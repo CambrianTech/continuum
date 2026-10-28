@@ -170,7 +170,7 @@
     #[tokio::test]
     pub(super) async fn a_canonical_completed_jobs_remainder_survives_a_crash_before_its_receipt() {
         use crate::commands::training_trigger::return_::{return_job, return_parked_remainder, Remainder, REMAINDER_RECEIPT};
-        use crate::genome::fine_tuning::job_board::{CompletedJob, WatchedJob};
+        use crate::genome::fine_tuning::job_board::{EndedJob, WatchedJob};
         use crate::genome::fine_tuning::types::{TrainingArtifact, TrainingStatus};
         for explicit in [false, true] {
         let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
@@ -225,7 +225,7 @@
         std::fs::write(jd.join("adapters/adapter.gguf"), b"gene").unwrap();
         std::fs::write(jd.join("partition.json"), serde_json::json!({"window": 40704, "sent": [2, 3, 7], "parked": parked, "rows": []}).to_string()).unwrap();
         assert!(!jd.join("request.json").exists(), "the canonical layout has no request file");
-        let completed = CompletedJob { local_id: job, persona_name: "test-p".into(), trait_kind: "code".into() };
+        let completed = EndedJob { local_id: job, persona_name: "test-p".into(), trait_kind: "code".into(), trained: true };
 
         // The dispatching core is gone; the one that boots next holds only what the durable store
         // says is pending (the dispatched batch is not). It durably accepts the remainder, and dies
@@ -264,11 +264,11 @@
             matches!(crashed.state.job_input(&orphan, &jd).await, Err(crate::modules::training_trigger::JobInputError::Unproven(_))),
             "a request file on disk never stands in for a dispatch that does not prove the job"
         );
-        assert!(return_parked_remainder(&crashed.state, &board, artifacts.path(), &completed).await.is_err(), "a usable request file cannot bypass a broken recorded dispatch");
+        assert!(return_parked_remainder(&crashed.state, &board, artifacts.path(), &completed, &|_: &str| None).await.is_err(), "a usable request file cannot bypass a broken recorded dispatch");
         assert_eq!(crashed.state.bucket_example_count(persona, "code", "synthetic"), None);
         assert!(!jd.join(REMAINDER_RECEIPT).exists());
         store.dispatches.update(dispatch, &intent).await.unwrap();
-        let returned = return_parked_remainder(&crashed.state, &board, artifacts.path(), &completed).await.unwrap();
+        let returned = return_parked_remainder(&crashed.state, &board, artifacts.path(), &completed, &|_: &str| None).await.unwrap();
         let Remainder::Submitted(accepted) = returned else { panic!("expected a new return: {returned:?}") };
         {
             let pending = crashed.state.buckets.get(&key).unwrap();
@@ -289,7 +289,7 @@
         drop(crashed);
 
         let (next, _executor) = build_runtime(adapter, false).await;
-        let replayed = return_parked_remainder(&next.state, &board, artifacts.path(), &completed).await.unwrap();
+        let replayed = return_parked_remainder(&next.state, &board, artifacts.path(), &completed, &|_: &str| None).await.unwrap();
         let Remainder::Submitted(outcome) = replayed else { panic!("the remainder is replayed, not skipped: {replayed:?}") };
         assert!(outcome.success, "{outcome:?}");
         assert!(outcome.acceptance.expect("an acceptance receipt").replayed, "the next owner replays the accepted remainder by identity");
@@ -300,7 +300,7 @@
             let expected: Vec<_> = parked.iter().map(|&i| originals[i].clone()).collect();
             assert_eq!(serde_json::to_value(&pending.examples).unwrap(), serde_json::to_value(&expected).unwrap(), "exactly the parked originals, whole and unchanged, in order");
         }
-        assert!(matches!(return_parked_remainder(&next.state, &board, artifacts.path(), &completed).await.unwrap(), Remainder::AlreadyReturned));
+        assert!(matches!(return_parked_remainder(&next.state, &board, artifacts.path(), &completed, &|_: &str| None).await.unwrap(), Remainder::AlreadyReturned));
         assert!(return_job(&next.state, &board, artifacts.path(), job).await.is_err(), "the full return of a completed job stays refused");
         if !explicit {
             use crate::commands::training_trigger::policy_recover::{PolicyRecoverParams, ReturnPolicyEdge};

@@ -85,6 +85,11 @@ pub(crate) async fn return_job(
     }
     let dir = job_dir_under(root, &job.persona_name, &job.trait_kind, job_id);
     refuse_trained_job(job_id, &dir)?;
+    // its parked examples already went back through the remainder route (card 565b3b64): a
+    // whole return now would hand them back twice, under a different identity
+    if dir.join(REMAINDER_RECEIPT).try_exists().map_err(|e| CommandError::Internal(e.to_string()))? {
+        return Err(CommandError::Invalid(format!("job {job_id}'s parked examples already went back to her bucket (its {REMAINDER_RECEIPT})")));
+    }
     let request = state.job_input(&job, &dir).await.map_err(input_error)?;
     if let Some(root) = &request.local_artifact_dir {
         refuse_trained_job(job_id, &root.join(job_id.to_string()))?;
@@ -122,6 +127,10 @@ pub(crate) enum Remainder {
     /// Submitted to her bucket. A refusal (`success: false`) leaves no receipt, so the next
     /// pass retries, and the chunks already accepted replay by their derived identities.
     Submitted(SubmitOutcome),
+    /// Not yet: her adopted window (`served`, `None` with no live lane for her base) is below
+    /// `needed`, the smallest window that trains one of its parked examples whole. Returned
+    /// now, they would only park again in a job that cannot run (card 565b3b64).
+    Waiting { needed: u32, served: Option<u32> },
 }
 
 /// Written in a job's directory once its parked remainder is back in her bucket.
@@ -136,11 +145,18 @@ struct RemainderReceipt {
     at_ms: u64,
 }
 
-/// The REMAINDER of a job that completed training: the whole originals its partition parked
-/// (the window couldn't hold them whole, or the run skipped them), back into her bucket, once
-/// (card 8a2334d9). Never an example it trained, so a trained job's FULL return stays refused
-/// ([`return_job`]). The caller has established that `job` completed training: the sentinel
-/// claimed it Completed, or the ledger's terminal row says so.
+/// The REMAINDER of a job that ended: the whole originals its partition parked (the window
+/// couldn't hold them whole, or the run skipped them), back into her bucket, once (card
+/// 8a2334d9). Never an example it trained, so a trained job's FULL return stays refused
+/// ([`return_job`]). `job.trained` is the sentinel's Completed claim or the ledger's terminal
+/// row. A FAILED job is returned here only when it sent nothing (every example parked, so it
+/// never ran: card 565b3b64) and no other return took its input; one that sent examples is the
+/// refused-job return's.
+///
+/// - Only when her adopted window (`served_window` of the job's base) reaches the smallest
+///   window that trains one of its parked examples whole ([`Remainder::Waiting`] otherwise): a
+///   return before then re-parks them in a job that fails, which is how her reviewed correction
+///   stranded. A partition without measured rows (before fork #51) is returned as before.
 ///
 /// - The examples are the job's own input as [`TrainingTriggerState::job_input`] proves it (its durable dispatch,
 ///   or a legacy request.json): native base, whole payloads, never the partition's measured rows.
@@ -155,7 +171,8 @@ pub(crate) async fn return_parked_remainder(
     state: &Arc<TrainingTriggerState>,
     board: &TrainingJobBoard,
     root: &std::path::Path,
-    job: &crate::genome::fine_tuning::job_board::CompletedJob,
+    job: &crate::genome::fine_tuning::job_board::EndedJob,
+    served_window: &dyn Fn(&str) -> Option<u32>,
 ) -> Result<Remainder, CommandError> {
     let id = job.local_id;
     let dir = job_dir_under(root, &job.persona_name, &job.trait_kind, id);
@@ -174,12 +191,27 @@ pub(crate) async fn return_parked_remainder(
     if dir.join(REMAINDER_RECEIPT).try_exists().map_err(|e| CommandError::Internal(e.to_string()))? {
         return Ok(Remainder::AlreadyReturned);
     }
-    if partition.parked.is_empty() {
+    if partition.parked.is_empty() || (!job.trained && !partition.sent.is_empty()) {
         return Ok(Remainder::Nothing);
+    }
+    if !job.trained && board.input_returned(id) {
+        return Ok(Remainder::AlreadyReturned);
     }
     let registration = board
         .registration(id)
         .ok_or_else(|| CommandError::NotFound(format!("job {id} has no registration on this node's job ledger")))?;
+    let needed = partition
+        .rows
+        .iter()
+        .filter(|row| partition.parked.contains(&row.index))
+        .map(|row| crate::inference::planning::training_plan::window_for_need(std::slice::from_ref(row), u32::MAX))
+        .min();
+    if let Some(needed) = needed {
+        let served = served_window(&registration.base_model);
+        if served.is_none_or(|window| window < needed) {
+            return Ok(Remainder::Waiting { needed, served });
+        }
+    }
     let mut request = state.job_input(&registration, &dir).await.map_err(input_error)?;
     let parked = remainder_of(&partition, request.dataset.examples.len())
         .map_err(|why| CommandError::Invalid(format!("job {id}: {why}; nothing is returned")))?;
@@ -335,7 +367,7 @@ mod tests {
     // refused with nothing added.
     #[tokio::test]
     async fn a_completed_job_returns_only_its_parked_remainder_once() {
-        use crate::genome::fine_tuning::job_board::CompletedJob;
+        use crate::genome::fine_tuning::job_board::EndedJob;
         let (trigger, _executor, _db) = build_runtime_trigger_only().await;
         let dir = tempfile::tempdir().expect("test: tempdir");
         let board = TrainingJobBoard::with_ledger(Some(dir.path().join("jobs-ledger.jsonl")));
@@ -373,7 +405,7 @@ mod tests {
             }).to_string()).expect("test: partition");
             std::fs::create_dir_all(jd.join("adapters")).expect("test: adapters");
             std::fs::write(jd.join("adapters/adapter.gguf"), b"gene").expect("test: its adapter");
-            CompletedJob { local_id: job, persona_name: "Kimi".into(), trait_kind: "code/owner".into() }
+            EndedJob { local_id: job, persona_name: "Kimi".into(), trait_kind: "code/owner".into(), trained: true }
         };
         let key = crate::modules::training_trigger::BucketKey {
             persona_id: persona,
@@ -385,12 +417,12 @@ mod tests {
         // Sent 0, 1 and 2; the run skipped 1, so 1 is parked too; 3 never fit. 0 and 2 trained.
         let trained = Uuid::new_v4();
         let job = completed(trained, vec![0, 1, 2], vec![1, 3]);
-        assert_eq!(board.take_completed(), vec![job.clone()], "the sentinel's Completed claim queues it for the trigger");
-        let first = return_parked_remainder(&trigger.state, &board, &root, &job).await.expect("test: returned");
+        assert_eq!(board.take_ended(), vec![job.clone()], "the sentinel's Completed claim queues it for the trigger");
+        let first = return_parked_remainder(&trigger.state, &board, &root, &job, &|_: &str| None).await.expect("test: returned");
         assert!(matches!(&first, Remainder::Submitted(o) if o.success), "{first:?}");
         assert_eq!(held(), vec!["p1".to_string(), "p3".to_string()], "only what it parked goes back, whole, never what it trained");
         assert!(job_dir_under(&root, "Kimi", "code/owner", trained).join(REMAINDER_RECEIPT).is_file(), "the receipt stands");
-        let again = return_parked_remainder(&trigger.state, &board, &root, &job).await.expect("test: answered");
+        let again = return_parked_remainder(&trigger.state, &board, &root, &job, &|_: &str| None).await.expect("test: answered");
         assert!(matches!(again, Remainder::AlreadyReturned), "{again:?}");
         assert_eq!(held().len(), 2, "returned once, never twice");
         let whole = return_job(&trigger.state, &board, &root, trained).await;
@@ -398,24 +430,100 @@ mod tests {
 
         // A partition naming an example its request doesn't hold is refused; nothing is added.
         let broken = completed(Uuid::new_v4(), vec![0], vec![1, 9]);
-        let refused = return_parked_remainder(&trigger.state, &board, &root, &broken).await;
+        let refused = return_parked_remainder(&trigger.state, &board, &root, &broken, &|_: &str| None).await;
         assert!(matches!(refused, Err(CommandError::Invalid(_))), "{refused:?}");
         assert_eq!(held().len(), 2, "nothing was added");
 
         // A partition that leaves an example unaccounted for (neither sent nor parked) is refused.
         let gap = completed(Uuid::new_v4(), vec![0], vec![2, 3]);
-        let refused = return_parked_remainder(&trigger.state, &board, &root, &gap).await;
+        let refused = return_parked_remainder(&trigger.state, &board, &root, &gap, &|_: &str| None).await;
         assert!(matches!(refused, Err(CommandError::Invalid(ref why)) if why.contains("index 1")), "{refused:?}");
         // A corrupt partition is an error the next pass retries, never "nothing parked".
         let torn = completed(Uuid::new_v4(), vec![0], vec![1, 2, 3]);
         std::fs::write(job_dir_under(&root, "Kimi", "code/owner", torn.local_id).join("partition.json"), b"{ torn").expect("test: corrupt");
-        let refused = return_parked_remainder(&trigger.state, &board, &root, &torn).await;
+        let refused = return_parked_remainder(&trigger.state, &board, &root, &torn, &|_: &str| None).await;
         assert!(matches!(refused, Err(CommandError::Internal(_))), "{refused:?}");
         assert_eq!(held().len(), 2, "nothing was added");
 
         // A job that parked nothing has no remainder.
         let whole_fit = completed(Uuid::new_v4(), vec![0, 1, 2, 3], vec![]);
-        assert!(matches!(return_parked_remainder(&trigger.state, &board, &root, &whole_fit).await, Ok(Remainder::Nothing)));
+        assert!(matches!(return_parked_remainder(&trigger.state, &board, &root, &whole_fit, &|_: &str| None).await, Ok(Remainder::Nothing)));
+    }
+
+    // what this catches (card 565b3b64; Kimi's reviewed correction 2de02f40 on the windows 5090,
+    // 2026-10-28): a job whose examples ALL parked never runs, ends FAILED, and its examples had no
+    // route back (the remainder route took completed jobs only). Returned at once they would only
+    // re-park in another job that cannot run. They wait while her adopted window is below the
+    // smallest one that trains one of them whole, and go back once it reaches it: once, by
+    // receipt, never again by the whole-job route either. A failed job that sent examples stays
+    // the refused-job return's, and one an operator already returned is not returned twice.
+    #[tokio::test]
+    async fn an_all_parked_failed_job_returns_when_her_window_can_train_one_and_only_once() {
+        use crate::genome::fine_tuning::job_board::EndedJob;
+        let (trigger, _executor, _db) = build_runtime_trigger_only().await;
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        let board = TrainingJobBoard::with_ledger(Some(dir.path().join("jobs-ledger.jsonl")));
+        let root = dir.path().join("genome");
+        let persona = Uuid::from_u128(0x2de0);
+        let row = |index: usize, tokens: u64| serde_json::json!({"index": index, "tokens_full": tokens, "tokens_min": tokens, "tokens_trained": 0, "fit": "skipped"});
+        let failed = |job: Uuid, sent: Vec<usize>, parked: Vec<usize>| {
+            board.register(WatchedJob {
+                trigger_dispatch_id: None,
+                handle: JobHandle { provider_id: "engine-local".into(), provider_job_id: "x".into(), local_id: job },
+                persona_id: persona,
+                persona_name: "Kimi".into(),
+                base_model: "ggml-org/Qwen3.8-27B-GGUF".into(),
+                trait_kind: "code/owner".into(),
+                eval_set: None,
+                signature: None,
+                decision: None,
+            });
+            board.claim(job, &TrainingStatus::Failed { error: "none of the 3 examples trains whole at window 49664".into() });
+            let jd = job_dir_under(&root, "Kimi", "code/owner", job);
+            std::fs::create_dir_all(&jd).expect("test: job dir");
+            std::fs::write(jd.join("request.json"), serde_json::json!({
+                "personaId": persona.to_string(), "personaName": "Kimi",
+                "baseModel": "ggml-org/Qwen3.8-27B-GGUF", "traitKind": "code/owner",
+                "dataset": {"examples": [ex("p0", "c"), ex("p1", "c"), ex("p2", "c")], "source": TrainingSource::TeacherSynthesized, "validationSplit": 0.0}
+            }).to_string()).expect("test: request");
+            std::fs::write(jd.join("partition.json"), serde_json::json!({
+                "window": 49664, "sent": sent, "parked": parked, "rows": [row(0, 51_670), row(1, 64_041), row(2, 60_000)]
+            }).to_string()).expect("test: partition");
+            EndedJob { local_id: job, persona_name: "Kimi".into(), trait_kind: "code/owner".into(), trained: false }
+        };
+        let key = crate::modules::training_trigger::BucketKey {
+            persona_id: persona,
+            trait_kind: "code/owner".into(),
+            base_model: "ggml-org/Qwen3.8-27B-GGUF".into(),
+        };
+        let held = || trigger.state.buckets.get(&key).map(|b| b.examples.len()).unwrap_or(0);
+        let all = Uuid::new_v4();
+        let job = failed(all, vec![], vec![0, 1, 2]);
+        assert_eq!(board.take_ended(), vec![job.clone()], "the sentinel's Failed claim lists it for the trigger, untrained");
+        // her smallest parked example (51,670 tokens) trains whole at 51,712
+        for (served, why) in [(None, "no live lane serves her base"), (Some(49_664), "her old window")] {
+            let waiting = return_parked_remainder(&trigger.state, &board, &root, &job, &|_: &str| served).await.expect("test: answered");
+            assert!(matches!(waiting, Remainder::Waiting { needed: 51_712, served: s } if s == served), "{why}: {waiting:?}");
+            assert_eq!(held(), 0, "{why}: nothing goes back while it would only park again");
+        }
+        let grown = |_: &str| Some(64_256);
+        let returned = return_parked_remainder(&trigger.state, &board, &root, &job, &grown).await.expect("test: returned");
+        assert!(matches!(&returned, Remainder::Submitted(o) if o.success), "{returned:?}");
+        assert_eq!(held(), 3, "every parked example goes back whole, the longest included: the next partition sends or parks it");
+        let again = return_parked_remainder(&trigger.state, &board, &root, &job, &grown).await.expect("test: answered");
+        assert!(matches!(again, Remainder::AlreadyReturned), "{again:?}");
+        let whole = return_job(&trigger.state, &board, &root, all).await;
+        assert!(matches!(whole, Err(CommandError::Invalid(ref why)) if why.contains(REMAINDER_RECEIPT)), "never a second return by the other route: {whole:?}");
+        assert_eq!(held(), 3, "returned once");
+
+        // a failed job that SENT examples is the refused-job return's, never this route's
+        let refused = failed(Uuid::new_v4(), vec![0], vec![1, 2]);
+        assert!(matches!(return_parked_remainder(&trigger.state, &board, &root, &refused, &grown).await, Ok(Remainder::Nothing)));
+        // one an operator already returned whole is not returned again here
+        let operator = failed(Uuid::new_v4(), vec![], vec![0, 1, 2]);
+        board.journal_returned(operator.local_id, operator.local_id, &serde_json::json!("genome/training-trigger/return"), 0);
+        assert!(matches!(return_parked_remainder(&trigger.state, &board, &root, &operator, &grown).await, Ok(Remainder::AlreadyReturned)));
+        assert_eq!(held(), 3, "nothing added by either");
     }
 
     // what this catches (the 5090, 2026-10-05; and 2026-10-07, a return wearing its submission's id): ~500 of Kimi's examples stranded in the

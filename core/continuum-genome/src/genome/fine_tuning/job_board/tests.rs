@@ -430,12 +430,14 @@
         assert!(TrainingJobBoard::with_ledger(Some(ledger)).reconcile_orphans().is_empty());
     }
 
-    // what this catches (card 8a2334d9): a job that completed before a restart (Kimi's
-    // 55f2e6de) losing its only route to returning what it parked, because the runtime list
-    // dies with the core. The next owner lists every completed job from the ledger, and no
-    // failed or open one; a reader that doesn't own the ledger lists none.
+    // what this catches (cards 8a2334d9, 565b3b64): a job that ended before a restart (Kimi's
+    // 55f2e6de completed; her 2de02f40 correction's all-parked job failed) losing its only route
+    // to returning what it parked, because the runtime list dies with the core. The next owner
+    // lists every ended job from the ledger, marked trained or not, a completion outranking a
+    // failure row of the same job; a killed-by-reboot row (no status) is not an ending this
+    // lists; a reader that doesn't own the ledger lists none.
     #[test]
-    fn the_boot_replay_lists_every_completed_job_for_its_remainder() {
+    fn the_boot_replay_lists_every_ended_job_for_its_remainder() {
         let dir = tempfile::tempdir().expect("test: tempdir");
         let ledger = dir.path().join("jobs-ledger.jsonl");
         let board = TrainingJobBoard::with_ledger(Some(ledger.clone()));
@@ -444,24 +446,24 @@
             "persona_id": Uuid::from_u128(7).to_string(), "persona_name": "Kimi",
             "base_model": "ggml-org/Qwen3.8-27B-GGUF", "trait_kind": "code/owner", "at_ms": 1
         });
-        let (done, failed) = (Uuid::from_u128(0xd0), Uuid::from_u128(0xfa));
-        for id in [done, failed] {
+        let (done, failed, killed) = (Uuid::from_u128(0xd0), Uuid::from_u128(0xfa), Uuid::from_u128(0x4b));
+        for id in [done, failed, killed] {
             board.journal(&registered(id));
         }
         let artifact = super::super::types::TrainingArtifact { model_id: "gene".into(), local_path: None, format: Default::default(), metrics: Default::default() };
         board.journal(&serde_json::json!({"event": "terminal", "reason": "claimed", "local_id": done.to_string(),
-            "status": TrainingStatus::Completed { artifact }, "at_ms": 2}));
+            "status": TrainingStatus::Failed { error: "an earlier row".into() }, "at_ms": 2}));
+        board.journal(&serde_json::json!({"event": "terminal", "reason": "claimed", "local_id": done.to_string(),
+            "status": TrainingStatus::Completed { artifact }, "at_ms": 3}));
         board.journal(&serde_json::json!({"event": "terminal", "reason": "claimed", "local_id": failed.to_string(),
-            "status": TrainingStatus::Failed { error: "refused".into() }, "at_ms": 2}));
+            "status": TrainingStatus::Failed { error: "none of the 11 examples trains whole".into() }, "at_ms": 2}));
+        board.journal(&serde_json::json!({"event": "terminal", "reason": "killed-by-reboot", "local_id": killed.to_string(), "at_ms": 2}));
         let reader = TrainingJobBoard::with_ledger(Some(ledger.clone()));
-        reader.reconcile_completed();
-        assert!(reader.take_completed().is_empty(), "a board that doesn't own the ledger lists nothing");
+        reader.reconcile_ended();
+        assert!(reader.take_ended().is_empty(), "a board that doesn't own the ledger lists nothing");
         drop((board, reader));
         let next = TrainingJobBoard::with_ledger(Some(ledger));
-        next.reconcile_completed();
-        assert_eq!(
-            next.take_completed(),
-            vec![CompletedJob { local_id: done, persona_name: "Kimi".into(), trait_kind: "code/owner".into() }],
-            "exactly the completed job, never the failed one"
-        );
+        next.reconcile_ended();
+        let job = |local_id, trained| EndedJob { local_id, persona_name: "Kimi".into(), trait_kind: "code/owner".into(), trained };
+        assert_eq!(next.take_ended(), vec![job(done, true), job(failed, false)], "the completed job as trained, the failed one as not, the killed one not at all");
     }
