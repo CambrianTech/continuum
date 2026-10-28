@@ -561,40 +561,33 @@ enum Evidence {
     Unknown(String),
 }
 
-/// PURE but for the reads: the evidence `roots` hold for `row`'s job. A job dir is `<root>/<job>`
-/// under a request's own artifact root, else `<root>/<persona>/<trait>/<job>` (`job_dir_for`).
+/// The evidence `roots` hold for `row`'s job, in every directory it can have
+/// ([`job_dirs_strict`](crate::genome::fine_tuning::job_dir::job_dirs_strict)): any listing,
+/// check or record that errs makes it unknown, never "not refused".
 fn refusal_evidence(row: &FootprintRow, roots: &[PathBuf]) -> Evidence {
     let Ok(job) = Uuid::parse_str(&row.job) else {
         return Evidence::NotRefused; // no job id (a test's or a hand's row): no record can name it
     };
     let mut unknown = None;
-    let mut dirs = Vec::new();
     for root in roots {
-        match std::fs::read_dir(root) {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => {
-                unknown = Some(format!("{}: {e}", root.display()));
+        let dirs = match crate::genome::fine_tuning::job_dir::job_dirs_strict(root, job) {
+            Ok(dirs) => dirs,
+            Err(why) => {
+                unknown = Some(why);
                 continue;
             }
-        }
-        dirs.push(root.join(job.to_string()));
-        for anchor in [RETURNABLE_FILE, LEGACY_REFUSAL_FILE] {
-            match crate::genome::fine_tuning::job_dir::find_job_dir_under(root, job, anchor) {
-                Ok(found) => dirs.extend(found),
+        };
+        for dir in dirs {
+            match read_returnable_strict(&dir) {
+                Ok(Some(Returnable::EngineRefused(refusal))) if refusal.graph_bytes == row.bytes => return Evidence::Refused,
+                Ok(_) => {}
                 Err(why) => unknown = Some(why),
             }
         }
     }
-    for dir in dirs {
-        match read_returnable_strict(&dir) {
-            Ok(Some(Returnable::EngineRefused(refusal))) if refusal.graph_bytes == row.bytes => return Evidence::Refused,
-            Ok(_) => {}
-            Err(why) => unknown = Some(why),
-        }
-    }
     unknown.map_or(Evidence::NotRefused, Evidence::Unknown)
 }
+
 
 /// The suffix a refusal's row is keyed under, beside the run row of the same shape.
 const REFUSED: &str = "|refused";

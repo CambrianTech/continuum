@@ -673,6 +673,19 @@ use super::*;
         let mut all = f.read_all();
         all.insert(unproven.key(), FootprintRow { engine: None, bytes: 5 * gib, measured_at_ms: 2, job: Uuid::from_u128(7).to_string(), whole_run: true, layers: None, provenance: None });
         std::fs::write(&path, serde_json::to_vec(&all).unwrap()).unwrap();
+        // a branch of the job layout that cannot be listed is unknown too, never "no record"
+        // (Codex on #5548 at a7bb4b919)
+        let locked = home.path().join("Other");
+        std::fs::create_dir_all(locked.join("code")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let unread = f.classify_legacy(&[home.path().to_path_buf()]).unwrap();
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(unread.unknown.len(), 1, "an unlistable persona directory is unknown: {unread:?}");
+            assert_eq!(f.read_all()[&unproven.key()].provenance, None, "so the row is not stamped a run");
+        }
         assert_eq!(f.classify_legacy(&[home.path().to_path_buf()]).unwrap(), Classified::default());
         assert_eq!(f.get(&unproven), Some(5 * gib), "nothing on disk says it was refused: it stays a run");
         assert_eq!(f.read_all()[&unproven.key()].provenance, Some(Provenance::Run));
