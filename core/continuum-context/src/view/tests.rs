@@ -32,6 +32,7 @@ impl Source<String> for Fake {
         self.items
             .iter()
             .map(|(key, text)| Item {
+                stored: None,
                 key: key.clone(),
                 full: text.clone(),
                 summary: None,
@@ -42,7 +43,7 @@ impl Source<String> for Fake {
     fn retired(&self) -> Vec<Item<String>> {
         self.retired
             .iter()
-            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), summary: None, pointer: Some(text.clone()) })
+            .map(|(key, text)| Item { stored: None, key: key.clone(), full: text.clone(), summary: None, pointer: Some(text.clone()) })
             .collect()
     }
 }
@@ -179,7 +180,7 @@ fn an_item_without_a_pointer_leaves_the_view_when_collapsed() {
             1
         }
         fn items(&self) -> Vec<Item<String>> {
-            self.0.iter().map(|t| Item { key: (*t).to_owned(), full: (*t).to_owned(), summary: None, pointer: None }).collect()
+            self.0.iter().map(|t| Item { stored: None, key: (*t).to_owned(), full: (*t).to_owned(), summary: None, pointer: None }).collect()
         }
     }
     let mut turns = Turns(vec!["one", "two", "three"]);
@@ -244,6 +245,7 @@ impl Source<String> for Leveled {
         self.0
             .iter()
             .map(|(key, full, summary)| Item {
+                stored: None,
                 key: (*key).to_owned(),
                 full: full.clone(),
                 summary: summary.clone(),
@@ -323,5 +325,78 @@ fn a_short_item_without_a_summary_stays_whole_under_a_summary_ceiling() -> Resul
     let rendered: Vec<String> = view.render().cloned().collect();
     assert_eq!(rendered, ["a short old result", "outline of the big result", "a short result", "outline of the file"]);
     assert_eq!((start.collapsed, start.summarized), (0, 2));
+    Ok(())
+}
+
+// what this catches: a read receipt naming a turn she never saw. `renders` answers true only
+// for an item her view shows whole (or summarized) this epoch, never for one collapsed to its
+// pointer or one the view never held.
+#[test]
+fn renders_is_true_only_for_what_her_view_shows() -> Result<(), GrantMismatch> {
+    let mut actions = Fake::new("actions", 1);
+    actions.push("#1", &"x".repeat(9_000));
+    actions.push("#2", "short");
+    let pointer = |item: &Item<String>| item.pointer.as_ref().map_or(0, String::len);
+    let floor: usize = actions.items().iter().map(pointer).sum();
+    let (view, _) = View::start(vec![], &[&actions], |_| vec![floor + 10])?;
+    assert!(!view.renders("actions", "#1"), "collapsed to its pointer: not read");
+    assert!(view.renders("actions", "#2"), "whole: read");
+    assert!(!view.renders("actions", "#3"), "never held");
+    assert!(!view.renders("conversation", "#2"), "another source's key");
+    Ok(())
+}
+
+/// A source whose bodies are spilled: resident as their pointer, whole on disk.
+struct Spilled {
+    bodies: Vec<(String, String)>,
+    loads: std::cell::Cell<usize>,
+}
+
+impl Source<String> for Spilled {
+    fn name(&self) -> &str {
+        "results"
+    }
+    fn priority(&self) -> u8 {
+        1
+    }
+    fn items(&self) -> Vec<Item<String>> {
+        self.bodies
+            .iter()
+            .map(|(key, body)| {
+                let pointer = format!("[{key}: {} chars stored]", body.len());
+                Item {
+                    stored: Some(crate::source::StoredWhole { chars: body.len(), handle: key.clone() }),
+                    key: key.clone(),
+                    full: pointer.clone(),
+                    summary: None,
+                    pointer: Some(pointer),
+                }
+            })
+            .collect()
+    }
+    fn load(&self, item: &Item<String>) -> Option<String> {
+        self.loads.set(self.loads.get() + 1);
+        let handle = &item.stored.as_ref()?.handle;
+        self.bodies.iter().find(|(key, _)| key == handle).map(|(_, body)| body.clone())
+    }
+}
+
+// what this catches: residency changing visibility. A stored whole is priced from its measured
+// size without a read, and only the item the allocation grants WHOLE is loaded; the one it
+// collapses is never read off disk.
+#[test]
+fn a_stored_whole_is_priced_without_a_read_and_loaded_only_when_granted() -> Result<(), GrantMismatch> {
+    let spilled = Spilled {
+        bodies: vec![("#1".into(), "a".repeat(5_000)), ("#2".into(), "b".repeat(800))],
+        loads: std::cell::Cell::new(0),
+    };
+    let claim = claims(&[&spilled as &dyn Source<String>]);
+    assert_eq!(claim[0].full_chars, 5_800, "priced from the stored sizes");
+    assert_eq!(spilled.loads.get(), 0, "pricing reads nothing");
+    let floor = claim[0].pointer_chars;
+    let (view, _) = View::start(vec![], &[&spilled], |_| vec![floor + 1_000])?;
+    assert_eq!(spilled.loads.get(), 1, "only the granted whole was loaded");
+    assert!(rendered(&view).contains(&"b".repeat(800)), "the newest, granted whole, renders its body");
+    assert!(!view.renders("results", "#1") && view.renders("results", "#2"));
     Ok(())
 }

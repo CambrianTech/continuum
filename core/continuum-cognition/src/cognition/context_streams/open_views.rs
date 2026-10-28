@@ -17,7 +17,7 @@ pub(crate) struct OpenViews<'a> {
 /// turn (Benchy, the M5, 2026-10-17), so collapsed it is still itself.
 fn required(key: String, text: String) -> Item<ContextMessage> {
     let message = ContextMessage::user(text);
-    Item { key, full: message.clone(), summary: None, pointer: Some(message) }
+    Item { stored: None, key, full: message.clone(), summary: None, pointer: Some(message) }
 }
 
 impl Source<ContextMessage> for OpenViews<'_> {

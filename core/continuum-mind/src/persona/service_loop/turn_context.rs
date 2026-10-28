@@ -196,6 +196,7 @@ pub(super) fn build_turn_burst(
             peer_id: &msg.peer_id.to_string(),
             content: &msg.render_content(),
             occurred_at_ms: 0,
+            source: Some(crate::cognition::workspace::TurnSource { room: msg.room_id, event: msg.event_id, lamport: msg.lamport }),
         }),
     );
     // #301 anchor-starvation fix: the in-window escalation counter loses its

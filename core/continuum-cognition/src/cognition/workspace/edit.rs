@@ -614,9 +614,27 @@ pub struct BurstTurn {
     pub occurred_at_ms: Option<u64>,
     /// Speech, or something the system told her. See [`TurnVoice`].
     pub voice: TurnVoice,
+    /// The airc event this turn is, when it came from a room: what keys it in her view and
+    /// what her read receipt advances to once a sent prompt rendered it. `None` for opaque,
+    /// eval and perception turns.
+    pub source: Option<TurnSource>,
+}
+
+/// The room event a turn came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnSource {
+    pub room: uuid::Uuid,
+    pub event: uuid::Uuid,
+    pub lamport: u64,
 }
 
 impl BurstTurn {
+    /// This turn is the room event `source`.
+    pub fn from_event(mut self, source: TurnSource) -> Self {
+        self.source = Some(source);
+        self
+    }
+
     /// An attributed turn — the live/eval path that knows WHO spoke and WHEN.
     pub fn attributed(
         is_self: bool,
@@ -630,6 +648,7 @@ impl BurstTurn {
             content: content.into(),
             occurred_at_ms,
             voice: TurnVoice::Speech,
+            source: None,
         }
     }
 
@@ -646,6 +665,7 @@ impl BurstTurn {
             content: content.into(),
             occurred_at_ms: None,
             voice: TurnVoice::Speech,
+            source: None,
         }
     }
 
@@ -659,6 +679,7 @@ impl BurstTurn {
     pub fn perception(content: impl Into<String>) -> Self {
         Self {
             voice: TurnVoice::Perception,
+            source: None,
             ..Self::opaque(content)
         }
     }

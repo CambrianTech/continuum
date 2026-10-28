@@ -254,10 +254,10 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
                 }
                 None => shown.answered().to_owned(),
             };
-            looped.push(Item { key: looped.len().to_string(), pointer: None, summary: None, full });
+            looped.push(Item { stored: None, key: looped.len().to_string(), pointer: None, summary: None, full });
         }
         for full in extra_pages {
-            looped.push(Item { key: looped.len().to_string(), pointer: None, summary: None, full });
+            looped.push(Item { stored: None, key: looped.len().to_string(), pointer: None, summary: None, full });
         }
         previous_sent = Some(&cut.sent);
         previous_rendered = Some(rendered);

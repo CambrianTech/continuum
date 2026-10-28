@@ -110,6 +110,10 @@ pub struct PersonaBrainConfig {
     /// page per room and never queue behind the living mind's act, since it acts beside
     /// her (`slots::PageKey::Fork`). `false` for every resident.
     pub forked: bool,
+    /// Where her sent prompts' read receipts go: her airc source, which advances her room
+    /// cursor through what each sent prompt rendered. `None` (a fork, an eval, a harness)
+    /// marks nothing read.
+    pub read_receipt: Option<Arc<dyn super::super::llm_deliberation_faculty::ReadReceipt>>,
 }
 
 /// Whether a grounding source must run synchronously on the inference loop, or
@@ -509,6 +513,10 @@ pub(super) fn assemble_workspace_cycle(
                 ws
             });
     let mut deliberation = if cfg.forked { deliberation.forked() } else { deliberation };
+    // A fork copies the living config but never marks her rooms read: it acts beside her.
+    if let Some(receipt) = cfg.read_receipt.clone().filter(|_| !cfg.forked) {
+        deliberation = deliberation.with_read_receipt(receipt);
+    }
     if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the

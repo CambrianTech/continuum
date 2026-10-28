@@ -100,10 +100,12 @@ impl LlmDeliberationFaculty {
                 stimulus = Some(ChatMessage::text(role, line));
                 continue;
             }
-            let key = match turn.occurred_at_ms {
-                Some(ms) => format!("{ms}/{}", turn.author),
-                // An opaque stimulus has no time: its position among the turns is its identity.
-                None => format!("#{index}"),
+            // A room turn is its event (unique, and what her read receipt names); a turn without
+            // one keys by time and author, an opaque stimulus by its position.
+            let key = match (turn.source, turn.occurred_at_ms) {
+                (Some(source), _) => source.event.to_string(),
+                (None, Some(ms)) => format!("{ms}/{}", turn.author),
+                (None, None) => format!("#{index}"),
             };
             let role = if turn.is_self {
                 crate::cognition::context_streams::Role::Assistant

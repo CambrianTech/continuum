@@ -30,6 +30,6 @@ impl Source<ContextMessage> for Grounding {
         // reopen it by, so collapsed it is still its truthful minimum, never a one-liner.
         let full = ContextMessage::user(format!("[{}]\n{}", self.faculty, self.text));
         let pointer = ContextMessage::user(format!("[{}]\n{}", self.faculty, self.minimum));
-        vec![Item { key: "block".to_owned(), full, summary: None, pointer: Some(pointer) }]
+        vec![Item { stored: None, key: "block".to_owned(), full, summary: None, pointer: Some(pointer) }]
     }
 }

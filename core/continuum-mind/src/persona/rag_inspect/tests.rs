@@ -152,16 +152,11 @@ async fn long_content_is_truncated_in_preview_but_tokens_remain_accurate() {
     );
 }
 
-// what this catches: under the slice-2 #43 digest contract the window is
-// bounded by budget alone — pack_digest walks newest-first and TRUNCATES
-// when the budget is exhausted; there is NO continuation cursor (the digest
-// IS the window — more history is a scrollback command, not a budget page).
-// A regression that re-introduced a continuation cursor, or that stopped
-// truncating, would break this.
+// what this catches: the inspect view sizing the conversation (FLOW plan §2d). The digest
+// is delivered whole at any budget, with NO continuation cursor (more history is a
+// scrollback command); her view, not the source, decides what of it she sees.
 #[tokio::test]
-async fn tight_budget_truncates_the_window_with_no_continuation_cursor() {
-    // 4 items × ~2 tokens each ("ddddd" = 5 chars → chars/4 + 1 = 2 tokens),
-    // budget of 4 tokens fits only the 2 newest.
+async fn tight_budget_delivers_the_whole_window_with_no_continuation_cursor() {
     let reader = Arc::new(StubReader::new(vec![
         make_event(Some("aaaaa"), 1, 1_000_000),
         make_event(Some("bbbbb"), 2, 1_000_000),
@@ -173,7 +168,7 @@ async fn tight_budget_truncates_the_window_with_no_continuation_cursor() {
     req.airc_max = 4;
     let result = inspect_persona_rag(&req, reader).await.unwrap();
     let d = &result.deliveries[0];
-    assert!(d.items.len() < 4, "tight budget truncates the window");
+    assert_eq!(d.items.len(), 4, "the source delivers every staged turn");
     assert!(
         !d.has_continuation,
         "the digest carries no continuation cursor by design"

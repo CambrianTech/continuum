@@ -408,6 +408,8 @@ impl LlmDeliberationFaculty {
                 }
             }
         };
+        // Sent and answered: she read what this prompt rendered (read_receipt.rs), never before.
+        self.send_read_receipt(ws).await;
         let messages = &view.messages;
         let lifecycle_recorded = self
             .prompt_capture

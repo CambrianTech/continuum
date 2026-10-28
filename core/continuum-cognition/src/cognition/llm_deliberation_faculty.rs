@@ -97,6 +97,8 @@ mod admission;
 pub(crate) mod admission_clock;
 use self::request::*;
 mod reply_claim;
+mod read_receipt;
+pub use read_receipt::ReadReceipt;
 use self::reply_claim::*;
 mod verdict;
 mod tool_surface;
@@ -199,6 +201,8 @@ pub struct LlmDeliberationFaculty {
     /// The live spawn path attaches a per-persona JSONL sink. See
     /// [`prompt_capture`](crate::cognition::prompt_capture).
     prompt_capture: Option<Arc<dyn crate::cognition::prompt_capture::PromptCaptureSink>>,
+    /// Where a sent prompt's read receipt goes (`read_receipt.rs`); `None` marks nothing read.
+    read_receipt: Option<Arc<dyn read_receipt::ReadReceipt>>,
     /// The persona's paged-in genome — the LoRA layers this faculty injects into
     /// every generation request ([`GenomeHandle`]). Shared with the owning
     /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle), which pages skills
@@ -259,6 +263,7 @@ impl LlmDeliberationFaculty {
             surface: ToolSurface::default(),
             working_memory: None,
             prompt_capture: None,
+            read_receipt: None,
             genome: empty_genome(),
             decoding: relaxed_decoding(),
             working_set: None,

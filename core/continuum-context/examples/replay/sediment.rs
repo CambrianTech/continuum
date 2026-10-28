@@ -171,7 +171,7 @@ mod tests {
         let items = sizes
             .iter()
             .enumerate()
-            .map(|(n, size)| Item { key: n.to_string(), full: "x".repeat(*size), summary: None, pointer: Some(format!("[result #{n}]")) })
+            .map(|(n, size)| Item { stored: None, key: n.to_string(), full: "x".repeat(*size), summary: None, pointer: Some(format!("[result #{n}]")) })
             .collect();
         Captured { name: name.to_owned(), items }
     }
