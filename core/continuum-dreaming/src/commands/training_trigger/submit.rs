@@ -303,6 +303,13 @@ async fn submit_batch_inner(state: &Arc<TrainingTriggerState>, p: SubmitParams, 
         base_model: p.base_model.clone(),
     };
 
+    // Each NEW experience is also one learn on her shadow as it is accepted (the dream stage,
+    // §9.6 D3): a step per arrival, never waiting for a threshold. A return re-submits examples a
+    // failed job handed back, which are not new experience.
+    let dream = returned_job.is_none().then(|| {
+        let learning_rate = p.schedule.as_ref().map_or(crate::genome::fine_tuning::DEFAULT_LEARNING_RATE, |s| s.learning_rate) as f32; // map_or: a batch without a schedule learns at the genome's one rate
+        (p.persona_id, p.base_model.clone(), p.examples.clone(), p.lora.clone(), learning_rate)
+    });
     let batch = PendingBatch {
         submission_ids: Vec::new(),
         submission_examples: Vec::new(),
@@ -352,6 +359,12 @@ async fn submit_batch_inner(state: &Arc<TrainingTriggerState>, p: SubmitParams, 
             Ok(receipt) => receipt,
             Err((kind, error)) => return SubmitOutcome::refused(kind, error),
         };
+        if let Some((persona, base_model, examples, lora, learning_rate)) = dream.filter(|_| !acceptance.replayed) {
+            let stage = crate::modules::dream_stage::dream_stage();
+            for example in examples {
+                stage.arrive(crate::modules::dream_stage::Arrival { persona, base_model: base_model.clone(), example, lora: lora.clone(), learning_rate });
+            }
+        }
         // A replay never appends again. It can still drive an already accepted,
         // retryable batch forward using the same persisted dispatch intent.
         let mut outcome = if state.ready_to_dispatch(&key) {

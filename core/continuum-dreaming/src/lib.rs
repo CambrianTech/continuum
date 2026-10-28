@@ -6,6 +6,7 @@ pub use continuum_mind::*;
 
 pub mod modules {
     pub mod dataset;
+    pub mod dream_stage;
     pub mod gene_examiner;
     pub mod genome;
     pub mod genome_fitness_sentinel;

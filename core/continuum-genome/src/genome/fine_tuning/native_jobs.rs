@@ -449,7 +449,7 @@ pub(super) fn job_dir_for(request: &TrainingJobRequest, local_id: Uuid) -> PathB
 /// 2.7733 over an epoch, -0.2%. The exact walk takes ONE AdamW step per window, so 18
 /// examples x 3 epochs is 54 steps, and at 1e-5 the adapter barely moves. 1e-4 is the
 /// conventional floor of the LoRA range at rank 8.
-pub(super) const DEFAULT_LEARNING_RATE: f64 = 1e-4;
+pub const DEFAULT_LEARNING_RATE: f64 = 1e-4;
 
 pub(super) fn default_schedule() -> ScheduleParams {
     ScheduleParams {
