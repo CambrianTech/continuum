@@ -307,6 +307,39 @@ mod tests {
         let _ = kept;
     }
 
+    // what this catches (card 4545eafd; Codex on #5572): a retirement that commits over a demand
+    // clear that never happened. A corrupt demand store read leniently is "empty", the clear
+    // is a no-op, and the rows flip with the withdrawn examples' reservation left behind. A
+    // store that cannot answer fails the retirement: the rows stay pending, the file keeps its
+    // bytes, and once the store is repaired the same retirement finishes.
+    #[tokio::test]
+    async fn a_demand_store_that_cannot_answer_fails_the_retirement_and_flips_nothing() {
+        let (trigger, executor, _dir) = build_runtime_trigger_only().await;
+        let persona = Uuid::new_v4();
+        let card = Uuid::new_v4();
+        submit(&executor, persona, vec![on_card(card, "w-1"), on_card(card, "w-2")]).await;
+        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(2));
+        use crate::genome::fine_tuning::training_demand::TrainingDemand;
+        let root = crate::genome::fine_tuning::job_dir::genome_root().expect("test: a home");
+        let file = TrainingDemand::store_dir(&root).join(format!("{persona}.json"));
+        std::fs::create_dir_all(file.parent().expect("test: parent")).expect("test: dir");
+        std::fs::write(&file, b"{ torn").expect("test: corrupt store");
+
+        let failed = retire_as_operator(&executor, json!({ "cardId": card, "reason": "superseded" })).await;
+        let refused = match failed {
+            Ok(json) => json["success"] != true,
+            Err(_) => true,
+        };
+        assert!(refused, "a store that cannot answer fails the retirement");
+        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(2), "the rows stay pending");
+        assert_eq!(std::fs::read(&file).expect("test: read"), b"{ torn", "the store keeps its bytes");
+
+        std::fs::remove_file(&file).expect("test: repair the store");
+        let finished = retire_as_operator(&executor, json!({ "cardId": card, "reason": "superseded" })).await.expect("test: rerun");
+        assert_eq!(finished["success"], true, "the same retirement finishes once the store answers: {finished}");
+        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(0));
+    }
+
     // what this catches: a submission already carried into a job is not a pending row;
     // retire must refuse it BY NAME with its dispatch, never flip it, so the operator
     // reaches for `return` on the job instead of believing the examples were withdrawn.

@@ -399,7 +399,7 @@ impl TrainingTriggerState {
             .flat_map(|(_, row)| row.batch.examples.iter().map(crate::genome::fine_tuning::training_demand::TrainingDemand::key_of))
             .collect();
         crate::genome::fine_tuning::training_demand::TrainingDemand::for_persona(key.persona_id)
-            .record(&[], &withdrawn, None)
+            .clear(&withdrawn)
             .map_err(|e| format!("retirement {retirement_id}: the withdrawn examples' demand could not be cleared ({e}); rerun the same retirement to finish"))?;
         for (id, mut row) in eligible {
             let count = row.batch.examples.len() as u32;

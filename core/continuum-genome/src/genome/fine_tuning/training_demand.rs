@@ -121,6 +121,27 @@ impl TrainingDemand {
         continuum_host::durable::replace(&tmp, path)
     }
 
+    /// Settle `keys` strictly: a store that cannot be read or parsed (or no store) is an error,
+    /// never an empty one, so a caller that must clear before it commits never commits over a
+    /// clear that did not happen (Codex on #5572). A missing file has nothing to clear.
+    pub fn clear(&self, keys: &[String]) -> Result<(), String> {
+        let Some(path) = &self.path else { return Err("no continuum home: no demand store".into()) };
+        let before = self.read_strict()?;
+        let mut now = before.clone();
+        for key in keys {
+            now.examples.remove(key);
+        }
+        if now.examples.is_empty() {
+            now.reservation = None;
+        }
+        if now == before {
+            return Ok(());
+        }
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(&now).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", tmp.display()))?; // disk boundary: training-demand/<persona>.json, read back by serving's requirements_for
+        continuum_host::durable::replace(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
     /// The largest window an outstanding example needs. `None` when nothing waits.
     pub fn outstanding(&self) -> Option<u32> {
         self.read().examples.into_values().max()
