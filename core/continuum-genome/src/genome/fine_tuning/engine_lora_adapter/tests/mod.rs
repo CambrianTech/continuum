@@ -645,6 +645,33 @@
         server.abort();
     }
 
+    // what this catches (card ea157b1a, gate 3): a lived example parked because her served
+    // window cannot train it whole, with nothing telling serving what her learning needs (Kimi's
+    // reviewed correction, 51,670-64,041 tokens, parked for good at 49,664). The partition records
+    // the window that trains it whole for the serving requirement, and prices it only from a
+    // footprint of that very shape: none yet, so the reservation is unmeasured.
+    #[tokio::test]
+    pub(super) async fn a_parked_example_records_the_window_it_needs_for_serving() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, _seen) = fake_lane(train.path().to_path_buf(), "park_all").await;
+        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), jobs.path().join("fp.json"), 6 * 1024 * 1024 * 1024);
+        t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 1536)));
+        t.demand_store = Some(jobs.path().join("training-demand"));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.persona_id = Uuid::new_v4();
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        // every example parks (the engine measures each 40,000 tokens past the window): the job
+        // ends without a run, and its demand is recorded all the same
+        let _ = t.create_job(r.clone()).await;
+        let demand = crate::genome::fine_tuning::training_demand::TrainingDemand::in_dir(t.demand_store.as_deref(), r.persona_id);
+        assert_eq!(demand.outstanding(), Some(41_728), "her 41,536-token example needs a 41,728 window; her lane serves 1,536");
+        assert_eq!(demand.waiting(), r.dataset.examples.len());
+        let reserved = demand.reservation().expect("a parked example reserves");
+        assert_eq!((reserved.window, reserved.bytes), (41_728, None), "no footprint of that shape yet: the reservation is unmeasured, never priced from another window");
+        server.abort();
+    }
+
     // what this catches (BigMama on #4894; the 5090, 2026-10-10 04:34Z): a refused calibration
     // filing nothing, so every later dispatch calibrates at the same chunk and is refused the
     // same way. The refusal files the graph the engine measured under the chunk it ran; the
