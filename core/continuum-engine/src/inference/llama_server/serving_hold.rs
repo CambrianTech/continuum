@@ -87,6 +87,22 @@ impl ServingHold {
         let since_ms = previous.filter(|held| held.by == by).map_or(now_ms, |held| held.since_ms);
         Some(ServingHold { since_ms, by })
     }
+
+    /// The live work a handoff of this node would end, named by its ids (card 9beab2da: the
+    /// windows 5090's deploy killed in-engine job 8b46862c at 41% while this hold named it).
+    /// `None` for a hold of unknown cause: that is not evidence of work, and the deploy may be its
+    /// repair.
+    pub fn live_work(&self) -> Option<String> {
+        match &self.by {
+            HoldCause::Resident { work } if !work.is_empty() => Some(
+                work.iter()
+                    .map(|w| format!("{} on {} (engine pid {}, port {})", w.consumer, w.base_model, w.engine_pid, w.port))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -149,5 +165,18 @@ mod tests {
         let first = ServingHold::of(&Occupancy::Resident(vec![a.clone(), b.clone()]), None, 1_000).expect("held");
         let swapped = ServingHold::of(&Occupancy::Resident(vec![b, a]), Some(&first), 2_000).expect("held");
         assert_eq!(swapped.since_ms, 1_000);
+    }
+
+    // what this catches (card 9beab2da): a deploy that reads the node's hold must stop for live
+    // work and only for it. Resident work is named by its consumer and engine; an unknown hold
+    // names nothing, so it never blocks the deploy that may repair it.
+    #[test]
+    fn only_resident_work_is_live_work_a_handoff_would_end() {
+        let held = ServingHold::of(&Occupancy::Resident(vec![work(0x8b46, 33_971, 1_793_118_524)]), None, 1_000).expect("held");
+        let named = held.live_work().expect("resident work is live work");
+        assert!(named.contains(&format!("genome-train:{}", 0x8b46)) && named.contains("engine pid 33971"), "{named}");
+        let unknown = ServingHold { since_ms: 1_000, by: HoldCause::Unknown { reason: "the residency record is unreadable".into() } };
+        assert_eq!(unknown.live_work(), None);
+        assert_eq!(ServingHold { since_ms: 1_000, by: HoldCause::Resident { work: Vec::new() } }.live_work(), None, "no work, nothing to end");
     }
 }

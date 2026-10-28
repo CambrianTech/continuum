@@ -154,6 +154,24 @@ impl PrebuiltCore {
     }
 }
 
+/// The live work the running core's engine carries, from its own `serving/status` hold. `None`
+/// when nothing is held, when the hold names no work (an unknown cause is not evidence of work),
+/// and when no core answers: no running core holds anything this handoff could end, and the deploy
+/// may be its repair. Said either way, never silent.
+async fn live_engine_work() -> Option<String> {
+    let snapshot = running_core_provenance("serving/status", "deploy training guard").await.and_then(|response| {
+        serde_json::from_value::<continuum_core::inference::llama_server::ServingSnapshot>(response) // IPC boundary: decode the running core's serving/status response.
+            .map_err(|e| format!("serving snapshot: {e}"))
+    });
+    match snapshot {
+        Ok(snapshot) => snapshot.held_for.as_ref().and_then(continuum_core::inference::llama_server::serving_hold::ServingHold::live_work),
+        Err(why) => {
+            println!("⚠ the running core's serving hold could not be read ({why}); no live engine work is known, so the handoff proceeds");
+            None
+        }
+    }
+}
+
 /// Rebuild source by default, or hand off to an explicitly validated prebuilt
 /// core. Both use the same leases, selective teardown and deploy verification.
 pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreError> {
@@ -265,6 +283,18 @@ pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreEr
              or rerun with `continuum reboot --force` if losing the runs is acceptable.",
             evals.join(", ")
         ).into());
+    }
+    // In-engine training guard (card 9beab2da; the windows 5090, 2026-10-28: the consumer's
+    // handoff killed job 8b46862c at 41% while serving/status read held_for it, and the mlx_lm
+    // guard above never sees an engine's own run). The running core's hold is the one owner of
+    // what live work its engine carries (#5543). Refused as Held, so the consumer rechecks on its
+    // next pass with no attempt charged.
+    if !force {
+        if let Some(work) = live_engine_work().await {
+            return Err(PublishedCoreError::Held(format!(
+                "the engine is held for live work ({work}): a handoff now would end it. The deploy waits and retries on its next pass; `continuum reboot --force` ends the work instead."
+            )));
+        }
     }
     if !evals.is_empty() {
         println!(

@@ -390,7 +390,7 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                         if let Err(reason) = ledger.save(&attempts_path) { return Ok(PassEnd::ResourceBlocked(reason)); }
                         return Ok(PassEnd::ResourceBlocked(reason));
                     }
-                    Err(PublishedCoreError::SourcePending(reason) | PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => return Ok(PassEnd::ResourceBlocked(reason)),
+                    Err(PublishedCoreError::SourcePending(reason) | PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason) | PublishedCoreError::Held(reason)) => return Ok(PassEnd::ResourceBlocked(reason)),
                     Err(PublishedCoreError::Artifact(reason)) => return Err(reason),
                 }
                 Ok(PassEnd::Done)
@@ -518,7 +518,7 @@ pub(super) async fn ci_core_for(repo: &Path, candidates: &[String], request_path
                             if let Err(error) = ledger.save(ledger_path) { return CiCore::ResourceBlocked(error); }
                             MissingArtifact::AdmissionWait(why)
                         },
-                        Err(PublishedCoreError::CapabilityDeferred(why) | PublishedCoreError::OperationalBlocked(why)) => return CiCore::ResourceBlocked(why),
+                        Err(PublishedCoreError::CapabilityDeferred(why) | PublishedCoreError::OperationalBlocked(why) | PublishedCoreError::Held(why)) => return CiCore::ResourceBlocked(why),
                         Err(PublishedCoreError::Artifact(why)) if key == newest.as_str() => MissingArtifact::Refuse(format!(
                             "the CI build for {key} was refused: {why}; repair the prebuilt artifact before retrying; running core preserved"
                         )),
