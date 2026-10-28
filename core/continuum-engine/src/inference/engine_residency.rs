@@ -105,35 +105,14 @@ fn kernel_says(pid: u32) -> ProcessProbe {
     // SAFETY: signal 0 performs only the existence and permission check; nothing is sent.
     let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
     if rc == 0 {
-        return if exited_unreaped(pid) { ProcessProbe::Absent } else { ProcessProbe::Present(0) };
+        // a zombie answers kill(0) too: exited, only awaiting its reaper (card e4ef7780)
+        return if continuum_host::process_exit::exited_unreaped(pid) { ProcessProbe::Absent } else { ProcessProbe::Present(0) };
     }
     match std::io::Error::last_os_error().raw_os_error() {
         Some(libc::ESRCH) => ProcessProbe::Absent,
         Some(libc::EPERM) => ProcessProbe::Present(0),
         _ => ProcessProbe::Unreadable,
     }
-}
-
-/// Whether a pid that `kill(pid, 0)` still answers is a zombie: exited, only its status left for
-/// its reaper (card e4ef7780). macOS lists no zombie in its process table, so `sysinfo` misses it
-/// and only the kernel can say: `proc_pidinfo(PROC_PIDTBSDINFO)` fails with `ESRCH` for a zombie
-/// while `kill(pid, 0)` still succeeds (measured on macOS 2026-10-28: running -> 136 bytes; zombie
-/// -> 0 with ESRCH; another user's live process -> EPERM from kill itself, never reaching here).
-/// Any other failure is not proof of exit. Linux keeps zombies in /proc, where `sysinfo` reads
-/// their status, so this has nothing to add there.
-#[cfg(target_os = "macos")]
-fn exited_unreaped(pid: u32) -> bool {
-    // SAFETY: proc_bsdinfo is plain old data; proc_pidinfo writes at most `size` bytes into it.
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-    // SAFETY: a read-only query for exactly this pid into a buffer of the stated size.
-    let n = unsafe { libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, std::ptr::addr_of_mut!(info).cast(), size) };
-    n <= 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn exited_unreaped(_pid: u32) -> bool {
-    false
 }
 
 #[cfg(windows)]
