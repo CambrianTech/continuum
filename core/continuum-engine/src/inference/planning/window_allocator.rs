@@ -345,7 +345,7 @@ pub fn allocate(
 #[serde(rename_all = "snake_case")]
 pub enum TrainingGrowth {
     NoDemand,
-    Unmeasured,
+    Unmeasured { reserved_bytes: u64 },
     Reserved { bytes: u64, target: u32, reached: bool },
     BaselineConflict { bytes: u64 },
 }
@@ -357,14 +357,18 @@ fn grow_shared_window(
     let mut target = largest_known(requirements).map_or(baseline, |w| w.max(baseline));
     let mut prices = std::collections::BTreeMap::<Uuid, u64>::new();
     let mut training_target = 0;
+    let mut unmeasured = false;
     for req in requirements {
         let Some(reserve) = &req.training else { continue };
         let (Some(price), Some(job)) = (reserve.price_for(&fp.model_id), reserve.job) else {
-            // Unknown cost must not silently spend the capacity learning needs.
-            return (baseline, TrainingGrowth::Unmeasured);
+            // Unknown training cannot authorize training-driven growth, but must
+            // not veto conversation growth or erase other jobs' priced reserves.
+            unmeasured = true;
+            continue;
         };
         if job.is_nil() {
-            return (baseline, TrainingGrowth::Unmeasured);
+            unmeasured = true;
+            continue;
         }
         prices.entry(job).and_modify(|b| *b = (*b).max(price.bytes)).or_insert(price.bytes);
         training_target = training_target.max(reserve.window);
@@ -376,7 +380,9 @@ fn grow_shared_window(
         return (baseline, TrainingGrowth::BaselineConflict { bytes: reserved });
     }
     let window = target.min(fp.context_window).min(fp.window_within(residual, lanes));
-    let decision = if prices.is_empty() {
+    let decision = if unmeasured {
+        TrainingGrowth::Unmeasured { reserved_bytes: reserved }
+    } else if prices.is_empty() {
         TrainingGrowth::NoDemand
     } else {
         TrainingGrowth::Reserved { bytes: reserved, target: training_target, reached: window >= training_target }
@@ -422,6 +428,8 @@ mod tests {
         windows.iter().map(|w| LaneRequirement::declared(Uuid::new_v4(), *w)).collect()
     }
 
+    // What this catches: training demand must reserve each job once without
+    // revoking conversational admission; an unknown price is not a growth veto.
     #[test]
     fn growth_reserves_training_once_and_preserves_conversation_when_it_cannot_fit() {
         let fp = qwen27b();
@@ -448,9 +456,13 @@ mod tests {
             TrainingReserve::new(target, None, None),
             TrainingReserve::new(target, Some(TrainingPrice { model: "other-base".into(), ..price }), Some(Uuid::from_u128(7))),
         ] {
-            let reqs = [LaneRequirement::declared(Uuid::new_v4(), baseline).with_training(Some(unknown))];
+            let reqs = [LaneRequirement::declared(Uuid::new_v4(), 55_000).with_training(Some(unknown.clone()))];
             assert_eq!(grow_shared_window(&reqs, &fp, roomy, 1, baseline),
-                (baseline, TrainingGrowth::Unmeasured));
+                (55_000, TrainingGrowth::Unmeasured { reserved_bytes: 0 }));
+            let mixed = [reqs[0].clone(), LaneRequirement::declared(Uuid::new_v4(), baseline)
+                .with_training(Some(reserve.clone()))];
+            assert_eq!(grow_shared_window(&mixed, &fp, partial, 1, baseline),
+                (50_000, TrainingGrowth::Unmeasured { reserved_bytes: bytes }));
         }
     }
 
