@@ -112,7 +112,7 @@ impl TrainingDemand {
             std::fs::create_dir_all(dir)?;
         }
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&now).map_err(std::io::Error::other)?)?;
+        std::fs::write(&tmp, serde_json::to_vec(&now).map_err(std::io::Error::other)?)?; // disk boundary: training-demand/<persona>.json, read back by serving's requirements_for
         continuum_host::durable::replace(&tmp, path)
     }
 
