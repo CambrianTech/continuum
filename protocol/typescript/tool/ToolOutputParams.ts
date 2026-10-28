@@ -45,7 +45,7 @@ maxMatches?: number,
  */
 byteOffset?: number, 
 /**
- * Requested byte count; a page fits the live render allowance. No bytes are
+ * Requested byte count; each encoded transport page is at most 64 KiB. No bytes are
  * discarded when this request spans multiple pages: nextByteOffset continues it.
  */
 byteLength?: number, };
