@@ -255,6 +255,22 @@ Engine surface (fork): load or save a mind's session state into the lane's step 
 3. A snapshot opens a gene trial with no relaunch, and her next cards draw arms.
 4. A deploy seam: checkpoints are written, the next core resumes them at their step counts, and a format mismatch opens from the stable gene.
 
+### 9.6 The minimal wiring, on what the fork already has (2026-10-28)
+
+Measured 2026-10-28 (read-only trace of canary 4f1b548b5): no reviewed correction has become a gene since the examiner landed; the last gene trained anywhere is gene 1 (5090, 10-10). Every correction went through the batch interim (§9.4) and stalled there: on the 5090 Kimi's correction parked, its re-dispatch failed in 2 ms on a 503, 11 examples sat under the threshold of 16; on the M5 the one in-engine job was killed by a reboot after 54 min, and `persona.genome.turn_genes` read `genes=0` on all 71 turns. Joel, the same day: "It's not a batch!!!" "if you take care of a little at a time, you never strain resources."
+
+The fork already takes the step: `learn_on_slot` learns one served reply on the slot that served it, into a loaded shadow adapter (`lora_id`), paced at `LEARN_DUTY` of the loop (0.10 today; the governor's measured background share is the target, more when she is idle), deferring with `retry_after_ms` while another slot is busy; a completion can carry its own `learn` so it trains before the slot is released. Nothing in core calls it. The wiring, each slice with its gate:
+
+| Slice | What | Gate |
+|---|---|---|
+| D1 (fork) | `POST /lora-adapters/save {id, name}`: `llama_adapter_lora_save` of a loaded adapter into `--train-dir`, immutable | a saved shadow loads back byte-for-byte equivalent and serves |
+| D2 (core, serving) | per mind: her shadow loaded dormant on her lane (a copy of her stable gene, or a zero-initialized adapter), a `learn` client (served messages + `lora_id`, `retry_after_ms` honoured, never dropped), a `save` client | one served turn learned on the M5 with residents turning; directed wait flat |
+| D3 (core, dreaming) | arrival: an accepted training example (the trigger journal, §9.2) is one learn on her shadow, now, as a `background` flow stage; the journal cursor advances when the step commits; the dispatch threshold stops gating anything | a reviewed correction is learned within minutes of review, with no job, threshold or flush |
+| D4 (core, genome) | promotion at a boundary (`DreamTrigger`: idle, card boundary): save a snapshot (D1), `adapter_manifest::register`, `GeneTrials::open`; the examiner fires on its own | the acceptance test runs on a learned gene for the first time |
+| D5 (academy) | the examiner's related tasks drawn from the correction's own task family (today a fixed six-task no-unwrap set) | a pass or fail says something about the correction it tests |
+
+Not in this wiring, and not dropped: recency-weighted replay (§8.1), session checkpoints (§9.2), the one-owner claim on the grid (§9.3); each is the next slice after D4.
+
 ## 10. Coursework is a room, not a runner (mapped 2026-09-28)
 
 Joel, relayed by Codex on 2026-09-28: academy, benchmarks, simulations and learning follow the same runtime and room state, with as few differences from inference as possible.
