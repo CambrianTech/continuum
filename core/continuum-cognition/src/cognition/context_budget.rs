@@ -133,7 +133,7 @@ impl ContextBudget {
     /// with zero handles dropped; 32k doubled turnovers. Re-measure by rerunning the replay;
     /// the act inspector tracking the knee continuously is the next step.
     pub fn working_window(served: u32) -> u32 {
-        working_window_when(served, crate::inference::llama_server::current_serving().active_model.is_some())
+        Self::working_window_when(served, crate::inference::llama_server::current_serving().active_model.is_some())
     }
 
     /// The served window only — the KV-capacity reading, for seams that must not be
@@ -324,7 +324,7 @@ fn working_window_when(served: u32, serving: bool) -> u32 {
     if served == 0 || !serving {
         return served;
     }
-    WORKING_WINDOW_TOKENS.min(served)
+    Self::WORKING_WINDOW_TOKENS.min(served)
 }
 
 /// Share of the served window recall may spend. See [`ContextBudget::recall_tokens`].
@@ -805,10 +805,10 @@ mod tests {
     // (every test) it is the served window, as before.
     #[test]
     fn the_working_window_is_the_measured_knee_and_never_exceeds_the_slot() {
-        assert_eq!(working_window_when(159_232, true), 49_152, "serving a wide slot: the measured knee");
-        assert_eq!(working_window_when(32_768, true), 32_768, "never above the slot");
-        assert_eq!(working_window_when(159_232, false), 159_232, "nothing served (a fixture): the served window");
-        assert_eq!(working_window_when(0, true), 0);
+        assert_eq!(ContextBudget::working_window_when(159_232, true), 49_152, "serving a wide slot: the measured knee");
+        assert_eq!(ContextBudget::working_window_when(32_768, true), 32_768, "never above the slot");
+        assert_eq!(ContextBudget::working_window_when(159_232, false), 159_232, "nothing served (a fixture): the served window");
+        assert_eq!(ContextBudget::working_window_when(0, true), 0);
         assert_eq!(ContextBudget::working_window(159_232), 159_232, "no served model in a test: the served window");
     }
 }
