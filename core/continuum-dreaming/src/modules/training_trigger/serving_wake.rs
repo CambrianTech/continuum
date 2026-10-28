@@ -3,12 +3,13 @@
 use super::{TrainingTriggerModule, TrainingTriggerState};
 use crate::inference::llama_server::ServingSnapshot;
 use std::{future::Future, sync::Arc};
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{watch, Mutex, Notify};
 
 #[derive(Default)]
 pub(super) struct ServingWake {
     receiver: Option<watch::Receiver<ServingSnapshot>>,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    recovery_requested: Arc<Notify>,
 }
 
 impl TrainingTriggerModule {
@@ -21,6 +22,14 @@ impl TrainingTriggerModule {
 }
 
 impl ServingWake {
+    pub(super) fn request_recovery(&self) -> bool {
+        if self.receiver.is_none() {
+            return false;
+        }
+        self.recovery_requested.notify_one();
+        true
+    }
+
     pub(super) async fn start(&self, state: Arc<TrainingTriggerState>) {
         let Some(receiver) = self.receiver.clone() else {
             return;
@@ -29,15 +38,19 @@ impl ServingWake {
         if task.is_some() {
             return;
         }
-        *task = Some(tokio::spawn(follow(receiver, move || {
-            let state = state.clone();
-            async move {
-                if let Err(error) = state.recover_pass().await {
-                    continuum_base::probe!(class = "training.serving_wake.failed", error = %error,
+        *task = Some(tokio::spawn(follow(
+            receiver,
+            self.recovery_requested.clone(),
+            move || {
+                let state = state.clone();
+                async move {
+                    if let Err(error) = state.recover_pass().await {
+                        continuum_base::probe!(class = "training.serving_wake.failed", error = %error,
                         "serving changed but training recovery failed; durable work remains owned");
+                    }
                 }
-            }
-        })));
+            },
+        )));
     }
 
     pub(super) async fn stop(&self) {
@@ -49,8 +62,11 @@ impl ServingWake {
     }
 }
 
-async fn follow<F, Fut>(mut receiver: watch::Receiver<ServingSnapshot>, mut recover: F)
-where
+async fn follow<F, Fut>(
+    mut receiver: watch::Receiver<ServingSnapshot>,
+    requested: Arc<Notify>,
+    mut recover: F,
+) where
     F: FnMut() -> Fut,
     Fut: Future<Output = ()>,
 {
@@ -59,8 +75,9 @@ where
         // unseen and immediately causes another pass. No watch borrow crosses await.
         receiver.borrow_and_update();
         recover().await;
-        if receiver.changed().await.is_err() {
-            return;
+        tokio::select! {
+            changed = receiver.changed() => if changed.is_err() { return; },
+            _ = requested.notified() => {},
         }
     }
 }
@@ -75,7 +92,8 @@ mod tests {
         let (entered, mut calls) = tokio::sync::mpsc::unbounded_channel();
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let gate = release.clone();
-        let task = tokio::spawn(follow(receiver, move || {
+        let requested = Arc::new(Notify::new());
+        let task = tokio::spawn(follow(receiver, requested.clone(), move || {
             let entered = entered.clone();
             let gate = gate.clone();
             async move {
@@ -101,6 +119,12 @@ mod tests {
             calls.try_recv().is_err(),
             "one serial recovery, no task per notification"
         );
+        requested.notify_one();
+        release.add_permits(1);
+        calls
+            .recv()
+            .await
+            .expect("recovery tick queues behind the running pass");
         drop(sender);
         release.add_permits(1);
         task.await.expect("closed owner stops its follower");

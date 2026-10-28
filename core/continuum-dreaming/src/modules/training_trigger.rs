@@ -931,7 +931,13 @@ impl ServiceModule for TrainingTriggerModule {
     }
 
     async fn tick(&self) -> Result<(), String> {
-        self.state.recover_pass().await
+        // The tick and serving changes have one recovery owner: concurrent
+        // passes must not drain each other's ended-job list before requeue.
+        if self.serving_wake.request_recovery() {
+            Ok(())
+        } else {
+            self.state.recover_pass().await
+        }
     }
 
     /// Expose the three dep-holding training-trigger verbs over this
