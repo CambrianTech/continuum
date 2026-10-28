@@ -213,6 +213,7 @@ pub async fn advance_card_state_effective(
                             "reviewer's pass on a card with an open PR — it stays in Review for \
                              its merge, which moves it to Merged"
                         );
+                        close_superseded_reviews(airc, parent_id, card_id, via).await;
                         return Ok(CardState::Review);
                     }
                 }
@@ -230,8 +231,15 @@ pub async fn advance_card_state_effective(
                 "reviewer's verdict — a pass closes the parent (grade fires), a send-back \
                  returns it to in_progress"
             );
+            // A PASS IS TERMINAL FOR EVERY PRIOR ROUND: whatever other review cards still sit
+            // open on this parent review artifacts that are now approved, and stay claimable
+            // P1s forever otherwise — the per-round cards outliving their parent's pass is
+            // exactly the stale accumulation this card exists to end. (A send-back keeps them:
+            // the author may still be inside a round they are reviewing.)
+            if passed {
+                close_superseded_reviews(airc, parent_id, card_id, via).await;
+            }
             raw_advance(airc, parent_id, next, via).await?;
-            return Ok(next);
         }
     }
     // A VERDICT is the review's outcome: it closes the parent outright. Every
@@ -487,3 +495,63 @@ mod tests {
         assert_eq!(resident_finish(None, true, &CardState::Merged), Proceed);
     }
 }
+/// A PASS CLOSES EVERY OTHER OPEN ROUND ON THE SAME PARENT. Review cards are per round:
+/// a pass on one makes every other card still sitting open on this parent stale (it
+/// reviews artifacts that just got approved), and left alone they stay claimable P1s
+/// forever — the per-round cards outliving their parent's pass is exactly the stale
+/// accumulation this exists to end. A send-back never reaches here: its round may still
+/// be live for its reviewer, so only a `passed` verdict sweeps (both call sites are
+/// inside `if passed`). The sweep must not break the verdict path it serves — every
+/// failure (a board that will not read, a close that refuses) is probed and swallowed;
+/// the parent's own advance stands either way.
+pub(crate) async fn close_superseded_reviews(
+    airc: &Arc<Airc>,
+    parent_id: WorkCardId,
+    current_review: WorkCardId,
+    via: &'static str,
+) {
+    let horizon = match super::horizon::board_horizon(airc).await {
+        Ok(horizon) => horizon,
+        Err(e) => {
+            continuum_base::probe!(
+                class = "work.review.superseded_sweep_failed",
+                parent = %short8(parent_id.as_uuid()),
+                error = %e,
+                "could not read the boards to sweep stale review cards — the verdict stands"
+            );
+            return;
+        }
+    };
+    let mut closed: u64 = 0;
+    for (room, board) in &horizon.boards {
+        for card in &board.snapshot().cards {
+            if card.card_id == current_review || card.reviews != Some(parent_id) {
+                continue; // not a review of this parent, or the verdict landing right now
+            }
+            if matches!(card.state, CardState::Closed | CardState::Merged) {
+                continue; // already terminal — nothing to sweep
+            }
+            match raw_advance(airc, card.card_id, CardState::Closed, via).await {
+                Ok(()) => closed += 1,
+                Err(e) => continuum_base::probe!(
+                    class = "work.review.superseded_close_failed",
+                    review = %short8(card.card_id.as_uuid()),
+                    parent = %short8(parent_id.as_uuid()),
+                    room = %room.name,
+                    error = %e,
+                    "a stale per-round review card refused to close — it stays open for a hand"
+                ),
+            }
+        }
+    }
+    if closed > 0 {
+        continuum_base::probe!(
+            class = "work.review.superseded_swept",
+            parent = %short8(parent_id.as_uuid()),
+            review = %short8(current_review.as_uuid()),
+            closed,
+            "a pass landed — the other open rounds on this parent are closed; no stale claimable P1s"
+        );
+    }
+}
+
