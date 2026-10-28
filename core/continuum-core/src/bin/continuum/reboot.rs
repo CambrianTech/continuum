@@ -154,21 +154,23 @@ impl PrebuiltCore {
     }
 }
 
-/// The live work the running core's engine carries, from its own `serving/status` hold. `None`
-/// when nothing is held, when the hold names no work (an unknown cause is not evidence of work),
-/// and when no core answers: no running core holds anything this handoff could end, and the deploy
-/// may be its repair. Said either way, never silent.
-async fn live_engine_work() -> Option<String> {
+/// What the running core's own `serving/status` hold says its engine carries. A read that fails
+/// is `NoCore` only when no core process is alive; with one alive it is `Unreadable` (a busy
+/// training core answers slowly), never "nothing held" (Codex on #5551).
+async fn observe_engine_hold() -> continuum_cli_lifecycle::deploy_hold::HoldObservation {
+    use continuum_cli_lifecycle::deploy_hold::HoldObservation;
     let snapshot = running_core_provenance("serving/status", "deploy training guard").await.and_then(|response| {
         serde_json::from_value::<continuum_core::inference::llama_server::ServingSnapshot>(response) // IPC boundary: decode the running core's serving/status response.
             .map_err(|e| format!("serving snapshot: {e}"))
     });
     match snapshot {
-        Ok(snapshot) => snapshot.held_for.as_ref().and_then(continuum_core::inference::llama_server::serving_hold::ServingHold::live_work),
-        Err(why) => {
-            println!("⚠ the running core's serving hold could not be read ({why}); no live engine work is known, so the handoff proceeds");
-            None
-        }
+        Ok(snapshot) => snapshot
+            .held_for
+            .as_ref()
+            .and_then(continuum_core::inference::llama_server::serving_hold::ServingHold::live_work)
+            .map_or(HoldObservation::Free, HoldObservation::LiveWork),
+        Err(_) if !running_core_pids().into_iter().any(pid_alive) => HoldObservation::NoCore,
+        Err(why) => HoldObservation::Unreadable(why),
     }
 }
 
@@ -287,14 +289,13 @@ pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreEr
     // In-engine training guard (card 9beab2da; the windows 5090, 2026-10-28: the consumer's
     // handoff killed job 8b46862c at 41% while serving/status read held_for it, and the mlx_lm
     // guard above never sees an engine's own run). The running core's hold is the one owner of
-    // what live work its engine carries (#5543). Refused as Held, so the consumer rechecks on its
-    // next pass with no attempt charged.
-    if !force {
-        if let Some(work) = live_engine_work().await {
-            return Err(PublishedCoreError::Held(format!(
-                "the engine is held for live work ({work}): a handoff now would end it. The deploy waits and retries on its next pass; `continuum reboot --force` ends the work instead."
-            )));
-        }
+    // what live work its engine carries (#5543); read even under --force, so what a forced
+    // handoff ends is said. A deferral is Held: the consumer rechecks on its next pass with no
+    // attempt charged.
+    match continuum_cli_lifecycle::deploy_hold::verdict(observe_engine_hold().await, force) {
+        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Defer(why) => return Err(PublishedCoreError::Held(why)),
+        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Proceed(Some(said)) => println!("⚠ {said}"),
+        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Proceed(None) => {}
     }
     if !evals.is_empty() {
         println!(

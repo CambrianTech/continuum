@@ -128,6 +128,35 @@ pub(super) async fn verify_registered_consumer(root: &Path) -> Result<continuum_
 /// as `cancelled`; #4729 keeps cancel-in-progress PR-only). Waiting for an artifact that
 /// will never exist held the M5 at a stale core for two hours on 2026-10-04 while three
 /// built tips went by. A pass that finds its request superseded starts over on the new one.
+/// How a refused handoff is charged to its build.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum HandoffRefusal {
+    /// A destination resource condition, kept durably until its explicit retry.
+    Deferred(continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral),
+    /// Rechecked on the next pass: no attempt charged, nothing kept. A training hold (card
+    /// 9beab2da) releases on its own, so it is never a failure or a durable deferral.
+    Blocked(String),
+    /// A handoff failure, charged to the build (three give up on it).
+    Failed(String),
+}
+
+/// PURE: how `error`, refusing the handoff of the core at `preparation`, is charged.
+pub(super) fn handoff_refusal(error: PublishedCoreError, preparation: PathBuf) -> HandoffRefusal {
+    match error {
+        PublishedCoreError::OperationalBlocked(reason) | PublishedCoreError::CapabilityDeferred(reason) => {
+            HandoffRefusal::Deferred(continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral {
+                condition: continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::OperationalUncertainty,
+                path: preparation,
+                projected_bytes: 0,
+                reason,
+            })
+        }
+        PublishedCoreError::ResourceDeferred(deferral) => HandoffRefusal::Deferred(deferral),
+        PublishedCoreError::SourcePending(reason) | PublishedCoreError::Held(reason) => HandoffRefusal::Blocked(reason),
+        PublishedCoreError::Artifact(reason) => HandoffRefusal::Failed(reason),
+    }
+}
+
 pub(super) async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
     if options.protocol {
         println!("{}", continuum_cli_lifecycle::prebuilt_artifact::CONSUMER_LEASE_PROTOCOL); // boundary: read-only CLI capability wire for retry rollout admission
@@ -371,16 +400,9 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                     Ok(()) => reboot(RebootOptions { service, prebuilt: Some(prebuilt), stage_prebuilt, cli_installed, ..Default::default() }).await,
                     Err(error) => Err(error),
                 };
-                let preparation = preparation.map_err(|error| match error {
-                    PublishedCoreError::OperationalBlocked(reason) | PublishedCoreError::CapabilityDeferred(reason) => PublishedCoreError::ResourceDeferred(continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral {
-                        condition: continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::OperationalUncertainty,
-                        path: preparation_path, projected_bytes: 0, reason,
-                    }),
-                    other => other,
-                });
-                match preparation {
+                match preparation.map_err(|error| handoff_refusal(error, preparation_path)) {
                     Ok(()) => {}
-                    Err(PublishedCoreError::ResourceDeferred(condition)) => {
+                    Err(HandoffRefusal::Deferred(condition)) => {
                         let digest = match ConsumeLedger::condition_digest(&condition) {
                             Ok(digest) => digest,
                             Err(reason) => return Ok(PassEnd::ResourceBlocked(reason)),
@@ -390,8 +412,8 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                         if let Err(reason) = ledger.save(&attempts_path) { return Ok(PassEnd::ResourceBlocked(reason)); }
                         return Ok(PassEnd::ResourceBlocked(reason));
                     }
-                    Err(PublishedCoreError::SourcePending(reason) | PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason) | PublishedCoreError::Held(reason)) => return Ok(PassEnd::ResourceBlocked(reason)),
-                    Err(PublishedCoreError::Artifact(reason)) => return Err(reason),
+                    Err(HandoffRefusal::Blocked(reason)) => return Ok(PassEnd::ResourceBlocked(reason)),
+                    Err(HandoffRefusal::Failed(reason)) => return Err(reason),
                 }
                 Ok(PassEnd::Done)
             }
