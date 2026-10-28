@@ -74,7 +74,7 @@ pub enum ProcessProbe {
 /// - Unix: `kill(pid, 0)` returning `ESRCH` is absence; success or `EPERM` means it exists
 ///   (another user's); any other error is unreadable.
 /// - Windows: `OpenProcess` failing with `ERROR_INVALID_PARAMETER` is absence (no such pid);
-///   a handle means it exists; any other failure (access denied, …) is unreadable.
+///   a signaled process handle proves termination; other failures are unreadable.
 pub fn probe_process(pid: u32) -> ProcessProbe {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
     if pid == 0 {
@@ -109,14 +109,22 @@ fn kernel_says(pid: u32) -> ProcessProbe {
 
 #[cfg(windows)]
 fn kernel_says(pid: u32) -> ProcessProbe {
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE};
     // SAFETY: a query-only handle for exactly this pid, closed once below.
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid) };
     if !handle.is_null() {
+        // A retained handle can keep a terminated process object open after its PID
+        // disappears from the process table. Handle existence alone is not liveness.
+        // SAFETY: query the valid process handle without waiting or changing it.
+        let state = unsafe { WaitForSingleObject(handle, 0) };
         // SAFETY: `handle` came from a successful OpenProcess and is closed once, here.
         unsafe { CloseHandle(handle) };
-        return ProcessProbe::Present(0);
+        return match state {
+            WAIT_OBJECT_0 => ProcessProbe::Absent,
+            WAIT_TIMEOUT => ProcessProbe::Present(0),
+            _ => ProcessProbe::Unreadable,
+        };
     }
     // SAFETY: reads this thread's last error, set by the failed OpenProcess above.
     if unsafe { GetLastError() } == ERROR_INVALID_PARAMETER {
@@ -460,6 +468,33 @@ pub fn occupancy(path: &Path, port: u16) -> Occupancy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A stopped engine can retain an open Child handle. It must release custody,
+    // while a live child with an unreadable start time must remain held.
+    #[cfg(windows)]
+    #[test]
+    fn a_retained_terminated_process_handle_is_not_live() -> Result<(), Box<dyn std::error::Error>> {
+        use std::process::Stdio;
+        let mut child = airc_core::process::background("cmd.exe")
+            .args(["/D", "/C", "set /p fixture_input="])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let pid = child.id();
+        let live = kernel_says(pid);
+        drop(child.stdin.take());
+        child.wait()?;
+        assert_eq!(live, ProcessProbe::Present(0));
+        assert_eq!(kernel_says(pid), ProcessProbe::Absent);
+        let dir = tempfile::tempdir()?;
+        let path = store_path(dir.path());
+        record(&path, work(11, pid, 1, 58059))?;
+        assert_eq!(occupancy(&path, 58059), Occupancy::Free);
+        assert!(all(&path)?.is_empty());
+        drop(child);
+        Ok(())
+    }
 
     fn work(job: u128, pid: u32, started_s: u64, port: u16) -> ResidentWork {
         ResidentWork {
