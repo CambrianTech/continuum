@@ -67,6 +67,44 @@
 11. **Waits on predicates, not re-arm loops** (Cormac). "A lane serving base X is ready", "Y bytes of memory free" are conditions the dispatcher evaluates on the events that can change them. The examiner's NotNow and CapacityParked become such waits.
 12. **No second scheduler.** The fork's training yield windows, TrainingHolds-as-scheduler, the reserved lanes, the prefill throttle and per-module `max_concurrency` limiters are deleted. The engine executes what the flow decides. Pause stays as an operator override.
 
+## 2a. Stages are short: CBAR's `QueueThread`, in Rust
+
+Joel, 2026-10-28: "Your goal is for modules to make this stuff trivial like cbar's pipeline/*.cpp stages.
+They're short." The reference is `cb-mobile-sdk/cpp/utility/Threads.h` `QueueThread<T>` and
+`cbar/CBAR_VideoThread` (default `queueSize = 1`):
+- `addItem` locks only to pop the oldest until there is room, push the newest, and signal. The
+  lock exists for the insert and the signal, nothing else, and the newest item always wins.
+- Each stage sets a priority, declares its cadence (`needsRealTime`, `videoOnly`), fetches
+  dependencies by type (`getAnalyzerOfType<T>()`), and implements one handler. `CBP_ElevationAnalyzer`
+  is 71 lines, most of them boilerplate.
+
+`continuum-flow` therefore ships a **`Stage`** alongside the capacity dispatcher:
+
+```rust
+pub trait Stage: Send + 'static {
+    type Input: Send;              // what wakes it (a signal, a digest handle, a frame)
+    const QOS: Qos;                // its class
+    const DEPTH: usize = 1;        // bounded queue; when full, the oldest is dropped (keep-latest)
+    async fn handle(&mut self, input: Self::Input);
+}
+// spawn_stage(stage) -> StageInput<Input>: push() inserts, drops the oldest past DEPTH, and signals.
+// A stage that needs a shared capacity (the engine, a TTS model) submits to that capacity's Flow.
+```
+
+The module owns every concern that today is copied into each subsystem:
+- the queue and its bound;
+- keep-latest and coalescing;
+- wake-on-signal (no polling);
+- class and aging;
+- yield;
+- shutdown drain;
+- probes.
+
+A stage is its handler and nothing else. **The rule for every migration in §5:** the migrated code
+holds no lock across an await, no timer, no backoff, no limiter and no queue of its own. The receipt
+for each step is lines removed versus added, per subsystem, with stage files measured like CBAR's (most
+under ~100 lines).
+
 ## 3. Live conversation, end to end
 
 The budget: first audio within about 1 s of the speaker stopping. The path and its timestamps (Codex's list, each a probe):
@@ -151,7 +189,7 @@ Pure scheduler + MindMemory + a fake engine on a virtual clock. Each case states
 The simulator reports what the live read reports: each resident's wait between acts, first-token latency
 for directed and live calls, switch freeze, aggregate tokens per second, and each class's worst wait.
 
-## 7. What gets deleted when this lands
+## 7. What gets deleted when this lands (mandatory: a migration that leaves its old mechanism beside the new one is not done)
 
 - Lane admission (`resource_admission/lanes.rs`, `progress.rs`, `serving_lane_permit.rs`).
 - The adapter concurrency semaphore and its grow/shrink task.
