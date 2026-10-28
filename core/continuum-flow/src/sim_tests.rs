@@ -93,3 +93,23 @@ fn a_dream_completes_under_steady_work_without_slowing_it() {
     let slower = summary("6 minds + dream", &with) / summary("6 minds", &without);
     assert!(slower < 1.15, "the dream slowed work by {:.0}%", (slower - 1.0) * 100.0);
 }
+
+// what this catches: guessing where speed comes from. The same four residents at today's median
+// working context (82k) and at smaller ones, where an epoch turnover re-prefills half the context
+// once every ~20 acts (today: ~65k tokens). Prints the forecast; asserts only that less context is
+// faster, so the numbers stay the measurement.
+#[test]
+fn how_much_faster_a_smaller_working_context_makes_an_act() {
+    for (label, depth) in [("82k (today's median)", 82_000.0), ("32k", 32_000.0), ("16k", 16_000.0)] {
+        let turnover_prefill_per_act = depth * 0.5 / 20.0;
+        let jobs: Vec<Job> = RESIDENTS[..4]
+            .iter()
+            .enumerate()
+            .map(|(i, owner)| Job { owner, qos: Qos::Work, prefill: 4000.0 + turnover_prefill_per_act, decode: 870.0, then_off_engine_s: Some(15.0), at_s: i as f64 * 0.5 })
+            .collect();
+        summary(&format!("working context {label}"), &run(Engine::m5_at_depth(depth), aging(), &jobs, 3600.0, 0.05, None));
+    }
+    let big = run(Engine::m5_at_depth(82_000.0), aging(), &residents(4), 1800.0, 0.05, None);
+    let small = run(Engine::m5_at_depth(16_000.0), aging(), &residents(4), 1800.0, 0.05, None);
+    assert!(summary("check 16k", &small) < summary("check 82k", &big));
+}
