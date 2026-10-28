@@ -26,7 +26,7 @@ pub mod sim;
 pub use flow::{Flow, Grant, Refused};
 pub use qos::Qos;
 pub use scheduler::{Aging, Decision, Dropped, Scheduler, Ticket};
-pub use stage::{spawn_stage, Stage, StageInput};
+pub use stage::{spawn_stage, Overflow, Stage, StageInput};
 
 #[cfg(test)]
 mod tests;
