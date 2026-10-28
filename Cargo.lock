@@ -3564,6 +3564,7 @@ dependencies = [
  "continuum-kernel",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

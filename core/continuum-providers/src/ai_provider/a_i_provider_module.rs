@@ -155,7 +155,10 @@ impl ServiceModule for AIProviderModule {
     /// remain in `handle_command` (separate concerns). See
     /// the command factory supplied by the composition root.
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        (self.services.commands)(self.registry.clone())
+        match self.services.commands {
+            Some(commands) => commands(self.registry.clone()),
+            None => Vec::new(), // Serving-only clients expose no core command surface.
+        }
     }
 
     async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {

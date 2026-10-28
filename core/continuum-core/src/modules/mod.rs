@@ -10,7 +10,6 @@
 
 pub mod acting_provider;
 pub mod agent;
-pub mod ai_provider;
 pub mod airc;
 pub mod airc_bridge_directive;
 pub mod airc_bridge_dispatch;

@@ -13,8 +13,8 @@ pub(super) fn register_ai_provider_and_genome_modules(
     // Routes to DeepSeek, Anthropic, OpenAI, Together, Groq, Fireworks, XAI, Google, Mistral
     runtime.register(Arc::new(AIProviderModule::with_gpu_manager(
         gpu_manager.clone(),
-        crate::modules::ai_provider::ProviderServices {
-            commands: crate::commands::ai::command_objects,
+        continuum_providers::ProviderServices {
+            commands: Some(crate::commands::ai::command_objects),
             usable_budget: || crate::resources::ResourceDaemon::global()
                 .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes),
         },

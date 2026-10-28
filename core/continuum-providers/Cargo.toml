@@ -11,3 +11,4 @@ continuum-kernel = { path = "../continuum-kernel" }
 async-trait.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+tracing.workspace = true

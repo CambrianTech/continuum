@@ -52,7 +52,8 @@ pub(super) static INITIALIZED: std::sync::atomic::AtomicBool =
 /// Composition-root services, shared by core and lean serving clients.
 /// Budget is sampled for each model, preserving the live governor authority.
 pub struct ProviderServices {
-    pub commands: fn(Arc<RwLock<AdapterRegistry>>) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>>,
+    pub commands:
+        Option<fn(Arc<RwLock<AdapterRegistry>>) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>>>,
     pub usable_budget: fn() -> Option<u64>,
 }
 
