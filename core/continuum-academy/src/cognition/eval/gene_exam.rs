@@ -45,7 +45,8 @@ impl ExamHost for MindExamHost {
         let family = correction_family(&trained).map_err(ExamRefusal::Unexaminable)?;
         let sets = family.iter().map(|set| load_set(set).map(|tasks| (set.clone(), tasks))).collect::<Result<Vec<_>, _>>()?;
         let (unseen, excluded) = unseen_tasks(&sets, &trained).map_err(ExamRefusal::Unexaminable)?;
-        let unrelated = load_set(UNRELATED_SET)?;
+        let retention_set = load_set(UNRELATED_SET)?;
+        let (unrelated, unrelated_excluded) = retention(&retention_set, &trained).map_err(ExamRefusal::Unexaminable)?;
         let correction = correction_summary(dir, &request.dataset.examples);
 
         // Her live lane, serving the gene's base.
@@ -124,7 +125,7 @@ impl ExamHost for MindExamHost {
         Ok(ExamSitting {
             correction: Some(correction),
             unseen: ArmsEvidence { tasks: ids(&unseen), excluded, with_gene: unseen_with, without_gene: unseen_without },
-            unrelated: ArmsEvidence { tasks: ids(&unrelated), excluded: 0, with_gene: unrelated_with, without_gene: unrelated_without },
+            unrelated: ArmsEvidence { tasks: ids(&unrelated), excluded: unrelated_excluded, with_gene: unrelated_with, without_gene: unrelated_without },
             nll: NllEvidence::Unmeasured { why: NLL_UNMEASURED.into() },
         })
     }
@@ -174,6 +175,19 @@ fn unseen_tasks(family: &[(String, Vec<EvalTask>)], trained: &crate::cognition::
         return Err("the gene trained on every task of its family: none is left unseen".into());
     }
     Ok((unseen, excluded))
+}
+
+/// PURE: the retention tasks the correction never worked or reviewed, and how many were left
+/// out: retention measures what it costs her elsewhere, so a task it saw is no measure of that.
+fn retention(tasks: &[EvalTask], trained: &crate::cognition::held_out::Trained) -> Result<(Vec<EvalTask>, u32), String> {
+    let held = crate::cognition::held_out::held_out(UNRELATED_SET, tasks, trained);
+    let clean = held
+        .known_clean()
+        .map_err(|unknown| format!("{unknown} trained example(s) recorded no task: no retention task can be proven unseen"))?;
+    if clean.is_empty() {
+        return Err(format!("the correction worked or reviewed every task of {UNRELATED_SET}: no retention arm is left"));
+    }
+    Ok((clean.iter().map(|t| (*t).clone()).collect(), held.excluded() as u32))
 }
 
 /// PURE: her genome without the gene, and with it at the scale she serves it.
@@ -266,5 +280,18 @@ mod tests {
         assert!(correction_family(&trained(&[example(json!({}))])).is_err_and(|why| why.contains("recorded no task")));
         assert!(correction_family(&trained(&[worked(UNRELATED_SET, "lc-unrelated/x")])).is_err_and(|why| why.contains("retention")));
         assert!(unseen_tasks(&sets, &trained(&[worked("hard-rs", "hard-rs/lru"), worked("hard-rs", "hard-rs/trie"), worked("hard-rs", "hard-rs/heap")])).is_err(), "nothing left unseen");
+
+        // what this catches (Codex on #5577): a correction that REVIEWED a retention task (a review
+        // title names no set) was retained on it unfiltered, excluded 0. Retention holds out what it
+        // saw, says how many, and refuses when nothing is left.
+        let reviewed = |id: &str| example(json!({"cardId": "r1", "source": "card-credit", "task": {"reviewOf": id}}));
+        let keep = [task("lc-unrelated/a"), task("lc-unrelated/b")];
+        let mixed = trained(&[worked("hard-rs", "hard-rs/lru"), reviewed("lc-unrelated/a")]);
+        assert!(correction_family(&mixed).is_ok(), "a graded family with a review beside it");
+        let (left, out) = retention(&keep, &mixed).expect("one retention task left");
+        assert_eq!((left.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), out), (vec!["lc-unrelated/b"], 1));
+        let all_seen = trained(&[worked("hard-rs", "hard-rs/lru"), reviewed("lc-unrelated/a"), reviewed("lc-unrelated/b")]);
+        assert!(retention(&keep, &all_seen).is_err_and(|why| why.contains("no retention arm")));
+        assert_eq!(retention(&keep, &hard).expect("unrelated to retention").1, 0);
     }
 }
