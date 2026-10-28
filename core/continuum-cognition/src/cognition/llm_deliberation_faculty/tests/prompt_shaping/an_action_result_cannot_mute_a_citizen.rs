@@ -289,6 +289,8 @@ mod the_newest_result_over_her_window {
     // comes in at its summary with its handle, and the turn goes.
     #[test]
     fn a_result_her_required_view_leaves_no_room_for_comes_in_reduced_not_refused() {
+        // context-budget-exempt: a fixture window this test is run at (a result that fits it alone,
+        // and required notices that leave it too little room), not a budget the code sizes anything by.
         const WINDOW: u32 = 60_000;
         let whole = "a line of a file she read, about as long as source lines run\n".repeat(1_700);
         let alone = faculty_at(&whole, Arc::new(HeuristicInferenceAdapter::new()), WINDOW);
