@@ -1,0 +1,165 @@
+# Flow implementation plan: making the concurrent mind real (2026-10-28)
+
+> The design already exists. [CONCURRENT-MIND-AND-GOVERNOR](CONCURRENT-MIND-AND-GOVERNOR.md) §1 and
+> §3.1-3.3 and [SUBSTRATE-DOCTRINE-ORGANIC-FLOW](SUBSTRATE-DOCTRINE-ORGANIC-FLOW.md) ("Flow not RPC",
+> "Demand not FIFO") are precedence-winning. This plan implements them against the code as it is,
+> using a measured inventory of every place that queues or gates work (appendix,
+> [FLOW-INVENTORY-2026-10-28](../planning/FLOW-INVENTORY-2026-10-28.md)). The code violated the
+> doctrine in 160 places, and the gap between the two is the slowness.
+>
+> Joel, 2026-10-28: "Its got to flow or have MANY queues"; "Semaphore really only exists for queue
+> inserts and signals"; "You can't let inference pile up"; "I'd always take the most recent";
+> "Think of live conversations"; "Simulate all cases".
+
+## 1. What the measurements say (M5, Qwen3.6-35B-A3B, 4 residents)
+
+- **The engine is not slow.**
+  - Our server matches stock `llama-bench` at 64k context: prefill 322 vs 304 tok/s, decode 30.5 vs 29.5.
+  - Four streams decode 101 tok/s together, 3.4x one stream.
+  - The engine was occupied 99.6% of the wall clock.
+- **Minds waited on gates in front of it.** A 155 s median act held about 50 s of permit waits:
+  - a reserved directed lane that was never lent, a median 25.7 s;
+  - a prefill throttle guarding a spike one engine never draws, a median 24.6 s.
+  - Removing both: act median 155 s -> 80 s, around-model 70 s -> 21 s (4579b4711, live).
+- **Removing the next layer without a plan regressed** (90ed24a22, rolled back):
+  - the in-flight gauge went dark;
+  - directed priority vanished;
+  - the wait moved inside the model call (slot wait median 17.2 s, because a reserved scratch slot served 6 of 400 requests).
+  - Removing scratch would have switched warm-ahead off (the test caught it).
+
+  The pieces are coupled. They move together, under one design, with a simulator.
+- **Context length is the largest per-token cost.** Stock prefill goes 968 -> 304 tok/s and decode 59 -> 29 tok/s from 0 to 64k. The resident median prompt is 82k, and an epoch turnover re-prefills about 65k tokens.
+
+## 2. The model (each line traces to the doctrine)
+
+1. **Content and signals are different things.**
+   - Content (chat lines, tool results, perception) appends to the mind's stream in the context codec (`continuum-context`, positron), which consolidates it: superseded items collapse, older ones fold to handles, the newest stays whole (§3.3 ChannelDigest).
+   - What flows to the scheduler is only a coalescing signal per mind: "she has fresh input at class X". Twenty lines while she is busy are one wakeup.
+   - Distinct committed inputs and tool results are never dropped. They are content, kept by the codec (Codex).
+2. **Govern resources, never minds** (invariant 1). A mind always may want. The flow governs only capacities:
+   - engine compute (decode/prefill share);
+   - KV memory;
+   - training memory;
+   - CPU workers;
+   - external APIs.
+3. **One authority per capacity, consumed by every caller** (Codex: "consume one resource authority rather than nesting independent capacity promises"). Memory is admission: `MindMemory::seat` for KV, the training lease for training. Compute is the preemptible share inside it.
+4. **Quality-of-service classes**, GCD-style:
+   - **interactive**: someone waits on the answer;
+   - **work**: her act on her card;
+   - **utility**: ambient thought, perception enrichers, gene exams;
+   - **background**: dreams, training, consolidation.
+5. **Each owner is a serial queue** that targets a class. Her newer signal supersedes her waiting one and keeps her place. Utility and background queues are bounded and shed their oldest. Nothing piles up (Joel; "Backpressure is intrinsic").
+6. **One event-driven dispatcher per capacity**, the `continuum-flow` primitive.
+   - It owns its ready set, wakes on events (submitted, freed, page landed, aging instant), and never polls.
+   - It is a pure scheduler (decisions, testable in microseconds) plus a thin actor.
+7. **Two preemption verbs** (Cormac): *yield compute* (stop at a decode step or batch boundary, keep memory) and *release memory* (page out or stop). A mind's act yields compute by finishing its step and pages out only if memory is wanted. A training job pauses at a batch boundary and keeps its graph.
+8. **Aging bounds every class's worst-case wait** (Cormac: a paused training job has no guarantee it ever runs).
+   - Each class has a stated maximum wait, which the simulator proves and the live read measures.
+   - Under permanent interactive saturation (Codex), work still gets a measured minimum share. Interactive cannot starve a mind's own act forever.
+9. **Late binding, captured at send** (Cormac).
+   - The prompt is rendered when the grant arrives, so she reads the newest.
+   - The recorder captures the bytes actually sent, because learning (L1) trains on captured turns.
+   - Settle still writes the room turn.
+10. **Prefill is an enricher** (§3.1).
+    - The context is append-only within an epoch, so appended items are prefilled as they arrive: during a tool call, during a person's speech.
+    - At grant time only the newest fragment remains.
+    - This is how a live reply starts within its budget.
+11. **Waits on predicates, not re-arm loops** (Cormac). "A lane serving base X is ready", "Y bytes of memory free" are conditions the dispatcher evaluates on the events that can change them. The examiner's NotNow and CapacityParked become such waits.
+12. **No second scheduler.** The fork's training yield windows, TrainingHolds-as-scheduler, the reserved lanes, the prefill throttle and per-module `max_concurrency` limiters are deleted. The engine executes what the flow decides. Pause stays as an operator override.
+
+## 3. Live conversation, end to end
+
+The budget: first audio within about 1 s of the speaker stopping. The path and its timestamps (Codex's list, each a probe):
+
+1. ingress (a word, a line);
+2. mind wake;
+3. context ready;
+4. admission queued and granted;
+5. page restored;
+6. engine first token;
+7. delivery (TTS first audio, UI first character).
+
+What the plan does at each point:
+- **Ingress and wake.** Streaming STT partials are perception events; her signal is interactive at once.
+  - The STT Semaphore(2) that *drops* a third utterance becomes a queue.
+  - The single Whisper mutex and the one mutex per TTS model become capacities in the flow, with interactive class (inventory #124-126).
+- **Context ready.** The codec appends partials as they arrive, and prefill follows them.
+- **Admission.** A mind in a call is seated with its KV pinned; nothing pages it out mid-call. Interactive class preempts lower classes' compute at the next decode step.
+- **Barge-in.** A new utterance during her reply raises the yield on her generation. The stream is dropped, and what she said so far stays in her context.
+- **Delivery.**
+  - The 250 ms token flush timer and the positron `min_interval` sleep become event-driven: flush on sentence boundary or first token (#95, #159).
+  - The call join's fixed sleeps go (#132).
+- **Several people.** Every utterance is perception. Whether she speaks is her decision, one coalesced signal per mind.
+
+## 4. Inventory mapping (160 places; full list in the appendix)
+
+| category | count | what happens |
+|---|---|---|
+| A: belongs in the flow | 74 | migrates to the capacity it protects; its local semaphore/heap/backoff is deleted |
+| B: content for the codec | 13 | becomes a codec source or consolidation (rings, dedup, digests) |
+| C: real locks on shared data | 28 | stay; any held across an await on a cognition path is narrowed (#79, #78) |
+| D: polling loops | 34 | become event-driven (watch/notify on the thing that changes) |
+| E: dead or duplicate | 11 | deleted, including the kernel's ConcurrentPriorityQueue, inference-grpc's unused priority queue, the unused TokioConcurrencyPolicy |
+
+The top live-latency items, in order:
+1. the serial per-mind loop with no preemption (a directed line waits for a whole self-turn);
+2. the per-mind act gate;
+3. the classless adapter semaphore;
+4. slot wait and page IO when minds outnumber slots;
+5. the relaunch drain barrier;
+6. the adapter registry RwLock held across generation;
+7. the voice path's drops and mutexes;
+8. RAG work inline on the turn path;
+9. remote minds' refusal and 2 s reply poll;
+10. token flush timers.
+
+## 5. Order of work (each step: simulator cases pass, dyno replay no worse, 15-minute live read no worse)
+
+| step | what | owner | proves |
+|---|---|---|---|
+| 0 | Hold #5558 commits 3-5; keep 4579b4711 live | Fable | done 14:20Z |
+| 1 | `continuum-flow` primitive + **simulator** (pure scheduler, fake engine, virtual clock; §6 cases) | Fable | every case in §6 green in seconds |
+| 2 | Engine compute as the first capacity: one dispatcher replaces lanes, adapter semaphore and the act gate; in-flight gauge and directed class move into it; warm-ahead becomes a utility-class use of free capacity (no reserved scratch slot) | Fable (dispatcher), Codex (admission/allocator/pager seams) | sim: directed waits < one decode step, gauge exact, warm-ahead intact; live: slot wait, act median |
+| 3 | KV memory admission: `MindMemory::seat` + RAM paging (fork #79, #70) as the release-memory verb | Fable, Codex | sim: no resident overwritten unsaved; live: switch freeze ~0.1 s |
+| 4 | Training and examiner as consumers: compute yield at batch boundary, memory lease kept; fork yield windows and TrainingHolds-as-scheduler deleted; S7 stop-drain fixture (920619c5) | Cormac | sim: training's worst-case wait bounded; live: resident decode during training |
+| 5 | The mind's stages on the flow: coalesced signal per mind, codec consolidation, late render with capture at send, prefill as enricher | Fable | sim: 20-line burst = one wake, newest read; live: act median, prefill per act |
+| 6 | Live path: STT/TTS capacities, barge-in yield, event-driven flush, call-join sleeps gone | Fable + BigMama (live) | sim: first token ≤ 1 s after silence; live: the seven timestamps |
+| 7 | The rest of category A by subsystem; D polls to events; E deleted | each owner by area | per-subsystem receipts, lines removed |
+
+## 6. The simulator: every case, deterministic, in seconds
+
+Pure scheduler + MindMemory + a fake engine on a virtual clock. Each case states its pass rule.
+
+| case | must hold |
+|---|---|
+| 4 residents, 4 slots, all working | no waits; every slot busy |
+| 6 residents, 4 slots | each class within its stated max wait; pages swap without loss |
+| directed call mid-act, engine full | lowest class yields within one decode step; first-token time recorded |
+| live call: streaming partials, speaker stops | prefill keeps pace; first token ≤ budget after silence |
+| barge-in during her reply | her generation yields; her context keeps what she said |
+| 20 chat lines to one busy mind | one coalesced wake; she reads all 20 consolidated; no stale request runs |
+| permanent interactive saturation | work still gets its minimum share (Codex) |
+| dream + training under steady work | both complete within their stated worst-case wait; work never preempted for them (Cormac) |
+| training holds memory, needs compute | yields compute at batch boundary, keeps memory; never deadlocks memory-vs-compute (Cormac) |
+| warm-ahead with no reserved slot | next mind's page restored ahead; no resident overwritten |
+| engine relaunch mid-act | in-flight work re-queued or failed cleanly; pages intact |
+| capacity shrinks 4 -> 2 | no new starts past capacity; running work finishes |
+| KV memory full | admission pages by class; never an OOM |
+| remote mind leased from another node | same classes, remote capacity; lost reply recovered by event, not poll |
+| relaunch drain | new turns not blocked behind the longest in-flight turn (inventory #5) |
+
+The simulator reports what the live read reports: each resident's wait between acts, first-token latency
+for directed and live calls, switch freeze, aggregate tokens per second, and each class's worst wait.
+
+## 7. What gets deleted when this lands
+
+- Lane admission (`resource_admission/lanes.rs`, `progress.rs`, `serving_lane_permit.rs`).
+- The adapter concurrency semaphore and its grow/shrink task.
+- The scratch reservation.
+- The prefill throttle (done).
+- The kernel `ConcurrentPriorityQueue`, `TokioConcurrencyPolicy` and `message_processor`.
+- `inference-grpc`'s priority queue and worker pool.
+- Per-module `max_concurrency` limiters on the typed path.
+- The fork's training yield windows, and TrainingHolds as a scheduler.
+- The act clock's queue-time accounting.
+- The 34 polling loops' timers, wherever an event exists.
