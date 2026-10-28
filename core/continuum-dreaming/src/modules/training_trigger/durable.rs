@@ -32,6 +32,8 @@ pub(crate) use training_trigger_state::JobInputError;
 mod training_trigger_state_2;
 mod training_trigger_state_3;
 pub(crate) use training_trigger_state_3::*;
+mod migration;
+pub(crate) use migration::migrate_base_change_buckets;
 
 #[cfg(test)]
 mod tests;
