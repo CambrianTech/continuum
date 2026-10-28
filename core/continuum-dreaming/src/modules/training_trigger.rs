@@ -548,8 +548,33 @@ impl TrainingTriggerState {
             let dispatch_id = Uuid::new_v4();
             // its original input from the one owner (its durable dispatch, card 3c3634d2), read
             // once: re-created from it, or returned with it
-            let input = self.job_input(&orphan, &dir).await.map_err(|e| e.to_string());
-            let params = match input.clone().and_then(|request| resumable_request(request, &dir, &orphan.provider_id, dispatch_id)) {
+            let input = match self.job_input(&orphan, &dir).await {
+                Ok(request) => request,
+                // what proves its input cannot be read NOW (the durable state not yet recovered at
+                // boot, a file held by another process): held and asked again, never dropped until
+                // the next boot (card c2dd200c)
+                Err(JobInputError::Unavailable(why)) => {
+                    continuum_base::probe!(
+                        class = "training.job.resume_deferred",
+                        local_id = %orphan.local_id,
+                        error = %why,
+                        "the job's input cannot be read now; the orphan is held and asked again"
+                    );
+                    self.hold_orphan(orphan, now);
+                    continue;
+                }
+                Err(error) => {
+                    continuum_base::probe!(
+                        class = "training.job.not_resumable",
+                        local_id = %orphan.local_id,
+                        dir = %dir.display(),
+                        error = %error,
+                        "the job's request cannot be read back, so there is nothing to resume from"
+                    );
+                    continue;
+                }
+            };
+            let params = match resumable_request(input.clone(), &dir, &orphan.provider_id, dispatch_id) {
                 Ok(params) => params,
                 Err(error) => {
                     continuum_base::probe!(
@@ -579,15 +604,12 @@ impl TrainingTriggerState {
                         );
                         continue;
                     }
-                    let resubmitted = match input {
-                        // The call returning is not the batch being taken: a refused submit
-                        // (InconsistentBucket, …) comes back success=false.
-                        Ok(request) => match crate::commands::training_trigger::submit::return_request(self, request, orphan.local_id, crate::commands::training_trigger::submit::ReturnScope::Whole).await {
-                            Ok(outcome) if outcome.success => Ok(()),
-                            Ok(outcome) => Err(format!("{:?}: {:?}", outcome.error_kind, outcome.error)),
-                            Err(error) => Err(error.to_string()),
-                        },
-                        Err(error) => Err(error),
+                    // The call returning is not the batch being taken: a refused submit
+                    // (InconsistentBucket, …) comes back success=false.
+                    let resubmitted = match crate::commands::training_trigger::submit::return_request(self, input, orphan.local_id, crate::commands::training_trigger::submit::ReturnScope::Whole).await {
+                        Ok(outcome) if outcome.success => Ok(()),
+                        Ok(outcome) => Err(format!("{:?}: {:?}", outcome.error_kind, outcome.error)),
+                        Err(error) => Err(error.to_string()),
                     };
                     // JOURNALED AS RESOLVED (BigMama on #4791): the orphan's examples now
                     // live in her bucket, so this orphan is resumed-into the joined job and

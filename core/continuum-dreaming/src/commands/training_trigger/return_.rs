@@ -102,11 +102,13 @@ pub(crate) async fn return_job(
 }
 
 /// A job's input that cannot be had, as the verb reports it: an unproven dispatch is an invalid
-/// request; a job with no dispatch and no request file has nothing to return.
+/// request; a job with no dispatch and no request file has nothing to return; a store or file
+/// that cannot be read now is an internal failure the caller may retry.
 fn input_error(error: crate::modules::training_trigger::JobInputError) -> CommandError {
     match error {
         crate::modules::training_trigger::JobInputError::Unproven(why) => CommandError::Invalid(why),
         crate::modules::training_trigger::JobInputError::Missing(why) => CommandError::NotFound(why),
+        crate::modules::training_trigger::JobInputError::Unavailable(why) => CommandError::Internal(why),
     }
 }
 
