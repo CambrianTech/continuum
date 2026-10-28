@@ -77,10 +77,10 @@ impl<T: Transport + Send + Sync + 'static> CreditAcceptanceRegion<T> {
         }
     }
 
-    /// One bounded step for `persona`. Progress is kept after every decision attempted, before
-    /// its settle is awaited, so a slow or broken decision costs its own turn and never the
-    /// ones after it; it is tried again, under the same submission id, when the scan comes
-    /// round (Codex on #5531).
+    /// One bounded step for `persona`. The scan moves past every decision it handled and never
+    /// waits on a settle, so a slow or broken decision costs its own slot and never the ones after
+    /// it (Codex on #5531); a settle past its quantum is cut and tried again, under the same
+    /// submission id, when the scan comes round ([`SettleSlots`]).
     pub async fn step(&self, persona: Uuid) -> CadenceHint {
         // whoever has left, swept on any pass (she may never be ticked again): her settles go with her
         settle_slots::release_departed(&self.slots, |p| (self.resolve)(p).is_some());
@@ -114,11 +114,13 @@ impl<T: Transport + Send + Sync + 'static> CreditAcceptanceRegion<T> {
                     };
                     match settle_slots::try_start(&self.slots, &(persona, id.clone()), tokio::time::Instant::now(), settle) {
                         Admit::Running | Admit::Start { .. } => {}
-                        Admit::Preempting { victim: (_, decision) } => {
-                            continuum_base::probe!(class = "training.credit.settle_preempted", persona = %name, decision = %decision, waiting = %id,
-                                "a settle outran its quantum while another decision waited for a slot: aborted, replayed under its submission id on a later pass with a doubled quantum");
-                            finished = false; // its slot frees once the aborted task ends: resume here next pass
-                            break;
+                        Admit::Cut { victim: (_, decision) } => {
+                            continuum_base::probe!(class = "training.credit.settle_cut", persona = %name, decision = %decision, for_decision = %id,
+                                "a settle outran its quantum: aborted, and replayed under its submission id once its task has ended, with a doubled quantum");
+                            if decision != *id {
+                                finished = false; // cut to free a slot for this one: resume here once it frees
+                                break;
+                            }
                         }
                         Admit::Full => {
                             finished = false; // her settles hold every slot: resume here next pass
