@@ -154,6 +154,11 @@ impl ServingDaemonModule {
         let ledger_credited = self.resource_daemon.board().attributions.iter().any(|a| {
             a.consumer_id == SERVING_CONSUMER_ID && a.kind == serving_pool_kind() && a.bytes > 0
         });
+        if !ledger_credited {
+            // The boot planner adds incumbent bytes after this snapshot. That
+            // enlarged budget no longer proves these leases were excluded.
+            account_training_leases(&mut demand, &[]);
+        }
         // WHICH BRANCH PLANNED THIS, AND WHAT IT PLANNED FROM (card d0ba2342, 2026-09-21).
         // These two arms differ by exactly ONE engine footprint: `at_rest` trusts that the
         // ledger has already credited serving's own bytes back, `stable` credits them here.
