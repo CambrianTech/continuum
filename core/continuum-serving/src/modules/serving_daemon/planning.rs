@@ -655,9 +655,9 @@ mod training_lease_tests {
             source: crate::inference::planning::training_plan::NeedSource::LowerBound,
             model: "fixture".into(), shape: "fixture".into(),
         };
-        let requirement = LaneRequirement::declared(uuid::Uuid::from_u128(1), 100)
-            .with_training(Some(TrainingReserve::new(200, Some(price), Some(job))));
-        let mut demand = ServingDemand::new(1, Some(100)).with_requirements(vec![requirement]);
+        let requirement = LaneRequirement::declared(uuid::Uuid::from_u128(1), 40_000)
+            .with_training(Some(TrainingReserve::new(64_256, Some(price), Some(job))));
+        let mut demand = ServingDemand::new(1, Some(40_000)).with_requirements(vec![requirement]);
         let lease = |id: &str, consumer: String, bytes| ResourceLease {
             lease_id: id.into(), consumer_id: consumer, kind: ResourceKind::Vram,
             bytes, acquired_at_ms: 0, expires_at_ms: 1000, reclaim_policy: ReclaimPolicy::Pinned,
@@ -669,16 +669,16 @@ mod training_lease_tests {
             lease("d", "embedding".into(), 1000),
         ];
         let model = ModelFootprint {
-            model_id: "fixture".into(), weights_bytes: 10_000, kv_per_token: 10,
-            context_window: 1000, capability_rank: 1, fixed_per_lane_bytes: 0,
+            model_id: "fixture".into(), weights_bytes: 19 * (1 << 30), kv_per_token: 33_000,
+            context_window: 262_144, capability_rank: 1, fixed_per_lane_bytes: 0,
         };
-        let budget = HostBudget { usable_bytes: 1_000_000, perf_cores: 1 };
+        let budget = HostBudget { usable_bytes: 64 * (1 << 30), perf_cores: 1 };
         account_training_leases(&mut demand, &leases);
         let allocated = allocate(&demand.requirements, &[model.clone()], &budget, 1)
             .expect("fixture fits");
-        assert_eq!(allocated.training_growth, TrainingGrowth::Reserved { bytes: 50, target: 200, reached: true });
+        assert_eq!(allocated.training_growth, TrainingGrowth::Reserved { bytes: 50, target: 64_256, reached: true });
         account_training_leases(&mut demand, &[]);
         let allocated = allocate(&demand.requirements, &[model], &budget, 1).expect("fixture fits");
-        assert_eq!(allocated.training_growth, TrainingGrowth::Reserved { bytes: 100, target: 200, reached: true });
+        assert_eq!(allocated.training_growth, TrainingGrowth::Reserved { bytes: 100, target: 64_256, reached: true });
     }
 }
