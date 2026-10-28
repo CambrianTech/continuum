@@ -396,7 +396,7 @@ impl LlmDeliberationFaculty {
 /// on top, the price of keeping it whole.) The reserve must also hold one act's appends, so
 /// `growing` is at most `available - grounding - per_act` as well, which binds only when an
 /// act appends more than half of what the growing sources may hold. Before the epoch being
-/// replaced appended anything (`None`) the half start stands alone; the replay's half-window
+/// replaced appended anything (`None`) the share start (`EPOCH_START_SHARE`) stands alone; the replay's half-window
 /// start halved turnovers (continuum-context `examples/replay.rs`).
 ///
 /// The one allocator spends it: a higher-priority source asks for its whole grant as its
@@ -416,7 +416,7 @@ pub(in super::super) fn start_grants(
     // Characters per allocation token, the ratio each claim was priced at (`view_claims`).
     let wanted_tokens: u64 = grants.iter().flatten().map(|a| u64::from(a.requested_max)).sum();
     let wanted_chars: u64 = claims.iter().zip(&grants).filter(|(_, a)| a.is_some()).map(|(c, _)| c.full_chars as u64).sum();
-    let per_act_tokens = appended_per_act.map_or(0, |chars| (chars as u64 * wanted_tokens).div_ceil(wanted_chars.max(1)) as usize); // map_or: no act measured yet reserves the half start alone
+    let per_act_tokens = appended_per_act.map_or(0, |chars| (chars as u64 * wanted_tokens).div_ceil(wanted_chars.max(1)) as usize); // map_or: no act measured yet reserves the share start alone
     let lowest = claims.iter().map(|claim| claim.priority).min().unwrap_or(0); // unwrap_or: no claims means nothing to grant
     let grounding: usize = claims
         .iter()
@@ -431,11 +431,11 @@ pub(in super::super) fn start_grants(
     // newest end with them. A re-home back into a 160-turn room measured 331,230 tokens
     // appended in one act against a 20,693 grant, and her view rendered empty
     // (`provider_context_feedback_bounds_replay_and_scales_next_turn`, 2026-10-23). Such an
-    // epoch turns over on the next act whatever its start, so it keeps the half start.
+    // epoch turns over on the next act whatever its start, so it keeps the ordinary start.
     let growing = if per_act_tokens < growable {
-        (growable / 2).min(growable - per_act_tokens)
+        (growable / EPOCH_START_SHARE).min(growable - per_act_tokens)
     } else {
-        growable / 2
+        growable / EPOCH_START_SHARE
     };
     let start = grounding + growing;
     let budgets: Vec<crate::cognition::rag_budget::RagSourceBudget> = claims
@@ -468,3 +468,15 @@ pub(in super::super) fn start_grants(
 
 #[cfg(test)]
 mod tests;
+
+/// The share of what grounding leaves that a new epoch starts her growing sources at; the rest is
+/// room to append before the next turnover. A turnover re-prefills the start, and turnovers come
+/// once per (window - start) of appends, so prefill per act from turnovers is
+/// `start * appended / (window - start)`: a smaller start is cheaper, bounded by what it collapses
+/// (which stays reachable through handles).
+// derived-or-floor: derived — the dyno over the M5 residents' captures at the 48k working window,
+// 2026-10-28 (~/.continuum/evidence/2026-10-28-working-window/, replay --share 2/3/4): a quarter
+// start cut prefill per request 10-25% against a half (Benchy 42 -> 34 s, Aiko 25 -> 19, Aris 33 -> 32,
+// Atlas 21 -> 17) with fewer turnovers and fewer items collapsed overall. The closed-form optimum
+// from her measured expand rate replaces this (FLOW plan §2b).
+const EPOCH_START_SHARE: usize = 4;
