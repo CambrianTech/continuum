@@ -522,8 +522,7 @@ impl LlmDeliberationFaculty {
     /// cached last turn at this box's measured prefill rate, plus her last output at its
     /// measured decode rate. Read from her LAST turn's shape (`LAST_TURN_SHAPE`) — the
     /// prompt is rendered after the gate, so the previous turn is the honest predictor.
-    /// `None` when any term is unmeasured: an absence is not a number, and the reserve is
-    /// then not lent (`resource_admission::reserve_lendable`).
+    /// `None` when any term is unmeasured: an absence is not a number (the probe says so).
     fn expected_occupancy(&self) -> Option<std::time::Duration> {
         expected_occupancy_for(self.persona_id)
     }

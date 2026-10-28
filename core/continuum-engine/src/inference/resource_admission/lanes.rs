@@ -421,9 +421,8 @@ impl LaneAdmission {
         let directed = priority.is_directed();
         // Non-directed reserves within the (lanes-1) budget FIRST, so the physical-lane
         // acquire below can never let non-directed work starve a directed caller —
-        // EXCEPT a work call whose occupancy is bounded inside the directed wait budget
-        // while nothing directed is pending: it may be LENT the reserved lane, because the
-        // guarantee is the wait, not the lane (`reserve_lendable`). THE LOAN NEVER PARKS
+        // EXCEPT that while nothing directed is pending a work call is LENT the reserved
+        // lane (`reserve_lendable`): a slot never idles for a mention. THE LOAN NEVER PARKS
         // (Cormac's condition on #4250): it is a try-acquire on a physical lane that is
         // free RIGHT NOW — a lent call that had to wait on the FIFO physical semaphore
         // would put a later directed arrival behind its whole occupancy (2× the budget
@@ -437,13 +436,7 @@ impl LaneAdmission {
                     Some(p) => (Some(p), None),
                     None => {
                         let reserve_exists = self.nondirected_budget() < self.lane_count();
-                        let budget = crate::inference::prefill_rate::INTERACTIVE_TTFT;
-                        let lendable = reserve_exists
-                            && reserve_lendable(
-                                expected_occupancy,
-                                directed_pending(),
-                                budget,
-                            );
+                        let lendable = reserve_exists && reserve_lendable(directed_pending());
                         let lent = if lendable {
                             self.try_acquire_resized(
                                 self.serving_lanes(),
@@ -457,9 +450,8 @@ impl LaneAdmission {
                             Some(lane) => {
                                 continuum_base::probe!(
                                     class = "admission.lane.reserve_lent_to_work",
-                                    expected_ms = expected_occupancy.map(|d| d.as_millis() as u64).unwrap_or(0), // unwrap_or: lendable implies Some; 0 cannot occur
-                                    budget_ms = budget.as_millis() as u64,
-                                    "a free reserved lane is lent to a bounded work call, never parked for — a directed arrival waits at most the call's occupancy"
+                                    expected_ms = ?expected_occupancy.map(|d| d.as_millis()),
+                                    "the reserved lane is lent to work while nothing directed is pending: no slot idles for a mention; a directed arrival takes the next lane released"
                                 );
                                 (None, Some(lane))
                             }
