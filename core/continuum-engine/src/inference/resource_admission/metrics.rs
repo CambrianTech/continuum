@@ -391,22 +391,16 @@ pub fn lane_wait_bound(
             .clamp(LANE_WAIT_FLOOR, LANE_WAIT_CEILING),
     )
 }
-/// PURE: may a WORK call be lent the lane reserved for directed calls? Only while no
-/// directed line is pending for any citizen here, and only when the call's expected
-/// occupancy — prefill of its uncached prompt at the measured prefill rate plus its
-/// decode at the measured decode rate — fits inside the directed wait budget, so the
-/// most a directed arrival can wait is that bound. Unknown occupancy lends nothing.
+/// PURE: may a WORK call be lent the lane reserved for directed calls? Whenever no directed
+/// line is pending here. A directed arrival then takes the next lane any call releases.
 ///
-/// Measured 2026-09-20 on the M5 (2 lanes): the reserve of lanes−1 left ONE non-directed
-/// lane for four minds at 3–6 min a turn — 11 grants an hour with a lane idle for a
-/// mention that came once all night. The reserve stays a guarantee; it is now stated in
-/// the seconds a directed call may wait, not in lanes.
-pub fn reserve_lendable(
-    expected: Option<std::time::Duration>,
-    directed_pending: bool,
-    budget: std::time::Duration,
-) -> bool {
-    !directed_pending && expected.is_some_and(|e| e <= budget)
+/// The old rule also required the call to fit the interactive wait budget. No resident act
+/// does (median model call 71 s), so the reserve was never lent: one of four engine slots
+/// sat idle for a mention while the fourth resident queued, a median 25.7 s and p90 131 s
+/// per model call (M5, 176 acts, 2026-10-28, build 7ace74020). An idle slot is never the
+/// price of a guarantee for an event that comes a few times a day.
+pub fn reserve_lendable(directed_pending: bool) -> bool {
+    !directed_pending
 }
 /// A bounded ring of wait samples (ms), newest kept, read as (p50, count) so an empty ring
 /// is UNMEASURED — never "0 ms". One shape for every queue a node measures about itself.
