@@ -230,6 +230,39 @@ A page save or restore stalls every stream, because SLOT_SAVE and SLOT_RESTORE r
 4. Expert paging for capacity on unified memory (card 5eedda3e).
 5. A long-context sweep: per-sequence KV reads are what batching cannot amortize.
 
+## 1c. The engine is fed by queues and signals, never held by permits (2026-10-28)
+
+Joel, 2026-10-28: "Its got to flow or have MANY queues"; "Semaphore really only exists for queue
+inserts and signals typically. Otherwise you lock up every thread." The CBAR shape applied to
+serving: stages run concurrently, work is submitted, the engine drains what is ready.
+
+**What it replaces, measured on the M5 (176 acts, build 7ace74020).** A resident's model call
+passed four permit layers that each counted the same engine slots and were held for the whole
+call: cognition's serving lane (one of four reserved for directed calls, lent only to calls under
+60 s, which a 71 s median act never is), a prefill throttle (1 to 2 permits for 72% of the time,
+guarding a compute-buffer spike one engine never draws), the adapter's concurrency permit, and the
+slot pool. Waiting on the first two: a median 25.7 s plus 24.6 s, in a 155 s median act, while the
+engine itself was occupied 99.6% of the time and four streams decode 3.4x one stream at 64k. The
+locks, not the engine, made minds wait. Each was added after an incident instead of fixing it.
+
+**The rule.**
+- A mind *submits* a generation (request plus a reply handle) and keeps flowing: tools,
+  perception and the prefill of her appended items run while she waits.
+- **One dispatcher per engine**, woken by events only: a submission arrived, a slot finished, a
+  page landed. It fills free slots from per-class queues (directed, work, background), oldest first
+  within a class with aging, so nothing starves. Priority is queue order, never a reserved slot.
+- **Admission is memory, once.** `MindMemory::seat` admits a mind by KV bytes. No per-call permit
+  counts slots a second time.
+- A semaphore only signals: an item entered a queue, or a slot freed. No permit is held across a
+  model call, a tool, or an await on another subsystem.
+- The engine's own continuous batching is the concurrency: every seated sequence with tokens to
+  process rides the same forward pass.
+
+**Done so far** (`fable/lanes-flow`): the reserved lane is lent whenever nothing directed is
+pending; the prefill throttle is deleted; deliberation and dreams take no lane. Left: the adapter's
+concurrency permit and the slot pool become the dispatcher above, the ambient anti-stampede permit
+becomes a class in it, and the act clock's queue-time registration goes with the lane.
+
 ## 2. Reuse versus write
 
 | Option | Speed | Effort | Risk |
