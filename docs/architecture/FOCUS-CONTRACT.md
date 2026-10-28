@@ -47,6 +47,9 @@ authorization, ownership or lifecycle contracts.
    the mind perceives. Storage eviction preserves the durable retrieval contract.
 8. Capture records the exact fitted request at send and its actual response.
    Learning uses those lived calls, not the unallocated wants or an imagined view.
+   Bind that capture to its allocation receipt: capacity and policy revision,
+   claim identities, wants, selected levels and grants. Preserve the linkage to
+   subsequent feedback so attention learning can attribute outcomes to decisions.
 
 An allocation may use internal solver iterations. The forbidden duplication is a
 source making its own competing allocation before the common owner sees its claims.
