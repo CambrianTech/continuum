@@ -264,6 +264,7 @@ use super::*;
             corpus_chars: 0,
             walk: None,
             trained_on: None,
+            demand_store: None,
             shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false },
         };
         let bound = crate::inference::engine_residency::ResidentWork {
@@ -322,6 +323,7 @@ use super::*;
             corpus_chars: 0,
             walk: None,
             trained_on: None,
+            demand_store: None,
             shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false },
         };
         let work = crate::inference::engine_residency::ResidentWork {

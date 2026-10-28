@@ -325,6 +325,26 @@ impl ResourceDaemon {
         self.governor.lock().budget_for_replacing(consumer_id, kind)
     }
 
+    /// Replacement budget and the leases charged by the same accounting read.
+    /// Consumers must keep these together when deriving a smaller planning budget;
+    /// a later board/holder read cannot justify omitting a future reservation.
+    pub fn replacement_budget_snapshot(
+        &self, consumer_id: &str, kind: ResourceKind,
+    ) -> (u64, Vec<super::lease::ResourceLease>) {
+        let governor = self.governor.lock();
+        let budget = governor.budget_for_replacing(consumer_id, kind);
+        let board = governor.board();
+        let capacity = board.kinds.iter().find(|row| row.kind == kind)
+            .map_or(0, |row| row.capacity_bytes);
+        let leases: Vec<_> = board.leases.into_iter()
+            .filter(|lease| lease.kind == kind && lease.consumer_id != consumer_id)
+            .collect();
+        let charged = leases.iter().fold(0u64, |sum, lease| sum.saturating_add(lease.bytes));
+        // An oversized own-residency add-back cannot erase another holder's
+        // grant. Every returned lease is excluded even before physical sampling.
+        (budget.min(capacity.saturating_sub(charged)), leases)
+    }
+
     /// Register a leaseholder after startup — no restart (the directive's
     /// "never restart a daemon to manage resources").
     pub fn add_consumer(&self, consumer: Arc<dyn ResourceConsumer>) {

@@ -76,6 +76,67 @@ pub struct LaneRequirement {
     /// a requirement is a target, not a gate; the need is the gate).
     #[serde(default)]
     pub need: Option<u32>,
+    /// Her parked training examples' reservation (card ea157b1a): the window that trains them
+    /// whole and the training graph it costs. Carried BESIDE her conversational `window` and
+    /// `need`, never folded into them: the allocator grows toward it only from what is left
+    /// once the conversational geometry is packed, so learning can never mute her.
+    pub training: Option<TrainingReserve>,
+}
+
+/// What a resident's waiting training needs of the budget: the window that trains her parked
+/// examples whole, and, when a footprint of that very shape is known, its price. Carried beside
+/// her conversational requirement; the allocator grows toward it only from what is left after
+/// the conversational geometry is packed (Codex on #5556), and an unpriced one grows nothing.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TrainingReserve {
+    pub window: u32,
+    /// Private: read through [`Self::price_for`], so a price is never used for a model it was
+    /// not measured on (Codex on #5557).
+    price: Option<TrainingPrice>,
+    /// The training job whose partition priced it (`None`: no partition priced this window):
+    /// reservations deduplicate by job, and the job already charged as the live training holder
+    /// is not reserved twice.
+    pub job: Option<Uuid>,
+    /// Bytes already excluded from this plan's budget for this exact job.
+    #[serde(skip)]
+    accounted_bytes: u64,
+}
+
+/// What training at a reservation's window costs, and exactly what it was measured FOR: the base
+/// model and the training shape's footprint key (rank, targets, depth, walk, chunk, recompute).
+/// `source` keeps the training plan's label: a lower bound or a prediction is never a whole run.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrainingPrice {
+    pub bytes: u64,
+    pub source: crate::inference::planning::training_plan::NeedSource,
+    /// The base model id the footprint was measured on (the serving candidate's `model_id`).
+    pub model: String,
+    /// The footprint key of the priced training shape, for the receipt.
+    pub shape: String,
+}
+
+impl TrainingReserve {
+    pub fn new(window: u32, price: Option<TrainingPrice>, job: Option<Uuid>) -> Self {
+        Self { window, price, job, accounted_bytes: 0 }
+    }
+
+    /// Set only from leases read atomically with this plan's budget. Never carry
+    /// this credit into another budget snapshot or persist it with the demand.
+    pub fn account_charged_bytes(&mut self, bytes: u64) {
+        self.accounted_bytes = bytes;
+    }
+
+    /// The price when serving plans `candidate_model`, the model it was measured on; `None` for
+    /// any other model, or when unpriced: then the reservation is unmeasured for that plan.
+    pub fn price_for(&self, candidate_model: &str) -> Option<&TrainingPrice> {
+        self.price.as_ref().filter(|p| p.model == candidate_model)
+    }
+
+    /// The price as recorded, whatever model it names: for a receipt, never for a plan.
+    pub fn recorded_price(&self) -> Option<&TrainingPrice> {
+        self.price.as_ref()
+    }
 }
 
 impl LaneRequirement {
@@ -84,13 +145,22 @@ impl LaneRequirement {
     /// declared field is wired; the allocator does not distinguish.
     pub fn from_demand(persona: Uuid, demand_tokens: u32, headroom: f64) -> Self {
         if demand_tokens == 0 {
-            return Self { persona, window: None, source: RequirementSource::Unknown, need: None };
+            return Self { persona, window: None, source: RequirementSource::Unknown, need: None, training: None };
         }
-        Self { persona, window: Some((demand_tokens as f64 * headroom) as u32), source: RequirementSource::MeasuredDemand, need: None }
+        Self { persona, window: Some((demand_tokens as f64 * headroom) as u32), source: RequirementSource::MeasuredDemand, need: None, training: None }
     }
 
     pub fn declared(persona: Uuid, window: u32) -> Self {
-        Self { persona, window: Some(window), source: RequirementSource::Declared, need: None }
+        Self { persona, window: Some(window), source: RequirementSource::Declared, need: None, training: None }
+    }
+
+    /// Carry her parked training examples' reservation (card ea157b1a). Her conversational
+    /// target, source and need stay exactly as her turns measured them (Codex on #5557: a target
+    /// overwritten here loses the geometry the allocator must preserve, and with no held turn her
+    /// floor would become the training window). A zero window reserves nothing.
+    pub fn with_training(mut self, reserve: Option<TrainingReserve>) -> Self {
+        self.training = reserve.filter(|r| r.window > 0);
+        self
     }
 
     /// With her measured need (the floor); `0` = no held turn, no floor beyond the
@@ -128,6 +198,8 @@ pub fn largest_known(requirements: &[LaneRequirement]) -> Option<u32> {
 /// The allocator's answer: one engine geometry and who it serves.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Allocation {
+    /// Why outstanding training did or did not leave room for window growth.
+    pub training_growth: TrainingGrowth,
     pub model_id: String,
     pub capability_rank: u8,
     /// The served per-slot window: the largest requirement among `served`.
@@ -254,6 +326,12 @@ pub fn allocate(
             smallest_requirement: largest_known.unwrap_or(0), // unwrap_or: nothing measured = 0 in the receipt, "unknown" spelled as the number it is
         });
     };
+    // Packing decides how many warm slots fit. Queued minds still use those slots
+    // in turn: do not strand spare memory at the smallest packed mind's target.
+    // Grow only the chosen geometry, never its slot count or admission promises.
+    let (window, training_growth) = grow_shared_window(
+        requirements, fp, budget.usable_bytes, lanes, window,
+    );
     let served: Vec<Uuid> = sorted.iter().take(lanes as usize).map(|r| r.persona).collect();
     let unserved: Vec<Uuid> = sorted.iter().skip(lanes as usize).map(|r| r.persona).collect();
     Ok(Allocation {
@@ -266,7 +344,60 @@ pub fn allocate(
         device_bytes: device_bytes(fp, window, lanes),
         lane_cap,
         lane_cap_by,
+        training_growth,
     })
+}
+
+/// The growth decision keeps a failed training reservation visible without revoking
+/// conversational admission. Prices are estimates with provenance, not a fit proof.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrainingGrowth {
+    NoDemand,
+    Unmeasured { reserved_bytes: u64 },
+    Reserved { bytes: u64, target: u32, reached: bool },
+    BaselineConflict { bytes: u64 },
+}
+
+fn grow_shared_window(
+    requirements: &[LaneRequirement], fp: &ModelFootprint, budget: u64,
+    lanes: u32, baseline: u32,
+) -> (u32, TrainingGrowth) {
+    let mut target = largest_known(requirements).map_or(baseline, |w| w.max(baseline));
+    let mut prices = std::collections::BTreeMap::<Uuid, u64>::new();
+    let mut training_target = 0;
+    let mut unmeasured = false;
+    for req in requirements {
+        let Some(reserve) = &req.training else { continue };
+        let (Some(price), Some(job)) = (reserve.price_for(&fp.model_id), reserve.job) else {
+            // Unknown training cannot authorize training-driven growth, but must
+            // not veto conversation growth or erase other jobs' priced reserves.
+            unmeasured = true;
+            continue;
+        };
+        if job.is_nil() {
+            unmeasured = true;
+            continue;
+        }
+        let outstanding = price.bytes.saturating_sub(reserve.accounted_bytes);
+        prices.entry(job).and_modify(|b| *b = (*b).max(outstanding)).or_insert(outstanding);
+        training_target = training_target.max(reserve.window);
+    }
+    target = target.max(training_target);
+    let reserved = prices.values().fold(0u64, |sum, bytes| sum.saturating_add(*bytes));
+    let residual = budget.saturating_sub(reserved);
+    if device_bytes(fp, baseline, lanes) > residual {
+        return (baseline, TrainingGrowth::BaselineConflict { bytes: reserved });
+    }
+    let window = target.min(fp.context_window).min(fp.window_within(residual, lanes));
+    let decision = if unmeasured {
+        TrainingGrowth::Unmeasured { reserved_bytes: reserved }
+    } else if prices.is_empty() {
+        TrainingGrowth::NoDemand
+    } else {
+        TrainingGrowth::Reserved { bytes: reserved, target: training_target, reached: window >= training_target }
+    };
+    (window.max(baseline), decision)
 }
 
 #[cfg(test)]
@@ -305,6 +436,101 @@ mod tests {
 
     fn minds(windows: &[u32]) -> Vec<LaneRequirement> {
         windows.iter().map(|w| LaneRequirement::declared(Uuid::new_v4(), *w)).collect()
+    }
+
+    // What this catches: training demand must reserve each job once without
+    // revoking conversational admission; an unknown price is not a growth veto.
+    #[test]
+    fn growth_reserves_training_once_and_preserves_conversation_when_it_cannot_fit() {
+        let fp = qwen27b();
+        let baseline = 40_000;
+        let target = 64_256;
+        let bytes = 4 * GB;
+        let price = TrainingPrice {
+            bytes, source: crate::inference::planning::training_plan::NeedSource::LowerBound,
+            model: fp.model_id.clone(), shape: "fixture-family".into(),
+        };
+        let reserve = TrainingReserve::new(target, Some(price.clone()), Some(Uuid::from_u128(7)));
+        let reqs: Vec<_> = minds(&[baseline, baseline]).into_iter()
+            .map(|r| r.with_training(Some(reserve.clone()))).collect();
+        let roomy = fp.peak_resident_bytes(target, 1) + bytes;
+        assert_eq!(grow_shared_window(&reqs, &fp, roomy, 1, baseline),
+            (target, TrainingGrowth::Reserved { bytes, target, reached: true }));
+        let tight = fp.peak_resident_bytes(baseline, 1);
+        assert_eq!(grow_shared_window(&reqs, &fp, tight, 1, baseline),
+            (baseline, TrainingGrowth::BaselineConflict { bytes }));
+        // What this catches: the same live job's already-charged allocation
+        // must not be reserved twice, while an uncovered remainder still is.
+        let mut charged = reserve.clone();
+        charged.account_charged_bytes(bytes);
+        let charged_reqs = [LaneRequirement::declared(Uuid::new_v4(), baseline)
+            .with_training(Some(charged.clone()))];
+        assert_eq!(grow_shared_window(&charged_reqs, &fp, roomy - bytes, 1, baseline),
+            (target, TrainingGrowth::Reserved { bytes: 0, target, reached: true }));
+        charged.account_charged_bytes(bytes / 2);
+        let partial_reqs = [LaneRequirement::declared(Uuid::new_v4(), baseline)
+            .with_training(Some(charged))];
+        assert_eq!(grow_shared_window(&partial_reqs, &fp, roomy - bytes / 2, 1, baseline),
+            (target, TrainingGrowth::Reserved { bytes: bytes / 2, target, reached: true }));
+        let partial = fp.peak_resident_bytes(50_000, 1) + bytes;
+        assert_eq!(grow_shared_window(&reqs, &fp, partial, 1, baseline),
+            (50_000, TrainingGrowth::Reserved { bytes, target, reached: false }));
+        for unknown in [
+            TrainingReserve::new(target, None, None),
+            TrainingReserve::new(target, Some(TrainingPrice { model: "other-base".into(), ..price }), Some(Uuid::from_u128(7))),
+        ] {
+            let reqs = [LaneRequirement::declared(Uuid::new_v4(), 55_000).with_training(Some(unknown.clone()))];
+            assert_eq!(grow_shared_window(&reqs, &fp, roomy, 1, baseline),
+                (55_000, TrainingGrowth::Unmeasured { reserved_bytes: 0 }));
+            let mixed = [reqs[0].clone(), LaneRequirement::declared(Uuid::new_v4(), baseline)
+                .with_training(Some(reserve.clone()))];
+            assert_eq!(grow_shared_window(&mixed, &fp, partial, 1, baseline),
+                (50_000, TrainingGrowth::Unmeasured { reserved_bytes: bytes }));
+        }
+    }
+
+    // The live 5090 could hold Kimi's training target in one slot, but packing
+    // stopped at the smaller resident's target when a second slot did not fit.
+    #[test]
+    fn queued_target_uses_spare_capacity_without_promising_another_slot() {
+        let fp = ModelFootprint {
+            weights_bytes: 18_973_870_432,
+            kv_per_token: 32_768,
+            fixed_per_lane_bytes: 886_154_752,
+            ..qwen27b()
+        };
+        let host = HostBudget { usable_bytes: 24_804_791_852, perf_cores: 8 };
+        let reqs = minds(&[36_491, 64_256]);
+        let a = allocate(&reqs, &[fp], &host, 2).expect("one slot fits");
+        assert_eq!((a.lanes, a.window), (1, 64_256));
+        assert_eq!(a.served, vec![reqs[0].persona]);
+        assert_eq!(a.unserved, vec![reqs[1].persona]);
+        assert_eq!(a.device_bytes, 23_677_817_846);
+        assert!(a.device_bytes <= host.usable_bytes);
+    }
+
+    #[test]
+    fn queued_target_cannot_take_memory_beyond_budget_or_mute_conversation() {
+        let fp = qwen27b();
+        let host = HostBudget {
+            usable_bytes: fp.peak_resident_bytes(45_000, 1),
+            perf_cores: 8,
+        };
+        let reqs = minds(&[36_491, 64_256]);
+        let a = allocate(&reqs, &[fp], &host, 2).expect("conversation still fits");
+        assert_eq!((a.lanes, a.window), (1, 45_000));
+        assert_eq!(a.served, vec![reqs[0].persona]);
+        assert_eq!(a.unserved, vec![reqs[1].persona]);
+        assert!(a.device_bytes <= host.usable_bytes);
+    }
+
+    #[test]
+    fn shared_target_respects_model_ceiling_and_measured_lane_cap() {
+        let fp = ModelFootprint { context_window: 50_000, ..qwen27b() };
+        let reqs = minds(&[36_491, 64_256]);
+        let a = allocate(&reqs, &[fp], &budget(200), 1).expect("one slot fits");
+        assert_eq!((a.lanes, a.window), (1, 50_000));
+        assert_eq!(a.unserved, vec![reqs[1].persona]);
     }
 
     // what this catches (Codex on #4971): a cap read as a budget refusal. With a roomy budget,
@@ -362,15 +588,16 @@ mod tests {
         assert_eq!(a.unserved.len(), 3);
     }
 
-    // what this catches: smallest-requirement-first packing serves the MOST minds — a
-    // 256k outlier does not size everyone's lane; she is served only if the box has
-    // room for her after the others, and the window is then hers.
+    // Packing still serves the most minds. A queued outlier may use spare window
+    // capacity, but cannot evict a packed mind or create an unaffordable slot.
     #[test]
-    fn the_outlier_is_served_last_and_does_not_size_the_others_lanes() {
+    fn the_outlier_uses_only_spare_capacity_after_packing() {
         let reqs = minds(&[256_000, 70_000, 70_000]);
         let a = allocate(&reqs, &[qwen27b()], &budget(30), u32::MAX).expect("fits");
         assert_eq!(a.lanes, 2, "two at 70k; the 256k mind would need 3 lanes at 256k");
-        assert_eq!(a.window, 70_000);
+        assert_eq!(a.window, qwen27b().window_within(budget(30).usable_bytes, 2));
+        assert!(a.window >= 70_000 && a.window < 256_000);
+        assert!(a.device_bytes <= budget(30).usable_bytes);
         assert_eq!(a.unserved.len(), 1);
         let roomy = allocate(&reqs, &[qwen27b()], &budget(60), u32::MAX).expect("fits");
         assert_eq!((roomy.lanes, roomy.window), (3, 256_000), "with room, all three at the largest requirement");
@@ -431,7 +658,7 @@ mod tests {
         let kimi = one_lane - 1_000;
         let seat = vec![LaneRequirement::declared(Uuid::new_v4(), kimi), LaneRequirement::declared(Uuid::new_v4(), 97_268)];
         let a = allocate(&seat, &[q8, small7b()], &budget(22), u32::MAX).expect("fits");
-        assert_eq!((a.model_id.as_str(), a.lanes, a.window), ("qwen-27b", 1, kimi));
+        assert_eq!((a.model_id.as_str(), a.lanes, a.window), ("qwen-27b", 1, one_lane));
         assert_eq!(a.unserved.len(), 1);
     }
     // what this catches (card 70706a9e): a mind whose TARGET the budget cannot hold but
@@ -473,4 +700,26 @@ mod tests {
         }
     }
 
+    // what this catches (card ea157b1a, gate 3; Codex on #5557): a training reservation folded
+    // into her conversational target, so the allocator can no longer see the geometry it must
+    // preserve, and with no held turn her floor becomes the training window: a mind that fit
+    // for conversation muted by learning. The reservation travels beside, labeled.
+    #[test]
+    fn a_training_reserve_travels_beside_her_conversation_never_into_it() {
+        let job = Uuid::from_u128(0x1e02);
+        let price = TrainingPrice { bytes: 6_000_000_000, source: crate::inference::planning::training_plan::NeedSource::LowerBound, model: "kimi-base".into(), shape: "kimi-base|w64256|r8|attn_q,attn_v|exact|rc".into() };
+        let measured = TrainingReserve::new(64_256, Some(price.clone()), Some(job));
+        for her in [LaneRequirement::from_demand(Uuid::new_v4(), 40_000, 1.25).with_need(30_000), LaneRequirement::from_demand(Uuid::new_v4(), 40_000, 1.25)] {
+            let learning = her.clone().with_training(Some(measured.clone()));
+            assert_eq!((learning.window, learning.need, learning.source), (her.window, her.need, her.source), "conversation untouched");
+            assert_eq!(learning.floor(50_000), her.floor(50_000), "no held turn or one: her floor is her conversation's, never the training window");
+            assert_eq!(learning.training.as_ref(), Some(&measured), "the reservation travels to the allocator, its source labeled");
+        }
+        assert_eq!(measured.price_for("kimi-base"), Some(&price), "priced for the model it was measured on");
+        assert_eq!(measured.price_for("another-base"), None, "the same window on another model is unmeasured, never this price");
+        assert_eq!(TrainingReserve::new(64_256, None, None).price_for("kimi-base"), None);
+        let her = LaneRequirement::from_demand(Uuid::new_v4(), 40_000, 1.25);
+        assert_eq!(her.clone().with_training(Some(TrainingReserve::new(0, Some(price), Some(job)))), her, "a zero window reserves nothing");
+        assert_eq!(her.clone().with_training(None), her, "nothing parked, nothing changes");
+    }
 }

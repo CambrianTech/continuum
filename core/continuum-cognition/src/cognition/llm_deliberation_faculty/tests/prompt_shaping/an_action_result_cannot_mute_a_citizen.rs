@@ -214,8 +214,13 @@ mod the_newest_result_over_her_window {
 
     /// The same, generating through `adapter`.
     fn faculty_on(content: &str, adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter>) -> LlmDeliberationFaculty {
+        faculty_at(content, adapter, ARIS_WINDOW)
+    }
+
+    /// The same, served at `window`.
+    fn faculty_at(content: &str, adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter>, window: u32) -> LlmDeliberationFaculty {
         let wm = Arc::new(WorkingMemory::new(8));
-        wm.set_served_window(ARIS_WINDOW);
+        wm.set_served_window(window);
         let room = Uuid::new_v4();
         let call = ToolCall { id: "call-aris".into(), name: "work/submission".into(), input: json!({ "include_staged_evidence": true }) };
         wm.record_native_action_statement("Reading the staged evidence for my submission.", room, std::slice::from_ref(&call));
@@ -234,7 +239,7 @@ mod the_newest_result_over_her_window {
         let rendered = observation.render_recency("", &wm.budget());
         wm.record_receipt_typed(&[observation], &rendered, Some(room), ResultCustody::Whole { handle: HANDLE.into() });
         LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", adapter)
-            .with_context_window(ARIS_WINDOW)
+            .with_context_window(window)
             .with_working_memory(wm)
     }
 
@@ -274,6 +279,36 @@ mod the_newest_result_over_her_window {
         assert!(shown.contains("too large to show whole") && shown.contains(&format!("tool/output {HANDLE}")), "{}", &shown[..shown.len().min(600)]);
         assert!(shown.contains("lines between"), "it is her result's summary level, not only a pointer");
         assert!(shown.chars().count() * 4 <= whole.chars().count(), "a smaller level: {} of {}", shown.chars().count(), whole.chars().count());
+    }
+
+    // what this catches: Kimi on the windows 5090 (2026-10-28, refusal 1eef970d). Her view's
+    // required sources (notices, open views) are never shed, but her newest result was priced
+    // against the window less framing and tools alone: it fit there, stayed whole, and the view's
+    // floor then took its room, so the fit refused required 33,719 > 30,243 before sending, with
+    // no reduction offered. A result that fits the window alone but not beside her required view
+    // comes in at its summary with its handle, and the turn goes.
+    #[test]
+    fn a_result_her_required_view_leaves_no_room_for_comes_in_reduced_not_refused() {
+        // context-budget-exempt: a fixture window this test is run at (a result that fits it alone,
+        // and required notices that leave it too little room), not a budget the code sizes anything by.
+        const WINDOW: u32 = 60_000;
+        let whole = "a line of a file she read, about as long as source lines run\n".repeat(1_700);
+        let alone = faculty_at(&whole, Arc::new(HeuristicInferenceAdapter::new()), WINDOW);
+        let ws = Workspace::new("what does the file say?");
+        let view = alone.prompt_view_with_visual_feedback(&ws, WINDOW, PromptCalibration::default(), None);
+        assert!(view.capacity_error.is_none(), "alone, the result fits whole: {:?}", view.capacity_error);
+        assert_eq!(tool_results(&view), vec![("call-aris".to_owned(), whole.clone())], "and is untouched");
+        let beside = faculty_at(&whole, Arc::new(HeuristicInferenceAdapter::new()), WINDOW);
+        let memory = beside.working_memory.as_ref().expect("test: her memory"); // JUSTIFIED: test fixture
+        for n in 0..60 {
+            memory.pin_fact(&format!("held-{n}"), &format!("- a condition the substrate holds her to, number {n}: {}", "detail ".repeat(200)));
+        }
+        let view = beside.prompt_view_with_visual_feedback(&ws, WINDOW, PromptCalibration::default(), None);
+        assert!(view.capacity_error.is_none(), "beside her required view the turn is not refused: {:?}", view.capacity_error);
+        let results = tool_results(&view);
+        assert_eq!(results.len(), 1, "the native call/result pair is intact");
+        assert!(results[0].1.contains("too large to show whole") && results[0].1.contains(&format!("tool/output {HANDLE}")),
+            "it comes in reduced with its handle: {}", &results[0].1[..results[0].1.len().min(400)]);
     }
 
     // what this catches: the collapse firing on a result that fits, which would cost her the

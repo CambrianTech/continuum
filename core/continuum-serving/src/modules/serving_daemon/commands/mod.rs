@@ -38,6 +38,7 @@ use crate::modules::serving_daemon::PinFitChecker;
 use crate::sdk_codegen::DynCommand;
 
 pub mod cache_probe;
+pub mod handoff;
 pub mod load;
 pub mod pin;
 pub mod plan;

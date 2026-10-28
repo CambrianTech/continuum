@@ -20,6 +20,9 @@ impl FineTuningAdapter for EngineLoraFineTuner {
     }
 
     async fn create_job(&self, mut request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
+        // The request as it arrived, before the provider's defaults fill it in: what the job's
+        // provenance records (card 04679d57), so defaults never read back as the producer's policy.
+        let received = request.clone();
         let schedule = request.schedule.get_or_insert_with(default_schedule).clone();
         let lora = request.lora.get_or_insert_with(default_lora).clone();
         if request.dataset.examples.is_empty()
@@ -224,8 +227,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 class = "training.job.depth_stepped",
                 job = %id,
                 needed = u64::from(need),
-                asked = family.depth.map_or(-1, i64::from), // -1 = every block
-                depth = stepped.map_or(-1, i64::from),
+                asked = family.depth.map_or(0, u64::from), // probe field: 0 = every block
+                depth = stepped.map_or(0, u64::from), // probe field: 0 = every block
                 governed_free = governed_free,
                 "the asked depth cannot hold the window her examples need even at the smallest chunk; a shallower one can (or is unmeasured, and this run measures it), so every example trains whole"
             );
@@ -339,6 +342,25 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let base_model = request.base_model.clone();
         let governed = matches!(self.admission, Admission::Governed);
         let job_dir = job_dir_for(&request, id);
+        // THE REQUEST BEFORE THE RUN (card 04679d57): the examiner learns what a gene trained on
+        // from its job's request (`job_dir::read_job_request`), and proves the unseen tasks from it.
+        // This trainer never wrote one, so every in-engine gene was unexaminable by construction
+        // (the windows 5090: both of Kimi's exam receipts, 2026-10-24, "no training job recorded").
+        // Published once, before anything can train; a job whose provenance cannot be written is
+        // not started, since its gene could never be examined.
+        let request_bytes = serde_json::to_vec(&received) // disk boundary: the job dir's request.json, read back by the examiner and a legacy return
+            .map_err(|e| FineTuningError::InvalidRequest(format!("the training request does not serialize: {e}")))?;
+        match crate::genome::fine_tuning::job_dir::publish_job_file(&job_dir, "request.json", &request_bytes) {
+            Ok(None) => {}
+            Ok(Some(existing)) if existing == request_bytes => {}
+            Ok(Some(_)) => {
+                return Err(FineTuningError::InvalidRequest(format!(
+                    "{} already holds another training request than job {id}'s",
+                    job_dir.join("request.json").display()
+                )))
+            }
+            Err(e) => return Err(FineTuningError::Transient(format!("job {id}'s training request could not be recorded before its run: {e}"))),
+        }
         let mut corpus_chars = 0;
         let model_id = format!("{PROVIDER_ID}:{}:{id}", request.trait_kind);
         let epochs = schedule.epochs;
@@ -382,6 +404,50 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     "the examples this window can train are sent; the rest are parked in the job's directory until a window of at least shortest_parked tokens can be planned. \
                      A small window trains her SHORTEST turns only: the gene is biased toward short-context Kimi"
                 );
+                // HER LEARNING'S DEMAND ON SERVING (card ea157b1a): each parked example records
+                // the window that trains it whole (the planner's own window_for_need, unclamped),
+                // each sent one clears; the largest is priced by THIS shape's footprints at that
+                // window (measured, a lower bound, or the fit's prediction, labeled; unknown when
+                // none), and the serving requirement reads it as her target and reservation.
+                use crate::genome::fine_tuning::training_demand::{Reservation, TrainingDemand};
+                use crate::inference::planning::window_allocator::TrainingPrice;
+                let demand = TrainingDemand::in_dir(self.demand_store.as_deref(), request.persona_id);
+                let key = |i: usize| TrainingDemand::key_of(&request.dataset.examples[i]);
+                let parked_needs: Vec<(String, u32)> = partition
+                    .rows
+                    .iter()
+                    .filter(|r| r.fit != ExampleFit::Kept)
+                    .map(|r| (key(r.index), window_for_need(std::slice::from_ref(r), u32::MAX)))
+                    .collect();
+                // priced only from THIS shape's footprints at that window, and bound to the model
+                // and shape it was priced for (Codex on #5557); sent examples clear nothing here:
+                // only a run that trains them does, at its finish
+                let reservation = parked_needs.iter().map(|(_, w)| *w).max().map(|largest| {
+                    let at = Shape { window: largest, chunk: TRAINING_CHUNK_MIN, ..family.clone() };
+                    let priced = footprints.need(&at, model.map(|m| m.bytes(largest, TRAINING_CHUNK_MIN)));
+                    let price = priced.map(|n| TrainingPrice { bytes: n.bytes, source: n.source, model: at.model.clone(), shape: at.key() });
+                    Reservation { window: largest, price, job: id }
+                });
+                let reserve_receipt = reservation.as_ref().and_then(|r| r.price.as_ref()).map(|p| (p.bytes, p.source));
+                if let Err(e) = demand.record(&parked_needs, &[], reservation) {
+                    continuum_base::probe!(class = "training.demand.unrecorded", job = %id, error = %e,
+                        "her parked examples' window demand could not be recorded; serving sizes her lane without it until the next partition");
+                }
+                if let Some(requested) = parked_needs.iter().map(|(_, w)| *w).max() {
+                    continuum_base::probe!(
+                        class = "training.demand.unresolved",
+                        job = %id,
+                        persona = %request.persona_id,
+                        requested_window = u64::from(requested),
+                        served_window = u64::from(served_sent),
+                        planned_window = u64::from(window),
+                        parked = parked_needs.len() as u64,
+                        outstanding = demand.waiting() as u64,
+                        reserve_bytes = reserve_receipt.map_or(0, |(bytes, _)| bytes), // probe field: 0 = unpriced, see reserve_source
+                        reserve_source = ?reserve_receipt.map(|(_, source)| source),
+                        "lived examples wait for a window her lane does not serve: the serving plan reads this as her target; it is unmet until a partition sends them (the serving plan's own receipt says why its window is smaller)"
+                    );
+                }
                 let sent: Vec<EngineExample> = partition.sent.iter().map(|&i| body.examples[i].clone()).collect();
                 let written = write_partition(&job_dir, &partition);
                 match written {
@@ -409,6 +475,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             corpus_chars,
             walk: Some(walk),
             trained_on: weights,
+            demand_store: self.demand_store.clone(),
         };
         Ok(self.jobs.prepare(id, move |progress| async move {
             if let Some(why) = unrunnable {
@@ -547,6 +614,25 @@ impl FineTuningAdapter for EngineLoraFineTuner {
     }
 }
 
+/// Her demand for the examples this finished run TRAINED is met (card ea157b1a): the partition as
+/// amended with what the run skipped, against the request it was cut from. Only a finish clears,
+/// so a run that fails or is cancelled after being sent leaves her demand as it was.
+fn clear_trained_demand(job: Uuid, spec: &EngineRunSpec) {
+    use crate::genome::fine_tuning::training_demand::TrainingDemand;
+    let Some(store) = spec.demand_store.as_deref() else { return };
+    let cleared = crate::genome::fine_tuning::job_dir::read_job_request(&spec.job_dir).and_then(|request| {
+        let partition = read_partition(&spec.job_dir)?.ok_or("the job recorded no partition")?;
+        let trained = TrainingDemand::trained(&request.dataset.examples, &partition);
+        TrainingDemand::in_dir(Some(store), request.persona_id).record(&[], &trained, None).map_err(|e| e.to_string())?;
+        Ok(trained.len())
+    });
+    match cleared {
+        Ok(n) => continuum_base::probe!(class = "training.demand.trained", job = %job, cleared = n as u64, "the examples this run trained owe serving nothing more"),
+        Err(e) => continuum_base::probe!(class = "training.demand.uncleared", job = %job, error = %e,
+            "the trained examples' demand could not be cleared: her lane may hold a window for examples already trained until the next partition re-records her demand"),
+    }
+}
+
 /// A run's finish: collect its adapter into the job directory, read the engine's receipts, and
 /// file the footprint under the geometry that ran. ONE body for a run this core started and one
 /// it re-attached to (step 3), because both finish from the same [`EngineRunSpec`].
@@ -599,6 +685,7 @@ pub(super) fn finish_run(
                 Err(e) => continuum_base::probe!(class = "training.job.partition_unamended", job = %job, error = %e, "the partition could not be read, so the run's skipped examples could not be parked; they remain in the job's request"),
             }
         }
+        clear_trained_demand(job, &spec);
         let adapted = effective_depth(status.layers_adapted, status.n_layer);
         if adapted != spec.shape.depth {
             continuum_base::probe!(
