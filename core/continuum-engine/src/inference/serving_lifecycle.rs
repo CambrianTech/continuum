@@ -7,6 +7,9 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
+mod handoff;
+pub use handoff::{HandoffClose, HandoffOwner};
+
 use continuum_base::time::EpochMs;
 
 /// The existing reconcile gate, armed before spawning so abort-before-first-poll
@@ -105,6 +108,9 @@ pub enum GateRefusal {
     /// A serving operation (relaunch, placement move, teacher batch) holds the gate:
     /// free memory now is its window, not capacity.
     Operation,
+    /// A core handoff closed training admission (card 91921d0f): a run admitted now would be
+    /// ended by the stop that follows. Waits for the reopen, or for the handoff's owner to die.
+    Handoff,
 }
 /// The gate, held while one admission reads and leases; dropping it releases the gate.
 pub struct AdmissionHold {
@@ -125,6 +131,8 @@ pub struct LifecycleGate {
     started_ms: Arc<AtomicU64>,
     step: Arc<AtomicU8>,
     settled: Arc<AtomicBool>,
+    /// A core handoff's close of training admission, if one stands.
+    handoff: Arc<parking_lot::Mutex<Option<HandoffClose>>>,
 }
 
 impl GateRefusal {
@@ -132,6 +140,7 @@ impl GateRefusal {
         match self {
             Self::Unsettled => "serving_unsettled",
             Self::Operation => "serving_operation",
+            Self::Handoff => "core_handoff",
         }
     }
 }
@@ -145,7 +154,7 @@ impl LifecycleGate {
         step: Arc<AtomicU8>,
         settled: Arc<AtomicBool>,
     ) -> Self {
-        Self { gate, started_ms, step, settled }
+        Self { gate, started_ms, step, settled, handoff: Arc::new(parking_lot::Mutex::new(None)) }
     }
     /// Publish THE serving daemon's gate (first writer wins — the boot path). One serving
     /// lifecycle per core, same precedent as `ResourceDaemon::set_global`.
@@ -165,6 +174,7 @@ impl LifecycleGate {
             started_ms: Arc::new(AtomicU64::new(0)),
             step: Arc::new(AtomicU8::new(0)),
             settled: Arc::new(AtomicBool::new(settled)),
+            handoff: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
     /// What a test's planner does on its first publish.
@@ -183,10 +193,77 @@ impl LifecycleGate {
             self.step.clone(),
         )
         .ok_or(GateRefusal::Operation)?;
+        // read UNDER the gate: a close is set only while holding it, so an admission either
+        // decided before the close (and its hold is published) or sees it here
+        let mut handoff = self.handoff.lock();
+        match handoff::verdict(handoff.as_ref(), crate::inference::engine_residency::probe_process) {
+            handoff::CloseVerdict::Open => {}
+            handoff::CloseVerdict::Closed => return Err(GateRefusal::Handoff),
+            handoff::CloseVerdict::OwnerGone => {
+                continuum_base::probe!(class = "serving.handoff.owner_gone", owner_pid = handoff.as_ref().map_or(0, |c| c.owner.pid),
+                    "the process that closed training admission for a core handoff is gone without reopening it: admission reopens");
+                *handoff = None;
+            }
+        }
+        drop(handoff);
         operation.step(ReconcileStep::TrainingAdmission);
         Ok(AdmissionHold {
             _operation: operation,
         })
+    }
+
+    /// Close training admission for a core handoff owned by `owner` (card 91921d0f). Taken under
+    /// the gate: an admission deciding now finishes first, so its hold is published before this
+    /// returns, and every later one is refused (`GateRefusal::Handoff`) until
+    /// [`Self::reopen_after_handoff`] or the owner's death. `None` while a serving operation holds
+    /// the gate; the caller asks again. A second close replaces the first (one handoff at a time).
+    pub fn close_for_handoff(&self, owner: HandoffOwner) -> Option<uuid::Uuid> {
+        let operation = ServingOperation::acquire(self.gate.clone(), self.started_ms.clone(), self.step.clone())?;
+        let token = uuid::Uuid::new_v4();
+        *self.handoff.lock() = Some(HandoffClose { token, owner });
+        drop(operation);
+        continuum_base::probe!(class = "serving.handoff.closed", owner_pid = owner.pid, token = %token,
+            "a core handoff closed training admission; admissions wait until it reopens or its owner dies");
+        Some(token)
+    }
+
+    /// Reopen what close `token` closed. `false` when no close stands or another does: a stale
+    /// token never reopens a newer handoff's close.
+    pub fn reopen_after_handoff(&self, token: uuid::Uuid) -> bool {
+        let mut handoff = self.handoff.lock();
+        if handoff.as_ref().is_some_and(|close| close.token == token) {
+            *handoff = None;
+            continuum_base::probe!(class = "serving.handoff.reopened", token = %token, "a core handoff reopened training admission");
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (card 91921d0f, Codex on #5551): a training run admitted between a
+    // handoff's hold read and its stop. Once closed, the gate refuses admission as Handoff (a
+    // wait, not a failure); a stale token never reopens a newer close; the right token reopens it;
+    // and a close is not taken while a serving operation holds the gate.
+    #[test]
+    fn a_handoff_close_refuses_admission_until_its_own_token_reopens_it() {
+        let gate = LifecycleGate::unowned(true);
+        let me = HandoffOwner::of(std::process::id()).expect("test: this process's start time is readable");
+        assert!(gate.hold_for_admission().is_ok(), "open: admits");
+        let token = gate.close_for_handoff(me).expect("free gate: closes");
+        assert_eq!(gate.hold_for_admission().err(), Some(GateRefusal::Handoff), "closed by a live owner: waits");
+        assert!(!gate.reopen_after_handoff(uuid::Uuid::from_u128(7)), "a stale token reopens nothing");
+        assert_eq!(gate.hold_for_admission().err(), Some(GateRefusal::Handoff));
+        assert!(gate.reopen_after_handoff(token));
+        assert!(gate.hold_for_admission().is_ok(), "reopened: admits");
+        let deciding = gate.hold_for_admission().expect("an admission holds the gate");
+        assert_eq!(gate.close_for_handoff(me), None, "a close waits for the admission deciding now");
+        drop(deciding);
+        assert!(gate.close_for_handoff(me).is_some());
     }
 }
 

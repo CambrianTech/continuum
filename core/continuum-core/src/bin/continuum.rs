@@ -121,6 +121,8 @@ use launch::*;
 mod processes;
 use processes::*;
 #[path = "continuum/reboot.rs"]
+mod handoff_admission;
+use handoff_admission::*;
 mod reboot;
 use reboot::*;
 #[path = "continuum/start.rs"]
