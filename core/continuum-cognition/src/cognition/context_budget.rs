@@ -119,7 +119,7 @@ impl ContextBudget {
     /// The window her prompt is fitted to: a turnover re-prefills about half of her view
     /// cold, so the window is sized for that cold half to fit the interactive minute at the
     /// measured prefill rate: `2 x INTERACTIVE_TTFT x rate`, to the nearest
-    /// [`WORKING_WINDOW_STEP`], never above `served`, never below the serving floor.
+    /// [`Self::WORKING_WINDOW_STEP`], never above `served`, never below the serving floor.
     ///
     /// - Audience-independent on purpose: a per-audience size swung state 3x between turns
     ///   and re-prefilled ~9k tokens a turn (M5, 2026-10-17, `from_window_for` above).
@@ -150,7 +150,7 @@ impl ContextBudget {
             return served;
         };
         let cold_half = tps * crate::inference::prefill_rate::INTERACTIVE_TTFT.as_secs_f64();
-        let step = WORKING_WINDOW_STEP as f64;
+        let step = Self::WORKING_WINDOW_STEP as f64;
         let snapped = ((2.0 * cold_half) / step).round() * step;
         let window = snapped.clamp(0.0, u32::MAX as f64) as u32;
         window.max(crate::inference::planning::MIN_SERVE_CTX).min(served)
