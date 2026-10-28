@@ -151,6 +151,7 @@ use super::*;
             // benchmark-reproducibility knob set only by the eval fork.
             suppress_recall: false,
             forked: false,
+            read_receipt: None,
         }
     }
 

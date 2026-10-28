@@ -115,6 +115,7 @@ use super::*;
             defer_grounding: false,
             suppress_recall: false,
             forked: false,
+            read_receipt: None,
         };
         crate::cognition::persona_workspace::global()
             .register_from_cfg(cfg)
@@ -214,6 +215,7 @@ use super::*;
                 defer_grounding: false,
                 suppress_recall: false,
                 forked: false,
+                read_receipt: None,
             };
             crate::cognition::persona_workspace::global()
                 .register_from_cfg(cfg)
@@ -520,6 +522,7 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
         defer_grounding: false,
         suppress_recall: false,
         forked: false,
+        read_receipt: None,
     };
     crate::cognition::persona_workspace::global()
         .register_from_cfg(cfg)

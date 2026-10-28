@@ -97,5 +97,6 @@ fn cfg_for(persona_id: uuid::Uuid) -> crate::cognition::persona_workspace::Perso
         defer_grounding: false,
         suppress_recall: false,
         forked: false,
+        read_receipt: None,
     }
 }

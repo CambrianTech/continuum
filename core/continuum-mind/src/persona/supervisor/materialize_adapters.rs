@@ -197,12 +197,10 @@ pub async fn materialize_adapters(
             identity.agent_name.clone(),
             rag_engine,
         );
-        let airc_source: Arc<dyn crate::cognition::rag_budget::RagSource> =
-            Arc::new(crate::persona::airc_source::AircRagSource::new(
-                identity.peer_id.as_uuid(),
-                runtime.clone(),
-            ));
-        cognition.set_airc_source(airc_source);
+        // One airc source: it delivers her rooms to cognition and takes the read receipt
+        // of every sent prompt (her cursor moves through what she was shown, never at delivery).
+        let airc = Arc::new(crate::persona::airc_source::AircRagSource::new(identity.peer_id.as_uuid(), runtime.clone()));
+        cognition.set_airc_source(Arc::clone(&airc) as Arc<dyn crate::cognition::rag_budget::RagSource>);
 
         // WHO IS PRESENT, read from the SAME `RosterViewState` the browser renders
         // (#408 + the RenderTarget pattern). Her room's OWN store, so a citizen in
@@ -583,6 +581,7 @@ pub async fn materialize_adapters(
             // benchmark-reproducibility knob, never a life-path setting (#207).
             suppress_recall: false,
             forked: false,
+            read_receipt: Some(Arc::clone(&airc) as Arc<dyn crate::cognition::llm_deliberation_faculty::ReadReceipt>),
         };
         // A checkpoint can be locked by offline adoption. Waiting and reading
         // belong off the async runtime workers; registration publishes nothing

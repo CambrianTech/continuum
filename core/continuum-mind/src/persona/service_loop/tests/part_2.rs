@@ -642,6 +642,7 @@
                 peer_id: joel,
                 content: "run commands/list and tell me the count",
                 occurred_at_ms: 0,
+                source: None,
             };
             let turns = build_workspace_turns(&deliveries, me, "Asha", Some(trigger));
 
@@ -685,6 +686,7 @@
                 peer_id: joel,
                 content: question,
                 occurred_at_ms: 0,
+                source: None,
             };
             let turns = build_workspace_turns(&deliveries, me, "Asha", Some(trigger));
             assert_eq!(

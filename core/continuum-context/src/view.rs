@@ -223,6 +223,7 @@ impl<T: Block> View<T> {
             let mut rendered = Vec::with_capacity(items.len());
             for (item, level) in items.into_iter().zip(levels) {
                 let id = key(source.name(), &item.key);
+                let item_key = item.key.clone(); // its fingerprint after the level consumed it; once per item per start
                 let text = match level {
                     Level::Full => Some(crate::source::whole(&**source, item)),
                     Level::Summary => {
@@ -235,7 +236,7 @@ impl<T: Block> View<T> {
                     }
                 };
                 if let Some(text) = text {
-                    rendered.push((fingerprint(&item.key, &text), text.chars()));
+                    rendered.push((fingerprint(&item_key, &text), text.chars()));
                     view.epoch.observe(id, text);
                 }
             }
@@ -249,6 +250,14 @@ impl<T: Block> View<T> {
     /// Append what changed in each source since the last act, each item at the rendering its
     /// epoch start chose. An item first seen mid-epoch arrives in full: the allocator weighs
     /// it at the next start.
+    /// Whether her view shows `source`'s item `item` this epoch, whole or as its summary. A
+    /// collapsed item renders at most its pointer, which is not reading it: the read receipt
+    /// (her room cursor) only advances through what this answers true for.
+    pub fn renders(&self, source: &str, item: &str) -> bool {
+        let id = key(source, item);
+        self.epoch.holds(&id) && !self.collapsed.contains(&id)
+    }
+
     pub fn advance(&mut self, sources: &[&dyn Source<T>]) -> Advance {
         self.act = Some(self.epoch.mark());
         self.append(sources, None)

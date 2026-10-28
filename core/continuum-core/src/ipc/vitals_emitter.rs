@@ -364,6 +364,7 @@ mod tests {
                 defer_grounding: false,
                 suppress_recall: false,
                 forked: false,
+                read_receipt: None,
             })
             .expect("test: resident checkpoint is readable");
         registry
