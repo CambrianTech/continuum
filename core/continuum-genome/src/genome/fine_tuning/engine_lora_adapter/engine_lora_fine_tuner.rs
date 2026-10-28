@@ -404,6 +404,45 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     "the examples this window can train are sent; the rest are parked in the job's directory until a window of at least shortest_parked tokens can be planned. \
                      A small window trains her SHORTEST turns only: the gene is biased toward short-context Kimi"
                 );
+                // HER LEARNING'S DEMAND ON SERVING (card ea157b1a): each parked example records
+                // the window that trains it whole (the planner's own window_for_need, unclamped),
+                // each sent one clears; the largest is priced by THIS shape's footprints at that
+                // window (measured, a lower bound, or the fit's prediction, labeled; unknown when
+                // none), and the serving requirement reads it as her target and reservation.
+                use crate::genome::fine_tuning::training_demand::{Reservation, TrainingDemand};
+                let demand = TrainingDemand::in_dir(self.demand_store.as_deref(), request.persona_id);
+                let key = |i: usize| TrainingDemand::key_of(&request.dataset.examples[i]);
+                let parked_needs: Vec<(String, u32)> = partition
+                    .rows
+                    .iter()
+                    .filter(|r| r.fit != ExampleFit::Kept)
+                    .map(|r| (key(r.index), window_for_need(std::slice::from_ref(r), u32::MAX)))
+                    .collect();
+                let sent_keys: Vec<String> = partition.sent.iter().map(|&i| key(i)).collect();
+                let reservation = parked_needs.iter().map(|(_, w)| *w).max().map(|largest| {
+                    let at = Shape { window: largest, chunk: TRAINING_CHUNK_MIN, ..family.clone() };
+                    let priced = footprints.need(&at, model.map(|m| m.bytes(largest, TRAINING_CHUNK_MIN)));
+                    Reservation { window: largest, bytes: priced.map(|n| n.bytes), source: priced.map(|n| n.source), job: id }
+                });
+                if let Err(e) = demand.record(&parked_needs, &sent_keys, reservation) {
+                    continuum_base::probe!(class = "training.demand.unrecorded", job = %id, error = %e,
+                        "her parked examples' window demand could not be recorded; serving sizes her lane without it until the next partition");
+                }
+                if let Some(requested) = parked_needs.iter().map(|(_, w)| *w).max() {
+                    continuum_base::probe!(
+                        class = "training.demand.unresolved",
+                        job = %id,
+                        persona = %request.persona_id,
+                        requested_window = u64::from(requested),
+                        served_window = u64::from(served_sent),
+                        planned_window = u64::from(window),
+                        parked = parked_needs.len() as u64,
+                        outstanding = demand.waiting() as u64,
+                        reserve_bytes = reservation.and_then(|r| r.bytes).unwrap_or(0), // probe field: 0 = unmeasured, see reserve_source
+                        reserve_source = ?reservation.and_then(|r| r.source),
+                        "lived examples wait for a window her lane does not serve: the serving plan reads this as her target; it is unmet until a partition sends them (the serving plan's own receipt says why its window is smaller)"
+                    );
+                }
                 let sent: Vec<EngineExample> = partition.sent.iter().map(|&i| body.examples[i].clone()).collect();
                 let written = write_partition(&job_dir, &partition);
                 match written {

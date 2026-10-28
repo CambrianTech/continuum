@@ -892,7 +892,8 @@ impl WorkingSetRegistry {
 }
 
 /// Each mind's requirement, from the untrimmed demand her turns assemble with the
-/// standard headroom — the ONE derivation, shared by the serving daemon (sizing this
+/// standard headroom, with her parked training examples' reservation beside it (never
+/// folded into her target or floor) — the ONE derivation, shared by the serving daemon (sizing this
 /// seat's lanes) and the grid allocator daemon (sizing the grid's roles). A mind with
 /// no turn yet is `Unknown`, never a number.
 pub fn requirements_for(
@@ -911,7 +912,12 @@ pub fn requirements_for(
                 .as_ref()
                 .and_then(need_tokens)
                 .unwrap_or(0); // JUSTIFIED unwrap_or: no held turn measured = no floor beyond the target (0 = no measurement)
-            crate::inference::planning::window_allocator::LaneRequirement::from_demand(*p, wish, crate::inference::planning::serving_plan::SENT_HEADROOM).with_need(need)
+            // Her parked training examples' reservation, carried beside her conversational target
+            // and need (card ea157b1a): the allocator grows toward it only from spare budget.
+            let training = crate::genome::fine_tuning::training_demand::TrainingDemand::for_persona(*p).reservation();
+            crate::inference::planning::window_allocator::LaneRequirement::from_demand(*p, wish, crate::inference::planning::serving_plan::SENT_HEADROOM)
+                .with_need(need)
+                .with_training(training)
         })
         .collect()
 }

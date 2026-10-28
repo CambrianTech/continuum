@@ -76,6 +76,27 @@ pub struct LaneRequirement {
     /// a requirement is a target, not a gate; the need is the gate).
     #[serde(default)]
     pub need: Option<u32>,
+    /// Her parked training examples' reservation (card ea157b1a): the window that trains them
+    /// whole and the training graph it costs. Carried BESIDE her conversational `window` and
+    /// `need`, never folded into them: the allocator grows toward it only from what is left
+    /// once the conversational geometry is packed, so learning can never mute her.
+    pub training: Option<TrainingReserve>,
+}
+
+/// What a resident's waiting training needs of the budget: the window that trains her parked
+/// examples whole, and the bytes that training costs there by the training plan's own footprint
+/// arithmetic (`bytes` with its `source`: a whole run, a lower bound or a prediction, labeled as
+/// such), or `None` when nothing has measured that shape yet. The allocator grows the shared
+/// window toward it only from what is left after the reservations it must keep (Codex on #5556);
+/// an unmeasured reservation grows nothing and is reported unresolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct TrainingReserve {
+    pub window: u32,
+    pub bytes: Option<u64>,
+    pub source: Option<crate::inference::planning::training_plan::NeedSource>,
+    /// The training job that last measured it: reservations are deduplicated by job, and the job
+    /// already charged as the live training holder is not reserved twice.
+    pub job: Uuid,
 }
 
 impl LaneRequirement {
@@ -84,13 +105,22 @@ impl LaneRequirement {
     /// declared field is wired; the allocator does not distinguish.
     pub fn from_demand(persona: Uuid, demand_tokens: u32, headroom: f64) -> Self {
         if demand_tokens == 0 {
-            return Self { persona, window: None, source: RequirementSource::Unknown, need: None };
+            return Self { persona, window: None, source: RequirementSource::Unknown, need: None, training: None };
         }
-        Self { persona, window: Some((demand_tokens as f64 * headroom) as u32), source: RequirementSource::MeasuredDemand, need: None }
+        Self { persona, window: Some((demand_tokens as f64 * headroom) as u32), source: RequirementSource::MeasuredDemand, need: None, training: None }
     }
 
     pub fn declared(persona: Uuid, window: u32) -> Self {
-        Self { persona, window: Some(window), source: RequirementSource::Declared, need: None }
+        Self { persona, window: Some(window), source: RequirementSource::Declared, need: None, training: None }
+    }
+
+    /// Carry her parked training examples' reservation (card ea157b1a). Her conversational
+    /// target, source and need stay exactly as her turns measured them (Codex on #5557: a target
+    /// overwritten here loses the geometry the allocator must preserve, and with no held turn her
+    /// floor would become the training window). A zero window reserves nothing.
+    pub fn with_training(mut self, reserve: Option<TrainingReserve>) -> Self {
+        self.training = reserve.filter(|r| r.window > 0);
+        self
     }
 
     /// With her measured need (the floor); `0` = no held turn, no floor beyond the
@@ -525,4 +555,22 @@ mod tests {
         }
     }
 
+    // what this catches (card ea157b1a, gate 3; Codex on #5557): a training reservation folded
+    // into her conversational target, so the allocator can no longer see the geometry it must
+    // preserve, and with no held turn her floor becomes the training window: a mind that fit
+    // for conversation muted by learning. The reservation travels beside, labeled.
+    #[test]
+    fn a_training_reserve_travels_beside_her_conversation_never_into_it() {
+        let job = Uuid::from_u128(0x1e02);
+        let measured = TrainingReserve { window: 64_256, bytes: Some(6_000_000_000), source: Some(crate::inference::planning::training_plan::NeedSource::LowerBound), job };
+        for her in [LaneRequirement::from_demand(Uuid::new_v4(), 40_000, 1.25).with_need(30_000), LaneRequirement::from_demand(Uuid::new_v4(), 40_000, 1.25)] {
+            let learning = her.clone().with_training(Some(measured));
+            assert_eq!((learning.window, learning.need, learning.source), (her.window, her.need, her.source), "conversation untouched");
+            assert_eq!(learning.floor(50_000), her.floor(50_000), "no held turn or one: her floor is her conversation's, never the training window");
+            assert_eq!(learning.training, Some(measured), "the reservation travels to the allocator, its source labeled");
+        }
+        let her = LaneRequirement::from_demand(Uuid::new_v4(), 40_000, 1.25);
+        assert_eq!(her.clone().with_training(Some(TrainingReserve { window: 0, ..measured })), her, "a zero window reserves nothing");
+        assert_eq!(her.clone().with_training(None), her, "nothing parked, nothing changes");
+    }
 }
