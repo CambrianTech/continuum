@@ -462,24 +462,6 @@ impl LlmDeliberationFaculty {
     /// so an act that really needs more room earns it back within a turn.
     const COMPLETION_COLD_PRIOR_TOKENS: u32 = crate::inference::planning::MIN_SERVE_CTX;
 
-    /// The share of the served window the REQUIRED room payload may occupy.
-    ///
-    /// Room updates are required input — a citizen must see what was said to her —
-    /// so `fit_messages` may not drop them the way it drops old history. Unbounded,
-    /// that makes a BUSY ROOM into a mute citizen: measured 2026-09-09 on BigMama,
-    /// `delib.turn.demand` reported `conversation_tokens=53522` against a 23,040
-    /// window (`over_window=3.14`). The required side then exceeded the whole
-    /// budget, `grounding_budget` saturated to 0, and `GroundingPlan::minimum`
-    /// refused 192 of 229 cognition cycles — 84% — with
-    /// "requires 810 tokens, but only 0 are available". Both live citizens were
-    /// mute for hours while `serving/status` read `ready: true`.
-    ///
-    /// The window is not the fault and raising it does not fix this: the room grows
-    /// without bound and any fixed window is eventually 3x under. What is bounded
-    /// here is what the turn REQUIRES; the rest of the room is still reachable
-    /// through history and recall.
-    const ROOM_UPDATE_SHARE_DENOM: u32 = 4;
-
     /// The action result's share of the window before its tail is DEMOTED to ordinary
     /// history. Same denominator as the room payload for the same reason: no single
     /// required item may claim more than a quarter of the window, because the moment one

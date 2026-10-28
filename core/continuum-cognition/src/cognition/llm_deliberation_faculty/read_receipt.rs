@@ -21,8 +21,8 @@ impl LlmDeliberationFaculty {
         self
     }
 
-    /// The newest event per room that the prompt just sent rendered: her stimulus, the room
-    /// updates she was handed, and every conversation turn her view shows whole or summarized.
+    /// The newest event per room that the prompt just sent rendered: her stimulus and every
+    /// conversation turn her view shows (room updates are conversation turns, keyed by event).
     pub(super) fn rendered_through(&self, ws: &Workspace) -> Vec<TurnSource> {
         let stimulus = ws.turns.iter().rposition(|t| !t.is_self && t.voice == crate::cognition::workspace::TurnVoice::Speech);
         let view = self.context_view.lock();
@@ -30,7 +30,11 @@ impl LlmDeliberationFaculty {
             Some(index) == stimulus || view.as_ref().is_some_and(|v| v.renders("conversation", &source.event.to_string()))
         };
         let turns = ws.turns.iter().enumerate().filter_map(|(i, t)| t.source.filter(|s| shown(i, s)));
-        let updates = ws.room_updates.iter().map(|m| TurnSource { room: m.room_id, event: m.event_id, lamport: m.lamport });
+        let updates = ws
+            .room_updates
+            .iter()
+            .map(|m| TurnSource { room: m.room_id, event: m.event_id, lamport: m.lamport })
+            .filter(|source| view.as_ref().is_some_and(|v| v.renders("conversation", &source.event.to_string())));
         let mut newest: std::collections::HashMap<uuid::Uuid, TurnSource> = std::collections::HashMap::new();
         for source in turns.chain(updates) {
             let entry = newest.entry(source.room).or_insert(source);

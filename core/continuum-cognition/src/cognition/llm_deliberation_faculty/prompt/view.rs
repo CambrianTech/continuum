@@ -246,8 +246,6 @@ impl LlmDeliberationFaculty {
                 framing_tokens,
                 tool_tokens = tools.floor,
                 stimulus_tokens = required.stimulus,
-                room_update_tokens = required.room_updates,
-                room_updates = required.room_update_count,
                 action_statement_tokens = required.action_statement,
                 latest_result_tokens = required.latest_result,
                 latest_results = required.latest_result_count,

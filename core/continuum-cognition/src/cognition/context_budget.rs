@@ -409,21 +409,6 @@ fn working_window_when(served: u32, serving: bool) -> u32 {
         self.fraction(4)
     }
 
-    /// Default CEILING on one response's generated length, in TOKENS (not chars) — the role's
-    /// fallback budget when it declares none. An eighth of the window: enough that a real
-    /// answer (a function, a diff, a traceback walk) is never truncated mid-thought, while
-    /// still leaving the prompt its room. #45's doctrine is that the adapter owns generation
-    /// length; this is the fallback for a role that says nothing, and like every other bound
-    /// here it must scale — a `512` default silently truncates every model's answers equally,
-    /// whether it holds 4k or 1M.
-    pub fn default_response_tokens(&self) -> u32 {
-        match self.total_chars {
-            // total_chars = window * GUARD_CHARS_PER_TOKEN, so /8 in tokens is /(8*ratio) here.
-            Some(total) => ((total / GUARD_CHARS_PER_TOKEN) / 8).min(u32::MAX as usize) as u32,
-            None => u32::MAX,
-        }
-    }
-
     /// Share of the window the TOOL MENU may occupy. See [`Self::tool_surface_tokens`].
     const TOOL_SURFACE_DENOM: usize = 4;
 
