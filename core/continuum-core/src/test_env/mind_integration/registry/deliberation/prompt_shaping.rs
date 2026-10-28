@@ -781,7 +781,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
         "the newest burst line must survive once the budget prices the surface it \
                  actually sends — if this regresses, the accounting is double-counting the \
                  withheld registry again (card dec1a7ff); selected={}, estimated={}, reserve={}, capacity={:?}\n{}",
-        faculty.select_tool_surface(&ws).tokens,
+        faculty.prompt_view(&ws).tools.tokens,
         view.estimated_prompt_tokens,
         view.completion_reserve,
         view.capacity_error,

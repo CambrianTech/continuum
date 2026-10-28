@@ -155,7 +155,7 @@ fn an_initiative_turn_takes_a_work_turns_hands_and_act_kind() {
     initiative.initiative = true;
     assert!(!initiative.workspace_deliverable, "an initiative is not a deliverable turn");
     assert_eq!(faculty.turn_kind(&initiative), faculty.turn_kind(&work), "the act allowance");
-    let (i, w) = (faculty.select_tool_surface(&initiative), faculty.select_tool_surface(&work));
+    let (i, w) = (faculty.prompt_view(&initiative).tools, faculty.prompt_view(&work).tools);
     assert_eq!((i.reason, i.specs), (w.reason, w.specs), "one surface for every kind of turn");
 }
 

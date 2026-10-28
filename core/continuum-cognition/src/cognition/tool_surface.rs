@@ -18,10 +18,9 @@
 //!
 //! # What decides it now
 //!
-//! Two inputs, both of which change only where her prompt turns over anyway:
-//! - the ACTIVITY: the verbs or subtrees (`code/**`) its recipe declares, else her hands;
-//! - the SERVED window (a startup fact; a relaunch drops the KV regardless): whether her
-//!   extended hands fit its tool share, else her core hands.
+//! The activity declares the desired verbs or subtrees (code/**), else her hands.
+//! The shared prompt allocation grants a token budget; this owner selects a whole level.
+//! The faculty retains that level for the epoch so subsequent acts keep stable schemas.
 //!
 //! The order is canonical (by command name), fixed at [`ToolSurface::build`]. Nothing here
 //! takes fewer abilities: the system prompt's menu lists every category, `commands/help`
@@ -47,7 +46,7 @@ pub enum SurfaceReason {
     NoTools,
     /// Her hands: the working set of an activity that declares none (the ordinary room).
     Hands,
-    /// The served window's tool share cannot hold her extended hands (the web, push and
+    /// The shared allocation grant cannot hold her extended hands (the web, push and
     /// PR, rooms and chat, her focus verbs), so her core hands go out. The one arm that is a
     /// truncation, so the one whose demand exceeds what it sends.
     CoreHandsForWindow,
@@ -171,34 +170,6 @@ impl ToolSurface {
     /// What her hands cost on the wire.
     pub fn hands_tokens(&self) -> usize {
         self.hands.tokens
-    }
-
-    /// The surface for an activity that declares `declared` on a lane serving
-    /// `served_window` tokens. Nothing about the turn is an input, so two acts in the same
-    /// activity on the same lane offer the same bytes.
-    pub fn select(&self, declared: &[String], served_window: u32) -> SelectedSurface<'_> {
-        if self.registry.specs.is_empty() {
-            return SelectedSurface::borrowed(&[], 0, SurfaceReason::NoTools, 0);
-        }
-        if let Some(offer) = self.declared(declared) {
-            let tokens = offer.tokens;
-            return SelectedSurface {
-                specs: Some(Cow::Owned(offer.specs)),
-                tokens,
-                reason: SurfaceReason::RoomAffordances,
-                demand: tokens,
-                tail: Vec::new(),
-            };
-        }
-        // The SERVED window, never the prefill-affordable one: the schemas sit in the cached
-        // prefix, so they are prefilled once per epoch, not once per act, and pricing them
-        // against this turn's measured rate is what made the surface move.
-        let share = super::context_budget::ContextBudget::from_window_unbounded(served_window).tool_surface_tokens();
-        if self.hands.tokens <= share {
-            SelectedSurface::borrowed(&self.hands.specs, self.hands.tokens, SurfaceReason::Hands, self.hands.tokens)
-        } else {
-            SelectedSurface::borrowed(&self.core.specs, self.core.tokens, SurfaceReason::CoreHandsForWindow, self.hands.tokens)
-        }
     }
 
     /// Every native verb as the learned head chooses from it: its canonical name, its
@@ -487,14 +458,14 @@ mod tests {
     // must depend on the activity and the served window alone, in one canonical order: the
     // same inputs give the same schemas whatever order the registry was assembled in.
     #[test]
-    fn the_same_activity_and_window_give_the_same_bytes_in_canonical_order() {
+    fn the_same_activity_and_grant_give_the_same_bytes_in_canonical_order() {
         let forward = built(REGISTRY.iter().copied());
         let backward = built(REGISTRY.iter().rev().copied());
         for declared in [Vec::new(), vec!["code/**".to_string()]] {
-            for window in [0, 8_192, 87_296] {
-                let (a, b) = (forward.select(&declared, window), backward.select(&declared, window));
+            for window in [forward.claim_tokens(&declared).0, forward.claim_tokens(&declared).1] {
+                let (a, b) = (forward.select_granted(&declared, window).expect("grant fits"), backward.select_granted(&declared, window).expect("grant fits"));
                 assert_eq!((a.reason, wire(&a)), (b.reason, wire(&b)), "declared {declared:?}, window {window}");
-                assert_eq!(wire(&a), wire(&forward.select(&declared, window)), "a second act is identical");
+                assert_eq!(wire(&a), wire(&forward.select_granted(&declared, window).expect("grant fits")), "a second act is identical");
             }
         }
         let names: Vec<&str> = forward.hands().iter().map(|s| s.name.as_str()).collect();
@@ -510,31 +481,31 @@ mod tests {
     #[test]
     fn a_declared_subtree_selects_that_subtree_with_her_discovery_and_focus_verbs() {
         let surface = built(REGISTRY.iter().copied());
-        let selected = surface.select(&["code/**".to_string()], 87_296);
+        let selected = surface.select_granted(&["code/**".to_string()], 87_296).expect("recipe fits");
         assert_eq!(selected.reason, SurfaceReason::RoomAffordances);
         let names: Vec<&str> = selected.specs.as_deref().into_iter().flatten().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
             ["code/edit", "code/git/apply", "code/read", "commands/help", "commands/list", "focus/continue"]
         );
-        let unmatched = surface.select(&["mail/send".to_string()], 87_296);
+        let unmatched = surface.select_granted(&["mail/send".to_string()], 87_296).expect("hands fit");
         assert_eq!(unmatched.reason, SurfaceReason::Hands, "a rule binding nothing offers her hands, never nothing");
     }
 
     // what this catches: a window too small for her extended hands sending nothing, or
     // reporting the core it sent as all she wanted (the demand probe would hide the pressure).
     #[test]
-    fn a_window_too_small_for_her_extended_hands_sends_her_core_and_demands_the_whole() {
+    fn a_small_grant_sends_core_hands_and_demands_the_whole() {
         let surface = built(REGISTRY.iter().copied());
-        let roomy = surface.select(&[], 87_296);
+        let roomy = surface.select_granted(&[], surface.hands_tokens()).expect("hands fit");
         assert_eq!((roomy.reason, roomy.demand_tokens()), (SurfaceReason::Hands, roomy.tokens));
-        let tight = surface.select(&[], 512);
+        let tight = surface.select_granted(&[], surface.claim_tokens(&[]).0).expect("core fits");
         assert_eq!(tight.reason, SurfaceReason::CoreHandsForWindow);
         assert_eq!(tight.demand_tokens(), surface.hands_tokens());
         assert!(tight.tokens < tight.demand_tokens());
         let names: Vec<&str> = tight.specs.as_deref().into_iter().flatten().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"commands/list") && !names.contains(&"web/fetch"), "{names:?}");
-        assert_eq!(surface.select(&[], 0).reason, SurfaceReason::Hands, "an unknown window is never an invented one");
+        assert_eq!(surface.select_granted(&[], 0).err(), Some(surface.claim_tokens(&[]).0), "zero grant cannot buy core hands");
     }
 
     // what this catches: the learned head sending verbs out of canonical order (two acts in one

@@ -223,12 +223,8 @@ impl LlmDeliberationFaculty {
             // the structured-turns refactor that fixes the echo loop.
             // A verb not on her native surface still DISPATCHES: `act_observe` resolves any
             // call by name, and the system prompt's menu plus `commands/help` reach it.
-            // WHICH surface she is offered is a question about her ACTIVITY and the served
-            // window, never about this turn: the schemas sit right after the system prompt,
-            // so a surface that moves between acts re-prefills everything after it (goal 10;
-            // `cognition::tool_surface` has the measurement). The decision lives in
-            // [`Self::select_tool_surface`] so the budget in `prompt_view_within` reaches the
-            // SAME answer (card dec1a7ff).
+            // The view retains the tool level bought by the shared allocation for this epoch.
+            // Send that same selection so accounting, wire bytes and prefix reuse agree.
             if request_template.is_none() {
                 // What her view's allocation bought; a server that refuses `tail_tools` gets the
                 // activity surface at the same grant, without her learned head.

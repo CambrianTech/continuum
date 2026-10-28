@@ -190,7 +190,7 @@ pub struct LlmDeliberationFaculty {
     tools: Vec<NativeToolSpec>,
     /// Her native tool surfaces (the whole registry, her hands, her core hands), built
     /// once per tool assignment in canonical order; which one a turn sends is
-    /// [`Self::select_tool_surface`], from the activity and the served window only.
+    /// the retained tools in [`Self::prompt_view`], selected from the shared allocation.
     surface: ToolSurface,
     /// Where this faculty records its chain-of-thought after a verdict, so the
     /// persona can resume its train of thought next turn (the
