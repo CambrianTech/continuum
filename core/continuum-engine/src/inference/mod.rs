@@ -23,6 +23,7 @@ pub mod backends;
 pub mod batching_probe;
 pub mod child_log;
 pub mod engine_stall;
+pub mod stderr_relay;
 pub mod backend_receipt;
 pub(crate) mod engine_install;
 mod launch_inputs;

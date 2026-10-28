@@ -477,4 +477,9 @@ pub trait LlamaServerControl: Send + Sync {
     /// The reconcile calls it on every `AlreadyServing`. Default: nothing, for a control with
     /// no lane record to write (a fake or a remote control).
     async fn record_observed_placement(&self) {}
+
+    /// Follow the served engine's log relay, so an engine this core adopted has its lines watched
+    /// as a spawned one's are (card 1d7d6d4c). Default: a fake or remote control has no local
+    /// engine to follow.
+    fn follow_engine_log(&self) {}
 }

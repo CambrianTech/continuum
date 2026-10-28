@@ -166,6 +166,7 @@ async fn ready_predicate_requires_ready_and_a_model() {
         vision_base_url: None,
         vision_model: None,
         loading_model: None,
+        held_for: None,
     });
     assert!(!pred(&rx.borrow()));
     // not-ready but has a model → unsatisfied.
@@ -184,6 +185,7 @@ async fn ready_predicate_requires_ready_and_a_model() {
         vision_base_url: None,
         vision_model: None,
         loading_model: None,
+        held_for: None,
     });
     assert!(!pred(&rx.borrow()));
     // ready AND a model → satisfied, and wait_for resolves to it at once.
@@ -202,6 +204,7 @@ async fn ready_predicate_requires_ready_and_a_model() {
         vision_base_url: None,
         vision_model: None,
         loading_model: None,
+        held_for: None,
     });
     let got = tokio::time::timeout(Duration::from_millis(100), rx.wait_for(pred))
         .await

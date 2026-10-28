@@ -170,6 +170,10 @@ impl ServingDaemonModule {
         // wait out, an engine whose KV paging is unverified: that replacement proceeds, and the
         // work is TOLD why before it commits.
         let occupancy = self.engine_occupancy();
+        // Published either way (card a18452d6): a held engine says what holds it; a free one, or
+        // one the emergency below replaces anyway, is no longer held.
+        let held = occupancy.holds() && !self.server.paging_recovery_required();
+        self.publish_hold(if held { &occupancy } else { &crate::inference::engine_residency::Occupancy::Free });
         if occupancy.holds() {
             let port = (self.inherited_lane)().map(|r| r.port);
             if self.server.paging_recovery_required() {

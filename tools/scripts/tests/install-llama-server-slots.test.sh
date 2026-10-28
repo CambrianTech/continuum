@@ -29,7 +29,10 @@ sub="$repo/core/vendor/llama.cpp"
 printf '# fixture\n' > "$sub/tools/server/CMakeLists.txt"
 git -C "$sub" init -q && git -C "$sub" -c user.email=t@t -c user.name=t add -A \
   && git -C "$sub" -c user.email=t@t -c user.name=t commit -qm fixture
-head="$(git -C "$sub" rev-parse --short HEAD)"
+git -C "$repo" init -q
+git -C "$repo" add core/vendor/llama.cpp
+git -C "$repo" -c user.email=t@t -c user.name=t commit -qm 'pin engine'
+head="$(git -C "$repo" rev-parse --short HEAD:core/vendor/llama.cpp)"
 backend=cpu
 if [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ]; then backend=metal
 elif [ "$(uname -s)" = Linux ] && command -v nvcc >/dev/null 2>&1; then backend=cuda; fi
@@ -134,3 +137,29 @@ printf 'engine-a\n' > "$CONTINUUM_HOME/bin/current"
 PROMOTE_RC=4 IDLE_RC=0 IDLE_SLOT=engine-c run || fail "deferred engine: exit $?"
 [ "$(cat "$CONTINUUM_HOME/bin/current")" = engine-a ] || fail "deferred engine changed current"
 [ "$(cat "$scratch/out")" = "$CONTINUUM_HOME/bin/engine-a/llama-server" ] || fail "deferred engine named candidate"
+
+# A stale working checkout cannot make a stale installed engine count as current.
+printf '# next\n' >> "$sub/tools/server/CMakeLists.txt"
+git -C "$sub" add -A
+git -C "$sub" -c user.email=t@t -c user.name=t commit -qm drift
+drift="$(git -C "$sub" rev-parse --short HEAD)"
+fresh_home; engine_at "$CONTINUUM_HOME/bin/engine-b" "$drift:$backend"
+echo engine-b > "$CONTINUUM_HOME/bin/current"
+if IDLE_RC=0 IDLE_SLOT=engine-a run; then fail 'drift incorrectly accepted'; fi
+grep -q 'source differs from tracked pin' "$scratch/err" || fail 'drift not named'
+[ "$(cat "$CONTINUUM_HOME/bin/current")" = engine-b ] || fail 'drift moved current'
+# A correct artifact is still reusable without overwriting the developer checkout.
+fresh_home; engine_at "$CONTINUUM_HOME/bin/engine-b" "$want"
+echo engine-b > "$CONTINUUM_HOME/bin/current"
+IDLE_RC=0 IDLE_SLOT=engine-a run || fail 'pinned artifact not reused'
+[ "$(git -C "$sub" rev-parse --short HEAD)" = "$drift" ] || fail 'checkout mutated'
+
+# At the correct commit, modified tracked source must not be stamped as clean.
+git -C "$sub" checkout -q "$(git -C "$repo" rev-parse HEAD:core/vendor/llama.cpp)"
+printf '# developer edit\n' >> "$sub/tools/server/CMakeLists.txt"
+fresh_home; engine_at "$CONTINUUM_HOME/bin/engine-b" "old:$backend"
+echo engine-b > "$CONTINUUM_HOME/bin/current"
+if IDLE_RC=0 IDLE_SLOT=engine-a run; then fail 'dirty source incorrectly accepted'; fi
+grep -q 'source differs from tracked pin' "$scratch/err" || fail 'dirty source not named'
+grep -q 'developer edit' "$sub/tools/server/CMakeLists.txt" || fail 'developer edit lost'
+echo 'gitlink stamp: drift and dirty-source cases pass'

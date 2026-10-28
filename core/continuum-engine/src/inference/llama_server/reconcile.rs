@@ -80,8 +80,10 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
     let outcome = serve_or_adopt(ctrl, target, force_probe, current).await;
     // Every adoption, whichever rail took it (an owned child, a decode-proven orphan, a busy
     // one), records the lane's placement when its record lacks one (card 22aa3379).
+    // Every adoption also follows the engine's log relay: a no-op for one already followed.
     if matches!(outcome, EnsureOutcome::AlreadyServing) {
         ctrl.record_observed_placement().await;
+        ctrl.follow_engine_log();
     }
     outcome
 }

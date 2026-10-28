@@ -232,6 +232,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    // An engine's log relay (card 1d7d6d4c): spawned by the core in the engine's process group,
+    // it outlives the core, so it starts nothing a core starts.
+    {
+        use continuum_core::inference::stderr_relay::process as relay;
+        if probe_args.get(1).is_some_and(|arg| arg == relay::FLAG) {
+            relay::main(relay::parse(&probe_args[2..])?)?;
+            return Ok(());
+        }
+    }
     if probe_args
         .get(1)
         .is_some_and(|arg| arg == continuum_cli_lifecycle::prebuilt_validation::EMBEDDING_FLAG)
@@ -312,16 +321,27 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
                 .map(|s| s.to_string())
                 .or_else(|| info.payload().downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "<non-string panic payload>".to_string()); // panic hook display path; payload downcast miss keeps the hook alive
-            let bt = std::backtrace::Backtrace::force_capture();
+            // WHERE and WHAT first, the backtrace last (card 90642123). Windows 6133 hung its IPC
+            // thread before the bind three times (2026-10-27) and left no panic line anywhere:
+            // this hook used to capture and FORMAT a backtrace before writing a byte, and dbghelp
+            // symbolizing a large binary can sit for minutes, while the boot deadline ends in
+            // `_exit(1)`, which never flushes the async tracing appender. So the default hook's
+            // raw stderr line goes first (it prints the thread, location and payload, and a
+            // backtrace only when RUST_BACKTRACE asks), then the probe line, then the backtrace.
+            default_hook(info);
             tracing::error!(
                 probe_class = "panic.caught",
                 location = %loc,
                 payload = %msg,
-                backtrace = %bt,
                 "PANIC at {loc}: {msg}"
             );
-            // Keep the default behaviour too (stderr line), so nothing regresses.
-            default_hook(info);
+            let bt = std::backtrace::Backtrace::force_capture();
+            tracing::error!(
+                probe_class = "panic.backtrace",
+                location = %loc,
+                backtrace = %bt,
+                "backtrace of the panic at {loc}"
+            );
         }));
     }
 
@@ -587,6 +607,10 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
         "everything main did before starting the IPC thread"
     );
     let ipc_handle = std::thread::spawn(move || {
+        // Pre-bind boot steps are marked one by one (card d97d3681): Windows hung here for 300 s
+        // with nothing after `main_to_ipc_thread` and no stack sampler on that host, so each step
+        // says it finished and a stall names the step that did not.
+        continuum_base::probe!(class = "boot.step", step = "ipc_thread_started", "the IPC thread runs; start_server begins");
         if let Err(e) = start_server(
             &socket_path,
             ipc_livekit_manager,

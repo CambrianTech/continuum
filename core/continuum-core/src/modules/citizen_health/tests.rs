@@ -33,7 +33,7 @@
     }
 
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
-        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, lanes_sustained: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, think_only: 0, lane_starved: 0, generations: 0, generations_dropped: 0, knee: None, prompt_cached_tokens: 0, prompt_prefill_tokens: 0, moves_opportunity: 0, moves_failure: 0, oldest_dormant_turn_age_ms: None }
+        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, lanes_sustained: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, think_only: 0, lane_starved: 0, generations: 0, generations_dropped: 0, knee: None, prompt_cached_tokens: 0, prompt_prefill_tokens: 0, moves_opportunity: 0, moves_failure: 0, oldest_dormant_turn_age_ms: None, held_for: None }
     }
 
     // what this catches (card 10bba591): the line carries the grid's half — moves by
@@ -309,6 +309,41 @@
         // the roster fell through to a verdict ABOUT THE CITIZENS and nothing rested.
         let by_peak = CitizenHealth { lanes_sustained: 8, ..measured.clone() };
         assert_eq!(verdict(&by_peak), Verdict::Reading { acts: 15 });
-
     }
 
+    // what this catches (card a18452d6): a node whose only engine a mind's training held read
+    // EMPTY twice on enrico (2026-10-27) and was chased as dead. A held hour reads HELD and names
+    // the work; an hour with acts is judged as usual even while held.
+    #[test]
+    fn a_held_engine_reads_held_with_its_work_never_empty() {
+        use crate::inference::llama_server::serving_hold::{HeldWork, HoldCause, ServingHold};
+        let hold = ServingHold {
+            since_ms: 1_793_120_435_262,
+            by: HoldCause::Resident {
+                work: vec![HeldWork {
+                    job: uuid::Uuid::from_u128(0xf633bd36),
+                    consumer: "genome-train:f633bd36".into(),
+                    base_model: "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF".into(),
+                    engine_pid: 33_971,
+                    engine_started_s: 1_793_118_524,
+                    port: 58_057,
+                }],
+            },
+        };
+        let held = CitizenHealth { held_for: Some(hold.clone()), ..h(0, 0, 0, 0) };
+        let v = verdict(&held);
+        assert_eq!(v, Verdict::Held { resident: 0, hold });
+        let shown = line(&held, &v);
+        assert!(shown.contains("HELD") && shown.contains("genome-train:f633bd36") && shown.contains("pid 33971"), "{shown}");
+        // An unreadable residency record holds serving too, but confirms no work: the line says
+        // ownership is unknown and never claims the engine hosts live work.
+        let unknown = CitizenHealth {
+            held_for: Some(ServingHold { since_ms: 1_793_120_435_262, by: HoldCause::Unknown { reason: "record unreadable".into() } }),
+            ..h(0, 0, 0, 0)
+        };
+        let unknown_line = line(&unknown, &verdict(&unknown));
+        assert!(unknown_line.contains("HELD") && unknown_line.contains("ownership") && unknown_line.contains("record unreadable"), "{unknown_line}");
+        assert!(!unknown_line.contains("hosts live work"), "{unknown_line}");
+        let acting = CitizenHealth { held_for: held.held_for.clone(), ..h(4, 2, 10, 2) };
+        assert_ne!(verdict(&acting).as_str(), "held", "minds that acted are judged on their acts");
+    }

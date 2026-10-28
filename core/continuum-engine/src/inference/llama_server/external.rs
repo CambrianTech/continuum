@@ -138,6 +138,7 @@ pub async fn probe_external_serving(timeout: Duration) -> Option<ServingSnapshot
     Some(ServingSnapshot {
         // A lane with a verified window is serving, not loading.
         loading_model: None,
+        held_for: None,
         active_model: Some(active_model),
         ready: true,
         // Personas point their inference adapter here; `serving_v1_url()` already

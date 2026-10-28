@@ -140,6 +140,14 @@ pub struct ServingSnapshot {
     /// MEMORY, and they do not start together.
     #[ts(optional)]
     pub loading_model: Option<String>,
+    /// THE ENGINE IS HELD FOR LIVE WORK, if it is: what holds it, on which incarnation, and
+    /// since when ([`super::serving_hold`], card a18452d6). Serving does not swap, re-home,
+    /// page in or retire a held engine, so a node can be `ready: false` with no lanes for
+    /// hours on purpose; without this it read as an unexplained empty node. Separate from
+    /// `degraded_reason`: a hold is not a degradation.
+    #[serde(default)]
+    #[ts(optional)]
+    pub held_for: Option<super::serving_hold::ServingHold>,
 }
 
 
@@ -185,6 +193,7 @@ impl ServingSnapshot {
             vision_base_url: None,
             vision_model: None,
             loading_model: None,
+            held_for: None,
         }
     }
 
