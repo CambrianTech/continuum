@@ -210,14 +210,32 @@ pub(crate) async fn return_parked_remainder(
             // It waits only while serving can know what it waits for. Demand is recorded by a
             // partition (#5557); a job partitioned before that has none, so held it would wait
             // forever beside a window that never grows for it (the windows 5090, 2026-10-28:
-            // NoDemand, 2 lanes at 51,694 against her 51,712). Such a remainder goes back once
-            // (its receipt ends it): the next partition records and prices it on the one
-            // pricing path, and the job it parks into waits with its demand known (card a9e94342).
+            // NoDemand, 2 lanes at 51,694 against her 51,712). Such a remainder records its own
+            // demand FIRST (each example's window from its measured row, unpriced), then goes back
+            // once (its receipt ends it), so the next partition prices it on the one pricing path.
+            // Recorded before it goes back, a later all-parked job of the same examples finds it
+            // and waits, even if that partition's write fails: no cross-job loop. A store that
+            // cannot answer or be written holds the job and is asked again (Codex on #5569).
             use crate::genome::fine_tuning::training_demand::TrainingDemand;
+            let demand = TrainingDemand::in_dir(demand_dir, registration.persona_id);
             let keys: Vec<String> = parked.iter().filter_map(|&i| request.dataset.examples.get(i)).map(TrainingDemand::key_of).collect();
-            if TrainingDemand::in_dir(demand_dir, registration.persona_id).records_all(&keys) {
+            let recorded = demand
+                .records_all(&keys)
+                .map_err(|why| CommandError::Internal(format!("job {id}: her demand store cannot answer ({why}); held, asked again")))?;
+            if recorded {
                 return Ok(Remainder::Waiting { needed, served });
             }
+            let needs: Vec<(String, u32)> = parked
+                .iter()
+                .filter_map(|&i| {
+                    let example = request.dataset.examples.get(i)?;
+                    let row = partition.rows.iter().find(|row| row.index == i)?;
+                    Some((TrainingDemand::key_of(example), crate::inference::planning::training_plan::window_for_need(std::slice::from_ref(row), u32::MAX)))
+                })
+                .collect();
+            demand
+                .record(&needs, &[], None)
+                .map_err(|e| CommandError::Internal(format!("job {id}: its demand could not be recorded ({e}); held, asked again")))?;
             continuum_base::probe!(
                 class = "training.job.remainder_unrecorded",
                 job = %id,
@@ -568,6 +586,34 @@ mod tests {
         assert_eq!(held(), 12, "the untold job's three, once");
         let again = return_parked_remainder(&trigger.state, &board, &root, &untold, &|_: &str| Some(49_664), Some(&nowhere)).await.expect("test: answered");
         assert!(matches!(again, Remainder::AlreadyReturned), "once, by its receipt: {again:?}");
+        // ...and recorded its demand before going back: the next all-parked job of the same
+        // examples (its partition's write failed, say) WAITS, so no cross-job loop (Codex on #5569)
+        let next = failed(Uuid::new_v4(), vec![], vec![0, 1, 2]);
+        let waits = return_parked_remainder(&trigger.state, &board, &root, &next, &|_: &str| Some(49_664), Some(&nowhere)).await.expect("test: answered");
+        assert!(matches!(waits, Remainder::Waiting { needed: 51_712, .. }), "the successor job waits: {waits:?}");
+        assert_eq!(held(), 12, "nothing added by the successor");
+        // a store that cannot answer, or cannot be written, holds the job and adds nothing
+        let corrupt = dir.path().join("corrupt-demand");
+        std::fs::create_dir_all(&corrupt).expect("test: dir");
+        std::fs::write(corrupt.join(format!("{persona}.json")), b"{ torn").expect("test: corrupt");
+        let torn = failed(Uuid::new_v4(), vec![], vec![0, 1, 2]);
+        let held_up = return_parked_remainder(&trigger.state, &board, &root, &torn, &|_: &str| Some(49_664), Some(&corrupt)).await;
+        assert!(matches!(held_up, Err(CommandError::Internal(_))), "a corrupt store is not 'unrecorded': {held_up:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let sealed = dir.path().join("sealed-demand");
+            std::fs::create_dir_all(&sealed).expect("test: dir");
+            std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o555)).expect("test: read-only");
+            // as root a read-only dir is still writable: only a sealed one tests the refusal
+            let really_sealed = std::fs::write(sealed.join("probe"), b"x").is_err();
+            if really_sealed {
+                let unwritable = return_parked_remainder(&trigger.state, &board, &root, &torn, &|_: &str| Some(49_664), Some(&sealed)).await;
+                assert!(matches!(unwritable, Err(CommandError::Internal(_))), "a demand it cannot record is never returned: {unwritable:?}");
+            }
+            std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).expect("test: restore");
+        }
+        assert_eq!(held(), 12, "nothing added by a store that cannot answer or be written");
 
         // a failed job that SENT examples is the refused-job return's, never this route's
         let refused = failed(Uuid::new_v4(), vec![0], vec![1, 2]);
