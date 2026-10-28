@@ -498,19 +498,29 @@ mod tests {
     #[test]
     fn an_exited_unreaped_child_is_not_live() -> Result<(), Box<dyn std::error::Error>> {
         use std::io::Write;
-        let mut child = std::process::Command::new("sh")
-            .args(["-c", "read line"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .spawn()?;
-        let pid = child.id();
+        // reaped on every exit of this test, a failed assertion included (Codex on #5566)
+        struct Reaped(std::process::Child);
+        impl Drop for Reaped {
+            fn drop(&mut self) {
+                let _ = self.0.kill(); // best effort: an exited child refuses the kill
+                let _ = self.0.wait(); // the reap this test exists for; nothing to report from a drop
+            }
+        }
+        let mut child = Reaped(
+            std::process::Command::new("sh")
+                .args(["-c", "read line"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()?,
+        );
+        let pid = child.0.id();
         let started = process_start_s(pid).ok_or("test: a running child has a start time")?;
         assert_eq!(probe_process(pid), ProcessProbe::Present(started), "running");
         let dir = tempfile::tempdir()?;
         let path = store_path(dir.path());
         record(&path, work(12, pid, started, 58060))?;
         assert!(matches!(occupancy(&path, 58060), Occupancy::Resident(_)), "a running engine holds");
-        child.stdin.take().ok_or("test: piped stdin")?.write_all(b"done\n")?;
+        child.0.stdin.take().ok_or("test: piped stdin")?.write_all(b"done\n")?;
         // exited, NOT waited: a zombie until the wait below
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while probe_process(pid) != ProcessProbe::Absent {
@@ -519,7 +529,6 @@ mod tests {
         }
         assert_eq!(occupancy(&path, 58060), Occupancy::Free, "its record is released on the way");
         assert!(all(&path)?.is_empty());
-        child.wait()?;
         Ok(())
     }
 
