@@ -44,6 +44,7 @@ The port is stable and configured, never dynamic, because an agent needs a URL i
 Tools pass straight through. The agent executes its own tools; the gateway never does. Tool-call parsing and rendering stays the engine's one template owner (SERVING-ENGINE §1 `template`).
 
 **A session is a mind.** Each agent session maps to a driver mind, `PageKey::driver(user, session)`.
+- Session memory is opt-in (`x-continuum-session: on`) until G2 seats driver minds through `MindMemory::seat`: switched on by default, a driver session queued behind resident pins, a 61 s steady-state step against 18 s without (card e3ce65f9).
 - The session id comes from the protocol when it carries one: `previous_response_id`, an `x-session-id` header, or OpenAI's `user` field.
 - Otherwise it is the hash of the conversation's stable head: the system prompt plus the first user message.
 
