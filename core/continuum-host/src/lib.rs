@@ -8,4 +8,5 @@ pub mod file_identity;
 pub mod local_stream;
 pub mod output_handoff;
 pub mod positioned;
+pub mod process_exit;
 pub mod stack_sample;
