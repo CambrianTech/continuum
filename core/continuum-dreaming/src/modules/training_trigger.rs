@@ -144,6 +144,17 @@ pub(crate) struct PendingBatch {
     /// dispatch can take whole submissions (a time-budgeted run, `training_rate`).
     #[serde(skip)]
     pub(crate) submission_examples: Vec<u32>,
+    /// Which of `submission_ids` are returns, in the same order, so a split keeps [`Self::returned`]
+    /// exact for each part.
+    #[serde(skip)]
+    pub(crate) submission_returned: Vec<bool>,
+    /// This batch holds a RETURN: examples a job handed back, which met a threshold when they
+    /// were first dispatched. Persisted with the submission that accepts it, so the recovery
+    /// pass dispatches its bucket below the threshold after any restart, exactly once
+    /// (`ready_to_recover`; the windows 5090 2026-10-28 20:16Z: a return held at 11 of 16).
+    /// Rows accepted before this field read `false`: historical buckets keep their threshold.
+    #[serde(default)]
+    pub(crate) returned: bool,
     pub(crate) persona_name: String,
     pub(crate) source: TrainingSource,
     pub(crate) examples: Vec<TrainingExample>,
@@ -424,7 +435,7 @@ impl TrainingTriggerState {
                     job = %id,
                     persona = %job.persona_name,
                     why = ?returnable,
-                    "a job that ended without training (engine refusal or replaced lane) handed its examples back to her bucket; the next dispatch re-plans"
+                    "a job that ended without training (engine refusal or replaced lane) handed its examples back to her bucket; the recovery pass dispatches them (a return is ready below its threshold)"
                 ),
                 Ok(outcome) => continuum_base::probe!(
                     class = "training.job.refusal_return_refused",
