@@ -42,8 +42,10 @@ async fn serve<W: Wire>(headers: axum::http::HeaderMap, Json(body): Json<Value>)
     let id = format!("{}_{}", prefix::<W>(), uuid::Uuid::new_v4().simple());
     let session = crate::session::session_of(&call.request);
     // The session is a mind: its id keys a warm page the engine pins, saves and restores.
-    // `x-continuum-session: off` asks for no session memory (a one-shot call).
-    let remembered = headers.get("x-continuum-session").and_then(|v| v.to_str().ok()) != Some("off");
+    // Opt-in (`x-continuum-session: on`) until a driver mind is seated by MindMemory instead of
+    // queueing behind resident pins: on by default it measured a 61 s steady-state step against
+    // 18 s without (card e3ce65f9, M5 2026-10-27).
+    let remembered = headers.get("x-continuum-session").and_then(|v| v.to_str().ok()) == Some("on");
     if remembered {
         call.request.persona_id = Some(session.to_string());
     }
