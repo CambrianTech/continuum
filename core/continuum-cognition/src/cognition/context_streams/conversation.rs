@@ -11,6 +11,9 @@ pub(crate) struct Turn {
     pub key: String,
     pub role: Role,
     pub line: String,
+    /// A handle when collapsing must not drop the turn: a message that reached her room
+    /// during this turn and that she has not read yet. `None` for the burst's turns.
+    pub pointer: Option<String>,
 }
 
 #[derive(Default)]
@@ -36,9 +39,10 @@ impl Source<ContextMessage> for Conversation {
                 full: ContextMessage { role: turn.role, text: turn.line.clone() },
                 // Collapsed, a turn leaves her view: the room's history holds it, and the
                 // `[context]` fact says how many turns the room offered. A one-line pointer would
-                // weigh about what a short turn does, saving nothing.
+                // weigh about what a short turn does, saving nothing. An unread room update keeps
+                // its handle, so one larger than her window is still hers to open.
                 summary: None,
-                pointer: None,
+                pointer: turn.pointer.clone().map(|text| ContextMessage { role: turn.role, text }),
             })
             .collect()
     }

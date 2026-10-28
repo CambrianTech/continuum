@@ -112,7 +112,7 @@ impl LlmDeliberationFaculty {
             } else {
                 crate::cognition::context_streams::Role::User
             };
-            turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line });
+            turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line, pointer: None });
         }
         // Messages that reached her room during this turn are conversation too, after the
         // burst, keyed by their event: in her view they append like any turn, and one
@@ -124,7 +124,13 @@ impl LlmDeliberationFaculty {
                 continue;
             }
             let line = update.render_room_update();
-            turns.push(crate::cognition::context_streams::conversation::Turn { key, role: crate::cognition::context_streams::Role::User, line });
+            let pointer = Some(format!(
+                "[Room message received during this turn; peer {}; event {}; {} chars, not shown: reread it with chat/history]",
+                airc_core::shown_id::shown_form(update.peer_id),
+                airc_core::shown_id::shown_form(update.event_id),
+                line.chars().count(),
+            ));
+            turns.push(crate::cognition::context_streams::conversation::Turn { key, role: crate::cognition::context_streams::Role::User, line, pointer });
         }
         // What follows the view in this act's prompt: facts, the clock, demoted payloads.
         let mut messages: Vec<ChatMessage> = Vec::new();
