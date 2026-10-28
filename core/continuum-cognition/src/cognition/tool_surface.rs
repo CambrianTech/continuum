@@ -362,34 +362,6 @@ pub fn tool_surface_tokens_of(specs: &[NativeToolSpec]) -> usize {
         .sum()
 }
 
-/// The prompt this lane affords (served window bounded by prefill t/s x TTFT), read beside
-/// what the tool surface and framing cost. Emits `delib.tool_surface.over_affordable` when
-/// they alone exceed it. Observation only: nothing here changes what is sent (card 3026b83e,
-/// step 1). Returns the affordable token count for the turn's receipt.
-pub(crate) fn over_affordable_receipt(
-    persona: &str,
-    surface_reason: SurfaceReason,
-    tool_tokens: usize,
-    framing_tokens: usize,
-    context_window: u32,
-) -> Option<usize> {
-    let affordable_tokens =
-        super::context_budget::ContextBudget::from_window(context_window).affordable_tokens();
-    if let Some(affordable) = affordable_tokens.filter(|a| framing_tokens + tool_tokens > *a) {
-        continuum_base::probe!(
-            class = "delib.tool_surface.over_affordable",
-            persona = %persona,
-            surface_reason = ?surface_reason,
-            tool_tokens,
-            framing_tokens,
-            affordable_tokens = affordable,
-            context_window,
-            "the tool surface and framing alone cost more than the prompt this lane can prefill inside its TTFT budget"
-        );
-    }
-    affordable_tokens
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
