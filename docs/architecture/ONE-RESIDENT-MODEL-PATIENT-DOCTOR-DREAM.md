@@ -263,7 +263,7 @@ The fork already takes the step: `learn_on_slot` learns one served reply on the 
 
 | Slice | What | Gate |
 |---|---|---|
-| D1 (fork) | `POST /lora-adapters/save {id, name}`: `llama_adapter_lora_save` of a loaded adapter into `--train-dir`, immutable | a saved shadow loads back byte-for-byte equivalent and serves |
+| D1 (fork) | two routes on what exists: `POST /lora-adapters/fresh {name, rank, alpha, targets, top_layers, seed}` writes a fresh adapter (`common_lora_write_fresh`, the zero-B init `/train` uses: output unchanged until the first step) into `--train-dir` and loads it dormant; `POST /lora-adapters/save {id, name}` writes a loaded adapter (`llama_adapter_lora_save`), immutable | a fresh shadow serves identically to the base; a saved shadow loads back and serves the same |
 | D2 (core, serving) | per mind: her shadow loaded dormant on her lane (a copy of her stable gene, or a zero-initialized adapter), a `learn` client (served messages + `lora_id`, `retry_after_ms` honoured, never dropped), a `save` client | one served turn learned on the M5 with residents turning; directed wait flat |
 | D3 (core, dreaming) | arrival: an accepted training example (the trigger journal, §9.2) is one learn on her shadow, now, as a `background` flow stage; the journal cursor advances when the step commits; the dispatch threshold stops gating anything | a reviewed correction is learned within minutes of review, with no job, threshold or flush |
 | D4 (core, genome) | promotion at a boundary (`DreamTrigger`: idle, card boundary): save a snapshot (D1), `adapter_manifest::register`, `GeneTrials::open`; the examiner fires on its own | the acceptance test runs on a learned gene for the first time |
