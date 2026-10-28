@@ -32,8 +32,7 @@ impl ServingWake {
         *task = Some(tokio::spawn(follow(receiver, move || {
             let state = state.clone();
             async move {
-                state.return_refused_jobs().await;
-                if let Err(error) = state.recover_tick().await {
+                if let Err(error) = state.recover_pass().await {
                     continuum_base::probe!(class = "training.serving_wake.failed", error = %error,
                         "serving changed but training recovery failed; durable work remains owned");
                 }
