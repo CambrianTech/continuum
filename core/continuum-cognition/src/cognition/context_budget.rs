@@ -425,14 +425,6 @@ const RECALL_DENOM: usize = 10;
         }
     }
 
-    /// ONE tool's one-line summary in the catalog she is offered. A catalog lists ~100 tools,
-    /// so an unbounded description per line re-creates the dump this bound exists to prevent —
-    /// but on a roomy window she can afford a fuller clause per tool, which is real PX. At a
-    /// 16k lane this is exactly the 96 chars the old constant hard-coded.
-    pub fn catalog_summary_chars(&self) -> usize {
-        self.fraction(512)
-    }
-
     /// Default CEILING on one response's generated length, in TOKENS (not chars) — the role's
     /// fallback budget when it declares none. An eighth of the window: enough that a real
     /// answer (a function, a diff, a traceback walk) is never truncated mid-thought, while
@@ -687,7 +679,6 @@ mod tests {
         assert_eq!(b.latest_action_chars(), 16_384 * GUARD_CHARS_PER_TOKEN);
         near(b.dispatch_result_chars(), 4_000); // DISPATCH_RESULT_MAX_CHARS
         near(b.render_slice_chars(), 12_000); // RENDER_BUDGET_CHARS
-        near(b.catalog_summary_chars(), 96); // SUMMARY_MAX_CHARS
                                              // Echoed args share the trail-head fraction (see the module doc's † note — the old
                                              // 600 was invented, not tuned, so it is not a calibration target).
         assert_eq!(b.echoed_arg_chars(), b.trail_head_chars());
