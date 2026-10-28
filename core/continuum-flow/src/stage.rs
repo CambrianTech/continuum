@@ -7,6 +7,7 @@ use crate::Qos;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Notify;
 
 /// What a full stage does with a new input. Signals and reliable inputs are different types
@@ -35,6 +36,7 @@ pub trait Stage: Send + 'static {
 }
 
 struct Inbox<T> {
+    producers: AtomicUsize,
     items: Mutex<VecDeque<T>>,
     signal: Notify,
     depth: usize,
@@ -45,12 +47,12 @@ struct Inbox<T> {
 /// its queued inputs are handled.
 pub struct StageInput<T> {
     inbox: Arc<Inbox<T>>,
-    alive: Arc<()>,
 }
 
 impl<T> Clone for StageInput<T> {
     fn clone(&self) -> Self {
-        Self { inbox: Arc::clone(&self.inbox), alive: Arc::clone(&self.alive) }
+        self.inbox.producers.fetch_add(1, Ordering::Relaxed);
+        Self { inbox: Arc::clone(&self.inbox) }
     }
 }
 
@@ -84,7 +86,7 @@ impl<T> StageInput<T> {
 impl<T> Drop for StageInput<T> {
     fn drop(&mut self) {
         // The last producer gone: wake the worker so it can drain and end.
-        if Arc::strong_count(&self.alive) == 1 {
+        if self.inbox.producers.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.inbox.signal.notify_one();
         }
     }
@@ -92,17 +94,17 @@ impl<T> Drop for StageInput<T> {
 
 /// Start `stage` on its own task; returns its input.
 pub fn spawn_stage<S: Stage>(mut stage: S) -> StageInput<S::Input> {
-    let inbox = Arc::new(Inbox { items: Mutex::new(VecDeque::new()), signal: Notify::new(), depth: S::DEPTH.max(1), overflow: S::OVERFLOW });
-    let alive = Arc::new(());
-    let input = StageInput { inbox: Arc::clone(&inbox), alive: Arc::clone(&alive) };
-    let watch = Arc::downgrade(&alive);
-    drop(alive);
+    let inbox = Arc::new(Inbox { producers: AtomicUsize::new(1), items: Mutex::new(VecDeque::new()), signal: Notify::new(), depth: S::DEPTH.max(1), overflow: S::OVERFLOW });
+    let input = StageInput { inbox: Arc::clone(&inbox) };
     tokio::spawn(async move {
         loop {
-            let next = inbox.items.lock().unwrap_or_else(|e| e.into_inner()).pop_front(); // see push
+            let (next, closed) = {
+                let mut items = inbox.items.lock().unwrap_or_else(|e| e.into_inner()); // see push
+                (items.pop_front(), inbox.producers.load(Ordering::Acquire) == 0)
+            };
             match next {
                 Some(item) => stage.handle(item).await,
-                None if watch.strong_count() == 0 => return,
+                None if closed => return,
                 None => inbox.signal.notified().await,
             }
         }
