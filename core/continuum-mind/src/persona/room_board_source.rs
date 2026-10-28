@@ -283,7 +283,7 @@ impl RoomBoardSource {
         names: &dyn crate::cognition::card_holder::PeerNames,
         include_submission: bool,
     ) -> String {
-        let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+        let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
         let held = crate::cognition::card_holder::holder(card, self_id, now_ms, names);
         // The tag leads with what the card IS to someone deciding whether to take
         // it, not with the column it happens to sit in — a lapsed claim is takeable
@@ -354,7 +354,7 @@ fn claim_is_live(card: &airc_work::WorkCard, now_ms: u64) -> bool {
 /// times. The path is now in front of her each turn she holds the card. With no checkout on
 /// this node the line says nothing about one: an absence is not reported as a location.
 fn held_card_line(card: &airc_work::WorkCard, checkout: Option<&std::path::Path>) -> String {
-    let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+    let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
     let line = format!("  {id8}: \"{}\" [{:?}]", card.title, card.state);
     match checkout {
         Some(path) => format!("{line}\n    its work is at {}", path.display()),
@@ -552,7 +552,7 @@ impl RoomBoardSource {
         if let Some(card) = crate::persona::work_focus::focus_workspace_card(mine.iter().copied()) {
             if let Some(content) = Self::submission_guidance(card, &board) {
                 focused_submission = Some(card.card_id);
-                let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+                let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
                 items.push(
                     RagItem::whole(
                         format!("submission:{}", card.card_id.as_uuid()),
@@ -620,7 +620,7 @@ impl RoomBoardSource {
                 .iter()
                 .take(5)
                 .map(|c| {
-                    let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
+                    let id8 = airc_core::shown_id::shown_form(c.card_id.as_uuid());
                     format!("  {id8}: \"{}\" ({:?})", c.title, c.priority)
                 })
                 .collect::<Vec<_>>()
@@ -678,7 +678,7 @@ impl RoomBoardSource {
 
         for card in ordered {
             let content = Self::render(card, &board, self.persona_id, now_ms, &names, focused_submission != Some(card.card_id));
-            let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+            let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
             // The pointer keeps what a teammate decides on (the card and its takeable /
             // held tag) once the line collapses; the title returns with `work/list`.
             let tag = crate::cognition::card_holder::holder(card, self.persona_id, now_ms, &names).state_tag();

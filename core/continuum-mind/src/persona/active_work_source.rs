@@ -76,7 +76,7 @@ impl ActiveWorkSource {
     /// GONE from this read; we do NOT know who holds it now (that would need a
     /// board read), so the fact says exactly that and points at the board.
     fn lost_claim_item(card_id: &uuid::Uuid, title: &str) -> RagItem {
-        let id8: String = card_id.to_string().chars().take(8).collect();
+        let id8 = airc_core::shown_id::shown_form(*card_id);
         let content = format!(
             "[work] Your claim on card {id8} \"{title}\" is no longer held by you \
              (lease expired or released). Do not continue work on it as yours — \
@@ -181,7 +181,7 @@ impl RagSource for ActiveWorkSource {
         // retains its admitted workspace. Describe the shared selector's result only.
         let focus = crate::persona::work_focus::focus_workspace_card(claims.iter()).map(|c| c.card_id);
         for card in &claims {
-            let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+            let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
             // Human-readable line; structured parts also ride in metadata so
             // prompt-assembly / verifiers can render without re-parsing.
             let stance = if claims.len() > 1 {
