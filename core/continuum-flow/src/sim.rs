@@ -23,6 +23,13 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// The M5 at a working context of `tokens`: stock `llama-bench` (741b0175b, q4_0 KV, FA) gave
+    /// decode 58.7 / 47.8 / 29.5 tok/s and prefill 968 / 650 / 304 tok/s at depth 0 / 16k / 64k.
+    /// Fitted: decode 59/(1+d/64k), within 2%; prefill 968/(1+d/30k), within 4%.
+    pub fn m5_at_depth(tokens: f64) -> Self {
+        Self { decode_alone: 59.0 / (1.0 + tokens / 65_536.0), prefill_alone: 968.0 / (1.0 + tokens / 30_000.0), ..Self::m5() }
+    }
+
     pub fn m5() -> Self {
         Self { slots: 4, decode_alone: 30.5, decode_exponent: 0.865, prefill_alone: 304.0, page_out_s: 0.1 }
     }
