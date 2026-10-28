@@ -443,6 +443,8 @@ impl TrainingTriggerState {
                 }
             }
         }
+        // Apply base-change migration for pending batches.
+        super::migrate_base_change_buckets(&self.state).await?;
         Ok(())
     }
 
