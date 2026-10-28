@@ -4,4 +4,12 @@
  * One item the source delivered, with the mechanic-grade rationale
  * flattened for the wire (content_preview, score, age_s, etc).
  */
-export type RagInspectItem = { index: number, tokens: number, score: number, contentPreview: string, peerIdPrefix: string, lamport: number, ageS: number, };
+export type RagInspectItem = { index: number, tokens: number, score: number, contentPreview: string, peerIdPrefix: string, lamport: number, ageS: number, 
+/**
+ * The item has a coarser summary level her view can fall back to.
+ */
+hasSummary: boolean, 
+/**
+ * The item has a pointer level (what it is and how to reopen it).
+ */
+hasPointer: boolean, };

@@ -383,4 +383,3 @@
             assert!(pointer.contains(id.as_str()) && pointer.contains("persona/wall/list"), "{pointer}");
         }
     }
-}

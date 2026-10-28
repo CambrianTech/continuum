@@ -171,17 +171,6 @@ pub trait RagRenderable: DeserializeOwned + Send + Sync + 'static {
     }
 }
 
-/// Rough token estimate. Errs HIGH: an over-estimate costs a little room, an
-/// under-estimate overruns the window, and only one of those corrupts a turn.
-///
-/// A shared helper rather than a per-source guess — the divergent hand-rolled
-/// estimates are exactly how sources ended up asking for 12-80x their real size.
-pub(crate) fn estimate_tokens(text: &str) -> u32 {
-    // ~3.5 chars/token is conservative for English prose with punctuation; the
-    // ceil keeps a one-word unit from estimating as free.
-    ((text.len() as f32 / 3.5).ceil() as u32).max(1)
-}
-
 /// THE adapter: any [`RagRenderable`] `ViewState` is a [`RagSource`].
 ///
 /// Generic over the kind, so N kinds cost N small impls and zero new plumbing.

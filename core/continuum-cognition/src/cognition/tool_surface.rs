@@ -317,7 +317,7 @@ impl<'a> SelectedSurface<'a> {
     }
 
     /// No surface: a turn refused for capacity before it could be offered one.
-    pub(crate) fn none() -> Self {
+    pub fn none() -> Self {
         Self::borrowed(&[], 0, SurfaceReason::NoTools, 0)
     }
 

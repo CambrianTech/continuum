@@ -34,7 +34,7 @@
 
     #[test]
     fn empty_context_window_under_provisions_required() {
-        let result = flex_allocate((500).saturating_sub(reserved(400, 200)), &[budget("conversation", 10, 100, 200, 1000, true)]);
+        let result = flex_allocate(500u32.saturating_sub(reserved(400, 200)), &[budget("conversation", 10, 100, 200, 1000, true)]);
         assert!(result.escalation_needed);
         assert_eq!(
             alloc_for(&result, "conversation").state,
@@ -44,7 +44,7 @@
 
     #[test]
     fn single_required_source_satisfied() {
-        let result = flex_allocate((10_000).saturating_sub(reserved(500, 2000)), &[budget("conversation", 10, 200, 500, 5000, true)]);
+        let result = flex_allocate(10_000u32.saturating_sub(reserved(500, 2000)), &[budget("conversation", 10, 200, 500, 5000, true)]);
         let conv = alloc_for(&result, "conversation");
         assert!(conv.allocated_tokens >= 500);
         assert_eq!(conv.state, AllocationState::Satisfied);
@@ -55,7 +55,7 @@
     fn priority_distributes_remaining_proportionally() {
         // max well above expected share so neither caps before the
         // priority ratio gets to express.
-        let result = flex_allocate((10_000).saturating_sub(reserved(0, 0)), &[
+        let result = flex_allocate(10_000u32.saturating_sub(reserved(0, 0)), &[
                 budget("conversation", 10, 100, 500, 50_000, true),
                 budget("memories", 5, 100, 500, 50_000, true),
             ]);
@@ -73,7 +73,7 @@
 
     #[test]
     fn optional_source_drops_when_floor_cant_fit() {
-        let result = flex_allocate((1_000).saturating_sub(reserved(500, 200)), &[
+        let result = flex_allocate(1_000u32.saturating_sub(reserved(500, 200)), &[
                 budget("conversation", 10, 200, 200, 500, true),
                 budget("artifacts", 3, 200, 200, 500, false),
             ]);
@@ -90,7 +90,7 @@
 
     #[test]
     fn required_under_provisions_when_floor_cant_fit() {
-        let result = flex_allocate((300).saturating_sub(reserved(100, 100)), &[
+        let result = flex_allocate(300u32.saturating_sub(reserved(100, 100)), &[
                 budget("conversation", 10, 200, 200, 500, true),
                 budget("memories", 5, 200, 200, 500, true),
             ]);
@@ -108,7 +108,7 @@
         // Joel's recent-universal floor doctrine: even if min is
         // squeezed, floor is unconditional. Here floor == min so the
         // test verifies the floor lands BEFORE the min pass.
-        let result = flex_allocate((2_000).saturating_sub(reserved(0, 0)), &[
+        let result = flex_allocate(2_000u32.saturating_sub(reserved(0, 0)), &[
                 budget("conversation", 10, 500, 500, 1000, true),
                 budget("memories", 5, 200, 600, 1500, false),
             ]);
@@ -120,7 +120,7 @@
 
     #[test]
     fn max_caps_distribution() {
-        let result = flex_allocate((10_000).saturating_sub(reserved(0, 0)), &[
+        let result = flex_allocate(10_000u32.saturating_sub(reserved(0, 0)), &[
                 budget("tiny", 10, 0, 0, 100, false),
                 budget("big", 5, 0, 0, 9_000, false),
             ]);
@@ -136,11 +136,11 @@
     fn deterministic_priority_tiebreak() {
         // Two sources at same priority must allocate identically across
         // runs. Use source_id alpha order.
-        let result_a = flex_allocate((10_000).saturating_sub(reserved(0, 0)), &[
+        let result_a = flex_allocate(10_000u32.saturating_sub(reserved(0, 0)), &[
                 budget("a", 5, 0, 500, 2000, false),
                 budget("b", 5, 0, 500, 2000, false),
             ]);
-        let result_b = flex_allocate((10_000).saturating_sub(reserved(0, 0)), &[
+        let result_b = flex_allocate(10_000u32.saturating_sub(reserved(0, 0)), &[
                 budget("b", 5, 0, 500, 2000, false),
                 budget("a", 5, 0, 500, 2000, false),
             ]);
