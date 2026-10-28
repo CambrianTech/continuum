@@ -188,8 +188,7 @@ impl LlmDeliberationFaculty {
             // Actual selected schemas, not the full registry's withheld cost.
             tool_tokens,
             registry_tool_tokens = self.describe_tool_tokens(),
-            // Which arm selected that surface, and the prompt the lane affords: the two
-            // numbers a 10k-token surface on a 2.8k-affordable lane is read against.
+            // Which whole tool level the shared allocation selected.
             surface_reason = ?surface_reason,
             // The pool the budget is subtracted FROM, read from the local that
             // actually holds it. First written as
