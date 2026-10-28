@@ -49,7 +49,7 @@ impl Wire for Responses {
     }
 
     fn answer(response: &TextGenerationResponse, id: &str) -> Value {
-        envelope(id, &response.model, now_s(), "completed", output(response, id), Some(response))
+        envelope(id, &response.model, continuum_base::time::EpochMs::now().secs(), "completed", output(response, id), Some(response))
     }
 
     fn error(kind: ErrorKind, message: &str) -> Value {
@@ -62,7 +62,7 @@ impl Wire for Responses {
     }
 
     fn streamer(model: &str, id: &str) -> Self {
-        Self { model: model.to_owned(), id: id.to_owned(), created: now_s(), sequence: 0, text: None }
+        Self { model: model.to_owned(), id: id.to_owned(), created: continuum_base::time::EpochMs::now().secs(), sequence: 0, text: None }
     }
 
     fn opened(&mut self) -> Vec<Frame> {
@@ -141,10 +141,6 @@ fn message_id(response_id: &str) -> String {
     format!("msg_{}", response_id.trim_start_matches("resp_"))
 }
 
-fn now_s() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) // map_or: a clock before 1970 reads 0
-}
-
 fn envelope(id: &str, model: &str, created: u64, status: &str, output: Vec<Value>, response: Option<&TextGenerationResponse>) -> Value {
     json!({
         "id": id, "object": "response", "created_at": created, "status": status, "model": model,
@@ -181,7 +177,7 @@ fn items_to_messages(items: &[Value]) -> Result<Vec<ChatMessage>, BadRequest> {
         match kind {
             "message" => {
                 let role = item.get("role").and_then(Value::as_str).ok_or_else(|| BadRequest("a message item has no `role`".into()))?;
-                out.push(ChatMessage { role: role.to_owned(), content: content(item.get("content").unwrap_or(&Value::Null)), name: None });
+                out.push(ChatMessage { role: role.to_owned(), content: content(&item["content"]), name: None });
             }
             "function_call" => {
                 let arguments = item.get("arguments").and_then(Value::as_str).unwrap_or("{}"); // unwrap_or: a call with no arguments
@@ -234,6 +230,6 @@ fn tool(value: &Value) -> Option<NativeToolSpec> {
     Some(NativeToolSpec {
         name: value.get("name").and_then(Value::as_str)?.to_owned(),
         description: value.get("description").and_then(Value::as_str).unwrap_or_default().to_owned(), // unwrap_or_default: a tool may have no description
-        input_schema: input_schema(value.get("parameters").unwrap_or(&json!({}))),
+        input_schema: input_schema(&value["parameters"]),
     })
 }

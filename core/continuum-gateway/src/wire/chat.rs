@@ -48,7 +48,7 @@ impl Wire for Chat {
             message["tool_calls"] = json!(calls);
         }
         json!({
-            "id": id, "object": "chat.completion", "created": now_s(), "model": response.model,
+            "id": id, "object": "chat.completion", "created": continuum_base::time::EpochMs::now().secs(), "model": response.model,
             "choices": [{"index": 0, "message": message, "finish_reason": finish_reason(response)}],
             "usage": usage(response),
         })
@@ -64,7 +64,7 @@ impl Wire for Chat {
     }
 
     fn streamer(model: &str, id: &str) -> Self {
-        Self { model: model.to_owned(), id: id.to_owned(), created: now_s() }
+        Self { model: model.to_owned(), id: id.to_owned(), created: continuum_base::time::EpochMs::now().secs() }
     }
 
     fn opened(&mut self) -> Vec<Frame> {
@@ -112,10 +112,6 @@ impl Chat {
     }
 }
 
-fn now_s() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) // map_or: a clock before 1970 reads 0
-}
-
 fn finish_reason(response: &TextGenerationResponse) -> &'static str {
     if stopped_for_tools(response) {
         "tool_calls"
@@ -144,7 +140,7 @@ fn conversation(messages: &[Value]) -> Result<Vec<ChatMessage>, BadRequest> {
     let mut out = Vec::new();
     for m in messages {
         let role = m.get("role").and_then(Value::as_str).ok_or_else(|| BadRequest("a message has no `role`".into()))?;
-        let content = m.get("content").unwrap_or(&Value::Null);
+        let content = &m["content"];
         match role {
             "assistant" => {
                 let mut parts = Vec::new();
@@ -207,7 +203,7 @@ fn tool(value: &Value) -> Option<NativeToolSpec> {
     Some(NativeToolSpec {
         name: function.get("name").and_then(Value::as_str)?.to_owned(),
         description: function.get("description").and_then(Value::as_str).unwrap_or_default().to_owned(), // unwrap_or_default: a tool may have no description
-        input_schema: input_schema(function.get("parameters").unwrap_or(&json!({}))),
+        input_schema: input_schema(&function["parameters"]),
     })
 }
 
