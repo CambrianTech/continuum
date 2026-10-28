@@ -85,7 +85,7 @@ pub(crate) async fn return_job(
     }
     let dir = job_dir_under(root, &job.persona_name, &job.trait_kind, job_id);
     refuse_trained_job(job_id, &dir)?;
-    let request = job_request(state, &job, &dir).await?;
+    let request = state.job_input(&job, &dir).await.map_err(input_error)?;
     if let Some(root) = &request.local_artifact_dir {
         refuse_trained_job(job_id, &root.join(job_id.to_string()))?;
     }
@@ -101,23 +101,13 @@ pub(crate) async fn return_job(
     Ok(outcome)
 }
 
-/// THE original input of a trigger-owned job comes from its verified durable dispatch.
-/// Adapter request files can materialize provider defaults; treating those as producer
-/// policy makes a return into an empty bucket incompatible with the next producer.
-/// Only jobs without a trigger dispatch use their legacy request file.
-async fn job_request(
-    state: &Arc<TrainingTriggerState>,
-    job: &crate::genome::fine_tuning::job_board::OrphanedJob,
-    dir: &std::path::Path,
-) -> Result<crate::genome::fine_tuning::types::TrainingJobRequest, CommandError> {
-    let job_id = job.local_id;
-    if let Some(dispatch) = job.trigger_dispatch_id {
-        let key = crate::modules::training_trigger::BucketKey {
-            persona_id: job.persona_id, trait_kind: job.trait_kind.clone(), base_model: job.base_model.clone(),
-        };
-        return state.dispatched_request(&key, dispatch, job_id).await.map_err(CommandError::Invalid);
+/// A job's input that cannot be had, as the verb reports it: an unproven dispatch is an invalid
+/// request; a job with no dispatch and no request file has nothing to return.
+fn input_error(error: crate::modules::training_trigger::JobInputError) -> CommandError {
+    match error {
+        crate::modules::training_trigger::JobInputError::Unproven(why) => CommandError::Invalid(why),
+        crate::modules::training_trigger::JobInputError::Missing(why) => CommandError::NotFound(why),
     }
-    read_job_request(dir).map_err(CommandError::NotFound)
 }
 
 /// What returning a trained job's parked remainder did.
@@ -150,7 +140,7 @@ struct RemainderReceipt {
 /// ([`return_job`]). The caller has established that `job` completed training: the sentinel
 /// claimed it Completed, or the ledger's terminal row says so.
 ///
-/// - The examples are the job's own input as [`job_request`] proves it (its durable dispatch,
+/// - The examples are the job's own input as [`TrainingTriggerState::job_input`] proves it (its durable dispatch,
 ///   or a legacy request.json): native base, whole payloads, never the partition's measured rows.
 /// - The partition is read strictly: only a confirmed-absent file means nothing was parked; an
 ///   unreadable or corrupt one is an error the next pass retries.
@@ -188,7 +178,7 @@ pub(crate) async fn return_parked_remainder(
     let registration = board
         .registration(id)
         .ok_or_else(|| CommandError::NotFound(format!("job {id} has no registration on this node's job ledger")))?;
-    let mut request = job_request(state, &registration, &dir).await?;
+    let mut request = state.job_input(&registration, &dir).await.map_err(input_error)?;
     let parked = remainder_of(&partition, request.dataset.examples.len())
         .map_err(|why| CommandError::Invalid(format!("job {id}: {why}; nothing is returned")))?;
     request.dataset.examples = parked.iter().map(|&i| request.dataset.examples[i].clone()).collect();

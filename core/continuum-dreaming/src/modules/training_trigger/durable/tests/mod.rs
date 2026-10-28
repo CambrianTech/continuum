@@ -235,6 +235,18 @@
         drop(old);
         let (crashed, crashed_executor) = build_runtime(adapter.clone(), false).await;
         let mut adapter_request = crashed.state.dispatched_request(&key, dispatch, job).await.unwrap();
+        // card 3c3634d2 (the windows 5090, 8b46862c: an in-engine job's directory held only
+        // partition.json, and its resume gave up): a job left behind is resumed and returned from
+        // the same verified dispatch, with no request file on disk; with no dispatch and no file
+        // there is nothing to resume from
+        let orphan = crate::genome::fine_tuning::job_board::OrphanedJob {
+            local_id: job, trigger_dispatch_id: Some(dispatch), provider_id: crate::genome::fine_tuning::cuda_lora_adapter::PROVIDER_ID.into(),
+            persona_id: persona, persona_name: "test-p".into(), base_model: "synthetic".into(), trait_kind: "code".into(), eval_set: None,
+        };
+        let input = crashed.state.job_input(&orphan, &jd).await.expect("its input, from its durable dispatch");
+        assert_eq!(serde_json::to_value(&input).unwrap(), serde_json::to_value(&adapter_request).unwrap());
+        let undispatched = crate::genome::fine_tuning::job_board::OrphanedJob { trigger_dispatch_id: None, ..orphan.clone() };
+        assert!(matches!(crashed.state.job_input(&undispatched, &jd).await, Err(crate::modules::training_trigger::JobInputError::Missing(_))));
         let original_lora = adapter_request.lora.clone();
         let original_schedule = adapter_request.schedule.clone();
         assert_eq!(original_lora.is_some(), explicit);
@@ -248,6 +260,10 @@
             provider: crate::genome::fine_tuning::cuda_lora_adapter::PROVIDER_ID.into(),
         };
         store.dispatches.update(dispatch, &broken).await.unwrap();
+        assert!(
+            matches!(crashed.state.job_input(&orphan, &jd).await, Err(crate::modules::training_trigger::JobInputError::Unproven(_))),
+            "a request file on disk never stands in for a dispatch that does not prove the job"
+        );
         assert!(return_parked_remainder(&crashed.state, &board, artifacts.path(), &completed).await.is_err(), "a usable request file cannot bypass a broken recorded dispatch");
         assert_eq!(crashed.state.bucket_example_count(persona, "code", "synthetic"), None);
         assert!(!jd.join(REMAINDER_RECEIPT).exists());
