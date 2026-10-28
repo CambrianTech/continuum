@@ -109,7 +109,8 @@ pub(crate) async fn checkpoint_endpoint(
         transition.checkpoint_residents(client, root).await.map(|_| ())
     })
     .await
-    .unwrap_or_else(|_| Err(format!("the stop's cap ({} ms) ran out", cap.as_millis())));
+    .map_err(|_elapsed| format!("the stop's cap ({} ms) ran out", cap.as_millis()))
+    .and_then(|saved| saved);
     Some(outcome)
 }
 

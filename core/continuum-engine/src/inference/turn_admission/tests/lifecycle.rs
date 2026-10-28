@@ -115,7 +115,7 @@ async fn every_mind_resumes_where_she_left_off_across_a_stop_and_a_boot() {
         act(&lanes, &pool_a, &client, &root_a, &slots_a, mind, tokens).await;
     }
     // Mind 3 was paged out at 300; minds 1 and 2 are resident at 150 and 250.
-    let stopped = crate::inference::slots::checkpoint_endpoint(&client, &root_a, &endpoint_a, std::time::Duration::from_secs(10))
+    let stopped = crate::inference::slots::page_io::checkpoint_endpoint(&client, &root_a, &endpoint_a, std::time::Duration::from_secs(10))
         .await
         .expect("test: an engine was launched here");
     stopped.expect("test: the stop saves every resident");
