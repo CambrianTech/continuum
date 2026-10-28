@@ -304,11 +304,11 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
     let window = 8192u32;
     for oversized_part in 0..5 {
         let persona = Uuid::new_v4();
-        // Parts 0-2 must never reach the adapter, so an EMPTY script proves it.
-        // Parts 3-4 shed their enrichment and go on to think, so they need a real
-        // response — reaching the model is the outcome those cases assert.
+        // Part 0 (the oversized stimulus) must never reach the adapter, so an EMPTY script
+        // proves it. Parts 1-4 bound, shed or collapse and go on to think, so they need a
+        // real response — reaching the model is the outcome those cases assert.
         let adapter = Arc::new(ScriptedAdapter::new(
-            if oversized_part >= 3 || oversized_part == 1 {
+            if oversized_part != 0 {
                 vec![make_response(FinishReason::Stop, "PASS", None)]
             } else {
                 vec![]
@@ -375,8 +375,8 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
         let view = faculty.prompt_view(&ws);
         if oversized_part == 2 {
             assert!(
-                view.messages.iter().any(|m| m.content_text().contains("reread it with chat/history")),
-                "an oversized room update reaches her as its handle, never vanishes"
+                view.messages.iter().any(|m| m.content_text().contains("reread with chat/history")),
+                "an oversized room update is never unknown: the index names where it is"
             );
         }
         if grounding_case {
