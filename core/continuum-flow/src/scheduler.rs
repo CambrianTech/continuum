@@ -34,7 +34,9 @@ struct Waiting<K> {
 
 struct Running<K> {
     owner: K,
-    qos: Qos,
+    /// The class it started at: its own, or the class aging raised it to. Preemption compares
+    /// against this, so a dream that aged into its turn is not taken back by work.
+    started_as: u32,
     yield_asked: bool,
 }
 
@@ -140,17 +142,28 @@ impl<K: Clone + Eq + Hash> Scheduler<K> {
         while self.running.len() < self.capacity {
             let Some(ticket) = self.best_eligible(now) else { break };
             let Some(w) = self.waiting.remove(&ticket) else { break };
+            let started_as = self.effective(&w, now);
             self.busy_owners.insert(w.owner.clone());
-            self.running.insert(ticket, Running { owner: w.owner, qos: w.qos, yield_asked: false });
+            self.running.insert(ticket, Running { owner: w.owner, started_as, yield_asked: false });
             out.push(Decision::Run(ticket));
         }
-        if let Some(best) = self.best_eligible(now) {
-            let wanted = self.waiting.get(&best).map(|w| w.qos);
+        // Ask yields only for waiting work that outranks what runs, one per such ticket, oldest
+        // asks first: the lowest class that started lowest yields first.
+        let eligible: Vec<u32> = self
+            .waiting
+            .values()
+            .filter(|w| !self.busy_owners.contains(&w.owner))
+            .map(|w| w.qos.rank())
+            .collect();
+        let asked = self.running.values().filter(|r| r.yield_asked).count();
+        let lowest_running = self.running.values().filter(|r| !r.yield_asked).map(|r| r.started_as).min();
+        let outranking = lowest_running.map_or(0, |low| eligible.iter().filter(|&&q| q > low).count());
+        if outranking > asked {
             let victim = self
                 .running
                 .iter()
-                .filter(|(_, r)| !r.yield_asked && wanted.is_some_and(|q| q > r.qos))
-                .min_by_key(|(t, r)| (r.qos, std::cmp::Reverse(**t)))
+                .filter(|(_, r)| !r.yield_asked)
+                .min_by_key(|(t, r)| (r.started_as, std::cmp::Reverse(**t)))
                 .map(|(t, _)| *t);
             if let Some(t) = victim {
                 if let Some(r) = self.running.get_mut(&t) {
