@@ -225,7 +225,20 @@ this same mistake.
 - Each claim has a priority from the turn's intent, a floor of real need, and a want of its whole.
 - Sources deliver *levels* (whole, summary, pointer), never a size.
 
-**Focus is the priorities.**
+**Focus is a brain process, and it is hers** (Joel: "I don't choose my focus, my mind just does";
+"it can still be 'her' but in reality it's a brain process"). The priorities select themselves:
+- **Recent use.** Items her own acts touched (files read and edited, tests run, the card she's on) are
+  the open episode's working set and take the high claims. Untouched items decay toward summary, then
+  pointer.
+- **Salience.** The amygdala's outlier detector (being addressed, affect, a sudden change) raises a
+  claim on its own. A directed line also takes the interactive class.
+- **Relevance.** Recall ranks by nearness to her current thought, so related engrams surface at summary
+  level.
+- **`cognition/focus.rs` `FocusState`** (her self-set level, thread cursor and mutes) is an override, not
+  a requirement. A recipe's preset is where the process starts. Nothing is computed *for* her: it is her
+  own activity, reflected.
+
+**What focus does to the view.**
 - The current episode's working set gets the high claims.
 - Everything else shrinks to summary or pointer: still in her view, reachable on demand, never clipped.
 - She keeps all of her context; only its level changes.
