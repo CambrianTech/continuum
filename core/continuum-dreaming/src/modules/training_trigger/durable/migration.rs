@@ -6,15 +6,13 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 use uuid::Uuid;
 
 use super::super::TrainingTriggerState;
 use crate::continuum_mind::persona::model_override::{PersonaHome, PersonaModelOverride};
-use crate::modules::training_trigger::{BucketKey, PendingBatch};
+use crate::modules::training_trigger::BucketKey;
 
-/// Enumerate all persona homes on disk and map their UUIDs to the authoritative base model
-/// declared in their `model_override.json`. Missing or malformed overrides are skipped (abstain).
+/// Enumerate persona homes and map their UUIDs to the authoritative base model.
 fn collect_persona_bases(continuum_home: &Path) -> Result<HashMap<Uuid, String>, String> {
     let personas_dir = continuum_home.join("citizens/personas");
     let mut persona_bases = HashMap::new();
@@ -40,10 +38,7 @@ fn collect_persona_bases(continuum_home: &Path) -> Result<HashMap<Uuid, String>,
 }
 
 /// Determine which buckets need migration and move their examples to the new base.
-pub(super) async fn migrate_base_change_buckets(self: &Arc<Self>) -> Result<(), String> {
-    let state = Arc::as_ref(self);
-    
-    // Load persona bases from disk
+pub(super) async fn migrate_base_change_buckets(state: &TrainingTriggerState) -> Result<(), String> {
     let continuum_home = state.config.continuum_home.as_path();
     let persona_bases = collect_persona_bases(continuum_home)?;
 
@@ -77,12 +72,9 @@ pub(super) async fn migrate_base_change_buckets(self: &Arc<Self>) -> Result<(), 
 
     // Process migrations sequentially to avoid contention
     for (key, mut batch) in to_update {
-        // Update the batch's base model reference
         let new_base = persona_bases.get(&key.bucket.persona_id).unwrap().clone();
         
-        // Move examples: clear old base references and update metadata
         batch.update_base(&new_base);
-        
         state.pending_batches.lock().await.insert(key, batch);
     }
 
