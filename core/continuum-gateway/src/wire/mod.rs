@@ -153,7 +153,7 @@ pub(crate) fn place_system(system_prompt: Option<String>, messages: Vec<ChatMess
 }
 
 /// The text of a message's content, its text parts joined.
-fn plain_text(content: &MessageContent) -> String {
+pub(crate) fn plain_text(content: &MessageContent) -> String {
     match content {
         MessageContent::Text(text) => text.clone(),
         MessageContent::Parts(parts) => parts
@@ -165,6 +165,11 @@ fn plain_text(content: &MessageContent) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
     }
+}
+
+/// Prompt tokens the engine reused from a warm page this call, when it measured them.
+pub(crate) fn cached_tokens(response: &TextGenerationResponse) -> Option<u32> {
+    response.timing.as_ref().map(|t| t.cached_tokens)
 }
 
 /// The sampling fields every format names the same way: temperature, top_p, stop.
