@@ -166,7 +166,8 @@ pub(super) fn register_ai_provider_and_genome_modules(
         // `[[no-fallbacks-ever]]`, dispatch failure preserves bucket
         // contents — curated examples never silently disappear.
         runtime.register(Arc::new(
-            crate::modules::training_trigger::TrainingTriggerModule::new(),
+            crate::modules::training_trigger::TrainingTriggerModule::new()
+                .with_serving_changes(serving_daemon.subscribe_serving()),
         ));
         log_info!(
             "ipc",

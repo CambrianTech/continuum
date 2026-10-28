@@ -87,13 +87,17 @@ pub struct OrphanedJob {
     pub eval_set: Option<String>,
 }
 
-/// A job that completed training, as the trigger needs it to find the job's directory and
-/// return the examples its partition parked (card 8a2334d9).
+/// A job that ENDED, completed or failed, as the trigger needs it to find the job's directory
+/// and return the examples its partition parked (card 8a2334d9). A failed job is listed too,
+/// because one whose examples all parked never ran and has no other route back (card 565b3b64).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompletedJob {
+pub struct EndedJob {
     pub local_id: Uuid,
     pub persona_name: String,
     pub trait_kind: String,
+    /// It completed training: its sent examples trained. False: it failed, and whether any of
+    /// its examples ran is the trigger's to read from its partition.
+    pub trained: bool,
 }
 
 /// How many times one job's lineage may be resumed before the board stops trying:
@@ -170,10 +174,10 @@ pub struct TrainingJobBoard {
     /// (`take_failed`) and decides whether their examples go back to her bucket (card
     /// 2dfce676). The sentinel only polls and claims; the decision is the trigger's.
     failed: std::sync::Mutex<Vec<WatchedJob>>,
-    /// Jobs that COMPLETED training, until the trigger takes them (`take_completed`) and
-    /// returns the examples each one parked (card 8a2334d9): claimed Completed at runtime, and
-    /// at boot every job the ledger records as completed, since a restart loses this list.
-    completed: std::sync::Mutex<Vec<CompletedJob>>,
+    /// Jobs that ENDED, until the trigger takes them (`take_ended`) and returns the examples each
+    /// one parked (cards 8a2334d9, 565b3b64): claimed Completed or Failed at runtime, and at boot
+    /// every job the ledger records as ended, since a restart loses this list.
+    ended: std::sync::Mutex<Vec<EndedJob>>,
 }
 
 /// A bounded evidence read. Neither absence, a partial scan, nor an I/O error
@@ -489,7 +493,7 @@ impl TrainingJobBoard {
             }
             let board = TrainingJobBoard::with_ledger(ledger.clone());
             let orphaned = board.reconcile_orphans().len();
-            board.reconcile_completed();
+            board.reconcile_ended();
             if let (true, Some(ledger)) = (orphaned > 0, ledger) {
                 tracing::warn!(
                     orphaned,
@@ -513,7 +517,7 @@ impl TrainingJobBoard {
             quarantined: DashMap::new(),
             orphans: std::sync::Mutex::new(Vec::new()),
             failed: std::sync::Mutex::new(Vec::new()),
-            completed: std::sync::Mutex::new(Vec::new()),
+            ended: std::sync::Mutex::new(Vec::new()),
             ledger,
             #[cfg(any(test, feature = "test-fixtures"))]
             _test_directory: None,
@@ -694,33 +698,34 @@ impl TrainingJobBoard {
         self.failed.lock().map(|mut f| std::mem::take(&mut *f)).unwrap_or_default() // unwrap_or_default: a poisoned lock yields nothing to return, never a panic on the tick
     }
 
-    /// The jobs that completed training since the last take: the trigger's tick takes them and
-    /// returns what each one parked (card 8a2334d9).
-    pub fn take_completed(&self) -> Vec<CompletedJob> {
-        self.completed.lock().map(|mut c| std::mem::take(&mut *c)).unwrap_or_default() // unwrap_or_default: a poisoned lock yields nothing to return, never a panic on the tick
+    /// The jobs that ended since the last take: the trigger's tick takes them and returns what
+    /// each one parked (cards 8a2334d9, 565b3b64).
+    pub fn take_ended(&self) -> Vec<EndedJob> {
+        self.ended.lock().map(|mut c| std::mem::take(&mut *c)).unwrap_or_default() // unwrap_or_default: a poisoned lock yields nothing to return, never a panic on the tick
     }
 
-    /// Put back completed jobs whose remainder could not be returned this tick, to try again.
-    pub fn requeue_completed(&self, jobs: Vec<CompletedJob>) {
+    /// Put back ended jobs whose remainder could not, or may not yet, be returned this tick.
+    pub fn requeue_ended(&self, jobs: Vec<EndedJob>) {
         if jobs.is_empty() {
             return;
         }
-        if let Ok(mut held) = self.completed.lock() {
+        if let Ok(mut held) = self.ended.lock() {
             held.extend(jobs);
         }
     }
 
-    /// At boot, every job the ledger records as having completed training, for the trigger to
-    /// return what each one parked: the runtime list dies with the core, and a job completed
-    /// before this existed (Kimi's 55f2e6de) has no other route. One pass over the ledger. A
-    /// job whose remainder already went back is answered by its receipt, so listing it again
-    /// costs one file check. Only the ledger's owner lists them, as with orphans.
-    pub fn reconcile_completed(&self) {
+    /// At boot, every job the ledger records as ended (completed, or failed), for the trigger to
+    /// return what each one parked: the runtime list dies with the core, and a job that ended
+    /// before this existed (Kimi's 55f2e6de completed; her 2de02f40 correction's all-parked job
+    /// failed) has no other route. One pass over the ledger. A job whose remainder already went
+    /// back is answered by its receipt, so listing it again costs one file check. Only the
+    /// ledger's owner lists them, as with orphans.
+    pub fn reconcile_ended(&self) {
         if self.owner.is_none() {
             return;
         }
         let mut registered: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
-        let mut completed: Vec<String> = Vec::new();
+        let mut ended: Vec<(String, bool)> = Vec::new();
         for row in self.ledger_rows() {
             let (Some(event), Some(id)) = (
                 row.get("event").and_then(|e| e.as_str()).map(str::to_owned),
@@ -728,33 +733,35 @@ impl TrainingJobBoard {
             ) else {
                 continue;
             };
-            match event.as_str() {
-                "registered" => {
+            let status = row.get("status").and_then(|status| serde_json::from_value::<TrainingStatus>(status.clone()).ok());
+            match (event.as_str(), status) {
+                ("registered", _) => {
                     registered.insert(id, row);
                 }
-                "terminal"
-                    if row.get("status").is_some_and(|status| {
-                        matches!(serde_json::from_value::<TrainingStatus>(status.clone()), Ok(TrainingStatus::Completed { .. }))
-                    }) && !completed.contains(&id) =>
-                {
-                    completed.push(id);
+                ("terminal", Some(status @ (TrainingStatus::Completed { .. } | TrainingStatus::Failed { .. }))) => {
+                    let trained = matches!(status, TrainingStatus::Completed { .. });
+                    match ended.iter_mut().find(|(seen, _)| *seen == id) {
+                        Some(entry) => entry.1 |= trained, // a completion outranks any failure row
+                        None => ended.push((id, trained)),
+                    }
                 }
                 _ => {}
             }
         }
-        let jobs: Vec<CompletedJob> = completed
+        let jobs: Vec<EndedJob> = ended
             .iter()
-            .filter_map(|id| {
+            .filter_map(|(id, trained)| {
                 let reg = registered.get(id)?;
                 let field = |k: &str| reg.get(k).and_then(|v| v.as_str()).map(str::to_owned);
-                Some(CompletedJob {
+                Some(EndedJob {
                     local_id: Uuid::parse_str(id).ok()?,
                     persona_name: field("persona_name")?,
                     trait_kind: field("trait_kind")?,
+                    trained: *trained,
                 })
             })
             .collect();
-        if let Ok(mut held) = self.completed.lock() {
+        if let Ok(mut held) = self.ended.lock() {
             held.extend(jobs);
         }
     }
@@ -887,13 +894,17 @@ impl TrainingJobBoard {
         }
         let job = self.jobs.remove(&local_id).map(|(_, job)| job);
         if let Some(job) = &job {
-            if matches!(status, TrainingStatus::Completed { .. }) {
+            let trained = matches!(status, TrainingStatus::Completed { .. });
+            if trained {
                 self.adopting.insert(local_id, job.clone());
-                if let Ok(mut completed) = self.completed.lock() {
-                    completed.push(CompletedJob {
+            }
+            if trained || matches!(status, TrainingStatus::Failed { .. }) {
+                if let Ok(mut ended) = self.ended.lock() {
+                    ended.push(EndedJob {
                         local_id,
                         persona_name: job.persona_name.clone(),
                         trait_kind: job.trait_kind.clone(),
+                        trained,
                     });
                 }
             }

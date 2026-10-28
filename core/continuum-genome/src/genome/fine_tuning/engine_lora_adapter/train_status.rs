@@ -249,6 +249,14 @@ pub(super) fn live_lane_for(base: &str) -> Option<LaneChoice> {
     lane_choice(crate::inference::lane_registry::live_lane()?, base)
 }
 
+/// The per-slot window the live lane serving `base` ADOPTED (its launch record, not a plan that
+/// may not have landed): what a training partition on this node is measured at, so the trigger
+/// asks the same number before returning parked examples (card 565b3b64). `None`: no live lane
+/// serves `base` here, so nothing of it can train now.
+pub fn served_window_for(base: &str) -> Option<u32> {
+    live_lane_for(base).map(|lane| lane.window)
+}
+
 /// The lane `rec` names as a place to train `base`, priced in the pool its recorded placement
 /// keeps its bytes in. A lane recorded before placements were (an older build launched it)
 /// is not offered: its pool is unknown, and the current configuration is the NEXT launch's
