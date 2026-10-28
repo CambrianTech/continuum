@@ -61,7 +61,7 @@ impl LlmDeliberationFaculty {
     /// reserves the head the next epoch would hold, so a turnover can adopt it and the shadow
     /// receipt (`delib.tool_head.epoch`) measures it. It changes what is SENT only on a server
     /// that takes `tail_tools`, where a verb outside the head stays callable.
-    fn with_learned_head<'a>(&'a self, selected: SelectedSurface<'a>, ws: &Workspace) -> SelectedSurface<'a> {
+    fn with_learned_head<'a>(&'a self, selected: SelectedSurface<'a>, ws: &Workspace, budget: usize) -> SelectedSurface<'a> {
         let Some(memory) = self.working_memory.as_deref() else {
             return selected;
         };
@@ -69,7 +69,6 @@ impl LlmDeliberationFaculty {
             return selected;
         };
         let binding = self.binding.load();
-        let budget = super::super::context_budget::ContextBudget::from_window_unbounded(self.working_window()).tool_surface_tokens();
         let head = memory.tool_head();
         let next = head.next(
             ws.now_ms.map_or_else(continuum_base::time::EpochMs::now, continuum_base::time::EpochMs::from_millis), // map_or_else: a workspace that carries no clock reading decides at now
@@ -101,7 +100,25 @@ impl LlmDeliberationFaculty {
     /// consecutive acts in one activity send byte-identical schemas, so the prefix after the
     /// system prompt survives (goal 10; [`crate::cognition::tool_surface`] has the why).
     pub fn select_tool_surface(&self, ws: &Workspace) -> SelectedSurface<'_> {
-        self.with_learned_head(self.select_activity_surface(ws), ws)
+        let budget = super::super::context_budget::ContextBudget::from_window_unbounded(self.working_window()).tool_surface_tokens();
+        self.with_learned_head(self.select_activity_surface(ws), ws, budget)
+    }
+
+    /// Whole demand before focus allocation. The epoch owner records this beside
+    /// the grant; the grant never becomes a demand observation.
+    pub fn tool_claim_tokens(&self, ws: &Workspace) -> (usize, usize) {
+        let held = self.working_memory.as_ref().and_then(|wm| wm.tool_head().held()).unwrap_or_default(); // unwrap_or_default: no learned head contributes no extra verbs
+        self.surface.claim_with_head(&ws.room_affordances, &held)
+    }
+
+    /// Called at epoch start with the ONE allocation's tools grant. Retain the
+    /// returned selection for accounting and the wire until the next epoch.
+    pub fn select_tool_surface_granted(&self, ws: &Workspace, grant_tokens: usize) -> Result<SelectedSurface<'_>, usize> {
+        let (_, want) = self.tool_claim_tokens(ws);
+        let activity = self.surface.select_granted(&ws.room_affordances, grant_tokens)?;
+        let selected = self.with_learned_head(activity, ws, grant_tokens);
+        if selected.tokens > grant_tokens { return Err(selected.tokens); }
+        Ok(selected.with_demand(want))
     }
 
     /// The activity's own surface, without her learned head: what she is offered when her

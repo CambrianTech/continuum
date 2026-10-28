@@ -100,6 +100,18 @@ impl ToolSurface {
         }
     }
 
+    /// Full activity surface plus the retained learned verbs, counted as a union.
+    /// No grant is an input: focus cannot teach the serving planner its own cap.
+    pub fn claim_with_head(&self, declared: &[String], held: &[String]) -> (usize, usize) {
+        let (floor, _) = self.claim_tokens(declared);
+        let recipe = self.declared(declared);
+        let base = recipe.as_ref().map_or(&self.hands.specs, |offer| &offer.specs);
+        let wanted: Vec<_> = self.names.iter().zip(&self.registry.specs)
+            .filter(|(name, spec)| held.contains(name) || base.iter().any(|b| b.name == spec.name))
+            .map(|(_, spec)| spec.clone()).collect();
+        (floor, tool_surface_tokens_of(&wanted))
+    }
+
     /// Select a whole schema level from an allocation grant, never a window share.
     /// `Err(floor)` reports capacity instead of emitting schemas beyond the grant.
     /// The epoch owner retains this selection until the next epoch boundary.
@@ -291,6 +303,11 @@ impl<'a> SelectedSurface<'a> {
         self.demand
     }
 
+    pub(crate) fn with_demand(mut self, demand: usize) -> Self {
+        self.demand = demand;
+        self
+    }
+
     /// Charge the budget at least `reserve_tokens` for this surface: the next epoch's head,
     /// which a turnover in this act would adopt, is larger than this one.
     pub fn reserving(mut self, reserve_tokens: usize) -> Self {
@@ -407,6 +424,19 @@ mod tests {
         assert_eq!(floor, want, "an explicit recipe is indivisible");
         assert_eq!(surface.select_granted(&declared, floor - 1).err(), Some(floor));
         assert_eq!(surface.select_granted(&declared, want).expect("recipe fits").demand_tokens(), want);
+    }
+
+    #[test]
+    fn learned_want_is_a_union_not_the_granted_head_size() {
+        let surface = built(REGISTRY.iter().copied());
+        let (floor, want) = surface.claim_with_head(&[], &[]);
+        assert_eq!(surface.claim_with_head(&[], &["code/read".into()]), (floor, want));
+        let held = vec!["activity/archive".into()];
+        let (_, extended) = surface.claim_with_head(&[], &held);
+        assert_eq!(extended, want + tool_surface_tokens_of(&[spec("activity/archive")]));
+        assert_eq!(surface.claim_with_head(&[], &[held[0].clone(), held[0].clone()]), (floor, extended));
+        let selected = surface.select_granted(&[], floor).expect("core fits").with_demand(extended);
+        assert_eq!((selected.tokens, selected.demand_tokens()), (floor, extended));
     }
 
     fn spec(name: &str) -> NativeToolSpec {
