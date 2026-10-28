@@ -18,17 +18,17 @@ use crate::cognition::tool_executor::spill;
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 
 /// Default context lines around each grep match (like `grep -C2`).
-// context-budget-exempt: grep-style -C lines around a match — a display shape; the rendered slice's total size is window-derived (render_slice_chars)
+// context-budget-exempt: grep-style -C lines around a match; transport bounds the page, the view bounds perception.
 const DEFAULT_CONTEXT_LINES: usize = 2;
 /// Default cap on grep match windows — enough to see the failures, bounded so a
 /// pattern that matches everything can't re-flood.
 const DEFAULT_MAX_MATCHES: usize = 50;
-// Char budget for the rendered slice — a fraction of the caller's LIVE served window
-// (`ContextBudget::render_slice_chars`), kept below the result-fold bound so a normal
-// investigation isn't itself re-spilled. Never a constant: the old `RENDER_BUDGET_CHARS =
-// 12_000` clipped a 1M-context mind to the same slice as a 16k one.
-// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
-use crate::cognition::context_budget::ContextBudget;
+/// Maximum encoded body of one saved-output transport page, independent of model context.
+/// A provisional 64 KiB I/O bound, not a measured optimum or a perception allowance.
+/// The result enters the ordinary action source; only the shared view chooses its level.
+/// nextByteOffset keeps every remaining byte reachable. Full response-lifetime RAM custody
+/// belongs to the resource daemon and is separate from this per-read bound.
+const OUTPUT_TRANSPORT_PAGE_BYTES: usize = 64 * 1024;
 
 /// Prebuilt failure-hunting filters, so a persona navigates a flood WITHOUT having to
 /// know regex — the PX "hit the ground running" affordance for the overwhelming case
@@ -119,7 +119,7 @@ pub struct ToolOutputParams {
     #[ts(optional)]
     #[ts(type = "number")]
     pub byte_offset: Option<u64>,
-    /// Requested byte count; a page fits the live render allowance. No bytes are
+    /// Requested byte count; each encoded transport page is at most 64 KiB. No bytes are
     /// discarded when this request spans multiple pages: nextByteOffset continues it.
     #[ts(optional)]
     #[ts(type = "number")]
@@ -231,7 +231,7 @@ impl ActionCommand for ToolOutput {
             (None, None) => None,
         };
 
-        let budget = ContextBudget::live().render_slice_chars();
+        let budget = OUTPUT_TRANSPORT_PAGE_BYTES;
         if params.byte_length.is_some() && params.byte_offset.is_none() {
             return Err(CommandError::Invalid(
                 "byteLength requires byteOffset".into(),
@@ -309,6 +309,49 @@ fn read_saved(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A transport boundary may split UTF-8, but never discard a byte. This fixture
+    // spans several production-sized pages and reconstructs the exact saved body.
+    #[test]
+    fn transport_pages_reconstruct_the_whole_saved_output() {
+        use base64::Engine as _;
+        let dir = tempfile::tempdir().expect("temporary output directory");
+        let path = dir.path().join("saved.txt");
+        let body = "a🦀é\n".repeat(OUTPUT_TRANSPORT_PAGE_BYTES);
+        std::fs::write(&path, &body).expect("saved output");
+        let mut offset = 0;
+        let mut actual = Vec::new();
+        let mut pages = 0;
+        loop {
+            let result = read_saved(
+                &path,
+                ToolOutputParams {
+                    handle: "fixture".into(),
+                    byte_offset: Some(offset),
+                    ..Default::default()
+                },
+                None,
+                OUTPUT_TRANSPORT_PAGE_BYTES,
+            ).expect("bounded transport page");
+            assert!(result.content.len() <= OUTPUT_TRANSPORT_PAGE_BYTES);
+            actual.extend(if result.encoding == "base64" {
+                base64::engine::general_purpose::STANDARD.decode(result.content)
+                    .expect("lossless encoded bytes")
+            } else {
+                result.content.into_bytes()
+            });
+            pages += 1;
+            match result.next_byte_offset {
+                Some(next) => {
+                    assert!(next > offset);
+                    offset = next;
+                }
+                None => break,
+            }
+        }
+        assert!(pages > 1);
+        assert_eq!(actual, body.as_bytes());
+    }
 
     // what this catches: name mirrors path so the persona reaches it by the name
     // she'd guess from the elision marker.
