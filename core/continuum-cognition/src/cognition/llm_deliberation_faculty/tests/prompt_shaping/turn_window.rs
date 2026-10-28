@@ -349,7 +349,7 @@ async fn deliberates_through_a_real_adapter() {
 // cancellation are distinct. Reading playback cannot call the adapter.
 #[tokio::test]
 async fn playback_captures_actual_dispatch_before_completion_and_cancellation() {
-    use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+    use continuum_capture::{self, CallStatus, JsonlPromptCaptureSink};
     let dir = tempfile::tempdir().expect("capture fixture directory");
     let persona = Uuid::new_v4();
     let room = Uuid::new_v4();
@@ -372,14 +372,14 @@ async fn playback_captures_actual_dispatch_before_completion_and_cancellation() 
         _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
     }
     let pending =
-        prompt_capture::page(dir.path(), persona, None, false, 10).expect("pending page");
+        continuum_capture::page(dir.path(), persona, None, false, 10).expect("pending page");
     assert_eq!(pending.entries.len(), 1);
     let first = &pending.entries[0];
     assert!(matches!(first.status, CallStatus::Submitted));
     assert_eq!(first.cycle_id, Some(17));
     assert_eq!(first.room_id, room);
     let input =
-        prompt_capture::detail(dir.path(), persona, &first.cursor).expect("pending input");
+        continuum_capture::detail(dir.path(), persona, &first.cursor).expect("pending input");
     assert!(input.terminal.is_none());
     assert!(
         input.submitted.as_ref().expect("submitted")["request"]["messages"]
@@ -389,11 +389,11 @@ async fn playback_captures_actual_dispatch_before_completion_and_cancellation() 
     let verdict = turn.await.expect("completed deliberation");
     assert!(verdict.decision.is_some());
     let completed =
-        prompt_capture::page(dir.path(), persona, Some(&first.cursor), true, 10)
+        continuum_capture::page(dir.path(), persona, Some(&first.cursor), true, 10)
             .expect("terminal page");
     assert_eq!(completed.entries.len(), 1);
     assert!(matches!(completed.entries[0].status, CallStatus::Completed));
-    let detail = prompt_capture::detail(dir.path(), persona, &completed.entries[0].cursor)
+    let detail = continuum_capture::detail(dir.path(), persona, &completed.entries[0].cursor)
         .expect("completed payload");
     assert!(detail.issues.is_empty());
     {
@@ -415,7 +415,7 @@ async fn playback_captures_actual_dispatch_before_completion_and_cancellation() 
         );
     }
     let legacy =
-        prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
+        continuum_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
             .expect("existing prompt/dataset reader");
     assert_eq!(legacy.len(), 1);
     assert!(legacy[0]["messages"]
@@ -424,14 +424,14 @@ async fn playback_captures_actual_dispatch_before_completion_and_cancellation() 
     assert!(legacy[0]["response"]["text"].is_string());
 
     let mut malformed =
-        prompt_capture::detail(dir.path(), persona, &completed.entries[0].cursor)
+        continuum_capture::detail(dir.path(), persona, &completed.entries[0].cursor)
             .expect("completed payload for integrity check");
     malformed.submitted.as_mut().expect("submitted request")["request"]
         .as_object_mut()
         .expect("typed request object")
         .remove("messages");
     assert!(
-        prompt_capture::legacy_projection(malformed).is_err(),
+        continuum_capture::legacy_projection(malformed).is_err(),
         "missing required payload must stay explicit, not resemble a filtered provider failure"
     );
 
@@ -443,7 +443,7 @@ async fn playback_captures_actual_dispatch_before_completion_and_cancellation() 
     }
     drop(cancelled);
     let page =
-        prompt_capture::page(dir.path(), persona, None, false, 10).expect("cancelled page");
+        continuum_capture::page(dir.path(), persona, None, false, 10).expect("cancelled page");
     assert!(matches!(
         page.entries.last().expect("terminal").status,
         CallStatus::Cancelled
@@ -456,7 +456,7 @@ async fn playback_captures_actual_dispatch_before_completion_and_cancellation() 
 
 #[tokio::test]
 async fn playback_records_inference_failure_without_a_fake_response() {
-    use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+    use continuum_capture::{self, CallStatus, JsonlPromptCaptureSink};
     let dir = tempfile::tempdir().expect("capture fixture directory");
     let persona = Uuid::new_v4();
     let faculty = LlmDeliberationFaculty::new(
@@ -471,12 +471,12 @@ async fn playback_records_inference_failure_without_a_fake_response() {
     let ws = Workspace::in_room("Review the pending task.", Uuid::new_v4());
     let result = faculty.contribute(&ws).await.expect("fault contribution");
     assert!(result.fault.is_some());
-    let page = prompt_capture::page(dir.path(), persona, None, false, 10)
+    let page = continuum_capture::page(dir.path(), persona, None, false, 10)
         .expect("failed call page");
     let last = page.entries.last().expect("failed terminal");
     assert!(matches!(last.status, CallStatus::Failed));
     let detail =
-        prompt_capture::detail(dir.path(), persona, &last.cursor).expect("failure detail");
+        continuum_capture::detail(dir.path(), persona, &last.cursor).expect("failure detail");
     let terminal = detail.terminal.expect("failed terminal payload");
     assert!(terminal["response"].is_null());
     assert!(terminal["error"]
@@ -484,7 +484,7 @@ async fn playback_records_inference_failure_without_a_fake_response() {
         .expect("failure cause")
         .contains("exhausted"));
     assert!(
-        prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
+        continuum_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
             .expect("compatibility reader")
             .is_empty(),
         "failed calls must not become training examples"
@@ -495,7 +495,7 @@ async fn playback_records_inference_failure_without_a_fake_response() {
 // for inspection without accepting it as a decision or training example.
 #[tokio::test]
 async fn playback_excludes_typed_error_responses_from_completed_training_rows() {
-    use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+    use continuum_capture::{self, CallStatus, JsonlPromptCaptureSink};
     let dir = tempfile::tempdir().expect("capture fixture directory");
     let persona = Uuid::new_v4();
     let mut response = HeuristicInferenceAdapter::new()
@@ -543,7 +543,7 @@ async fn playback_excludes_typed_error_responses_from_completed_training_rows() 
     assert!(
         matches!(accepted.decision, Some(Decision::Speak { text }) if text == "Ship it.")
     );
-    let page = prompt_capture::page(dir.path(), persona, None, false, 10)
+    let page = continuum_capture::page(dir.path(), persona, None, false, 10)
         .expect("typed error page");
     assert_eq!(page.entries.len(), 6);
     let failures: Vec<_> = page
@@ -553,7 +553,7 @@ async fn playback_excludes_typed_error_responses_from_completed_training_rows() 
         .collect();
     assert_eq!(failures.len(), 2);
     for terminal in failures {
-        let detail = prompt_capture::detail(dir.path(), persona, &terminal.cursor)
+        let detail = continuum_capture::detail(dir.path(), persona, &terminal.cursor)
             .expect("actual error response");
         assert_eq!(
             detail.terminal.expect("terminal record")["response"]["text"],
@@ -562,7 +562,7 @@ async fn playback_excludes_typed_error_responses_from_completed_training_rows() 
         );
     }
     let completed =
-        prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
+        continuum_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
             .expect("completed reader");
     assert_eq!(
         completed.len(),

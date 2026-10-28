@@ -9,7 +9,7 @@ use super::*;
     #[test]
     pub(super) fn a_staged_turn_is_read_back_as_the_calls_she_lived_and_a_hole_is_named() {
         use crate::ai::types::{ChatMessage, TextGenerationRequest, TextGenerationResponse};
-        use crate::cognition::prompt_capture::{CaptureLease, JsonlPromptCaptureSink, PromptCall};
+        use continuum_capture::{CaptureLease, JsonlPromptCaptureSink, PromptCall};
         let dir = tempfile::tempdir().expect("capture dir");
         let persona = Uuid::new_v4();
         let request = TextGenerationRequest {

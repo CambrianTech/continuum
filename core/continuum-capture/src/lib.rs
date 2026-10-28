@@ -1,20 +1,27 @@
+//! The one capture of every mind's calls, below everything that writes or reads it
+//! (docs/architecture/DRIVER-GATEWAY.md, "One glass box for every system"): the residents'
+//! deliberation faculty and the driver gateway write it; the act inspector, replay, playback
+//! and Dreaming read it. Privacy of thought is decided here once (`mind_room`).
+//!
 //! The existing deliberation capture owner: borrowed request submission before
 //! inference, then a small terminal record. Playback reads never run cognition.
 use continuum_base::time::EpochMs;
-use crate::ai::types::{ChatMessage, TextGenerationRequest, TextGenerationResponse};
+use continuum_engine::ai::types::{ChatMessage, TextGenerationRequest, TextGenerationResponse};
 use serde::Serialize;
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
 use uuid::Uuid;
 
-#[path = "capture_owner.rs"]
-pub(super) mod owner;
+pub mod owner;
 
-#[path = "prompt_capture_store.rs"]
 mod store;
 pub use store::{detail, page};
 pub use store::{CallHeader, CallStatus, PlaybackDetail, PlaybackPage};
 use store::{PayloadRef, Store};
+pub mod mind_room;
+mod fixture_dir;
+pub use fixture_dir::fixture_dir;
+
 pub const FIXTURE_DIR: &str = "fixtures/prompt-captures";
 
 #[derive(Debug, Serialize)]
@@ -119,8 +126,8 @@ impl CaptureLease {
         // A turn in her mind room is hers (PRIVACY-OF-THOUGHT.md §4, sink 2): the lease is
         // inert, so neither `finish` nor `Drop` writes, and every dataset built from
         // captures (sink 3) has nothing to read.
-        let token = if crate::cognition::mind_room::is_private_room(call.persona_id, call.room_id) {
-            crate::cognition::mind_room::note_withheld(call.persona_id, "prompt_capture");
+        let token = if crate::mind_room::is_private_room(call.persona_id, call.room_id) {
+            crate::mind_room::note_withheld(call.persona_id, "prompt_capture");
             None
         } else {
             sink.submitted(call, request)
@@ -128,7 +135,7 @@ impl CaptureLease {
         // A recorded call keeps its raw stream too, so the terminal entry can show the tokens
         // the parse turned into this response (card fb6d7912).
         if token.is_some() {
-            crate::inference::wire_tap::arm(&call.request_id);
+            continuum_engine::inference::wire_tap::arm(&call.request_id);
         }
         Self {
             sink,
@@ -178,7 +185,7 @@ impl CaptureLease {
             error,
             self.started.elapsed().as_millis() as u64,
         );
-        crate::inference::wire_tap::take(&token.header.request_id);
+        continuum_engine::inference::wire_tap::take(&token.header.request_id);
         cursor
     }
 }
@@ -218,7 +225,7 @@ struct TerminalRecord<'a> {
     /// (normalization named in `inference::wire_tap`), the last attempt being the response's
     /// (card fb6d7912). Absent when no stream was watched.
     #[serde(skip_serializing_if = "Option::is_none")]
-    wire: Option<crate::inference::wire_tap::Wire>,
+    wire: Option<continuum_engine::inference::wire_tap::Wire>,
     /// Why a watched stream is NOT in this entry, when it is not: a stream that would push the
     /// entry past the capture's row limit is dropped from it, so it is never the cause of an
     /// unrecordable entry, and the drop is said.
@@ -263,8 +270,8 @@ pub struct JsonlPromptCaptureSink {
     store: Arc<Mutex<Store>>,
 }
 impl JsonlPromptCaptureSink {
-    pub(crate) fn open_for_persona(persona_id: Uuid) -> std::io::Result<Self> {
-        let dir = crate::cognition::capture::fixture_dir(FIXTURE_DIR).ok_or_else(|| {
+    pub fn open_for_persona(persona_id: Uuid) -> std::io::Result<Self> {
+        let dir = crate::fixture_dir(FIXTURE_DIR).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "cannot resolve capture home directory",
@@ -289,7 +296,7 @@ impl JsonlPromptCaptureSink {
             store,
         })
     }
-    pub(crate) fn with_session(mut self, session_id: Uuid) -> Self {
+    pub fn with_session(mut self, session_id: Uuid) -> Self {
         self.session_id = session_id;
         self
     }
@@ -393,7 +400,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
             elapsed_ms,
             response,
             error,
-            wire: crate::inference::wire_tap::take(&header.request_id),
+            wire: continuum_engine::inference::wire_tap::take(&header.request_id),
             wire_omitted: None,
         };
         let record = within_row_limit(record, store::MAX_PAYLOAD_BYTES);
@@ -495,9 +502,9 @@ fn recorded_response_failed(response: &serde_json::Value) -> bool {
         .get("finishReason")
         .or_else(|| response.get("finish_reason"));
     finish.is_some_and(|value| {
-        <crate::ai::types::FinishReason as serde::Deserialize<'_>>::deserialize(value)
+        <continuum_engine::ai::types::FinishReason as serde::Deserialize<'_>>::deserialize(value)
             .map_or(true, |reason| {
-                reason == crate::ai::types::FinishReason::Error
+                reason == continuum_engine::ai::types::FinishReason::Error
             })
     }) || response.get("error").is_some_and(|error| !error.is_null())
 }
@@ -505,7 +512,7 @@ fn recorded_response_failed(response: &serde_json::Value) -> bool {
 /// Compatibility projection for existing prompt inspection and dataset miners.
 /// Only a completed response is a training candidate. Failed/cancelled/pending
 /// calls remain visible through playback, never promoted to completed examples.
-pub(crate) fn legacy_projection(
+pub fn legacy_projection(
     detail: PlaybackDetail,
 ) -> std::io::Result<Option<serde_json::Value>> {
     let malformed =
@@ -727,7 +734,7 @@ mod tests {
         };
         // Opening the store may write its own index; the turn must add nothing beyond it.
         let opened = bytes(dir.path());
-        let mind = crate::cognition::mind_room::mind_room_id(persona);
+        let mind = crate::mind_room::mind_room_id(persona);
         let mut finished = CaptureLease::start(Arc::clone(&sink), &call(mind), &request);
         assert_eq!(finished.finish(None, Some("done")), None, "an inert lease names no entry");
         drop(CaptureLease::start(Arc::clone(&sink), &call(mind), &request));
@@ -761,7 +768,7 @@ mod tests {
             ..Default::default()
         };
         let mut lease = CaptureLease::start(Arc::clone(&sink), &call(Uuid::new_v4(), &request_id), &request);
-        let mut stream = crate::inference::wire_tap::WireTap::open(Some(&request_id));
+        let mut stream = continuum_engine::inference::wire_tap::WireTap::open(Some(&request_id));
         stream.push(r#"{"choices":[{"delta":{"reasoning_content":"close the stray cards"}}]}"#);
         stream.push(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"work/create","arguments":"{\"title\":\"x\"}"}}]}}]}"#);
         drop(stream);
@@ -776,7 +783,7 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(events[1].as_str().unwrap().contains("work/create"), "as received, in order");
         assert_eq!(terminal["wire"]["open_at_end"], false);
-        assert_eq!(crate::inference::wire_tap::take(&request_id), None, "released when the call ended");
+        assert_eq!(continuum_engine::inference::wire_tap::take(&request_id), None, "released when the call ended");
 
         // A stream too large for a row is dropped from the entry and said, never allowed to
         // make the response itself unrecordable.
@@ -792,7 +799,7 @@ mod tests {
             elapsed_ms: 0,
             response: None,
             error: None,
-            wire: Some(crate::inference::wire_tap::Wire {
+            wire: Some(continuum_engine::inference::wire_tap::Wire {
                 attempts: vec![vec!["data: ".to_string() + &"t".repeat(4096)]],
                 open_at_end: false,
             }),
@@ -806,12 +813,12 @@ mod tests {
         assert!(with_newline.wire.is_some() && with_newline.wire_omitted.is_none(), "JSON plus newline fits");
 
         let private_id = format!("wire-{}", Uuid::new_v4());
-        let mind = crate::cognition::mind_room::mind_room_id(persona);
+        let mind = crate::mind_room::mind_room_id(persona);
         drop(CaptureLease::start(Arc::clone(&sink), &call(mind, &private_id), &request));
-        let mut thought = crate::inference::wire_tap::WireTap::open(Some(&private_id));
+        let mut thought = continuum_engine::inference::wire_tap::WireTap::open(Some(&private_id));
         thought.push("a private token");
         drop(thought);
-        assert_eq!(crate::inference::wire_tap::take(&private_id), None, "her mind room arms nothing");
+        assert_eq!(continuum_engine::inference::wire_tap::take(&private_id), None, "her mind room arms nothing");
     }
     #[test]
     fn concurrent_capture_wrappers_share_one_owner_and_keep_distinct_sessions() {

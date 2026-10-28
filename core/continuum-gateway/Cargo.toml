@@ -6,6 +6,7 @@ description = "The driver gateway (docs/architecture/DRIVER-GATEWAY.md): one doo
 
 [dependencies]
 continuum-engine = { path = "../continuum-engine" }
+continuum-capture = { path = "../continuum-capture" }
 continuum-base = { path = "../continuum-base" }
 async-trait = "0.1"
 axum = "0.8"

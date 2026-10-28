@@ -54,7 +54,7 @@
 //! and the turn returns its real result.
 
 use continuum_base::time::EpochMs;
-use crate::cognition::capture::fixture_dir;
+use continuum_capture::fixture_dir;
 use crate::cognition::tool_executor::types::MediaItemLite;
 use crate::persona::response::{PersonaResponse, RespondInput};
 use crate::cognition::trace::CognitionTrace;
@@ -231,8 +231,8 @@ pub fn record_turn_frame_replay(record: &PersonaTurnFrameReplayRecord) {
     if disabled() {
         return;
     }
-    if crate::cognition::mind_room::is_private_room(record.persona_id, record.room_id) {
-        crate::cognition::mind_room::note_withheld(record.persona_id, "turn_frame_recorder");
+    if continuum_capture::mind_room::is_private_room(record.persona_id, record.room_id) {
+        continuum_capture::mind_room::note_withheld(record.persona_id, "turn_frame_recorder");
         return;
     }
     let dir = match fixture_dir(TURN_FRAME_FIXTURE_DIR) {
@@ -249,8 +249,8 @@ fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
         return;
     }
     // A turn in her mind room is hers (PRIVACY-OF-THOUGHT.md §4, sink 1): not recorded.
-    if crate::cognition::mind_room::is_private_room(input.persona.persona_id, input.turn_context.room_id) {
-        crate::cognition::mind_room::note_withheld(input.persona.persona_id, "turn_recorder");
+    if continuum_capture::mind_room::is_private_room(input.persona.persona_id, input.turn_context.room_id) {
+        continuum_capture::mind_room::note_withheld(input.persona.persona_id, "turn_recorder");
         return;
     }
     let dir = match fixture_dir(RESPOND_FIXTURE_DIR) {

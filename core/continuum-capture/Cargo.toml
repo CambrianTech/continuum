@@ -1,0 +1,20 @@
+[package]
+name = "continuum-capture"
+version = "0.1.0"
+edition = "2021"
+# Captures are stamped with the build they ran on (CONTINUUM_BUILD_GIT_SHA): core's build
+# script is the one owner of that identity, as for continuum-cognition.
+build = "../continuum-core/build.rs"
+description = "The one capture of every mind's calls (residents, forks, driver sessions) and the privacy-of-thought gate every sink asks; written by the deliberation faculty and the driver gateway, read by the act inspector, replay, playback and Dreaming."
+
+[dependencies]
+continuum-base = { path = "../continuum-base" }
+continuum-engine = { path = "../continuum-engine" }
+serde.workspace = true
+serde_json.workspace = true
+ts-rs.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

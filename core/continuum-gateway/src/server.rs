@@ -29,8 +29,8 @@ async fn models() -> Json<Value> {
 }
 
 /// Decode, select, generate, encode: the same for every format.
-async fn serve<W: Wire>(Json(body): Json<Value>) -> Response {
-    let call = match W::decode(body) {
+async fn serve<W: Wire>(headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+    let mut call = match W::decode(body) {
         Ok(call) => call,
         Err(BadRequest(why)) => return refuse::<W>(StatusCode::BAD_REQUEST, ErrorKind::InvalidRequest, &why),
     };
@@ -40,11 +40,26 @@ async fn serve<W: Wire>(Json(body): Json<Value>) -> Response {
         Err(error) => return refused::<W>(error),
     };
     let id = format!("{}_{}", prefix::<W>(), uuid::Uuid::new_v4().simple());
-    continuum_base::probe!(class = "gateway.call", wire = W::NAME, model = %model, stream = call.stream,
+    let session = crate::session::session_of(&call.request);
+    // The session is a mind: its id keys a warm page the engine pins, saves and restores.
+    // `x-continuum-session: off` asks for no session memory (a one-shot call).
+    let remembered = headers.get("x-continuum-session").and_then(|v| v.to_str().ok()) != Some("off");
+    if remembered {
+        call.request.persona_id = Some(session.to_string());
+    }
+    continuum_base::probe!(class = "gateway.call", wire = W::NAME, model = %model, stream = call.stream, session = %session, remembered = remembered,
         tools = call.request.tools.as_ref().map_or(0, Vec::len) as u64, messages = call.request.messages.len() as u64,
         "an agent's call reached the engine through the gateway");
+    let mut lease = crate::session::record(session, &id, W::NAME, &call.request);
     if !call.stream {
-        return match route::generate(&adapter, call.request).await {
+        let outcome = route::generate(&adapter, call.request).await;
+        if let Some(lease) = lease.as_mut() {
+            match &outcome {
+                Ok(response) => lease.finish(Some(response), None),
+                Err(error) => lease.finish(None, Some(&format!("{error:?}"))),
+            };
+        }
+        return match outcome {
             Ok(response) => Json(W::answer(&response, &id)).into_response(),
             Err(error) => refused::<W>(error),
         };
@@ -56,7 +71,7 @@ async fn serve<W: Wire>(Json(body): Json<Value>) -> Response {
         let generation = tokio::spawn(async move { route::stream(&adapter, call.request, chunks).await });
         let send = |batch: Vec<crate::wire::Frame>| batch.into_iter().all(|f| events.send(Ok::<_, std::convert::Infallible>(f.into_event())).is_ok());
         if !send(encoder.opened()) {
-            return; // the agent left; the generation runs to completion and is dropped
+            return; // the agent left; the lease records the call as cancelled when dropped
         }
         while let Some(chunk) = received.recv().await {
             if !send(encoder.chunk(&chunk)) {
@@ -64,8 +79,18 @@ async fn serve<W: Wire>(Json(body): Json<Value>) -> Response {
             }
         }
         let closing = match generation.await {
-            Ok(Ok(response)) => encoder.finished(&response),
-            Ok(Err(RouteError::Engine(why))) => encoder.failed(&why),
+            Ok(Ok(response)) => {
+                if let Some(lease) = lease.as_mut() {
+                    lease.finish(Some(&response), None);
+                }
+                encoder.finished(&response)
+            }
+            Ok(Err(RouteError::Engine(why))) => {
+                if let Some(lease) = lease.as_mut() {
+                    lease.finish(None, Some(&why));
+                }
+                encoder.failed(&why)
+            }
             Ok(Err(RouteError::UnknownModel { model, .. })) => encoder.failed(&format!("model `{model}` is not served here")),
             Err(join) => encoder.failed(&format!("generation task ended: {join}")),
         };

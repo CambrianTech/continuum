@@ -584,7 +584,7 @@
         let her = Uuid::new_v4();
         state.set_owner_id(her);
         let mut private = semantic_reflection("a private thought", Uuid::new_v4());
-        private.context_id = Some(crate::cognition::mind_room::mind_room_id(her));
+        private.context_id = Some(continuum_capture::mind_room::mind_room_id(her));
         assert!(matches!(
             state.admit_reflection(private).expect("no error"),
             AdmissionDecision::Drop { reason: crate::cognition::engram::AdmissionDropReason::PolicyDeniedAdmission { .. } }

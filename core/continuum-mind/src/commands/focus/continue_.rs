@@ -119,7 +119,7 @@ impl ActionCommand for FocusContinue {
             // "room is required" (2026-10-05 04:42Z): a room she is standing in is not
             // something to make her spell out.
             let activity = if p.private {
-                crate::cognition::mind_room::mind_room_id(persona)
+                continuum_capture::mind_room::mind_room_id(persona)
             } else if p.room.trim().is_empty() {
                 ctx.context_id.filter(|id| !id.is_nil()).ok_or_else(|| {
                     CommandError::Invalid(
@@ -150,7 +150,7 @@ impl ActionCommand for FocusContinue {
         saved.map_err(|e| CommandError::Internal(format!("your continuation was set but could not be saved: {e}")))?;
         // A private continuation is sealed in her mind store (sink 10), never in
         // mind-state.json; an open one, or a clear, removes any sealed one left behind.
-        let private = continuation.as_ref().filter(|c| crate::cognition::mind_room::is_private_room(persona, c.activity));
+        let private = continuation.as_ref().filter(|c| continuum_capture::mind_room::is_private_room(persona, c.activity));
         crate::persona::mind_store::seal_continuation(persona, private)
             .map_err(|e| CommandError::Internal(format!("your private continuation could not be sealed: {e}")))?;
 

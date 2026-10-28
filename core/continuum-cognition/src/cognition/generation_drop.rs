@@ -7,7 +7,7 @@
 //!
 //! A generation the awaiting side abandons leaves ONE trace today: a `cancelled` row in
 //! the persona's prompt capture whose error reads `"request future dropped before a
-//! terminal response"` — written by `prompt_capture::CaptureLease`'s `Drop`, which is the
+//! terminal response"` — written by `continuum_capture::CaptureLease`'s `Drop`, which is the
 //! only thing left running when a future is torn down. Nothing counts it, nothing says
 //! WHICH bound reaped it or what the bound was derived from, and nothing says how much
 //! output existed at the moment it was thrown away. Fifty submitted generations on the M5
@@ -18,7 +18,7 @@
 //!
 //! - **Never dispatched** — the mind was abandoned at an admission gate, before the model
 //!   ever saw the request. Already counted as `lane_starved`; this module only gives its
-//!   capture row a NAMED reason ([`crate::cognition::prompt_capture::CaptureLease::abandon`])
+//!   capture row a NAMED reason ([`continuum_capture::CaptureLease::abandon`])
 //!   so it stops masquerading as a dropped generation.
 //! - **Dropped in flight** — the model WAS generating and the awaiting side went away.
 //!   That is what [`InFlight`] witnesses and what the hour line counts as `dropped`.

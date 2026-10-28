@@ -360,7 +360,7 @@ pub(super) async fn read_lived(
         .map(|r| r.capture.clone())
         .collect();
     let read = tokio::task::spawn_blocking(move || {
-        let dir = crate::cognition::capture::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR);
+        let dir = continuum_capture::fixture_dir(continuum_capture::FIXTURE_DIR);
         read_lived_calls(dir.as_deref(), persona_id, served, known)
     })
     .await;
@@ -418,9 +418,9 @@ pub(super) fn read_lived_calls(
             missing.get_or_insert_with(|| "capture directory unavailable".into());
             continue;
         };
-        let decoded = crate::cognition::prompt_capture::detail(dir, persona_id, &cursor)
+        let decoded = continuum_capture::detail(dir, persona_id, &cursor)
             .map_err(|e| e.to_string())
-            .and_then(crate::cognition::prompt_capture::decode)
+            .and_then(continuum_capture::decode)
             .and_then(|call| {
                 call.response
                     .map(|response| (call.request, response))

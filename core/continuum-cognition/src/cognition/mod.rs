@@ -37,7 +37,6 @@ pub mod engram;
 pub mod engram_graph;
 pub mod home;
 pub mod inbox_admission;
-pub mod mind_room;
 pub mod recall_metadata;
 pub mod trace;
 pub mod cached_source;
@@ -90,7 +89,6 @@ pub mod handoff;
 /// Bounded per-room diagnostics state, with the eviction decision CLAUDE.md
 /// requires of anything that accumulates (#3903 review).
 pub mod bounded_room_ledger;
-pub mod prompt_capture;
 pub(crate) mod prompt_prefix;
 pub mod rag_source_faculty;
 pub mod rate_proposals;
@@ -121,7 +119,6 @@ pub mod workspace_capture;
 // fixture policy, the faculty ids persona's sources deliver under, the one budget
 // allocator, text analysis, prompt assembly, redaction, the health ledger, presence
 // glyphs, mind events, the room directory and the focus registry.
-pub mod capture;
 pub mod faculty_ids;
 pub mod focus;
 pub mod health_ledger;

@@ -64,17 +64,63 @@ The `Responses` API's server-side state is exactly this: the response id names t
 
 **What the gateway does not do.** It does not run an agent loop, grade work, or rewrite the agent's prompt. It is the model behind the agent, with memory and learning.
 
+## One glass box for every system (Joel, 2026-10-27)
+
+"We should have built our replay and glass boxing around this … so that this is straightforward regardless of system."
+
+**The seam.** Every step of every agent (Claude Code, Codex, Grok Build, Hermes, opencode) crosses the gateway. Every act of every resident crosses the deliberation faculty. Both write ONE capture, so everything we built for residents works on any system unchanged:
+- the act inspector: per-act prefill, decode, reuse, view layers and divergence;
+- the replay;
+- the glass-box playback.
+
+**What moves.** The capture owner (`continuum-cognition/src/cognition/prompt_capture.rs`, 940 lines, schema v4, `fixtures/prompt-captures/<persona>.jsonl`) moves down, below both callers: Serving's floor, `continuum-engine` or its own small crate.
+- It is keyed by mind (`PageKey`): resident, fork, or `driver(user, session)`.
+- The deliberation faculty and the gateway are its two writers, by the same `submitted`/`completed` records.
+- The private-room withholding rule moves with it.
+- Scope rules (§17) decide what a driver session may record at all.
+
+**The layering: learning and the genome ride the same seam** (Joel: "learning and genome must work anyway. All about proper layering").
+
+| Layer | Owners | Rule |
+|---|---|---|
+| 1. Serving floor | the engine; `MindMemory` (SERVING-ENGINE §1a); the capture owner | One identity, the mind (`PageKey`), for a resident, a fork or a driver session. |
+| 2. Writers | the residents' deliberation faculty; the gateway (every external agent) | Both write the same capture. Neither knows the readers. |
+| 3. Readers of the capture | glass box and replay (act inspector, playback, `serving-replay`); Dreaming (`dataset/from_captures` → training → genes) | They read records, never which system produced them. |
+| 4. Genome | genes selected by what a mind is on, served at `MindMemory::seat` | A gene change calls `forget`, so KV computed under the old genome is never restored. |
+
+A driver session is perception like a resident's act. It is learned from under the scope rules and served genes the same way. Nothing above layer 1 special-cases a system.
+
+**Why it is the tuning loop.**
+- A captured Claude Code or Codex session replays against our engine on the dyno, with no live agent and no residents, under any engine config. Their loop becomes our validator: prefill per step, reuse, and time to a passing test.
+- A resident's captured act is read by the same inspector beside an agent's step on the same task, so the gap is visible act by act, not argued: context size, layers, act count, reasoning length.
+- Tuning our system to match theirs is then a replay comparison, and glass-boxing any system that calls us is free.
+
 ## Build order (each slice lands with its validator first, and deletes what it replaces)
 
 | # | Slice | Validator (seconds, no residents) | Live gate | Owner |
 |---|---|---|---|---|
 | G0 | `Gateway` module on a stable port. The Anthropic adapter moved into it; `http/mod.rs`'s server deleted. | Claude Code's captured requests decode to the same `TextGenerationRequest` as today. | Claude Code on the M5 answers through it. | Fable |
 | G1 | OpenAI Chat Completions and Responses adapters, SSE. `GET /v1/models`. | Round-trip fixtures from each agent's captured traffic (Grok Build's `mock_server_tests` show its shapes). | Hermes, opencode and Grok Build each complete a coding task on the M5. | Fable |
+| G1.5 | **One capture for every system:** `prompt_capture` moved below cognition, keyed by mind. The gateway writes the same schema-v4 records as residents. | The act inspector and `serving-replay` read a captured Claude Code session exactly as a resident's. | The four-agent median-bug run glass-boxed beside Benchy's run on the same task. | Fable |
+| G-lean | **A lean install for drivers** (Joel: "only install these features, reducing bloat"). A `continuum-serve` binary built from the Serving seam only: gateway, `continuum-serving` (the engine lifecycle), `continuum-engine` with `MindMemory`, and the capture owner. Learning is opt-in by adding `continuum-dreaming`. No personas, rooms, airc, desktop or academy. The provider registration moves down from the core's AI module, so both binaries share it. | `cargo tree` shows no `continuum-core`, `continuum-mind` or `continuum-cognition`. The four-agent run passes on the lean binary. | Binary size, build time and RSS at idle against the full core. The same four agents on a machine with only the lean install. | Fable (binary), Codex (engine lifecycle seam) |
 | G2 | Session identity: `PageKey::driver`, seated through `MindMemory::seat` (needs §1a step 1). | Replay a captured agent session: prefix reuse per step at least 90%, and no resident evicted unsaved. | **The speed gate:** the same agent and model on the gateway vs stock llama-server, with four residents running. Time per agent step and re-prefilled tokens. | Fable (seat), Codex (scheduling temperature) |
 | G3 | Capture to the perception stream, under the scope rules. | A captured session yields perception rows and no secret. | — | Cormac (learning side) |
 | G4 | Driver genes: selected by what the session is on, served to the session. | — | **The learning gate** (§17's proof): correct an agent once, restart, give it an unseen related task. It succeeds; without the gene it fails. | Cormac, Fable |
+| G5 | **Org genomes** (Joel, 2026-10-27: "genome is also given to them; shared … learned repos shared within an org"). A repo's gene is learned from every developer's agent sessions in that repo, plus the repo's history (REPO-GENOME-AND-COURSES §17). Every org member's agent wears it the first time it works there. Private repos' genes stay on the org's own nodes over the grid; publishing beyond the org is an explicit act; secrets never enter. Fitness is usage across the org; revocation removes the skill. | A gene learned from one member's corrected session passes the acceptance test on another member's agent in the same repo. | An org of two (two machines, two agents, one repo): a correction made on one machine is applied on an unseen task by the other's agent after a restart. | Cormac (genome), Codex (grid trust), Fable (gateway serving) |
 
 G0 and G1 can start now. G2 waits on MindMemory's `seat`, and G4 on the residents passing the learning acceptance test (plan pipeline step 3).
+
+## Crate divisions this work exposes (Joel: "if you see more crate divisions note or build them")
+
+| Crate | State | From | Why it is its own crate |
+|---|---|---|---|
+| `continuum-gateway` | BUILT 10-27 | `continuum-core/src/http` (Anthropic-only endpoint deleted) | The Serving seam's door; depends only on the engine and capture. |
+| `continuum-capture` | BUILT 10-27 | `continuum-cognition`: `prompt_capture`, its store and owner, `mind_room`, `fixture_dir` (1,920 lines moved with history, 38 callers) | One capture and one privacy gate below every writer (faculty, gateway) and reader (inspector, replay, Dreaming). |
+| `continuum-mind-memory` | NEXT | `continuum-engine/src/inference/slots/*` plus the paging block of `turn_admission.rs` | SERVING-ENGINE §1a's owner. A crate keeps every other path from reaching `holders` or the ledger again. |
+| `continuum-providers` | NOTED | the AI provider module's registration in `continuum-core` | The lean `continuum-serve` and the full core must register adapters the same way, without the core. |
+| `continuum-serve` (bin) | NOTED | — | G-lean: the Serving seam alone, learning opt-in. |
+| `*-types` crates | NOTED | wire types shared by two crates (for example `TextGenerationRequest` and the capture records) | Grok Build's pattern (`xai-grok-config-types`): consumers depend on types, not on the engine. Cut where a reader such as `serving-replay` or the act inspector needs records without the engine. |
+| `wire_tap` | NOTED | `continuum-engine/src/inference/wire_tap.rs` | The raw-stream tap is armed only by the capture lease: it may belong in `continuum-capture`, behind a trait the engine calls. |
 
 ## Measured before and after
 
