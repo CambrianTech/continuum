@@ -17,7 +17,7 @@ use super::*;
             let footprints = jobs.path().join("footprints.json");
             Footprints::at(footprints.clone())
                 .for_engine(measured_on.map(str::to_owned))
-                .record_with(&fam(bound_at), 2 * gib, false, Uuid::nil())
+                .record_with(&fam(bound_at), 2 * gib, false, None, Uuid::nil())
                 .expect("test: graph-only refusal");
             let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, gib);
             t.lane = Box::new(move |_: &str| Some(LaneChoice { build: lane_build.map(str::to_owned), ..LaneChoice::at(url.clone(), 61_696) }));
@@ -613,10 +613,10 @@ use super::*;
         let dir = tempfile::tempdir().expect("test: dir");
         let f = Footprints::at(dir.path().join("f.json"));
         let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false };
-        f.record_with(&s, 900, true, Uuid::nil()).unwrap();
-        f.record_with(&s, 700, true, Uuid::nil()).unwrap();
+        f.record_with(&s, 900, true, None, Uuid::nil()).unwrap();
+        f.record_with(&s, 700, true, None, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(900));
-        f.record_with(&s, 1200, true, Uuid::nil()).unwrap();
+        f.record_with(&s, 1200, true, None, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(1200));
     }
 
@@ -641,7 +641,7 @@ use super::*;
         let f = Footprints::at(path.clone());
         assert_eq!(f.get(&full), Some(41_500), "the legacy row is full depth");
         assert_eq!(f.get(&top8), None, "a reduced-depth lookup never falls back to the legacy row");
-        f.record_with(&top8, 5_200, true, Uuid::nil()).unwrap();
+        f.record_with(&top8, 5_200, true, None, Uuid::nil()).unwrap();
         let reloaded = Footprints::at(path);
         assert_eq!(reloaded.get(&top8), Some(5_200));
         assert_eq!(reloaded.get(&full), Some(41_500), "the reduced row never answers for full depth");

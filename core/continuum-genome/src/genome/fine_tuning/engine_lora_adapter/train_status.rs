@@ -832,10 +832,12 @@ impl EngineRun {
                     if grown > 0 {
                         let ran_window = s.window.unwrap_or(self.shape.window); // unwrap_or: an engine that reports no window ran the one asked
                         let ran_chunk = s.chunk.unwrap_or_else(|| train_chunk_for(ran_window, self.shape.chunk)); // unwrap_or_else: an engine that reports no chunk ran the mirrored rule
-                        let refused = Shape { window: ran_window, chunk: ran_chunk, ..self.shape.clone() };
+                        // the depth the engine adapted (it reports it before the preflight), as a finish files it
+                        let depth = effective_depth(s.layers_adapted, s.n_layer);
+                        let refused = Shape { window: ran_window, chunk: ran_chunk, depth, ..self.shape.clone() };
                         // The job's examples belong back in her bucket so the next dispatch can
                         // step down; the trigger reads this to decide (card 2dfce676).
-                        if let Err(e) = write_returnable(&self.job_dir, &Returnable::EngineRefused(Refusal { window: ran_window, chunk: ran_chunk, graph_bytes: grown, error: why.to_string() })) {
+                        if let Err(e) = write_returnable(&self.job_dir, &Returnable::EngineRefused(Refusal { window: ran_window, chunk: ran_chunk, depth, layers: s.n_layer, graph_bytes: grown, error: why.to_string() })) {
                             continuum_base::probe!(
                                 class = "training.job.refusal_unrecorded",
                                 job = %self.job,
@@ -846,8 +848,10 @@ impl EngineRun {
                         // file I/O that may wait out a Windows sharing violation: off the runtime
                         let store = self.footprints.clone();
                         let (shape, job) = (refused.clone(), self.job);
-                        let whole = s.context_mib.is_some();
-                        let recorded = tokio::task::spawn_blocking(move || store.record_with(&shape, grown, whole, job))
+                        // A LOWER BOUND, whatever it includes: the preflight sized a graph that never
+                        // ran, so it rules this shape out but never trains the fit (card 0d21e644)
+                        let layers = s.n_layer;
+                        let recorded = tokio::task::spawn_blocking(move || store.record_with(&shape, grown, false, layers, job))
                             .await
                             .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
                         match recorded {
@@ -858,7 +862,7 @@ impl EngineRun {
                                 chunk = ran_chunk as u64,
                                 exact = refused.exact,
                                 graph_bytes = grown,
-                                "the engine refused this shape's graph; its measured size is filed so the next dispatch chooses a smaller chunk"
+                                "the engine refused this shape's graph; its size is filed as a lower bound so the next dispatch steps a rung down (chunk, then depth, then window)"
                             ),
                             Err(e) => continuum_base::probe!(
                                 class = "training.job.footprint_unrecorded",

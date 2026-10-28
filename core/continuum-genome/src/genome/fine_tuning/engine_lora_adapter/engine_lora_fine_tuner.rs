@@ -183,8 +183,28 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             rows = footprints.rows_like(&family);
             model = GraphModel::fit(&rows);
         }
-        let bounds = footprints.bound_rows_like(&family);
-        let plan = choose_window(need, governed_free, &rows, &bounds);
+        // CHUNK, THEN DEPTH, THEN WINDOW (card 0d21e644; Kimi's job 598e183c, refused at window
+        // 45,056 with only a smaller window left, which parks her longest turns): each depth's
+        // plan reads its own rows, so a depth is chosen by what was measured there, or calibrates
+        let (stepped, plan) = choose_depth(family.depth, footprints.layers(&family.model), need, |depth| {
+            let at = Shape { depth, ..family.clone() };
+            choose_window(need, governed_free, &footprints.rows_like(&at), &footprints.bound_rows_like(&at))
+        });
+        if stepped != family.depth {
+            continuum_base::probe!(
+                class = "training.job.depth_stepped",
+                job = %id,
+                needed = u64::from(need),
+                asked = family.depth.map_or(-1, i64::from), // -1 = every block
+                depth = stepped.map_or(-1, i64::from),
+                governed_free = governed_free,
+                "the asked depth cannot hold the window her examples need even at the smallest chunk; a shallower one can (or is unmeasured, and this run measures it), so every example trains whole"
+            );
+            family.depth = stepped;
+            body.top_layers = stepped;
+            rows = footprints.rows_like(&family);
+            model = GraphModel::fit(&rows);
+        }
         let window = plan.window;
         // ONE evaluation, ONE probe (Cormac on #4972): a predicted no-fit floor is reported as the
         // prediction it is, and never as window_calculated's "what trains her examples whole". The window is set
@@ -586,9 +606,9 @@ pub(super) fn finish_run(
             if asked_full {
                 // the asked depth, at the window that ran
                 let asked_ran = Shape { window: ran_window, chunk: ran_chunk, ..spec.shape.clone() };
-                let _ = store.record_with(&asked_ran, grown, status.context_mib.is_some(), job); // best effort: the full-depth row below is the one that matters
+                let _ = store.record_with(&asked_ran, grown, status.context_mib.is_some(), status.n_layer, job); // best effort: the full-depth row below is the one that matters
             }
-            if let Err(e) = store.record_with(&measured_shape, grown, status.context_mib.is_some(), job) {
+            if let Err(e) = store.record_with(&measured_shape, grown, status.context_mib.is_some(), status.n_layer, job) {
                 continuum_base::probe!(
                     class = "training.job.footprint_unrecorded",
                     job = %job,
