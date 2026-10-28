@@ -97,6 +97,7 @@ impl ServingDaemonModule {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn publish_plan_for_intent(
         &self,
         budget: HostBudget,
