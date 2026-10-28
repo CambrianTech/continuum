@@ -90,8 +90,8 @@ impl ServingHold {
 
     /// The live work a handoff of this node would end, named by its ids (card 9beab2da: the
     /// windows 5090's deploy killed in-engine job 8b46862c at 41% while this hold named it).
-    /// `None` for a hold of unknown cause: that is not evidence of work, and the deploy may be its
-    /// repair.
+    /// `None` when no work is named: no work, or a hold of unknown cause, which names none and is
+    /// not a confirmed absence either (the deploy guard reads the cause itself: `observation_of`).
     pub fn live_work(&self) -> Option<String> {
         match &self.by {
             HoldCause::Resident { work } if !work.is_empty() => Some(

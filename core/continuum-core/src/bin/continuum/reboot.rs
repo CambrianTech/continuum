@@ -164,13 +164,26 @@ async fn observe_engine_hold() -> continuum_cli_lifecycle::deploy_hold::HoldObse
             .map_err(|e| format!("serving snapshot: {e}"))
     });
     match snapshot {
-        Ok(snapshot) => snapshot
-            .held_for
-            .as_ref()
-            .and_then(continuum_core::inference::llama_server::serving_hold::ServingHold::live_work)
-            .map_or(HoldObservation::Free, HoldObservation::LiveWork),
+        Ok(snapshot) => observation_of(snapshot.held_for.as_ref()),
         Err(_) if !running_core_pids().into_iter().any(pid_alive) => HoldObservation::NoCore,
         Err(why) => HoldObservation::Unreadable(why),
+    }
+}
+
+/// PURE: what a decoded hold says. A hold of unknown cause (its residency record unreadable) is
+/// not a confirmed absence of work: Unreadable, deferred like a failed read (Codex on #5551).
+pub(super) fn observation_of(
+    held: Option<&continuum_core::inference::llama_server::serving_hold::ServingHold>,
+) -> continuum_cli_lifecycle::deploy_hold::HoldObservation {
+    use continuum_cli_lifecycle::deploy_hold::HoldObservation;
+    use continuum_core::inference::llama_server::serving_hold::HoldCause;
+    match held {
+        None => HoldObservation::Free,
+        Some(hold) => match (&hold.by, hold.live_work()) {
+            (HoldCause::Unknown { reason }, _) => HoldObservation::Unreadable(format!("the serving hold's cause is unknown: {reason}")),
+            (_, Some(work)) => HoldObservation::LiveWork(work),
+            (HoldCause::Resident { .. }, None) => HoldObservation::Free,
+        },
     }
 }
 
