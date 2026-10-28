@@ -619,6 +619,32 @@
         server.abort();
     }
 
+    // what this catches (card 04679d57, gate 3): an in-engine gene the examiner can never judge.
+    // It proves what is unseen from the job's request.json (`read_job_request`), which this
+    // trainer never wrote: both of Kimi's exam receipts on the windows 5090 (2026-10-24) are
+    // "unexaminable: no training job recorded". The job now records the request as it arrived,
+    // before its run, readable by the examiner's own reader, with the provider's defaults never
+    // written as if they were the producer's.
+    #[tokio::test]
+    pub(super) async fn an_in_engine_job_records_the_request_it_trains_from_before_its_run() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, _seen) = fake_lane(train.path().to_path_buf(), "refused").await;
+        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), jobs.path().join("fp.json"), 6 * 1024 * 1024 * 1024);
+        t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 1536)));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        r.schedule = None; // the producer named none: the provider's default must not be recorded as hers
+        let h = t.create_job(r.clone()).await.expect("test: create");
+        let recorded = crate::genome::fine_tuning::job_dir::read_job_request(&jobs.path().join(h.local_id.to_string()))
+            .expect("test: the job's request is on disk, readable by the examiner's reader");
+        assert_eq!(recorded.dataset.examples.len(), r.dataset.examples.len(), "what the gene trains from");
+        assert_eq!(recorded.dataset.examples[0].prompt, "p");
+        assert!(recorded.schedule.is_none(), "the request as it arrived, before the provider's default schedule");
+        let _ = wait_terminal(&t, &h).await;
+        server.abort();
+    }
+
     // what this catches (BigMama on #4894; the 5090, 2026-10-10 04:34Z): a refused calibration
     // filing nothing, so every later dispatch calibrates at the same chunk and is refused the
     // same way. The refusal files the graph the engine measured under the chunk it ran; the

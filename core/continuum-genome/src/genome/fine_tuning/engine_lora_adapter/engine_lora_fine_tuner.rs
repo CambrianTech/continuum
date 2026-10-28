@@ -20,6 +20,9 @@ impl FineTuningAdapter for EngineLoraFineTuner {
     }
 
     async fn create_job(&self, mut request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
+        // The request as it arrived, before the provider's defaults fill it in: what the job's
+        // provenance records (card 04679d57), so defaults never read back as the producer's policy.
+        let received = request.clone();
         let schedule = request.schedule.get_or_insert_with(default_schedule).clone();
         let lora = request.lora.get_or_insert_with(default_lora).clone();
         if request.dataset.examples.is_empty()
@@ -339,6 +342,25 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let base_model = request.base_model.clone();
         let governed = matches!(self.admission, Admission::Governed);
         let job_dir = job_dir_for(&request, id);
+        // THE REQUEST BEFORE THE RUN (card 04679d57): the examiner learns what a gene trained on
+        // from its job's request (`job_dir::read_job_request`), and proves the unseen tasks from it.
+        // This trainer never wrote one, so every in-engine gene was unexaminable by construction
+        // (the windows 5090: both of Kimi's exam receipts, 2026-10-24, "no training job recorded").
+        // Published once, before anything can train; a job whose provenance cannot be written is
+        // not started, since its gene could never be examined.
+        let request_bytes = serde_json::to_vec(&received) // disk boundary: the job dir's request.json, read back by the examiner and a legacy return
+            .map_err(|e| FineTuningError::InvalidRequest(format!("the training request does not serialize: {e}")))?;
+        match crate::genome::fine_tuning::job_dir::publish_job_file(&job_dir, "request.json", &request_bytes) {
+            Ok(None) => {}
+            Ok(Some(existing)) if existing == request_bytes => {}
+            Ok(Some(_)) => {
+                return Err(FineTuningError::InvalidRequest(format!(
+                    "{} already holds another training request than job {id}'s",
+                    job_dir.join("request.json").display()
+                )))
+            }
+            Err(e) => return Err(FineTuningError::Transient(format!("job {id}'s training request could not be recorded before its run: {e}"))),
+        }
         let mut corpus_chars = 0;
         let model_id = format!("{PROVIDER_ID}:{}:{id}", request.trait_kind);
         let epochs = schedule.epochs;
