@@ -76,7 +76,7 @@ pub enum ProcessProbe {
 /// - Windows: `OpenProcess` failing with `ERROR_INVALID_PARAMETER` is absence (no such pid);
 ///   a handle means it exists; any other failure (access denied, …) is unreadable.
 pub fn probe_process(pid: u32) -> ProcessProbe {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
     if pid == 0 {
         return ProcessProbe::Absent;
     }
@@ -88,6 +88,13 @@ pub fn probe_process(pid: u32) -> ProcessProbe {
         ProcessRefreshKind::nothing(),
     );
     if let Some(p) = sys.process(target) {
+        // A zombie has exited and only awaits its reaper: its pid still answers `kill(pid, 0)`
+        // and keeps its start time, so it would read ALIVE and hold its residency forever
+        // (card e4ef7780; the Windows twin is a retained terminated handle, #5565). Same rule as
+        // `lane_process::kill9::still_present`.
+        if p.status() == ProcessStatus::Zombie {
+            return ProcessProbe::Absent;
+        }
         return ProcessProbe::Present(p.start_time());
     }
     kernel_says(pid)
@@ -98,13 +105,35 @@ fn kernel_says(pid: u32) -> ProcessProbe {
     // SAFETY: signal 0 performs only the existence and permission check; nothing is sent.
     let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
     if rc == 0 {
-        return ProcessProbe::Present(0);
+        return if exited_unreaped(pid) { ProcessProbe::Absent } else { ProcessProbe::Present(0) };
     }
     match std::io::Error::last_os_error().raw_os_error() {
         Some(libc::ESRCH) => ProcessProbe::Absent,
         Some(libc::EPERM) => ProcessProbe::Present(0),
         _ => ProcessProbe::Unreadable,
     }
+}
+
+/// Whether a pid that `kill(pid, 0)` still answers is a zombie: exited, only its status left for
+/// its reaper (card e4ef7780). macOS lists no zombie in its process table, so `sysinfo` misses it
+/// and only the kernel can say: `proc_pidinfo(PROC_PIDTBSDINFO)` fails with `ESRCH` for a zombie
+/// while `kill(pid, 0)` still succeeds (measured on macOS 2026-10-28: running -> 136 bytes; zombie
+/// -> 0 with ESRCH; another user's live process -> EPERM from kill itself, never reaching here).
+/// Any other failure is not proof of exit. Linux keeps zombies in /proc, where `sysinfo` reads
+/// their status, so this has nothing to add there.
+#[cfg(target_os = "macos")]
+fn exited_unreaped(pid: u32) -> bool {
+    // SAFETY: proc_bsdinfo is plain old data; proc_pidinfo writes at most `size` bytes into it.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: a read-only query for exactly this pid into a buffer of the stated size.
+    let n = unsafe { libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, std::ptr::addr_of_mut!(info).cast(), size) };
+    n <= 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn exited_unreaped(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(windows)]
@@ -460,6 +489,39 @@ pub fn occupancy(path: &Path, port: u16) -> Occupancy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card e4ef7780): an engine that exited but was never reaped. On Unix it
+    // is a zombie, which answers kill(0) and keeps its start time, so it read ALIVE and its
+    // residency held serving forever. A real unreaped child: Present while it runs, Absent once
+    // it exits (before any reaping), and its record is released by occupancy.
+    #[cfg(unix)]
+    #[test]
+    fn an_exited_unreaped_child_is_not_live() -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "read line"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()?;
+        let pid = child.id();
+        let started = process_start_s(pid).ok_or("test: a running child has a start time")?;
+        assert_eq!(probe_process(pid), ProcessProbe::Present(started), "running");
+        let dir = tempfile::tempdir()?;
+        let path = store_path(dir.path());
+        record(&path, work(12, pid, started, 58060))?;
+        assert!(matches!(occupancy(&path, 58060), Occupancy::Resident(_)), "a running engine holds");
+        child.stdin.take().ok_or("test: piped stdin")?.write_all(b"done\n")?;
+        // exited, NOT waited: a zombie until the wait below
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while probe_process(pid) != ProcessProbe::Absent {
+            assert!(std::time::Instant::now() < deadline, "test: the exited child never read Absent");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(occupancy(&path, 58060), Occupancy::Free, "its record is released on the way");
+        assert!(all(&path)?.is_empty());
+        child.wait()?;
+        Ok(())
+    }
 
     fn work(job: u128, pid: u32, started_s: u64, port: u16) -> ResidentWork {
         ResidentWork {
