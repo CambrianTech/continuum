@@ -420,11 +420,17 @@ pub(super) async fn a_checkout_derived_submit_publishes_her_patch_and_records_it
     Ok(())
 }
 
-/// Her store, with a training trigger that never answers a submit for `hang` and accepts any other.
+/// Her store, with a training trigger that never answers a submit for `hang`, answers one for
+/// `slow` only after [`SLOWER_THAN_A_TICK_BUDGET`], and accepts any other at once.
 struct HangOn {
     data: InProcessTransport,
     hang: Uuid,
+    slow: Option<Uuid>,
 }
+
+/// Longer than the 2.5 s per-tick budget the region's settles used to be cut at, so a settle
+/// that is still cut by a tick can never complete it.
+const SLOWER_THAN_A_TICK_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[async_trait::async_trait]
 impl Transport for HangOn {
@@ -435,6 +441,9 @@ impl Transport for HangOn {
         let submission = params["submissionId"].clone();
         if submission == json!(self.hang) {
             std::future::pending::<()>().await;
+        }
+        if self.slow.is_some_and(|slow| submission == json!(slow)) {
+            tokio::time::sleep(SLOWER_THAN_A_TICK_BUDGET).await;
         }
         Ok(json!({"success": true, "acceptance": {"submissionId": submission, "replayed": false}}))
     }
@@ -455,10 +464,12 @@ impl Transport for HangOn {
     }
 }
 
-// what this catches (Codex on #5531): an earlier decided credit whose settle hangs on EVERY pass
-// holding back a different, healthy decided credit behind it. Two ordinary submissions on her
-// card, both passed while the trigger refused; the first in id order never settles, the second
-// is accepted by the region with no review event, registration or turn, and the first still waits.
+// what this catches (Codex on #5531; card a4e8756d, Kimi's 28087ebb on Windows 2026-10-28): an
+// earlier decided credit whose settle hangs on EVERY pass holding back a different decided credit
+// behind it, and a settle slower than a tick's budget cut on every pass so it never completes.
+// Two ordinary submissions on her card, both passed while the trigger refused; the first in id
+// order never settles, the second answers only after SLOWER_THAN_A_TICK_BUDGET and is still
+// accepted by the region with no review event, registration or turn; the first still waits.
 #[tokio::test]
 pub(super) async fn a_decision_that_always_hangs_never_holds_back_the_next() -> TestResult {
     use crate::runtime::{BrainRegion, RegionContext};
@@ -525,19 +536,23 @@ pub(super) async fn a_decision_that_always_hangs_never_holds_back_the_next() -> 
     // The decision first in id order hangs on every pass; the other must still be settled.
     let (stuck, healthy) = if first.submission_id < second.submission_id { (first.submission_id, second.submission_id) } else { (second.submission_id, first.submission_id) };
     let stuck_row = if stuck == first.submission_id { first_row.id } else { second_row.id };
+    let healthy_row = if stuck == first.submission_id { second_row.id } else { first_row.id };
     let (executor, persona, name) = (r.executor.clone(), r.persona, r.name);
     let region = CreditAcceptanceRegion::new(Arc::new(move |_| {
         let data = InProcessTransport::new(executor.clone(), Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))));
-        Some((name.to_string(), Connection::new(HangOn { data, hang: stuck_row })))
+        Some((name.to_string(), Connection::new(HangOn { data, hang: stuck_row, slow: Some(healthy_row) })))
     }));
     let scoped = RegionContext { tick_number: 1, persona_scope: Some(r.persona) };
+    // Settles run off the tick: tick as the governor does and give them time, well past the
+    // slow one's answer.
     let mut settled = false;
-    for _ in 0..4 {
+    for _ in 0..40 {
         region.tick(&scoped).await;
         if reviewed::credit_status(&r.data(), r.name, healthy).await?.state == State::Accepted {
             settled = true;
             break;
         }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
     assert!(settled, "the healthy decision behind a permanently hanging one is settled");
     assert_eq!(reviewed::credit_status(&r.data(), r.name, stuck).await?.state, State::AwaitingAcceptance, "the hanging one still waits");

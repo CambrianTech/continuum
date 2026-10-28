@@ -11,8 +11,15 @@
 //! ([`reviewed::retry_decided`]). It backs off by the governor's own ladder while one waits and
 //! sleeps when none does; a sleeping pair is re-checked every 30 passes (`CadenceTable`'s
 //! floor, one pass a second), so a decision persisted later is reached within that.
+//!
+//! A settle runs OFF the tick, as its own task, and is never cut by it (card a4e8756d). It used to
+//! run inside the tick under half the governor's region bound. On Windows (2026-10-28 01:58Z) a
+//! submit slower than that was cancelled mid-flight after the trigger had already accepted Kimi's
+//! 28087ebb but before her acceptance was recorded; each pass cut it again until one happened to
+//! fit (02:04:59Z). The tick now only starts settles (one in flight per decision) and never waits
+//! on or cancels one.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -29,12 +36,6 @@ use crate::runtime::{
 /// decision in turn.
 const PAGE: usize = 8;
 
-/// One tick's working budget: half the governor's own bound on a region tick, so a slow settle
-/// is cut here, with its progress kept, before the governor cancels the whole tick.
-fn tick_budget() -> std::time::Duration {
-    crate::persona::substrate_governor::REGION_TICK_TIMEOUT / 2
-}
-
 /// Who a persona is to this region: her name (the store's handle) and her store connection, as
 /// her own caller identity. `None` when she is not resident here.
 pub type Resolve<T> = Arc<dyn Fn(Uuid) -> Option<(String, Connection<T>)> + Send + Sync>;
@@ -43,49 +44,44 @@ pub struct CreditAcceptanceRegion<T: Transport + Send + Sync + 'static> {
     resolve: Resolve<T>,
     /// Where each persona's scan resumes: the last decision id attempted.
     cursors: parking_lot::Mutex<HashMap<Uuid, String>>,
+    /// The settles running now, by persona and decision: one at a time per decision.
+    in_flight: Arc<parking_lot::Mutex<HashSet<(Uuid, String)>>>,
 }
 
-/// What one decision came to.
-enum Attempt {
-    /// Nothing owed: already accepted.
-    Settled,
-    Accepted,
-    /// Still owed: refused again, unreadable, or cut by the budget. Tried again on the next pass.
-    Waiting,
+/// A settle's place in the in-flight set, given up however its task ends (a panic included).
+struct Settling {
+    in_flight: Arc<parking_lot::Mutex<HashSet<(Uuid, String)>>>,
+    key: (Uuid, String),
+}
+
+impl Drop for Settling {
+    fn drop(&mut self) {
+        self.in_flight.lock().remove(&self.key);
+    }
 }
 
 impl<T: Transport + Send + Sync + 'static> CreditAcceptanceRegion<T> {
     pub fn new(resolve: Resolve<T>) -> Self {
-        Self { resolve, cursors: parking_lot::Mutex::new(HashMap::new()) }
+        Self { resolve, cursors: parking_lot::Mutex::new(HashMap::new()), in_flight: Arc::new(parking_lot::Mutex::new(HashSet::new())) }
     }
 
-    async fn attempt(conn: &Connection<T>, name: &str, persona: Uuid, id: &str) -> Attempt {
-        let owed = match reviewed::owed_acceptance(conn, name, id).await {
-            Ok(Some(submission)) => submission,
-            Ok(None) => return Attempt::Settled,
-            Err(error) => {
-                continuum_base::probe!(class = "training.credit.retry_failed", persona = %name, decision = %id, error = %error,
-                    "a decided credit could not be read: passed over now, tried again on the next pass");
-                return Attempt::Waiting;
-            }
-        };
+    /// Settle one owed decision again, under the submission id it was issued with: run off the
+    /// tick, to completion. Its outcome is said here; a still-owed one is found again next pass.
+    async fn settle(conn: &Connection<T>, name: &str, persona: Uuid, id: &str, owed: Uuid) {
         match reviewed::retry_decided(conn, name, persona, owed).await {
             Ok(credit) if credit.state == reviewed::ReviewedCreditState::Accepted => {
                 continuum_base::probe!(class = "training.credit.accepted_on_retry", persona = %name, submission = %owed,
                     "a decided credit the trigger had not accepted is accepted, with no new review, registration or turn");
-                Attempt::Accepted
             }
             Ok(credit) => {
                 if credit.state != reviewed::ReviewedCreditState::AwaitingAcceptance {
                     continuum_base::probe!(class = "training.credit.retry_failed", persona = %name, decision = %id, state = ?credit.state,
-                        "a decision with no acceptance did not settle to a pending credit: passed over now, tried again on the next pass");
+                        "a decision with no acceptance did not settle to a pending credit: tried again on the next pass");
                 }
-                Attempt::Waiting
             }
             Err(error) => {
                 continuum_base::probe!(class = "training.credit.retry_failed", persona = %name, decision = %id, error = %error,
                     "a decided credit could not be settled again: tried again on the next pass");
-                Attempt::Waiting
             }
         }
     }
@@ -105,31 +101,51 @@ impl<T: Transport + Send + Sync + 'static> CreditAcceptanceRegion<T> {
                 return CadenceHint::Slower;
             }
         };
-        let deadline = tokio::time::Instant::now() + tick_budget();
-        let (mut waiting, mut finished) = (false, true);
+        // For each decision still owed an acceptance, start its settle unless one is running, with
+        // at most a page of settles in flight for her. The owed check is a store read, kept here;
+        // the settle (the submit) runs off the tick and is never waited on.
+        let (mut busy, mut finished) = (false, true);
         for id in &ids {
-            let now = tokio::time::Instant::now();
-            if now >= deadline {
-                finished = false;
-                break;
-            }
-            self.cursors.lock().insert(persona, id.clone());
-            match tokio::time::timeout(deadline - now, Self::attempt(&conn, &name, persona, id)).await {
-                Ok(Attempt::Settled | Attempt::Accepted) => {}
-                Ok(Attempt::Waiting) => waiting = true,
-                Err(_) => {
-                    waiting = true;
-                    continuum_base::probe!(class = "training.credit.retry_slow", persona = %name, decision = %id,
-                        budget_ms = tick_budget().as_millis() as u64,
-                        "settling a decided credit outlasted this tick's budget: passed over now, tried again on the next pass");
+            match reviewed::owed_acceptance(&conn, &name, id).await {
+                Ok(None) => {} // nothing owed: already accepted
+                Err(error) => {
+                    continuum_base::probe!(class = "training.credit.retry_failed", persona = %name, decision = %id, error = %error,
+                        "a decided credit could not be read: passed over now, tried again on the next pass");
+                    busy = true;
+                }
+                Ok(Some(owed)) => {
+                    busy = true;
+                    let key = (persona, id.clone());
+                    let start = {
+                        let mut in_flight = self.in_flight.lock();
+                        if in_flight.contains(&key) {
+                            false // its settle is still running
+                        } else if in_flight.iter().filter(|(p, _)| *p == persona).count() >= PAGE {
+                            finished = false; // her settles are at their bound: resume here next pass
+                            break;
+                        } else {
+                            in_flight.insert(key.clone());
+                            true
+                        }
+                    };
+                    if start {
+                        let settling = Settling { in_flight: Arc::clone(&self.in_flight), key };
+                        let (conn, name, id) = (conn.clone(), name.clone(), id.clone());
+                        tokio::spawn(async move {
+                            let _settling = settling;
+                            Self::settle(&conn, &name, persona, &id, owed).await;
+                        });
+                    }
                 }
             }
+            // Handled (settled, unreadable, running or started): the scan resumes after it.
+            self.cursors.lock().insert(persona, id.clone());
         }
         if finished && !full {
             self.cursors.lock().remove(&persona); // past her last decision: the next scan starts again
         }
-        let more = !finished || full;
-        match (waiting, more) {
+        match (busy, full) {
+            // Settles are running: look again after they have had time.
             (true, _) => CadenceHint::Slower,
             (false, true) => CadenceHint::Hold,
             (false, false) => CadenceHint::Sleep,
