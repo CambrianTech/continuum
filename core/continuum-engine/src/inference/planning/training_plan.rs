@@ -393,7 +393,7 @@ pub fn choose_window(
 /// rungs. A rung is a candidate, not a claim: it is chosen only by a plan, and the run there (or
 /// its refusal) is its measurement.
 pub fn shallower_depths(from: Option<u32>, layers: u32) -> Vec<u32> {
-    let mut depth = from.unwrap_or(layers).min(layers);
+    let mut depth = from.unwrap_or(layers).min(layers); // unwrap_or: no depth asked IS every block (top_layers omitted, fork #27)
     let mut rungs = Vec::new();
     while depth > 1 {
         depth /= 2;
@@ -427,7 +427,7 @@ pub fn choose_depth(
         .flat_map(|n| shallower_depths(asked, n))
         .map(|depth| (Some(depth), plan_at(Some(depth))))
         .find(|(_, plan)| holds(plan))
-        .unwrap_or((asked, at_asked))
+        .unwrap_or((asked, at_asked)) // unwrap_or: no shallower depth holds it, so the asked depth and its smaller window stand
 }
 
 /// The window a run trains at: the engine's training context is n_ctx, which rounds up to a
