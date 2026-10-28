@@ -90,6 +90,39 @@ pub struct ToolSurface {
 }
 
 impl ToolSurface {
+    /// Prices for the one allocation, independent of its eventual grant. Explicit
+    /// activity recipes are indivisible: silently replacing their verbs changes
+    /// what the activity can do. Ordinary hands have the core as their floor.
+    pub fn claim_tokens(&self, declared: &[String]) -> (usize, usize) {
+        match self.declared(declared) {
+            Some(offer) => (offer.tokens, offer.tokens),
+            None => (self.core.tokens, self.hands.tokens),
+        }
+    }
+
+    /// Select a whole schema level from an allocation grant, never a window share.
+    /// `Err(floor)` reports capacity instead of emitting schemas beyond the grant.
+    /// The epoch owner retains this selection until the next epoch boundary.
+    pub fn select_granted(&self, declared: &[String], grant_tokens: usize) -> Result<SelectedSurface<'_>, usize> {
+        if self.registry.specs.is_empty() {
+            return Ok(SelectedSurface::borrowed(&[], 0, SurfaceReason::NoTools, 0));
+        }
+        if let Some(offer) = self.declared(declared) {
+            let tokens = offer.tokens;
+            if tokens > grant_tokens { return Err(tokens); }
+            return Ok(SelectedSurface {
+                specs: Some(Cow::Owned(offer.specs)), tokens,
+                reason: SurfaceReason::RoomAffordances, demand: tokens, tail: Vec::new(),
+            });
+        }
+        if self.core.tokens > grant_tokens { return Err(self.core.tokens); }
+        if self.hands.tokens <= grant_tokens {
+            Ok(SelectedSurface::borrowed(&self.hands.specs, self.hands.tokens, SurfaceReason::Hands, self.hands.tokens))
+        } else {
+            Ok(SelectedSurface::borrowed(&self.core.specs, self.core.tokens, SurfaceReason::CoreHandsForWindow, self.hands.tokens))
+        }
+    }
+
     /// Build every surface from the native registry, sorted by command name so the bytes
     /// on the wire never depend on registration order, then renamed into the model's dialect.
     pub fn build(mut raw: Vec<NativeToolSpec>, to_wire: impl Fn(NativeToolSpec) -> NativeToolSpec) -> Self {
@@ -354,6 +387,27 @@ pub(crate) fn over_affordable_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focus_grants_change_the_tool_level_without_changing_full_demand() {
+        let surface = built(REGISTRY.iter().copied());
+        let (floor, want) = surface.claim_tokens(&[]);
+        assert!(floor > 0 && floor < want);
+        let focused = surface.select_granted(&[], want).expect("whole hands fit");
+        let reduced = surface.select_granted(&[], floor).expect("core hands fit");
+        assert_eq!(focused.demand_tokens(), want);
+        assert_eq!(reduced.demand_tokens(), want);
+        assert_eq!((focused.tokens, reduced.tokens), (want, floor));
+        assert_eq!(surface.select_granted(&[], floor - 1).err(), Some(floor));
+        let again = surface.select_granted(&[], want).expect("same grant fits");
+        assert_eq!(serde_json::to_string(&focused.specs).expect("schemas"),
+            serde_json::to_string(&again.specs).expect("schemas"), "same epoch inputs keep prefix bytes");
+        let declared = vec!["code/**".to_string()];
+        let (floor, want) = surface.claim_tokens(&declared);
+        assert_eq!(floor, want, "an explicit recipe is indivisible");
+        assert_eq!(surface.select_granted(&declared, floor - 1).err(), Some(floor));
+        assert_eq!(surface.select_granted(&declared, want).expect("recipe fits").demand_tokens(), want);
+    }
 
     fn spec(name: &str) -> NativeToolSpec {
         NativeToolSpec {
