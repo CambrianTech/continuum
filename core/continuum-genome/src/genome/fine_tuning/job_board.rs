@@ -811,16 +811,6 @@ impl TrainingJobBoard {
         }));
     }
 
-    /// Whether `local_id`'s input already went back to her bucket by any return the ledger
-    /// journals (`journal_returned`), so a second route never returns it again (card 565b3b64).
-    pub fn input_returned(&self, local_id: Uuid) -> bool {
-        let id = local_id.to_string();
-        self.ledger_rows().any(|row| {
-            row.get("event").and_then(|e| e.as_str()) == Some("returned")
-                && row.get("from_local_id").and_then(|i| i.as_str()) == Some(id.as_str())
-        })
-    }
-
     /// Journal a resume: `from` died with a core, `to` carries its input on.
     pub fn journal_resumed(&self, origin: Uuid, from: Uuid, to: Uuid, attempt: u32) {
         self.journal(&serde_json::json!({

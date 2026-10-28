@@ -85,11 +85,6 @@ pub(crate) async fn return_job(
     }
     let dir = job_dir_under(root, &job.persona_name, &job.trait_kind, job_id);
     refuse_trained_job(job_id, &dir)?;
-    // its parked examples already went back through the remainder route (card 565b3b64): a
-    // whole return now would hand them back twice, under a different identity
-    if dir.join(REMAINDER_RECEIPT).try_exists().map_err(|e| CommandError::Internal(e.to_string()))? {
-        return Err(CommandError::Invalid(format!("job {job_id}'s parked examples already went back to her bucket (its {REMAINDER_RECEIPT})")));
-    }
     let request = state.job_input(&job, &dir).await.map_err(input_error)?;
     if let Some(root) = &request.local_artifact_dir {
         refuse_trained_job(job_id, &root.join(job_id.to_string()))?;
@@ -150,8 +145,10 @@ struct RemainderReceipt {
 /// 8a2334d9). Never an example it trained, so a trained job's FULL return stays refused
 /// ([`return_job`]). `job.trained` is the sentinel's Completed claim or the ledger's terminal
 /// row. A FAILED job is returned here only when it sent nothing (every example parked, so it
-/// never ran: card 565b3b64) and no other return took its input; one that sent examples is the
-/// refused-job return's.
+/// never ran: card 565b3b64); one that sent examples is the refused-job return's. Its remainder
+/// IS its whole input, so it goes back under the whole-job identity ([`ReturnScope::Whole`]), the
+/// one [`return_job`] uses: an operator's return, a concurrent pass or a replay after a crash
+/// before the receipt are one return by identity, never two appends (Codex on #5563).
 ///
 /// - Only when her adopted window (`served_window` of the job's base) reaches the smallest
 ///   window that trains one of its parked examples whole ([`Remainder::Waiting`] otherwise): a
@@ -194,9 +191,6 @@ pub(crate) async fn return_parked_remainder(
     if partition.parked.is_empty() || (!job.trained && !partition.sent.is_empty()) {
         return Ok(Remainder::Nothing);
     }
-    if !job.trained && board.input_returned(id) {
-        return Ok(Remainder::AlreadyReturned);
-    }
     let registration = board
         .registration(id)
         .ok_or_else(|| CommandError::NotFound(format!("job {id} has no registration on this node's job ledger")))?;
@@ -216,7 +210,9 @@ pub(crate) async fn return_parked_remainder(
     let parked = remainder_of(&partition, request.dataset.examples.len())
         .map_err(|why| CommandError::Invalid(format!("job {id}: {why}; nothing is returned")))?;
     request.dataset.examples = parked.iter().map(|&i| request.dataset.examples[i].clone()).collect();
-    let outcome = return_request(state, request, id, ReturnScope::Parked(&parked)).await?;
+    // a failed job that sent nothing parked every example (`remainder_of` proved the coverage)
+    let scope = if job.trained { ReturnScope::Parked(&parked) } else { ReturnScope::Whole };
+    let outcome = return_request(state, request, id, scope).await?;
     if outcome.success {
         let receipt = RemainderReceipt { job: id, parked, at_ms: continuum_base::time::EpochMs::now().millis() };
         write_receipt(&dir, &receipt).map_err(|e| {
@@ -454,9 +450,10 @@ mod tests {
     // 2026-10-28): a job whose examples ALL parked never runs, ends FAILED, and its examples had no
     // route back (the remainder route took completed jobs only). Returned at once they would only
     // re-park in another job that cannot run. They wait while her adopted window is below the
-    // smallest one that trains one of them whole, and go back once it reaches it: once, by
-    // receipt, never again by the whole-job route either. A failed job that sent examples stays
-    // the refused-job return's, and one an operator already returned is not returned twice.
+    // smallest one that trains one of them whole, and go back once it reaches it, under the
+    // whole-job identity: the operator's return, a replay after a crash before the receipt, and
+    // both routes at once are each one return (Codex on #5563). A failed job that sent examples
+    // stays the refused-job return's.
     #[tokio::test]
     async fn an_all_parked_failed_job_returns_when_her_window_can_train_one_and_only_once() {
         use crate::genome::fine_tuning::job_board::EndedJob;
@@ -512,18 +509,33 @@ mod tests {
         assert_eq!(held(), 3, "every parked example goes back whole, the longest included: the next partition sends or parks it");
         let again = return_parked_remainder(&trigger.state, &board, &root, &job, &grown).await.expect("test: answered");
         assert!(matches!(again, Remainder::AlreadyReturned), "{again:?}");
-        let whole = return_job(&trigger.state, &board, &root, all).await;
-        assert!(matches!(whole, Err(CommandError::Invalid(ref why)) if why.contains(REMAINDER_RECEIPT)), "never a second return by the other route: {whole:?}");
-        assert_eq!(held(), 3, "returned once");
+        // the operator's whole return of the same job is the same return by identity: a replay
+        let whole = return_job(&trigger.state, &board, &root, all).await.expect("test: replay");
+        assert!(whole.success, "{whole:?}");
+        assert_eq!(held(), 3, "returned once across both routes");
+
+        // a crash after her bucket took it, before the receipt: the next pass replays by identity
+        let crashed = failed(Uuid::new_v4(), vec![], vec![0, 1, 2]);
+        let first = return_parked_remainder(&trigger.state, &board, &root, &crashed, &grown).await.expect("test: returned");
+        assert!(matches!(&first, Remainder::Submitted(o) if o.success), "{first:?}");
+        std::fs::remove_file(job_dir_under(&root, "Kimi", "code/owner", crashed.local_id).join(REMAINDER_RECEIPT)).expect("test: lose the receipt");
+        let replayed = return_parked_remainder(&trigger.state, &board, &root, &crashed, &grown).await.expect("test: replayed");
+        assert!(matches!(&replayed, Remainder::Submitted(o) if o.success), "{replayed:?}");
+        assert_eq!(held(), 6, "the crashed job's three, once");
+
+        // both routes at once, neither past its receipt: one return by identity
+        let raced = failed(Uuid::new_v4(), vec![], vec![0, 1, 2]);
+        let (by_pass, by_operator) = tokio::join!(
+            return_parked_remainder(&trigger.state, &board, &root, &raced, &grown),
+            return_job(&trigger.state, &board, &root, raced.local_id),
+        );
+        assert!(by_pass.is_ok() && by_operator.is_ok(), "{by_pass:?} {by_operator:?}");
+        assert_eq!(held(), 9, "the raced job's three, once");
 
         // a failed job that SENT examples is the refused-job return's, never this route's
         let refused = failed(Uuid::new_v4(), vec![0], vec![1, 2]);
         assert!(matches!(return_parked_remainder(&trigger.state, &board, &root, &refused, &grown).await, Ok(Remainder::Nothing)));
-        // one an operator already returned whole is not returned again here
-        let operator = failed(Uuid::new_v4(), vec![], vec![0, 1, 2]);
-        board.journal_returned(operator.local_id, operator.local_id, &serde_json::json!("genome/training-trigger/return"), 0);
-        assert!(matches!(return_parked_remainder(&trigger.state, &board, &root, &operator, &grown).await, Ok(Remainder::AlreadyReturned)));
-        assert_eq!(held(), 3, "nothing added by either");
+        assert_eq!(held(), 9, "nothing added");
     }
 
     // what this catches (the 5090, 2026-10-05; and 2026-10-07, a return wearing its submission's id): ~500 of Kimi's examples stranded in the
