@@ -582,4 +582,3 @@ pub(super) fn handle_client<S: IpcStream>(
     log_debug!("ipc", "server", "Client disconnected: {}", peer_addr);
     Ok(())
 }
-
