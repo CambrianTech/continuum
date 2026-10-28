@@ -24,10 +24,11 @@ impl TrainingTriggerState {
             continuum_base::probe!(class = "training.job.remainder_unrooted", jobs = ended.len() as u64, "no home: completed jobs cannot be found to return what they parked");
             return;
         };
+        let demand_dir = crate::genome::fine_tuning::training_demand::TrainingDemand::store_dir(&root);
         let mut retry = Vec::new();
         for job in ended {
             let id = job.local_id;
-            match return_parked_remainder(self, board, &root, &job, &served).await {
+            match return_parked_remainder(self, board, &root, &job, &served, Some(&demand_dir)).await {
                 Ok(Remainder::Nothing | Remainder::AlreadyReturned) => {}
                 Ok(Remainder::Waiting { needed, served }) => {
                     let changed = self.remainder_waits.lock().is_ok_and(|mut waits| waits.insert(job.local_id, (needed, served)) != Some((needed, served)));
