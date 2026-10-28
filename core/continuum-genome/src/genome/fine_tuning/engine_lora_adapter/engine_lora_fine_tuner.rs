@@ -820,3 +820,34 @@ pub(super) fn engine_example(e: &TrainingExample) -> EngineExample {
             .map(|tools| json!(crate::inference::request_body::openai_tools(tools))),
     }
 }
+
+/// One example as `/learn` reads it (the dream stage, docs/architecture/ONE-RESIDENT-MODEL-PATIENT-
+/// DOCTOR-DREAM.md §9.6): the served conversation ending in the reply to learn, and the tools she
+/// was offered, rendered by the same [`engine_example`] `/train` uses, so learning sees what serving
+/// saw (§9.1). A flat pair goes as the prompt she read and the reply.
+pub fn learn_conversation(e: &TrainingExample) -> (Vec<Value>, Option<Value>) {
+    match engine_example(e) {
+        EngineExample::Conversation { messages, tools } => (messages, tools),
+        EngineExample::Pair { prompt, completion } => {
+            (vec![json!({ "role": "user", "content": prompt }), json!({ "role": "assistant", "content": completion })], None)
+        }
+    }
+}
+
+/// A mind's shadow at her gene's shape: the hyperparameters her examples carry, else the engine
+/// path's own default, through the one HF->GGUF target map (`gguf_targets`). `seed` fixes the
+/// fresh adapter's A init for her.
+pub fn shadow_shape(
+    lora: Option<&LoRAHyperparams>,
+    seed: u32,
+) -> Result<crate::inference::llama_server::ShadowShape, String> {
+    let fallback = super::super::job_actor::default_lora();
+    let lora = lora.unwrap_or(&fallback);
+    Ok(crate::inference::llama_server::ShadowShape {
+        rank: lora.rank,
+        alpha: lora.alpha as f32,
+        targets: gguf_targets(&lora.target_modules)?.split(',').map(str::to_owned).collect(),
+        top_layers: lora.top_layers.unwrap_or(0), // unwrap_or: 0 is the engine's "every block", what None means here
+        seed,
+    })
+}

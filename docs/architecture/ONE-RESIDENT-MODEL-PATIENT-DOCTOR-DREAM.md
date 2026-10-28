@@ -269,6 +269,8 @@ The fork already takes the step: `learn_on_slot` learns one served reply on the 
 | D4 (core, genome) | promotion at a boundary (`DreamTrigger`: idle, card boundary): save a snapshot (D1), `adapter_manifest::register`, `GeneTrials::open`; the examiner fires on its own | the acceptance test runs on a learned gene for the first time |
 | D5 (academy) | the examiner's related tasks drawn from the correction's own task family (today a fixed six-task no-unwrap set) | a pass or fail says something about the correction it tests |
 
+**Wakefulness sets the share; the amygdala wakes her** (Joel, 2026-10-28: "It's low latency or low wakefulness process almost like the damn metaphor means something." "The amygdala will be key here too. Literal wakefulness and sleep dreaming."). The duty share is not a constant (the fork's `LEARN_DUTY` 0.10 today) but a function of her wakefulness: awake in a turn, a thin trickle that yields at once; drowsy (quiet), more; asleep, deep dreaming takes most of the engine. Wakefulness is her measured activity temperature (plan goal 9), the one number the scheduler already reads. The amygdala is the arousal signal: a stimulus that matters (a mention, a direct question, a surprise spike, cussing or caps) raises the interrupt that wakes her, and dreaming yields within one step so the turn starts alert. A low-latency stimulus and a low-wakefulness dream are the two ends of the same dial.
+
 Not in this wiring, and not dropped: recency-weighted replay (§8.1), session checkpoints (§9.2), the one-owner claim on the grid (§9.3); each is the next slice after D4.
 
 ## 10. Coursework is a room, not a runner (mapped 2026-09-28)
