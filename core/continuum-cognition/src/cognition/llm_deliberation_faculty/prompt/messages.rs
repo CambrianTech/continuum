@@ -400,7 +400,7 @@ impl LlmDeliberationFaculty {
     /// handle. A cut on a CHAR boundary would split a UTF-8 sequence, so the split walks
     /// to a line boundary and says how much moved.
     pub(in super::super) fn split_action_result(&self, message: String) -> (ChatMessage, Option<ChatMessage>) {
-        let window = self.binding.load().context_window as usize;
+        let window = self.working_window() as usize;
         let cap = window / Self::RESULT_SHARE_DENOM as usize;
         let whole = ChatMessage::text("user", message.clone());
         if Self::messages_cost(std::slice::from_ref(&whole)) <= cap {

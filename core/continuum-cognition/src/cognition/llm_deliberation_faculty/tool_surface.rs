@@ -69,7 +69,7 @@ impl LlmDeliberationFaculty {
             return selected;
         };
         let binding = self.binding.load();
-        let budget = super::super::context_budget::ContextBudget::from_window_unbounded(binding.context_window).tool_surface_tokens();
+        let budget = super::super::context_budget::ContextBudget::from_window_unbounded(self.working_window()).tool_surface_tokens();
         let head = memory.tool_head();
         let next = head.next(
             ws.now_ms.map_or_else(continuum_base::time::EpochMs::now, continuum_base::time::EpochMs::from_millis), // map_or_else: a workspace that carries no clock reading decides at now
@@ -108,7 +108,7 @@ impl LlmDeliberationFaculty {
     /// destination refused the tail (`InferenceError::TailToolsUnreachable`), so every verb she
     /// sees is one she can call.
     pub(super) fn select_activity_surface(&self, ws: &Workspace) -> SelectedSurface<'_> {
-        let selected = self.surface.select(&ws.room_affordances, self.binding.load().context_window);
+        let selected = self.surface.select(&ws.room_affordances, self.working_window());
         if !ws.room_affordances.is_empty()
             && !matches!(selected.reason, SurfaceReason::RoomAffordances | SurfaceReason::NoTools)
         {
@@ -181,7 +181,7 @@ impl LlmDeliberationFaculty {
         if self.surface.registry().is_empty() {
             return; // no hands offered — nothing to fit, nothing to warn about
         }
-        let window = self.binding.load().context_window;
+        let window = self.working_window();
         let needed = self.min_window_for_agentic_surface();
         if window >= needed {
             return;
