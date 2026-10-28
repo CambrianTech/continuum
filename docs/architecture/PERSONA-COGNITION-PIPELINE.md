@@ -1,5 +1,9 @@
 # PERSONA COGNITION PIPELINE — READ THIS BEFORE TOUCHING THE BRAIN
 
+**Focus and budgeting:** [Focus contract](FOCUS-CONTRACT.md) is the canonical
+single-allocation, adaptive-attention and all-node compliance contract. Local
+prompt-sizing recipes must comply with it; implementation status requires receipts.
+
 **Stop. Read this doc end-to-end before editing any of:**
 
 - `core/continuum-core/src/persona/service_loop.rs`

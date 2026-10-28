@@ -125,6 +125,26 @@ impl TrainingDemand {
         self.read().examples.into_values().max()
     }
 
+    /// Whether every one of `keys` is outstanding here: serving has been told what those examples
+    /// need. Empty `keys` is false: nothing to wait for is not a recorded demand. `Err` when the
+    /// store cannot answer (no store, unreadable, corrupt): never read as "not recorded", since
+    /// a caller acting on that would return examples it cannot record (Codex on #5569).
+    pub fn records_all(&self, keys: &[String]) -> Result<bool, String> {
+        let examples = self.read_strict()?.examples;
+        Ok(!keys.is_empty() && keys.iter().all(|key| examples.contains_key(key)))
+    }
+
+    /// The store as recorded: a missing file is an empty store; no store, or a file that cannot
+    /// be read or parsed, is an error.
+    fn read_strict(&self) -> Result<Recorded, String> {
+        let Some(path) = &self.path else { return Err("no continuum home: no demand store".into()) };
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: not a demand record ({e})", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Recorded::default()),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    }
+
     /// How many examples wait.
     pub fn waiting(&self) -> usize {
         self.read().examples.len()

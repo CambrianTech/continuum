@@ -1,5 +1,9 @@
 # A mind's context and the engine it runs on
 
+**Focus boundary:** [Focus contract](FOCUS-CONTRACT.md) defines one allocation,
+full demand versus granted detail, learnable attention and node conformance.
+This document retains ownership of physical capacity and KV continuity.
+
 **Status:** DESIGN, co-authored (Fable, Codex), 2026-10-19. Nothing here is built.
 Supersedes nothing yet; it consolidates four designs that each named part of this and
 were built in pieces: [PERSONA-CONTEXT-PAGING](PERSONA-CONTEXT-PAGING.md),

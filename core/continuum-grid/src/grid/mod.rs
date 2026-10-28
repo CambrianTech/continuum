@@ -401,16 +401,7 @@ impl ServiceModule for GridModule {
             let rank_of = |id: &str| -> Option<u8> {
                 crate::model_registry::global().model(id).and_then(|m| m.serving.measured_capability)
             };
-            // What one of this node's turns needs of a lane: the residents' typical prompt
-            // with headroom, read once per pass; None until a turn has been sent.
-            let residents: Vec<uuid::Uuid> = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
-                .map(|r| r.live_personas())
-                .unwrap_or_default(); // unwrap_or_default: no registry = no residents = no requirement yet
-            let requirement = crate::cognition::working_set::global()
-                .sent_median_of(&residents)
-                .map(crate::inference::planning::serving_plan::prompt_floor_of);
             let local = crate::persona::placement_switch::LocalShape {
-                requirement,
                 lane_wait_p50_ms: {
                     let (p50, samples) = crate::inference::resource_admission::local_lane_wait_p50_ms();
                     (samples > 0).then_some(p50)
