@@ -24,12 +24,32 @@ impl LlmDeliberationFaculty {
         self.prompt_view_with_feedback(ws, window, calibration)
     }
 
+    /// The window her prompt is fitted to: the working window
+    /// ([`crate::cognition::context_budget::ContextBudget::working_window`]), narrowed by the
+    /// provider's last observation. The binding keeps the served window: serving reads it.
     pub fn prompt_fit(&self, binding: &ModelBinding) -> (u32, PromptCalibration) {
+        self.fit_within(binding, crate::cognition::context_budget::ContextBudget::working_window(binding.context_window))
+    }
+
+    /// The served window, narrowed the same way: the one rebuild when her required input
+    /// cannot fit the working window (`verdict/contribute.rs`), so a large required payload is
+    /// served from the whole slot instead of refused.
+    pub fn prompt_fit_served(&self, binding: &ModelBinding) -> (u32, PromptCalibration) {
+        self.fit_within(binding, binding.context_window)
+    }
+
+    fn fit_within(&self, binding: &ModelBinding, window: u32) -> (u32, PromptCalibration) {
         let feedback = self.prompt_feedback.load();
         feedback.as_ref().filter(|f| f.applies_to(binding)).map_or(
-            (binding.context_window, PromptCalibration::default()),
-            |f| (binding.context_window.min(f.available), f.calibration),
+            (window, PromptCalibration::default()),
+            |f| (window.min(f.available), f.calibration),
         )
+    }
+
+    /// The working window for this faculty's current binding: the shares sized from the
+    /// window (results, room updates, the tool surface) scale with the prompt they live in.
+    pub(in super::super) fn working_window(&self) -> u32 {
+        crate::cognition::context_budget::ContextBudget::working_window(self.binding.load().context_window)
     }
 
     /// Fixture view against an explicit window, without a prior provider observation.

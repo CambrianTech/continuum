@@ -116,6 +116,46 @@ impl ContextBudget {
         }
     }
 
+    /// The window her prompt is fitted to: a turnover re-prefills about half of her view
+    /// cold, so the window is sized for that cold half to fit the interactive minute at the
+    /// measured prefill rate: `2 x INTERACTIVE_TTFT x rate`, to the nearest
+    /// [`WORKING_WINDOW_STEP`], never above `served`, never below the serving floor.
+    ///
+    /// - Audience-independent on purpose: a per-audience size swung state 3x between turns
+    ///   and re-prefilled ~9k tokens a turn (M5, 2026-10-17, `from_window_for` above).
+    /// - Snapped to a step, so a moving rate average does not move her budget act to act
+    ///   (each move can turn her epoch over).
+    /// - No measured rate: the served window, which is what she budgeted against before.
+    ///
+    /// Measured on the M5, 2026-10-28: the rate read 396 tok/s, so this gives 48k. A replay of all
+    /// four residents' captures (the dyno) put the knee at 48k independently: prefill per
+    /// request fell ~3x (Benchy 110 -> 41 s, Aiko 81 -> 24, Aris 113 -> 33, Atlas 94 -> 20)
+    /// with zero handles dropped; 32k doubled turnovers
+    /// (`~/.continuum/evidence/2026-10-28-working-window/`). The served slot, and the demand
+    /// the serving plan reads, are unchanged.
+    pub fn working_window(served: u32) -> u32 {
+        if served == 0 {
+            return 0;
+        }
+        let Some(model) = crate::inference::llama_server::current_serving().active_model else {
+            return served;
+        };
+        let rate = crate::inference::prefill_rate::measured_rate_for(&model);
+        Self::working_window_for_rate(rate.tps, served)
+    }
+
+    /// [`Self::working_window`] for a given rate (pure; the tests' seam).
+    pub fn working_window_for_rate(tps: Option<f64>, served: u32) -> u32 {
+        let Some(tps) = tps.filter(|t| t.is_finite() && *t > 0.0) else {
+            return served;
+        };
+        let cold_half = tps * crate::inference::prefill_rate::INTERACTIVE_TTFT.as_secs_f64();
+        let step = WORKING_WINDOW_STEP as f64;
+        let snapped = ((2.0 * cold_half) / step).round() * step;
+        let window = snapped.clamp(0.0, u32::MAX as f64) as u32;
+        window.max(crate::inference::planning::MIN_SERVE_CTX).min(served)
+    }
+
     /// The served window only — the KV-capacity reading, for seams that must not be
     /// prefill-bounded (a test fixture, a capacity report).
     pub fn from_window_unbounded(context_window: u32) -> Self {
@@ -291,6 +331,12 @@ fn prefill_affordable_window_for(served: u32, audience: crate::inference::prefil
     }
     affordable
 }
+
+/// The step the working window snaps to: 8k tokens, so a rate EMA that moves 10% act to act
+/// leaves her budget where it was.
+// derived-or-floor: floor — the prefill-rate EMA (alpha 0.2) moved within +-10% on the M5
+// (2026-10-28, 41 samples at ~396 tok/s, a +-4.75k swing in the window); an 8k step absorbs it.
+const WORKING_WINDOW_STEP: u32 = 8_192;
 
 /// Share of the served window recall may spend. See [`ContextBudget::recall_tokens`].
 const RECALL_DENOM: usize = 10;
@@ -763,5 +809,23 @@ mod tests {
         assert_eq!(b.latest_action_chars(), usize::MAX);
         assert_eq!(b.trail_head_chars(), usize::MAX);
         assert_eq!(b.echoed_arg_chars(), usize::MAX);
+    }
+
+    // what this catches: a working window that tracks the rate's noise (each move can turn her
+    // epoch over), that exceeds the slot, or that invents a size with nothing measured.
+    // The M5's measured 396 tok/s gives 48k, the dyno's knee (2026-10-28).
+    #[test]
+    fn the_working_window_is_two_interactive_minutes_of_cold_prefill_snapped_to_a_step() {
+        let served = 159_232;
+        assert_eq!(ContextBudget::working_window_for_rate(Some(396.0), served), 49_152);
+        assert_eq!(
+            ContextBudget::working_window_for_rate(Some(380.0), served),
+            ContextBudget::working_window_for_rate(Some(410.0), served),
+            "a +-4% rate swing leaves the window where it was"
+        );
+        assert_eq!(ContextBudget::working_window_for_rate(Some(5_000.0), served), served, "never above the slot");
+        assert_eq!(ContextBudget::working_window_for_rate(None, served), served, "nothing measured: the served window, as before");
+        assert_eq!(ContextBudget::working_window_for_rate(Some(f64::NAN), served), served);
+        assert!(ContextBudget::working_window_for_rate(Some(1.0), served) >= crate::inference::planning::MIN_SERVE_CTX, "never below the serving floor");
     }
 }
