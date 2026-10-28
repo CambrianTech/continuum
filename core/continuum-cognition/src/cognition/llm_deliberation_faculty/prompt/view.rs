@@ -191,9 +191,23 @@ impl LlmDeliberationFaculty {
             )
             .saturating_sub(framing_tokens)
             .saturating_sub(selected.tokens);
+        // Her view's REQUIRED sources (notices, the lines of files she has open) are never shed:
+        // granted their floor first, or kept over their grant (`fit_view`). That floor is
+        // therefore as irreducible as the turn's own input, and what is left for the rest is
+        // what remains after it. Kimi on the windows 5090 (2026-10-28, refusal 1eef970d): her
+        // newest result was priced against the window less framing and tools alone, fit there,
+        // stayed whole, and the view's floor then took its room: required 33,719 > 30,243,
+        // refused before sending with no reduction offered.
+        let view_floor: usize = self
+            .view_claims(&all_messages.streams)
+            .iter()
+            .filter(|claim| claim.required)
+            .map(|claim| claim.floor_tokens as usize)
+            .sum();
+        let irreducible_room = after_reserves.saturating_sub(view_floor);
         // Her newest result alone over what the window leaves it is shown at a smaller level
         // with its handle, never dropped (goal 7); one that fits is untouched.
-        let newest_result_reduced = self.fit_newest_result(&mut all_messages, after_reserves);
+        let newest_result_reduced = self.fit_newest_result(&mut all_messages, irreducible_room);
         // Her view already carries every block that rides the conversation.
         let unfitted_message_tokens = all_messages.tokens();
         // KEEP THE OVERFLOW. This used to be one chained `saturating_sub` ending in
@@ -204,14 +218,15 @@ impl LlmDeliberationFaculty {
         let required = all_messages.required_parts();
         let newest_result_tokens = required.latest_result;
         let required_payload = required.total();
-        let grounding_budget = after_reserves.saturating_sub(required_payload);
-        let payload_overflow = required_payload.saturating_sub(after_reserves);
+        let grounding_budget = irreducible_room.saturating_sub(required_payload);
+        let payload_overflow = required_payload.saturating_sub(irreducible_room);
         if payload_overflow > 0 {
             continuum_base::probe!(
                 class = "delib.payload.over_window",
                 persona = %self.persona_name,
                 required_payload,
                 after_reserves,
+                view_floor_tokens = view_floor,
                 payload_overflow,
                 context_window,
                 framing_tokens,
