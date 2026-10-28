@@ -419,13 +419,16 @@ impl TrainingTriggerState {
                 }
             }
             match crate::commands::training_trigger::return_::return_job(self, board, &root, id).await {
-                Ok(outcome) if outcome.success => continuum_base::probe!(
-                    class = "training.job.refusal_returned",
-                    job = %id,
-                    persona = %job.persona_name,
-                    why = ?returnable,
-                    "a job that ended without training (engine refusal or replaced lane) handed its examples back to her bucket; the next dispatch re-plans"
-                ),
+                Ok(outcome) if outcome.success => {
+                    continuum_base::probe!(
+                        class = "training.job.refusal_returned",
+                        job = %id,
+                        persona = %job.persona_name,
+                        why = ?returnable,
+                        "a job that ended without training (engine refusal or replaced lane) handed its examples back to her bucket; the next dispatch re-plans"
+                    );
+                    self.dispatch_returned(BucketKey { persona_id: job.persona_id, trait_kind: job.trait_kind.clone(), base_model: job.base_model.clone() }, id).await;
+                }
                 Ok(outcome) => continuum_base::probe!(
                     class = "training.job.refusal_return_refused",
                     job = %id,
