@@ -390,6 +390,17 @@ impl TrainingTriggerState {
             .save(retirement_id, &receipt)
             .await
             .map_err(|e| e.to_string())?;
+        // Withdrawn examples owe serving nothing: their demand (a parked example returned to her
+        // bucket keeps it) is cleared before the rows flip, or it would reserve a window for
+        // examples that will never train (card 4545eafd; FOCUS-CONTRACT: no stale demand). A
+        // failure here leaves the rows pending under this receipt; rerunning finishes it.
+        let withdrawn: Vec<String> = eligible
+            .iter()
+            .flat_map(|(_, row)| row.batch.examples.iter().map(crate::genome::fine_tuning::training_demand::TrainingDemand::key_of))
+            .collect();
+        crate::genome::fine_tuning::training_demand::TrainingDemand::for_persona(key.persona_id)
+            .record(&[], &withdrawn, None)
+            .map_err(|e| format!("retirement {retirement_id}: the withdrawn examples' demand could not be cleared ({e}); rerun the same retirement to finish"))?;
         for (id, mut row) in eligible {
             let count = row.batch.examples.len() as u32;
             row.is_pending = false;

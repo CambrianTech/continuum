@@ -91,14 +91,15 @@ impl TrainingDemand {
         }
     }
 
-    /// Record what one partition or run learned: `parked` examples need these windows, `trained`
-    /// ones were trained by a run and owe nothing, every other entry is kept; `reservation` is
-    /// what the largest parked window costs, as a partition's footprints price it.
-    pub fn record(&self, parked: &[(String, u32)], trained: &[String], reservation: Option<Reservation>) -> std::io::Result<()> {
+    /// Record what changed: `parked` examples need these windows; `settled` ones owe nothing more
+    /// (a run trained them, or they were withdrawn from her training input: card 4545eafd); every
+    /// other entry is kept. `reservation` is what the largest parked window costs, as a
+    /// partition's footprints price it.
+    pub fn record(&self, parked: &[(String, u32)], settled: &[String], reservation: Option<Reservation>) -> std::io::Result<()> {
         let Some(path) = &self.path else { return Ok(()) };
         let before = self.read();
         let mut now = before.clone();
-        for key in trained {
+        for key in settled {
             now.examples.remove(key);
         }
         for (key, window) in parked {

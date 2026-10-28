@@ -247,6 +247,11 @@ mod tests {
         let pre_2 = submit(&executor, persona, vec![on_card(overturned, "pre-2")]).await;
         let kept = submit(&executor, persona, vec![on_card(other, "other-1")]).await;
         assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(4));
+        // card 4545eafd: a withdrawn example's demand clears; another card's stays
+        use crate::genome::fine_tuning::training_demand::TrainingDemand;
+        let demand = TrainingDemand::for_persona(persona);
+        let (withdrawn, staying) = (TrainingDemand::key_of(&on_card(overturned, "pre-1a")), TrainingDemand::key_of(&on_card(other, "other-1")));
+        demand.record(&[(withdrawn.clone(), 64_256), (staying.clone(), 51_712)], &[], None).expect("test: demand recorded");
 
         let json = retire_as_operator(
             &executor,
@@ -273,6 +278,8 @@ mod tests {
             Some(1),
             "the other card's row stays pending"
         );
+        assert!(!demand.records_all(std::slice::from_ref(&withdrawn)).expect("test: readable"), "a withdrawn example reserves nothing");
+        assert!(demand.records_all(std::slice::from_ref(&staying)).expect("test: readable"), "a pending one keeps its demand");
 
         // A second call for the same card changes nothing and says so.
         let again = retire_as_operator(
