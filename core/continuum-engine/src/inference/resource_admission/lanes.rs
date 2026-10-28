@@ -89,8 +89,7 @@ fn directed_pending() -> bool {
 /// serializes THIS module, but a cross-module guard could bump it mid-loop". This file had
 /// already learned the lesson once and applied it to the in-flight Gauge, stating the
 /// principle outright: *the race is gone at the SOURCE, not merely serialized*. That cure
-/// reached one of three cases. This applies it to the other two, and to the sibling
-/// [`crate::inference::prefill_throttle`] the same day.
+/// reached one of three cases. This applies it to the other two.
 ///
 /// Lazy semaphores capture the latest lane count on first use. If first use precedes
 /// serving, a later publication collects surplus boot permits without interrupting
@@ -171,7 +170,7 @@ pub fn resident_departed(persona: uuid::Uuid) {
 /// serving daemon calls this on every reconcile. Sizes the admission semaphores exactly:
 /// the lazy-init captures it at boot, and a LATER increase (roster grows, more personas
 /// demand lanes) grows the live semaphores via `add_permits`. Decreases collect idle
-/// permits immediately, as in `PrefillThrottle`; held permits become shrink debt.
+/// permits immediately, as a resized semaphore must; held permits become shrink debt.
 /// The serving daemon retries idle debt every tick; acquisition also retires debt
 /// before granting a transferred permit, so queued demand cannot defeat shrink.
 /// No running permit is revoked or awaited by the publisher.
@@ -181,7 +180,7 @@ pub fn set_served_lane_count(lanes: usize) {
 
 /// Reconcile installed permits without waiting for running calls. The difference
 /// between installed and a smaller target is debt retried on the next serving tick.
-/// Caller holds the owner resize lock, matching `PrefillThrottle`'s accounting.
+/// Caller holds the owner resize lock, the installed-permit accounting.
 pub(super) fn resize_semaphore_to(sem: &tokio::sync::Semaphore, installed: &AtomicUsize, target: usize) {
     let cur = installed.load(Ordering::Acquire);
     if target > cur {
