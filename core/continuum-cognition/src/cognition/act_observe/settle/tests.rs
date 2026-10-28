@@ -16,23 +16,6 @@
     }
 
     #[tokio::test(start_paused = true)]
-    async fn never_granted_queue_without_progress_ends_and_releases_entry() -> Result<(), Box<dyn std::error::Error>> {
-        let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
-        gate.set_served_lane_count(2);
-        let held = gate.acquire_serving_lane(None, LanePriority::Work, None).await;
-        let (wait, acquire) = gate.serving_lane_request(None, LanePriority::Work, None);
-        let bound = std::time::Duration::from_secs(10);
-        let start = tokio::time::Instant::now();
-        let turn = tokio::spawn(super::until_act_stalls(start + bound, bound, None, admission_clock::waiting(wait, acquire)));
-        queued(gate, 1).await;
-        assert!(turn.await?.is_err(), "a held permit without progress cannot park forever");
-        assert_eq!(start.elapsed(), bound);
-        assert_eq!(gate.work_waiting(), 0);
-        drop(held);
-        Ok(())
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn queue_that_stops_advancing_ends_at_the_next_checkpoint() {
         let bound = std::time::Duration::from_secs(10);
         let start = tokio::time::Instant::now();

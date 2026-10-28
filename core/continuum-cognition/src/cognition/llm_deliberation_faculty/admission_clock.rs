@@ -1,9 +1,6 @@
 //! Exact-step admission time, protected only while its blocking queue advances.
 //! join_all polls faculties in this task; detached workers do not inherit it.
-use crate::inference::{
-    llama_server::{InFlightSlot, SlotWork},
-    resource_admission::LaneWait,
-};
+use crate::inference::llama_server::{InFlightSlot, SlotWork};
 use std::{future::Future, time::Duration};
 use tokio::{sync::watch, time::Instant};
 
@@ -88,37 +85,10 @@ impl QueueProgress {
             })
     }
 }
-async fn sample(wait: &LaneWait) -> QueueProgress {
-    let snapshot = wait.progress();
-    let holders =
-        futures::future::join_all(snapshot.holders.into_iter().filter_map(|(id, persona)| {
-            crate::inference::llama_server::in_flight_slot(persona).map(|slot| async move {
-                let work = crate::inference::llama_server::slot_work(
-                    &slot.root,
-                    slot.slot,
-                    probe_client(),
-                )
-                .await;
-                (id, slot, work)
-            })
-        }))
-        .await;
-    QueueProgress {
-        grants: snapshot.grants,
-        holders,
-    }
-}
-fn probe_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
-}
 /// Registered from the acquisition's first poll until completion or drop,
 /// including time pending. Grant, directed yield, cancellation and shutdown all
 /// release the original entry. Checkpoints use the existing act bound, not a
 /// new queue timeout; only actual relevant grants or holder work extend a wait.
-pub(crate) async fn waiting<T>(wait: LaneWait, acquire: impl Future<Output = T>) -> T {
-    waiting_with_probe(acquire, || sample(&wait)).await
-}
 
 pub(crate) async fn waiting_with_probe<T, P, S>(acquire: impl Future<Output = T>, mut probe: P) -> T
 where
