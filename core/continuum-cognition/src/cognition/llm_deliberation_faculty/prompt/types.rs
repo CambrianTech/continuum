@@ -423,6 +423,12 @@ pub struct DeliberationPromptView {
     /// Her newest result's estimated tokens as this view carries it (`RequiredParts::latest_result`):
     /// what a refusal's excess is charged to when it refits her (`verdict/newest_refit.rs`).
     pub newest_result_tokens: usize,
+    /// Her hands as the one allocation bought them (`tools_epoch.rs`): the request sends
+    /// exactly this, never a second selection.
+    pub tools: crate::cognition::tool_surface::SelectedSurface<'static>,
+    /// The raw tokens the allocation granted her hands: a retry on a server that refuses
+    /// `tail_tools` re-selects at this grant, without her learned head.
+    pub tools_grant: usize,
 }
 
 impl DeliberationPromptView {

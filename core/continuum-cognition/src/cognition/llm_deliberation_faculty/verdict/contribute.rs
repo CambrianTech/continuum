@@ -230,7 +230,16 @@ impl LlmDeliberationFaculty {
             // [`Self::select_tool_surface`] so the budget in `prompt_view_within` reaches the
             // SAME answer (card dec1a7ff).
             if request_template.is_none() {
-                let mut selected = if tail_refused { self.select_activity_surface(ws) } else { self.select_tool_surface(ws) };
+                // What her view's allocation bought; a server that refuses `tail_tools` gets the
+                // activity surface at the same grant, without her learned head.
+                let mut selected = if tail_refused {
+                    match self.surface.select_granted(&ws.room_affordances, view.tools_grant) {
+                        Ok(activity) => activity.into_owned(),
+                        Err(_) => view.tools.clone(), // unreachable in practice: the view ran this same activity selection at this grant and it succeeded
+                    }
+                } else {
+                    view.tools.clone()
+                };
                 // Verbs she loaded into the tail ride beside the head, callable natively.
                 let tail = std::mem::take(&mut selected.tail);
                 if selected.reason == SurfaceReason::CoreHandsForWindow {
@@ -245,11 +254,10 @@ impl LlmDeliberationFaculty {
                         hands = self.surface.hands().len() as u64,
                         surface_tokens = selected.tokens as u64,
                         withheld_tokens = selected.demand_tokens().saturating_sub(selected.tokens) as u64,
-                        budget_tokens = super::super::super::context_budget::ContextBudget::from_window_unbounded(served)
-                            .tool_surface_tokens() as u64,
+                        budget_tokens = view.tools_grant as u64,
                         context_window = served,
-                        "her extended hands exceed the served window's tool share: \
-                         offering her core hands; the discovery pair still reaches the rest"
+                        "her one allocation granted her core hands, not her extended ones: \
+                         the discovery pair still reaches the rest"
                     );
                 }
                 // Selection and budget accounting borrow the cached schemas. Only the
