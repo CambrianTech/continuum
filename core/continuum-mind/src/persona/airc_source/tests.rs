@@ -88,7 +88,7 @@
         });
         let (source, _) = isolated_source(reader.clone());
         source
-            .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx_in(room))
             .await;
         assert_eq!(
             *reader.paged_room.lock().unwrap(),
@@ -100,7 +100,7 @@
         // pointer-scoped, not accidentally room-pinned.
         let ctx_no_room = RagContext::for_persona(persona(), 1_000_000);
         source
-            .deliver(&ctx_no_room, 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx_no_room)
             .await;
         assert_eq!(*reader.paged_room.lock().unwrap(), Some(None));
     }
@@ -164,7 +164,7 @@
         ]));
         let (source, _) = isolated_source(reader);
         let delivery = source
-            .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx_in(room))
             .await;
         assert_eq!(delivery.items.len(), 2);
         assert_eq!(delivery.items[0].content, "hello");
@@ -196,11 +196,11 @@
         let (source, _) = isolated_source(reader);
 
         let delivery = source
-            .deliver(&ctx_in(room), 4, ResolutionPreference::Raw)
+            .deliver(&ctx_in(room))
             .await;
         assert!(
             delivery.items.len() > DEFAULT_GROUNDING,
-            "a 4k-token budget must widen the window past the {DEFAULT_GROUNDING}-message \
+            "the window must reach past the {DEFAULT_GROUNDING}-message \
              recipe floor, got {}",
             delivery.items.len()
         );
@@ -225,7 +225,7 @@
             .collect();
         let events = texts.iter().enumerate().map(|(i, t)| event_in(room, Some(t), i as u64 + 1)).collect();
         let (source, _) = isolated_source(Arc::new(StubReader::new(events)));
-        let delivery = source.deliver(&ctx_in(room), 40, ResolutionPreference::Raw).await;
+        let delivery = source.deliver(&ctx_in(room)).await;
         let seen: Vec<&str> = delivery.items.iter().map(|i| i.content.as_str()).collect();
         assert_eq!(seen, texts.iter().map(String::as_str).collect::<Vec<_>>(), "every turn, whole, in order");
     }
@@ -303,7 +303,7 @@
         let reader = Arc::new(StubReader::new(events));
         let (source, _) = isolated_source(reader);
         let delivery = source
-            .deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw)
+            .deliver(&ctx_in(room))
             .await;
         assert_eq!(
             delivery.items.len(),
@@ -366,7 +366,7 @@
             assert!(seen[1].starts_with("Atlas:"), "a line DISCUSSING an envelope is speech: {seen:?}");
         }
         // And the live path (the one every turn takes) delivers the same two.
-        let delivery = source.deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw).await;
+        let delivery = source.deliver(&ctx_in(room)).await;
         assert_eq!(delivery.items.len(), 2, "{:?}", delivery.items.iter().map(|i| &i.content).collect::<Vec<_>>());
     }
 
@@ -380,7 +380,7 @@
         let reader = Arc::new(StubReader::new(vec![event_in(room, Some("hi"), 1)]));
         let (source, _) = isolated_source(reader);
         let ctx = RagContext::for_persona(persona(), 1_000_000); // airc_room = None
-        let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
+        let delivery = source.deliver(&ctx).await;
         assert_eq!(
             delivery.items.len(),
             1,
@@ -395,7 +395,7 @@
         let reader = Arc::new(StubReader::new(vec![]));
         let (source, _) = isolated_source(reader);
         let ctx = RagContext::for_persona(persona(), 1_000_000);
-        let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
+        let delivery = source.deliver(&ctx).await;
         assert!(delivery.items.is_empty());
     }
 
@@ -422,7 +422,7 @@
         buffer.publish((persona(), room.as_uuid()), Arc::new(staged));
 
         let delivery = source
-            .deliver(&ctx_in(room), 8, ResolutionPreference::Raw)
+            .deliver(&ctx_in(room))
             .await;
         assert_eq!(delivery.items.len(), 1);
         assert_eq!(
@@ -440,10 +440,9 @@
         let mut other = RagContext::for_persona(Uuid::new_v4(), 1_000_000);
         other.substrate.airc_room = Some(room);
         let delivery = source
-            .deliver(&other, 1_000, ResolutionPreference::Raw)
+            .deliver(&other)
             .await;
         assert!(delivery.items.is_empty());
-        assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
     // what this catches: a reader error degrades to empty (cognition stays up), no
@@ -455,7 +454,7 @@
         reader.set_fail(true);
         let (source, _) = isolated_source(reader);
         let delivery = source
-            .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx_in(room))
             .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
@@ -488,7 +487,7 @@
         let second = events[1].event_id.as_uuid();
         let reader = Arc::new(CursorReader { events, advanced: Mutex::new(Vec::new()) });
         let (source, _) = isolated_source(reader.clone());
-        let delivery = source.deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source.deliver(&ctx_in(room)).await;
         assert_eq!(delivery.items.len(), 3);
         assert!(!delivery.truncated, "the digest has no continuation cursor");
         assert!(reader.advanced.lock().unwrap().is_empty(), "delivery is not reading");
@@ -557,7 +556,7 @@
         }));
 
         let delivery = source
-            .deliver(&ctx_in(room), 400, ResolutionPreference::Raw)
+            .deliver(&ctx_in(room))
             .await;
         let texts: Vec<&str> = delivery.items.iter().map(|i| i.content.as_str()).collect();
         assert!(

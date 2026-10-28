@@ -374,6 +374,11 @@ pub struct Contribution {
     /// because the source did not report one ("whole or handle": a cut the reader
     /// cannot see is a silent clip, PERSONA-COGNITION-PIPELINE.md §3).
     pub source_truncated: bool,
+    /// The source's own items, each with its stable key and levels (whole, summary,
+    /// pointer), when it delivered some: her view prices and collapses them one by one
+    /// (`context_streams::blocks`), so the one allocation chooses per card, per post, per
+    /// member instead of whole-block-or-minimum. Shared, never copied per reader.
+    pub units: std::sync::Arc<[crate::cognition::rag_budget::RagItem]>,
 }
 
 impl Contribution {
@@ -395,6 +400,7 @@ impl Contribution {
             parts: vec![content.clone()],
             expand_command: None,
             source_truncated: false,
+            units: std::sync::Arc::from(Vec::new()),
             content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -420,6 +426,12 @@ impl Contribution {
     /// the assembly path never has to special-case "divisible but with nothing
     /// to divide". `content` is left untouched — it remains the whole, and is
     /// what renders whenever the whole fits.
+    /// The source's keyed, levelled items (see [`Contribution::units`]).
+    pub fn with_units(mut self, units: Vec<crate::cognition::rag_budget::RagItem>) -> Self {
+        self.units = units.into();
+        self
+    }
+
     pub fn with_parts(mut self, parts: Vec<String>) -> Self {
         if !parts.is_empty() {
             self.parts = parts;
@@ -462,6 +474,7 @@ impl Contribution {
             parts: vec![content.clone()],
             expand_command: None,
             source_truncated: false,
+            units: std::sync::Arc::from(Vec::new()),
             content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -511,6 +524,7 @@ impl Contribution {
             parts: vec![error.clone()],
             expand_command: None,
             source_truncated: false,
+            units: std::sync::Arc::from(Vec::new()),
             content: error.clone(),
             salience: 1.0,
             reasoning: "deliberation inference failed".to_string(),

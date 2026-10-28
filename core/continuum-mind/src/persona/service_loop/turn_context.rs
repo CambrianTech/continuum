@@ -140,7 +140,7 @@ pub(super) async fn compose_turn(
         // Without it every room-scoped source abstains and she perceives no
         // board, no roster, no doctrine, no wall (#331 / #127).
         cognition
-            .compose_for_turn(&ctx.profile, now_ms, Some(turn_room))
+            .compose_for_turn(now_ms, Some(turn_room))
             .await
     };
     phase_timings.compose_ms = compose_started.elapsed().as_millis() as u64;

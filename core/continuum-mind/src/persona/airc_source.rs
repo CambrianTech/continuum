@@ -36,9 +36,7 @@ use crate::cognition::channel_element::ChannelElement;
 use crate::cognition::channel_substrate::{
     global_channel_digest_buffer, global_channel_digest_builder,
 };
-use crate::cognition::rag_budget::{
-     RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
-};
+use crate::cognition::rag_budget::{RagContext, RagDelivery, RagItem, RagSource};
 use crate::runtime::ready_buffer::ReadyBuffer;
 use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
 
@@ -51,7 +49,6 @@ const FETCH_LIMIT: usize = 100;
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
 /// copy — converged.)
-use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
 
 /// Persona-bound source delivering the consolidated channel digest.
 pub struct AircRagSource {
@@ -315,11 +312,10 @@ impl AircRagSource {
     ) -> RagItem {
         let ev = element.event();
         let text = collapsed.unwrap_or_else(|| element.text().unwrap_or_default().to_string());
-        let tokens = estimate_tokens(&text);
-        RagItem {
-            content: text,
-            tokens,
-            metadata: serde_json::json!({
+        RagItem::whole(
+            ev.event_id.as_uuid().to_string(),
+            text,
+            serde_json::json!({
                 "event_id": ev.event_id.as_uuid().to_string(),
                 "room_id": ev.room_id.as_uuid().to_string(),
                 // The LOGICAL author: a chat/send line is attributed to the human/web
@@ -336,17 +332,7 @@ impl AircRagSource {
                 // as the item score; without it the inspect layer silently saw 0.0.
                 "score": if unread { 1.0 } else { 0.5 },
             }),
-        }
-    }
-
-    fn empty(resolution: ResolutionPreference) -> RagDelivery {
-        RagDelivery {
-            source_id: AIRC.to_string(),
-            items: Vec::new(),
-            tokens_used: 0,
-            truncated: false,
-            resolution_used: resolution,
-        }
+        )
     }
 }
 
@@ -386,22 +372,10 @@ impl RagSource for AircRagSource {
         Some("collaboration/chat/export")
     }
 
-    /// One conversation turn — a speaker and what they said. The recent-history
-    /// appetite is much larger and is expressed as `min`, not as this floor;
-    /// conflating the two is what made every source all-or-nothing.
-    fn floor_tokens(&self) -> u32 {
-        64
-    }
-
-    async fn deliver(
-        &self,
-        ctx: &RagContext,
-        _budget: u32, // never sizes the conversation (FLOW plan §2d); the parameter leaves the trait when every source complies
-        resolution: ResolutionPreference,
-    ) -> RagDelivery {
+    async fn deliver(&self, ctx: &RagContext) -> RagDelivery {
         // Defense in depth: never serve another persona's context.
         if ctx.persona_id != self.persona_id {
-            return Self::empty(ResolutionPreference::Placeholder);
+            return RagDelivery::empty(AIRC);
         }
         // Page the TURN's room when the RagContext carries it (#367). Before this,
         // page_recent always followed the persona's current-room POINTER (her
@@ -424,7 +398,7 @@ impl RagSource for AircRagSource {
                     persona_id = %self.persona_id,
                     "airc rag: page_recent failed — empty delivery, cognition stays up"
                 );
-                return Self::empty(ResolutionPreference::Placeholder);
+                return RagDelivery::empty(AIRC);
             }
         };
         let Some(room_id) = ctx
@@ -433,7 +407,7 @@ impl RagSource for AircRagSource {
             .or_else(|| events.last().map(|e| e.room_id.as_uuid()))
         else {
             // No room scope AND no transcript — genuinely nothing to digest.
-            return Self::empty(ResolutionPreference::Placeholder);
+            return RagDelivery::empty(AIRC);
         };
 
         // #249: when the LIVE window is shallower than the grounding target (the
@@ -552,15 +526,9 @@ impl RagSource for AircRagSource {
             tokens_used,
             "airc_rag: deliver (digest, every unit whole)"
         );
-        RagDelivery {
-            source_id: AIRC.to_string(),
-            items,
-            tokens_used,
-            // The digest IS the window. More history = a command (scrollback/search),
-            // not a budget continuation cursor.
-            truncated: false,
-            resolution_used: resolution,
-        }
+        // The digest IS the window. More history = a command (scrollback/search),
+        // not a budget continuation cursor.
+        RagDelivery::of(AIRC, items, false)
     }
 
 }

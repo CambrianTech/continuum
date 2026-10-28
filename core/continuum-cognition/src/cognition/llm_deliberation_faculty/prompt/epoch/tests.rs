@@ -8,7 +8,7 @@ use crate::cognition::context_streams::conversation::{Conversation, Turn};
 use crate::cognition::context_streams::Role;
 
 fn block(faculty: &str, text: &str) -> Grounding {
-    Grounding { faculty: faculty.to_owned(), text: text.to_owned(), minimum: text.to_owned() }
+    Grounding::atomic(faculty, text)
 }
 
 fn turn(n: usize) -> Turn {

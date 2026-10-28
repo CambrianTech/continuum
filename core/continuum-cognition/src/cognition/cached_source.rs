@@ -17,8 +17,7 @@
 //! event, workspace-map until one of the persona's own write receipts. The owner
 //! who constructs the wrap holds a [`DirtyHandle`] and connects it to that event;
 //! `deliver` never re-fetches on the compose path unless dirty (or the cache
-//! genuinely cannot answer: different room, or a bigger budget could yield more
-//! from a source that truncated). No benchmark/drive mode — an exam composes fast
+//! genuinely cannot answer: a different room). No benchmark/drive mode — an exam composes fast
 //! because nothing it depends on changes, a live room gets the same win because
 //! rosters and doctrine barely change there either.
 //!
@@ -31,9 +30,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::cognition::rag_budget::{
-     RagContext, RagDelivery, RagSource, ResolutionPreference,
-};
+use crate::cognition::rag_budget::{RagContext, RagDelivery, RagSource};
 
 /// The invalidation lever the OWNER wires to the source's change event.
 /// Cloneable and cheap; `mark()` from any thread/task.
@@ -107,14 +104,12 @@ impl CachedRagSource {
     /// Can `cached` answer THIS call without a fetch?
     ///
     /// - Same room (a projection is room-scoped state).
-    /// - It fits the budget (`tokens_used <= budget`).
-    /// - It is COMPLETE (`!truncated`) **or** the budget hasn't grown past what
-    ///   it was able to spend — a truncated delivery under a bigger budget
-    ///   could legitimately yield more, so it re-fetches.
-    fn answers(cached: &CachedDelivery, room: Option<uuid::Uuid>, budget: u32) -> bool {
+    /// - Not invalidated (the caller checks `dirty` before asking).
+    ///
+    /// A source is never handed a size, so a delivery is not budget-shaped and
+    /// `truncated` is the source's own fetch limit: neither changes the answer.
+    fn answers(cached: &CachedDelivery, room: Option<uuid::Uuid>) -> bool {
         cached.room == room
-            && cached.delivery.tokens_used <= budget
-            && (!cached.delivery.truncated || budget <= cached.delivery.tokens_used)
     }
 }
 
@@ -132,25 +127,12 @@ impl RagSource for CachedRagSource {
         self.inner.expand_command()
     }
 
-    fn floor_tokens(&self) -> u32 {
-        self.inner.floor_tokens()
-    }
-
-    fn budget_claim(&self, window: u32, headroom: u32) -> crate::cognition::rag_budget::RagSourceBudget {
-        self.inner.budget_claim(window, headroom)
-    }
-
-    async fn deliver(
-        &self,
-        ctx: &RagContext,
-        budget: u32,
-        resolution: ResolutionPreference,
-    ) -> RagDelivery {
+    async fn deliver(&self, ctx: &RagContext) -> RagDelivery {
         let room = ctx.airc_room.as_ref().map(|r| r.as_uuid());
         let mut guard = self.last_good.lock().await;
         if !self.dirty.load(Ordering::SeqCst) {
             if let Some(cached) = guard.as_ref() {
-                if Self::answers(cached, room, budget) {
+                if Self::answers(cached, room) {
                     return cached.delivery.clone();
                 }
             }
@@ -159,7 +141,7 @@ impl RagSource for CachedRagSource {
         // an event landing mid-fetch must not be lost (swap-then-check would
         // serve a projection already known stale).
         self.dirty.store(false, Ordering::SeqCst);
-        let delivery = self.inner.deliver(ctx, budget, resolution).await;
+        let delivery = self.inner.deliver(ctx).await;
         *guard = Some(CachedDelivery {
             delivery: delivery.clone(),
             room,
@@ -187,27 +169,17 @@ mod tests {
         fn expand_command(&self) -> Option<&'static str> {
             None
         }
-        fn floor_tokens(&self) -> u32 {
-            1
-        }
-        async fn deliver(
-            &self,
-            _ctx: &RagContext,
-            _budget: u32,
-            _resolution: ResolutionPreference,
-        ) -> RagDelivery {
+        async fn deliver(&self, _ctx: &RagContext) -> RagDelivery {
             let n = self.fetches.fetch_add(1, Ordering::SeqCst) + 1;
-            RagDelivery {
-                source_id: "counting".to_string(),
-                items: vec![crate::cognition::rag_budget::RagItem {
-                    content: format!("fetch #{n}"),
-                    tokens: 4,
-                    metadata: serde_json::json!({}),
-                }],
-                tokens_used: 4,
-                truncated: false,
-                resolution_used: ResolutionPreference::Raw,
-            }
+            RagDelivery::of(
+                "counting",
+                vec![crate::cognition::rag_budget::RagItem::whole(
+                    "counting",
+                    format!("fetch #{n}"),
+                    serde_json::json!({}),
+                )],
+                false,
+            )
         }
     }
 
@@ -225,7 +197,7 @@ mod tests {
         let ctx = RagContext::for_persona(me, 0);
 
         for _ in 0..5 {
-            let d = cached.deliver(&ctx, 100, ResolutionPreference::Raw).await;
+            let d = cached.deliver(&ctx).await;
             assert_eq!(
                 d.items[0].content, "fetch #1",
                 "unchanged world → cached projection"
@@ -238,7 +210,7 @@ mod tests {
         );
 
         dirty.mark();
-        let d = cached.deliver(&ctx, 100, ResolutionPreference::Raw).await;
+        let d = cached.deliver(&ctx).await;
         assert_eq!(
             d.items[0].content, "fetch #2",
             "dirty → exactly one refetch"
@@ -247,7 +219,7 @@ mod tests {
 
         // A DIFFERENT room must not see this room's projection (exam-bleed class).
         let other = RagContext::for_persona_in_room(me, 0, uuid::Uuid::new_v4());
-        let d = cached.deliver(&other, 100, ResolutionPreference::Raw).await;
+        let d = cached.deliver(&other).await;
         assert_eq!(
             d.items[0].content, "fetch #3",
             "room switch → fresh fetch, never bleed"

@@ -327,8 +327,6 @@ fn working_window_when(served: u32, serving: bool) -> u32 {
     Self::WORKING_WINDOW_TOKENS.min(served)
 }
 
-/// Share of the served window recall may spend. See [`ContextBudget::recall_tokens`].
-const RECALL_DENOM: usize = 10;
 
     /// Whether a window is known: every bound below is a real number, not "no bound".
     pub fn is_known(&self) -> bool {
@@ -411,20 +409,6 @@ const RECALL_DENOM: usize = 10;
         self.fraction(4)
     }
 
-    /// One source's grounding offer, in tokens. Preserve the source bridge's
-    /// window-relative share (task #124: 4096 on a 16k window), but apply the
-    /// same measured prefill affordability as recall, tools and working memory.
-    /// This is an offer ceiling, not a reservation: the existing prompt fitter
-    /// still allocates the assembled context and preserves complete source units.
-    /// Grounding and tool-output rendering have separate policy names even though
-    /// their current shares agree; changing one must not silently change the other.
-    pub fn grounding_tokens(&self) -> usize {
-        match self.total_chars {
-            Some(total) => (total / GUARD_CHARS_PER_TOKEN) / 4,
-            None => usize::MAX,
-        }
-    }
-
     /// Default CEILING on one response's generated length, in TOKENS (not chars) — the role's
     /// fallback budget when it declares none. An eighth of the window: enough that a real
     /// answer (a function, a diff, a traceback walk) is never truncated mid-thought, while
@@ -437,25 +421,6 @@ const RECALL_DENOM: usize = 10;
             // total_chars = window * GUARD_CHARS_PER_TOKEN, so /8 in tokens is /(8*ratio) here.
             Some(total) => ((total / GUARD_CHARS_PER_TOKEN) / 8).min(u32::MAX as usize) as u32,
             None => u32::MAX,
-        }
-    }
-
-    /// Tokens recall may spend surfacing past memories.
-    ///
-    /// Recall is ONE perception faculty among many (roster, doctrine, working memory)
-    /// plus the room transcript and the identity prompt — it must never crowd them
-    /// out. `1/RECALL_DENOM` keeps the live message dominant while still carrying the
-    /// relevant past, and it SCALES: a 1M-context model gets proportionally more
-    /// recall instead of a fixed 4k-shaped slice.
-    ///
-    /// Moved here 2026-08-20 from `recall_faculty.rs`, where it lived as
-    /// `RECALL_WINDOW_FRACTION: f32 = 0.10` — a bare float that this module's own
-    /// guard could not see, because the guard's type list stopped at the integers.
-    /// Widening it to floats surfaced this on the first run.
-    pub fn recall_tokens(&self) -> usize {
-        match self.total_chars {
-            Some(total) => (total / GUARD_CHARS_PER_TOKEN) / Self::RECALL_DENOM,
-            None => usize::MAX,
         }
     }
 
@@ -637,25 +602,16 @@ mod tests {
             1_024
         );
 
-        // Card 2bbee27a: grounding previously bypassed this rate ladder and
-        // offered a quarter of raw KV capacity while the other context sources
-        // used measured affordability. Exercise those same known/unknown rungs
-        // at the current 51,712-token geometry and a smaller-than-serve-floor
-        // window. These are deterministic policy inputs, not hardware receipts.
-        for (window, rate, expected) in [
-            (51_712, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }, 12_928),
-            (51_712, MeasuredRate::UNKNOWN, crate::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS / 4),
-            (256, MeasuredRate::UNKNOWN, 64),
-            (256, MeasuredRate { tps: Some(12.5), source: RateSource::Stale }, 64),
-            (0, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }, 0),
+        // Every rung, known or unknown, stays within the lane at the current geometry and a
+        // smaller-than-serve-floor window (deterministic policy inputs, not hardware receipts).
+        for (window, rate) in [
+            (51_712, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }),
+            (51_712, MeasuredRate::UNKNOWN),
+            (256, MeasuredRate::UNKNOWN),
+            (256, MeasuredRate { tps: Some(12.5), source: RateSource::Stale }),
+            (0, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }),
         ] {
-            let affordable = ContextBudget::affordable_for_rate(rate, window, Audience::Interactive, None);
-            assert!(affordable <= window);
-            if window > 0 {
-                let budget = ContextBudget::from_window_unbounded(affordable);
-                assert_eq!(budget.grounding_tokens(), expected as usize);
-                assert!(budget.grounding_tokens() <= window as usize);
-            }
+            assert!(ContextBudget::affordable_for_rate(rate, window, Audience::Interactive, None) <= window);
         }
     }
 

@@ -30,6 +30,10 @@
 //! - [[substrate-is-a-good-citizen-on-the-host]] — when `trace_path`
 //!   is `None`, the sink is `NoopRagCaptureSink` (zero overhead). The
 //!   hot path doesn't pay for observability it didn't ask for.
+//! - Inspection is side-effect free: a source delivers everything it holds
+//!   and does not advance its read cursor on `deliver` (that is a separate
+//!   mark_read), and no budget is allocated here; her prompt view owns the
+//!   one allocation.
 //! - [[source-drain-is-the-universal-pattern]] — the inspection IS
 //!   the drain for in-flight RAG decisions. Without it those
 //!   decisions are sources without drains, which is the leak shape.
@@ -42,10 +46,7 @@ use uuid::Uuid;
 
 use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
 use crate::persona::airc_source::AircRagSource;
-use crate::cognition::rag_budget::{
-    BudgetAllocation, FlexboxRagBudgetAdapter, RagBudgetAdapter, RagContext, RagSource,
-    RagSourceBudget, ReservedTokens, ResolutionPreference,
-};
+use crate::cognition::rag_budget::{RagContext, RagSource};
 use crate::persona::rag_capture::{
     JsonlRagCaptureSink, NoopRagCaptureSink, RagCaptureEvent, RagCaptureSink, RecordingRagSource,
 };
@@ -79,12 +80,8 @@ pub const DEFAULT_INSPECT_WINDOW: u32 = 32_768;
 pub struct RagInspectionRequest {
     pub persona_id: Uuid,
     pub persona_name: String,
+    /// Reported back in the inspection; nothing is allocated against it here.
     pub context_window: u32,
-    pub reserved: ReservedTokens,
-    pub airc_floor: u32,
-    pub airc_max: u32,
-    pub airc_priority: u8,
-    pub airc_required: bool,
     pub airc_fetch_limit: usize,
     /// Wall-clock "now" the inspection should reason against. Caller
     /// supplies this so the function stays pure-of-clock (testable +
@@ -132,47 +129,18 @@ impl RagInspectionRequest {
         Self::for_window(persona_id, persona_name, now_ms, profile.context_length)
     }
 
-    /// THE derivation both constructors share (#424 — `defaults_for`
-    /// previously hand-copied a flat `{system: 400, completion: 4_000,
-    /// airc_max: 20_000}` shape that had already drifted from this one).
-    ///
-    /// - reservation + headroom: [`ReservedTokens::scaled_for_window`].
-    /// - `airc_max` = at most 60% of the window, AND at most the
-    ///   post-reservation headroom.
-    /// - `airc_floor` clamps to `airc_max` so floor ≤ max always.
+    /// THE derivation both constructors share. The source delivers whole and her
+    /// prompt view owns the one allocation, so the window is only reported.
     pub fn for_window(
         persona_id: Uuid,
         persona_name: String,
         now_ms: u64,
         context_window: u32,
     ) -> Self {
-        let reserved = ReservedTokens::scaled_for_window(context_window);
-        let headroom = reserved.headroom_within(context_window);
-        // Default budget: ~60% of the context window for room
-        // history, clamped to headroom. This is a CONSERVATIVE
-        // FALLBACK — the substrate's real budgeter (TODO: routed
-        // through model characteristics on the Context per
-        // [[context-is-the-client-airc-token-is-identity]] and
-        // [[intent-driven-api-not-hot-patches]]) should derive
-        // this from `(prefill_tps, decode_tps, target_first_token_latency_ms)`
-        // so a 5090 + 200k-context frontier model can feed the
-        // whole history and a CPU + Qwen-0.5B can clamp itself.
-        // Both end up calling the SAME budget API; the answer
-        // differs because the model differs. Do NOT cap to a
-        // smaller percentage to make Intel Mac faster — that
-        // dumbs down every capable peer on the grid.
-        let airc_max = ((context_window as u64) * 6 / 10) as u32;
-        let airc_max = airc_max.min(headroom);
-        let airc_floor = 500_u32.min(airc_max);
         Self {
             persona_id,
             persona_name,
             context_window,
-            reserved,
-            airc_floor,
-            airc_max,
-            airc_priority: 10,
-            airc_required: true,
             airc_fetch_limit: 100,
             now_ms,
             trace_path: None,
@@ -195,8 +163,7 @@ impl RagInspectionRequest {
     }
 }
 
-/// The honest-look result. Carries the full allocation outcome PLUS
-/// per-source delivery details with the mechanic-grade rationale
+/// The honest-look result. Carries the per-source delivery details with the mechanic-grade rationale
 /// (score, lamport, peer-id-prefix, age, content preview).
 ///
 /// Specifically does NOT collapse layers — the future is multiple
@@ -208,7 +175,6 @@ pub struct RagInspection {
     pub persona_id: Uuid,
     pub persona_name: String,
     pub context_window: u32,
-    pub allocation: BudgetAllocation,
     pub deliveries: Vec<SourceDeliveryInspection>,
     /// Path to the JSONL trace if `trace_path` was set on the request,
     /// else `None`. Other AIs / mechanics resume replay against this.
@@ -255,12 +221,10 @@ pub struct ModelResponseInspection {
 }
 
 /// Per-source delivery, with the substrate-grade detail every
-/// inspection caller needs: requested budget, actual usage,
-/// continuation flag, and the full list of items packed.
+/// inspection caller needs: actual usage, continuation flag, and the full list of items packed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceDeliveryInspection {
     pub source_id: String,
-    pub budget_requested: u32,
     pub tokens_used: u32,
     pub has_continuation: bool,
     pub items: Vec<InspectedItem>,
@@ -277,6 +241,10 @@ pub struct InspectedItem {
     pub peer_id_prefix: String,
     pub lamport: u64,
     pub age_s: u64,
+    /// The item has a coarser summary level her view can fall back to.
+    pub has_summary: bool,
+    /// The item has a pointer level (what it is and how to reopen it).
+    pub has_pointer: bool,
     /// Full source-emitted metadata — sources may attach additional
     /// fields beyond the canonical ones above (e.g. event_id,
     /// room_id, admission_origin). Preserved verbatim for inspection
@@ -314,8 +282,8 @@ pub async fn inspect_persona_rag(
 ///   `model_response`. The prompt text + the actual response are
 ///   captured so an inspector can re-run the model with the same
 ///   prompt and compare.
-/// - "Which layer is broken?" — `allocation.allocations` + per-source
-///   deliveries (unchanged from the RAG-only path).
+/// - "Which layer is broken?" — per-source deliveries and each item's
+///   levels (whole, summary, pointer).
 /// - "Is this contextually relevant?" — per-item score + age +
 ///   peer_id_prefix in the deliveries (unchanged).
 ///
@@ -353,43 +321,14 @@ pub async fn inspect_persona_rag_with_inference(
     let mut ctx = ctx_base.clone();
     ctx.substrate.turn_id = Some(turn_id);
 
-    let budgets = vec![RagSourceBudget {
-        source_id: "airc".to_string(),
-        priority: request.airc_priority,
-        floor_tokens: request.airc_floor,
-        min_tokens: request.airc_floor,
-        max_tokens: request.airc_max,
-        required: request.airc_required,
-    }];
-
     sink.record(RagCaptureEvent::TurnStart {
         captured_at_ms: request.now_ms,
         persona_id: request.persona_id,
         turn_id: Some(turn_id),
-        context_window: request.context_window,
-        reserved: request.reserved,
-        source_budgets: budgets.clone(),
         context: ctx.clone(),
     });
 
-    let adapter = FlexboxRagBudgetAdapter::new();
-    let allocation = adapter.allocate(&ctx, request.context_window, request.reserved, &budgets);
-
-    sink.record(RagCaptureEvent::BudgetAllocated {
-        captured_at_ms: request.now_ms,
-        persona_id: request.persona_id,
-        turn_id: Some(turn_id),
-        allocation: allocation.clone(),
-    });
-
-    let airc_alloc = allocation
-        .allocations
-        .first()
-        .ok_or_else(|| "allocator returned no source allocations".to_string())?;
-    let budget_requested = airc_alloc.allocated_tokens;
-    let delivery = recorded
-        .deliver(&ctx, budget_requested, ResolutionPreference::Raw)
-        .await;
+    let delivery = recorded.deliver(&ctx).await;
 
     sink.record(RagCaptureEvent::TurnEnd {
         captured_at_ms: request.now_ms,
@@ -438,6 +377,8 @@ pub async fn inspect_persona_rag_with_inference(
                 peer_id_prefix,
                 lamport,
                 age_s,
+                has_summary: item.summary.is_some(),
+                has_pointer: item.pointer.is_some(),
                 metadata: item.metadata.clone(),
             }
         })
@@ -455,10 +396,8 @@ pub async fn inspect_persona_rag_with_inference(
         persona_id: request.persona_id,
         persona_name: request.persona_name.clone(),
         context_window: request.context_window,
-        allocation,
         deliveries: vec![SourceDeliveryInspection {
             source_id: delivery.source_id.clone(),
-            budget_requested,
             tokens_used: delivery.tokens_used,
             has_continuation: delivery.truncated,
             items,

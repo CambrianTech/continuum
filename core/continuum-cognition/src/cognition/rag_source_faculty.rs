@@ -56,20 +56,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
-use crate::cognition::rag_budget::{RagContext, RagSource, ResolutionPreference};
-
-/// Resolve a source offer through the same measured affordability owner as
-/// recall, tools and working memory. The serving minimum is not permission to
-/// exceed a caller's actual window. Explicit fixture budgets remain available
-/// through `with_budget`; final assembly still owns total prompt fitting.
-/// A zero window grants zero, rather than inventing serving capacity. The
-/// constructor's legacy default passes the declared serving minimum explicitly;
-/// production assembly passes its resolved model window.
-pub fn grounding_budget_for(served_window: u32) -> u32 {
-    super::context_budget::ContextBudget::from_window(served_window)
-        .grounding_tokens()
-        .min(served_window as usize) as u32
-}
+use crate::cognition::rag_budget::{RagContext, RagSource};
 
 /// Salience floor for **standing framing** (roster, doctrine) — always-present
 /// structural context, like the system prompt. This ranks above retrieved
@@ -140,7 +127,6 @@ pub struct RagSourceFaculty {
     stable: bool,
     /// Importance survives moving volatile grounding out of the system prefix.
     standing_grounding: bool,
-    budget: u32,
     clock: Clock,
     /// `true` when the assembler registered this grounding as
     /// [`Deferrability::ColdStartCritical`] — meaning its absence is a WRONG turn,
@@ -200,10 +186,6 @@ impl RagSourceFaculty {
             // follows content stability.
             stable,
             standing_grounding: matches!(policy, SaliencePolicy::StandingFraming),
-            // Floor default (derived from the substrate serving floor, not a magic
-            // number). Production overrides via `with_budget(grounding_budget_for(
-            // cfg.context_window))` so the ceiling tracks the LIVE served window.
-            budget: grounding_budget_for(crate::inference::planning::MIN_SERVE_CTX),
             clock: wall_clock(),
             // Not cold-start-critical until the assembler says so. The safe
             // direction for a LOUDNESS contract is the opposite of the safe
@@ -223,12 +205,6 @@ impl RagSourceFaculty {
     /// [`Deferrability::ColdStartCritical`]: super::persona_workspace::Deferrability::ColdStartCritical
     pub fn cold_start_critical(mut self, critical: bool) -> Self {
         self.cold_start_critical = critical;
-        self
-    }
-
-    /// Override the per-tick token budget handed to the source.
-    pub fn with_budget(mut self, budget: u32) -> Self {
-        self.budget = budget;
         self
     }
 
@@ -373,10 +349,10 @@ impl Faculty for RagSourceFaculty {
             crate::cognition::rag_budget::RagRoomScope::Activity => ws.activity_room_id,
         };
         let ctx = RagContext::for_persona_in_room(self.persona_id, now, room);
-        let delivery = self
-            .source
-            .deliver(&ctx, self.budget, ResolutionPreference::Raw)
-            .await;
+        // Every item the source holds, at its levels: her view's one allocation decides
+        // what of it she sees (FLOW-IMPLEMENTATION-PLAN §2d). Each faculty was handed a
+        // quarter of the window to cut to, seven of them about 7/4 of it.
+        let delivery = self.source.deliver(&ctx).await;
 
         // Empty delivery → abstain (the source had nothing, or degraded to empty
         // per the good-citizen doctrine). No empty bid clutters the workspace. An
@@ -410,6 +386,7 @@ impl Faculty for RagSourceFaculty {
 
         let c = Contribution::context(self.faculty_id.clone(), content, self.salience, reasoning)
             .with_parts(units)
+            .with_units(delivery.items)
             .with_expand_command(self.source.expand_command())
             // A continuation means the SOURCE stopped short of its own list; the
             // packer's notice must say so (card e049aa82: nothing resumes cursors).

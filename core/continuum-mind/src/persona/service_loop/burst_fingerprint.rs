@@ -320,7 +320,6 @@ pub(super) async fn run_self_cycle(
         // Passing None here is what made idle ticks blind to the board (#331 / #127).
         cognition
             .compose_for_turn(
-                &ctx.profile,
                 now_ms,
                 Some(focus_room.unwrap_or(ctx.identity.default_room)),
             )

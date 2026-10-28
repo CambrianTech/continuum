@@ -107,14 +107,6 @@ pub struct RagInspectParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     #[ts(optional, type = "number")]
-    pub airc_floor: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    #[ts(optional, type = "number")]
-    pub airc_max: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    #[ts(optional, type = "number")]
     pub airc_fetch_limit: Option<u32>,
     /// Optional absolute path for the JSONL capture trace. When set,
     /// the inspection records the full turn there so other AIs /
@@ -140,28 +132,6 @@ pub struct RagInspectParams {
     pub chain_inference: Option<bool>,
 }
 
-/// One source's allocation outcome — flattened from the library's
-/// BudgetAllocation for the wire.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/persona/RagInspectAllocation.ts"
-)]
-#[serde(rename_all = "camelCase")]
-pub struct RagInspectAllocation {
-    pub source_id: String,
-    #[ts(type = "number")]
-    pub allocated_tokens: u32,
-    #[ts(type = "number")]
-    pub requested_floor: u32,
-    #[ts(type = "number")]
-    pub requested_min: u32,
-    #[ts(type = "number")]
-    pub requested_max: u32,
-    /// "satisfied" / "floor_only" / "dropped" / "under_provisioned"
-    pub state: String,
-}
-
 /// One item the source delivered, with the mechanic-grade rationale
 /// flattened for the wire (content_preview, score, age_s, etc).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -183,9 +153,13 @@ pub struct RagInspectItem {
     pub lamport: u64,
     #[ts(type = "number")]
     pub age_s: u64,
+    /// The item has a coarser summary level her view can fall back to.
+    pub has_summary: bool,
+    /// The item has a pointer level (what it is and how to reopen it).
+    pub has_pointer: bool,
 }
 
-/// One source's delivery — its budget, what it served, and the per-
+/// One source's delivery — what it served, and the per-
 /// item rationale.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(
@@ -196,21 +170,18 @@ pub struct RagInspectItem {
 pub struct RagInspectDelivery {
     pub source_id: String,
     #[ts(type = "number")]
-    pub budget_requested: u32,
-    #[ts(type = "number")]
     pub tokens_used: u32,
     pub has_continuation: bool,
     pub items: Vec<RagInspectItem>,
 }
 
-/// Result of `persona/rag-inspect`. Carries the full allocation
-/// outcome + per-source deliveries so any AI inspecting the persona
+/// Result of `persona/rag-inspect`. Carries the per-source deliveries so any AI inspecting the persona
 /// can answer the three canonical questions:
 /// - "Would I respond as it requests at this step?" — full prompt
 ///   reconstructable from `deliveries`; when `chainInference=true`,
 ///   the actual model response is captured in `modelResponse`.
-/// - "Which layer is broken?" — per-source `allocations` show state
-///   (satisfied / floor_only / dropped / under_provisioned).
+/// - "Which layer is broken?" — per-source deliveries and each item's
+///   levels (`hasSummary`, `hasPointer`).
 /// - "Is this contextually relevant?" — per-item score + age +
 ///   peer in the deliveries.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -225,15 +196,6 @@ pub struct RagInspectResult {
     pub persona_name: String,
     #[ts(type = "number")]
     pub context_window: u32,
-    /// Sum of all source allocations. Useful for "did we leave
-    /// tokens on the table?" telemetry.
-    #[ts(type = "number")]
-    pub total_allocated: u32,
-    /// True if the allocator reported `escalation_needed` — a
-    /// required source landed under-provisioned. Callers (AIs)
-    /// SHOULD flag this in their reasoning.
-    pub escalation_needed: bool,
-    pub allocations: Vec<RagInspectAllocation>,
     pub deliveries: Vec<RagInspectDelivery>,
     /// JSONL trace path (relative or absolute) when `trace_path`
     /// was set on the request. Other AIs / mechanic-shop tools
@@ -279,27 +241,11 @@ pub struct RagInspectModelResponse {
 
 impl RagInspectResult {
     fn from_library(value: RagInspection) -> Self {
-        let total_allocated = value.allocation.total_allocated;
-        let escalation_needed = value.allocation.escalation_needed;
-        let allocations = value
-            .allocation
-            .allocations
-            .into_iter()
-            .map(|a| RagInspectAllocation {
-                source_id: a.source_id,
-                allocated_tokens: a.allocated_tokens,
-                requested_floor: a.requested_floor,
-                requested_min: a.requested_min,
-                requested_max: a.requested_max,
-                state: allocation_state_to_str(a.state).to_string(),
-            })
-            .collect();
         let deliveries = value
             .deliveries
             .into_iter()
             .map(|d| RagInspectDelivery {
                 source_id: d.source_id,
-                budget_requested: d.budget_requested,
                 tokens_used: d.tokens_used,
                 has_continuation: d.has_continuation,
                 items: d
@@ -313,6 +259,8 @@ impl RagInspectResult {
                         peer_id_prefix: i.peer_id_prefix,
                         lamport: i.lamport,
                         age_s: i.age_s,
+                        has_summary: i.has_summary,
+                        has_pointer: i.has_pointer,
                     })
                     .collect(),
             })
@@ -331,9 +279,6 @@ impl RagInspectResult {
             persona_id: value.persona_id,
             persona_name: value.persona_name,
             context_window: value.context_window,
-            total_allocated,
-            escalation_needed,
-            allocations,
             deliveries,
             trace_path: value
                 .trace_path
@@ -341,16 +286,6 @@ impl RagInspectResult {
                 .map(|p| p.to_string_lossy().into_owned()),
             model_response,
         }
-    }
-}
-
-fn allocation_state_to_str(state: crate::cognition::rag_budget::AllocationState) -> &'static str {
-    use crate::cognition::rag_budget::AllocationState as S;
-    match state {
-        S::Satisfied => "satisfied",
-        S::FloorOnly => "floor_only",
-        S::Dropped => "dropped",
-        S::UnderProvisioned => "under_provisioned",
     }
 }
 
@@ -436,12 +371,6 @@ pub(crate) async fn inspect_persona(
         RagInspectionRequest::defaults_for(resolution.persona_id, params.persona.clone(), now_ms);
     if let Some(cw) = params.context_window {
         request.context_window = cw;
-    }
-    if let Some(floor) = params.airc_floor {
-        request.airc_floor = floor;
-    }
-    if let Some(max) = params.airc_max {
-        request.airc_max = max;
     }
     if let Some(fetch) = params.airc_fetch_limit {
         request.airc_fetch_limit = fetch as usize;
@@ -618,8 +547,9 @@ mod tests {
         assert!(result.unwrap_err().contains("not found in stub resolver"));
     }
 
+    // what this catches: an empty room still reports the airc source's delivery (zero items), not a missing source.
     #[tokio::test]
-    async fn known_persona_with_empty_room_returns_zero_items_but_satisfied_allocation() {
+    async fn known_persona_with_empty_room_delivers_zero_items() {
         let m = module_with(vec![]);
         let result = inspect_persona(
             &m.resolver,
@@ -633,13 +563,8 @@ mod tests {
         .unwrap();
         assert_eq!(result.persona_name, "Paige");
         assert_eq!(result.persona_id, persona_uuid());
-        // Allocator gives the airc source its full max (default 20k);
-        // delivery is empty since there are no events.
-        assert!(!result.escalation_needed);
-        assert_eq!(result.allocations.len(), 1);
-        assert_eq!(result.allocations[0].source_id, "airc");
-        assert_eq!(result.allocations[0].state, "satisfied");
         assert_eq!(result.deliveries.len(), 1);
+        assert_eq!(result.deliveries[0].source_id, "airc");
         assert!(result.deliveries[0].items.is_empty());
     }
 
