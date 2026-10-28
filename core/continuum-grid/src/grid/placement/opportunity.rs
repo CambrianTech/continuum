@@ -95,7 +95,9 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
         // A remote seat: a slot is a lease the seat grants — ask on her wire first.
         let asked = match sw.airc_handle() {
             Some(a) => crate::persona::placement_reservation::request_reservation(&a, seat.node, mind).await,
-            None => Err("no airc handle for her — cannot ask the seat".to_string()),
+            None => Err(crate::persona::placement_reservation::ReservationAskError::Transport(
+                "no airc handle for her — cannot ask the seat".to_string(),
+            )), // no local wire at all: closest typed class is transport (nothing was sent, so no fault row either)
         };
         match asked {
             Ok(g) if g.granted => {}
@@ -115,8 +117,9 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
                     class = "placement.move.opportunity_refused",
                     persona = %sw.persona_name(),
                     to = %seat.node,
+                    kind = e.kind(), // capability vs transport without parsing reason (card 8e4c42de)
                     reason = %e,
-                    "the better seat did not answer the ask in time — she stays where she is"
+                    "the move ask produced no grant this tick — she stays where she is"
                 );
                 continue;
             }

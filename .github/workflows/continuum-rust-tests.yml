@@ -269,7 +269,9 @@ jobs:
             tests::reboot_tests::prebuilt_reboot_options_are_explicit_and_strict \
             tests::reboot_tests::prebuilt_reboot_launch_retains_candidate_socket_and_cwd \
             tests::reboot_tests::service_reboot_rejects_stale_action_and_artifact_before_teardown \
-            tests::deploy_consume_tests::the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running; do
+            tests::deploy_consume_tests::the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running \
+            tests::reboot_tests::a_decoded_hold_of_unknown_cause_is_unreadable_never_free \
+            tests::deploy_consume_tests::a_held_handoff_charges_no_attempt_and_keeps_no_deferral; do
             cargo test -p continuum-core --bin continuum --profile dev-fast --features "$FEATURES" "$test" -- --exact 2>&1 | tee cli-handoff.log
             if ! grep -q 'test result: ok. 1 passed;' cli-handoff.log; then
               echo "::error::The exact CLI handoff regression did not execute: $test"

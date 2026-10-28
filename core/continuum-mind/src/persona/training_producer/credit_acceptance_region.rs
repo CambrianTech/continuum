@@ -11,6 +11,14 @@
 //! ([`reviewed::retry_decided`]). It backs off by the governor's own ladder while one waits and
 //! sleeps when none does; a sleeping pair is re-checked every 30 passes (`CadenceTable`'s
 //! floor, one pass a second), so a decision persisted later is reached within that.
+//!
+//! A settle runs OFF the tick, as its own task, and is never cut by it (card a4e8756d). It used to
+//! run inside the tick under half the governor's region bound. On Windows (2026-10-28 01:58Z) a
+//! submit slower than that was cancelled mid-flight after the trigger had already accepted Kimi's
+//! 28087ebb but before her acceptance was recorded; each pass cut it again until one happened to
+//! fit (02:04:59Z). The tick now only starts settles, one in flight per decision and a page per
+//! persona, and never waits on one; a settle's slot is reclaimed only under contention
+//! ([`SettleSlots`]), so a hung submit cannot starve a healthy decision (Codex on #5547).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,6 +28,7 @@ use continuum_client::{Connection, Transport};
 use uuid::Uuid;
 
 use crate::persona::training_producer::reviewed;
+use crate::persona::training_producer::settle_slots::{self, Admit, SettleSlots};
 use crate::runtime::{
     BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PressureProfile, PressureSignalKind, RegionContext,
     RegionId, TickOutcome,
@@ -29,12 +38,6 @@ use crate::runtime::{
 /// decision in turn.
 const PAGE: usize = 8;
 
-/// One tick's working budget: half the governor's own bound on a region tick, so a slow settle
-/// is cut here, with its progress kept, before the governor cancels the whole tick.
-fn tick_budget() -> std::time::Duration {
-    crate::persona::substrate_governor::REGION_TICK_TIMEOUT / 2
-}
-
 /// Who a persona is to this region: her name (the store's handle) and her store connection, as
 /// her own caller identity. `None` when she is not resident here.
 pub type Resolve<T> = Arc<dyn Fn(Uuid) -> Option<(String, Connection<T>)> + Send + Sync>;
@@ -43,58 +46,44 @@ pub struct CreditAcceptanceRegion<T: Transport + Send + Sync + 'static> {
     resolve: Resolve<T>,
     /// Where each persona's scan resumes: the last decision id attempted.
     cursors: parking_lot::Mutex<HashMap<Uuid, String>>,
-}
-
-/// What one decision came to.
-enum Attempt {
-    /// Nothing owed: already accepted.
-    Settled,
-    Accepted,
-    /// Still owed: refused again, unreadable, or cut by the budget. Tried again on the next pass.
-    Waiting,
+    /// The settles running now, owned here: dropping the region aborts every one.
+    slots: settle_slots::Shared,
 }
 
 impl<T: Transport + Send + Sync + 'static> CreditAcceptanceRegion<T> {
     pub fn new(resolve: Resolve<T>) -> Self {
-        Self { resolve, cursors: parking_lot::Mutex::new(HashMap::new()) }
+        let slots = SettleSlots::shared(PAGE, crate::persona::substrate_governor::REGION_TICK_TIMEOUT);
+        Self { resolve, cursors: parking_lot::Mutex::new(HashMap::new()), slots }
     }
 
-    async fn attempt(conn: &Connection<T>, name: &str, persona: Uuid, id: &str) -> Attempt {
-        let owed = match reviewed::owed_acceptance(conn, name, id).await {
-            Ok(Some(submission)) => submission,
-            Ok(None) => return Attempt::Settled,
-            Err(error) => {
-                continuum_base::probe!(class = "training.credit.retry_failed", persona = %name, decision = %id, error = %error,
-                    "a decided credit could not be read: passed over now, tried again on the next pass");
-                return Attempt::Waiting;
-            }
-        };
+    /// Settle one owed decision again, under the submission id it was issued with: run off the
+    /// tick, to completion. Its outcome is said here; a still-owed one is found again next pass.
+    async fn settle(conn: &Connection<T>, name: &str, persona: Uuid, id: &str, owed: Uuid) {
         match reviewed::retry_decided(conn, name, persona, owed).await {
             Ok(credit) if credit.state == reviewed::ReviewedCreditState::Accepted => {
                 continuum_base::probe!(class = "training.credit.accepted_on_retry", persona = %name, submission = %owed,
                     "a decided credit the trigger had not accepted is accepted, with no new review, registration or turn");
-                Attempt::Accepted
             }
             Ok(credit) => {
                 if credit.state != reviewed::ReviewedCreditState::AwaitingAcceptance {
                     continuum_base::probe!(class = "training.credit.retry_failed", persona = %name, decision = %id, state = ?credit.state,
-                        "a decision with no acceptance did not settle to a pending credit: passed over now, tried again on the next pass");
+                        "a decision with no acceptance did not settle to a pending credit: tried again on the next pass");
                 }
-                Attempt::Waiting
             }
             Err(error) => {
                 continuum_base::probe!(class = "training.credit.retry_failed", persona = %name, decision = %id, error = %error,
                     "a decided credit could not be settled again: tried again on the next pass");
-                Attempt::Waiting
             }
         }
     }
 
-    /// One bounded step for `persona`. Progress is kept after every decision attempted, before
-    /// its settle is awaited, so a slow or broken decision costs its own turn and never the
-    /// ones after it; it is tried again, under the same submission id, when the scan comes
-    /// round (Codex on #5531).
+    /// One bounded step for `persona`. The scan moves past every decision it handled and never
+    /// waits on a settle, so a slow or broken decision costs its own slot and never the ones after
+    /// it (Codex on #5531); a settle past its quantum is cut and tried again, under the same
+    /// submission id, when the scan comes round ([`SettleSlots`]).
     pub async fn step(&self, persona: Uuid) -> CadenceHint {
+        // whoever has left, swept on any pass (she may never be ticked again): her settles go with her
+        settle_slots::release_departed(&self.slots, |p| (self.resolve)(p).is_some());
         let Some((name, conn)) = (self.resolve)(persona) else { return CadenceHint::Sleep };
         let after = self.cursors.lock().get(&persona).cloned();
         let (ids, full) = match reviewed::decided_page(&conn, &name, after.as_deref(), PAGE).await {
@@ -105,31 +94,49 @@ impl<T: Transport + Send + Sync + 'static> CreditAcceptanceRegion<T> {
                 return CadenceHint::Slower;
             }
         };
-        let deadline = tokio::time::Instant::now() + tick_budget();
-        let (mut waiting, mut finished) = (false, true);
+        // For each decision still owed an acceptance, start its settle unless one is running, with
+        // at most a page of settles in flight for her (an overdue one yields its slot to a waiting
+        // decision). The owed check is a store read, kept here; the settle runs off the tick.
+        let (mut busy, mut finished) = (false, true);
         for id in &ids {
-            let now = tokio::time::Instant::now();
-            if now >= deadline {
-                finished = false;
-                break;
-            }
-            self.cursors.lock().insert(persona, id.clone());
-            match tokio::time::timeout(deadline - now, Self::attempt(&conn, &name, persona, id)).await {
-                Ok(Attempt::Settled | Attempt::Accepted) => {}
-                Ok(Attempt::Waiting) => waiting = true,
-                Err(_) => {
-                    waiting = true;
-                    continuum_base::probe!(class = "training.credit.retry_slow", persona = %name, decision = %id,
-                        budget_ms = tick_budget().as_millis() as u64,
-                        "settling a decided credit outlasted this tick's budget: passed over now, tried again on the next pass");
+            match reviewed::owed_acceptance(&conn, &name, id).await {
+                Ok(None) => self.slots.lock().settled(&(persona, id.clone())), // nothing owed: already accepted
+                Err(error) => {
+                    continuum_base::probe!(class = "training.credit.retry_failed", persona = %name, decision = %id, error = %error,
+                        "a decided credit could not be read: passed over now, tried again on the next pass");
+                    busy = true;
+                }
+                Ok(Some(owed)) => {
+                    busy = true;
+                    let settle = {
+                        let (conn, name, id) = (conn.clone(), name.clone(), id.clone());
+                        async move { Self::settle(&conn, &name, persona, &id, owed).await }
+                    };
+                    match settle_slots::try_start(&self.slots, &(persona, id.clone()), tokio::time::Instant::now(), settle) {
+                        Admit::Running | Admit::Start { .. } => {}
+                        Admit::Cut { victim: (_, decision) } => {
+                            continuum_base::probe!(class = "training.credit.settle_cut", persona = %name, decision = %decision, for_decision = %id,
+                                "a settle outran its quantum: aborted, and replayed under its submission id once its task has ended, with a doubled quantum");
+                            if decision != *id {
+                                finished = false; // cut to free a slot for this one: resume here once it frees
+                                break;
+                            }
+                        }
+                        Admit::Full => {
+                            finished = false; // her settles hold every slot: resume here next pass
+                            break;
+                        }
+                    }
                 }
             }
+            // Handled (settled, unreadable, running or started): the scan resumes after it.
+            self.cursors.lock().insert(persona, id.clone());
         }
         if finished && !full {
             self.cursors.lock().remove(&persona); // past her last decision: the next scan starts again
         }
-        let more = !finished || full;
-        match (waiting, more) {
+        match (busy, full) {
+            // Settles are running: look again after they have had time.
             (true, _) => CadenceHint::Slower,
             (false, true) => CadenceHint::Hold,
             (false, false) => CadenceHint::Sleep,

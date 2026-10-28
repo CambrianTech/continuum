@@ -21,6 +21,27 @@ fn region_answering(fx: &ExactReview, reply: Option<serde_json::Value>) -> Credi
     }))
 }
 
+/// Tick `region` for her until her credit's status satisfies `done`, at most `passes` times,
+/// `between` apart: a settle runs off the tick (card a4e8756d), so its outcome is observed on a
+/// later look, never assumed right after the pass that started it.
+async fn tick_until<T: continuum_client::Transport + Send + Sync + 'static>(
+    region: &CreditAcceptanceRegion<T>,
+    fx: &ExactReview,
+    passes: usize,
+    between: std::time::Duration,
+    done: impl Fn(&reviewed::ReviewedCredit) -> bool,
+) -> bool {
+    let scoped = RegionContext { tick_number: 1, persona_scope: Some(fx.persona) };
+    for _ in 0..passes {
+        region.tick(&scoped).await;
+        tokio::time::sleep(between).await;
+        if reviewed::credit_status(&fx.data, fx.name, fx.selection.submission_id).await.is_ok_and(|status| done(&status)) {
+            return true;
+        }
+    }
+    false
+}
+
 // what this catches (card 99b2773a, Kimi's 28087ebb on the 5090, 2026-10-27, Codex on #5531):
 // a decided credit the trigger refused waited for a review event, a registration or her next
 // turn, and an idle citizen has none; a credit decided before refusals were kept had no row to
@@ -56,29 +77,30 @@ pub(super) async fn the_region_settles_a_refused_decided_credit_with_no_turn_rev
 
     let scoped = RegionContext { tick_number: 1, persona_scope: Some(fx.persona) };
     let still_refusing = region_answering(&fx, Some(json!({"success": false, "errorKind": "BucketHeldFull", "error": "held at its bound"})));
-    assert_eq!(still_refusing.tick(&scoped).await.cadence_hint, Some(CadenceHint::Slower), "a refusal backs the region off");
+    assert_eq!(still_refusing.tick(&scoped).await.cadence_hint, Some(CadenceHint::Slower), "an owed credit backs the region off");
+    let refused = |status: &reviewed::ReviewedCredit| status.destination.as_ref().and_then(|d| d.error_kind.as_deref()) == Some("BucketHeldFull");
+    assert!(tick_until(&still_refusing, &fx, 40, std::time::Duration::from_millis(50), refused).await, "the refusal is recorded once its settle has run");
     let status = reviewed::credit_status(&fx.data, fx.name, fx.selection.submission_id).await.expect("status");
     assert_eq!(status.state, State::AwaitingAcceptance);
-    assert_eq!(status.destination.and_then(|d| d.error_kind).as_deref(), Some("BucketHeldFull"));
 
     let accepting = region_answering(
         &fx,
         Some(json!({"success": true, "outcome": "BatchAppended", "currentCount": 1, "threshold": 16,
             "acceptance": {"submissionId": fx.selected.id, "replayed": false}})),
     );
-    accepting.tick(&scoped).await;
-    let status = reviewed::credit_status(&fx.data, fx.name, fx.selection.submission_id).await.expect("status");
-    assert_eq!(status.state, State::Accepted, "settled with no review event, registration or turn");
+    let accepted = tick_until(&accepting, &fx, 40, std::time::Duration::from_millis(50), |status| status.state == State::Accepted).await;
+    assert!(accepted, "settled with no review event, registration or turn");
 
     let never_again = region_answering(&fx, None);
     assert_eq!(never_again.tick(&scoped).await.cadence_hint, Some(CadenceHint::Sleep), "nothing owed: the region sleeps");
 }
 
-// what this catches (Codex on #5531): a scan that moved past a whole page before settling any of
-// it, so a decision whose settle always outlasted the governor's tick starved every decision
-// after it, and a malformed row that stopped the scan where it stood. Progress is kept per
-// decision: the malformed row is named and passed, a settle that hangs is cut by the tick's own
-// budget, and the scan comes round to that same submission and settles it on a later pass.
+// what this catches (Codex on #5531 and #5547): a scan that moved past a whole page before
+// settling any of it, so a decision whose settle always outlasted the governor's tick starved every
+// decision after it; a malformed row that stopped the scan where it stood; and a hung settle with
+// nothing waiting behind it never retried. Progress is kept per decision: the malformed row is
+// named and passed, the tick never waits on the settle, the hung settle is cut once past its
+// quantum (the governor's tick bound), and the scan settles that same submission on a later pass.
 #[tokio::test]
 pub(super) async fn a_bad_or_hanging_decision_never_starves_the_rest() {
     let (fx, _capture) = exact_review().await;
@@ -117,16 +139,11 @@ pub(super) async fn a_bad_or_hanging_decision_never_starves_the_rest() {
     let scoped = RegionContext { tick_number: 1, persona_scope: Some(fx.persona) };
     let started = std::time::Instant::now();
     assert_eq!(region.tick(&scoped).await.cadence_hint, Some(CadenceHint::Slower), "the malformed row and the cut settle both still wait");
-    assert!(started.elapsed() < std::time::Duration::from_secs(5), "the tick's own budget cut the hanging settle before the governor would");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "the tick never waits on the hanging settle");
     let status = reviewed::credit_status(&fx.data, fx.name, fx.selection.submission_id).await.expect("status");
     assert_eq!(status.state, State::AwaitingAcceptance);
 
-    for _ in 0..4 {
-        region.tick(&scoped).await;
-        let status = reviewed::credit_status(&fx.data, fx.name, fx.selection.submission_id).await.expect("status");
-        if status.state == State::Accepted {
-            return;
-        }
-    }
-    panic!("the scan never came round to her decision past the malformed row and the hang");
+    // past its quantum (5 s) the hung settle is cut, and the retry settles her: 60 looks, 250 ms apart
+    let accepted = tick_until(&region, &fx, 60, std::time::Duration::from_millis(250), |status| status.state == State::Accepted).await;
+    assert!(accepted, "the scan came round to her decision past the malformed row and the hang");
 }

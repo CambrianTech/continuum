@@ -154,6 +154,39 @@ impl PrebuiltCore {
     }
 }
 
+/// What the running core's own `serving/status` hold says its engine carries. A read that fails
+/// is `NoCore` only when no core process is alive; with one alive it is `Unreadable` (a busy
+/// training core answers slowly), never "nothing held" (Codex on #5551).
+async fn observe_engine_hold() -> continuum_cli_lifecycle::deploy_hold::HoldObservation {
+    use continuum_cli_lifecycle::deploy_hold::HoldObservation;
+    let snapshot = running_core_provenance("serving/status", "deploy training guard").await.and_then(|response| {
+        serde_json::from_value::<continuum_core::inference::llama_server::ServingSnapshot>(response) // IPC boundary: decode the running core's serving/status response.
+            .map_err(|e| format!("serving snapshot: {e}"))
+    });
+    match snapshot {
+        Ok(snapshot) => observation_of(snapshot.held_for.as_ref()),
+        Err(_) if !running_core_pids().into_iter().any(pid_alive) => HoldObservation::NoCore,
+        Err(why) => HoldObservation::Unreadable(why),
+    }
+}
+
+/// PURE: what a decoded hold says. A hold of unknown cause (its residency record unreadable) is
+/// not a confirmed absence of work: Unreadable, deferred like a failed read (Codex on #5551).
+pub(super) fn observation_of(
+    held: Option<&continuum_core::inference::llama_server::serving_hold::ServingHold>,
+) -> continuum_cli_lifecycle::deploy_hold::HoldObservation {
+    use continuum_cli_lifecycle::deploy_hold::HoldObservation;
+    use continuum_core::inference::llama_server::serving_hold::HoldCause;
+    match held {
+        None => HoldObservation::Free,
+        Some(hold) => match (&hold.by, hold.live_work()) {
+            (HoldCause::Unknown { reason }, _) => HoldObservation::Unreadable(format!("the serving hold's cause is unknown: {reason}")),
+            (_, Some(work)) => HoldObservation::LiveWork(work),
+            (HoldCause::Resident { .. }, None) => HoldObservation::Free,
+        },
+    }
+}
+
 /// Rebuild source by default, or hand off to an explicitly validated prebuilt
 /// core. Both use the same leases, selective teardown and deploy verification.
 pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreError> {
@@ -265,6 +298,17 @@ pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreEr
              or rerun with `continuum reboot --force` if losing the runs is acceptable.",
             evals.join(", ")
         ).into());
+    }
+    // In-engine training guard (card 9beab2da; the windows 5090, 2026-10-28: the consumer's
+    // handoff killed job 8b46862c at 41% while serving/status read held_for it, and the mlx_lm
+    // guard above never sees an engine's own run). The running core's hold is the one owner of
+    // what live work its engine carries (#5543); read even under --force, so what a forced
+    // handoff ends is said. A deferral is Held: the consumer rechecks on its next pass with no
+    // attempt charged.
+    match continuum_cli_lifecycle::deploy_hold::verdict(observe_engine_hold().await, force) {
+        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Defer(why) => return Err(PublishedCoreError::Held(why)),
+        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Proceed(Some(said)) => println!("⚠ {said}"),
+        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Proceed(None) => {}
     }
     if !evals.is_empty() {
         println!(

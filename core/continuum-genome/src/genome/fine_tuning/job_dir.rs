@@ -96,6 +96,39 @@ pub fn find_job_dir_under(root: &Path, local_id: Uuid, anchor: &str) -> Result<O
     }
 }
 
+/// Every directory job `local_id` can have under `root`, by the layout [`job_dir_under`] writes
+/// (`<root>/<persona>/<trait>/<local_id>/`) and a request's own artifact root
+/// (`<root>/<local_id>/`), each that EXISTS. Unlike [`find_job_dir_under`], which a caller uses
+/// to find one directory and reads an unreadable branch as no match, every listing or check that
+/// errs is an `Err` here: a caller deciding from "no record exists" must not decide from a read
+/// that failed (Codex on #5548). A root or a branch that is absent, or an entry that is not a
+/// directory, is not an error.
+pub fn job_dirs_strict(root: &Path, local_id: Uuid) -> Result<Vec<PathBuf>, String> {
+    let absent = |e: &std::io::Error| matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory);
+    let list = |dir: &Path| -> Result<Vec<PathBuf>, String> {
+        match std::fs::read_dir(dir) {
+            Ok(entries) => entries.map(|entry| entry.map(|e| e.path()).map_err(|e| format!("{}: {e}", dir.display()))).collect(),
+            Err(e) if absent(&e) => Ok(Vec::new()),
+            Err(e) => Err(format!("{}: {e}", dir.display())),
+        }
+    };
+    let exists = |dir: PathBuf| -> Result<Option<PathBuf>, String> {
+        match std::fs::metadata(&dir) {
+            Ok(meta) => Ok(meta.is_dir().then_some(dir)),
+            Err(e) if absent(&e) => Ok(None),
+            Err(e) => Err(format!("{}: {e}", dir.display())),
+        }
+    };
+    let id = local_id.to_string();
+    let mut found: Vec<PathBuf> = exists(root.join(&id))?.into_iter().collect();
+    for persona in list(root)? {
+        for trait_dir in list(&persona)? {
+            found.extend(exists(trait_dir.join(&id))?);
+        }
+    }
+    Ok(found)
+}
+
 /// A job's own request, read from its directory as the trigger first sent it. THE one
 /// reader of a job's `request.json` (the resume and `genome/training-trigger/return`).
 pub fn read_job_request(dir: &Path) -> Result<TrainingJobRequest, String> {

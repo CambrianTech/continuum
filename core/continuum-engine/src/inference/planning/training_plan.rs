@@ -388,6 +388,48 @@ pub fn choose_window(
     WindowPlan { window, fit }
 }
 
+/// The depths a plan may step down to from `from` (`None` = every one of the model's `layers`
+/// blocks): each half the one before, down to one block, so the search is bounded by log2(layers)
+/// rungs. A rung is a candidate, not a claim: it is chosen only by a plan, and the run there (or
+/// its refusal) is its measurement.
+pub fn shallower_depths(from: Option<u32>, layers: u32) -> Vec<u32> {
+    let mut depth = from.unwrap_or(layers).min(layers); // unwrap_or: no depth asked IS every block (top_layers omitted, fork #27)
+    let mut rungs = Vec::new();
+    while depth > 1 {
+        depth /= 2;
+        rungs.push(depth);
+    }
+    rungs
+}
+
+/// THE DEPTH RUNG, between the chunk and the window (ONE-RESIDENT-MODEL: "depth, recompute, or
+/// smaller chunks, never a smaller window"). `plan_at(depth)` is [`choose_window`] over that
+/// depth's own rows, which already steps the chunk (a bound at the smallest chunk is what caps a
+/// window). When the asked depth's plan holds `need` (the window that trains every example
+/// whole), it stands. Otherwise the first shallower depth whose plan holds `need` is chosen, so
+/// every example stays whole while depth is searched; an unmeasured depth plans `need` unmodelled
+/// and its run is the measurement. Only when no depth holds it does the asked depth's smaller
+/// window stand, and the partition parks what no longer fits. `layers` unknown (no run on this
+/// engine has reported its block count yet) offers no rung.
+pub fn choose_depth(
+    asked: Option<u32>,
+    layers: Option<u32>,
+    need: u32,
+    plan_at: impl Fn(Option<u32>) -> WindowPlan,
+) -> (Option<u32>, WindowPlan) {
+    let holds = |plan: &WindowPlan| plan.window >= need && !matches!(plan.fit, WindowFit::PredictedNoFit { .. });
+    let at_asked = plan_at(asked);
+    if holds(&at_asked) {
+        return (asked, at_asked);
+    }
+    layers
+        .into_iter()
+        .flat_map(|n| shallower_depths(asked, n))
+        .map(|depth| (Some(depth), plan_at(Some(depth))))
+        .find(|(_, plan)| holds(plan))
+        .unwrap_or((asked, at_asked)) // unwrap_or: no shallower depth holds it, so the asked depth and its smaller window stand
+}
+
 /// The window a run trains at: the engine's training context is n_ctx, which rounds up to a
 /// multiple of 256, and a window that is not one reached opt_init's assert and took the
 /// serving process down (fork #27 now refuses it). Rounded DOWN, so the lease never grows past
@@ -643,4 +685,40 @@ mod tests {
         assert_eq!(choose_chunk(256, gib, |_| Some(5 * gib)), (64, Some(5 * gib)), "a 256 window steps down to 64 too");
     }
 
+    // what this catches: Kimi's job 598e183c (the 5090 windows box, 2026-10-28): refused at window
+    // 45,056 with only a smaller window left on the ladder, which parks her longest lived turns.
+    // A shallower depth that holds the window her examples need is chosen first, every example
+    // whole; a depth is chosen by its plan, never assumed to fit; and the search is bounded.
+    #[test]
+    fn a_shallower_depth_holds_her_whole_examples_before_any_window_shrinks() {
+        assert_eq!(shallower_depths(None, 64), vec![32, 16, 8, 4, 2, 1], "halving to one block: log2 rungs");
+        assert_eq!(shallower_depths(Some(8), 64), vec![4, 2, 1], "from an asked depth");
+        assert_eq!(shallower_depths(Some(1), 64), Vec::<u32>::new(), "one block has no rung below it");
+        assert_eq!(shallower_depths(Some(99), 4), vec![2, 1], "an asked depth past the model is the model");
+
+        let need = 45_312;
+        let plan = |window: u32, fit: WindowFit| WindowPlan { window, fit };
+        // full depth measured not to hold `need` at the smallest chunk; 32 not either; 16 unmeasured
+        let refused_until_16 = |depth: Option<u32>| match depth {
+            None => plan(30_720, WindowFit::Fits),
+            Some(32) => plan(40_960, WindowFit::Fits),
+            Some(_) => plan(need, WindowFit::Unmodelled),
+        };
+        assert_eq!(choose_depth(None, Some(64), need, refused_until_16), (Some(16), plan(need, WindowFit::Unmodelled)), "the first depth that holds her whole examples; its run measures it");
+        let holds_at_full = |_: Option<u32>| plan(need, WindowFit::Fits);
+        assert_eq!(choose_depth(None, Some(64), need, holds_at_full).0, None, "a depth that holds stands: no step");
+        let predicted_no_fit = |depth: Option<u32>| match depth {
+            None => plan(30_720, WindowFit::Fits),
+            Some(_) => plan(need, WindowFit::PredictedNoFit { predicted_at_floor: 1 }),
+        };
+        assert_eq!(choose_depth(None, Some(64), need, predicted_no_fit), (None, plan(30_720, WindowFit::Fits)), "no depth holds it: the asked depth's smaller window stands");
+        assert_eq!(choose_depth(None, None, need, refused_until_16), (None, plan(30_720, WindowFit::Fits)), "the block count unreported: no rung is offered");
+        let asked = std::cell::Cell::new(0);
+        let counting = |depth: Option<u32>| {
+            asked.set(asked.get() + 1);
+            predicted_no_fit(depth)
+        };
+        choose_depth(None, Some(64), need, counting);
+        assert_eq!(asked.get(), 7, "bounded: the asked depth and six rungs, then the window");
+    }
 }
