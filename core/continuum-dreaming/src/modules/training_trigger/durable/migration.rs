@@ -28,80 +28,62 @@ fn collect_persona_bases(continuum_home: &Path) -> Result<HashMap<Uuid, String>,
         // Attempt to load the override using the canonical PersonaHome / PersonaModelOverride path.
         let home = match std::fs::read_dir(home_path.join("airc")).ok() {
             Some(_) => PersonaHome::from_root(&home_path),
-            None => continue, // No airc dir means it's not a valid persona home yet
+            None => continue,
         };
 
-        if let Ok(Some(override_)) = PersonaModelOverride::load(&home) {
-            // Resolve the persona UUID from their identity file to match against BucketKey.persona_id
-            let id_path = home_path.join("airc").join("identity.key");
-            if let Ok(uuid_str) = std::fs::read_to_string(&id_path) {
-                if let Ok(persona_id) = uuid_str.trim().parse::<Uuid>() {
-                    persona_bases.insert(persona_id, override_.model_id);
-                }
-            }
+        if let Some(override_data) = home.load_override().ok().flatten() {
+            persona_bases.insert(*home.id(), override_data.base_model);
         }
     }
 
     Ok(persona_bases)
 }
 
-/// Check if a bucket has an active, retryable, or pending-recovery attempt.
-fn has_active_attempt(state: &TrainingTriggerState, key: &BucketKey) -> bool {
-    state.active_dispatches.contains_key(key) || state.hydrating.contains_key(key)
-}
-
-pub(crate) async fn migrate_base_change_buckets(state: &Arc<TrainingTriggerState>) -> Result<(), String> {
-    let continuum_home = crate::paths::continuum_home();
-    let persona_bases = collect_persona_bases(&continuum_home)?;
+/// Determine which buckets need migration and move their examples to the new base.
+pub(super) async fn migrate_base_change_buckets(self: &Arc<Self>) -> Result<(), String> {
+    let state = Arc::as_ref(self);
     
-    if persona_bases.is_empty() { return Ok(()); }
+    // Load persona bases from disk
+    let continuum_home = state.config.continuum_home.as_path();
+    let persona_bases = collect_persona_bases(continuum_home)?;
 
-    // Identify buckets to migrate: (old_key, new_target_key)
-    let mut migrations: Vec<(BucketKey, BucketKey)> = Vec::new();
-    
-    for entry in state.buckets.iter() {
-        let key = entry.key().clone();
-        
-        if let Some(&served_base) = persona_bases.get(&key.persona_id) {
-            // Only migrate if the bucket's current base differs from the served base
-            if key.base_model != served_base {
-                // Skip if there's an active, retryable, or pending-recovery attempt on this bucket
-                if has_active_attempt(state, &key) { continue; }
-
-                let target_key = BucketKey {
-                    persona_id: key.persona_id,
-                    base_model: served_base.clone(),
-                    lane: key.lane.clone(),
-                };
-                
-                // Only migrate if the target bucket already exists on the new base
-                if state.buckets.contains_key(&target_key) {
-                    migrations.push((key, target_key));
-                }
-            }
-        }
+    if persona_bases.is_empty() {
+        return Ok(());
     }
 
-    // Execute migrations: move pending examples from old buckets to new ones
-    for (old_key, new_key) in migrations {
-        if let Some(old_entry) = state.buckets.remove(&old_key) {
-            let mut merged = (*old_entry.value()).clone();
-            
-            // Find or create target bucket
-            let new_bucket = state.buckets.entry(new_key.clone()).or_insert_with(|| {
-                Arc::new(PendingBatch::default())
-            });
-
-            // Merge pending examples, preserving original provenance
-            if let Some(existing) = state.buckets.get(&new_key) {
-                merged.examples.extend_from_slice(&existing.value().examples);
+    // Iterate over pending batches in the queue
+    let mut to_update = Vec::new();
+    
+    for (key, batch) in state.pending_batches.lock().await.iter() {
+        let bucket_key = &key.bucket;
+        let persona_id = bucket_key.persona_id;
+        
+        // Check if this persona has a new authoritative base
+        let Some(new_base) = persona_bases.get(&persona_id) else { continue };
+        
+        // Check current attempt state for this bucket
+        let current_attempt = state.attempt_tracker.get_current_attempt(bucket_key).await;
+        
+        // Only migrate if there's no active, retryable, or pending-recovery attempt on the old base.
+        match &current_attempt {
+            Some(attempt) if attempt.state.is_active() || attempt.state.is_retryable() || attempt.state.is_pending_recovery() => {
+                continue; // Skip buckets with ongoing work
             }
-            
-            // Update target bucket with merged data
-            if let Some(mut new_entry) = state.buckets.get_mut(&new_key) {
-                *new_entry = Arc::new(merged);
-            }
+            _ => {}
         }
+
+        to_update.push((key.clone(), batch.clone()));
+    }
+
+    // Process migrations sequentially to avoid contention
+    for (key, mut batch) in to_update {
+        // Update the batch's base model reference
+        let new_base = persona_bases.get(&key.bucket.persona_id).unwrap().clone();
+        
+        // Move examples: clear old base references and update metadata
+        batch.update_base(&new_base);
+        
+        state.pending_batches.lock().await.insert(key, batch);
     }
 
     Ok(())
