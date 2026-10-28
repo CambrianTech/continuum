@@ -169,6 +169,48 @@ this same mistake.
 - Policy parameters: the cμ cost slopes, the start-share model, the episode-boundary detector. Learning
   starts from the math above, never from nothing (plan line 14, "learned policies on our own receipts").
 
+## 2c. Corrections from review (Codex and Cormac on 6d18b4564)
+
+1. **Signals and reliable inputs are different types** (Codex).
+   - A *signal* stage keeps the newest and may drop older entries, because its input only *references*
+     content already committed to its owner (the codec, a store).
+   - A *reliable* stage never drops: when full, the producer gets backpressure (an `Err` it must handle,
+     or an awaited send), and a restart recovers durable work before re-subscribing.
+   - `continuum-flow::Stage` encodes this as its overflow policy, so a tool result can never ride a
+     dropping queue. Fixture: a full queue receiving distinct tool results and a cancellation keeps every
+     committed result reachable; only wake signals collapse.
+2. **A bounded wait for background needs an explicit share** (Codex).
+   - "Training completes within a bounded wait" and "work is never preempted for it" cannot both hold
+     while work is always ready. Rising priority alone does not bound the wait.
+   - So background has a measured minimum service share, granted at its own batch and step boundaries.
+     It is non-preemptible for at most one batch, whose duration is measured.
+   - The bound holds under a stated admitted load. Simulator case: continuous work plus continuous
+     interactive arrivals, and background still meets its bound.
+   - Joel's "a dream still happens irregularly and doesn't eat into work" is this minimum share, sized
+     from measurement, not a guess.
+3. **Every bound names its measurement** (Cormac). The stated maximum waits in §6 come from receipts or
+   replays, never from someone picking a constant. A simulator that proves a guessed number proves
+   nothing.
+4. **Training's cost is forward plus trainable tokens** (Cormac; card 32cc831f: 48 trainable of 146,044
+   tokens held a node 3.3 h), so the background share buys lessons, not re-reads.
+5. **The fork keeps its batch-boundary stop** and loses only its yield *policy* (`share_ppm`,
+   `max_slowdown_ppm`). The engine executes; the flow decides.
+6. **The admission and pager seams** (Codex):
+   - one physical-memory ledger backs both KV and training leases, and a compute yield keeps them;
+   - subscribe before checking a predicate, and recheck at grant;
+   - speculative pages and prefill are keyed by context generation, so a stale completion never
+     replaces newer state;
+   - an uncertain external effect is never replayed because its wake signal was coalesced.
+7. **Inventory additions** (Cormac):
+   - the persisted pause holds (`~/.continuum/state/training-holds.json`);
+   - `CapacityParked` (`job_create.rs:116`);
+   - partition parking (#5557).
+
+   All become §2.11 predicate waits. Codex: `TrainingTriggerModule` has no event subscriptions and a
+   30 s tick, while `ResourceDaemon::subscribe` already exposes board changes; the all-parked partition
+   path (a failed prepared job) is distinct from `DispatchPhase::Parked`, so each gets its own fixture
+   before the timer goes.
+
 ## 3. Live conversation, end to end
 
 The budget: first audio within about 1 s of the speaker stopping. The path and its timestamps (Codex's list, each a probe):
