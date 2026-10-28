@@ -189,6 +189,35 @@ Pure scheduler + MindMemory + a fake engine on a virtual clock. Each case states
 The simulator reports what the live read reports: each resident's wait between acts, first-token latency
 for directed and live calls, switch freeze, aggregate tokens per second, and each class's worst wait.
 
+## 6a. The dyno and the simulator: how to use them (both proved their worth on 2026-10-28)
+
+Answer "will this be faster?" here before touching the live node. Live reads under load are road
+tests in traffic.
+
+**The dyno** replays each resident's real captured prompts through her view, offline, with serving
+down (no residents involved):
+- Captures: `~/.continuum/fixtures/prompt-captures/<persona-id>.jsonl`, plus `.prev.jsonl` for the
+  previous segment. Resident ids come from the core log, never from memory.
+- Run:
+  `cargo run --release -p continuum-context --example replay -- --append-tail <prefill tok/s> [--window <tokens>] [--generational] <captures>`
+- Read the `TABLE` lines: prefill tokens and seconds per request, turnovers, re-prefill per turnover,
+  and handles dropped. A change that drops handles loses ability and is out.
+- Receipt that set the working window: 48k cut prefill per request about 3x for all four residents
+  with zero handles dropped; 32k doubled turnovers. Evidence:
+  `~/.continuum/evidence/2026-10-28-working-window/` (`replay_window.sh` is the serving-down
+  window script: trap and watchdog, restart on any exit).
+
+**The simulator** (`continuum-flow::sim`) puts scheduling and engine changes on a virtual clock:
+- The engine model is calibrated from `llama-bench` at depth and from the measured multi-stream
+  aggregate.
+- It reproduced the live gate removal (simulated 76 -> 57 s, live 122 -> 84 s) before forecasting
+  anything.
+- Run with `cargo test -p continuum-flow --release -- --nocapture`. Each case prints what a live read
+  reports.
+
+**Order for any speed change:** first the simulator or dyno forecast, then the dyno on real code,
+then the 15-minute live read against the same numbers.
+
 ## 7. What gets deleted when this lands (mandatory: a migration that leaves its old mechanism beside the new one is not done)
 
 - Lane admission (`resource_admission/lanes.rs`, `progress.rs`, `serving_lane_permit.rs`).
