@@ -189,6 +189,8 @@ pub fn largest_known(requirements: &[LaneRequirement]) -> Option<u32> {
 /// The allocator's answer: one engine geometry and who it serves.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Allocation {
+    /// Why outstanding training did or did not leave room for window growth.
+    pub training_growth: TrainingGrowth,
     pub model_id: String,
     pub capability_rank: u8,
     /// The served per-slot window: the largest requirement among `served`.
@@ -318,10 +320,9 @@ pub fn allocate(
     // Packing decides how many warm slots fit. Queued minds still use those slots
     // in turn: do not strand spare memory at the smallest packed mind's target.
     // Grow only the chosen geometry, never its slot count or admission promises.
-    let shared_target = largest_known.map_or(window, |target| target.max(window));
-    let window = shared_target
-        .min(fp.context_window)
-        .min(fp.window_within(budget.usable_bytes, lanes));
+    let (window, training_growth) = grow_shared_window(
+        requirements, fp, budget.usable_bytes, lanes, window,
+    );
     let served: Vec<Uuid> = sorted.iter().take(lanes as usize).map(|r| r.persona).collect();
     let unserved: Vec<Uuid> = sorted.iter().skip(lanes as usize).map(|r| r.persona).collect();
     Ok(Allocation {
@@ -334,7 +335,53 @@ pub fn allocate(
         device_bytes: device_bytes(fp, window, lanes),
         lane_cap,
         lane_cap_by,
+        training_growth,
     })
+}
+
+/// The growth decision keeps a failed training reservation visible without revoking
+/// conversational admission. Prices are estimates with provenance, not a fit proof.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrainingGrowth {
+    NoDemand,
+    Unmeasured,
+    Reserved { bytes: u64, target: u32, reached: bool },
+    BaselineConflict { bytes: u64 },
+}
+
+fn grow_shared_window(
+    requirements: &[LaneRequirement], fp: &ModelFootprint, budget: u64,
+    lanes: u32, baseline: u32,
+) -> (u32, TrainingGrowth) {
+    let mut target = largest_known(requirements).map_or(baseline, |w| w.max(baseline));
+    let mut prices = std::collections::BTreeMap::<Uuid, u64>::new();
+    let mut training_target = 0;
+    for req in requirements {
+        let Some(reserve) = &req.training else { continue };
+        let (Some(price), Some(job)) = (reserve.price_for(&fp.model_id), reserve.job) else {
+            // Unknown cost must not silently spend the capacity learning needs.
+            return (baseline, TrainingGrowth::Unmeasured);
+        };
+        if job.is_nil() {
+            return (baseline, TrainingGrowth::Unmeasured);
+        }
+        prices.entry(job).and_modify(|b| *b = (*b).max(price.bytes)).or_insert(price.bytes);
+        training_target = training_target.max(reserve.window);
+    }
+    target = target.max(training_target);
+    let reserved = prices.values().fold(0u64, |sum, bytes| sum.saturating_add(*bytes));
+    let residual = budget.saturating_sub(reserved);
+    if device_bytes(fp, baseline, lanes) > residual {
+        return (baseline, TrainingGrowth::BaselineConflict { bytes: reserved });
+    }
+    let window = target.min(fp.context_window).min(fp.window_within(residual, lanes));
+    let decision = if prices.is_empty() {
+        TrainingGrowth::NoDemand
+    } else {
+        TrainingGrowth::Reserved { bytes: reserved, target: training_target, reached: window >= training_target }
+    };
+    (window.max(baseline), decision)
 }
 
 #[cfg(test)]
@@ -373,6 +420,38 @@ mod tests {
 
     fn minds(windows: &[u32]) -> Vec<LaneRequirement> {
         windows.iter().map(|w| LaneRequirement::declared(Uuid::new_v4(), *w)).collect()
+    }
+
+    #[test]
+    fn growth_reserves_training_once_and_preserves_conversation_when_it_cannot_fit() {
+        let fp = qwen27b();
+        let baseline = 40_000;
+        let target = 64_256;
+        let bytes = 4 * GB;
+        let price = TrainingPrice {
+            bytes, source: crate::inference::planning::training_plan::NeedSource::LowerBound,
+            model: fp.model_id.clone(), shape: "fixture-family".into(),
+        };
+        let reserve = TrainingReserve::new(target, Some(price.clone()), Some(Uuid::from_u128(7)));
+        let reqs: Vec<_> = minds(&[baseline, baseline]).into_iter()
+            .map(|r| r.with_training(Some(reserve.clone()))).collect();
+        let roomy = fp.peak_resident_bytes(target, 1) + bytes;
+        assert_eq!(grow_shared_window(&reqs, &fp, roomy, 1, baseline),
+            (target, TrainingGrowth::Reserved { bytes, target, reached: true }));
+        let tight = fp.peak_resident_bytes(baseline, 1);
+        assert_eq!(grow_shared_window(&reqs, &fp, tight, 1, baseline),
+            (baseline, TrainingGrowth::BaselineConflict { bytes }));
+        let partial = fp.peak_resident_bytes(50_000, 1) + bytes;
+        assert_eq!(grow_shared_window(&reqs, &fp, partial, 1, baseline),
+            (50_000, TrainingGrowth::Reserved { bytes, target, reached: false }));
+        for unknown in [
+            TrainingReserve::new(target, None, None),
+            TrainingReserve::new(target, Some(TrainingPrice { model: "other-base".into(), ..price }), Some(Uuid::from_u128(7))),
+        ] {
+            let reqs = [LaneRequirement::declared(Uuid::new_v4(), baseline).with_training(Some(unknown))];
+            assert_eq!(grow_shared_window(&reqs, &fp, roomy, 1, baseline),
+                (baseline, TrainingGrowth::Unmeasured));
+        }
     }
 
     // The live 5090 could hold Kimi's training target in one slot, but packing
