@@ -227,8 +227,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 class = "training.job.depth_stepped",
                 job = %id,
                 needed = u64::from(need),
-                asked = family.depth.map_or(-1, i64::from), // -1 = every block
-                depth = stepped.map_or(-1, i64::from),
+                asked = family.depth.map_or(0, u64::from), // probe field: 0 = every block
+                depth = stepped.map_or(0, u64::from), // probe field: 0 = every block
                 governed_free = governed_free,
                 "the asked depth cannot hold the window her examples need even at the smallest chunk; a shallower one can (or is unmeasured, and this run measures it), so every example trains whole"
             );
