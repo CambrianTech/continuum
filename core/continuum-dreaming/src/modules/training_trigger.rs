@@ -76,6 +76,7 @@ use crate::sdk_codegen::DynCommand;
 
 mod attempt_evidence;
 mod durable;
+mod serving_wake;
 pub use durable::DispatchPhase;
 pub(crate) use durable::{DispatchFailure, DispatchResolution, DispatchResult, JobInputError, ResolveReport, RetireReport, RetireSelection};
 
@@ -368,6 +369,16 @@ impl TrainingTriggerState {
     /// window couldn't hold, or its run skipped, which no route returned before. Through
     /// `return_parked_remainder`, beside the one return: never an example the job trained, once
     /// per job by its receipt, and a refused or failed return stays for the next tick.
+    /// Every recovery pass, in order: what the tick runs AND what a serving change wakes, one
+    /// list, so a pass added for one is never missing from the other (Cormac on #5562: the wake
+    /// ran two of four, and missed the remainder pass a grown window unblocks).
+    pub(crate) async fn recover_pass(self: &Arc<Self>) -> Result<(), String> {
+        self.resume_orphans_once().await;
+        self.return_refused_jobs().await;
+        self.return_parked_remainders().await;
+        self.recover_tick().await
+    }
+
     pub(crate) async fn return_parked_remainders(self: &Arc<Self>) {
         use crate::commands::training_trigger::return_::{return_parked_remainder, Remainder};
         let board = crate::genome::fine_tuning::job_board::TrainingJobBoard::global();
@@ -868,12 +879,14 @@ fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
 
 pub struct TrainingTriggerModule {
     pub(crate) state: Arc<TrainingTriggerState>,
+    serving_wake: serving_wake::ServingWake,
 }
 
 impl TrainingTriggerModule {
     pub fn new() -> Self {
         Self {
             state: Arc::new(TrainingTriggerState::new()),
+            serving_wake: Default::default(),
         }
     }
 
@@ -885,6 +898,7 @@ impl TrainingTriggerModule {
         state.test_job_board = board;
         Self {
             state: Arc::new(state),
+            serving_wake: Default::default(),
         }
     }
 }
@@ -911,14 +925,19 @@ impl ServiceModule for TrainingTriggerModule {
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
         self.state.data.install(ctx.storage("training-trigger")?);
-        self.state.ensure_storage().await
+        self.state.ensure_storage().await?;
+        self.serving_wake.start(self.state.clone()).await;
+        Ok(())
     }
 
     async fn tick(&self) -> Result<(), String> {
-        self.state.resume_orphans_once().await;
-        self.state.return_refused_jobs().await;
-        self.state.return_parked_remainders().await;
-        self.state.recover_tick().await
+        // The tick and serving changes have one recovery owner: concurrent
+        // passes must not drain each other's ended-job list before requeue.
+        if self.serving_wake.request_recovery() {
+            Ok(())
+        } else {
+            self.state.recover_pass().await
+        }
     }
 
     /// Expose the three dep-holding training-trigger verbs over this
@@ -954,6 +973,7 @@ impl ServiceModule for TrainingTriggerModule {
     }
 
     async fn shutdown(&self) -> Result<(), String> {
+        self.serving_wake.stop().await;
         self.state.drain_operations().await
     }
 }
