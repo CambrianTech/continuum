@@ -32,6 +32,7 @@ impl Source<String> for Fake {
         self.items
             .iter()
             .map(|(key, text)| Item {
+                stored: None,
                 key: key.clone(),
                 full: text.clone(),
                 summary: None,
@@ -42,7 +43,7 @@ impl Source<String> for Fake {
     fn retired(&self) -> Vec<Item<String>> {
         self.retired
             .iter()
-            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), summary: None, pointer: Some(text.clone()) })
+            .map(|(key, text)| Item { stored: None, key: key.clone(), full: text.clone(), summary: None, pointer: Some(text.clone()) })
             .collect()
     }
 }
@@ -179,7 +180,7 @@ fn an_item_without_a_pointer_leaves_the_view_when_collapsed() {
             1
         }
         fn items(&self) -> Vec<Item<String>> {
-            self.0.iter().map(|t| Item { key: (*t).to_owned(), full: (*t).to_owned(), summary: None, pointer: None }).collect()
+            self.0.iter().map(|t| Item { stored: None, key: (*t).to_owned(), full: (*t).to_owned(), summary: None, pointer: None }).collect()
         }
     }
     let mut turns = Turns(vec!["one", "two", "three"]);
@@ -244,6 +245,7 @@ impl Source<String> for Leveled {
         self.0
             .iter()
             .map(|(key, full, summary)| Item {
+                stored: None,
                 key: (*key).to_owned(),
                 full: full.clone(),
                 summary: summary.clone(),
