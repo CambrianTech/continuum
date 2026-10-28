@@ -20,10 +20,15 @@
 mod flow;
 mod qos;
 mod scheduler;
+mod stage;
+pub mod sim;
 
 pub use flow::{Flow, Grant, Refused};
 pub use qos::Qos;
 pub use scheduler::{Aging, Decision, Dropped, Scheduler, Ticket};
+pub use stage::{spawn_stage, Stage, StageInput};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod sim_tests;

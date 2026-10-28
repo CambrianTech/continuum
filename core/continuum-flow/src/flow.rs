@@ -119,7 +119,7 @@ impl<K: Clone + Eq + Hash + Send + 'static> Flow<K> {
 }
 
 async fn dispatch<K: Clone + Eq + Hash>(mut scheduler: Scheduler<K>, mut inbox: mpsc::UnboundedReceiver<Event<K>>) {
-    let mut starting: HashMap<Ticket, oneshot::Sender<watch::Receiver<bool>>> = HashMap::new();
+    let mut starting: HashMap<Ticket, oneshot::Sender<Result<watch::Receiver<bool>, Dropped>>> = HashMap::new();
     let mut yielding: HashMap<Ticket, watch::Sender<bool>> = HashMap::new();
     loop {
         let now = Instant::now();
