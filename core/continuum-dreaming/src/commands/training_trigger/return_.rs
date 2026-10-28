@@ -225,14 +225,26 @@ pub(crate) async fn return_parked_remainder(
             if recorded {
                 return Ok(Remainder::Waiting { needed, served });
             }
-            let needs: Vec<(String, u32)> = parked
+            // Every parked example needs exactly one measured row, or only part of the demand is
+            // recorded and its successor finds it unrecorded and returns again (Codex on #5569).
+            let needs = parked
                 .iter()
-                .filter_map(|&i| {
-                    let example = request.dataset.examples.get(i)?;
-                    let row = partition.rows.iter().find(|row| row.index == i)?;
-                    Some((TrainingDemand::key_of(example), crate::inference::planning::training_plan::window_for_need(std::slice::from_ref(row), u32::MAX)))
+                .map(|&i| {
+                    let mut rows = partition.rows.iter().filter(|row| row.index == i);
+                    match (request.dataset.examples.get(i), rows.next(), rows.next()) {
+                        (Some(example), Some(row), None) => Ok((
+                            TrainingDemand::key_of(example),
+                            crate::inference::planning::training_plan::window_for_need(std::slice::from_ref(row), u32::MAX),
+                        )),
+                        _ => Err(i),
+                    }
                 })
-                .collect();
+                .collect::<Result<Vec<(String, u32)>, usize>>()
+                .map_err(|i| {
+                    CommandError::Invalid(format!(
+                        "job {id}: its partition does not hold exactly one measured row for parked example {i}; its demand cannot be recorded whole, so nothing is returned"
+                    ))
+                })?;
             demand
                 .record(&needs, &[], None)
                 .map_err(|e| CommandError::Internal(format!("job {id}: its demand could not be recorded ({e}); held, asked again")))?;
@@ -614,6 +626,18 @@ mod tests {
             std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).expect("test: restore");
         }
         assert_eq!(held(), 12, "nothing added by a store that cannot answer or be written");
+
+        // a partition missing a parked example's measured row can't have its demand recorded
+        // whole, so it is refused and nothing returns (Codex on #5569: a partial record loops)
+        let partial = failed(Uuid::new_v4(), vec![], vec![0, 1, 2]);
+        let pd = job_dir_under(&root, "Kimi", "code/owner", partial.local_id);
+        std::fs::write(pd.join("partition.json"), serde_json::json!({
+            "window": 49664, "sent": [], "parked": [0, 1, 2], "rows": [row(0, 51_670), row(1, 64_041)]
+        }).to_string()).expect("test: partition missing row 2");
+        let fresh = dir.path().join("fresh-demand");
+        let refused_partial = return_parked_remainder(&trigger.state, &board, &root, &partial, &|_: &str| Some(49_664), Some(&fresh)).await;
+        assert!(matches!(refused_partial, Err(CommandError::Invalid(ref why)) if why.contains("parked example 2")), "{refused_partial:?}");
+        assert_eq!(held(), 12, "nothing added by a partially measured partition");
 
         // a failed job that SENT examples is the refused-job return's, never this route's
         let refused = failed(Uuid::new_v4(), vec![0], vec![1, 2]);
