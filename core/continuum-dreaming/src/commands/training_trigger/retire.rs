@@ -337,7 +337,11 @@ mod tests {
         std::fs::remove_file(&file).expect("test: repair the store");
         let finished = retire_as_operator(&executor, json!({ "cardId": card, "reason": "superseded" })).await.expect("test: rerun");
         assert_eq!(finished["success"], true, "the same retirement finishes once the store answers: {finished}");
-        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(0));
+        // every row retired: the bucket is gone, not an empty one (Codex read CI: None)
+        assert!(
+            matches!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), None | Some(0)),
+            "nothing of hers stays pending"
+        );
     }
 
     // what this catches: a submission already carried into a job is not a pending row;
