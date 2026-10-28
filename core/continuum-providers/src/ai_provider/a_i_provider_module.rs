@@ -153,9 +153,12 @@ impl ServiceModule for AIProviderModule {
     /// `command_registry()` → the persona tool surface + grid ACL. The
     /// `ai/generate` inference seam and the `_ => execute_ts` legacy TS-forward
     /// remain in `handle_command` (separate concerns). See
-    /// [`crate::commands::ai`].
+    /// the command factory supplied by the composition root.
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        crate::commands::ai::command_objects(self.registry.clone())
+        match self.services.commands {
+            Some(commands) => commands(self.registry.clone()),
+            None => Vec::new(), // Serving-only clients expose no core command surface.
+        }
     }
 
     async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {

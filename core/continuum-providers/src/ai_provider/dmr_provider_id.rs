@@ -45,10 +45,20 @@ pub(super) struct DmrEndpoint {
 }
 
 /// Track if we've done first-time initialization
-pub(super) static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(super) static INITIALIZED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// AIProviderModule - ServiceModule implementation for AI inference
+/// Composition-root services, shared by core and lean serving clients.
+/// Budget is sampled for each model, preserving the live governor authority.
+pub struct ProviderServices {
+    pub commands:
+        Option<fn(Arc<RwLock<AdapterRegistry>>) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>>>,
+    pub usable_budget: fn() -> Option<u64>,
+}
+
 pub struct AIProviderModule {
+    pub(super) services: ProviderServices,
     pub(super) registry: Arc<RwLock<AdapterRegistry>>,
     pub(super) log: OnceLock<Arc<ModuleLogger>>,
     /// GPU memory manager — passed to CandleAdapter for VRAM allocation tracking.
@@ -71,7 +81,10 @@ pub struct AIProviderModule {
 ///
 /// Returns the trained window unchanged when the host is ungoverned or the model can't be sized:
 /// an unknown budget must not become an invented ceiling.
-pub(super) fn kv_safe_context(model: &crate::model_registry::Model) -> u32 {
+pub(super) fn kv_safe_context(
+    model: &crate::model_registry::Model,
+    usable_budget: fn() -> Option<u64>,
+) -> u32 {
     let trained = model.context_window;
     let Some(fp) = crate::inference::planning::serving_plan::footprint::footprint_for(model) else {
         return trained;
@@ -79,10 +92,7 @@ pub(super) fn kv_safe_context(model: &crate::model_registry::Model) -> u32 {
     if fp.kv_per_token == 0 {
         return trained;
     }
-    let Some(budget) = crate::resources::ResourceDaemon::global()
-        .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes)
-        .filter(|b| *b > 0)
-    else {
+    let Some(budget) = (usable_budget)().filter(|b| *b > 0) else {
         return trained;
     };
     let Some(kv_budget) = budget
@@ -100,8 +110,9 @@ pub(super) fn kv_safe_context(model: &crate::model_registry::Model) -> u32 {
 }
 
 impl AIProviderModule {
-    pub fn new() -> Self {
+    pub fn new(services: ProviderServices) -> Self {
         Self {
+            services,
             registry: crate::ai::adapter::global_registry(),
             log: OnceLock::new(),
             gpu_manager: None,
@@ -113,8 +124,10 @@ impl AIProviderModule {
     /// Create with GPU memory manager for VRAM-aware local inference.
     pub fn with_gpu_manager(
         gpu_manager: Arc<crate::gpu::memory_manager::GpuMemoryManager>,
+        services: ProviderServices,
     ) -> Self {
         Self {
+            services,
             registry: crate::ai::adapter::global_registry(),
             log: OnceLock::new(),
             gpu_manager: Some(gpu_manager),

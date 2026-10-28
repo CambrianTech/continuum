@@ -3000,6 +3000,7 @@ dependencies = [
  "continuum-orm-derive",
  "continuum-perception",
  "continuum-positron",
+ "continuum-providers",
  "continuum-sentinel",
  "continuum-service",
  "continuum-serving",
@@ -3551,6 +3552,19 @@ dependencies = [
  "tracing",
  "ts-rs 12.0.1",
  "uuid",
+]
+
+[[package]]
+name = "continuum-providers"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "continuum-base",
+ "continuum-engine",
+ "continuum-kernel",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
