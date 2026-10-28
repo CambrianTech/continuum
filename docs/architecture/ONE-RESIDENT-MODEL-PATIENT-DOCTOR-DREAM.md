@@ -273,6 +273,22 @@ The fork already takes the step: `learn_on_slot` learns one served reply on the 
 
 Not in this wiring, and not dropped: recency-weighted replay (§8.1), session checkpoints (§9.2), the one-owner claim on the grid (§9.3); each is the next slice after D4.
 
+### 9.7 How anything becomes a lesson, with no one choosing (2026-10-28)
+
+The hard part is automation (Joel, 2026-10-28: "The challenge is in automation of learning"). Every stage below runs by itself: nothing is picked by a rule, a reviewer, a button or an agent's call (Joel, 2026-10-15: "Her own mind determines what's relevant not someone clicking a button or her the same"; learning is "truly continual from her own engrams and actions not controlled by some agent or human"). Controls (pause, inspect, steer) sit on top of a loop that already runs. §9.6 D3 as first written feeds `/learn` rows a producer picked by rule; that is the explicit-lesson path and a test tool, and D3 is re-aimed at the stages below.
+
+| Stage | What it is | Automatic because |
+|---|---|---|
+| **Source** | everything she perceives and does: others' messages, tool results, files read, her thoughts, her acts; the tokens of every turn's prefill and reply | it is the turn she already serves; nothing selects it |
+| **Signal: prediction error** | the per-span loss of the serving forward pass (the logits she already computes): what surprised her model | the engine reports it with the completion (fork: per-span NLL, the same capability the examiner lacks for its NLL leg) |
+| **Weight: her own relevance** | engram salience and attention, the amygdala's valuation, which genes were active, and outcome credit that flows back to the spans that led to a graded card | her own state at that moment, already measured; lesson weight = prediction error x relevance, and a low weight costs nothing |
+| **Destination: a gene region** | the regions active for what her mind is on (the composer's selection by signature distance); none near enough, a new gene seeded at these spans' centroid | geometry, never a trait label or a card; thresholds measured, never set |
+| **Step: on the slot, in her sleep share** | after a turn completes its slot still holds the whole prompt: the in-slot learn trains the weighted spans into the active genes' shadows, no re-prefill, at the share her wakefulness allows (§9.6) | the turn ends; the step follows; the amygdala wakes her and it yields |
+| **Record and replay: engrams** | an admitted engram keeps its span, surprise and salience; sleep replays the high-surprise, high-relevance ones (consolidate, forget the noise) | the governor's sleep share, never a schedule |
+| **Promotion: fitness** | shadow to stable at a boundary when held-out loss fell and the smoke turn passes; genes that are used and lower surprise live, the rest fade | usage and surprise, measured; reversible |
+
+New engine work: per-span loss reported with a completion; per-span label weights on the in-slot learn (it labels only the reply today); a learn into several shadows at once (the active genes, MoE-like). Core: relevance per span from the engram and amygdala signals, gene routing by distance with minting, the sleep replay draw. Check with Astra before building (Joel, 2026-10-15).
+
 ## 10. Coursework is a room, not a runner (mapped 2026-09-28)
 
 Joel, relayed by Codex on 2026-09-28: academy, benchmarks, simulations and learning follow the same runtime and room state, with as few differences from inference as possible.
