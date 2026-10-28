@@ -211,6 +211,54 @@ this same mistake.
    path (a failed prepared job) is distinct from `DispatchPhase::Parked`, so each gets its own fixture
    before the timer goes.
 
+## 2d. Focus: the flexbox budget, with full compliance (Joel, 2026-10-28)
+
+> "We called this flexbox budgeting." "Ideally it even helps us shrink down during what we've seen the
+> coding models excel at, like as it starts to develop it's not a cluttered mind." "In human terms this
+> is focus." "Others shrink. She still has all of the context. Requires adherence."
+
+**The rule** (already law; saved 2026-10-18; `PERSONA-COGNITION-PIPELINE.md`:
+`FlexboxRagBudgetAdapter`/`flex_allocate` is the only budgeter):
+- Every part of a turn is a claim in **one** flexbox allocation per turn, over one window:
+  - framing, tools, required input, conversation, results/actions, grounding, recall, working memory;
+  - the reply.
+- Each claim has a priority from the turn's intent, a floor of real need, and a want of its whole.
+- Sources deliver *levels* (whole, summary, pointer), never a size.
+
+**Focus is the priorities.**
+- The current episode's working set gets the high claims.
+- Everything else shrinks to summary or pointer: still in her view, reachable on demand, never clipped.
+- She keeps all of her context; only its level changes.
+- A directed line raises its claim and the flow's interactive class; the episode stays warm and resumes.
+
+**Measured non-compliance** (2026-10-28, `fable/working-window`; the full map is on card 23ad5675):
+~40 production sites size prompt content outside the allocation.
+- **Conversation** runs a second flexbox in `compose_for_turn` over the 159k served window, plus a
+  per-turn cap and head cuts.
+- **Results and actions:** `collapse_results_over_cap`, `latest_action_chars`, `split_action_result`
+  and `RESULT_SHARE_DENOM`.
+- **Grounding** budget is frozen at spawn from the affordable window; doctrine, map and wall head cuts;
+  board 12/5 caps.
+- **Tools** take window/4 as a fixed claim.
+- **Recall:** count tiers, frozen at spawn.
+- **Dispatch and tool-output** slices, echo and trail heads.
+- **A per-call cache credit** swung `ContextBudget` from 22k to 159k between calls
+  (`cognition.budget.prefill_bound` fired 739 times in an hour).
+- My 48k working window on `prompt_fit` alone was another non-compliant patch: the prompt fit 48k while
+  the sources sized for 159k, and Aiko turned over every act.
+
+**The change, shipped as one:**
+1. The `prompt_self_sizing` ratchet first (~40). It counts `ContextBudget::live|live_or_floor|from_window*`,
+   the fraction methods, `_SHARE_DENOM`, and any `flex_allocate`/`FlexboxRagBudgetAdapter` outside the
+   one allocation.
+2. Migrate by prompt mass: conversation (one allocation, `compose_for_turn` delivers items), results,
+   grounding, tools, recall, small sites. Delete dead code.
+3. RAM and disk limits become a named storage budget that never decides what she sees.
+4. The total window is one parameter of the allocation: the dyno's measured knee.
+5. Ship when the ratchet reads 0, all cognition tests pass, and the dyno on all four residents shows
+   prefill per request no worse with zero handles dropped. Then the fraction methods go private, and
+   the compiler holds the line.
+
 ## 3. Live conversation, end to end
 
 The budget: first audio within about 1 s of the speaker stopping. The path and its timestamps (Codex's list, each a probe):
