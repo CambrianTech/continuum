@@ -2,7 +2,13 @@
 //! notifications, never examples; the recovery owner rechecks its predicates.
 use super::{TrainingTriggerModule, TrainingTriggerState};
 use crate::inference::llama_server::ServingSnapshot;
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 use tokio::sync::{watch, Mutex, Notify};
 
 #[derive(Default)]
@@ -10,6 +16,22 @@ pub(super) struct ServingWake {
     receiver: Option<watch::Receiver<ServingSnapshot>>,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     recovery_requested: Arc<Notify>,
+    alive: Arc<AtomicBool>,
+}
+
+struct Alive(Arc<AtomicBool>);
+
+impl Alive {
+    fn new(flag: Arc<AtomicBool>) -> Self {
+        flag.store(true, Ordering::Release);
+        Self(flag)
+    }
+}
+
+impl Drop for Alive {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 impl TrainingTriggerModule {
@@ -23,7 +45,7 @@ impl TrainingTriggerModule {
 
 impl ServingWake {
     pub(super) fn request_recovery(&self) -> bool {
-        if self.receiver.is_none() {
+        if !self.alive.load(Ordering::Acquire) {
             return false;
         }
         self.recovery_requested.notify_one();
@@ -41,6 +63,7 @@ impl ServingWake {
         *task = Some(tokio::spawn(follow(
             receiver,
             self.recovery_requested.clone(),
+            Alive::new(self.alive.clone()),
             move || {
                 let state = state.clone();
                 async move {
@@ -65,6 +88,7 @@ impl ServingWake {
 async fn follow<F, Fut>(
     mut receiver: watch::Receiver<ServingSnapshot>,
     requested: Arc<Notify>,
+    _alive: Alive,
     mut recover: F,
 ) where
     F: FnMut() -> Fut,
@@ -93,17 +117,23 @@ mod tests {
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let gate = release.clone();
         let requested = Arc::new(Notify::new());
-        let task = tokio::spawn(follow(receiver, requested.clone(), move || {
-            let entered = entered.clone();
-            let gate = gate.clone();
-            async move {
-                entered.send(()).expect("test receiver remains open");
-                gate.acquire()
-                    .await
-                    .expect("test semaphore remains open")
-                    .forget();
-            }
-        }));
+        let alive = Arc::new(AtomicBool::new(false));
+        let task = tokio::spawn(follow(
+            receiver,
+            requested.clone(),
+            Alive::new(alive.clone()),
+            move || {
+                let entered = entered.clone();
+                let gate = gate.clone();
+                async move {
+                    entered.send(()).expect("test receiver remains open");
+                    gate.acquire()
+                        .await
+                        .expect("test semaphore remains open")
+                        .forget();
+                }
+            },
+        ));
         calls
             .recv()
             .await
@@ -128,5 +158,37 @@ mod tests {
         drop(sender);
         release.add_permits(1);
         task.await.expect("closed owner stops its follower");
+        assert!(!alive.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn ticks_do_not_handoff_to_closed_or_aborted_followers() {
+        for abort in [false, true] {
+            let (sender, receiver) = watch::channel(ServingSnapshot::empty());
+            let wake = ServingWake {
+                receiver: Some(receiver.clone()),
+                ..Default::default()
+            };
+            assert!(
+                !wake.request_recovery(),
+                "before start the tick owns recovery"
+            );
+            let task = tokio::spawn(follow(
+                receiver,
+                wake.recovery_requested.clone(),
+                Alive::new(wake.alive.clone()),
+                || async {},
+            ));
+            assert!(wake.request_recovery(), "live owner accepts recovery");
+            if abort {
+                task.abort();
+            }
+            drop(sender);
+            let _ = task.await;
+            assert!(
+                !wake.request_recovery(),
+                "tick must recover after owner exits"
+            );
+        }
     }
 }
