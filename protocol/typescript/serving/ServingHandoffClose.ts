@@ -3,4 +3,4 @@
 /**
  * What the close came to.
  */
-export type ServingHandoffClose = { "kind": "closed", token: string, } | { "kind": "busy" } | { "kind": "no_serving" };
+export type ServingHandoffClose = { "kind": "closed", token: string, } | { "kind": "busy" } | { "kind": "taken", ownerPid: number, } | { "kind": "no_serving" };

@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::inference::serving_lifecycle::{HandoffOwner, LifecycleGate};
+use crate::inference::serving_lifecycle::{HandoffCloseOutcome, HandoffOwner, LifecycleGate};
 
 /// Params for `serving/handoff-close`: the process performing the handoff, which owns the close
 /// (its death releases it).
@@ -31,6 +31,11 @@ pub enum ServingHandoffClose {
     /// A serving operation (a relaunch, a placement move) holds the gate now: nothing is closed.
     /// The handoff waits and asks again.
     Busy,
+    /// Another handoff, whose process still runs, holds admission closed: nothing changed.
+    Taken {
+        #[serde(rename = "ownerPid")]
+        owner_pid: u32,
+    },
     /// This core has no serving lifecycle, so it admits no in-engine training: nothing to close.
     NoServing,
 }
@@ -49,7 +54,11 @@ crate::action_command! {
         let owner = HandoffOwner::of(p.owner_pid).ok_or_else(|| crate::sdk_codegen::CommandError::Invalid(format!(
             "process {} has no readable start time, so its death could never release the close", p.owner_pid
         )))?;
-        Ok(gate.close_for_handoff(owner).map_or(ServingHandoffClose::Busy, |token| ServingHandoffClose::Closed { token }))
+        Ok(match gate.close_for_handoff(owner) {
+            HandoffCloseOutcome::Closed { token } => ServingHandoffClose::Closed { token },
+            HandoffCloseOutcome::Busy => ServingHandoffClose::Busy,
+            HandoffCloseOutcome::Taken { owner } => ServingHandoffClose::Taken { owner_pid: owner.pid },
+        })
     }
 }
 

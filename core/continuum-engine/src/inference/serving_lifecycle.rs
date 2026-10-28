@@ -100,6 +100,18 @@ impl Drop for ServingOperation {
 }
 
 /// Why an admission may not decide now.
+/// What [`LifecycleGate::close_for_handoff`] came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandoffCloseOutcome {
+    /// Closed until reopened with `token` or the owner's death.
+    Closed { token: uuid::Uuid },
+    /// A serving operation holds the gate now: nothing changed; ask again.
+    Busy,
+    /// Another handoff, whose owner runs (or cannot be verified gone), holds it closed: nothing
+    /// changed; it is that handoff's to reopen.
+    Taken { owner: HandoffOwner },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateRefusal {
     /// Serving has not published its first plan on this core: the authority may not
@@ -215,16 +227,27 @@ impl LifecycleGate {
     /// Close training admission for a core handoff owned by `owner` (card 91921d0f). Taken under
     /// the gate: an admission deciding now finishes first, so its hold is published before this
     /// returns, and every later one is refused (`GateRefusal::Handoff`) until
-    /// [`Self::reopen_after_handoff`] or the owner's death. `None` while a serving operation holds
-    /// the gate; the caller asks again. A second close replaces the first (one handoff at a time).
-    pub fn close_for_handoff(&self, owner: HandoffOwner) -> Option<uuid::Uuid> {
-        let operation = ServingOperation::acquire(self.gate.clone(), self.started_ms.clone(), self.step.clone())?;
+    /// [`Self::reopen_after_handoff`] or the owner's death. ONE handoff at a time: a close that
+    /// another live (or unverifiable) owner holds is never replaced, or its handoff would proceed
+    /// to the stop with admission reopened by the other (Codex on #5553); only a verified-dead
+    /// owner's close is replaced.
+    pub fn close_for_handoff(&self, owner: HandoffOwner) -> HandoffCloseOutcome {
+        let Some(operation) = ServingOperation::acquire(self.gate.clone(), self.started_ms.clone(), self.step.clone()) else {
+            return HandoffCloseOutcome::Busy;
+        };
+        let mut handoff = self.handoff.lock();
+        if let Some(standing) = handoff.as_ref() {
+            if handoff::verdict(Some(standing), crate::inference::engine_residency::probe_process) == handoff::CloseVerdict::Closed {
+                return HandoffCloseOutcome::Taken { owner: standing.owner };
+            }
+        }
         let token = uuid::Uuid::new_v4();
-        *self.handoff.lock() = Some(HandoffClose { token, owner });
+        *handoff = Some(HandoffClose { token, owner });
+        drop(handoff);
         drop(operation);
         continuum_base::probe!(class = "serving.handoff.closed", owner_pid = owner.pid, token = %token,
             "a core handoff closed training admission; admissions wait until it reopens or its owner dies");
-        Some(token)
+        HandoffCloseOutcome::Closed { token }
     }
 
     /// Reopen what close `token` closed. `false` when no close stands or another does: a stale
@@ -254,16 +277,34 @@ mod tests {
         let gate = LifecycleGate::unowned(true);
         let me = HandoffOwner::of(std::process::id()).expect("test: this process's start time is readable");
         assert!(gate.hold_for_admission().is_ok(), "open: admits");
-        let token = gate.close_for_handoff(me).expect("free gate: closes");
+        let HandoffCloseOutcome::Closed { token } = gate.close_for_handoff(me) else { panic!("test: a free gate closes") };
         assert_eq!(gate.hold_for_admission().err(), Some(GateRefusal::Handoff), "closed by a live owner: waits");
         assert!(!gate.reopen_after_handoff(uuid::Uuid::from_u128(7)), "a stale token reopens nothing");
         assert_eq!(gate.hold_for_admission().err(), Some(GateRefusal::Handoff));
         assert!(gate.reopen_after_handoff(token));
         assert!(gate.hold_for_admission().is_ok(), "reopened: admits");
         let deciding = gate.hold_for_admission().expect("an admission holds the gate");
-        assert_eq!(gate.close_for_handoff(me), None, "a close waits for the admission deciding now");
+        assert_eq!(gate.close_for_handoff(me), HandoffCloseOutcome::Busy, "a close waits for the admission deciding now");
         drop(deciding);
-        assert!(gate.close_for_handoff(me).is_some());
+        assert!(matches!(gate.close_for_handoff(me), HandoffCloseOutcome::Closed { .. }));
+    }
+
+    // what this catches (Codex on #5553 at 2e3092026): a second handoff replacing a live owner's
+    // close, then reopening (or dying), so the first proceeded to its stop with admission open. A
+    // live owner's close is never replaced or released by another's token; a verified-dead owner's is.
+    #[test]
+    fn a_second_handoff_never_releases_a_live_owners_close() {
+        let gate = LifecycleGate::unowned(true);
+        let a = HandoffOwner::of(std::process::id()).expect("test: this process's start time is readable");
+        let HandoffCloseOutcome::Closed { token: a_token } = gate.close_for_handoff(a) else { panic!("test: A closes") };
+        let b = HandoffOwner { pid: a.pid, started_s: a.started_s }; // another handoff from a live process
+        assert_eq!(gate.close_for_handoff(b), HandoffCloseOutcome::Taken { owner: a }, "B cannot take A's close");
+        assert!(!gate.reopen_after_handoff(uuid::Uuid::from_u128(0xb)), "nor reopen it");
+        assert_eq!(gate.hold_for_admission().err(), Some(GateRefusal::Handoff), "A's exclusion stands");
+        assert!(gate.reopen_after_handoff(a_token));
+        // a close whose owner is verified gone (pid 0 is never a process) is replaced
+        *gate.handoff.lock() = Some(HandoffClose { token: uuid::Uuid::from_u128(1), owner: HandoffOwner { pid: 0, started_s: 1 } });
+        assert!(matches!(gate.close_for_handoff(b), HandoffCloseOutcome::Closed { .. }), "a dead owner's close is replaced");
     }
 }
 

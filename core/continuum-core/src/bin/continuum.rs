@@ -120,9 +120,10 @@ use launch::*;
 #[path = "continuum/processes.rs"]
 mod processes;
 use processes::*;
-#[path = "continuum/reboot.rs"]
+#[path = "continuum/handoff_admission.rs"]
 mod handoff_admission;
 use handoff_admission::*;
+#[path = "continuum/reboot.rs"]
 mod reboot;
 use reboot::*;
 #[path = "continuum/start.rs"]

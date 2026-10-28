@@ -26,11 +26,11 @@ impl HandoffAdmission {
             Ok(listed) => listed,
             Err(why) => return AdmissionClose::Failed(why),
         };
-        let supported = listed
-            .get("commands")
-            .and_then(Value::as_array)
-            .is_some_and(|commands| commands.iter().any(|c| c.get("name").and_then(Value::as_str) == Some(CLOSE)));
-        if !supported {
+        // only a well-formed listing that lacks the command is an older core (Codex on #5553)
+        let Some(commands) = listed.get("commands").and_then(Value::as_array) else {
+            return AdmissionClose::Failed(format!("commands/list answered without a commands array: {listed}"));
+        };
+        if !commands.iter().any(|c| c.get("name").and_then(Value::as_str) == Some(CLOSE)) {
             return AdmissionClose::NotSupported;
         }
         let reply = match running_core_call(CLOSE, serde_json::json!({ "ownerPid": std::process::id() }), "handoff admission close").await {
@@ -48,6 +48,10 @@ impl HandoffAdmission {
                 None => AdmissionClose::Failed(format!("{CLOSE} answered closed with no token: {reply}")),
             },
             Some("busy") => AdmissionClose::Busy,
+            Some("taken") => AdmissionClose::Failed(format!(
+                "another handoff (process {}) holds training admission closed",
+                reply.get("ownerPid").and_then(Value::as_u64).map_or_else(|| "unknown".to_string(), |pid| pid.to_string())
+            )),
             Some("no_serving") => AdmissionClose::NoServing,
             _ => AdmissionClose::Failed(format!("{CLOSE} answered something unknown: {reply}")),
         }
