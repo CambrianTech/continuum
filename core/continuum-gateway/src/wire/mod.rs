@@ -70,11 +70,6 @@ impl Frame {
             None => event,
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn json(&self) -> Value {
-        serde_json::from_str(&self.data).expect("test: a JSON frame")
-    }
 }
 
 /// A JSON frame, optionally named.

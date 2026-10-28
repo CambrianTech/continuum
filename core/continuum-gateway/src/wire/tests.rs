@@ -1,10 +1,17 @@
 //! Each format round-trips an agent's tool-using turn, whole and streamed.
+#![cfg(test)]
 use super::anthropic::Anthropic;
 use super::chat::Chat;
 use super::responses::Responses;
 use super::*;
 use continuum_engine::ai::{MessageContent, ToolCall, ToolChoice, UsageMetrics};
 use serde_json::json;
+
+impl Frame {
+    fn json(&self) -> Value {
+        serde_json::from_str(&self.data).expect("test: a JSON frame")
+    }
+}
 
 /// An answer that says a word and calls one tool.
 fn tool_answer() -> TextGenerationResponse {
