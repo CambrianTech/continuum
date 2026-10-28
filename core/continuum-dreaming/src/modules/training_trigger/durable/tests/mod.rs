@@ -15,6 +15,8 @@
         let batch = PendingBatch {
             submission_ids: ids.clone(),
             submission_examples: vec![2, 1, 3, 1],
+            submission_returned: vec![false; 4],
+            returned: false,
             persona_name: "Kimi".into(),
             source: crate::genome::fine_tuning::TrainingSource::OperatorCurated,
             examples: ["a1", "a2", "b1", "c1", "c2", "c3", "d1"].iter().map(|p| ex(p)).collect(),
