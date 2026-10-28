@@ -77,6 +77,13 @@ pub(super) fn humanize_result_content(raw: &str) -> String {
     }
 }
 
+/// How much of one argument she wrote is echoed back in its result's header, and of the
+/// intent line beside it. A rule for showing her own words, which her tool call already
+/// carries whole, never a share of the window: the recall sibling below is a constant for
+/// the same reason. It was a fixed 600 before it became `ContextBudget::echoed_arg_chars`
+/// (a 64th of the window, a second budget her view's allocation never saw).
+pub(super) const ECHOED_ARG_CHARS: usize = 600;
+
 /// Collapse tool ARGS for the RECENCY channel (working memory).
 ///
 /// The recall path has collapsed big args since it was written — `summarize_args_for_recall`
@@ -90,18 +97,11 @@ pub(super) fn humanize_result_content(raw: &str) -> String {
 /// into working memory as ARGS, ahead of the `EDIT REFUSED` result carrying the diagnostic she
 /// needed. On a 16k-token lane there is no room left for the diagnosis to survive.
 ///
-/// Deliberately MUCH more generous than the recall bound (600 vs 80 chars): recency is shown
-/// once and she may genuinely need to see the edit she just issued. Only a pathological
-/// whole-file paste collapses.
-///
-/// `budget` is `None` when the live window is UNKNOWN (no model binding). Then nothing folds.
-/// An unknown window must never become an invented one — that is how a guess turns into a
-/// clamp that outlives the guess.
-pub(super) fn summarize_args_for_recency(
-    args: &serde_json::Value,
-    budget: Option<usize>,
-) -> String {
-    let fold_at = budget.unwrap_or(usize::MAX);
+/// Deliberately MUCH more generous than the recall bound ([`ECHOED_ARG_CHARS`] vs 80 chars):
+/// recency is shown once and she may genuinely need to see the edit she just issued. Only a
+/// pathological whole-file paste collapses.
+pub(super) fn summarize_args_for_recency(args: &serde_json::Value) -> String {
+    let fold_at = ECHOED_ARG_CHARS;
     match args {
         serde_json::Value::Object(map) => map
             .iter()
@@ -211,7 +211,6 @@ pub(super) fn render_act_for_recall(
 
 #[cfg(test)]
 mod tests {
-    use crate::cognition::context_budget::ContextBudget;
     use crate::sdk_codegen::{ActVerdict, ToolVerdict};
     /// The two pre-#4352 states this file used to take as a bare bool.
     const OK_V: ActVerdict = ActVerdict::Declared(ToolVerdict::Succeeded);
@@ -372,10 +371,7 @@ mod tests {
     fn a_whole_file_arg_is_not_echoed_back_ahead_of_the_result() {
         let whole_file = "x = 1\n".repeat(4000); // ~24k chars, a real source file
         let args = serde_json::json!({ "file_path": "sympy/core/basic.py", "content": whole_file });
-        let rendered = summarize_args_for_recency(
-            &args,
-            Some(ContextBudget::from_window(16_384).echoed_arg_chars()),
-        );
+        let rendered = summarize_args_for_recency(&args);
         assert!(
             rendered.chars().count() < 400,
             "a whole-file arg must collapse, not flood: {} chars",
@@ -396,10 +392,7 @@ mod tests {
             "file_path": "a.py",
             "new_content": "def f():\n    return refine_arg(x)\n"
         });
-        let kept = summarize_args_for_recency(
-            &small,
-            Some(ContextBudget::from_window(16_384).echoed_arg_chars()),
-        );
+        let kept = summarize_args_for_recency(&small);
         assert!(
             kept.contains("refine_arg"),
             "an ordinary edit stays visible verbatim: {kept}"

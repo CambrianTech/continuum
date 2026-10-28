@@ -497,7 +497,7 @@ fn result_summary(result: &str, acts: &[Observation], budget: &crate::cognition:
         many => {
             // Each part is the act as the receipt shows it (its header over its humanized body),
             // at its own level: the same seam the single-act branch reads through `result`.
-            let parts: String = many.iter().map(|act| act.render_summary_part(budget, |body| level(body, Some(act)))).collect();
+            let parts: String = many.iter().map(|act| act.render_summary_part(|body| level(body, Some(act)))).collect();
             (parts.chars().count() * LEVEL_RATIO <= result.chars().count()).then_some(parts)
         }
     }

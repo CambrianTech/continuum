@@ -22,7 +22,6 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::ai::types::{ToolCall, ToolResult};
-use crate::cognition::context_budget::ContextBudget;
 
 use super::recency::{
     humanize_result_content, render_act_for_recall,
@@ -264,15 +263,10 @@ impl Observation {
     /// #205 KV-stability invariant. `intent` is batch-level (one per `apply_act`
     /// call, shared by every act in the batch), so it is passed rather than
     /// stored per-`Observation`.
-    pub fn render_recency(&self, intent: &str, budget: &ContextBudget) -> String {
-        Self::render_recency_impl(self, intent, budget)
-    }
-
-    fn render_recency_impl(&self, intent: &str, budget: &ContextBudget) -> String {
-        let fold = Some(budget.echoed_arg_chars());
-        let args = summarize_args_for_recency(&self.call.input, fold);
+    pub fn render_recency(&self, intent: &str) -> String {
+        let args = summarize_args_for_recency(&self.call.input);
         // The intent rides the result as a ONE-LINE reason, clipped to the same
-        // window-relative echo budget the args get — never the whole monologue.
+        // fixed echo bound the args get (ECHOED_ARG_CHARS) — never the whole monologue.
         // Measured 2026-09-04: one result header carried 2,902 chars of intent
         // ("Let me get oriented…") ahead of 790 chars of actual output; across a
         // turn, 6.1k of 20.6k result chars were intent echo. The output is what
@@ -280,7 +274,7 @@ impl Observation {
         let because = if intent.trim().is_empty() {
             String::new()
         } else {
-            format!(" because {}", clip_intent(intent, budget.echoed_arg_chars()))
+            format!(" because {}", clip_intent(intent, super::recency::ECHOED_ARG_CHARS))
         };
         format!(
             "{}({}){}\nResult:\n{}\n\n",
@@ -295,8 +289,8 @@ impl Observation {
     /// args, the same fold) over its HUMANIZED body at `level` (its summary, else whole), so a
     /// summary reads what the receipt shows her, never the executor's serialized JSON, where a
     /// read's numbered lines are escaped and no code level is found (Codex on #5424).
-    pub(crate) fn render_summary_part(&self, budget: &ContextBudget, level: impl Fn(&str) -> Option<String>) -> String {
-        let args = summarize_args_for_recency(&self.call.input, Some(budget.echoed_arg_chars()));
+    pub(crate) fn render_summary_part(&self, level: impl Fn(&str) -> Option<String>) -> String {
+        let args = summarize_args_for_recency(&self.call.input);
         let body = self.body_text();
         let body = body.trim();
         let shown = level(body).unwrap_or_else(|| body.to_owned()); // unwrap_or: a body with no smaller level is its own summary
