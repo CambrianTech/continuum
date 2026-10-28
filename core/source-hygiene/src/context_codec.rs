@@ -16,6 +16,13 @@
 //! - `collapse_outside_the_view`: collapsing what she sees anywhere but a view start. Working
 //!   memory bounds RAM by handle; the view decides what she reads.
 //! - `hand_churn_labels`: ordering sources by a label (`churn_of`) instead of measured motion.
+//! - `prompt_self_sizing`: anything that decides how much content enters her prompt outside the
+//!   ONE flexbox allocation per turn (Joel, 2026-10-28: "We called this flexbox budgeting";
+//!   "Others shrink. She still has all of the context. Requires adherence"). A source delivers
+//!   levels (whole, summary, pointer); the allocation's claims decide which she sees. Measured
+//!   at ~40 sites on 2026-10-28, including a second `flex_allocate` over the served window in
+//!   `compose_for_turn` (FLOW-IMPLEMENTATION-PLAN §2d). When it reaches 0 the sizing methods go
+//!   private and this ratchet is deleted.
 
 use super::{SourceFile, SourceRule, Violation};
 
@@ -25,6 +32,38 @@ const PROMPT_ASSEMBLY: &str = "cognition/llm_deliberation_faculty/prompt/";
 pub struct PromptMessagesOutsideTheView;
 pub struct CollapseOutsideTheView;
 pub struct HandChurnLabels;
+pub struct PromptSelfSizing;
+
+/// The one allocation's owners: the prompt assembly runs it; `context_budget.rs` and the
+/// allocator module define what it uses.
+const ALLOCATION_OWNERS: [&str; 3] = [PROMPT_ASSEMBLY, "cognition/context_budget.rs", "cognition/rag_budget/"];
+
+/// Calls that size prompt content on their own: the `ContextBudget` entry points and fraction
+/// methods, the fixed share splits, and a second run of the flexbox.
+const SELF_SIZING: [&str; 22] = [
+    "ContextBudget::live(",
+    "ContextBudget::live_or_floor(",
+    "ContextBudget::from_window(",
+    "ContextBudget::from_window_for(",
+    "ContextBudget::from_window_unbounded(",
+    ".recall_tokens(",
+    ".grounding_tokens(",
+    ".tool_surface_tokens(",
+    ".latest_action_chars(",
+    ".dispatch_result_chars(",
+    ".render_slice_chars(",
+    ".catalog_summary_chars(",
+    ".echoed_arg_chars(",
+    ".trail_head_chars(",
+    ".recent_results_chars(",
+    ".receipt_archive_chars(",
+    ".default_response_tokens(",
+    "_SHARE_DENOM",
+    "budget_claim(",
+    "FlexboxRagBudgetAdapter::new(",
+    "adapter.allocate(",
+    "flex_allocate(",
+];
 
 fn sites(file: &SourceFile, rule: &'static str, hit: impl Fn(&str) -> bool) -> Vec<Violation> {
     file.production_lines()
@@ -68,6 +107,19 @@ impl SourceRule for HandChurnLabels {
     }
 }
 
+impl SourceRule for PromptSelfSizing {
+    fn name(&self) -> &'static str {
+        "prompt_self_sizing"
+    }
+
+    fn check(&self, file: &SourceFile) -> Vec<Violation> {
+        if ALLOCATION_OWNERS.iter().any(|owner| file.rel.starts_with(owner)) || !file.rel.starts_with("cognition/") && !file.rel.starts_with("persona/") {
+            return Vec::new();
+        }
+        sites(file, self.name(), |code| !code.contains("fn ") && SELF_SIZING.iter().any(|call| code.contains(call)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +160,13 @@ mod tests {
         hold(&HandChurnLabels, "The view orders a start by measured motion (continuum_context::motion).");
     }
 
+    // what this catches: content sized outside the one flexbox allocation (Aiko turned over every act
+    // while ~40 sites sized for 159k and the prompt fit 48k, M5 2026-10-28). It may only fall.
+    #[test]
+    fn prompt_self_sizing_never_increases() {
+        hold(&PromptSelfSizing, "Deliver levels (whole, summary, pointer) and make the content a claim in the one allocation in prompt/view.rs; never size it at the source.");
+    }
+
     // what this catches: the predicates that make the rules useful rather than noise.
     #[test]
     fn each_rule_catches_its_shape_and_spares_its_definition() {
@@ -118,6 +177,10 @@ mod tests {
         assert_eq!(count(&CollapseOutsideTheView, "cognition/wm.rs", "self.collapse_results_over_cap();"), 1);
         assert_eq!(count(&CollapseOutsideTheView, "cognition/wm.rs", "pub fn collapse_over(&mut self, cap: usize) -> Collapsed {"), 0);
         assert_eq!(count(&HandChurnLabels, "cognition/a.rs", "churn_of(&block.faculty) < PromptChurn::Claims"), 1);
+        assert_eq!(count(&PromptSelfSizing, "cognition/recall_faculty.rs", "ContextBudget::from_window(context_window).recall_tokens()"), 1);
+        assert_eq!(count(&PromptSelfSizing, "persona/unified.rs", "let plan = adapter.allocate(&claims, budget);"), 1);
+        assert_eq!(count(&PromptSelfSizing, "cognition/llm_deliberation_faculty/prompt/view.rs", "let plan = flex_allocate(window, &claims);"), 0);
+        assert_eq!(count(&PromptSelfSizing, "cognition/context_budget.rs", "pub fn recall_tokens(&self) -> usize {"), 0);
         assert_eq!(count(&HandChurnLabels, "cognition/a.rs", "pub(super) fn churn_of(faculty: &str) -> PromptChurn {"), 0);
     }
 }
