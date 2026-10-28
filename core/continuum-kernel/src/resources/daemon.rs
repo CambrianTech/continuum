@@ -325,6 +325,20 @@ impl ResourceDaemon {
         self.governor.lock().budget_for_replacing(consumer_id, kind)
     }
 
+    /// Replacement budget and the leases charged by the same accounting read.
+    /// Consumers must keep these together when deriving a smaller planning budget;
+    /// a later board/holder read cannot justify omitting a future reservation.
+    pub fn replacement_budget_snapshot(
+        &self, consumer_id: &str, kind: ResourceKind,
+    ) -> (u64, Vec<super::lease::ResourceLease>) {
+        let governor = self.governor.lock();
+        let budget = governor.budget_for_replacing(consumer_id, kind);
+        let leases = governor.board().leases.into_iter()
+            .filter(|lease| lease.kind == kind && lease.consumer_id != consumer_id)
+            .collect();
+        (budget, leases)
+    }
+
     /// Register a leaseholder after startup — no restart (the directive's
     /// "never restart a daemon to manage resources").
     pub fn add_consumer(&self, consumer: Arc<dyn ResourceConsumer>) {
