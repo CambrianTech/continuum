@@ -254,6 +254,13 @@ pub fn allocate(
             smallest_requirement: largest_known.unwrap_or(0), // unwrap_or: nothing measured = 0 in the receipt, "unknown" spelled as the number it is
         });
     };
+    // Packing decides how many warm slots fit. Queued minds still use those slots
+    // in turn: do not strand spare memory at the smallest packed mind's target.
+    // Grow only the chosen geometry, never its slot count or admission promises.
+    let shared_target = largest_known.map_or(window, |target| target.max(window));
+    let window = shared_target
+        .min(fp.context_window)
+        .min(fp.window_within(budget.usable_bytes, lanes));
     let served: Vec<Uuid> = sorted.iter().take(lanes as usize).map(|r| r.persona).collect();
     let unserved: Vec<Uuid> = sorted.iter().skip(lanes as usize).map(|r| r.persona).collect();
     Ok(Allocation {
@@ -305,6 +312,50 @@ mod tests {
 
     fn minds(windows: &[u32]) -> Vec<LaneRequirement> {
         windows.iter().map(|w| LaneRequirement::declared(Uuid::new_v4(), *w)).collect()
+    }
+
+    // The live 5090 could hold Kimi's training target in one slot, but packing
+    // stopped at the smaller resident's target when a second slot did not fit.
+    #[test]
+    fn queued_target_uses_spare_capacity_without_promising_another_slot() {
+        let fp = ModelFootprint {
+            weights_bytes: 18_973_870_432,
+            kv_per_token: 32_768,
+            fixed_per_lane_bytes: 886_154_752,
+            ..qwen27b()
+        };
+        let host = HostBudget { usable_bytes: 24_804_791_852, perf_cores: 8 };
+        let reqs = minds(&[36_491, 64_256]);
+        let a = allocate(&reqs, &[fp], &host, 2).expect("one slot fits");
+        assert_eq!((a.lanes, a.window), (1, 64_256));
+        assert_eq!(a.served, vec![reqs[0].persona]);
+        assert_eq!(a.unserved, vec![reqs[1].persona]);
+        assert_eq!(a.device_bytes, 23_677_817_846);
+        assert!(a.device_bytes <= host.usable_bytes);
+    }
+
+    #[test]
+    fn queued_target_cannot_take_memory_beyond_budget_or_mute_conversation() {
+        let fp = qwen27b();
+        let host = HostBudget {
+            usable_bytes: fp.peak_resident_bytes(45_000, 1),
+            perf_cores: 8,
+        };
+        let reqs = minds(&[36_491, 64_256]);
+        let a = allocate(&reqs, &[fp], &host, 2).expect("conversation still fits");
+        assert_eq!((a.lanes, a.window), (1, 45_000));
+        assert_eq!(a.served, vec![reqs[0].persona]);
+        assert_eq!(a.unserved, vec![reqs[1].persona]);
+        assert!(a.device_bytes <= host.usable_bytes);
+    }
+
+    #[test]
+    fn shared_target_respects_model_ceiling_and_measured_lane_cap() {
+        let fp = ModelFootprint { context_window: 50_000, ..qwen27b() };
+        let reqs = minds(&[36_491, 64_256]);
+        let a = allocate(&reqs, &[fp], &budget(200), 1).expect("one slot fits");
+        assert_eq!((a.lanes, a.window), (1, 50_000));
+        assert_eq!(a.unserved, vec![reqs[1].persona]);
     }
 
     // what this catches (Codex on #4971): a cap read as a budget refusal. With a roomy budget,
@@ -362,15 +413,16 @@ mod tests {
         assert_eq!(a.unserved.len(), 3);
     }
 
-    // what this catches: smallest-requirement-first packing serves the MOST minds — a
-    // 256k outlier does not size everyone's lane; she is served only if the box has
-    // room for her after the others, and the window is then hers.
+    // Packing still serves the most minds. A queued outlier may use spare window
+    // capacity, but cannot evict a packed mind or create an unaffordable slot.
     #[test]
-    fn the_outlier_is_served_last_and_does_not_size_the_others_lanes() {
+    fn the_outlier_uses_only_spare_capacity_after_packing() {
         let reqs = minds(&[256_000, 70_000, 70_000]);
         let a = allocate(&reqs, &[qwen27b()], &budget(30), u32::MAX).expect("fits");
         assert_eq!(a.lanes, 2, "two at 70k; the 256k mind would need 3 lanes at 256k");
-        assert_eq!(a.window, 70_000);
+        assert_eq!(a.window, qwen27b().window_within(budget(30).usable_bytes, 2));
+        assert!(a.window >= 70_000 && a.window < 256_000);
+        assert!(a.device_bytes <= budget(30).usable_bytes);
         assert_eq!(a.unserved.len(), 1);
         let roomy = allocate(&reqs, &[qwen27b()], &budget(60), u32::MAX).expect("fits");
         assert_eq!((roomy.lanes, roomy.window), (3, 256_000), "with room, all three at the largest requirement");
@@ -431,7 +483,7 @@ mod tests {
         let kimi = one_lane - 1_000;
         let seat = vec![LaneRequirement::declared(Uuid::new_v4(), kimi), LaneRequirement::declared(Uuid::new_v4(), 97_268)];
         let a = allocate(&seat, &[q8, small7b()], &budget(22), u32::MAX).expect("fits");
-        assert_eq!((a.model_id.as_str(), a.lanes, a.window), ("qwen-27b", 1, kimi));
+        assert_eq!((a.model_id.as_str(), a.lanes, a.window), ("qwen-27b", 1, one_lane));
         assert_eq!(a.unserved.len(), 1);
     }
     // what this catches (card 70706a9e): a mind whose TARGET the budget cannot hold but
