@@ -159,7 +159,7 @@
     fn a_dead_jobs_request_json_is_its_resume_and_an_empty_directory_is_none() {
         let dir = tempfile::tempdir().expect("test: tempdir");
         let dispatch = Uuid::new_v4();
-        assert!(resumable_request(dir.path(), "cuda-local", dispatch).is_err(), "nothing on disk");
+        assert!(read_job_request(dir.path()).and_then(|r| resumable_request(r, dir.path(), "cuda-local", dispatch)).is_err(), "nothing on disk");
         // What the CUDA adapter writes: the flattened request plus its admission fields.
         let spec = serde_json::json!({
             "personaId": Uuid::from_u128(7).to_string(),
@@ -177,7 +177,7 @@
             "revision": null
         });
         std::fs::write(dir.path().join("request.json"), spec.to_string()).expect("test: write");
-        let params = resumable_request(dir.path(), "cuda-local", dispatch).expect("test: resumable");
+        let params = read_job_request(dir.path()).and_then(|r| resumable_request(r, dir.path(), "cuda-local", dispatch)).expect("test: resumable");
         assert_eq!(params["triggerDispatchId"], serde_json::json!(dispatch.to_string()));
         assert!(
             params.get("preferredProvider").is_none(),
@@ -197,7 +197,7 @@
         std::fs::create_dir_all(&ck).expect("test: checkpoint dir");
         std::fs::write(ck.join("adapter_config.json"), "{}").expect("test: adapter config");
         std::fs::write(dir.path().join("checkpoints").join("LATEST"), "step-8\n").expect("test: pointer");
-        let params = resumable_request(dir.path(), "cuda-local", dispatch).expect("test: resumable");
+        let params = read_job_request(dir.path()).and_then(|r| resumable_request(r, dir.path(), "cuda-local", dispatch)).expect("test: resumable");
         assert_eq!(params["resumeFrom"], serde_json::json!(ck.to_string_lossy()), "continues from the latest checkpoint");
         assert_eq!(params["preferredProvider"], serde_json::json!("cuda-local"), "a checkpoint is its trainer's format: pinned");
         let d = default_job_dir("Kimi", "code/owner", Uuid::from_u128(9)).expect("test: a home directory");

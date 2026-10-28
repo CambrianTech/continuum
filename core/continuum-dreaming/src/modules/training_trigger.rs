@@ -77,7 +77,7 @@ use crate::sdk_codegen::DynCommand;
 mod attempt_evidence;
 mod durable;
 pub use durable::DispatchPhase;
-pub(crate) use durable::{DispatchFailure, DispatchResolution, DispatchResult, ResolveReport, RetireReport, RetireSelection};
+pub(crate) use durable::{DispatchFailure, DispatchResolution, DispatchResult, JobInputError, ResolveReport, RetireReport, RetireSelection};
 
 /// Default per-bucket fire threshold. 16 examples is a healthy
 /// THE BOUND ON A HELD BUCKET. A bucket held by a job in flight, a trial open, or her
@@ -546,7 +546,10 @@ impl TrainingTriggerState {
                 continue;
             };
             let dispatch_id = Uuid::new_v4();
-            let params = match resumable_request(&dir, &orphan.provider_id, dispatch_id) {
+            // its original input from the one owner (its durable dispatch, card 3c3634d2), read
+            // once: re-created from it, or returned with it
+            let input = self.job_input(&orphan, &dir).await.map_err(|e| e.to_string());
+            let params = match input.clone().and_then(|request| resumable_request(request, &dir, &orphan.provider_id, dispatch_id)) {
                 Ok(params) => params,
                 Err(error) => {
                     continuum_base::probe!(
@@ -576,7 +579,7 @@ impl TrainingTriggerState {
                         );
                         continue;
                     }
-                    let resubmitted = match read_job_request(&dir) {
+                    let resubmitted = match input {
                         // The call returning is not the batch being taken: a refused submit
                         // (InconsistentBucket, …) comes back success=false.
                         Ok(request) => match crate::commands::training_trigger::submit::return_request(self, request, orphan.local_id, crate::commands::training_trigger::submit::ReturnScope::Whole).await {
@@ -620,7 +623,7 @@ impl TrainingTriggerState {
                         to = %handle.local_id,
                         provider = %provider,
                         attempt,
-                        "an in-flight training job survived the reboot: re-created from its own request.json"
+                        "an in-flight training job survived the reboot: re-created from its original input"
                     );
                 }
                 Err(error) => {
@@ -727,8 +730,12 @@ use crate::genome::fine_tuning::job_dir::{default_job_dir, genome_root, job_dir_
 /// its own `request.json` (the flattened `TrainingJobRequest` the trainer was handed,
 /// with the adapter's admission fields alongside, which the request type ignores).
 /// `None` when there is nothing on disk to resume from.
-pub(crate) fn resumable_request(dir: &std::path::Path, provider: &str, dispatch_id: Uuid) -> Result<Value, String> {
-    let mut request = read_job_request(dir)?;
+pub(crate) fn resumable_request(
+    mut request: crate::genome::fine_tuning::types::TrainingJobRequest,
+    dir: &std::path::Path,
+    provider: &str,
+    dispatch_id: Uuid,
+) -> Result<Value, String> {
     // The dead job's latest checkpoint, when it got that far: the re-created job
     // continues from it instead of from zero (Fable's readiness ask: a resume loses
     // minutes, not the run). `checkpoints/LATEST` names the directory the trainer

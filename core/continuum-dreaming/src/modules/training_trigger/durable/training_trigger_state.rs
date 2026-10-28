@@ -292,6 +292,26 @@ impl TrainingTriggerState {
         Ok(batch.training_request(key.persona_id, &key.trait_kind, &key.base_model))
     }
 
+    /// THE original input of a job a previous core left behind, for its return and its resume
+    /// alike: a trigger-owned job's comes from its verified durable dispatch, since adapter
+    /// request files can materialize provider defaults (a return into an empty bucket then reads
+    /// as another policy) and an in-engine job never writes one at all (the Windows 5090,
+    /// 2026-10-28: 8b46862c's directory held only partition.json, so its resume found nothing;
+    /// card 3c3634d2). Only a job with no trigger dispatch uses its legacy request file.
+    pub(crate) async fn job_input(
+        &self,
+        job: &crate::genome::fine_tuning::job_board::OrphanedJob,
+        dir: &std::path::Path,
+    ) -> Result<crate::genome::fine_tuning::types::TrainingJobRequest, JobInputError> {
+        match job.trigger_dispatch_id {
+            Some(dispatch) => {
+                let key = BucketKey { persona_id: job.persona_id, trait_kind: job.trait_kind.clone(), base_model: job.base_model.clone() };
+                self.dispatched_request(&key, dispatch, job.local_id).await.map_err(JobInputError::Unproven)
+            }
+            None => crate::genome::fine_tuning::job_dir::read_job_request(dir).map_err(JobInputError::Missing),
+        }
+    }
+
     /// Bridge the old return identity without accepting its examples twice on upgrade.
     /// A legacy row has no return-purpose tag: payload equality and a `returned` journal
     /// row cannot distinguish a real return from the old erroneous AlreadyAccepted.
@@ -536,6 +556,24 @@ impl TrainingTriggerState {
                 kind: "PersistenceFailed",
                 error,
             },
+        }
+    }
+}
+
+/// Why a job's original input could not be had.
+#[derive(Debug)]
+pub(crate) enum JobInputError {
+    /// Its durable dispatch does not prove this job's input (absent, another job's, or a
+    /// submission that is not its own).
+    Unproven(String),
+    /// A job with no trigger dispatch has no readable request file.
+    Missing(String),
+}
+
+impl std::fmt::Display for JobInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unproven(why) | Self::Missing(why) => f.write_str(why),
         }
     }
 }
