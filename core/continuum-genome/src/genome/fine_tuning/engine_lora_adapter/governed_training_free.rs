@@ -368,13 +368,32 @@ pub(super) fn write_returnable(job_dir: &Path, returnable: &Returnable) -> Resul
 }
 
 /// What `job_dir` records about a return, if anything: `returnable.json`, else #4904's
-/// `refusal.json` as `EngineRefused`. A missing or unreadable record is none.
+/// `refusal.json` as `EngineRefused`. A missing or unreadable record is none; a caller that must
+/// tell the two apart reads [`read_returnable_strict`].
 pub fn read_returnable(job_dir: &Path) -> Option<Returnable> {
-    if let Some(r) = std::fs::read(job_dir.join(RETURNABLE_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
-        return Some(r);
+    read_returnable_strict(job_dir).ok().flatten()
+}
+
+/// [`read_returnable`], telling a confirmed absence (`Ok(None)`: neither file exists) from a record
+/// that exists and cannot be read or parsed, or a directory that cannot be checked (`Err`).
+pub fn read_returnable_strict(job_dir: &Path) -> Result<Option<Returnable>, String> {
+    let read = |name: &str| -> Result<Option<Vec<u8>>, String> {
+        let path = job_dir.join(name);
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    };
+    if let Some(bytes) = read(RETURNABLE_FILE)? {
+        return serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("{}: not a returnable record: {e}", job_dir.join(RETURNABLE_FILE).display()));
     }
-    let legacy: Refusal = serde_json::from_slice(&std::fs::read(job_dir.join(LEGACY_REFUSAL_FILE)).ok()?).ok()?;
-    Some(Returnable::EngineRefused(legacy))
+    match read(LEGACY_REFUSAL_FILE)? {
+        Some(bytes) => serde_json::from_slice::<Refusal>(&bytes)
+            .map(|legacy| Some(Returnable::EngineRefused(legacy)))
+            .map_err(|e| format!("{}: not a refusal record: {e}", job_dir.join(LEGACY_REFUSAL_FILE).display())),
+        None => Ok(None),
+    }
 }
 
 /// PURE: whether a refused job has a smaller rung to step down to: a smaller chunk, a shallower
@@ -525,6 +544,58 @@ pub(super) enum Provenance {
     Refusal,
 }
 
+/// What [`Footprints::classify_legacy`] did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct Classified {
+    /// Legacy rows moved to their refusal keys.
+    pub(super) refusals: usize,
+    /// Why each row left unclassified could not be classified.
+    pub(super) unknown: Vec<String>,
+}
+
+/// What a legacy row's own job directory says about it.
+enum Evidence {
+    Refused,
+    /// Every place its job could be was read, and none records a refusal of its size.
+    NotRefused,
+    Unknown(String),
+}
+
+/// PURE but for the reads: the evidence `roots` hold for `row`'s job. A job dir is `<root>/<job>`
+/// under a request's own artifact root, else `<root>/<persona>/<trait>/<job>` (`job_dir_for`).
+fn refusal_evidence(row: &FootprintRow, roots: &[PathBuf]) -> Evidence {
+    let Ok(job) = Uuid::parse_str(&row.job) else {
+        return Evidence::NotRefused; // no job id (a test's or a hand's row): no record can name it
+    };
+    let mut unknown = None;
+    let mut dirs = Vec::new();
+    for root in roots {
+        match std::fs::read_dir(root) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                unknown = Some(format!("{}: {e}", root.display()));
+                continue;
+            }
+        }
+        dirs.push(root.join(job.to_string()));
+        for anchor in [RETURNABLE_FILE, LEGACY_REFUSAL_FILE] {
+            match crate::genome::fine_tuning::job_dir::find_job_dir_under(root, job, anchor) {
+                Ok(found) => dirs.extend(found),
+                Err(why) => unknown = Some(why),
+            }
+        }
+    }
+    for dir in dirs {
+        match read_returnable_strict(&dir) {
+            Ok(Some(Returnable::EngineRefused(refusal))) if refusal.graph_bytes == row.bytes => return Evidence::Refused,
+            Ok(_) => {}
+            Err(why) => unknown = Some(why),
+        }
+    }
+    unknown.map_or(Evidence::NotRefused, Evidence::Unknown)
+}
+
 /// The suffix a refusal's row is keyed under, beside the run row of the same shape.
 const REFUSED: &str = "|refused";
 
@@ -667,50 +738,51 @@ impl Footprints {
         }
         self.write_all(&all)
     }
-    /// Classify every row from before [`Provenance`] once: a whole-run row whose own job recorded
-    /// an engine refusal of exactly its size (`returnable.json`, or #4904's `refusal.json`, in its
-    /// directory under one of `roots`) WAS a refusal, filed as whole before card 0d21e644 (the windows 5090's row
-    /// for 598e183c at window 45,056). It moves to the refusal key, out of the fit. Any other is
-    /// stamped a run: nothing on disk says otherwise. Returns how many were reclassified.
-    pub(super) fn classify_legacy(&self, roots: &[PathBuf]) -> std::io::Result<usize> {
+    /// Classify every row from before [`Provenance`]: a whole-run row whose own job recorded an
+    /// engine refusal of exactly its size (`returnable.json`, or #4904's `refusal.json`, in its
+    /// directory under one of `roots`) WAS a refusal, filed as whole before card 0d21e644 (the
+    /// windows 5090's row for 598e183c at window 45,056). It moves to the refusal key, out of the
+    /// fit. A row whose job is confirmed to record no such refusal is stamped a run. A row whose
+    /// evidence cannot be read (a root, a directory or a record that errs) stays unclassified and is
+    /// tried again on the next dispatch: a transient failure never stamps a refusal as a run (Codex
+    /// on #5548). Returns how many were reclassified as refusals and how many stay unknown.
+    pub(super) fn classify_legacy(&self, roots: &[PathBuf]) -> std::io::Result<Classified> {
         let mut all = self.read_all();
         let legacy: Vec<String> = all.iter().filter(|(k, r)| r.provenance.is_none() && !k.ends_with(REFUSED)).map(|(k, _)| k.clone()).collect();
+        let mut classified = Classified::default();
         if legacy.is_empty() {
-            return Ok(0);
+            return Ok(classified);
         }
-        let mut refusals = 0;
+        let mut changed = false;
         for key in legacy {
             let Some(mut row) = all.remove(&key) else { continue };
-            let refused = row.whole_run
-                && Uuid::parse_str(&row.job).ok().is_some_and(|job| {
-                    // a job dir is `<root>/<job>` under a request's own artifact root, else
-                    // `<root>/<persona>/<trait>/<job>` (`job_dir_for`)
-                    roots
-                        .iter()
-                        .flat_map(|root| {
-                            let nested = [RETURNABLE_FILE, LEGACY_REFUSAL_FILE]
-                                .into_iter()
-                                .filter_map(|anchor| crate::genome::fine_tuning::job_dir::find_job_dir_under(root, job, anchor).ok().flatten());
-                            std::iter::once(root.join(job.to_string())).chain(nested).collect::<Vec<_>>()
-                        })
-                        .filter_map(|dir| read_returnable(&dir))
-                        .any(|r| matches!(r, Returnable::EngineRefused(refusal) if refusal.graph_bytes == row.bytes))
-                });
-            if refused {
-                refusals += 1;
-                row.whole_run = false;
-                row.provenance = Some(Provenance::Refusal);
-                let refused_key = format!("{key}{REFUSED}");
-                if all.get(&refused_key).is_none_or(|kept| kept.bytes < row.bytes) {
-                    all.insert(refused_key, row);
+            let evidence = if row.whole_run { refusal_evidence(&row, roots) } else { Evidence::NotRefused };
+            match evidence {
+                Evidence::Refused => {
+                    classified.refusals += 1;
+                    changed = true;
+                    row.whole_run = false;
+                    row.provenance = Some(Provenance::Refusal);
+                    let refused_key = format!("{key}{REFUSED}");
+                    if all.get(&refused_key).is_none_or(|kept| kept.bytes < row.bytes) {
+                        all.insert(refused_key, row);
+                    }
                 }
-            } else {
-                row.provenance = Some(Provenance::Run);
-                all.insert(key, row);
+                Evidence::NotRefused => {
+                    changed = true;
+                    row.provenance = Some(Provenance::Run);
+                    all.insert(key, row);
+                }
+                Evidence::Unknown(why) => {
+                    classified.unknown.push(why);
+                    all.insert(key, row); // as it was: tried again on the next dispatch
+                }
             }
         }
-        self.write_all(&all)?;
-        Ok(refusals)
+        if changed {
+            self.write_all(&all)?;
+        }
+        Ok(classified)
     }
 }
 

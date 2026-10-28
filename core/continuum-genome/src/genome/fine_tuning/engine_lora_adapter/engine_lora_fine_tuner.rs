@@ -157,13 +157,20 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 .map_err(|e| e.to_string())
                 .and_then(|r| r.map_err(|e| e.to_string()));
             match classified {
-                Ok(0) => {}
-                Ok(refusals) => continuum_base::probe!(
-                    class = "training.footprints.legacy_refusals",
-                    job = %id,
-                    refusals = refusals as u64,
-                    "footprint rows filed as whole runs were refusals by their own job's record: moved to their refusal keys, out of the fit"
-                ),
+                Ok(done) => {
+                    if done.refusals > 0 {
+                        continuum_base::probe!(
+                            class = "training.footprints.legacy_refusals",
+                            job = %id,
+                            refusals = done.refusals as u64,
+                            "footprint rows filed as whole runs were refusals by their own job's record: moved to their refusal keys, out of the fit"
+                        );
+                    }
+                    if !done.unknown.is_empty() {
+                        continuum_base::probe!(class = "training.footprints.legacy_unclassified", job = %id, rows = done.unknown.len() as u64, error = %done.unknown.join("; "),
+                            "rows from before provenance whose job record could not be read stay unclassified; they are tried again on the next dispatch");
+                    }
+                }
                 Err(e) => continuum_base::probe!(class = "training.footprints.legacy_unclassified", job = %id, error = %e,
                     "rows from before provenance could not be classified; they stay as they were and are classified on the next dispatch"),
             }
