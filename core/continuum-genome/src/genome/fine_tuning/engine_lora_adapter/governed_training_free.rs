@@ -478,6 +478,11 @@ pub struct EngineRunSpec {
     /// metrics so a re-attached run names the same base (card 3fd98325).
     #[serde(default)]
     pub(super) trained_on: Option<crate::inference::weights_stamp::WeightsStamp>,
+    /// Where her training demand is recorded ([`crate::genome::fine_tuning::training_demand`]):
+    /// a successful finish clears the examples the run trained. `None` on a spec persisted before
+    /// demand existed, when no example of its run could have been recorded as demand.
+    #[serde(default)]
+    pub(super) demand_store: Option<PathBuf>,
 }
 
 /// The depth a finished run actually adapted, as the shape it is recorded under: the engine's

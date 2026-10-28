@@ -301,6 +301,9 @@ pub struct EngineLoraFineTuner {
     /// Where a run's binding to its engine incarnation is recorded (`None`: no home, or a
     /// test with no engine; an ungoverned run binds nothing).
     pub(super) residency_store: Option<PathBuf>,
+    /// Where each persona's outstanding training demand is recorded for serving to read
+    /// ([`crate::genome::fine_tuning::training_demand`]; `None`: no home, nothing recorded).
+    pub(super) demand_store: Option<PathBuf>,
     /// Leases re-taken at boot for runs a previous core bound to a still-live engine
     /// ([`Self::reclaim_resident_leases`]), held here until `reattach` hands each to its run or
     /// the binding is released. The lease was in the dead core's memory; the engine's
@@ -349,6 +352,9 @@ impl EngineLoraFineTuner {
             residency_store: crate::paths::continuum_home()
                 .ok()
                 .map(|home| crate::inference::engine_residency::store_path(&home)),
+            demand_store: crate::paths::ContinuumLayout::home()
+                .ok()
+                .map(|layout| crate::genome::fine_tuning::training_demand::TrainingDemand::store_dir(&layout.genome())),
             resident_leases: Arc::new(Mutex::new(BTreeMap::new())),
             post_wait_floor: POST_WAIT_FLOOR,
         }
@@ -387,6 +393,7 @@ impl EngineLoraFineTuner {
             holds: TrainingHolds::new(),
             hold_store: None,
             residency_store: None,
+            demand_store: None,
             resident_leases: Arc::new(Mutex::new(BTreeMap::new())),
             post_wait_floor: Duration::from_secs(1),
         }

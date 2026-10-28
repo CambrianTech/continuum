@@ -7,19 +7,26 @@
     // what this catches (Cormac's chain test on #4946, card 3cef97ef; job 97e081e2): the WHOLE
     // path of a POST lost after the engine took the run. The engine's answer outlasts the POST's
     // wait, the core asks GET /train, finds this job's run, watches it to its end, and the job
-    // completes with its adapter collected: not failed while the engine trains, unadoptable.
+    // completes with its adapter collected: not failed while the engine trains, unadoptable. And
+    // (card ea157b1a) the examples it trained owe serving nothing more: her demand for them clears
+    // at the finish, and only there.
     #[tokio::test]
     pub(super) async fn a_run_whose_post_is_lost_is_watched_to_its_end_and_completes() {
         let train = tempfile::tempdir().expect("test: dir");
         let jobs = tempfile::tempdir().expect("test: dir");
         let (url, server, seen) = fake_lane(train.path().to_path_buf(), "lost_post").await;
-        let t = EngineLoraFineTuner::for_test(url, train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        let mut t = EngineLoraFineTuner::for_test(url, train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        t.demand_store = Some(jobs.path().join("training-demand"));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let demand = crate::genome::fine_tuning::training_demand::TrainingDemand::in_dir(t.demand_store.as_deref(), r.persona_id);
+        let parked_before: Vec<(String, u32)> = r.dataset.examples.iter().map(|e| (crate::genome::fine_tuning::training_demand::TrainingDemand::key_of(e), 65_536)).collect();
+        demand.record(&parked_before, &[], None).expect("test: her examples waited for a window");
         let h = t.create_job(r).await.expect("test: create");
         let end = wait_terminal(&t, &h).await;
         assert!(seen.lock().unwrap().is_some(), "the run was posted");
         assert!(matches!(end, TrainingStatus::Completed { .. }), "reconciled and watched to its end: {end:?}");
+        assert_eq!(demand.waiting(), 0, "the run trained them: her demand is met");
         server.abort();
     }
 
@@ -35,11 +42,17 @@
         let footprints = jobs.path().join("footprints.json");
         let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), 6 * 1024 * 1024 * 1024);
         t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 1536)));
+        t.demand_store = Some(jobs.path().join("training-demand"));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        // card ea157b1a: her examples were waiting; this run is sent them and refused
+        let demand = crate::genome::fine_tuning::training_demand::TrainingDemand::in_dir(t.demand_store.as_deref(), r.persona_id);
+        let parked_before: Vec<(String, u32)> = r.dataset.examples.iter().map(|e| (crate::genome::fine_tuning::training_demand::TrainingDemand::key_of(e), 65_536)).collect();
+        demand.record(&parked_before, &[], None).expect("test: her examples waited for a window");
         let h = t.create_job(r).await.expect("test: create");
         let end = wait_terminal(&t, &h).await;
         assert!(matches!(end, TrainingStatus::Failed { .. }), "refused: {end:?}");
+        assert_eq!(demand.waiting(), parked_before.len(), "sent and refused is not trained: her demand stands");
         let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: the refusal filed a footprint")).expect("test: json");
         let filed: Vec<u64> = rows.as_object().expect("test: rows").values().filter_map(|r| r["bytes"].as_u64()).collect();
         assert_eq!(filed, vec![(12_654.1f64 * 1024.0 * 1024.0) as u64], "the refused graph is filed");
@@ -642,6 +655,33 @@
         assert_eq!(recorded.dataset.examples[0].prompt, "p");
         assert!(recorded.schedule.is_none(), "the request as it arrived, before the provider's default schedule");
         let _ = wait_terminal(&t, &h).await;
+        server.abort();
+    }
+
+    // what this catches (card ea157b1a, gate 3): a lived example parked because her served
+    // window cannot train it whole, with nothing telling serving what her learning needs (Kimi's
+    // reviewed correction, 51,670-64,041 tokens, parked for good at 49,664). The partition records
+    // the window that trains it whole for the serving requirement, and prices it only from a
+    // footprint of that very shape: none yet, so the reservation is unmeasured.
+    #[tokio::test]
+    pub(super) async fn a_parked_example_records_the_window_it_needs_for_serving() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, _seen) = fake_lane(train.path().to_path_buf(), "park_all").await;
+        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), jobs.path().join("fp.json"), 6 * 1024 * 1024 * 1024);
+        t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 1536)));
+        t.demand_store = Some(jobs.path().join("training-demand"));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.persona_id = Uuid::new_v4();
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        // every example parks (the engine measures each 40,000 tokens past the window): the job
+        // ends without a run, and its demand is recorded all the same
+        let h = t.create_job(r.clone()).await.expect("test: create");
+        let demand = crate::genome::fine_tuning::training_demand::TrainingDemand::in_dir(t.demand_store.as_deref(), r.persona_id);
+        assert_eq!(demand.outstanding(), Some(41_728), "her 41,536-token example needs a 41,728 window; her lane serves 1,536");
+        assert_eq!(demand.waiting(), r.dataset.examples.len());
+        let reserved = demand.reservation().expect("a parked example reserves");
+        assert_eq!((reserved.window, reserved.recorded_price(), reserved.job), (41_728, None, Some(h.local_id)), "no footprint of that shape yet: the reservation is unpriced, never priced from another window");
         server.abort();
     }
 
