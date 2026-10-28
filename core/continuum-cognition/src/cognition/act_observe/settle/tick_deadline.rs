@@ -15,11 +15,7 @@ pub(super) const ACT_EXTENSIONS: u32 = 2;
 /// checkpoint, or the same task with its work moved at a later one, extends by one bound,
 /// up to [`ACT_EXTENSIONS`]. No pinned slot, an idle or silent slot, or a new task on it
 /// ends the act exactly as before (`Err(Elapsed)`), so a request lost inside a busy engine
-/// still ends. Registered admission queue intervals are excluded from this
-/// step's watchdog clock: they retain FIFO ownership without a pinned engine
-/// slot while relevant grants or blocking holders advance at each act-bound
-/// checkpoint. A stalled/unknown queue ends the act. On grant the unspent budget
-/// resumes; no other await gets this exemption.
+/// still ends.
 ///
 /// `Err` says whether the step's generation was already dispatched: a step ended after
 /// that point dropped a generation in flight and must never be counted as a lane wait.
@@ -45,22 +41,21 @@ pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::
     step: F,
     condemned: C,
 ) -> Result<F::Output, Abandoned> {
-    use crate::cognition::llm_deliberation_faculty::admission_clock;
-    let (queue_tx, mut queue_rx) = tokio::sync::watch::channel(admission_clock::QueueTime::new(deadline, bound));
-    let step = admission_clock::scope(queue_tx.clone(), step);
+    use crate::cognition::llm_deliberation_faculty::step_clock;
+    let (clock_tx, mut clock_rx) = tokio::sync::watch::channel(step_clock::StepClock::new(deadline, bound));
+    let step = step_clock::scope(clock_tx.clone(), step);
     tokio::pin!(step);
     tokio::pin!(condemned);
     let mut extensions = 0u32;
     let mut previous = None;
     loop {
-        let state = *queue_rx.borrow_and_update();
-        let due = if state.stalled { Some(tokio::time::Instant::now()) } else { state.deadline() };
+        let state = *clock_rx.borrow_and_update();
         tokio::select! {
             biased;
             out = &mut step => return Ok(out),
-            _ = queue_rx.changed() => continue,
+            _ = clock_rx.changed() => continue,
             () = &mut condemned => {
-                let abandoned = Abandoned::at(&queue_rx);
+                let abandoned = Abandoned::at(&clock_rx);
                 continuum_base::probe!(
                     class = "settle.tick.condemned",
                     dispatched = abandoned.dispatched,
@@ -69,13 +64,7 @@ pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::
                 );
                 return Err(abandoned);
             }
-            _ = async {
-                match due {
-                    Some(at) => tokio::time::sleep_until(at).await,
-                    None => std::future::pending::<()>().await,
-                }
-            } => {
-                if state.stalled { return Err(Abandoned::at(&queue_rx)); }
+            _ = tokio::time::sleep_until(state.deadline()) => {
                 let pinned = persona.and_then(crate::inference::llama_server::in_flight_slot);
                 let now = match &pinned {
                     Some(p) => crate::inference::llama_server::slot_work(&p.root, p.slot, act_probe_client()).await,
@@ -87,11 +76,11 @@ pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::
                     || crate::inference::llama_server::engine_condemned()
                     || !crate::inference::llama_server::slot_advanced(previous, now)
                 {
-                    return Err(Abandoned::at(&queue_rx));
+                    return Err(Abandoned::at(&clock_rx));
                 }
                 extensions += 1;
                 previous = now;
-                queue_tx.send_modify(|state| state.extend());
+                clock_tx.send_modify(|state| state.extend());
                 continuum_base::probe!(
                     class = "settle.tick.extended",
                     slot = pinned.as_ref().map(|p| p.slot as u64).unwrap_or(0), // probe field: extension implies a pinned slot
@@ -111,7 +100,7 @@ pub(super) struct Abandoned {
 }
 
 impl Abandoned {
-    fn at(clock: &tokio::sync::watch::Receiver<crate::cognition::llm_deliberation_faculty::admission_clock::QueueTime>) -> Self {
+    fn at(clock: &tokio::sync::watch::Receiver<crate::cognition::llm_deliberation_faculty::step_clock::StepClock>) -> Self {
         Self { dispatched: clock.borrow().dispatched }
     }
 }
