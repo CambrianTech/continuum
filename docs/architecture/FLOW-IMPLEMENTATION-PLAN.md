@@ -105,6 +105,70 @@ holds no lock across an await, no timer, no backoff, no limiter and no queue of 
 for each step is lines removed versus added, per subsystem, with stage files measured like CBAR's (most
 under ~100 lines).
 
+## 2b. Scheduling math, episodes, and learning the policy (Joel, 2026-10-28)
+
+> "Isn't there math for this? … a traffic light problem with clusters of cars … never leaving
+> someone in the left hand turn lane for too long (never a threshold) or just reinforcement
+> learning … the things you're measuring as scoring." "Usually you want groupings like code reads
+> and edits … like a group of semis." "Just realize this is general for other asks."
+
+**The index, not thresholds: the generalized cμ rule.**
+- Each class has a delay cost that grows with waiting, `C_i(w)`: steep for a live reply, shallow for
+  a dream.
+- When capacity frees, serve the waiter with the largest `μ_i · C_i'(w_i)`, where `μ_i` is
+  1 / predicted service time. This is optimal for convex delay costs in heavy traffic; the traffic-light
+  form is max-pressure control.
+- Priority rises smoothly with the wait, so nobody is stuck in the turn lane, and there is no class bump
+  at a quantum (`continuum-flow`'s current step aging is that threshold and is replaced).
+
+**Predicted service time.** A request's cost is known before it runs:
+- prefill = tokens to prefill ÷ the engine's rate at that depth;
+- decode = the owner's expected reply length ÷ the per-stream rate.
+
+These come from the same calibrated curve the simulator uses. The scheduler sees that a 2k reply costs
+~3 s and a turnover ~60 s and orders them. The head-of-line blocking fork #69 fixes inside the engine is
+this same mistake.
+
+**Episodes: a concern's working set travels as a convoy and is cleared at its close.**
+- Nothing is independent. A concern (a code change, a research thread, a document, a game, a
+  conversation thread, a media session) needs a working set loaded for several steps.
+- Loading it is a setup cost (the prefill of those reads). Interleaving or preemption pays it again on
+  every return.
+- **Boundaries come from the activity's own events:**
+  - a card claimed or done, a commit, tests green after edits;
+  - files or sources that no longer overlap;
+  - a topic change in the room, the recipe step's completion, or her own words.
+- **Each item an act adds is tagged with its episode.** At close, the episode's bulky items collapse to
+  their outline level plus a handle, while conclusions (decision, commit, result) stay whole. That is a
+  planned turnover at a natural seam, its re-prefill scheduled while she runs a tool or idles (prefill
+  as an enricher), so forced turnovers at the window limit mostly stop.
+- **The flow schedules episodes as the unit.**
+  - Affinity to one slot.
+  - Preemption charges the switch's setup cost in the index: a dream never breaks a convoy; a live reply
+    may, paying ~0.1 s with RAM paging.
+  - MindMemory pages an episode's KV as a unit.
+- **An expand of a collapsed handle is the measured cost of collapsing too much.** Its rate feeds the
+  epoch-start optimum below, so the policy tunes itself from her behavior.
+
+**The epoch start has a closed form.**
+- With grounding floor `g` (re-prefilled every turnover; measured 12-20k tokens on the dyno), start `s`,
+  window `W` and appends per act `a`, turnover prefill per act is `(g + s) · a / (W − g − s)`. That always
+  favors a small `s`.
+- Against it stands the expansion cost of what a small start collapses.
+- Minimizing the sum gives `s*` from measured `g`, `a` and the expand rate, per resident. The dyno already
+  shows the direction: a 1/4 start beat 1/2 by 10-25% prefill at 48k.
+- The grounding floor `g` is the next target: blocks that rarely change should not re-prefill on every
+  turnover.
+
+**Learning the policy.**
+- The reward is what we already measure: wait between acts, first-token latency for live and directed
+  calls, aggregate tokens per second, a penalty on any class's worst wait, and expands of collapsed
+  handles.
+- The simulator is the training environment (thousands of simulated hours per minute); the dyno replays
+  her real traces; the live read validates.
+- Policy parameters: the cμ cost slopes, the start-share model, the episode-boundary detector. Learning
+  starts from the math above, never from nothing (plan line 14, "learned policies on our own receipts").
+
 ## 3. Live conversation, end to end
 
 The budget: first audio within about 1 s of the speaker stopping. The path and its timestamps (Codex's list, each a probe):
