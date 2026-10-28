@@ -70,6 +70,7 @@ pub mod ort_providers;
 pub mod placement_capture;
 pub mod recipe_budget;
 pub mod request_body;
+pub(crate) mod speculation;
 pub mod governed_budget;
 pub mod resource_admission;
 pub mod serving_footprints;
