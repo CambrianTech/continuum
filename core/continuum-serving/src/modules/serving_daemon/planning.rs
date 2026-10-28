@@ -638,3 +638,47 @@ fn account_training_leases(demand: &mut ServingDemand, leases: &[crate::resource
         reserve.account_charged_bytes(bytes);
     }
 }
+
+#[cfg(test)]
+mod training_lease_tests {
+    use super::*;
+    use crate::inference::planning::window_allocator::{allocate, LaneRequirement, TrainingGrowth, TrainingPrice, TrainingReserve};
+    use crate::resources::lease::{ReclaimPolicy, ResourceLease};
+
+    // What this catches: unrelated or different-job leases cannot cancel a
+    // training reserve; two charged leases for the exact job count together.
+    #[test]
+    fn only_exact_job_leases_credit_training_and_credit_is_reset() {
+        let job = uuid::Uuid::from_u128(7);
+        let price = TrainingPrice {
+            bytes: 100,
+            source: crate::inference::planning::training_plan::NeedSource::LowerBound,
+            model: "fixture".into(), shape: "fixture".into(),
+        };
+        let requirement = LaneRequirement::declared(uuid::Uuid::from_u128(1), 100)
+            .with_training(Some(TrainingReserve::new(200, Some(price), Some(job))));
+        let mut demand = ServingDemand::new(1, Some(100)).with_requirements(vec![requirement]);
+        let lease = |id: &str, consumer: String, bytes| ResourceLease {
+            lease_id: id.into(), consumer_id: consumer, kind: ResourceKind::Vram,
+            bytes, acquired_at_ms: 0, expires_at_ms: 1000, reclaim_policy: ReclaimPolicy::Pinned,
+        };
+        let leases = [
+            lease("a", format!("genome-train:{job}"), 30),
+            lease("b", format!("genome-train:{job}"), 20),
+            lease("c", format!("genome-train:{}", uuid::Uuid::from_u128(8)), 1000),
+            lease("d", "embedding".into(), 1000),
+        ];
+        let model = ModelFootprint {
+            model_id: "fixture".into(), weights_bytes: 10_000, kv_per_token: 10,
+            context_window: 1000, capability_rank: 1, fixed_per_lane_bytes: 0,
+        };
+        let budget = HostBudget { usable_bytes: 1_000_000, perf_cores: 1 };
+        account_training_leases(&mut demand, &leases);
+        let allocated = allocate(&demand.requirements, &[model.clone()], &budget, 1)
+            .expect("fixture fits");
+        assert_eq!(allocated.training_growth, TrainingGrowth::Reserved { bytes: 50, target: 200, reached: true });
+        account_training_leases(&mut demand, &[]);
+        let allocated = allocate(&demand.requirements, &[model], &budget, 1).expect("fixture fits");
+        assert_eq!(allocated.training_growth, TrainingGrowth::Reserved { bytes: 100, target: 200, reached: true });
+    }
+}
