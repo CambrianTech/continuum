@@ -591,7 +591,7 @@ use super::*;
         let registry = PersonaWorkspaceRegistry::new();
         let her = Uuid::new_v4();
         let live = registry.register_from_cfg(cfg_for(her)).expect("live cycle");
-        let mind_room = crate::cognition::mind_room::mind_room_id(her);
+        let mind_room = continuum_capture::mind_room::mind_room_id(her);
         let mind = registry.cycle_for_room(&her, mind_room).expect("her mind cycle");
         assert!(!Arc::ptr_eq(&live, &mind), "her mind room runs on its own cycle");
         assert!(

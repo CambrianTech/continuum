@@ -3,7 +3,7 @@
 //!
 //! Companion to the coordinator's [`LaneCaptureEvent`](super::coordinator::LaneCaptureEvent)
 //! family (which records lane *lifecycle* — open/close/evict — with `target_silicon`)
-//! and to [`JsonlPromptCaptureSink`](crate::cognition::prompt_capture): same shape,
+//! and to `continuum_capture::JsonlPromptCaptureSink`: same shape,
 //! different stream. This one answers "was the accelerator filled first, or did a
 //! lane silently fall to CPU?" — token-for-token auditable, never inferred from a
 //! `mean_tokens_per_second` that quietly collapsed to 4 tok/s.
@@ -73,7 +73,7 @@ impl PlacementCaptureSink for NoopPlacementCaptureSink {
 }
 
 /// Appends one JSON line per placement decision to `<dir>/decisions.jsonl`.
-/// Mirrors [`JsonlPromptCaptureSink`](crate::cognition::prompt_capture::JsonlPromptCaptureSink).
+/// Mirrors `continuum_capture::JsonlPromptCaptureSink`.
 pub struct JsonlPlacementCaptureSink {
     file: Mutex<File>,
 }

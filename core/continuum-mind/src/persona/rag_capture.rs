@@ -208,7 +208,7 @@ impl JsonlRagCaptureSink {
 /// retrieval is captured. The ONE predicate every RAG capture record asks.
 pub(crate) fn turn_is_private(ctx: &RagContext) -> bool {
     ctx.airc_room
-        .is_some_and(|room| crate::cognition::mind_room::is_private_room(ctx.persona_id, room.as_uuid()))
+        .is_some_and(|room| continuum_capture::mind_room::is_private_room(ctx.persona_id, room.as_uuid()))
 }
 
 impl RagCaptureSink for JsonlRagCaptureSink {
@@ -308,7 +308,7 @@ impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
             delivery: delivery.clone(),
         };
         if turn_is_private(ctx) {
-            crate::cognition::mind_room::note_withheld(ctx.persona_id, "rag_capture");
+            continuum_capture::mind_room::note_withheld(ctx.persona_id, "rag_capture");
         } else {
             self.sink.record(event);
         }

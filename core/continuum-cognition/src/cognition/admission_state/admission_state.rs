@@ -136,8 +136,8 @@ impl AdmissionState {
     /// no owner (tests, replay) has no mind room.
     pub(super) fn withheld_in_her_mind_room(&self, room: Uuid) -> Option<AdmissionDecision> {
         let owner = (*self.owner_id.read().unwrap())?;
-        crate::cognition::mind_room::is_private_room(owner, room).then(|| {
-            crate::cognition::mind_room::note_withheld(owner, "engrams");
+        continuum_capture::mind_room::is_private_room(owner, room).then(|| {
+            continuum_capture::mind_room::note_withheld(owner, "engrams");
             AdmissionDecision::Drop {
                 reason: crate::cognition::engram::AdmissionDropReason::PolicyDeniedAdmission {
                     policy_id: "mind-room".to_string(),

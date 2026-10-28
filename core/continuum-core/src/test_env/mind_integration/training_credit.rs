@@ -171,7 +171,7 @@ pub(super) fn captured(
     persona: Uuid,
     receipt: crate::ai::provenance::GenerationReceipt,
 ) -> crate::ai::provenance::GenerationReceipt {
-    use crate::cognition::prompt_capture::{CaptureLease, JsonlPromptCaptureSink, PromptCall, FIXTURE_DIR};
+    use continuum_capture::{CaptureLease, JsonlPromptCaptureSink, PromptCall, FIXTURE_DIR};
     let served = matches!(receipt.outcome, crate::ai::provenance::GenerationOutcome::Served { .. });
     if !served || receipt.capture.is_some() {
         return receipt;
@@ -182,7 +182,7 @@ pub(super) fn captured(
     static SINKS: std::sync::LazyLock<
         std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, Uuid), Arc<JsonlPromptCaptureSink>>>,
     > = std::sync::LazyLock::new(Default::default);
-    let dir = crate::cognition::capture::fixture_dir(FIXTURE_DIR).expect("the test home resolves"); // JUSTIFIED: test fixture
+    let dir = continuum_capture::fixture_dir(FIXTURE_DIR).expect("the test home resolves"); // JUSTIFIED: test fixture
     let mut sinks = SINKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or_else: a panicked test leaves the map usable
     // Home-pinned tests run one at a time (HomeGuard): a sink of another home belongs to a
     // finished test, and its handles go with it so its temp home can be removed.
@@ -219,7 +219,7 @@ pub(super) fn uncaptured(id: &str, model: &str) -> crate::ai::provenance::Genera
 /// Runs `staged` with the process home's capture directory moved aside, so every read
 /// back fails as an unfinished capture does, then puts it back: the capture lands late.
 pub(super) async fn captures_unreadable<T>(staged: impl std::future::Future<Output = T>) -> T {
-    let dir = crate::cognition::capture::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR)
+    let dir = continuum_capture::fixture_dir(continuum_capture::FIXTURE_DIR)
         .expect("the test home resolves"); // JUSTIFIED: test fixture
     let aside = dir.with_extension("aside");
     std::fs::rename(&dir, &aside).expect("move the captures aside"); // JUSTIFIED: test fixture

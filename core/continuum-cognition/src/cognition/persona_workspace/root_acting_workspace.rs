@@ -155,7 +155,7 @@ impl PersonaWorkspaceRegistry {
     /// her live cycle everywhere else. THE selection the service loop asks (one rule, two
     /// call sites: a message turn and a self/continuation turn).
     pub fn cycle_for_room(&self, persona_id: &Uuid, room: Uuid) -> Option<Arc<WorkspaceCycle>> {
-        if crate::cognition::mind_room::is_private_room(*persona_id, room) {
+        if continuum_capture::mind_room::is_private_room(*persona_id, room) {
             self.mind_cycle(persona_id)
         } else {
             self.get(persona_id)

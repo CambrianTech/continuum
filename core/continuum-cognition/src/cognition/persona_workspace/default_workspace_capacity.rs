@@ -533,7 +533,7 @@ pub(super) fn assemble_workspace_cycle(
     // persona + CycleId joins every request without a singular workspace call ID.
     let capture_session = Uuid::new_v4();
     if capture == Capture::Recorded {
-        match super::super::prompt_capture::JsonlPromptCaptureSink::open_for_persona(cfg.persona_id) {
+        match continuum_capture::JsonlPromptCaptureSink::open_for_persona(cfg.persona_id) {
             Ok(sink) => {
                 deliberation =
                     deliberation.with_prompt_capture(Arc::new(sink.with_session(capture_session)))

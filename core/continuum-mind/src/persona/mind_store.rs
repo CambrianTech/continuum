@@ -17,7 +17,7 @@ pub fn seal_continuation(
         return Ok(false);
     };
     let store = runtime.airc().mind_store().map_err(|e| e.to_string())?;
-    let id = crate::cognition::mind_room::continuation_record_id(persona);
+    let id = continuum_capture::mind_room::continuation_record_id(persona);
     match continuation {
         Some(c) => {
             let json = serde_json::to_string(c).map_err(|e| e.to_string())?; // disk boundary: her continuation as a sealed record in her mind store
@@ -40,7 +40,7 @@ pub fn sealed_continuation(persona: Uuid) -> Option<crate::cognition::attention:
             return None;
         }
     };
-    let id = crate::cognition::mind_room::continuation_record_id(persona);
+    let id = continuum_capture::mind_room::continuation_record_id(persona);
     if !store.list().ok()?.contains(&id) {
         return None;
     }

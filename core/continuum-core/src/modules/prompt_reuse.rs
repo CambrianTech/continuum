@@ -5,7 +5,7 @@
 //! # Why (Joel, 2026-08-21: "record and playback so we could iterate to refine")
 //!
 //! The record half already exists and is on by default:
-//! [`crate::cognition::prompt_capture::JsonlPromptCaptureSink`] writes the VERBATIM
+//! [`continuum_capture::JsonlPromptCaptureSink`] writes the VERBATIM
 //! system prompt + exact message thread of every deliberation call, one jsonl per
 //! persona under `~/.continuum/fixtures/prompt-captures/`. What was missing is the
 //! playback half: walking a persona's calls chronologically and measuring how many
@@ -145,12 +145,12 @@ pub struct PromptReuseResult {
 }
 
 fn captures_dir() -> Result<PathBuf, CommandError> {
-    crate::cognition::capture::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR)
+    continuum_capture::fixture_dir(continuum_capture::FIXTURE_DIR)
         .ok_or_else(|| CommandError::Internal("cannot resolve capture home directory".into()))
 }
 
 fn load_tail(path: &Path, tail: usize) -> Result<Vec<CapturedCall>, CommandError> {
-    let mut calls = crate::cognition::prompt_capture::completed_file(path, usize::MAX)
+    let mut calls = continuum_capture::completed_file(path, usize::MAX)
         .map_err(|error| CommandError::Internal(error.to_string()))?
         .into_iter()
         .map(serde_json::from_value::<CapturedCall>)

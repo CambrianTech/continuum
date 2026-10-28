@@ -8,7 +8,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::ai::{TextGenerationRequest, TextGenerationResponse};
-use crate::cognition::prompt_capture::{
+use continuum_capture::{
     self, CaptureLease, JsonlPromptCaptureSink, PromptCall, ReplaySource,
 };
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
@@ -104,7 +104,7 @@ pub struct ReplayRequestResult {
     pub input_comparison: InputComparison,
 }
 
-use super::super::prompt_capture::{InputComparison, ToolSchemaComparison};
+use continuum_capture::{InputComparison, ToolSchemaComparison};
 
 fn request_hash(request: &TextGenerationRequest) -> Result<String, CommandError> {
     let value = serde_json::to_value(request) // boundary: canonical request digest shared with diagnostic caller
@@ -203,7 +203,7 @@ struct Prepared {
 }
 
 fn prepare(
-    detail: prompt_capture::PlaybackDetail,
+    detail: continuum_capture::PlaybackDetail,
     p: &ReplayRequestParams,
     persona: Uuid,
 ) -> Result<Prepared, CommandError> {
@@ -218,11 +218,11 @@ fn prepare(
             "provider must be explicit and max_tokens must be positive".into(),
         ));
     }
-    let prompt_capture::CapturedCall {
+    let continuum_capture::CapturedCall {
         context_window,
         mut request,
         response,
-    } = prompt_capture::decode(detail).map_err(CommandError::Invalid)?;
+    } = continuum_capture::decode(detail).map_err(CommandError::Invalid)?;
     let input_comparison = compare_input(&mut request, p)?;
     let original = response.as_ref().map(ReplayOutcome::from);
     // An implicit provider default is only reproducible when the terminal receipt
@@ -291,9 +291,9 @@ impl ActionCommand for CognitionReplayRequest {
             .map_err(|e| CommandError::Arguments(format!("persona_id: {e}")))?;
         let selected = p.selected.clone();
         let prepared = tokio::task::spawn_blocking(move || {
-            let dir = crate::cognition::capture::fixture_dir(prompt_capture::FIXTURE_DIR)
+            let dir = continuum_capture::fixture_dir(continuum_capture::FIXTURE_DIR)
                 .ok_or_else(|| CommandError::Internal("capture directory unavailable".into()))?;
-            let detail = prompt_capture::detail(&dir, persona, &selected)
+            let detail = continuum_capture::detail(&dir, persona, &selected)
                 .map_err(|e| CommandError::Invalid(format!("capture: {e}")))?;
             prepare(detail, &p, persona)
         })
@@ -458,7 +458,7 @@ mod tests {
             tool_schema_override: None,
         };
         let read =
-            || prompt_capture::detail(dir.path(), persona, &cursor).expect("original capture");
+            || continuum_capture::detail(dir.path(), persona, &cursor).expect("original capture");
         let prepared = prepare(read(), &p, persona).expect("prepare replay");
         let actual = serde_json::to_value(&prepared.request).expect("request value");
         let mut expected = serde_json::to_value(&request).expect("original value");
@@ -582,7 +582,7 @@ mod tests {
         let replay_cursor = replay.cursor().expect("replay capture").to_string();
         drop(replay); // cancellation is a terminal event, never a successful replay
         let detail =
-            prompt_capture::detail(dir.path(), replay_id, &replay_cursor).expect("replay detail");
+            continuum_capture::detail(dir.path(), replay_id, &replay_cursor).expect("replay detail");
         let submitted = detail.submitted.expect("replay submitted");
         assert_eq!(submitted["replay_of"]["persona_id"], persona.to_string());
         assert_eq!(submitted["replay_of"]["cursor"], cursor);
@@ -652,7 +652,7 @@ mod tests {
             .expect("implicit recorded")
             .to_string();
         drop(implicit_capture);
-        let recorded = prompt_capture::detail(dir.path(), implicit_id, &implicit_cursor)
+        let recorded = continuum_capture::detail(dir.path(), implicit_id, &implicit_cursor)
             .expect("binding record");
         assert_eq!(
             recorded.submitted.expect("binding submission")["replay_of"]["model_from_response"],
@@ -696,13 +696,13 @@ mod tests {
         assert_eq!(serde_json::to_value(&seen[0].tools).unwrap(), expected_schema["tools"]);
         assert!(result.input_comparison.tool_schema.is_some());
         let page =
-            prompt_capture::page(dir.path(), replay_id, None, false, 10).expect("replay lifecycle");
+            continuum_capture::page(dir.path(), replay_id, None, false, 10).expect("replay lifecycle");
         let terminal = page.entries.last().expect("terminal event");
         assert!(matches!(
             terminal.status,
-            prompt_capture::CallStatus::Completed
+            continuum_capture::CallStatus::Completed
         ));
-        let final_detail = prompt_capture::detail(dir.path(), replay_id, &terminal.cursor)
+        let final_detail = continuum_capture::detail(dir.path(), replay_id, &terminal.cursor)
             .expect("terminal detail");
         assert_eq!(
             final_detail.terminal.expect("terminal")["response"]["toolCalls"][0]["name"],

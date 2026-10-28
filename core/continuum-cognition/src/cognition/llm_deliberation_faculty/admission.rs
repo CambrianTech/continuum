@@ -16,7 +16,7 @@ impl LlmDeliberationFaculty {
         ws: &Workspace,
         request: &TextGenerationRequest,
         owner: GenerationAdmissionOwner,
-        capture: &mut Option<super::super::prompt_capture::CaptureLease>,
+        capture: &mut Option<continuum_capture::CaptureLease>,
     ) -> Option<GenerationAdmission> {
         admit_target(owner, self.admit_local_generation(ws, request, capture)).await
     }
@@ -25,7 +25,7 @@ impl LlmDeliberationFaculty {
         &self,
         ws: &Workspace,
         request: &TextGenerationRequest,
-        capture: &mut Option<super::super::prompt_capture::CaptureLease>,
+        capture: &mut Option<continuum_capture::CaptureLease>,
     ) -> Option<GenerationAdmission> {
         // MEASURED-HOLD DEFER, ABOVE the admission gates (2026-08-29). The adapter's
         // own defer sits BELOW acquire_serving_lane + the prefill slot, so a

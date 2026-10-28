@@ -11,7 +11,7 @@ fn a_turn_in_her_mind_room_writes_zero_wire_capture_bytes() {
         ..Default::default()
     };
     let file = dir.path().join("Kimi.wire.jsonl");
-    super::append_wire_capture(dir.path(), persona, "Kimi", crate::cognition::mind_room::mind_room_id(persona), &request);
+    super::append_wire_capture(dir.path(), persona, "Kimi", continuum_capture::mind_room::mind_room_id(persona), &request);
     assert!(!file.exists(), "her mind room: no wire row");
     super::append_wire_capture(dir.path(), persona, "Kimi", uuid::Uuid::new_v4(), &request);
     assert!(std::fs::metadata(&file).expect("row written").len() > 0, "an ordinary room still captures");

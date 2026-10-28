@@ -147,7 +147,7 @@ pub struct JsonlWorkspaceCaptureSink {
 impl JsonlWorkspaceCaptureSink {
     /// Use the same native-aware fixture root as introspection and replay.
     pub(crate) fn open_for_persona(persona_id: Uuid) -> std::io::Result<Self> {
-        let dir = crate::cognition::capture::fixture_dir(FIXTURE_DIR).ok_or_else(|| {
+        let dir = continuum_capture::fixture_dir(FIXTURE_DIR).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "cannot resolve capture home directory",
@@ -169,8 +169,8 @@ impl JsonlWorkspaceCaptureSink {
         let file_name = format!("{persona_id}.jsonl");
         let path = dir.join(&file_name);
         static OWNERS: LazyLock<
-            super::prompt_capture::owner::CaptureOwners<BufWriter<CappedAppender>>,
-        > = LazyLock::new(super::prompt_capture::owner::CaptureOwners::default);
+            continuum_capture::owner::CaptureOwners<BufWriter<CappedAppender>>,
+        > = LazyLock::new(continuum_capture::owner::CaptureOwners::default);
         let file = OWNERS.acquire(&path, |_| {
             CappedAppender::with_limits(dir, &file_name, max_bytes, TRACE_GENERATIONS)
                 .map(|appender| BufWriter::with_capacity(64 * 1024, appender))

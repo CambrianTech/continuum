@@ -49,10 +49,10 @@ impl PendingInput {
             return;
         }
         let Some(persona) = self.persona else { return };
-        let private = crate::cognition::mind_room::is_private_room(persona, room);
+        let private = continuum_capture::mind_room::is_private_room(persona, room);
         let (answered, owed): (Vec<_>, Vec<_>) = std::mem::take(&mut self.uncertain)
             .into_iter()
-            .partition(|(_, held)| crate::cognition::mind_room::is_private_room(persona, *held) == private);
+            .partition(|(_, held)| continuum_capture::mind_room::is_private_room(persona, *held) == private);
         self.uncertain = owed;
         self.answered.extend(answered.into_iter().map(|(row, _)| row));
     }
@@ -99,7 +99,7 @@ mod tests {
         pending.notices_read(public, &[receipt("faulted")]);
         pending.notices_read(public, &[]);
         assert!(pending.take_answered().is_empty(), "nothing served: the model read nothing");
-        let private = crate::cognition::mind_room::mind_room_id(persona);
+        let private = continuum_capture::mind_room::mind_room_id(persona);
         pending.notices_read(private, &[served_receipt("mind", "m")]);
         assert!(pending.take_answered().is_empty(), "her mind cycle never saw the live cycle's notice");
         pending.notices_read(Uuid::new_v4(), &[receipt("faulted"), served_receipt("live", "m")]);

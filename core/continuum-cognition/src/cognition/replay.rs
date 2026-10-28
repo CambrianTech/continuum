@@ -42,7 +42,7 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 /// Where the live cycle writes its per-persona workspace traces (mirror of
 /// `persona_workspace`'s capture wiring). The replay reads the SAME files.
 fn traces_dir() -> Option<std::path::PathBuf> {
-    crate::cognition::capture::fixture_dir(super::workspace_capture::FIXTURE_DIR)
+    continuum_capture::fixture_dir(super::workspace_capture::FIXTURE_DIR)
 }
 
 /// One captured bid from the assembled `context` (the broadcast the decider saw).
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn native_home_capture_round_trips_through_inspection_and_replay() {
         use crate::ai::types::{ChatMessage, FinishReason, TextGenerationResponse, UsageMetrics};
-        use crate::cognition::prompt_capture::{JsonlPromptCaptureSink, PromptCaptureSink};
+        use continuum_capture::{JsonlPromptCaptureSink, PromptCaptureSink};
         use crate::cognition::workspace::{WorkspaceCaptureSink, WorkspaceTrace};
         use crate::cognition::workspace_capture::JsonlWorkspaceCaptureSink;
 
@@ -605,13 +605,13 @@ mod tests {
                 request,
             ),
             (
-                super::super::prompt_capture::FIXTURE_DIR,
+                continuum_capture::FIXTURE_DIR,
                 "system",
                 grounding,
             ),
         ] {
             // Where the sinks wrote, through the one owner they write through (card 3c8b03ae).
-            let dir = crate::cognition::capture::fixture_dir(relative).expect("the test's native home resolves");
+            let dir = continuum_capture::fixture_dir(relative).expect("the test's native home resolves");
             assert!(dir.starts_with(home.path()) && dir.join(format!("{persona}.jsonl")).is_file());
             let rows =
                 super::super::introspect_commands::tail_persona_jsonl(relative, &persona_text, 1)

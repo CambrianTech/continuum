@@ -177,7 +177,7 @@ async fn live_window_observation_cannot_overwrite_a_newer_binding() {
 #[tokio::test]
 async fn provider_context_feedback_refits_and_captures_each_attempt() {
     use crate::ai::inference_error::InferenceError;
-    use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+    use continuum_capture::{self, CallStatus, JsonlPromptCaptureSink};
     use crate::cognition::workspace::Burst;
 
     for (failed_response, residual) in [(false, false), (true, false), (false, true)] {
@@ -371,7 +371,7 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                     <= window as usize
             );
         }
-        let page = prompt_capture::page(home.path(), persona, None, false, 10)
+        let page = continuum_capture::page(home.path(), persona, None, false, 10)
             .expect("actual capture lifecycle");
         let terminals: Vec<_> = page
             .entries

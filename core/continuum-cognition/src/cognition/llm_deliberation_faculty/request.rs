@@ -143,9 +143,9 @@ impl LlmDeliberationFaculty {
         // so the room's outcome for the turn can be credited to the genes that produced it.
         let genes = crate::ai::provenance::genes_of(request.active_adapters.as_deref());
         let mut capture = self.prompt_capture.as_ref().map(|sink| {
-            super::super::prompt_capture::CaptureLease::start(
+            continuum_capture::CaptureLease::start(
                 Arc::clone(sink),
-                &super::super::prompt_capture::PromptCall {
+                &continuum_capture::PromptCall {
                     request_id: request_id.clone(),
                     persona_id: self.persona_id,
                     room_id: ws.room_id,
