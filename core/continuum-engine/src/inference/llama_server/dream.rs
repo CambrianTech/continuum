@@ -58,6 +58,13 @@ pub async fn fresh_shadow(name: &str, shape: &ShadowShape) -> Result<i64, DreamE
     answer.get("id").and_then(|id| id.as_i64()).ok_or_else(|| DreamError::Unreachable(format!("/lora-adapters/fresh answered {answer}")))
 }
 
+/// `POST /lora-adapters/load`: her existing shadow file `name` loaded dormant (after an engine
+/// restart, which forgets loaded adapters but not the file). Returns its adapter id.
+pub async fn load_shadow(name: &str) -> Result<i64, DreamError> {
+    let answer = post("/lora-adapters/load", &serde_json::json!({ "name": name }), Some(PROBE_TIMEOUT)).await?;
+    answer.get("id").and_then(|id| id.as_i64()).ok_or_else(|| DreamError::Unreachable(format!("/lora-adapters/load answered {answer}")))
+}
+
 /// `POST /learn`: one served reply learned into `lora_id`. `messages` are the conversation she was
 /// served, its last message the reply to learn (her own, or the reviewed correction); `tools` the
 /// tools she was offered, so the tokens are the tokens she was served (§9.1).

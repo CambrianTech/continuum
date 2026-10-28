@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::genome::fine_tuning::engine_lora_adapter::{learn_conversation, shadow_shape};
 use crate::genome::fine_tuning::types::{LoRAHyperparams, TrainingExample};
-use crate::inference::llama_server::{fresh_shadow, learn, DreamError};
+use crate::inference::llama_server::{fresh_shadow, learn, load_shadow, DreamError};
 
 /// One accepted experience for one mind.
 pub(crate) struct Arrival {
@@ -116,8 +116,14 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Arrival>) {
     }
 }
 
-/// Her shadow, fresh at her gene's shape. `None` (probed) when the lane cannot make one.
+/// Her shadow on the lane: the file she already has (an engine restart forgets loaded adapters,
+/// not files, and a published name is immutable, so it is loaded, never made again), else fresh
+/// at her gene's shape. `None` (probed) when the lane can do neither.
 async fn open_shadow(arrival: &Arrival) -> Option<i64> {
+    let name = shadow_name(arrival.persona, &arrival.base_model);
+    if let Ok(id) = load_shadow(&name).await {
+        return Some(id);
+    }
     let shape = match shadow_shape(arrival.lora.as_ref(), shadow_seed(arrival.persona)) {
         Ok(shape) => shape,
         Err(why) => {
@@ -125,7 +131,7 @@ async fn open_shadow(arrival: &Arrival) -> Option<i64> {
             return None;
         }
     };
-    match fresh_shadow(&shadow_name(arrival.persona, &arrival.base_model), &shape).await {
+    match fresh_shadow(&name, &shape).await {
         Ok(id) => Some(id),
         Err(error) => {
             continuum_base::probe!(
