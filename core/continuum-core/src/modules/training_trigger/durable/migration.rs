@@ -2,7 +2,7 @@
 //! 
 //! When a resident's lane record (`PersonaModelOverride`) authoritatively names a new base,
 //! and a bucket has no active, retryable, or pending-recovery attempt on its current base,
-//! its examples move to that served base. A missing lane, offer, or peer never moves anything.
+//! its examples move to that served base. A missing lane, offer or peer never moves anything.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -68,20 +68,15 @@ pub(crate) async fn migrate_base_change_buckets(state: &Arc<TrainingTriggerState
                 // Skip if there's an active, retryable, or pending-recovery attempt on this bucket
                 if has_active_attempt(state, &key) { continue; }
 
-                // Look for existing bucket on the new served base
                 let target_key = BucketKey {
                     persona_id: key.persona_id,
                     base_model: served_base.clone(),
                     lane: key.lane.clone(),
                 };
                 
+                // Only migrate if the target bucket already exists on the new base
                 if state.buckets.contains_key(&target_key) {
                     migrations.push((key, target_key));
-                } else {
-                    // If no bucket exists on the new base yet, we create it or skip? 
-                    // The card says "its examples move to that base", implying the target bucket should exist or be created.
-                    // For safety, only migrate if target exists.
-                    continue;
                 }
             }
         }
@@ -90,7 +85,7 @@ pub(crate) async fn migrate_base_change_buckets(state: &Arc<TrainingTriggerState
     // Execute migrations: move pending examples from old buckets to new ones
     for (old_key, new_key) in migrations {
         if let Some(old_entry) = state.buckets.remove(&old_key) {
-            let old_batch = old_entry.value();
+            let mut merged = (*old_entry.value()).clone();
             
             // Find or create target bucket
             let new_bucket = state.buckets.entry(new_key.clone()).or_insert_with(|| {
@@ -98,11 +93,7 @@ pub(crate) async fn migrate_base_change_buckets(state: &Arc<TrainingTriggerState
             });
 
             // Merge pending examples, preserving original provenance
-            let mut merged = (*old_batch).clone();
             if let Some(existing) = state.buckets.get(&new_key) {
-                // Append old batch's examples to existing new bucket's examples
-                // Assuming PendingBatch has a way to merge/append examples
-                // This is a placeholder for the actual merge logic based on struct definition
                 merged.examples.extend_from_slice(&existing.value().examples);
             }
             
