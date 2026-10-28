@@ -112,7 +112,7 @@ impl LlmDeliberationFaculty {
             } else {
                 crate::cognition::context_streams::Role::User
             };
-            turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line });
+            turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line, pointer: None });
         }
         // Messages that reached her room during this turn are conversation too, after the
         // burst, keyed by their event: in her view they append like any turn, and one
@@ -124,7 +124,23 @@ impl LlmDeliberationFaculty {
                 continue;
             }
             let line = update.render_room_update();
-            turns.push(crate::cognition::context_streams::conversation::Turn { key, role: crate::cognition::context_streams::Role::User, line });
+            turns.push(crate::cognition::context_streams::conversation::Turn { key, role: crate::cognition::context_streams::Role::User, line, pointer: None });
+        }
+        // One line after them that never collapses: how many arrived and where the rest
+        // are. An update her window cannot hold whole then leaves only this, never
+        // vanishes unknown; a handle per update would put every one in the conversation's
+        // floor and crowd out the newest (40 handles took its room in the busy-room test).
+        if let Some(newest) = ws.room_updates.last() {
+            let line = format!(
+                "[{} room message(s) arrived during this turn; any not shown above: reread with chat/history]",
+                ws.room_updates.len()
+            );
+            turns.push(crate::cognition::context_streams::conversation::Turn {
+                key: format!("room-updates/{}", newest.event_id),
+                role: crate::cognition::context_streams::Role::User,
+                pointer: Some(line.clone()),
+                line,
+            });
         }
         // What follows the view in this act's prompt: facts, the clock, demoted payloads.
         let mut messages: Vec<ChatMessage> = Vec::new();

@@ -304,11 +304,11 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
     let window = 8192u32;
     for oversized_part in 0..5 {
         let persona = Uuid::new_v4();
-        // Parts 0-2 must never reach the adapter, so an EMPTY script proves it.
-        // Parts 3-4 shed their enrichment and go on to think, so they need a real
-        // response — reaching the model is the outcome those cases assert.
+        // Part 0 (the oversized stimulus) must never reach the adapter, so an EMPTY script
+        // proves it. Parts 1-4 bound, shed or collapse and go on to think, so they need a
+        // real response — reaching the model is the outcome those cases assert.
         let adapter = Arc::new(ScriptedAdapter::new(
-            if oversized_part >= 3 || oversized_part == 1 {
+            if oversized_part != 0 {
                 vec![make_response(FinishReason::Stop, "PASS", None)]
             } else {
                 vec![]
@@ -365,15 +365,20 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
                 .with_context_window(window)
                 .with_working_memory(wm)
                 .with_working_set(registry.clone());
-        // Parts 3-4 shed their standing grounding (#3954) and part 1 caps its
-        // oversized action result and demotes the rest — all three now THINK
-        // instead of refusing. What still faults is a genuinely irreducible
-        // payload: the stimulus (part 0) and a room update (part 2), neither of
-        // which any bound may drop without answering a question she was never
-        // shown.
-        let bounded_case = oversized_part >= 3 || oversized_part == 1;
+        // Parts 3-4 shed their standing grounding (#3954), part 1 caps its oversized
+        // action result and demotes the rest, and part 2's room update is a turn of her
+        // view that collapses to its handle (`chat/history`) — all four now THINK
+        // instead of refusing. What still faults is the genuinely irreducible payload:
+        // the stimulus (part 0), the question she is answering.
+        let bounded_case = oversized_part != 0;
         let grounding_case = bounded_case;
         let view = faculty.prompt_view(&ws);
+        if oversized_part == 2 {
+            assert!(
+                view.messages.iter().any(|m| m.content_text().contains("reread with chat/history")),
+                "an oversized room update is never unknown: the index names where it is"
+            );
+        }
         if grounding_case {
             assert!(
                 view.capacity_error.is_none(),

@@ -12,7 +12,7 @@ fn block(faculty: &str, text: &str) -> Grounding {
 }
 
 fn turn(n: usize) -> Turn {
-    Turn { key: format!("turn-{n}"), role: Role::User, line: format!("[occurred {n}] Operator: turn {n}") }
+    Turn { key: format!("turn-{n}"), role: Role::User, line: format!("[occurred {n}] Operator: turn {n}"), pointer: None }
 }
 
 /// One act's sources: a room window of six turns starting at `first_turn`, a settled map, the
