@@ -76,6 +76,7 @@ use crate::sdk_codegen::DynCommand;
 
 mod attempt_evidence;
 mod durable;
+mod remainders;
 mod serving_wake;
 pub use durable::DispatchPhase;
 pub(crate) use durable::{DispatchFailure, DispatchResolution, DispatchResult, JobInputError, ResolveReport, RetireReport, RetireSelection};
@@ -189,6 +190,9 @@ pub struct TrainingTriggerState {
     /// evidence either way; never resumed while held (Cormac on #4537: asked once and dropped,
     /// a transiently silent engine held serving off it for its whole life).
     held_orphans: std::sync::Mutex<Vec<(crate::genome::fine_tuning::job_board::OrphanedJob, u64)>>,
+    /// Ended jobs whose parked examples wait for her window, with the (needed, served) last
+    /// reported, so a held job is reported when that changes, not on every pass (card 565b3b64).
+    remainder_waits: std::sync::Mutex<std::collections::HashMap<Uuid, (u32, Option<u32>)>>,
     durable: LateBound<durable::DurableStore>,
     acceptance_gates: PerKeyGate<Uuid>,
     active_dispatches: DashMap<BucketKey, Arc<durable::ActiveDispatch>>,
@@ -275,6 +279,7 @@ impl TrainingTriggerState {
             executor: LateBound::new("training-trigger::executor"),
             resumed_orphans: std::sync::atomic::AtomicBool::new(false),
             held_orphans: std::sync::Mutex::new(Vec::new()),
+            remainder_waits: std::sync::Mutex::new(std::collections::HashMap::new()),
             durable: LateBound::new("training-trigger::durable-store"),
             acceptance_gates: PerKeyGate::new(),
             active_dispatches: DashMap::new(),
@@ -365,10 +370,6 @@ impl TrainingTriggerState {
             .or_else(|| self.active_dispatches.get(key).map(|active| active.batch.policy()))
     }
 
-    /// Hand back what each COMPLETED job parked (card 8a2334d9): the whole originals its
-    /// window couldn't hold, or its run skipped, which no route returned before. Through
-    /// `return_parked_remainder`, beside the one return: never an example the job trained, once
-    /// per job by its receipt, and a refused or failed return stays for the next tick.
     /// Every recovery pass, in order: what the tick runs AND what a serving change wakes, one
     /// list, so a pass added for one is never missing from the other (Cormac on #5562: the wake
     /// ran two of four, and missed the remainder pass a grown window unblocks).
@@ -377,57 +378,6 @@ impl TrainingTriggerState {
         self.return_refused_jobs().await;
         self.return_parked_remainders().await;
         self.recover_tick().await
-    }
-
-    pub(crate) async fn return_parked_remainders(self: &Arc<Self>) {
-        use crate::commands::training_trigger::return_::{return_parked_remainder, Remainder};
-        let board = crate::genome::fine_tuning::job_board::TrainingJobBoard::global();
-        let completed = board.take_completed();
-        if completed.is_empty() {
-            return;
-        }
-        let Some(root) = genome_root() else {
-            continuum_base::probe!(class = "training.job.remainder_unrooted", jobs = completed.len() as u64, "no home: completed jobs cannot be found to return what they parked");
-            return;
-        };
-        let mut retry = Vec::new();
-        for job in completed {
-            match return_parked_remainder(self, board, &root, &job).await {
-                Ok(Remainder::Nothing | Remainder::AlreadyReturned) => {}
-                Ok(Remainder::Submitted(outcome)) if outcome.success => continuum_base::probe!(
-                    class = "training.job.remainder_returned",
-                    job = %job.local_id,
-                    persona = %job.persona_name,
-                    "a completed job's parked examples went back to her bucket, whole; the next dispatch re-plans them"
-                ),
-                Ok(Remainder::Submitted(outcome)) => {
-                    continuum_base::probe!(
-                        class = "training.job.remainder_refused",
-                        job = %job.local_id,
-                        error = ?outcome.error,
-                        "the return of a completed job's parked examples was refused; they stay in its directory and are tried again"
-                    );
-                    retry.push(job);
-                }
-                // A malformed record is refused loudly and not retried: retrying reads the same bytes.
-                Err(error @ crate::sdk_codegen::CommandError::Invalid(_)) => continuum_base::probe!(
-                    class = "training.job.remainder_invalid",
-                    job = %job.local_id,
-                    error = %error,
-                    "a completed job's partition does not match its request; its parked examples stay in its directory for a human"
-                ),
-                Err(error) => {
-                    continuum_base::probe!(
-                        class = "training.job.remainder_failed",
-                        job = %job.local_id,
-                        error = %error,
-                        "the return of a completed job's parked examples failed; they stay in its directory and are tried again"
-                    );
-                    retry.push(job);
-                }
-            }
-        }
-        board.requeue_completed(retry);
     }
 
     /// Hand back the examples of jobs the ENGINE REFUSED, so her bucket re-fires and the next
