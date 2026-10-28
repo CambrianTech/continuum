@@ -40,7 +40,7 @@ impl Wire for Responses {
             messages,
             tools: body.get("tools").and_then(Value::as_array).map(|tools| tools.iter().filter_map(tool).collect()),
             tool_choice: body.get("tool_choice").and_then(chat::tool_choice),
-            purpose: Some("driver".into()),
+            purpose: Some(continuum_engine::inference::request_body::DRIVER_PURPOSE.into()),
             ..Default::default()
         };
         sampling(&body, &mut request);
@@ -150,7 +150,8 @@ fn envelope(id: &str, model: &str, created: u64, status: &str, output: Vec<Value
         "id": id, "object": "response", "created_at": created, "status": status, "model": model,
         "output": output,
         "usage": response.map(|r| json!({"input_tokens": r.usage.input_tokens, "output_tokens": r.usage.output_tokens,
-            "total_tokens": r.usage.input_tokens + r.usage.output_tokens})),
+            "total_tokens": r.usage.input_tokens + r.usage.output_tokens,
+            "input_tokens_details": {"cached_tokens": super::cached_tokens(r).unwrap_or(0)}})), // unwrap_or: no measured reuse reads as none
         "incomplete_details": response.filter(|r| r.finish_reason == continuum_engine::ai::FinishReason::Length && !stopped_for_tools(r))
             .map(|_| json!({"reason": "max_output_tokens"})),
     })

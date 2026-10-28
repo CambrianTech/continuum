@@ -65,7 +65,8 @@ pub fn class_for(purpose: Option<&str>) -> SlotClass {
         Some("cognition/deliberation")
         | Some("cognition/act")
         | Some("persona-respond")
-        | Some("persona_decide_and_respond") => SlotClass::Turn,
+        | Some("persona_decide_and_respond")
+        | Some(crate::inference::request_body::DRIVER_PURPOSE) => SlotClass::Turn,
         Some("cognition/should-respond")
         | Some("cognition/generate-response")
         | Some("cognition/validate-response-decision")

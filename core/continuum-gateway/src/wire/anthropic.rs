@@ -35,7 +35,7 @@ impl Wire for Anthropic {
             messages: messages.iter().map(message).collect::<Result<_, _>>()?,
             tools: body.get("tools").and_then(Value::as_array).map(|tools| tools.iter().filter_map(tool).collect()),
             tool_choice: body.get("tool_choice").and_then(tool_choice),
-            purpose: Some("driver".into()),
+            purpose: Some(continuum_engine::inference::request_body::DRIVER_PURPOSE.into()),
             ..Default::default()
         };
         sampling(&body, &mut request);
@@ -58,7 +58,7 @@ impl Wire for Anthropic {
             "id": id, "type": "message", "role": "assistant", "model": response.model,
             "content": content,
             "stop_reason": stop_reason(response), "stop_sequence": null,
-            "usage": {"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens},
+            "usage": usage(response),
         })
     }
 
@@ -108,7 +108,7 @@ impl Wire for Anthropic {
         }
         events.push(event(Some("message_delta"), &json!({"type": "message_delta",
             "delta": {"stop_reason": stop_reason(response), "stop_sequence": null},
-            "usage": {"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens}})));
+            "usage": usage(response)})));
         events.push(event(Some("message_stop"), &json!({"type": "message_stop"})));
         events
     }
@@ -151,6 +151,13 @@ impl Anthropic {
         self.next += 1;
         index
     }
+}
+
+/// Anthropic counts cache reads apart from fresh input: `input_tokens` is what was prefilled.
+fn usage(response: &TextGenerationResponse) -> Value {
+    let cached = super::cached_tokens(response).unwrap_or(0); // unwrap_or: no measured reuse reads as none
+    json!({"input_tokens": response.usage.input_tokens.saturating_sub(cached), "output_tokens": response.usage.output_tokens,
+        "cache_read_input_tokens": cached})
 }
 
 fn stop_reason(response: &TextGenerationResponse) -> &'static str {

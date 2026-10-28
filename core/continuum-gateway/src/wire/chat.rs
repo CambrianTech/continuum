@@ -31,7 +31,7 @@ impl Wire for Chat {
             messages,
             tools: body.get("tools").and_then(Value::as_array).map(|tools| tools.iter().filter_map(tool).collect()),
             tool_choice: body.get("tool_choice").and_then(tool_choice),
-            purpose: Some("driver".into()),
+            purpose: Some(continuum_engine::inference::request_body::DRIVER_PURPOSE.into()),
             ..Default::default()
         };
         sampling(&body, &mut request);
@@ -127,8 +127,12 @@ fn finish_reason(response: &TextGenerationResponse) -> &'static str {
 }
 
 fn usage(response: &TextGenerationResponse) -> Value {
-    json!({"prompt_tokens": response.usage.input_tokens, "completion_tokens": response.usage.output_tokens,
-        "total_tokens": response.usage.input_tokens + response.usage.output_tokens})
+    let mut usage = json!({"prompt_tokens": response.usage.input_tokens, "completion_tokens": response.usage.output_tokens,
+        "total_tokens": response.usage.input_tokens + response.usage.output_tokens});
+    if let Some(cached) = super::cached_tokens(response) {
+        usage["prompt_tokens_details"] = json!({"cached_tokens": cached});
+    }
+    usage
 }
 
 fn function_call((id, name, input): &(String, String, Value)) -> Value {
