@@ -495,21 +495,38 @@ pub(super) struct FootprintRow {
     pub(super) bytes: u64,
     pub(super) measured_at_ms: u64,
     pub(super) job: String,
-    /// The row is a WHOLE RUN's measurement: the graph AND its context (fork #52's context_mib) of
-    /// a run that trained, the whole of what a lease must cover, and what the model is fitted to.
-    /// Otherwise it is a LOWER BOUND, kept to rule a shape out but never leased or fitted: a graph
-    /// alone (an engine before #52: it under-states a lease by the context's K/V and would bend
-    /// the fit; Cormac on #4939), or a REFUSAL, whose preflight sized a graph that never ran (card
-    /// 0d21e644, Codex's gate: a refusal never trains a positive fit). Stored under its first
-    /// name, so rows written before the rename read the same.
+    /// A RUN's row is the graph AND its context (fork #52's context_mib), the whole of what a lease
+    /// must cover and what the model is fitted to. A run row from before it is the graph alone: it
+    /// under-states a lease by the context's K/V, and mixed into one fit with whole-run rows it bends
+    /// the model, so it is kept as a bound but never leased or fitted (Cormac on #4939). A refusal
+    /// row ([`Provenance::Refusal`]) is never whole. Stored under its first name, so every row on a
+    /// node reads the same.
     #[serde(default, rename = "includesContext")]
     pub(super) whole_run: bool,
-    /// The model's block count as the measuring engine reported it (`n_layer`): what a plan's
-    /// depth rungs are halved from. `None` on rows from before it and from engines that do not
-    /// report it.
+    /// The model's block count as the measuring engine reported it (`n_layer`): what a plan's depth
+    /// rungs are halved from. Merged on every write whatever the bytes ([`Footprints::upsert`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) layers: Option<u32>,
+    /// What measured it. `None` only on rows from before it, classified once by
+    /// [`Footprints::classify_legacy`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) provenance: Option<Provenance>,
 }
+
+/// What a footprint row's number is (card 0d21e644).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Provenance {
+    /// A run that trained: its measured footprint.
+    Run,
+    /// The engine's preflight refused the shape: the graph it sized, a LOWER BOUND that never ran.
+    /// Filed under its own key ([`REFUSED`]) so it neither replaces nor hides a run's row, and it
+    /// never trains the fit (Codex's gate on #5548).
+    Refusal,
+}
+
+/// The suffix a refusal's row is keyed under, beside the run row of the same shape.
+const REFUSED: &str = "|refused";
 
 impl Footprints {
     pub(super) fn at(path: PathBuf) -> Self {
@@ -536,6 +553,18 @@ impl Footprints {
             Err(_) => BTreeMap::new(),
         }
     }
+    fn write_all(&self, all: &BTreeMap<String, FootprintRow>) -> std::io::Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(()); // unrecorded: nowhere to keep it, so the next run measures again
+        };
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(all).map_err(std::io::Error::other)?)?;
+        // a scanner holding the new temp must not lose the measurement (the 5090, 2026-10-10)
+        continuum_host::durable::replace(&tmp, path)
+    }
     pub(super) fn get(&self, shape: &Shape) -> Option<u64> {
         self.read_all().get(&shape.key()).filter(|r| r.whole_run && self.measured_here(r)).map(|r| r.bytes)
     }
@@ -555,19 +584,19 @@ impl Footprints {
             .filter(|&(window, chunk, _)| self.get(&Shape { window, chunk, ..shape.clone() }).is_some())
             .collect()
     }
-    /// Every measured row of `shape`'s family, a graph-only refusal included: LOWER bounds on
-    /// what each shape needs. They cap a plan (a graph alone over what is free means the whole
+    /// Every measured row of `shape`'s family, refusals and graph-only rows included: LOWER bounds
+    /// on what each shape needs. They cap a plan (a graph alone over what is free means the whole
     /// run is over it too) but never fit the model, which reads whole-run rows only (#4939).
     pub(super) fn bound_rows_like(&self, shape: &Shape) -> Vec<(u32, u32, u64)> {
         self.family_rows(shape, false)
     }
-    /// A shape's measured lower bound: its whole-run row, else its graph-only one.
+    /// A shape's measured lower bound: the larger of its run row and its refusal.
     pub(super) fn bound(&self, shape: &Shape) -> Option<u64> {
-        self.read_all().get(&shape.key()).filter(|r| self.measured_here(r)).map(|r| r.bytes)
+        let all = self.read_all();
+        [shape.key(), format!("{}{REFUSED}", shape.key())].iter().filter_map(|k| all.get(k)).filter(|r| self.measured_here(r)).map(|r| r.bytes).max()
     }
-    /// What a shape needs ([`need`] over this store's rows): a graph-only refusal
-    /// at a chunk still rules it out, so the ladder steps down instead of calibrating the
-    /// refused shape again.
+    /// What a shape needs ([`need`] over this store's rows): a refusal at a chunk still rules it
+    /// out, so the ladder steps down instead of calibrating the refused shape again.
     pub(super) fn need(&self, shape: &Shape, predicted: Option<u64>) -> Option<Need> {
         need(self.get(shape), self.bound(shape), predicted)
     }
@@ -576,7 +605,7 @@ impl Footprints {
     pub(super) fn layers(&self, model: &str) -> Option<u32> {
         self.read_all()
             .into_iter()
-            .filter(|(key, row)| key.split('|').next() == Some(model) && self.measured_here(row))
+            .filter(|(key, row)| key.split('|').next() == Some(model) && self.measured_here(row) && row.layers.is_some())
             .max_by_key(|(_, row)| row.measured_at_ms)
             .and_then(|(_, row)| row.layers)
     }
@@ -584,53 +613,104 @@ impl Footprints {
         self.read_all()
             .into_iter()
             .filter_map(|(key, row)| {
+                let (named, refused) = key.strip_suffix(REFUSED).map_or((key.as_str(), false), |named| (named, true));
                 let num = |prefix: char| {
-                    key.split('|')
+                    named
+                        .split('|')
                         .find_map(|seg| seg.strip_prefix(prefix).filter(|v| v.chars().all(|c| c.is_ascii_digit())).and_then(|v| v.parse::<u32>().ok()))
                 };
                 let window = num('w')?;
                 let chunk = num('c').unwrap_or_else(|| train_chunk_for(window, TRAINING_CHUNK));
                 let candidate = Shape { window, chunk, ..shape.clone() };
                 // the fit reads whole runs of any engine (a prediction); bounds only this engine's
-                let usable = if whole_only { row.whole_run } else { self.measured_here(&row) };
-                (candidate.key() == key && usable).then_some((window, chunk, row.bytes))
+                let usable = if whole_only { !refused && row.whole_run } else { self.measured_here(&row) };
+                (candidate.key() == named && usable).then_some((window, chunk, row.bytes))
             })
             .collect()
     }
-    /// Keeps the LARGEST footprint observed for a shape: the peak is sampled on the governor's
-    /// scan cadence, which can miss the true peak but never invents one (Cormac on #4443). A
-    /// whole-run row always replaces a graph-only one, whatever their sizes: they measure
-    /// different things.
+    /// A RUN's footprint. Keeps the LARGEST observed for a shape: the peak is sampled on the
+    /// governor's scan cadence, which can miss the true peak but never invents one (Cormac on
+    /// #4443). A whole-run row always replaces a graph-only one, whatever their sizes: they
+    /// measure different things.
     pub(super) fn record_with(&self, shape: &Shape, bytes: u64, whole_run: bool, layers: Option<u32>, job: Uuid) -> std::io::Result<()> {
-        let mut all = self.read_all();
         // a whole-run row is never replaced by a graph-only one (an engine rolled back before
         // #52), whatever its size; otherwise the larger measurement stands (Cormac on #4939)
         // within ONE engine; another engine's measurement is not evidence about this one, so a
         // measurement on this engine always replaces it
-        if all.get(&shape.key()).is_some_and(|r| r.engine == self.engine && ((r.whole_run && !whole_run) || (r.whole_run == whole_run && r.bytes >= bytes))) {
-            return Ok(());
+        let row = self.row(bytes, whole_run, layers, job, Provenance::Run);
+        self.upsert(shape.key(), row, |old, new| (old.whole_run && !new.whole_run) || (old.whole_run == new.whole_run && old.bytes >= new.bytes))
+    }
+    /// A REFUSAL's graph, a lower bound, under the shape's refusal key: the largest stands.
+    pub(super) fn record_refusal(&self, shape: &Shape, bytes: u64, layers: Option<u32>, job: Uuid) -> std::io::Result<()> {
+        let row = self.row(bytes, false, layers, job, Provenance::Refusal);
+        self.upsert(format!("{}{REFUSED}", shape.key()), row, |old, new| old.bytes >= new.bytes)
+    }
+    fn row(&self, bytes: u64, whole_run: bool, layers: Option<u32>, job: Uuid, provenance: Provenance) -> FootprintRow {
+        let measured_at_ms = continuum_base::time::EpochMs::now().millis();
+        FootprintRow { engine: self.engine.clone(), bytes, measured_at_ms, job: job.to_string(), whole_run, layers, provenance: Some(provenance) }
+    }
+    /// Write `new` under `key` unless this engine's row there is to be `kept` over it; either way
+    /// the engine's reported block count lands, so a kept row never hides a newer count (Codex on
+    /// #5548: an equal or smaller run must still attach it).
+    fn upsert(&self, key: String, new: FootprintRow, kept: impl Fn(&FootprintRow, &FootprintRow) -> bool) -> std::io::Result<()> {
+        let mut all = self.read_all();
+        match all.get_mut(&key) {
+            Some(old) if old.engine == self.engine && kept(old, &new) => {
+                if new.layers.is_none() || old.layers == new.layers {
+                    return Ok(());
+                }
+                old.layers = new.layers;
+            }
+            _ => {
+                all.insert(key, new);
+            }
         }
-        all.insert(
-            shape.key(),
-            FootprintRow {
-                engine: self.engine.clone(),
-                bytes,
-                measured_at_ms: continuum_base::time::EpochMs::now().millis(),
-                job: job.to_string(),
-                whole_run,
-                layers,
-            },
-        );
-        let Some(path) = &self.path else {
-            return Ok(()); // unrecorded: nowhere to keep it, so the next run measures again
-        };
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+        self.write_all(&all)
+    }
+    /// Classify every row from before [`Provenance`] once: a whole-run row whose own job recorded
+    /// an engine refusal of exactly its size (`returnable.json`, or #4904's `refusal.json`, in its
+    /// directory under one of `roots`) WAS a refusal, filed as whole before card 0d21e644 (the windows 5090's row
+    /// for 598e183c at window 45,056). It moves to the refusal key, out of the fit. Any other is
+    /// stamped a run: nothing on disk says otherwise. Returns how many were reclassified.
+    pub(super) fn classify_legacy(&self, roots: &[PathBuf]) -> std::io::Result<usize> {
+        let mut all = self.read_all();
+        let legacy: Vec<String> = all.iter().filter(|(k, r)| r.provenance.is_none() && !k.ends_with(REFUSED)).map(|(k, _)| k.clone()).collect();
+        if legacy.is_empty() {
+            return Ok(0);
         }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?)?;
-        // a scanner holding the new temp must not lose the measurement (the 5090, 2026-10-10)
-        continuum_host::durable::replace(&tmp, path)
+        let mut refusals = 0;
+        for key in legacy {
+            let Some(mut row) = all.remove(&key) else { continue };
+            let refused = row.whole_run
+                && Uuid::parse_str(&row.job).ok().is_some_and(|job| {
+                    // a job dir is `<root>/<job>` under a request's own artifact root, else
+                    // `<root>/<persona>/<trait>/<job>` (`job_dir_for`)
+                    roots
+                        .iter()
+                        .flat_map(|root| {
+                            let nested = [RETURNABLE_FILE, LEGACY_REFUSAL_FILE]
+                                .into_iter()
+                                .filter_map(|anchor| crate::genome::fine_tuning::job_dir::find_job_dir_under(root, job, anchor).ok().flatten());
+                            std::iter::once(root.join(job.to_string())).chain(nested).collect::<Vec<_>>()
+                        })
+                        .filter_map(|dir| read_returnable(&dir))
+                        .any(|r| matches!(r, Returnable::EngineRefused(refusal) if refusal.graph_bytes == row.bytes))
+                });
+            if refused {
+                refusals += 1;
+                row.whole_run = false;
+                row.provenance = Some(Provenance::Refusal);
+                let refused_key = format!("{key}{REFUSED}");
+                if all.get(&refused_key).is_none_or(|kept| kept.bytes < row.bytes) {
+                    all.insert(refused_key, row);
+                }
+            } else {
+                row.provenance = Some(Provenance::Run);
+                all.insert(key, row);
+            }
+        }
+        self.write_all(&all)?;
+        Ok(refusals)
     }
 }
 

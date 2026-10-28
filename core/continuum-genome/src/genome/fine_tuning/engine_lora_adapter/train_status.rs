@@ -848,10 +848,11 @@ impl EngineRun {
                         // file I/O that may wait out a Windows sharing violation: off the runtime
                         let store = self.footprints.clone();
                         let (shape, job) = (refused.clone(), self.job);
-                        // A LOWER BOUND, whatever it includes: the preflight sized a graph that never
-                        // ran, so it rules this shape out but never trains the fit (card 0d21e644)
+                        // A LOWER BOUND under its own key: the preflight sized a graph that never ran,
+                        // so it rules this shape out, never trains the fit, and never replaces or hides
+                        // a run's row (card 0d21e644)
                         let layers = s.n_layer;
-                        let recorded = tokio::task::spawn_blocking(move || store.record_with(&shape, grown, false, layers, job))
+                        let recorded = tokio::task::spawn_blocking(move || store.record_refusal(&shape, grown, layers, job))
                             .await
                             .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
                         match recorded {

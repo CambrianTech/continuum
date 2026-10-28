@@ -620,6 +620,56 @@ use super::*;
         assert_eq!(f.get(&s), Some(1200));
     }
 
+    // what this catches (Codex on #5548 at 2950139e9): one row per shape made a refusal and a run
+    // fight. The windows 5090's row for 598e183c (window 45,056, chunk 64) is a refusal filed as a
+    // whole run before refusals had their own kind: it trained the fit, nothing could disqualify
+    // it, and a kept row hid every newer block count, so depth could never be stepped. Now: a
+    // legacy row its own job recorded as an engine refusal of exactly its size leaves the fit; a
+    // refusal and a run of one shape coexist, neither replacing nor hiding the other; and the
+    // engine's block count lands on every write, an equal or smaller run's included.
+    #[test]
+    pub(super) fn a_refusal_never_trains_the_fit_or_hides_a_run_and_the_block_count_always_lands() {
+        let gib = 1024u64 * 1024 * 1024;
+        let home = tempfile::tempdir().expect("test: dir");
+        let path = home.path().join("engine-footprints.json");
+        let refused = Shape { model: "m".into(), window: 45_056, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK_MIN, recompute: true };
+        let (job, graph) = (Uuid::from_u128(0x598e), 4_164_829_568u64);
+        // the legacy row as 2950139e9's predecessor wrote it: whole, no block count, no provenance
+        std::fs::write(&path, serde_json::to_vec(&serde_json::json!({ refused.key(): { "bytes": graph, "measuredAtMs": 1, "job": job.to_string(), "includesContext": true } })).unwrap()).unwrap();
+        // and its own job's record of the refusal, where `job_dir_for` puts it
+        let jd = home.path().join("Kimi").join("code_owner").join(job.to_string());
+        write_returnable(&jd, &Returnable::EngineRefused(Refusal { window: 45_056, chunk: 64, depth: None, layers: None, graph_bytes: graph, error: "the training graph did not fit".into() })).unwrap();
+        let f = Footprints::at(path.clone());
+        assert_eq!(f.get(&refused), Some(graph), "before classifying, the legacy row reads as a run");
+        assert_eq!(f.classify_legacy(&[home.path().to_path_buf()]).unwrap(), 1, "its own job proves it a refusal");
+        assert_eq!(f.get(&refused), None, "a refusal leases nothing");
+        assert!(f.rows_like(&refused).is_empty(), "and never trains the fit");
+        assert_eq!(f.bound(&refused), Some(graph), "it still rules the shape out");
+        assert_eq!(f.bound_rows_like(&refused), vec![(45_056, TRAINING_CHUNK_MIN, graph)], "and caps the window");
+        assert_eq!(f.classify_legacy(&[home.path().to_path_buf()]).unwrap(), 0, "classified once");
+        assert_eq!(f.layers("m"), None);
+        f.record_refusal(&refused, graph, Some(64), job).unwrap();
+        assert_eq!(f.layers("m"), Some(64), "a fresh refusal of the same size attaches the engine's block count");
+        // a run of the same shape beside its refusal: neither replaces nor hides the other
+        f.record_with(&refused, 3 * gib, true, Some(64), Uuid::nil()).unwrap();
+        assert_eq!(f.get(&refused), Some(3 * gib), "the run is leased by its own number");
+        assert_eq!(f.bound(&refused), Some(graph), "the larger refusal still bounds it");
+        // an equal or smaller run on a kept larger one still lands its block count
+        let other = Shape { window: 3_072, ..refused.clone() };
+        f.record_with(&other, 2 * gib, true, None, Uuid::nil()).unwrap();
+        f.record_with(&other, gib, true, Some(48), Uuid::nil()).unwrap();
+        assert_eq!(f.get(&other), Some(2 * gib), "the larger observation stands");
+        assert_eq!(f.read_all()[&other.key()].layers, Some(48), "and the newer block count lands on it");
+        // a legacy whole row its job never refused is a run, stamped so
+        let unproven = Shape { window: 6_144, ..refused.clone() };
+        let mut all = f.read_all();
+        all.insert(unproven.key(), FootprintRow { engine: None, bytes: 5 * gib, measured_at_ms: 2, job: Uuid::from_u128(7).to_string(), whole_run: true, layers: None, provenance: None });
+        std::fs::write(&path, serde_json::to_vec(&all).unwrap()).unwrap();
+        assert_eq!(f.classify_legacy(&[home.path().to_path_buf()]).unwrap(), 0);
+        assert_eq!(f.get(&unproven), Some(5 * gib), "nothing on disk says it was refused: it stays a run");
+        assert_eq!(f.read_all()[&unproven.key()].provenance, Some(Provenance::Run));
+    }
+
     // what this catches (fork #27, Codex's cases): a footprint leased at the wrong depth. The
     // graph is ~linear in the blocks adapted, so a K=8 number leased for a full-depth run
     // under-reserves (the engine then refuses or the node overcommits), and a full-depth number

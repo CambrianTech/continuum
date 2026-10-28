@@ -146,6 +146,28 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // Evidence about THIS lane's engine only (Codex on #4988): a bound another engine measured
         // must not park her on this one, or a fixed engine could never wake her.
         let footprints = self.footprints.for_engine(build.clone());
+        // rows filed before refusals had their own key are classified once, by the refusal their
+        // own job recorded, so a refusal filed as a whole run leaves the fit (Codex on #5548).
+        // File I/O that may wait out a Windows sharing violation: off the runtime.
+        {
+            let (store, roots) = (footprints.clone(), [request.local_artifact_dir.clone(), crate::genome::fine_tuning::job_dir::genome_root()]);
+            let roots: Vec<PathBuf> = roots.into_iter().flatten().collect();
+            let classified = tokio::task::spawn_blocking(move || store.classify_legacy(&roots))
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.map_err(|e| e.to_string()));
+            match classified {
+                Ok(0) => {}
+                Ok(refusals) => continuum_base::probe!(
+                    class = "training.footprints.legacy_refusals",
+                    job = %id,
+                    refusals = refusals as u64,
+                    "footprint rows filed as whole runs were refusals by their own job's record: moved to their refusal keys, out of the fit"
+                ),
+                Err(e) => continuum_base::probe!(class = "training.footprints.legacy_unclassified", job = %id, error = %e,
+                    "rows from before provenance could not be classified; they stay as they were and are classified on the next dispatch"),
+            }
+        }
         let mut rows = footprints.rows_like(&family);
         let mut model = GraphModel::fit(&rows);
         // THE WINDOW THE DATA NEEDS: every example measured at the served window by the engine's

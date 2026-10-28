@@ -131,7 +131,7 @@
         let text = std::fs::read_to_string(dir.path().join("fp.json")).expect("test: read");
         assert!(text.contains("\"includesContext\": true") && !text.contains("wholeRun"), "stored under its first name: {text}");
         assert_eq!(store.layers("m"), None, "no engine has reported the blocks yet: no rung");
-        store.record_with(&Shape { window: 3072, ..shape.clone() }, 4 * gib, false, Some(64), Uuid::nil()).expect("test: a refusal");
+        store.record_refusal(&Shape { window: 3072, ..shape.clone() }, 4 * gib, Some(64), Uuid::nil()).expect("test: a refusal");
         assert_eq!(store.layers("m"), Some(64));
         assert_eq!(store.layers("other"), None, "another model's rows say nothing about this one");
     }
@@ -642,7 +642,7 @@
         assert_eq!(seen.lock().unwrap().clone().expect("test: posted")["chunk"].as_u64(), Some(512), "the first dispatch calibrates at the engine's default chunk");
         let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: the refusal filed a footprint")).unwrap();
         let (key, row) = rows.as_object().unwrap().iter().next().expect("test: one row");
-        assert_eq!(key, "ggml-org/Qwen3.8-27B-GGUF|w1536|r8|attn_q,attn_v|rc", "filed under the shape and the chunk that ran (512 is 1536's default: no chunk suffix), with recompute");
+        assert_eq!(key, "ggml-org/Qwen3.8-27B-GGUF|w1536|r8|attn_q,attn_v|rc|refused", "filed under the shape and the chunk that ran (512 is 1536's default: no chunk suffix), with recompute, as a refusal beside any run (card 0d21e644)");
         assert_eq!(row["bytes"].as_u64(), Some((12_654.1f64 * 1024.0 * 1024.0) as u64), "the graph the preflight measured");
         let h2 = t.create_job(r).await.expect("test: create again");
         let _ = wait_terminal(&t, &h2).await;
@@ -731,7 +731,7 @@
         let footprints = jobs.path().join("footprints.json");
         let gib = 1024u64 * 1024 * 1024;
         let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 3072, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK_MIN, recompute: true };
-        Footprints::at(footprints.clone()).record_with(&fam, 2 * gib, false, Some(64), Uuid::nil()).expect("test: a refusal at every block");
+        Footprints::at(footprints.clone()).record_refusal(&fam, 2 * gib, Some(64), Uuid::nil()).expect("test: a refusal at every block");
         let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, gib);
         t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 61_696)));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
