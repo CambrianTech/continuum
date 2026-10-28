@@ -7,10 +7,14 @@
 //! trains past what serving holds and nothing told serving what her learning needs. Each
 //! partition records here, per example, the window that trains it whole, and the reservation
 //! for the largest: the training graph's bytes there by the training plan's own footprint
-//! arithmetic, labeled (a whole run, a lower bound, a prediction), or unknown. The serving
-//! requirement carries it ([`TrainingReserve`]): a measured one raises her target and is kept
-//! out of the allocator's growth; an unknown one grows nothing (Codex on ea157b1a). An entry
-//! clears when its example is sent whole by a later partition; the others stay.
+//! arithmetic, labeled (a whole run, a lower bound, a prediction) and bound to the model and
+//! training shape it was measured for, or unknown. The serving requirement carries it beside her
+//! conversation ([`TrainingReserve`]); an unknown price grows nothing (Codex on ea157b1a).
+//!
+//! An entry clears only when a run TRAINS its example: at the run's successful finish, the
+//! examples its partition sent minus any the run itself skipped ([`TrainingDemand::trained`]).
+//! Being sent clears nothing: a sent run that fails, is refused or is cancelled leaves her
+//! demand as it was, so her lane never shrinks under examples that still wait (Codex on #5557).
 //!
 //! Durable, per persona, keyed by each example's content (it survives a return and a
 //! re-dispatch unchanged): `<genome root>/training-demand/<persona>.json`.
@@ -23,16 +27,16 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::types::TrainingExample;
-use crate::inference::planning::training_plan::NeedSource;
-use crate::inference::planning::window_allocator::TrainingReserve;
+use crate::inference::planning::training_plan::Partition;
+use crate::inference::planning::window_allocator::{TrainingPrice, TrainingReserve};
 
-/// What the largest outstanding window costs to train, as a partition measured it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// What the largest outstanding window costs to train, as a partition priced it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Reservation {
     pub window: u32,
-    pub bytes: Option<u64>,
-    pub source: Option<NeedSource>,
+    /// `None`: no footprint of that shape is known yet.
+    pub price: Option<TrainingPrice>,
     pub job: Uuid,
 }
 
@@ -87,14 +91,14 @@ impl TrainingDemand {
         }
     }
 
-    /// Record what one partition learned: `parked` examples need these windows, `sent` ones
-    /// trained whole and owe nothing, every other entry is kept; `reservation` is what the
-    /// largest parked window costs, as this partition's footprints price it.
-    pub fn record(&self, parked: &[(String, u32)], sent: &[String], reservation: Option<Reservation>) -> std::io::Result<()> {
+    /// Record what one partition or run learned: `parked` examples need these windows, `trained`
+    /// ones were trained by a run and owe nothing, every other entry is kept; `reservation` is
+    /// what the largest parked window costs, as a partition's footprints price it.
+    pub fn record(&self, parked: &[(String, u32)], trained: &[String], reservation: Option<Reservation>) -> std::io::Result<()> {
         let Some(path) = &self.path else { return Ok(()) };
         let before = self.read();
         let mut now = before.clone();
-        for key in sent {
+        for key in trained {
             now.examples.remove(key);
         }
         for (key, window) in parked {
@@ -132,13 +136,23 @@ impl TrainingDemand {
     pub fn reservation(&self) -> Option<TrainingReserve> {
         let recorded = self.read();
         let window = recorded.examples.values().copied().max()?;
-        let measured = recorded.reservation.filter(|r| r.window == window);
-        Some(TrainingReserve {
-            window,
-            bytes: measured.and_then(|r| r.bytes),
-            source: measured.and_then(|r| r.source),
-            job: measured.map_or(Uuid::nil(), |r| r.job), // map_or: no partition priced this window yet: no job measured it
-        })
+        match recorded.reservation.filter(|r| r.window == window) {
+            Some(r) => Some(TrainingReserve::new(window, r.price, Some(r.job))),
+            None => Some(TrainingReserve::new(window, None, None)),
+        }
+    }
+
+    /// The keys a finished run TRAINED: what its partition sent, minus what the run itself
+    /// skipped (amended into `parked` by `with_run_skipped`). An index outside `examples` is not
+    /// one of this request's and is ignored.
+    pub fn trained(examples: &[TrainingExample], partition: &Partition) -> Vec<String> {
+        partition
+            .sent
+            .iter()
+            .filter(|i| !partition.parked.contains(i))
+            .filter_map(|&i| examples.get(i))
+            .map(Self::key_of)
+            .collect()
     }
 }
 
@@ -146,28 +160,37 @@ impl TrainingDemand {
 mod tests {
     use super::*;
 
-    // what this catches (card ea157b1a, Codex's ask): resolving one parked example dropping every
-    // outstanding demand, so her lane shrinks while other lived turns still cannot train; an example
-    // that trained whole still holding her target up; and a reservation priced for one window
-    // read as the price of another.
+    // what this catches (card ea157b1a; Codex on #5557): resolving one parked example dropping
+    // every outstanding demand; an example SENT to a run that then fails clearing her demand, so
+    // her lane shrinks under examples that still wait; an example a run skipped counted as
+    // trained; and a reservation priced for one window read as the price of another.
     #[test]
-    fn resolving_one_example_keeps_the_others_and_a_reservation_prices_only_its_window() {
+    fn only_a_trained_example_clears_and_a_price_holds_only_for_its_window() {
+        use crate::inference::planning::training_plan::{ExampleFit, MeasuredExample, NeedSource};
         let dir = tempfile::tempdir().expect("test: dir");
         let demand = TrainingDemand::at(dir.path().join("kimi.json"));
         assert_eq!(demand.reservation(), None, "nothing parked, nothing reserved");
+        let ex = |c: &str| TrainingExample { prompt: "p".into(), completion: c.into(), metadata: None, lived: None };
+        let (a, b, c) = (ex("a"), ex("b"), ex("c"));
+        let key = TrainingDemand::key_of;
         let job = Uuid::from_u128(0x1e02);
-        let priced = Reservation { window: 64_256, bytes: Some(6_000_000_000), source: Some(NeedSource::LowerBound), job };
-        demand.record(&[("a".into(), 51_712), ("b".into(), 64_256)], &[], Some(priced)).expect("test: record");
-        assert_eq!((demand.outstanding(), demand.waiting()), (Some(64_256), 2));
-        assert_eq!(demand.reservation(), Some(TrainingReserve { window: 64_256, bytes: Some(6_000_000_000), source: Some(NeedSource::LowerBound), job }));
-        demand.record(&[], &["b".into()], None).expect("test: b trained whole");
-        assert_eq!((demand.outstanding(), demand.waiting()), (Some(51_712), 1), "a still waits");
+        let price = TrainingPrice { bytes: 6_000_000_000, source: NeedSource::LowerBound, model: "kimi-base".into(), shape: "kimi-base|w64256".into() };
+        let priced = Reservation { window: 64_256, price: Some(price.clone()), job };
+        demand.record(&[(key(&a), 51_712), (key(&b), 64_256), (key(&c), 40_192)], &[], Some(priced)).expect("test: record");
+        assert_eq!((demand.outstanding(), demand.waiting()), (Some(64_256), 3));
+        assert_eq!(demand.reservation(), Some(TrainingReserve::new(64_256, Some(price), Some(job))));
+        // b and c are sent to a run; it fails: no finish, nothing cleared
+        assert_eq!(demand.waiting(), 3, "sent is not trained: a failed or cancelled run leaves her demand");
+        // the retry trains b, and the run itself skips c: only b clears
+        let row = |index: usize| MeasuredExample { index, tokens_full: 1, tokens_min: 1, tokens_trained: 1, fit: ExampleFit::Kept };
+        let ran = Partition { window: 65_536, sent: vec![1, 2], parked: vec![0, 2], rows: vec![row(0), row(1), row(2)] };
+        demand.record(&[], &TrainingDemand::trained(&[a.clone(), b, c], &ran), None).expect("test: b trained");
+        assert_eq!((demand.outstanding(), demand.waiting()), (Some(51_712), 2), "a and the run-skipped c still wait");
         let left = demand.reservation().expect("a still reserves");
-        assert_eq!((left.window, left.bytes, left.source), (51_712, None, None), "64,256's price is never read as 51,712's: unknown until measured");
-        demand.record(&[], &["a".into()], None).expect("test: a trained whole");
+        assert_eq!((left.window, left.recorded_price(), left.job), (51_712, None, None), "64,256's price is never read as 51,712's: unknown until priced");
+        demand.record(&[], &[key(&a), key(&ex("c"))], None).expect("test: a and c trained");
         assert_eq!(demand.reservation(), None);
-        let again = TrainingDemand::at(dir.path().join("kimi.json"));
-        assert_eq!(again.waiting(), 0, "durable: a reload reads what was recorded");
+        assert_eq!(TrainingDemand::at(dir.path().join("kimi.json")).waiting(), 0, "durable: a reload reads what was recorded");
     }
 
     // what this catches: a lived turn keyed by something a return or a re-dispatch changes, so

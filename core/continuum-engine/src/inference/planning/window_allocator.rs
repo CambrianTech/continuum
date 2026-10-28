@@ -84,19 +84,50 @@ pub struct LaneRequirement {
 }
 
 /// What a resident's waiting training needs of the budget: the window that trains her parked
-/// examples whole, and the bytes that training costs there by the training plan's own footprint
-/// arithmetic (`bytes` with its `source`: a whole run, a lower bound or a prediction, labeled as
-/// such), or `None` when nothing has measured that shape yet. The allocator grows the shared
-/// window toward it only from what is left after the reservations it must keep (Codex on #5556);
-/// an unmeasured reservation grows nothing and is reported unresolved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+/// examples whole, and, when a footprint of that very shape is known, its price. Carried beside
+/// her conversational requirement; the allocator grows toward it only from what is left after
+/// the conversational geometry is packed (Codex on #5556), and an unpriced one grows nothing.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct TrainingReserve {
     pub window: u32,
-    pub bytes: Option<u64>,
-    pub source: Option<crate::inference::planning::training_plan::NeedSource>,
-    /// The training job that last measured it: reservations are deduplicated by job, and the job
-    /// already charged as the live training holder is not reserved twice.
-    pub job: Uuid,
+    /// Private: read through [`Self::price_for`], so a price is never used for a model it was
+    /// not measured on (Codex on #5557).
+    price: Option<TrainingPrice>,
+    /// The training job whose partition priced it (`None`: no partition priced this window):
+    /// reservations deduplicate by job, and the job already charged as the live training holder
+    /// is not reserved twice.
+    pub job: Option<Uuid>,
+}
+
+/// What training at a reservation's window costs, and exactly what it was measured FOR: the base
+/// model and the training shape's footprint key (rank, targets, depth, walk, chunk, recompute).
+/// `source` keeps the training plan's label: a lower bound or a prediction is never a whole run.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrainingPrice {
+    pub bytes: u64,
+    pub source: crate::inference::planning::training_plan::NeedSource,
+    /// The base model id the footprint was measured on (the serving candidate's `model_id`).
+    pub model: String,
+    /// The footprint key of the priced training shape, for the receipt.
+    pub shape: String,
+}
+
+impl TrainingReserve {
+    pub fn new(window: u32, price: Option<TrainingPrice>, job: Option<Uuid>) -> Self {
+        Self { window, price, job }
+    }
+
+    /// The price when serving plans `candidate_model`, the model it was measured on; `None` for
+    /// any other model, or when unpriced: then the reservation is unmeasured for that plan.
+    pub fn price_for(&self, candidate_model: &str) -> Option<&TrainingPrice> {
+        self.price.as_ref().filter(|p| p.model == candidate_model)
+    }
+
+    /// The price as recorded, whatever model it names: for a receipt, never for a plan.
+    pub fn recorded_price(&self) -> Option<&TrainingPrice> {
+        self.price.as_ref()
+    }
 }
 
 impl LaneRequirement {
@@ -562,15 +593,19 @@ mod tests {
     #[test]
     fn a_training_reserve_travels_beside_her_conversation_never_into_it() {
         let job = Uuid::from_u128(0x1e02);
-        let measured = TrainingReserve { window: 64_256, bytes: Some(6_000_000_000), source: Some(crate::inference::planning::training_plan::NeedSource::LowerBound), job };
+        let price = TrainingPrice { bytes: 6_000_000_000, source: crate::inference::planning::training_plan::NeedSource::LowerBound, model: "kimi-base".into(), shape: "kimi-base|w64256|r8|attn_q,attn_v|exact|rc".into() };
+        let measured = TrainingReserve::new(64_256, Some(price.clone()), Some(job));
         for her in [LaneRequirement::from_demand(Uuid::new_v4(), 40_000, 1.25).with_need(30_000), LaneRequirement::from_demand(Uuid::new_v4(), 40_000, 1.25)] {
-            let learning = her.clone().with_training(Some(measured));
+            let learning = her.clone().with_training(Some(measured.clone()));
             assert_eq!((learning.window, learning.need, learning.source), (her.window, her.need, her.source), "conversation untouched");
             assert_eq!(learning.floor(50_000), her.floor(50_000), "no held turn or one: her floor is her conversation's, never the training window");
-            assert_eq!(learning.training, Some(measured), "the reservation travels to the allocator, its source labeled");
+            assert_eq!(learning.training.as_ref(), Some(&measured), "the reservation travels to the allocator, its source labeled");
         }
+        assert_eq!(measured.price_for("kimi-base"), Some(&price), "priced for the model it was measured on");
+        assert_eq!(measured.price_for("another-base"), None, "the same window on another model is unmeasured, never this price");
+        assert_eq!(TrainingReserve::new(64_256, None, None).price_for("kimi-base"), None);
         let her = LaneRequirement::from_demand(Uuid::new_v4(), 40_000, 1.25);
-        assert_eq!(her.clone().with_training(Some(TrainingReserve { window: 0, ..measured })), her, "a zero window reserves nothing");
+        assert_eq!(her.clone().with_training(Some(TrainingReserve::new(0, Some(price), Some(job)))), her, "a zero window reserves nothing");
         assert_eq!(her.clone().with_training(None), her, "nothing parked, nothing changes");
     }
 }
