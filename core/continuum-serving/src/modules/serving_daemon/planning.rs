@@ -579,7 +579,7 @@ impl ServingDaemonModule {
                     );
                 }
                 let spike = spike_of_served.unwrap_or(0);
-                crate::inference::prefill_throttle::publish_serving(spike, plan.lanes as usize);
+                crate::inference::prefill_spike::publish(spike);
                 // send_replace keeps the latest even with no live receivers yet.
                 self.publish_plan_snapshot(intent_revision, Some(plan));
             }
