@@ -125,6 +125,13 @@ impl TrainingDemand {
         self.read().examples.into_values().max()
     }
 
+    /// Whether every one of `keys` is outstanding here: serving has been told what those examples
+    /// need. Empty `keys` is false: nothing to wait for is not a recorded demand.
+    pub fn records_all(&self, keys: &[String]) -> bool {
+        let examples = self.read().examples;
+        !keys.is_empty() && keys.iter().all(|key| examples.contains_key(key))
+    }
+
     /// How many examples wait.
     pub fn waiting(&self) -> usize {
         self.read().examples.len()
