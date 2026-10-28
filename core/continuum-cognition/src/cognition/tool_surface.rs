@@ -276,6 +276,7 @@ fn declares(pattern: &str, name: &str) -> bool {
 ///
 /// One decision, consulted by both the budget math and the request builder, so the two can
 /// never disagree about what is on the wire (card dec1a7ff).
+#[derive(Debug, Clone)]
 pub struct SelectedSurface<'a> {
     /// Exactly what goes into the request. `None` only when there are no tools. Borrowed
     /// from the built surfaces, owned only when an activity's declaration selected it.
@@ -301,6 +302,23 @@ impl<'a> SelectedSurface<'a> {
     /// her whole hands are the demand. Every other arm sent what was wanted.
     pub fn demand_tokens(&self) -> usize {
         self.demand
+    }
+
+    /// The same selection, owning its schemas: what a prompt view carries to its request, so
+    /// the request sends exactly what the allocation bought (one decision, card dec1a7ff).
+    pub fn into_owned(self) -> SelectedSurface<'static> {
+        SelectedSurface {
+            specs: self.specs.map(|specs| Cow::Owned(specs.into_owned())),
+            tokens: self.tokens,
+            reason: self.reason,
+            demand: self.demand,
+            tail: self.tail,
+        }
+    }
+
+    /// No surface: a turn refused for capacity before it could be offered one.
+    pub(crate) fn none() -> Self {
+        Self::borrowed(&[], 0, SurfaceReason::NoTools, 0)
     }
 
     pub(crate) fn with_demand(mut self, demand: usize) -> Self {

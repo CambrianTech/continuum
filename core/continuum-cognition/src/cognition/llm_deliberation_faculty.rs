@@ -154,6 +154,9 @@ const FLEX_HISTORY: &str = "history";
 
 const FLEX_REPLY: &str = "reply";
 
+/// Her hands (`prompt/tools_epoch.rs`): floor = the epoch's level or core hands, want = all.
+const FLEX_TOOLS: &str = "tools";
+
 /// The reasoner faculty. Persona-scoped; shared model backend.
 pub struct LlmDeliberationFaculty {
     persona_id: Uuid,
@@ -236,6 +239,8 @@ pub struct LlmDeliberationFaculty {
     context_view: parking_lot::Mutex<
         Option<continuum_context::view::View<crate::cognition::context_streams::ContextMessage>>,
     >,
+    /// The tool level her current view epoch chose (`prompt/tools_epoch.rs`).
+    tools_epoch: parking_lot::Mutex<Option<prompt::ToolsEpoch>>,
     /// A measurement fork's (`fork_eval_cycle`): its turns warm their own page, never hers.
     forked: bool,
 }
@@ -268,6 +273,7 @@ impl LlmDeliberationFaculty {
             decoding: relaxed_decoding(),
             working_set: None,
             context_view: parking_lot::Mutex::new(None),
+            tools_epoch: parking_lot::Mutex::new(None),
             forked: false,
         }
     }

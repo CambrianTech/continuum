@@ -364,3 +364,41 @@ fn a_binding_without_a_model_name_carries_the_adapters_served_model() {
     assert_eq!(faculty.binding.load().model.as_deref(), Some(served.as_str()),
         "a bound faculty always names the model it is bound to");
 }
+
+// what this catches: her hands re-sized every act (a surface that moves mid-epoch rewrites the
+// whole prompt after the system text), or sized outside the one allocation. Her first view
+// buys her whole hands from an ample grant; the next act's claim keeps that level as its
+// target with her core hands as the only floor, and the request carries exactly the
+// selection the allocation bought.
+#[test]
+fn an_epoch_keeps_the_tool_level_its_allocation_bought() {
+    let raw: Vec<NativeToolSpec> = ["code/read", "work/state", "chat/send", "commands/list", "room/join", "code/git/status", "work/submit", "web/fetch"]
+        .iter()
+        .map(|n| NativeToolSpec {
+            name: (*n).to_string(),
+            description: format!("{n}: does what its name says"),
+            input_schema: crate::ai::types::ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: serde_json::json!({}),
+                required: None,
+                definitions: None,
+            },
+        })
+        .collect();
+    let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Asha", "You are Asha.", adapter).with_tools(raw);
+    let ws = Workspace::new("what changed on the board?");
+    let first = faculty.prompt_view_within(&ws, 200_000);
+    assert!(first.capacity_error.is_none(), "{:?}", first.capacity_error);
+    let claim = faculty.tools_claim(&ws);
+    assert!(claim.floor < claim.want, "core hands are smaller than her whole hands: {claim:?}");
+    assert_eq!(first.tools.tokens, claim.want, "an ample grant buys her whole surface");
+    assert_eq!(claim.level, first.tools.tokens, "the epoch keeps the level it chose as its target");
+    assert!(first.tools_grant >= first.tools.tokens, "the selection stays within its grant");
+    let second = faculty.prompt_view_within(&ws, 200_000);
+    assert_eq!(
+        serde_json::to_string(&second.tools.specs).expect("schemas"),
+        serde_json::to_string(&first.tools.specs).expect("schemas"),
+        "the same epoch sends byte-identical schemas"
+    );
+}
