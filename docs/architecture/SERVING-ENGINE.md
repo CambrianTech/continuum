@@ -258,6 +258,27 @@ locks, not the engine, made minds wait. Each was added after an incident instead
 - The engine's own continuous batching is the concurrency: every seated sequence with tokens to
   process rides the same forward pass.
 
+**Classes, the GCD way** (Joel, 2026-10-28: "no one is ever not getting their task done so a dream
+still happens just irregularly and doesn't eat into work"). Each mind is a serial queue (one act at
+a time) that targets a quality-of-service class; the engine is the concurrent pool beneath them.
+
+| class | work | rule |
+|---|---|---|
+| interactive | a directed reply | the next free slot; preempts a lower class at a decode-step boundary |
+| work | a resident's act on her card, with her tools | runs whenever ready; never waits behind the classes below |
+| utility | ambient thought, perception, gene exams | fills what the two above leave |
+| background | dreams, training, consolidation | runs in the gaps; yields at the next step to anything above |
+
+Background is throttled, never starved: a waiting task's effective priority ages upward, so a dream
+gets its step even on a busy node, irregularly and in small pieces, and it only ever takes a slot
+no higher class wants now (preempted by `page_out`, ~0.1 s, the moment one does). Training is the
+same: the engine's idle task, never a hold on serving.
+
+**One owner, one heap.** The dispatcher task owns its ready heap and receives events over a channel
+(submitted, slot freed, page landed, priority aged); it pops only when a slot is free. The kernel's
+`concurrency::ConcurrentPriorityQueue` forwards each item to an unbounded output channel as soon as
+it is signalled, so it does not keep priority order under load; the dispatcher does not build on it.
+
 **Done so far** (`fable/lanes-flow`): the reserved lane is lent whenever nothing directed is
 pending; the prefill throttle is deleted; deliberation and dreams take no lane. Left: the adapter's
 concurrency permit and the slot pool become the dispatcher above, the ambient anti-stampede permit
