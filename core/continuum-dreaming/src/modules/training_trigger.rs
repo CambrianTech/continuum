@@ -76,6 +76,7 @@ use crate::sdk_codegen::DynCommand;
 
 mod attempt_evidence;
 mod durable;
+mod serving_wake;
 pub use durable::DispatchPhase;
 pub(crate) use durable::{DispatchFailure, DispatchResolution, DispatchResult, JobInputError, ResolveReport, RetireReport, RetireSelection};
 
@@ -868,12 +869,14 @@ fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
 
 pub struct TrainingTriggerModule {
     pub(crate) state: Arc<TrainingTriggerState>,
+    serving_wake: serving_wake::ServingWake,
 }
 
 impl TrainingTriggerModule {
     pub fn new() -> Self {
         Self {
             state: Arc::new(TrainingTriggerState::new()),
+            serving_wake: Default::default(),
         }
     }
 
@@ -885,6 +888,7 @@ impl TrainingTriggerModule {
         state.test_job_board = board;
         Self {
             state: Arc::new(state),
+            serving_wake: Default::default(),
         }
     }
 }
@@ -911,7 +915,9 @@ impl ServiceModule for TrainingTriggerModule {
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
         self.state.data.install(ctx.storage("training-trigger")?);
-        self.state.ensure_storage().await
+        self.state.ensure_storage().await?;
+        self.serving_wake.start(self.state.clone()).await;
+        Ok(())
     }
 
     async fn tick(&self) -> Result<(), String> {
@@ -954,6 +960,7 @@ impl ServiceModule for TrainingTriggerModule {
     }
 
     async fn shutdown(&self) -> Result<(), String> {
+        self.serving_wake.stop().await;
         self.state.drain_operations().await
     }
 }
