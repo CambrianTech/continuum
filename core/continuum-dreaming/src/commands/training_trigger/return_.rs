@@ -169,7 +169,7 @@ pub(crate) async fn return_parked_remainder(
     board: &TrainingJobBoard,
     root: &std::path::Path,
     job: &crate::genome::fine_tuning::job_board::EndedJob,
-    served_window: &dyn Fn(&str) -> Option<u32>,
+    served_window: &(dyn Fn(&str) -> Option<u32> + Sync), // held across awaits: Sync keeps the pass's future Send
 ) -> Result<Remainder, CommandError> {
     let id = job.local_id;
     let dir = job_dir_under(root, &job.persona_name, &job.trait_kind, id);
