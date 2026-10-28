@@ -181,6 +181,55 @@ Each scenario asserts where every mind resumes, in seconds, before any live read
 
 Each step deletes what it replaces in the same PR, and the lifecycle validator gains that step's scenario first.
 
+## 1b. What concurrent minds cost on the M5: measured 2026-10-28
+
+These findings come from engine-c 741b0175b with Qwen3.6-35B-A3B Q4_K_M, on 64 GB of unified memory. Every number is a receipt, and each one answers "is it llama.cpp, the server, or continuum?"
+
+**Decode across layers** (short prompts, 256-token decodes; t/s per stream / aggregate):
+
+| Streams | llama-batched-bench (no server) | Our server, no draft | Our server, MTP draft n_max 4 |
+|---|---|---|---|
+| 1 | 59 / 59 | 57 / 57 | 80 / 80 |
+| 2 | 45 / 90 | 44 / 89 | 42 / 84 |
+| 4 | 31 / 124 | 31 / 122 | 23 / 91 |
+
+- Nothing serializes: the server batches like stock llama.cpp.
+- Batching amortizes weight reads, so the aggregate climbs. On this MoE model it reaches only about 2.1× at four streams, because each sequence routes to its own experts.
+- The MTP draft spends the same spare capacity that batching does. It wins alone and loses under concurrency.
+- Fix: `inference::speculation` drafts only while a turn decodes alone, set per request.
+
+**Live decode by concurrent engine work** (16k `tg_3s` samples, 2026-10-27):
+
+| What else is running | Median t/s |
+|---|---|
+| Nothing | 20.6 |
+| 1 other decoding | 11.2 |
+| 2 others decoding | 8.7 |
+| 3 others decoding | 8.3 |
+| Another slot prefilling | 14.7 |
+| Any page save or restore | 4.6–5.6 |
+
+A page save or restore stalls every stream, because SLOT_SAVE and SLOT_RESTORE run on the server's main loop.
+
+**Page IO, isolated against live:**
+
+| | Bytes | Save | Restore |
+|---|---|---|---|
+| Isolated (99k tokens, SSD) | 0.7 GB | 0.22 s (3.3 GB/s) | 0.1 s |
+| Live (92 saves, 95 restores) | 1.88 GB, of which 1.24 GB is checkpoint sidecar | 3.05 s median (0.59 GB/s) | 1.38 s (1.32 GB/s) |
+
+- The engine's IO code is fast.
+- Live pages carry about 2.5× the bytes, mostly checkpoints of the hybrid model's recurrent state.
+- Live pages also move 5–6× slower. The suspect is memory pressure: 8.4 GB of swap in use, with the engine's 17 GB `--cache-ram` and `--ctx-checkpoints 32` beside the 22 GB model and 4 × 159k KV. This is being sampled.
+- The size quote is cheap and is ruled out.
+
+**What follows:**
+1. Size the prompt cache and checkpoint retention from one measured memory budget, so the engine never pushes the machine into swap.
+2. Pages carry only the checkpoints a resume needs.
+3. Page IO goes RAM-first and off the main loop (S1), so a switch never stalls the other minds.
+4. Expert paging for capacity on unified memory (card 5eedda3e).
+5. A long-context sweep: per-sequence KV reads are what batching cannot amortize.
+
 ## 2. Reuse versus write
 
 | Option | Speed | Effort | Risk |
