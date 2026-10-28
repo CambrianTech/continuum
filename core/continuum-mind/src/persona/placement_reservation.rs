@@ -207,34 +207,68 @@ pub fn reservation_capability_gate(
     }
 }
 
+/// Why a reservation ask did not produce a grant — typed so callers can count
+/// capability-vs-transport without parsing strings (card 8e4c42de). The pre-wire variants
+/// send nothing and write no fault row; only [`ReservationAskError::Transport`] is a wire
+/// failure, and it alone notes the seat's backoff inside [`request_reservation`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReservationAskError {
+    /// `peer` is this node under one of its own ids: asking itself for a slot. No wire sent,
+    /// no fault row — a canary after #4219 and the self-peer resolver.
+    SelfNode,
+    /// The seat's beacon does not affirmatively advertise the capability this ask requires
+    /// (#3941): no wire sent, no fault row — a stable fact of the beacon, re-read each tick
+    /// for one ledger scan.
+    Capability { required: crate::capacity::gossip::CapabilityId },
+    /// The seat faulted an earlier ask and per-peer backoff is still in effect (not refreshed
+    /// by this check). No new wire sent this tick; the existing fault row stays as-is.
+    Backoff { remaining_ms: u64 },
+    /// The ask was sent and failed to grant: no route, no answer within deadline,
+    /// unparseable reply, or a command-level refusal. This variant alone writes the seat's
+    /// fault row (inside [`request_reservation`]) and probes `placement.reserve.backoff`.
+    Transport(String),
+}
+
+impl std::fmt::Display for ReservationAskError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SelfNode => write!(f, "a node never asks itself for a slot"),
+            Self::Capability { required } => write!(
+                f,
+                "the seat does not advertise the capability this ask requires ({required:?}) — its slot arithmetic is lanes−residents, never asked"
+            ),
+            Self::Backoff { remaining_ms } => {
+                write!(f, "the seat faulted an earlier ask — not asked again for {}s", remaining_ms / 1000)
+            }
+            Self::Transport(detail) => f.write_str(detail),
+        }
+    }
+}
+
+impl ReservationAskError {
+    /// The machine-countable class of this refusal (card 8e4c42de): the callers' probes carry it as a field so downstream counts capability-vs-transport without parsing reason text.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::SelfNode => "self_node",
+            Self::Capability { .. } => "capability",
+            Self::Backoff { .. } => "backoff",
+            Self::Transport(_) => "transport",
+        }
+    }
+}
+
 /// THE SPILLER'S HALF: ask `peer` for a slot for `mind` over airc and wait for its word,
-/// bounded by [`RESERVE_DEADLINE`]. `Err` = no answer or no route: not a seat this tick.
+/// bounded by [`RESERVE_DEADLINE`]. Pre-wire refusals (self-node, capability absence,
+/// backoff) arrive as their own typed variants — none of them sends or writes a fault row;
+/// only a failed wire round-trip is [`ReservationAskError::Transport`], which notes the
+/// seat's backoff.
 pub async fn request_reservation(
     airc: &std::sync::Arc<airc_lib::Airc>,
     peer: Uuid,
     mind: Uuid,
-) -> Result<PlacementReservationReport, String> {
-    if crate::persona::self_peer::is_this_node(peer) {
-        return Err(format!("seat {peer} is this node — a node never asks itself for a slot"));
-    }
-    // THE capability gate (#3941): ask ONLY a seat whose beacon affirmatively advertises the grant. A refusal here sends NOTHING over the wire — no ACL evaluation at the seat, no deadline wait — and writes NO fault row: it is a stable fact of the seat's beacon (which may refresh with new capabilities next beat), not a transport or policy fault; re-reading it each tick costs one ledger scan. The caller receipts this as its existing "stays home" path — the refusal travels through this operation's own result type.
-    if let crate::capacity::gossip::CapabilityDecision::Refuse { required } =
-        reservation_capability_gate(&crate::capacity::gossip::global_ledger(), peer)
-    {
-        return Err(format!(
-            "seat {peer} does not advertise the capability this ask requires ({required:?}) — its slot arithmetic is lanes−residents, never asked"
-        ));
-    }
+) -> Result<PlacementReservationReport, ReservationAskError> {
     let now = EpochMs::now().millis();
-    // The guard lives in its own block: this fn awaits the wire below, and a std
-    // MutexGuard in scope across an await point makes the future !Send.
-    let remaining = {
-        let faults = ASK_BACKOFF.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned backoff map is still a map of peer → until_ms; the worst a panicked holder leaves is one stale row, which expires by time
-        ask_backoff_remaining(&faults, peer, now)
-    };
-    if let Some(left_ms) = remaining {
-        return Err(format!("seat {peer} faulted an ask {}s ago — not asked again for {}s", (ASK_BACKOFF_MS.saturating_sub(left_ms)) / 1000, left_ms / 1000));
-    }
+    reservation_preflight(peer, now)?;
     let asked = send_reservation_ask(airc, peer, mind).await;
     if let Err(fault) = &asked {
         {
@@ -250,7 +284,32 @@ pub async fn request_reservation(
             "a seat that faulted the ask (policy, transport, deadline) is not asked again by ANY mind until the backoff passes"
         );
     }
-    asked
+    asked.map_err(ReservationAskError::Transport)
+}
+
+/// The ask's pre-wire decision — self-node, capability (#3941), backoff, in that order,
+/// before anything touches the wire or a fault row is written. Pure over process state and
+/// ledgers so it tests without an airc handle; [`request_reservation`] runs it first and
+/// only sends on Ok (card 8e4c42de).
+pub fn reservation_preflight(peer: Uuid, now_ms: u64) -> Result<(), ReservationAskError> {
+    if crate::persona::self_peer::is_this_node(peer) {
+        return Err(ReservationAskError::SelfNode);
+    }
+    // THE capability gate (#3941): ask ONLY a seat whose beacon affirmatively advertises the grant. A refusal here sends NOTHING over the wire — no ACL evaluation at the seat, no deadline wait — and writes NO fault row: it is a stable fact of the seat's beacon (which may refresh with new capabilities next beat), not a transport or policy fault; re-reading it each tick costs one ledger scan.
+    if let crate::capacity::gossip::CapabilityDecision::Refuse { required } =
+        reservation_capability_gate(&crate::capacity::gossip::global_ledger(), peer)
+    {
+        return Err(ReservationAskError::Capability { required });
+    }
+    // The guard lives in its own block: scope the lock to the read, nothing held past it.
+    let remaining = {
+        let faults = ASK_BACKOFF.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned backoff map is still a map of peer → until_ms; the worst a panicked holder leaves is one stale row, which expires by time
+        ask_backoff_remaining(&faults, peer, now_ms)
+    };
+    if let Some(left_ms) = remaining {
+        return Err(ReservationAskError::Backoff { remaining_ms: left_ms });
+    }
+    Ok(())
 }
 
 /// A seat is asked again only after this long once an ask FAULTED — refused by policy,
@@ -461,5 +520,51 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    // what this catches (card 8e4c42de, the title): callers' probes carry `kind` as a field so
+    // downstream counts capability-vs-transport without parsing reason text. The four classes
+    // are exactly these strings — a rename or merge here silently corrupts every fleet count
+    // that leans on it; and each class still renders human-readable text, because the refusal
+    // is logged too.
+    #[test]
+    fn each_refusal_carries_its_own_machine_countable_kind() {
+        use crate::capacity::gossip::CapabilityId;
+
+        let errs = [
+            ReservationAskError::SelfNode,
+            ReservationAskError::Capability { required: CapabilityId::PlacementReservationGrant },
+            ReservationAskError::Backoff { remaining_ms: 1_500 },
+            ReservationAskError::Transport("reserve ask to the seat not routed".to_string()),
+        ];
+        let kinds: Vec<&'static str> = errs.iter().map(|e| e.kind()).collect();
+        assert_eq!(kinds, vec!["self_node", "capability", "backoff", "transport"]);
+        assert!(errs[1].to_string().contains("capability"), "{}", errs[1]);
+        assert_eq!(errs[3].to_string(), "reserve ask to the seat not routed", "the transport text IS the wire detail");
+        assert!(errs[2].to_string().contains("not asked again"), "{}", errs[2]);
+    }
+
+    // what this catches (card 8e4c42de + #4219): preflight refuses BEFORE anything touches the
+    // wire, in a fixed order — self-node first (a node never asks itself for a slot under any
+    // of its own ids; the canary after M5's loopback spill), then capability absence. Neither
+    // refusal sends or writes a fault row; both are re-read each tick for one ledger scan.
+    #[test]
+    fn preflight_refuses_itself_and_the_unadvertised_seat_before_anything_touches_the_wire() {
+        use crate::capacity::gossip::CapabilityId;
+
+        let own = Uuid::new_v4();
+        crate::persona::self_peer::register(own); // every id this process wears is "me", including one registered just now
+        assert_eq!(
+            reservation_preflight(own, NOW),
+            Err(ReservationAskError::SelfNode),
+            "a node never asks itself for a slot — under any of its ids"
+        );
+
+        let stranger = Uuid::new_v4(); // never worn by this node; no beacon in the global ledger either
+        assert_eq!(
+            reservation_preflight(stranger, NOW),
+            Err(ReservationAskError::Capability { required: CapabilityId::PlacementReservationGrant }),
+            "a seat with no affirmative advertisement is refused before the wire — absence is a refusal"
+        );
     }
 }
