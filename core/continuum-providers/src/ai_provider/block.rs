@@ -424,7 +424,7 @@ impl AIProviderModule {
                 // ceiling. Over-allocation is what this guards (a huge trained window would
                 // allocate multi-GB F16 KV per seq and fail first-decode with
                 // `llama_decode returned -3`), and the governed budget guards it correctly.
-                let effective_context = kv_safe_context(&model_meta);
+                let effective_context = kv_safe_context(&model_meta, self.services.usable_budget);
                 let adapter_base = crate::inference::LlamaCppAdapter::with_model_id(
                     gguf_path.clone(),
                     model_meta.id.clone(),
@@ -688,11 +688,5 @@ impl AIProviderModule {
         }
 
         Ok(())
-    }
-}
-
-impl Default for AIProviderModule {
-    fn default() -> Self {
-        Self::new()
     }
 }

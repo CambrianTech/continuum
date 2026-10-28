@@ -1,0 +1,13 @@
+[package]
+name = "continuum-providers"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+continuum-base = { path = "../continuum-base" }
+continuum-engine = { path = "../continuum-engine" }
+continuum-kernel = { path = "../continuum-kernel" }
+async-trait.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

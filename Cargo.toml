@@ -38,6 +38,7 @@ members = [
     "core/continuum-live",
     "core/continuum-hands",
     "core/continuum-engine",
+    "core/continuum-providers",
     "core/continuum-models",
     "core/continuum-serving",
     "core/continuum-embedding",
