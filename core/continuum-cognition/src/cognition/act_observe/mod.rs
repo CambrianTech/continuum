@@ -142,7 +142,6 @@ pub mod test_support {
             &self,
             calls: &[ToolCall],
             context: &ToolExecutionContext,
-            _max_result_chars: usize,
         ) -> Result<NativeBatchOutcome, ToolError> {
             let act = {
                 let mut rooms = self.rooms.lock().unwrap();
@@ -289,7 +288,6 @@ pub mod test_support {
             &self,
             calls: &[ToolCall],
             context: &ToolExecutionContext,
-            _max_result_chars: usize,
         ) -> Result<NativeBatchOutcome, ToolError> {
             *self.seen_context.lock().unwrap() = Some(context.context_id);
             let results = calls
