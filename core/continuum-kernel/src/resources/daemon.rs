@@ -333,10 +333,16 @@ impl ResourceDaemon {
     ) -> (u64, Vec<super::lease::ResourceLease>) {
         let governor = self.governor.lock();
         let budget = governor.budget_for_replacing(consumer_id, kind);
-        let leases = governor.board().leases.into_iter()
+        let board = governor.board();
+        let capacity = board.kinds.iter().find(|row| row.kind == kind)
+            .map_or(0, |row| row.capacity_bytes);
+        let leases: Vec<_> = board.leases.into_iter()
             .filter(|lease| lease.kind == kind && lease.consumer_id != consumer_id)
             .collect();
-        (budget, leases)
+        let charged = leases.iter().fold(0u64, |sum, lease| sum.saturating_add(lease.bytes));
+        // An oversized own-residency add-back cannot erase another holder's
+        // grant. Every returned lease is excluded even before physical sampling.
+        (budget.min(capacity.saturating_sub(charged)), leases)
     }
 
     /// Register a leaseholder after startup — no restart (the directive's

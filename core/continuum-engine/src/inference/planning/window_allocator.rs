@@ -97,6 +97,9 @@ pub struct TrainingReserve {
     /// reservations deduplicate by job, and the job already charged as the live training holder
     /// is not reserved twice.
     pub job: Option<Uuid>,
+    /// Bytes already excluded from this plan's budget for this exact job.
+    #[serde(skip)]
+    accounted_bytes: u64,
 }
 
 /// What training at a reservation's window costs, and exactly what it was measured FOR: the base
@@ -115,7 +118,13 @@ pub struct TrainingPrice {
 
 impl TrainingReserve {
     pub fn new(window: u32, price: Option<TrainingPrice>, job: Option<Uuid>) -> Self {
-        Self { window, price, job }
+        Self { window, price, job, accounted_bytes: 0 }
+    }
+
+    /// Set only from leases read atomically with this plan's budget. Never carry
+    /// this credit into another budget snapshot or persist it with the demand.
+    pub fn account_charged_bytes(&mut self, bytes: u64) {
+        self.accounted_bytes = bytes;
     }
 
     /// The price when serving plans `candidate_model`, the model it was measured on; `None` for
@@ -370,7 +379,8 @@ fn grow_shared_window(
             unmeasured = true;
             continue;
         }
-        prices.entry(job).and_modify(|b| *b = (*b).max(price.bytes)).or_insert(price.bytes);
+        let outstanding = price.bytes.saturating_sub(reserve.accounted_bytes);
+        prices.entry(job).and_modify(|b| *b = (*b).max(outstanding)).or_insert(outstanding);
         training_target = training_target.max(reserve.window);
     }
     target = target.max(training_target);
@@ -449,6 +459,19 @@ mod tests {
         let tight = fp.peak_resident_bytes(baseline, 1);
         assert_eq!(grow_shared_window(&reqs, &fp, tight, 1, baseline),
             (baseline, TrainingGrowth::BaselineConflict { bytes }));
+        // What this catches: the same live job's already-charged allocation
+        // must not be reserved twice, while an uncovered remainder still is.
+        let mut charged = reserve.clone();
+        charged.account_charged_bytes(bytes);
+        let charged_reqs = [LaneRequirement::declared(Uuid::new_v4(), baseline)
+            .with_training(Some(charged.clone()))];
+        assert_eq!(grow_shared_window(&charged_reqs, &fp, roomy - bytes, 1, baseline),
+            (target, TrainingGrowth::Reserved { bytes: 0, target, reached: true }));
+        charged.account_charged_bytes(bytes / 2);
+        let partial_reqs = [LaneRequirement::declared(Uuid::new_v4(), baseline)
+            .with_training(Some(charged))];
+        assert_eq!(grow_shared_window(&partial_reqs, &fp, roomy - bytes / 2, 1, baseline),
+            (target, TrainingGrowth::Reserved { bytes: bytes / 2, target, reached: true }));
         let partial = fp.peak_resident_bytes(50_000, 1) + bytes;
         assert_eq!(grow_shared_window(&reqs, &fp, partial, 1, baseline),
             (50_000, TrainingGrowth::Reserved { bytes, target, reached: false }));

@@ -13,11 +13,10 @@ impl ServingDaemonModule {
     /// to drive the spawner before the tick loop starts — single source of
     /// truth for "what model + how many lanes."
     pub fn compute_plan(&self) -> Option<ServingPlan> {
-        plan_serving(
-            &self.host_budget(),
-            &self.live_candidates(),
-            &self.serving_demand(),
-        )
+        let (budget, leases) = self.host_budget_snapshot();
+        let mut demand = self.serving_demand();
+        account_training_leases(&mut demand, &leases);
+        plan_serving(&budget, &self.live_candidates(), &demand)
     }
 
     /// Recompute the plan from the live host snapshot + on-disk models, publish
@@ -40,12 +39,12 @@ impl ServingDaemonModule {
             self.note_reconcile_busy("recompute");
             return;
         }
-        let budget = self.host_budget();
+        let (budget, leases) = self.host_budget_snapshot();
         let intent = self.intent.snapshot();
         let catalog = self.catalog.snapshot();
         let candidates = servable_candidates(&catalog, &intent.suppressed, &intent.pinned);
         let on_disk = servable_candidates(&catalog, &HashSet::new(), &intent.pinned);
-        self.publish_plan_for_intent(budget, &candidates, &on_disk, intent.revision);
+        self.publish_plan_with_leases(budget, &candidates, &on_disk, intent.revision, &leases);
     }
 
     /// Pure publish step: run the classifier on the given inputs, publish the
@@ -105,6 +104,14 @@ impl ServingDaemonModule {
         on_disk: &[ModelFootprint],
         intent_revision: u64,
     ) {
+        self.publish_plan_with_leases(budget, candidates, on_disk, intent_revision, &[]);
+    }
+
+    fn publish_plan_with_leases(
+        &self, budget: HostBudget, candidates: &[ModelFootprint],
+        on_disk: &[ModelFootprint], intent_revision: u64,
+        leases: &[crate::resources::lease::ResourceLease],
+    ) {
         // Hysteresis: pass the currently-served model as the incumbent so a
         // transient free-memory dip doesn't thrash the served model.
         //
@@ -130,9 +137,10 @@ impl ServingDaemonModule {
         let seat_model = incumbent
             .as_deref()
             .or(remembered.as_ref().map(|g| g.model_id.as_str()));
-        let demand = self
+        let mut demand = self
             .serving_demand()
             .with_sticky_window(seat_model.and_then(crate::inference::served_window_store::load_for));
+        account_training_leases(&mut demand, leases);
         // THE INCUMBENT'S OWN BYTES ARE CREDITED BACK EXACTLY ONCE. `budget` is the
         // ledger's replace-myself budget: serving's own measured footprint added back,
         // capped at the device. Once serving has REPORTED that footprint (steady state,
@@ -610,5 +618,18 @@ impl ServingDaemonModule {
                 self.publish_plan_snapshot(intent_revision, None);
             }
         }
+    }
+}
+
+/// Match exact job identity; unrelated holders and other jobs earn no credit.
+fn account_training_leases(demand: &mut ServingDemand, leases: &[crate::resources::lease::ResourceLease]) {
+    for requirement in &mut demand.requirements {
+        let Some(reserve) = &mut requirement.training else { continue };
+        let bytes = reserve.job.map_or(0, |job| {
+            let consumer = format!("genome-train:{job}");
+            leases.iter().filter(|lease| lease.consumer_id == consumer)
+                .fold(0u64, |sum, lease| sum.saturating_add(lease.bytes))
+        });
+        reserve.account_charged_bytes(bytes);
     }
 }

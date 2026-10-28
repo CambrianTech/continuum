@@ -185,6 +185,10 @@ impl ServingDaemonModule {
     /// Delegates to the free [`live_host_budget`] so the autonomic tick and the
     /// `serving/pin` fit-gate compute the budget from the ONE source.
     pub(super) fn host_budget(&self) -> HostBudget {
+        self.host_budget_snapshot().0
+    }
+
+    pub(super) fn host_budget_snapshot(&self) -> (HostBudget, Vec<crate::resources::lease::ResourceLease>) {
         // The autonomic plan's budget = the LIVE governed available of the lane's POOL
         // (`serving_pool_kind`: the Ram row for a CPU-placed lane, the Vram row otherwise;
         // the Vram wording below predates that split and reads for the GPU arm) — net of every
@@ -217,7 +221,14 @@ impl ServingDaemonModule {
             self.system.gpu_memory_mode(),
             Some(crate::gpu::monitor::MemoryMode::Unified)
         );
-        let live = governed_vram_ceiling_or_report(&self.resource_daemon, "host_budget");
+        let (measured, leases) = self.resource_daemon
+            .replacement_budget_snapshot(SERVING_CONSUMER_ID, serving_pool_kind());
+        let (live, charged) = if measured > 0 {
+            (measured, leases)
+        } else {
+            // A substitute ceiling carries no authority to credit live holders.
+            (governed_vram_ceiling_or_report(&self.resource_daemon, "host_budget"), Vec::new())
+        };
         // LUDICROUS override: a declared benchmark/exam intent floors the whole GPU
         // (Performance, fraction 0.96) — the biggest window the model+machine allow, past the
         // conservative pressure read (which on UMA under-reports free memory). The drive mode
@@ -293,10 +304,12 @@ impl ServingDaemonModule {
                 "the plan budgets the sustained minimum, not this tick's reading"
             );
         }
-        HostBudget {
+        // The sustained minimum cannot exceed this atomic reading after mode
+        // reduction. Its historical conservatism cannot spend the charged bytes.
+        (HostBudget {
             usable_bytes,
             perf_cores: perf_cores(),
-        }
+        }, charged)
     }
 
     /// The serving budget this host has when the box is OURS — physical capacity at
