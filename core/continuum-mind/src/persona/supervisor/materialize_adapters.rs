@@ -91,10 +91,14 @@ pub async fn materialize_adapters(
         }
 
         // Reconcile the persona's effective context window to the TRUTH the
-        // running gateway serves. `build_adapter` just awaited a READY serving
-        // snapshot, so `current_serving()` now carries the real per-slot window
-        // the daemon read from llama-server's own `/props` — the authoritative
-        // model metadata. The profile's window was provisionally set at spawn-plan
+        // running gateway serves. When the snapshot is ready, `current_serving()`
+        // carries the real per-slot window the daemon read from llama-server's own
+        // `/props` — the authoritative model metadata. It need NOT be ready here (a
+        // persona materialized while the engine is still loading after a deploy):
+        // she is then bound at the provisional window, and the served-model re-home
+        // reconciler (`ipc/start_server/rehome_reconciler.rs`) rebinds her to the
+        // served window on the first ready snapshot. That reconciler owns the
+        // correction; this pin only spares the first turns a wrong window. The profile's window was provisionally set at spawn-plan
         // time from the planner's `served_context_window`, which the daemon
         // RE-computes every tick against live memory and which drifts ABOVE the
         // running server's frozen, 256-padded slot. Budgeting a prompt to that
@@ -157,7 +161,8 @@ pub async fn materialize_adapters(
             let snap = crate::inference::llama_server::current_serving();
             // A ready snapshot always carries a real window (the daemon refuses to
             // publish ready with 0). Guard on both so a not-yet-ready/empty
-            // snapshot never clobbers the provisional window with 0.
+            // snapshot never clobbers the provisional window with 0; the re-home
+            // reconciler corrects the binding once serving is ready.
             if snap.ready && snap.served_context_window > 0 {
                 if snap.served_context_window != profile.context_length {
                     continuum_base::probe!(

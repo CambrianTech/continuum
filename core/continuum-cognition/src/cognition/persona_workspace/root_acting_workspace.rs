@@ -632,21 +632,6 @@ impl PersonaWorkspaceRegistry {
         Some((Arc::clone(&cfg.admission), adapter, model))
     }
 
-    /// Rebind verified local residents on a serving change; preserve remote or unreadable assignments.
-    pub fn re_home_all(
-        &self,
-        adapter: Arc<dyn AIProviderAdapter>,
-        model: Option<String>,
-        context_window: u32,
-    ) -> usize {
-        self.re_home_all_at(
-            &crate::paths::continuum_root(),
-            adapter,
-            model,
-            context_window,
-        )
-    }
-
     /// How many persona minds are resident.
     pub fn len(&self) -> usize {
         self.cycles.lock().len()
