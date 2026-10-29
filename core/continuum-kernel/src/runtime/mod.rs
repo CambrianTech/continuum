@@ -43,6 +43,7 @@ pub mod control;
 pub mod event_classes;
 pub mod event_graph;
 pub mod tracked_checkout;
+pub mod tasks;
 pub mod daemon;
 pub mod governor_bus;
 pub mod handle;

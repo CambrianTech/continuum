@@ -1,0 +1,350 @@
+//! Durable task facts. Acceptance precedes execution; the first terminal insert wins.
+//! A terminal fact is also the outbox: it remains pending until its owner acknowledges it.
+//! Execution supervision and the owner sink are separate from this persistence contract.
+
+use crate::orm::query::{QueryBuilder, QueryOperator};
+use crate::orm::types::{CollectionSchema, FieldType, SchemaField};
+use crate::orm::{adapter::StorageAdapter, entity::OrmEntity, store::OrmStore};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::sync::Arc;
+use uuid::Uuid;
+
+mod output;
+pub use output::TaskOutput;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum TaskEnd {
+    Done(TaskOutput),
+    Failed(String),
+    TimedOut,
+    Stopped,
+    Lost,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+enum Fact {
+    Accepted { command: String },
+    Ended(TaskEnd),
+    Delivered,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct TaskFact {
+    task: Uuid,
+    owner: Uuid,
+    fact: Fact,
+}
+
+impl OrmEntity for TaskFact {
+    const COLLECTION: &'static str = "kernel_task_facts";
+
+    fn collection_schema() -> CollectionSchema {
+        let mut fields = crate::orm::entity::base_entity_fields();
+        for (name, field_type) in [
+            ("task", FieldType::Uuid),
+            ("owner", FieldType::Uuid),
+            ("fact", FieldType::Json),
+        ] {
+            fields.push(SchemaField {
+                name: name.into(),
+                field_type,
+                indexed: false,
+                unique: false,
+                nullable: false,
+                max_length: None,
+                foreign_key: None,
+            });
+        }
+        CollectionSchema {
+            collection: Self::COLLECTION.into(),
+            fields,
+            indexes: vec![],
+        }
+    }
+}
+
+/// One ledger may be reopened or shared by multiple supervisors. INSERT, rather than a
+/// process-local lock or equal-version monotonic upsert, arbitrates terminal races.
+pub struct TaskLedger {
+    facts: OrmStore<TaskFact>,
+}
+
+/// A bounded reconciliation page. Advance even when `ends` is empty: acknowledged
+/// rows still consume scan space. A new reconciliation starts with no cursor.
+pub struct PendingPage {
+    pub ends: Vec<(Uuid, TaskEnd)>,
+    pub after: Option<Uuid>,
+    pub exhausted: bool,
+}
+
+impl TaskLedger {
+    pub async fn new(adapter: Arc<dyn StorageAdapter>) -> Result<Self, String> {
+        Ok(Self {
+            facts: OrmStore::new(adapter).await.map_err(|e| e.to_string())?,
+        })
+    }
+
+    pub async fn accept(&self, owner: Uuid, command: String) -> Result<Uuid, String> {
+        let task = Uuid::new_v4();
+        self.facts
+            .save(
+                task,
+                &TaskFact {
+                    task,
+                    owner,
+                    fact: Fact::Accepted { command },
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(task)
+    }
+
+    async fn authorize(&self, task: Uuid, owner: Uuid) -> Result<(), String> {
+        match self
+            .facts
+            .find_by_id(task)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            Some(TaskFact {
+                task: stored_task,
+                owner: stored,
+                fact: Fact::Accepted { .. },
+            }) if stored == owner && stored_task == task => Ok(()),
+            _ => Err("task is absent or belongs to another owner".into()),
+        }
+    }
+
+    /// Only a supervisor that has observed execution ending calls this. A cancellation
+    /// request alone is not an end. Competing endings return the durable winner.
+    pub async fn finish(&self, task: Uuid, owner: Uuid, end: TaskEnd) -> Result<TaskEnd, String> {
+        self.authorize(task, owner).await?;
+        let id = Uuid::new_v5(&task, b"terminal");
+        let row = TaskFact {
+            task,
+            owner,
+            fact: Fact::Ended(end.clone()),
+        };
+        match self.facts.save(id, &row).await {
+            Ok(()) => Ok(end),
+            Err(write_error) => match self.facts.find_by_id(id).await.map_err(|e| e.to_string())? {
+                Some(TaskFact {
+                    task: stored_task,
+                    owner: stored_owner,
+                    fact: Fact::Ended(winner),
+                }) if stored_task == task && stored_owner == owner => Ok(winner),
+                // Never reinterpret an arbitrary store failure as a successful completion.
+                _ => Err(write_error.to_string()),
+            },
+        }
+    }
+
+    pub async fn pending(&self, task: Uuid, owner: Uuid) -> Result<Option<TaskEnd>, String> {
+        self.authorize(task, owner).await?;
+        let delivered = self
+            .facts
+            .find_by_id(Uuid::new_v5(&task, b"delivered"))
+            .await
+            .map_err(|e| e.to_string())?;
+        match delivered {
+            Some(TaskFact {
+                task: stored_task,
+                owner: stored_owner,
+                fact: Fact::Delivered,
+            }) if stored_task == task && stored_owner == owner => return Ok(None),
+            Some(_) => return Err("task delivery fact has an invalid identity or shape".into()),
+            None => {}
+        }
+        match self
+            .facts
+            .find_by_id(Uuid::new_v5(&task, b"terminal"))
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            Some(TaskFact {
+                task: stored_task,
+                owner: stored_owner,
+                fact: Fact::Ended(end),
+            }) if stored_task == task && stored_owner == owner => Ok(Some(end)),
+            None => Ok(None),
+            _ => Err("task terminal fact has an invalid identity or shape".into()),
+        }
+    }
+
+    /// Called only after the sink durably consumes the terminal fact. A repeated delivery
+    /// uses the same task id; the sink must deduplicate before acknowledging here.
+    pub async fn acknowledge(&self, task: Uuid, owner: Uuid) -> Result<(), String> {
+        self.authorize(task, owner).await?;
+        let terminal = self
+            .facts
+            .find_by_id(Uuid::new_v5(&task, b"terminal"))
+            .await
+            .map_err(|e| e.to_string())?;
+        if !matches!(
+            terminal,
+            Some(TaskFact {
+                task: stored_task, owner: stored_owner, fact: Fact::Ended(_),
+            }) if stored_task == task && stored_owner == owner
+        ) {
+            return Err("cannot acknowledge a task without a terminal fact".into());
+        }
+        let id = Uuid::new_v5(&task, b"delivered");
+        let row = TaskFact {
+            task,
+            owner,
+            fact: Fact::Delivered,
+        };
+        match self.facts.save(id, &row).await {
+            Ok(()) => Ok(()),
+            Err(error) => match self.facts.find_by_id(id).await.map_err(|e| e.to_string())? {
+                Some(stored) if stored == row => Ok(()),
+                _ => Err(error.to_string()),
+            },
+        }
+    }
+
+    /// Reconstruct delivery from durable ownership, never from remembered handles.
+    /// This scan is not a live subscription: concurrent inserts are picked up by the
+    /// next sweep. Notification triggers and boot recovery both start a fresh sweep.
+    pub async fn pending_page(
+        &self,
+        owner: Uuid,
+        after: Option<Uuid>,
+        limit: usize,
+    ) -> Result<PendingPage, String> {
+        if limit == 0 {
+            return Err("task reconciliation page must be nonempty".into());
+        }
+        let mut query = QueryBuilder::new(TaskFact::COLLECTION)
+            .filter_eq("owner", owner.to_string())
+            .sort_asc("id")
+            .limit(limit);
+        if let Some(cursor) = after {
+            query = query.filter("id", QueryOperator::Gt(Value::String(cursor.to_string())));
+        }
+        let rows = self
+            .facts
+            .find_matching(query.build())
+            .await
+            .map_err(|e| e.to_string())?;
+        let exhausted = rows.len() < limit;
+        let next = rows.last().map(|(id, _)| *id);
+        let mut ends = Vec::new();
+        for (id, row) in rows {
+            if row.owner != owner {
+                return Err("task owner query returned another owner".into());
+            }
+            if matches!(row.fact, Fact::Accepted { .. }) {
+                if id != row.task {
+                    return Err("task acceptance has an invalid identity".into());
+                }
+                if let Some(end) = self.pending(row.task, owner).await? {
+                    ends.push((row.task, end));
+                }
+            }
+        }
+        Ok(PendingPage {
+            ends,
+            after: next,
+            exhausted,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn concurrent_ends_survive_reopen_and_delivery_retry() -> Result<(), String> {
+        let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+        let first = TaskLedger::new(adapter.clone()).await?;
+        let second = TaskLedger::new(adapter.clone()).await?;
+        let owner = Uuid::new_v4();
+        let task = first.accept(owner, "code/shell".into()).await?;
+        assert!(first.acknowledge(task, owner).await.is_err());
+        let (a, b) = tokio::join!(
+            first.finish(task, owner, TaskEnd::Done(TaskOutput::Json(Value::Null))),
+            second.finish(task, owner, TaskEnd::Stopped),
+        );
+        let winner = a?;
+        assert_eq!(winner, b?);
+        drop(first);
+        drop(second);
+        let reopened = TaskLedger::new(adapter).await?;
+        assert_eq!(reopened.pending(task, owner).await?, Some(winner.clone()));
+        let page = reopened.pending_page(owner, None, 10).await?;
+        assert_eq!(page.ends, vec![(task, winner.clone())]);
+        assert_eq!(reopened.finish(task, owner, TaskEnd::Lost).await?, winner);
+        assert!(reopened.pending(task, Uuid::new_v4()).await.is_err());
+        reopened.acknowledge(task, owner).await?;
+        reopened.acknowledge(task, owner).await?;
+        assert_eq!(reopened.pending(task, owner).await?, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn corrupt_delivery_cannot_hide_an_unconsumed_end() -> Result<(), String> {
+        let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+        let ledger = TaskLedger::new(adapter).await?;
+        let owner = Uuid::new_v4();
+        let task = ledger.accept(owner, "code/shell".into()).await?;
+        ledger.finish(task, owner, TaskEnd::Stopped).await?;
+        ledger
+            .facts
+            .save(
+                Uuid::new_v5(&task, b"delivered"),
+                &TaskFact {
+                    task,
+                    owner: Uuid::new_v4(),
+                    fact: Fact::Delivered,
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        assert!(ledger.pending(task, owner).await.is_err());
+        assert!(ledger.acknowledge(task, owner).await.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn replay_pages_cross_empty_pages_without_leaking_other_owners() -> Result<(), String> {
+        let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+        let ledger = TaskLedger::new(adapter).await?;
+        let owner = Uuid::new_v4();
+        let foreign = Uuid::new_v4();
+        let consumed = ledger.accept(owner, "consumed".into()).await?;
+        ledger.finish(consumed, owner, TaskEnd::Stopped).await?;
+        ledger.acknowledge(consumed, owner).await?;
+        let pending = ledger.accept(owner, "pending".into()).await?;
+        ledger
+            .finish(pending, owner, TaskEnd::Done(TaskOutput::Json(Value::Null)))
+            .await?;
+        let other = ledger.accept(foreign, "other".into()).await?;
+        ledger.finish(other, foreign, TaskEnd::Stopped).await?;
+        let mut after = None;
+        let mut found = Vec::new();
+        let mut exhausted = false;
+        // Five facts for this owner, plus the empty last page. This bound also
+        // catches a cursor that fails to advance on an empty-result page.
+        for _ in 0..7 {
+            let page = ledger.pending_page(owner, after, 1).await?;
+            found.extend(page.ends);
+            if page.exhausted {
+                exhausted = true;
+                break;
+            }
+            assert_ne!(page.after, after);
+            after = page.after;
+        }
+        assert!(exhausted);
+        assert_eq!(
+            found,
+            vec![(pending, TaskEnd::Done(TaskOutput::Json(Value::Null)))]
+        );
+        assert!(ledger.pending_page(owner, None, 0).await.is_err());
+        Ok(())
+    }
+}
