@@ -125,6 +125,11 @@ pub struct PersonaDemand {
     /// Legacy files without it read 0.
     #[serde(default)]
     pub sent_peak: u32,
+    /// Recent starvation-aware growth samples; the lifetime peak is diagnostic only.
+    #[serde(default)]
+    pub growth_recent: [u32; RECENT_TURNS],
+    #[serde(default)]
+    pub growth_next: u8,
     /// The last [`RECENT_TURNS`] untrimmed demands, newest overwriting oldest — what
     /// her turns TYPICALLY assemble, as opposed to `peak_tokens` (once, ever). The
     /// lane REQUIREMENT is the median of these with headroom (`typical_tokens`):
@@ -167,6 +172,27 @@ fn push_need(d: &mut PersonaDemand, need_tokens: u32) {
     let i = (d.need_next as usize) % RECENT_TURNS;
     d.need_recent[i] = need_tokens;
     d.need_next = ((i + 1) % RECENT_TURNS) as u8;
+}
+
+fn push_growth(d: &mut PersonaDemand, tokens: u32) {
+    if tokens == 0 {
+        return;
+    }
+    d.sent_peak = d.sent_peak.max(tokens);
+    let i = (d.growth_next as usize) % RECENT_TURNS;
+    d.growth_recent[i] = tokens;
+    d.growth_next = ((i + 1) % RECENT_TURNS) as u8;
+}
+
+/// Migration uses recent untrimmed demand until growth samples arrive. Old files
+/// with no ring use their last demand; sent-only legacy records have only sent_peak.
+/// Never substitute post-fit need: a starved window must still request growth.
+fn growth_tokens(d: &PersonaDemand) -> u32 {
+    if let Some(tokens) = median_of(&d.growth_recent) {
+        return tokens;
+    }
+    let demand = requirement_tokens(d);
+    if demand > 0 { demand } else { d.sent_peak }
 }
 
 fn median_of(ring: &[u32; RECENT_TURNS]) -> Option<u32> {
@@ -490,8 +516,12 @@ impl WorkingSetRegistry {
         *self
             .observed
             .entry(persona)
-            .and_modify(|d| d.sent_peak = d.sent_peak.max(sent_tokens))
-            .or_insert(PersonaDemand { last_seen_ms: now_ms, sent_peak: sent_tokens, ..PersonaDemand::default() })
+            .and_modify(|d| push_growth(d, sent_tokens))
+            .or_insert_with(|| {
+                let mut d = PersonaDemand { last_seen_ms: now_ms, ..PersonaDemand::default() };
+                push_growth(&mut d, sent_tokens);
+                d
+            })
     }
 
     /// Record the post-fit size of a turn the fit HELD — her need (see
@@ -527,14 +557,14 @@ impl WorkingSetRegistry {
     }
 
     /// Typical growth sample among `personas` — the median of their retained
-    /// starvation-aware peaks. The planner's per-lane floor follows this, not the ceiling: one mind
+    /// recent starvation-aware samples. The planner's per-lane floor follows this, not the ceiling: one mind
     /// with a 96k prompt must not size every lane to 120k and starve the roster
     /// (2026-09-14: 16 residents on 3 lanes). The outlier is reconciled down to the
     /// served window instead.
     pub fn sent_median_of(&self, personas: &[Uuid]) -> Option<u32> {
         self.sent_median_with(personas, &[])
     }
-    /// Growth demand over the residents' peaks PLUS `extra` requested samples —
+    /// Growth demand over the residents' recent medians PLUS `extra` requested samples —
     /// including refused prompts from minds hosted on other nodes
     /// ([`crate::inference::resource_admission::leased_in_sent_samples`]). ONE median for
     /// the seat's whole demand pool: a seat that plans lanes for leased-in minds must size
@@ -543,7 +573,7 @@ impl WorkingSetRegistry {
     pub fn sent_median_with(&self, personas: &[Uuid], extra: &[u32]) -> Option<u32> {
         let mut peaks: Vec<u32> = personas
             .iter()
-            .filter_map(|p| self.observed.get(p).map(|e| e.value().sent_peak))
+            .filter_map(|p| self.observed.get(p).map(|e| growth_tokens(e.value())))
             .chain(extra.iter().copied())
             .filter(|&t| t > 0)
             .collect();
@@ -553,11 +583,11 @@ impl WorkingSetRegistry {
         peaks.sort_unstable();
         Some(peaks[peaks.len() / 2])
     }
-    /// Largest retained growth sample among `personas`, including unmet demand.
+    /// Largest current growth requirement among `personas`, including unmet demand.
     pub fn sent_ceiling_of(&self, personas: &[Uuid]) -> Option<u32> {
         personas
             .iter()
-            .filter_map(|p| self.observed.get(p).map(|e| e.value().sent_peak))
+            .filter_map(|p| self.observed.get(p).map(|e| growth_tokens(e.value())))
             .max()
             .filter(|&t| t > 0)
     }
