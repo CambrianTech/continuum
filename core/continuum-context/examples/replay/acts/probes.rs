@@ -89,7 +89,7 @@ impl Probes {
 mod tests {
     use super::*;
 
-    const LOG: &str = include_str!("fixtures/core.log");
+    const LOG: &str = include_str!("fixtures/core-log.txt");
 
     // what this catches: the ANSI colours left in a field (a persona id that never matches), a
     // turnover reported as an append, or a probe from before her previous act charged to this one.

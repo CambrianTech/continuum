@@ -361,7 +361,7 @@ mod tests {
         let mut captures = Captures::default();
         captures::read(CAPTURES, Window::default(), &mut captures);
         let o = Options { personas: personas.iter().map(|p| p.to_string()).collect(), ..Options::default() };
-        inspect(&captures, engine::parse(include_str!("fixtures/engine.log")), &probes::parse(include_str!("fixtures/core.log")), &o)
+        inspect(&captures, engine::parse(include_str!("fixtures/engine-log.txt")), &probes::parse(include_str!("fixtures/core-log.txt")), &o)
     }
 
     // what this catches: the engine rewording its over-window refusal: the act would read 0

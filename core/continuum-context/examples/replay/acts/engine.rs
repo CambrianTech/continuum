@@ -139,7 +139,7 @@ impl Index {
 mod tests {
     use super::*;
 
-    const LOG: &str = include_str!("fixtures/engine.log");
+    const LOG: &str = include_str!("fixtures/engine-log.txt");
 
     // what this catches: a page-in attributed to the wrong slot or carried past a relaunch, a
     // resume field misread (lcp vs chosen), or a second process's resumes mixed into the first.
