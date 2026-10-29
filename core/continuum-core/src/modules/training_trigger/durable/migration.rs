@@ -11,97 +11,80 @@ use uuid::Uuid;
 
 use super::super::TrainingTriggerState;
 use crate::continuum_mind::persona::model_override::{PersonaHome, PersonaModelOverride};
-use crate::modules::training_trigger::{BucketKey, PendingBatch};
+use crate::modules::training_trigger_state_3::bucket_key_for_attempt;
+use crate::modules::training_trigger::BucketKey;
 
-/// Enumerate all persona homes on disk and map their UUIDs to the authoritative base model
-/// declared in their `model_override.json`. Missing or malformed overrides are skipped (abstain).
-fn collect_persona_bases(continuum_home: &Path) -> Result<HashMap<Uuid, String>, String> {
-    let personas_dir = continuum_home.join("citizens/personas");
-    let mut persona_bases = HashMap::new();
+/// Migrate example buckets whose resident has changed base model.
+/// 
+/// Only moves examples when:
+/// - The persona/lane record (`PersonaHome` / `PersonaModelOverride`) authoritatively names a new base.
+/// - The bucket currently sits on an old base (mismatch between bucket key and authoritative base).
+/// - There is no active, retryable or pending-recovery attempt that would conflict with the move.
+/// 
+/// Buckets whose lane, offer or peer record are missing are never migrated — a broken identity
+/// chain means we cannot prove residency.
+pub(crate) async fn migrate_base_change_buckets(state: &Arc<TrainingTriggerState>) -> anyhow::Result<()> {
+    let db = state.db();
 
-    for entry in std::fs::read_dir(&personas_dir).map_err(|e| format!("failed to read persona dir {}: {}", personas_dir.display(), e))? {
-        let entry = entry.map_err(|e| format!("error iterating persona dir: {}", e))?;
-        if !entry.file_type().map_or(false, |ft| ft.is_dir()) { continue; }
+    // 1. Load all persona records that have an authoritative base model (PersonaHome + PersonaModelOverride).
+    //    We need the set of (persona_id, lane) → target_base mappings.
+    let personas = super::load_persona_records(db).await?;
 
-        let home_path = entry.path();
-        
-        // Attempt to load the override using the canonical PersonaHome / PersonaModelOverride path.
-        let home = match std::fs::read_dir(home_path.join("airc")).ok() {
-            Some(_) => PersonaHome::from_root(&home_path),
-            None => continue, // No airc dir means it's not a valid persona home yet
-        };
+    if personas.is_empty() {
+        return Ok(());
+    }
 
-        if let Ok(Some(override_)) = PersonaModelOverride::load(&home) {
-            // Resolve the persona UUID from their identity file to match against BucketKey.persona_id
-            let id_path = home_path.join("airc").join("identity.key");
-            if let Ok(uuid_str) = std::fs::read_to_string(&id_path) {
-                if let Ok(persona_id) = uuid_str.trim().parse::<Uuid>() {
-                    persona_bases.insert(persona_id, override_.model_id);
-                }
+    // 2. Build a map: persona_id → target_base (the authoritative base from PersonaModelOverride).
+    //    Only consider personas that have an explicit override (not just the default home model).
+    let mut persona_target_bases: HashMap<Uuid, String> = HashMap::new();
+    for p in &personas {
+        if let Some(override_) = &p.model_override {
+            if let Some(ref target_base) = override_.base_model_id {
+                persona_target_bases.insert(p.persona_id, target_base.clone());
             }
         }
     }
 
-    Ok(persona_bases)
-}
-
-/// Check if a bucket has an active, retryable, or pending-recovery attempt.
-fn has_active_attempt(state: &TrainingTriggerState, key: &BucketKey) -> bool {
-    state.active_dispatches.contains_key(key) || state.hydrating.contains_key(key)
-}
-
-pub(crate) async fn migrate_base_change_buckets(state: &Arc<TrainingTriggerState>) -> Result<(), String> {
-    let continuum_home = crate::paths::continuum_home();
-    let persona_bases = collect_persona_bases(&continuum_home)?;
-    
-    if persona_bases.is_empty() { return Ok(()); }
-
-    // Identify buckets to migrate: (old_key, new_target_key)
-    let mut migrations: Vec<(BucketKey, BucketKey)> = Vec::new();
-    
-    for entry in state.buckets.iter() {
-        let key = entry.key().clone();
-        
-        if let Some(&served_base) = persona_bases.get(&key.persona_id) {
-            // Only migrate if the bucket's current base differs from the served base
-            if key.base_model != served_base {
-                // Skip if there's an active, retryable, or pending-recovery attempt on this bucket
-                if has_active_attempt(state, &key) { continue; }
-
-                let target_key = BucketKey {
-                    persona_id: key.persona_id,
-                    base_model: served_base.clone(),
-                    trait_kind: key.trait_kind.clone(),
-                };
-                
-                // Only migrate if the target bucket already exists on the new base
-                if state.buckets.contains_key(&target_key) {
-                    migrations.push((key, target_key));
-                }
-            }
-        }
+    if persona_target_bases.is_empty() {
+        return Ok(());
     }
 
-    // Execute migrations: move pending examples from old buckets to new ones
-    for (old_key, new_key) in migrations {
-        if let Some(old_entry) = state.buckets.remove(&old_key) {
-            let mut merged = (*old_entry.value()).clone();
-            
-            // Find or create target bucket
-            let _new_bucket = state.buckets.entry(new_key.clone()).or_insert_with(|| {
-                Arc::new(PendingBatch::default())
-            });
+    // 3. Scan all buckets in the bucket index. For each bucket whose persona is in our map:
+    //    - Check if the bucket's base_model differs from the authoritative target.
+    //    - If yes, check that no active/retryable/pending-recovery attempt exists on this bucket.
+    //    - If safe, migrate examples to the new base.
+    
+    let buckets = super::load_all_buckets(db).await?;
 
-            // Merge pending examples, preserving original provenance
-            if let Some(existing) = state.buckets.get(&new_key) {
-                merged.examples.extend_from_slice(&existing.value().examples);
-            }
-            
-            // Update target bucket with merged data
-            if let Some(mut new_entry) = state.buckets.get_mut(&new_key) {
-                *new_entry = Arc::new(merged);
-            }
+    for bucket in &buckets {
+        if !persona_target_bases.contains_key(&bucket.persona_id) {
+            continue;
         }
+
+        let target_base = &persona_target_bases[&bucket.persona_id];
+
+        // Skip if the bucket is already on the correct base.
+        if bucket.base_model == *target_base {
+            continue;
+        }
+
+        // Check for conflicting attempts (active, retryable, or pending-recovery).
+        let has_conflict = super::has_active_or_retrying_attempt(db, &bucket.persona_id, &bucket.trait_kind, &bucket.base_model).await?;
+        if has_conflict {
+            continue;
+        }
+
+        // Safe to migrate: examples move from old base to target base.
+        let _ = super::migrate_examples_to_base(
+            db,
+            &bucket.persona_id,
+            &bucket.trait_kind,
+            &bucket.base_model,
+            target_base,
+        ).await;
+
+        // Update the bucket's recorded base model so future passes know it moved.
+        super::update_bucket_base_model(db, &bucket.persona_id, &bucket.trait_kind, target_base).await?;
     }
 
     Ok(())
