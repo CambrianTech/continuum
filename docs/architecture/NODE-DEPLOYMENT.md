@@ -42,9 +42,15 @@ decides which engine a core runs.
   below fails instead.
 - Never under an operator's `LLAMA_SERVER_BIN`, and never while a deploy claim is in flight (the
   deploy owns the pointers mid-promote).
-- `ping` reports `enginePin` and `engineStamp`. `deploy-verify` (and so every `reboot`) fails
-  with "ENGINE NOT PINNED" when the stamp is not the pin, after giving the core up to 60 s to
-  re-pin.
+- A candidate slot must carry exactly the current slot's verified target (`<backend>[:<cuda
+  archs>]`, the installer's `STAMP_WANT`); a current slot with no readable stamp promotes nothing
+  (`serving.engine.untargeted`).
+- `ping.engine` keeps the INSTALLED slot stamp and the SERVED engine (the live incarnation's own
+  `/props` build, OS-confirmed, and the slot stamp it was launched from) apart, or names the
+  operator's own engine as its own mode. `deploy-verify` (and so every `reboot`) passes only when
+  the live owned engine reports the pin and runs from the installed slot; a missing report, no
+  install, an unadopted lane or a stale build refuses ("ENGINE NOT VERIFIED / PINNED / ADOPTED")
+  after the serving wait (`DEFAULT_SERVING_WAIT`, one cold relaunch).
 
 ## Still open, each with an owner
 

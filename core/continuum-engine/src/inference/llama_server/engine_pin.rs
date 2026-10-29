@@ -9,10 +9,12 @@
 //!
 //! The core knows its pin: `vendor/LLAMA_CPP_PIN` is compiled in. Before every launch, and before
 //! the reconcile compares a running lane with the installed engine, the current slot is held to
-//! it. A slot already holding the pin on the same backend is promoted, a verified one first.
-//! When none exists, the node keeps serving on what it has and says so loudly
-//! (`serving.engine.unpinned`), because a mute resident is worse than a slow one. `deploy-verify`
-//! reads the same fact from `ping` and fails the deploy.
+//! it. A slot already holding the pin for this host's verified target (backend and CUDA
+//! architectures, [`EngineStamp`]) is promoted, a verified one first. When none exists, the node
+//! keeps serving on what it has and says so loudly (`serving.engine.unpinned`), because a mute
+//! resident is worse than a slow one. Promoting the pointer is not the running engine: the
+//! reconcile relaunches the lane onto it, and `deploy-verify` passes only when the LIVE engine's
+//! own build is the pin ([`super::engine_report`]).
 
 /// The fork commit this tree pins, compiled in from the one file a PR edits to move it.
 pub(crate) const PINNED_ENGINE: &str = include_str!("../../../../vendor/LLAMA_CPP_PIN");
@@ -31,47 +33,70 @@ pub(crate) struct SlotReading {
     pub verified: bool,
 }
 
+/// A slot stamp read as its two halves: the fork commit, and the build target the installer
+/// verified on THIS host before writing the stamp (`<backend>[:<cuda archs>]`: `STAMP_WANT` in
+/// install-llama-server.sh, which decides the backend and, for CUDA, the architectures from the
+/// host's own devices, then stamps only after the built binary reports that backend's devices).
+/// The target is the host-compatibility fact: two stamps with the same target are builds of one
+/// program for the same hardware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EngineStamp<'a> {
+    pub commit: &'a str,
+    pub target: &'a str,
+}
+
+impl<'a> EngineStamp<'a> {
+    /// `None` for a stamp that names no commit or no target: it says nothing about compatibility.
+    pub(crate) fn parse(stamp: &'a str) -> Option<Self> {
+        let (commit, target) = stamp.trim().split_once(':')?;
+        let (commit, target) = (commit.trim(), target.trim());
+        (!commit.is_empty() && !target.is_empty()).then_some(Self { commit, target })
+    }
+
+    /// Whether this build is of `pin` (the ONE SHA rule: prefix either way, credible hex).
+    pub(crate) fn holds(&self, pin: &str) -> bool {
+        continuum_cli_lifecycle::deploy_provenance::sha_matches(self.commit, pin)
+    }
+}
+
 /// What holding the node to its pin decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PinChoice {
-    /// The current slot already runs the pinned engine.
+    /// The current slot already holds the pinned engine.
     Pinned,
-    /// Make this slot current: it holds the pin on the current engine's backend.
+    /// Make this slot current: it holds the pin for exactly the current engine's target.
     Promote { slot: &'static str, stamp: String },
-    /// No slot holds the pin on this backend: the node serves on `current` and says so.
-    Unpinned { current: Option<String> },
+    /// No slot holds the pin for the current target: the node serves on `current` and says so.
+    Unpinned { current: String },
+    /// The current slot has no readable stamp, so this host's verified target is unknown and no
+    /// slot can be shown to fit it: nothing is promoted.
+    Untargeted { current: Option<String> },
 }
 
-fn commit(stamp: &str) -> &str {
-    stamp.split(':').next().unwrap_or(stamp).trim() // unwrap_or: split always yields one piece
-}
-
-fn backend(stamp: &str) -> Option<&str> {
-    stamp.split(':').nth(1).map(str::trim)
-}
-
-fn holds(stamp: &str, pin: &str) -> bool {
-    continuum_cli_lifecycle::deploy_provenance::sha_matches(commit(stamp), pin)
-}
-
-/// PURE: hold `current` to `pin`. A candidate must share the current slot's backend (a pin is
-/// never a reason to move a CUDA node to CPU), and a verified slot wins over an unproven one.
+/// PURE: hold `current` to `pin`. A candidate must carry exactly the current slot's verified
+/// target (backend AND CUDA architectures: a pin is never a reason to move a CUDA node to CPU, or
+/// an sm_120 node onto an sm_86 build), and a verified slot wins over an unproven one. With no
+/// readable current target there is no compatibility evidence, so nothing is promoted.
 pub(crate) fn choose(current: Option<&'static str>, slots: &[SlotReading], pin: &str) -> PinChoice {
-    let current_stamp = current.and_then(|name| slots.iter().find(|s| s.name == name)).and_then(|s| s.stamp.clone());
-    if current_stamp.as_deref().is_some_and(|stamp| holds(stamp, pin)) {
+    let current_stamp = current.and_then(|name| slots.iter().find(|s| s.name == name)).and_then(|s| s.stamp.as_deref());
+    let Some((stamp, target)) = current_stamp.and_then(|stamp| Some((stamp, EngineStamp::parse(stamp)?))) else {
+        return PinChoice::Untargeted { current: current_stamp.map(str::to_string) };
+    };
+    if target.holds(pin) {
         return PinChoice::Pinned;
     }
-    let want_backend = current_stamp.as_deref().and_then(backend);
     let candidate = slots
         .iter()
         .filter(|s| Some(s.name) != current)
-        .filter_map(|s| s.stamp.as_deref().map(|stamp| (s, stamp)))
-        .filter(|(_, stamp)| holds(stamp, pin))
-        .filter(|(_, stamp)| want_backend.map_or(true, |want| backend(stamp) == Some(want))) // map_or: no current stamp constrains no backend
+        .filter_map(|s| {
+            let stamp = s.stamp.as_deref()?;
+            let parsed = EngineStamp::parse(stamp)?;
+            (parsed.holds(pin) && parsed.target == target.target).then_some((s, stamp))
+        })
         .max_by_key(|(s, _)| s.verified);
     match candidate {
         Some((slot, stamp)) => PinChoice::Promote { slot: slot.name, stamp: stamp.to_string() },
-        None => PinChoice::Unpinned { current: current_stamp },
+        None => PinChoice::Unpinned { current: stamp.to_string() },
     }
 }
 
@@ -132,26 +157,26 @@ pub(super) fn hold_current_engine_to_pin() {
         PinChoice::Unpinned { current: stamp } => {
             if changed {
                 continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.unpinned",
+                    current = stamp.as_str(),
+                    pin = pinned_engine(),
+                    "no engine slot holds this core's pinned engine for this host's target: the node \
+                     serves on an engine its source does not pin until `continuum install` builds it"
+                );
+            }
+        }
+        PinChoice::Untargeted { current: stamp } => {
+            if changed {
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.untargeted",
+                    slot = current.unwrap_or(""), // probe field: no current slot reads empty
                     current = stamp.as_deref().unwrap_or(""), // probe field: no stamp reads empty
                     pin = pinned_engine(),
-                    "no engine slot holds this core's pinned engine on this backend: the node serves on \
-                     an engine its source does not pin until `continuum install` builds it"
+                    "the current engine slot has no readable stamp, so no slot can be shown to fit this \
+                     host: nothing is promoted until `continuum install` writes a verified one"
                 );
             }
         }
     }
     *LAST.lock() = Some(choice);
-}
-
-/// The current slot's stamp, for `ping` and `deploy-verify`: `None` under an operator override
-/// or with no owned install.
-pub fn current_engine_stamp() -> Option<String> {
-    super::engine_install::installed_engine_stamp()
-}
-
-/// Whether `stamp` names this core's pinned engine.
-pub fn stamp_holds_pin(stamp: &str) -> bool {
-    holds(stamp, pinned_engine())
 }
 
 #[cfg(test)]
@@ -178,7 +203,7 @@ mod tests {
         assert_eq!(choose(Some("engine-c"), &m5, PIN), PinChoice::Pinned);
 
         let other_backend = [slot("engine-a", "e7e1077b3:metal", true), slot("engine-b", "741b0175b:cpu", true)];
-        assert_eq!(choose(Some("engine-a"), &other_backend, PIN), PinChoice::Unpinned { current: Some("e7e1077b3:metal".into()) });
+        assert_eq!(choose(Some("engine-a"), &other_backend, PIN), PinChoice::Unpinned { current: "e7e1077b3:metal".into() });
 
         let proven_first = [
             slot("engine-a", "e7e1077b3:metal", true),
@@ -187,10 +212,29 @@ mod tests {
         ];
         assert_eq!(choose(Some("engine-a"), &proven_first, PIN), PinChoice::Promote { slot: "engine-c", stamp: "741b0175b:metal".into() });
 
-        let cuda = [slot("engine-a", "e7e1077b3:cuda:120", true), slot("engine-b", "741b0175b:cuda:120", false)];
-        assert_eq!(choose(Some("engine-a"), &cuda, PIN), PinChoice::Promote { slot: "engine-b", stamp: "741b0175b:cuda:120".into() });
-
         let none = [slot("engine-a", "e7e1077b3:metal", true)];
-        assert_eq!(choose(Some("engine-a"), &none, PIN), PinChoice::Unpinned { current: Some("e7e1077b3:metal".into()) });
+        assert_eq!(choose(Some("engine-a"), &none, PIN), PinChoice::Unpinned { current: "e7e1077b3:metal".into() });
+    }
+
+    // what this catches (Codex on #5535): a CUDA pin build for other GPU architectures promoted
+    // onto this node because only the backend word was compared (sm_86 kernels on an sm_120
+    // card), and a missing current stamp read as "any backend will do".
+    #[test]
+    fn a_candidate_must_fit_the_current_target_and_a_missing_target_promotes_nothing() {
+        let cuda = [
+            slot("engine-a", "e7e1077b3:cuda:120", true),
+            slot("engine-b", "741b0175b:cuda:86", true),
+            slot("engine-c", "741b0175b:cuda:120", false),
+        ];
+        assert_eq!(choose(Some("engine-a"), &cuda, PIN), PinChoice::Promote { slot: "engine-c", stamp: "741b0175b:cuda:120".into() });
+        let other_arch = [slot("engine-a", "e7e1077b3:cuda:120", true), slot("engine-b", "741b0175b:cuda:86", true)];
+        assert_eq!(choose(Some("engine-a"), &other_arch, PIN), PinChoice::Unpinned { current: "e7e1077b3:cuda:120".into() });
+
+        let pinned_elsewhere = slot("engine-b", "741b0175b:metal", true);
+        let unstamped = [SlotReading { name: "engine-a", stamp: None, verified: true }, pinned_elsewhere.clone()];
+        assert_eq!(choose(Some("engine-a"), &unstamped, PIN), PinChoice::Untargeted { current: None });
+        let no_target = [slot("engine-a", "e7e1077b3", true), pinned_elsewhere.clone()];
+        assert_eq!(choose(Some("engine-a"), &no_target, PIN), PinChoice::Untargeted { current: Some("e7e1077b3".into()) });
+        assert_eq!(choose(None, &[pinned_elsewhere], PIN), PinChoice::Untargeted { current: None });
     }
 }

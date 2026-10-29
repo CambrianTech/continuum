@@ -87,7 +87,9 @@ use genome::{engine_help_lists_train_dir, ENGINE_TRAIN_DIR};
 mod engine_install;
 mod engine_features;
 mod engine_pin;
-pub use engine_pin::{current_engine_stamp, pinned_engine, stamp_holds_pin};
+pub use engine_pin::pinned_engine;
+mod engine_report;
+pub use engine_report::{engine_report, engine_verdict, EngineReport, ServedEngineReport};
 pub use engine_features::serving_engine_takes_tail_tools;
 use engine_features::{forget_served_engine, observe_served_engine};
 #[cfg(windows)]

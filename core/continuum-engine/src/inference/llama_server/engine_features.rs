@@ -42,6 +42,12 @@ impl ServedEngine {
         }
     }
 
+    /// The incarnation this reading came from and the build it reported, when both are known:
+    /// the served-engine evidence `ping` reports (card a3e92354).
+    pub(crate) fn reading(&self) -> Option<(EngineIncarnation, String)> {
+        Some((self.incarnation?, self.build.clone()?))
+    }
+
     /// Whether this evidence says the engine takes `tail_tools`: its build is the `pinned` one.
     pub(crate) fn takes_tail_tools(&self, pinned: &str) -> bool {
         self.build.as_deref().is_some_and(|build| build_takes_tail_tools(build, pinned))
@@ -56,6 +62,11 @@ static SERVED_ENGINE: parking_lot::Mutex<ServedEngine> =
 /// Record one reconcile reading of the serving lane (see [`ServedEngine::observe`]).
 pub(super) fn observe_served_engine(now: Option<EngineIncarnation>, props: Result<Option<&str>, ()>) {
     SERVED_ENGINE.lock().observe(now, props);
+}
+
+/// The serving lane's own account of its build, with the incarnation that gave it.
+pub(super) fn served_engine_reading() -> Option<(EngineIncarnation, String)> {
+    SERVED_ENGINE.lock().reading()
 }
 
 /// A new live engine is being launched: nothing is known about it until its own `/props` is read.
