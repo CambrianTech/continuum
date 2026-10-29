@@ -114,7 +114,7 @@ pub fn in_flight_starts() -> Vec<(uuid::Uuid, u64)> {
 
 /// Every turn in flight right now, as (ms it has run, her typical turn ms — `None` until
 /// she has finished one this boot). The settle before a stop sizes its wait from this
-/// ([`crate::cognition::turn_ingress::settle_bound_ms`]). `now_ms` is the clock
+/// ([`crate::turn_ingress::settle_bound_ms`]). `now_ms` is the clock
 /// [`begin_turn`] was stamped with. Locks taken one at a time, never nested.
 pub(crate) fn in_flight_turns(now_ms: u64) -> Vec<(u64, Option<u64>)> {
     let personas: Vec<uuid::Uuid> = IN_FLIGHT.lock().iter().copied().collect();
@@ -163,7 +163,7 @@ pub async fn hold_ambient_turn_for(
     persona: uuid::Uuid,
     now_ms: u64,
 ) -> Option<tokio::sync::OwnedSemaphorePermit> {
-    if let Some(p) = crate::inference::resource_admission::try_hold_ambient_turn() {
+    if let Some(p) = continuum_engine::inference::resource_admission::try_hold_ambient_turn() {
         return Some(p);
     }
     let last = LAST_TURN_MS.lock().get(&persona).copied();
@@ -171,7 +171,7 @@ pub async fn hold_ambient_turn_for(
         return None;
     }
     let started = std::time::Instant::now();
-    match crate::inference::resource_admission::wait_ambient_turn(std::time::Duration::from_millis(IDLE_SHARE_WAIT_MS)).await {
+    match continuum_engine::inference::resource_admission::wait_ambient_turn(std::time::Duration::from_millis(IDLE_SHARE_WAIT_MS)).await {
         Some(permit) => {
             continuum_base::probe!(
                 class = "admission.lane.idle_share",

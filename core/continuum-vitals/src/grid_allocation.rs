@@ -122,7 +122,7 @@ pub struct LanePlan {
 impl LanePlan {
     /// A node's published plan, read as an offer. The decode measurement lives outside
     /// the plan (the knee record); the caller passes what it has.
-    pub fn of(plan: &crate::inference::planning::serving_plan::ServingPlan, decode_tps_per_lane: Option<f32>) -> Self {
+    pub fn of(plan: &continuum_engine::inference::planning::serving_plan::ServingPlan, decode_tps_per_lane: Option<f32>) -> Self {
         Self {
             model_id: plan.base_model.model_id.clone(),
             capability_rank: plan.base_model.capability_rank,
@@ -153,7 +153,7 @@ impl LanePlan {
     /// `None` when nothing is LIVE — not ready, no model, no lanes, or an unknown window:
     /// an absence, never a substituted intent and never fabricated capacity.
     pub fn serving(
-        snapshot: &crate::inference::llama_server::ServingSnapshot,
+        snapshot: &continuum_engine::inference::llama_server::ServingSnapshot,
         capability_rank: u8,
         decode_tps_per_lane: Option<f32>,
     ) -> Option<Self> {
@@ -553,7 +553,7 @@ impl GridAllocation {
 /// minimum; measured demand is a sizing target. A large thought must not turn every
 /// node into a refused seat. Declared recipe requirements remain hard constraints.
 pub fn roles_from(
-    citizens: &[crate::experience::recipe::CitizenRecipe],
+    citizens: &[continuum_experience::experience::recipe::CitizenRecipe],
     measured_target: Option<u32>,
 ) -> (Vec<Role>, Vec<RoleFloor>) {
     let mut roles: Vec<Role> = Vec::new();
@@ -568,7 +568,7 @@ pub fn roles_from(
                 decode_floor_tps: r.decode_floor_tps,
             },
             None => Requirement {
-                window: crate::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET,
+                window: continuum_engine::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET,
                 target_window: measured_target,
                 min_capability: 0,
                 decode_floor_tps: None,

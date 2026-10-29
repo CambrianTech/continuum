@@ -216,7 +216,7 @@ pub fn read_lane_buckets() -> [u64; LANE_BUCKETS] {
 /// what made a starved hour read as a working one.
 pub fn note_lane_starved() {
     LEDGER.lane_starved.fetch_add(1, Ordering::Relaxed);
-    note_lane_sample(crate::inference::resource_admission::served_lane_count() as u64);
+    note_lane_sample(continuum_engine::inference::resource_admission::served_lane_count() as u64);
 }
 
 /// A generation reached its end, one way or the other (the
@@ -243,7 +243,7 @@ pub fn note_generation(cached: u32, prefilled: u32) {
     LEDGER.prompt_cached.fetch_add(u64::from(cached), Ordering::Relaxed);
     LEDGER.prompt_prefilled.fetch_add(u64::from(prefilled), Ordering::Relaxed);
     // The same split, per turn, for the prefill knee's median (card e370a673).
-    crate::inference::prefill_knee::note_turn(cached, prefilled);
+    continuum_engine::inference::prefill_knee::note_turn(cached, prefilled);
 }
 
 /// An act was observed (the `persona.act.observed` seam). `wrote` = it changed a file.
@@ -257,8 +257,8 @@ pub fn note_act(wrote: bool) {
 /// A lane was granted to a mind (the `delib.gate.lane_acquired` seam).
 pub fn note_lane_granted() {
     LEDGER.lanes_granted.fetch_add(1, Ordering::Relaxed);
-    note_lanes(crate::inference::llama_server::current_serving().lanes as u64);
-    note_lane_sample(crate::inference::resource_admission::served_lane_count() as u64);
+    note_lanes(continuum_engine::inference::llama_server::current_serving().lanes as u64);
+    note_lane_sample(continuum_engine::inference::resource_admission::served_lane_count() as u64);
 }
 
 /// Per-mind lane grants this hour — the placement chooser's "least served" order. One per-mind ledger ([`MindHour`]), not two.
@@ -464,7 +464,7 @@ pub struct CitizenHealth {
     pub oldest_dormant_turn_age_ms: Option<u64>,
     /// The hold live work had on the engine at the tick, as serving published it (card
     /// a18452d6): a node held for a mind's training reads HELD with the work, not EMPTY.
-    pub held_for: Option<crate::inference::llama_server::serving_hold::ServingHold>,
+    pub held_for: Option<continuum_engine::inference::llama_server::serving_hold::ServingHold>,
 }
 
 /// The hour's PREFIX REUSE as a whole percentage — `cached / (cached + prefilled)`,
@@ -524,7 +524,7 @@ pub enum Verdict {
     /// The engine was held for live work (a mind's training, say) and nothing acted: a
     /// deliberate hold, not a dead or empty node (card a18452d6; enrico 2026-10-27 read EMPTY
     /// twice while Delia's gene trained on its only engine).
-    Held { resident: u64, hold: crate::inference::llama_server::serving_hold::ServingHold },
+    Held { resident: u64, hold: continuum_engine::inference::llama_server::serving_hold::ServingHold },
 }
 
 impl Verdict {
@@ -606,8 +606,8 @@ pub fn verdict(h: &CitizenHealth) -> Verdict {
 
 /// What holds the engine, in the line's words: each job with its consumer and engine, or why
 /// ownership is unknown.
-fn held_by(by: &crate::inference::llama_server::serving_hold::HoldCause) -> String {
-    use crate::inference::llama_server::serving_hold::HoldCause;
+fn held_by(by: &continuum_engine::inference::llama_server::serving_hold::HoldCause) -> String {
+    use continuum_engine::inference::llama_server::serving_hold::HoldCause;
     match by {
         HoldCause::Resident { work } => format!(
             "the engine hosts live work: {}",

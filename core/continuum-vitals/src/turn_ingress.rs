@@ -22,7 +22,7 @@
 //! node that wants turns again starts a core.
 
 use continuum_base::time::EpochMs;
-use crate::runtime::AdmissionGate;
+use continuum_kernel::runtime::AdmissionGate;
 
 /// The process's turn gate. One [`AdmissionGate`]: open/closed and the in-flight count in
 /// one word, so an admission cannot slip between a close and the drain's read.
@@ -66,7 +66,7 @@ pub fn in_flight() -> u64 {
 /// `engaged`. Draining on that flag would walk past exactly the turns that have taken
 /// input and not yet written anything, which are the ones whose loss is invisible.
 #[must_use = "the permit IS the turn's admission; dropping it immediately ends the turn"]
-pub fn admit() -> Option<crate::runtime::Permit<'static>> {
+pub fn admit() -> Option<continuum_kernel::runtime::Permit<'static>> {
     GATE.admit()
 }
 
@@ -134,7 +134,7 @@ pub(crate) struct TurnSettle {
 /// say how many the stop still tore. Installed at boot (`runtime::extensions`).
 pub struct TurnsSettle;
 
-impl crate::runtime::extensions::SettleBeforeStop for TurnsSettle {
+impl continuum_kernel::runtime::extensions::SettleBeforeStop for TurnsSettle {
     fn name(&self) -> &'static str {
         "admitted_turns"
     }
@@ -171,7 +171,7 @@ pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
     let started = std::time::Instant::now();
     let in_flight_at_close = in_flight();
     let cap_ms = cap.as_millis().min(u128::from(u64::MAX)) as u64;
-    let turns = crate::cognition::turn_ledger::in_flight_turns(EpochMs::now().millis());
+    let turns = crate::turn_ledger::in_flight_turns(EpochMs::now().millis());
     let bound_ms = settle_bound_ms(&turns, in_flight_at_close > turns.len() as u64, cap_ms);
     let bound_source = if in_flight_at_close == 0 {
         "nothing_in_flight"

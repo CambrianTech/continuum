@@ -157,7 +157,7 @@ pub fn current() -> ActivitySnapshot {
 /// RTOS shape: own task, interval, cheap reads, publish ON CHANGE with a probe.
 pub fn spawn_activity_gate() {
     GATE_LIVE.store(true, Ordering::Release);
-    let hold_rx = crate::inference::measured_hold::subscribe();
+    let hold_rx = continuum_engine::inference::measured_hold::subscribe();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(GATE_TICK);
         ticker.tick().await;
@@ -167,7 +167,7 @@ pub fn spawn_activity_gate() {
             ticker.tick().await;
             let now = EpochMs::now().millis();
             let hold_active = hold_rx.borrow().is_some();
-            let inflight = crate::inference::resource_admission::inflight_model_calls();
+            let inflight = continuum_engine::inference::resource_admission::inflight_model_calls();
             let prev = gate().tx.borrow().state;
             // Thread the hysteresis memory: the instant inputs read active,
             // idle memory resets; the first idle instant starts the clock.
@@ -290,7 +290,7 @@ pub async fn wait_for_boredom_of(peer: Uuid) {
     }
     let tx = persona_tx(peer);
     let mut rx = tx.subscribe();
-    let mut hold_rx = crate::inference::measured_hold::subscribe();
+    let mut hold_rx = continuum_engine::inference::measured_hold::subscribe();
     loop {
         let activity = *rx.borrow();
         let hold_active = hold_rx.borrow().is_some();
@@ -325,7 +325,7 @@ pub async fn wait_for_engagement_of(peer: Uuid) {
     }
     let tx = persona_tx(peer);
     let mut rx = tx.subscribe();
-    let mut hold_rx = crate::inference::measured_hold::subscribe();
+    let mut hold_rx = continuum_engine::inference::measured_hold::subscribe();
     loop {
         if rx.borrow().engaged || hold_rx.borrow().is_some() {
             return;

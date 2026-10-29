@@ -41,7 +41,7 @@ pub struct PersonaActUpdate {
     /// as a tick is card f6c50a49. New field rather than a redefinition of `ok`, so
     /// a client that has not adopted it is not silently given a new meaning.
     #[serde(default)]
-    pub(crate) state: String,
+    pub state: String,
     /// Her reasoning for the act batch this receipt opens, whole; `None` on the batch's
     /// later receipts, when she gave none, and for a turn in her mind room. For the
     /// human's view only: it never goes to the room's transcript.

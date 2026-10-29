@@ -34,6 +34,7 @@ members = [
     "core/continuum-experience",
     "core/continuum-cognition",
     "core/continuum-rooms",
+    "core/continuum-vitals",
     "core/continuum-text-analysis",
     "core/continuum-academy",
     "core/continuum-live",
