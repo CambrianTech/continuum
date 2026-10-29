@@ -530,8 +530,8 @@ async fn a_pass_closes_superseded_rounds_and_leaves_newer_ones_open() {
         .claim_work_card(ClaimWorkCard { card_id: parent, ttl_ms: 600_000 })
         .await
         .expect("the round's work is claimed");
-    let artifact = SubmissionArtifact {
-        hash: ContentHash::from_bytes(b"patch"),
+    let artifact = airc_work::SubmissionArtifact {
+        hash: airc_blobs::ContentHash::from_bytes(b"patch"),
         size_bytes: 5,
         mime: Some("text/x-patch".into()),
     };
@@ -645,8 +645,8 @@ async fn a_pass_leaves_rounds_reviewing_newer_work_open() {
         .claim_work_card(ClaimWorkCard { card_id: parent, ttl_ms: 600_000 })
         .await
         .expect("the round's work is claimed");
-    let artifact = SubmissionArtifact {
-        hash: ContentHash::from_bytes(b"patch"),
+    let artifact = airc_work::SubmissionArtifact {
+        hash: airc_blobs::ContentHash::from_bytes(b"patch"),
         size_bytes: 5,
         mime: Some("text/x-patch".into()),
     };
