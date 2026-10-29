@@ -18,3 +18,9 @@ pub mod plasticity;
 pub mod sensory;
 pub mod serving_pin_store;
 pub mod serving_tier_down;
+
+pub use continuum_kernel::{
+    action_command, clog_debug, clog_error, clog_info, clog_warn, log_debug, log_error, log_info,
+    log_warn, register_command, register_event, register_outcome, register_stateless_command,
+    stack, time_async, time_section,
+};
