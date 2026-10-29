@@ -39,7 +39,7 @@ impl Source<ContextMessage> for Thoughts<'_> {
         let banner = ContextMessage::user(
             "My own recent thoughts (working memory, my interior state, not a message from anyone):".to_owned(),
         );
-        let mut items = vec![Item { key: "banner".to_owned(), full: banner.clone(), summary: None, pointer: Some(banner) }];
+        let mut items = vec![Item { key: "banner".to_owned(), full: banner.clone(), summary: None, pointer: Some(banner), stored: None }];
         items.extend(thoughts.into_iter().map(|text| {
             // Keyed by what it says: a thought, once recorded, does not change, and neither may
             // its rendering. Full is the whole thought; how much of her thoughts she reads is the
@@ -52,12 +52,13 @@ impl Source<ContextMessage> for Thoughts<'_> {
                 full: ContextMessage::user(format!("- {text}")),
                 summary: None,
                 pointer: Some(ContextMessage::user(format!("- {}", collapse_thought(&text, POINTER_KEEP)))),
+                stored: None,
             }
         }));
         // Fresh each event, newest last; one item, so a status change appends one line set.
         items.extend(dispatched.map(|text| {
             let message = ContextMessage::user(text);
-            Item { key: "dispatched".to_owned(), full: message.clone(), summary: None, pointer: Some(message) }
+            Item { key: "dispatched".to_owned(), full: message.clone(), summary: None, pointer: Some(message), stored: None }
         }));
         items
     }

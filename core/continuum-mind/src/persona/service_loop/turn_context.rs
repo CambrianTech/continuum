@@ -140,7 +140,7 @@ pub(super) async fn compose_turn(
         // Without it every room-scoped source abstains and she perceives no
         // board, no roster, no doctrine, no wall (#331 / #127).
         cognition
-            .compose_for_turn(&ctx.profile, now_ms, Some(turn_room))
+            .compose_for_turn(now_ms, Some(turn_room))
             .await
     };
     phase_timings.compose_ms = compose_started.elapsed().as_millis() as u64;
@@ -196,6 +196,7 @@ pub(super) fn build_turn_burst(
             peer_id: &msg.peer_id.to_string(),
             content: &msg.render_content(),
             occurred_at_ms: 0,
+            source: Some(crate::cognition::workspace::TurnSource { room: msg.room_id, event: msg.event_id, lamport: msg.lamport }),
         }),
     );
     // #301 anchor-starvation fix: the in-window escalation counter loses its

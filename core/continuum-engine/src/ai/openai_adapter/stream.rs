@@ -200,11 +200,17 @@ impl OpenAICompatibleAdapter {
             // Discovery: install this server's slot pool on first use (probes /props).
             // Non-Turn traffic also needs the pool on a single-slot server: it
             // must save the activity resident before borrowing the only slot.
-            let pool = self.ensure_slot_pool(&endpoints).await.map_err(|miss| miss.probe(root)).ok();
+            let pool = self.ensure_slot_pool(&endpoints).await.map_err(|miss| {
+                miss.probe(root);
+                crate::ai::inference_error::InferenceError::Unavailable(format!(
+                    "slot discovery refused generation at {root}: {} ({miss:?})",
+                    miss.as_str(),
+                ))
+            })?;
             let adm = crate::inference::turn_admission::admit_turn(
                 &self.concurrency,
                 turn_key,
-                pool,
+                Some(pool),
                 &self.client,
                 root,
                 approx_tokens,

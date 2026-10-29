@@ -189,6 +189,9 @@ crate::action_command! {
             .messages
             .iter()
             .map(|m| crate::cognition::rag_budget::RagItem {
+                key: String::new(),
+                summary: None,
+                pointer: None,
                 content: m.content.clone(),
                 tokens: 0,
                 metadata: serde_json::json!({
@@ -202,7 +205,6 @@ crate::action_command! {
             items,
             tokens_used: 0,
             truncated: false,
-            resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
         };
         // own_peer attributes the persona's OWN past posts (is_self → assistant role); a
         // command-seeded turn carries only inbound peer messages, so it's inert here but

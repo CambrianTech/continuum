@@ -302,7 +302,7 @@ async fn confirm_pending(
     within: std::time::Duration,
 ) -> Result<Vec<SweepOutcome>, String> {
     let identities = pending.iter().map(|(_, rec)| lane_identity(rec)).collect();
-    let survivors = lane_process::confirm_gone(identities, within).await;
+    let survivors = continuum_process::confirm_gone(identities, within).await;
     tokio::task::spawn_blocking(move || {
         for (path, rec) in pending {
             if survivors.contains(&lane_identity(&rec)) {
@@ -609,7 +609,7 @@ fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRe
             // legacy records cannot authorize termination of a recycled PID.
             let identified = rec.started_s != 0;
             let outcome = if identified {
-                finish_signal(&path, &rec, lane_process::signal_if_same(lane_identity(&rec)))
+                finish_signal(&path, &rec, continuum_process::signal_if_same(lane_identity(&rec)))
             } else {
                 // No stamped incarnation: retain evidence instead of signalling
                 // an unbound PID after the destructive stop has begun.

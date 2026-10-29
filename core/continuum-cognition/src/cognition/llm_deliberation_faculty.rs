@@ -97,6 +97,8 @@ mod admission;
 pub(crate) mod admission_clock;
 use self::request::*;
 mod reply_claim;
+mod read_receipt;
+pub use read_receipt::ReadReceipt;
 use self::reply_claim::*;
 mod verdict;
 mod tool_surface;
@@ -152,6 +154,9 @@ const FLEX_HISTORY: &str = "history";
 
 const FLEX_REPLY: &str = "reply";
 
+/// Her hands (`prompt/tools_epoch.rs`): floor = the epoch's level or core hands, want = all.
+const FLEX_TOOLS: &str = "tools";
+
 /// The reasoner faculty. Persona-scoped; shared model backend.
 pub struct LlmDeliberationFaculty {
     persona_id: Uuid,
@@ -185,7 +190,7 @@ pub struct LlmDeliberationFaculty {
     tools: Vec<NativeToolSpec>,
     /// Her native tool surfaces (the whole registry, her hands, her core hands), built
     /// once per tool assignment in canonical order; which one a turn sends is
-    /// [`Self::select_tool_surface`], from the activity and the served window only.
+    /// the retained tools in [`Self::prompt_view`], selected from the shared allocation.
     surface: ToolSurface,
     /// Where this faculty records its chain-of-thought after a verdict, so the
     /// persona can resume its train of thought next turn (the
@@ -199,6 +204,8 @@ pub struct LlmDeliberationFaculty {
     /// The live spawn path attaches a per-persona JSONL sink. See
     /// [`prompt_capture`](crate::cognition::prompt_capture).
     prompt_capture: Option<Arc<dyn crate::cognition::prompt_capture::PromptCaptureSink>>,
+    /// Where a sent prompt's read receipt goes (`read_receipt.rs`); `None` marks nothing read.
+    read_receipt: Option<Arc<dyn read_receipt::ReadReceipt>>,
     /// The persona's paged-in genome — the LoRA layers this faculty injects into
     /// every generation request ([`GenomeHandle`]). Shared with the owning
     /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle), which pages skills
@@ -232,6 +239,8 @@ pub struct LlmDeliberationFaculty {
     context_view: parking_lot::Mutex<
         Option<continuum_context::view::View<crate::cognition::context_streams::ContextMessage>>,
     >,
+    /// The tool level her current view epoch chose (`prompt/tools_epoch.rs`).
+    tools_epoch: parking_lot::Mutex<Option<prompt::ToolsEpoch>>,
     /// A measurement fork's (`fork_eval_cycle`): its turns warm their own page, never hers.
     forked: bool,
 }
@@ -259,10 +268,12 @@ impl LlmDeliberationFaculty {
             surface: ToolSurface::default(),
             working_memory: None,
             prompt_capture: None,
+            read_receipt: None,
             genome: empty_genome(),
             decoding: relaxed_decoding(),
             working_set: None,
             context_view: parking_lot::Mutex::new(None),
+            tools_epoch: parking_lot::Mutex::new(None),
             forked: false,
         }
     }
@@ -451,29 +462,6 @@ impl LlmDeliberationFaculty {
     /// so an act that really needs more room earns it back within a turn.
     const COMPLETION_COLD_PRIOR_TOKENS: u32 = crate::inference::planning::MIN_SERVE_CTX;
 
-    /// The share of the served window the REQUIRED room payload may occupy.
-    ///
-    /// Room updates are required input — a citizen must see what was said to her —
-    /// so `fit_messages` may not drop them the way it drops old history. Unbounded,
-    /// that makes a BUSY ROOM into a mute citizen: measured 2026-09-09 on BigMama,
-    /// `delib.turn.demand` reported `conversation_tokens=53522` against a 23,040
-    /// window (`over_window=3.14`). The required side then exceeded the whole
-    /// budget, `grounding_budget` saturated to 0, and `GroundingPlan::minimum`
-    /// refused 192 of 229 cognition cycles — 84% — with
-    /// "requires 810 tokens, but only 0 are available". Both live citizens were
-    /// mute for hours while `serving/status` read `ready: true`.
-    ///
-    /// The window is not the fault and raising it does not fix this: the room grows
-    /// without bound and any fixed window is eventually 3x under. What is bounded
-    /// here is what the turn REQUIRES; the rest of the room is still reachable
-    /// through history and recall.
-    const ROOM_UPDATE_SHARE_DENOM: u32 = 4;
-
-    /// The action result's share of the window before its tail is DEMOTED to ordinary
-    /// history. Same denominator as the room payload for the same reason: no single
-    /// required item may claim more than a quarter of the window, because the moment one
-    /// does, every other required item is competing for what is left and the turn refuses.
-    const RESULT_SHARE_DENOM: u32 = 4;
 
     /// The most an ACT turn may generate — a RUNAWAY bound, not a budget.
     /// Measured acts that COMMITTED a tool call ran 4,188–9,818 tokens on the
@@ -715,8 +703,10 @@ fn occupancy_of(shape: TurnShape, prefill_tps: f64, decode_tps: f64) -> Option<s
     Some(std::time::Duration::from_secs_f64(secs))
 }
 
-/// Append one request's exact message list to `<dir>/<persona>.wire.jsonl` (the wire capture,
-/// sink 4 of PRIVACY-OF-THOUGHT.md). A turn in her mind room writes nothing.
+/// Append one request's message list, whole, to `<dir>/<persona>.wire.jsonl` (the wire capture,
+/// sink 4 of PRIVACY-OF-THOUGHT.md). A turn in her mind room writes nothing. The boundary is the
+/// ADAPTER'S INPUT (`TextGenerationRequest::messages`), not the HTTP body an adapter serializes
+/// from it; a write failure is silent here, so a missing row is never evidence no request ran.
 fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &str, room_id: Uuid, request: &TextGenerationRequest) {
     if crate::cognition::mind_room::is_private_room(persona_id, room_id) {
         crate::cognition::mind_room::note_withheld(persona_id, "wire_capture");
@@ -725,11 +715,10 @@ fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &s
     let row = serde_json::json!({
         "ts_ms": continuum_base::time::EpochMs::now().millis(),
         "persona": persona_name,
-        "messages": request
-            .messages
-            .iter()
-            .map(|m| serde_json::json!({"role": m.role, "text": m.content_text()}))
-            .collect::<Vec<_>>(),
+        // Whole messages, every part: a text-only projection dropped native tool calls and
+        // results, so her newest result read as a bare label in the one input of record
+        // (Aiko, the M5, 2026-10-29: a result counted as lost was on the wire).
+        "messages": request.messages,
     });
     let _ = std::fs::create_dir_all(dir);
     use std::io::Write as _;

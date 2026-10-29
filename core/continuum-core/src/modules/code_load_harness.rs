@@ -119,7 +119,7 @@ async fn team(executor: &Arc<CommandExecutor>, root: &str) -> Vec<(Uuid, Command
             json!({ "workspace_root": root }),
         )];
         let out = client
-            .execute_native_batch(&calls, &ctx(id), 8000)
+            .execute_native_batch(&calls, &ctx(id))
             .await
             .expect("workspace batch");
         assert!(
@@ -160,7 +160,7 @@ async fn profile_op<F>(
                     let calls = vec![tool("op", command, mk(id, r))];
                     let t0 = Instant::now();
                     let out = client
-                        .execute_native_batch(&calls, &c, 16000)
+                        .execute_native_batch(&calls, &c)
                         .await
                         .unwrap();
                     stats.record(t0.elapsed().as_micros() as u64);
@@ -206,7 +206,6 @@ async fn team_of(
                     json!({ "workspace_root": root }),
                 )],
                 &ctx(id),
-                8000,
             )
             .await
             .expect("workspace");
@@ -250,7 +249,7 @@ async fn read_scaling_sweep() {
                     for r in 0..ROUNDS {
                         let calls = vec![tool("r", "code/read", json!({ "persona_id": id.to_string(), "file_path": format!("mod_{}.rs", r % FILES) }))];
                         let t0 = Instant::now();
-                        client.execute_native_batch(&calls, &c, 16000).await.unwrap();
+                        client.execute_native_batch(&calls, &c).await.unwrap();
                         stats.record(t0.elapsed().as_micros() as u64);
                     }
                 })
@@ -351,7 +350,7 @@ async fn realistic_collaborative_tool_load() {
                         tool("t", "code/tree", json!({ "persona_id": id.to_string(), "max_depth": 5 })),
                     ];
                     let t0 = Instant::now();
-                    client.execute_native_batch(&batch, &c, 16000).await.unwrap();
+                    client.execute_native_batch(&batch, &c).await.unwrap();
                     stats.record(t0.elapsed().as_micros() as u64);
                 }
             })

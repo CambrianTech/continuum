@@ -1,8 +1,8 @@
 // Only the Windows paths below reach the parent's items (parse_tasklist_image_name).
 #[cfg(windows)]
 use super::*;
-use crate::system_resources::disk_reporters::Kept;
-use crate::system_resources::process_tree::{ProcessIdentity, TreeEnd};
+use continuum_kernel::system_resources::disk_reporters::Kept;
+use continuum_kernel::system_resources::process_tree::{ProcessIdentity, TreeEnd};
 
 
 /// How often an owned execution's task looks for a kill request: the cadence a kill is noticed
@@ -347,7 +347,7 @@ pub(super) struct OwnedChild {
     pub(super) child: Option<tokio::process::Child>,
     pub(super) pipes: Vec<PipeTask>,
     pub(super) capture: std::sync::Arc<RunCapture>,
-    pub(super) held: Option<std::sync::Arc<crate::identity::hands_gate::HandsLease>>,
+    pub(super) held: Option<std::sync::Arc<continuum_kernel::identity::hands_gate::HandsLease>>,
     /// What its caller holds for it ([`holding`]), kept until its tree has ended.
     pub(super) kept: Vec<Kept>,
     pub(super) label: &'static str,
@@ -363,7 +363,7 @@ tokio::task_local! {
 /// tree's end runs after it ([`OwnedChild`]'s drop), so an exclusion held only by the future
 /// (a checkout's sync lock) would admit the next holder beside a git still being ended
 /// (Codex reviewer on #5037). Nested scopes add to what the outer ones hold. It needs an
-/// admission ([`crate::identity::hands_gate::admitted`]): what an unconfirmed end keeps goes onto it.
+/// admission ([`continuum_kernel::identity::hands_gate::admitted`]): what an unconfirmed end keeps goes onto it.
 pub async fn holding<F: std::future::Future>(value: Kept, work: F) -> F::Output {
     let mut all = HOLDING.try_with(Vec::clone).unwrap_or_default(); // unwrap_or_default: outside any scope nothing else is held
     all.push(value);
@@ -434,7 +434,7 @@ impl Drop for OwnedChild {
 /// End an owned child and its tree ([`end_tree`]) while holding the admission it was started
 /// under. What can't be confirmed ended is kept ON the admission before it drops, so the
 /// release that waits it out re-checks those processes and holds the hands for the rest.
-pub(super) async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc<crate::identity::hands_gate::HandsLease>>, kept: Vec<Kept>, label: &'static str) -> TreeEnd {
+pub(super) async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc<continuum_kernel::identity::hands_gate::HandsLease>>, kept: Vec<Kept>, label: &'static str) -> TreeEnd {
     let end = end_tree(&mut child).await;
     if !end.confirmed() {
         continuum_base::probe!(
@@ -460,7 +460,7 @@ pub(super) async fn end_owned(mut child: tokio::process::Child, held: Option<std
 /// its admission's lingering record, released only when a re-check finds nothing left (Codex
 /// reviewer on #5037). `kept` is non-empty only under an admission: [`run_owned_with_input`]
 /// refuses `holding` without one before anything starts.
-pub(super) fn keep_with_lingering(held: Option<&std::sync::Arc<crate::identity::hands_gate::HandsLease>>, kept: &[Kept]) {
+pub(super) fn keep_with_lingering(held: Option<&std::sync::Arc<continuum_kernel::identity::hands_gate::HandsLease>>, kept: &[Kept]) {
     if let Some(lease) = held {
         lease.keep_held(kept);
     }
@@ -626,7 +626,7 @@ pub async fn run_owned_with_input(
     }
     let deadline = bound.map(|b| tokio::time::Instant::now() + b);
     let kept = HOLDING.try_with(Vec::clone).unwrap_or_default(); // unwrap_or_default: started outside any `holding` scope, it keeps nothing extra
-    let held = crate::identity::hands_gate::current();
+    let held = continuum_kernel::identity::hands_gate::current();
     if !kept.is_empty() && held.is_none() {
         // what a caller holds for a child is released when the child's end is confirmed, or by
         // the admission's re-check when it isn't; with no admission nothing could release it

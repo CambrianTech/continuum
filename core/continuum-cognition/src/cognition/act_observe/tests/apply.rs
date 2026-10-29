@@ -166,7 +166,6 @@ impl ToolExecutor for FoldedRunningExecutor {
         &self,
         calls: &[ToolCall],
         _context: &ToolExecutionContext,
-        _max_result_chars: usize,
     ) -> Result<NativeBatchOutcome, ToolError> {
         let results = calls
             .iter()
@@ -359,7 +358,6 @@ async fn an_acts_calls_carry_the_generation_that_issued_them() {
             &self,
             calls: &[ToolCall],
             _context: &ToolExecutionContext,
-            _max_result_chars: usize,
         ) -> Result<NativeBatchOutcome, ToolError> {
             if let Ok(mut seen) = self.seen.lock() {
                 seen.extend(calls.iter().map(|_| self.issued.clone()));

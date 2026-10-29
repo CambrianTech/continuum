@@ -59,7 +59,7 @@ impl LlamaServerProcess {
             Liveness::Unknown => return Err(LlamaServerError::RetirementRefused("adopted engine identity became unverified after checkpoint".into())),
             Liveness::Alive => {}
         }
-        crate::inference::lane_process::signal_if_same(
+        continuum_process::signal_if_same(
             crate::system_resources::process_tree::ProcessIdentity {
                 pid: incarnation.pid,
                 start_time: incarnation.started_s,

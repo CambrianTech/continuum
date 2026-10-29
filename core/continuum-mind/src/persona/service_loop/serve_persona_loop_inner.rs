@@ -319,13 +319,13 @@ pub(super) async fn serve_persona_loop_inner(
                 .flatten(),
         )
         .await;
-        // Recorded BEFORE compose_turn, which marks the trigger read: from here until the turn
-        // ends, a stop that cuts it leaves this row behind to say so.
+        // Recorded BEFORE the turn can mark its trigger read (the read receipt of its sent
+        // prompt): from here until the turn ends, a stop that cuts it leaves this row behind.
         // A retry reconciles the id its first attempt minted (confirmed or not); only a new input
         // mints one. Only a CONFIRMED row lets the turn run (stop-drain S2): an unknown row could be
         // re-run by a later start after this turn acted. Unconfirmed, the input is retained WITH its
         // candidate id (Codex on #5492: a create may have committed unseen), and the turn stops
-        // here, before compose_turn marks the trigger read.
+        // here, before any prompt could mark the trigger read.
         let candidate = admitted_retry.then(|| deferred_input.obligation_for(&msg)).flatten();
         let obligation = match obligations.admit(turn_room, &msg, wake_engram, now_ms, candidate).await {
             crate::persona::obligation::Admission::Confirmed(turn) => turn,

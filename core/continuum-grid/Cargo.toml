@@ -11,6 +11,7 @@ repository = "https://github.com/CambrianTech/continuum"
 # allocator read persona and cognition state) is packaging, not independence: see the PR's seam map.
 
 [dependencies]
+continuum-process = { path = "../continuum-process" }
 continuum-base = { path = "../continuum-base" }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }

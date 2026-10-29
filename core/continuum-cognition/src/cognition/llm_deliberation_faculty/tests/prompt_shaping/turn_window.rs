@@ -92,9 +92,6 @@ async fn substrate_notices_survive_attention_and_history_pressure_once() {
 // against a 23,040 window, 192 of 229 cognition cycles refused (84%), both
 // citizens mute for hours while serving reported ready.
 //
-// Mutation check: delete the cap in `bounded_room_updates` (collect every
-// update instead) and this goes RED with a capacity_error — which is exactly
-// the production symptom.
 #[tokio::test]
 async fn a_busy_room_cannot_make_a_citizen_mute() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
@@ -129,37 +126,14 @@ async fn a_busy_room_cannot_make_a_citizen_mute() {
         view.capacity_error
     );
 
-    // The NEWEST updates stay REQUIRED; the older ones are DEMOTED, not
-    // deleted. Joel, 2026-09-09: "maybe trim clipped or killed important
-    // information the persona needed to complete things" — a task or a
-    // correction that arrived earlier in the batch must not vanish before
-    // she reads it, so the overflow rides in ordinary history instead.
-    let (required, demoted) = faculty.split_room_updates(&ws);
-    assert!(!required.is_empty(), "the newest update is always required");
+    // Every update is a conversation turn of her view keyed by its event, so the room
+    // cannot inflate the required input at all (it was required under a quarter-window
+    // share); the newest reaches the prompt whole.
+    let text: Vec<String> = view.messages.iter().map(|m| m.content_text().to_string()).collect();
+    assert!(text.iter().any(|t| t.contains("update 39")), "the newest update reaches her prompt");
     assert!(
-        !demoted.is_empty(),
-        "an over-share payload must actually be demoted"
-    );
-    assert_eq!(
-        required.len() + demoted.len(),
-        40,
-        "every update survives somewhere — demotion must not DELETE"
-    );
-    assert!(
-        required
-            .last()
-            .expect("required is non-empty")
-            .content_text()
-            .contains("update 39"),
-        "the NEWEST update must stay required"
-    );
-    assert!(
-        demoted
-            .first()
-            .expect("demoted is non-empty")
-            .content_text()
-            .contains("update 0"),
-        "the OLDEST update is the one demoted, and it is still present"
+        !view.messages.last().is_some_and(|m| m.content_text().contains("[Room message received during this turn")),
+        "room updates ride her view, not the required tail"
     );
 }
 

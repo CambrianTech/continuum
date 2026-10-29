@@ -261,6 +261,15 @@ fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
 
 ## Ongoing refinement is part of every change
 
+**Simplify, codify, enforce (Joel, 2026-10-29):** follow the canonical rule in
+[AGENTS.md](AGENTS.md#simplify-codify-enforce-joel-2026-10-29). It applies to every
+file and to ratchets/CI themselves: consolidate patterns and enforcement, delete
+dead code and invalid fallbacks, and retain no code for backwards compatibility.
+Update callers and preserve durable state through explicit verified migrations.
+That same section defines fast delivery as the purpose of crate cuts: independent
+build/test/review, slim affected-crate CI in parallel, measured critical-path time,
+and ownership through merge without abandoned branches or PRs.
+
 **Build as if you were the AI in the system** (Joel, 2026-10-13): don't hand-code a persona's
 problems, remove undue hurdles, ask why a piece exists before polishing it, search for the
 shared pattern before writing a helper, and never make Python load-bearing. The rules live

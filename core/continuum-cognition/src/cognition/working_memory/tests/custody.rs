@@ -57,7 +57,7 @@ fn a_step_is_scoped_to_its_root_and_every_result_is_perceived_labelled_with_its_
     let results = WorkingMemory::new(2);
     results.set_served_window(16_384);
     results.set_scope(Some("task-a".into()));
-    let body_a = format!("task-a-only {}", "a".repeat(results.budget().recent_results_chars()));
+    let body_a = format!("task-a-only {}", "a".repeat(crate::cognition::working_memory::RESULTS_RESIDENT_CHARS));
     results.record_receipt_typed(&[], &body_a, None, saved("scope-a-output"));
     let original = results.last_action_full();
     results.set_scope(Some("task-b".into()));
@@ -118,7 +118,7 @@ fn a_mind_s_saved_handles_are_live_until_it_drops() {
     let live = |p: &std::path::Path| crate::cognition::tool_executor::spill::is_live(p);
     let wm = WorkingMemory::new(8);
     wm.set_served_window(16_384);
-    let cap = wm.budget().recent_results_chars();
+    let cap = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
     wm.record_receipt_typed(&[], &"a".repeat(cap / 2), None, saved(&handle));
     assert!(live(&file), "referenced by the ring");
     for _ in 0..4 {
@@ -166,7 +166,7 @@ fn a_receipt_s_per_call_results_stay_reachable_as_long_as_the_receipt() {
     let (receipt, children) = (id(), [id(), id()]);
     let wm = WorkingMemory::new(2); // two entries: the third receipt rolls the first out
     wm.set_served_window(16_384);
-    let cap = wm.budget().recent_results_chars();
+    let cap = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
     wm.record_receipt_typed(&[act(&children[0]), act(&children[1])], &"r".repeat(cap / 2), None, saved(&receipt));
     for _ in 0..3 {
         record_saved(&wm, &"s".repeat(cap / 2));
@@ -273,20 +273,20 @@ fn each_call_s_saved_result_is_live_once_its_receipt_is_recorded() {
     assert!(!crate::cognition::tool_executor::spill::is_live(&file), "released with the mind");
 }
 
-// what this catches (BigMama's live receipt of #4963 on the 5090, card df0035bf): restore
-// collapsing against the FLOOR budget. Restore runs before the served window is known, so
-// its budget is the floor (a 1,536-char share measured there) and it folded results her
-// real window holds. With no window yet, restore keeps the ring as saved; once a window is
-// set, the same snapshot collapses against it.
+// what this catches (BigMama's live receipt of #4963 on the 5090, card df0035bf; FLOW §2d):
+// restore folding what she sees by a window. Restore once collapsed against the floor budget
+// before her window was known (a 1,536-char share), and later against the window itself. The
+// ring's bound is now a storage budget (`RESULTS_RESIDENT_CHARS`): the window plays no part, so
+// restoring with no window or a small one keeps exactly what the snapshot held.
 #[test]
-fn restore_collapses_only_against_a_known_window() {
+fn restore_bounds_results_by_storage_never_by_window() {
+    let budget = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
     let source = WorkingMemory::new(8);
     source.set_served_window(65_536);
-    let share = source.budget().recent_results_chars();
     for i in 0..4 {
         source.record_receipt_typed(
             &[],
-            &format!("r{i} {}", "w".repeat(share / 3)),
+            &format!("r{i} {}", "w".repeat(budget / 3)),
             None,
             saved(&format!("restore-{i}")),
         );
@@ -295,18 +295,14 @@ fn restore_collapses_only_against_a_known_window() {
     let entries = |wm: &WorkingMemory| {
         wm.recent_results_messages().iter().filter(|m| m.starts_with("[result ")).count()
     };
-
-    // The source settles against its own window as it records, so the count to keep is
-    // what it held, not how many were recorded.
     let held = entries(&source);
     let unknown = WorkingMemory::new(8);
     unknown.restore(snapshot.clone());
-    assert_eq!(entries(&unknown), held, "no window yet: nothing folds against the floor");
-
-    let known = WorkingMemory::new(8);
-    known.set_served_window(16_384);
-    known.restore(snapshot);
-    assert!(entries(&known) < held, "a known smaller window collapses on restore");
+    assert_eq!(entries(&unknown), held, "no window yet: the storage budget alone bounds it");
+    let small = WorkingMemory::new(8);
+    small.set_served_window(16_384);
+    small.restore(snapshot);
+    assert_eq!(entries(&small), held, "a small window changes nothing her view is offered");
 }
 
 // what this catches: the ring growing without bound between settlements. The share was
@@ -318,7 +314,7 @@ fn restore_collapses_only_against_a_known_window() {
 fn the_ring_holds_its_share_at_every_receipt_and_evicts_in_bursts() {
     let wm = WorkingMemory::new(8);
     wm.set_served_window(16_384);
-    let share = wm.budget().recent_results_chars();
+    let share = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
     let chunk = share / 5;
     let rendered = |wm: &WorkingMemory| -> Vec<String> {
         wm.recent_results_messages().into_iter().filter(|m| m.starts_with("[result ")).collect()
@@ -350,7 +346,7 @@ fn the_ring_holds_its_share_at_every_receipt_and_evicts_in_bursts() {
 fn an_unsaved_result_keeps_its_bytes_through_settlement_and_restore() {
     let wm = WorkingMemory::new(8);
     wm.set_served_window(16_384);
-    let cap = wm.budget().recent_results_chars();
+    let cap = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
     let unsaved = format!("UNSAVED {}", "u".repeat(cap / 2));
     wm.record_receipt_typed(&[], &unsaved, None, crate::ai::types::ResultCustody::Unsaved);
     for _ in 0..4 {
@@ -367,4 +363,36 @@ fn an_unsaved_result_keeps_its_bytes_through_settlement_and_restore() {
     restored.set_served_window(16_384);
     restored.restore(wm.snapshot());
     assert!(whole(&restored), "and through restore");
+}
+
+// what this catches (Fable on #5573; Aiko on the M5, 2026-10-29): results an earlier life evicted
+// by the old window share carry a handle but no stored size, so after a deploy her view priced
+// their whole at nothing and showed them as pointers forever. A restore prices each from its
+// saved output; one whose output can't be read stays a pointer, never a guessed size.
+#[test]
+fn a_restore_prices_a_legacy_evicted_result_from_its_saved_output() {
+    let wm = WorkingMemory::new(8);
+    let persona = Uuid::new_v4();
+    let pin = crate::cognition::tool_executor::spill::LivePin::new();
+    let body = "a line of the saved output\n".repeat(50);
+    wm.record_receipt_typed(&[], &body, None, pin.retain(persona, &body));
+    wm.record_receipt_typed(&[], "a result whose output is gone", None, pin.retain(persona, "a result whose output is gone"));
+    wm.record_receipt_typed(&[], "the newest stays resident", None, pin.retain(persona, "the newest stays resident"));
+    wm.evict_resident_results_over(1);
+    let mut snapshot = wm.snapshot();
+    snapshot.actions = snapshot.action_records();
+    // the shape the old share left: body gone, handle kept, no stored size
+    let legacy: Vec<_> = snapshot.actions.iter_mut().filter(|r| r.result.is_none()).map(|r| {
+        r.stored_chars = None;
+        r.handle.clone().expect("test: saved")
+    }).collect();
+    assert_eq!(legacy.len(), 2, "two evicted, the newest resident");
+    let measured = body.trim().chars().count();
+    snapshot.price_evicted_wholes(|handle| (handle == legacy[0]).then_some(measured));
+    let restored = WorkingMemory::new(8);
+    restored.restore(snapshot);
+    let (acts, _) = restored.action_renderings();
+    let label = restored.action_whole_label(acts[0].0).expect("test: a label").chars().count();
+    assert_eq!(acts[0].4.as_ref().map(|(chars, _)| *chars), Some(label + measured), "priced from its saved output, label included");
+    assert_eq!(acts[1].4, None, "an output that can't be read stays a pointer");
 }

@@ -88,7 +88,7 @@
         });
         let (source, _) = isolated_source(reader.clone());
         source
-            .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx_in(room))
             .await;
         assert_eq!(
             *reader.paged_room.lock().unwrap(),
@@ -100,7 +100,7 @@
         // pointer-scoped, not accidentally room-pinned.
         let ctx_no_room = RagContext::for_persona(persona(), 1_000_000);
         source
-            .deliver(&ctx_no_room, 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx_no_room)
             .await;
         assert_eq!(*reader.paged_room.lock().unwrap(), Some(None));
     }
@@ -124,7 +124,7 @@
             // Isolated tests exercise the live window; hydration has its own test
             // (a stub DurableRoomHistory) and stays off here.
             history: None,
-            anchors: std::sync::Mutex::new(std::collections::HashMap::new()),
+            last_digest: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         (source, buffer)
     }
@@ -164,7 +164,7 @@
         ]));
         let (source, _) = isolated_source(reader);
         let delivery = source
-            .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx_in(room))
             .await;
         assert_eq!(delivery.items.len(), 2);
         assert_eq!(delivery.items[0].content, "hello");
@@ -182,9 +182,9 @@
     // 2026-07-30: Asha's captures showed "[context] you can currently see the
     // last 3 messages" while her L1 budget could hold dozens — she then looped
     // generic-assistant filler because the real conversation was invisible).
-    // Grounding must derive from the TOKEN budget (turns-that-fit), never a
-    // fixed message count: with every message already read (bookmark at tip),
-    // a generous budget must still deliver far more than DEFAULT_GROUNDING.
+    // what this catches: a budget sizing the conversation inside the source (FLOW plan §2d).
+    // A caught-up persona is still handed the whole staged history, and a tiny budget
+    // changes nothing: her one view decides what she sees, never a second budget here.
     #[tokio::test]
     async fn caught_up_persona_sees_budget_worth_of_history_not_five_messages() {
         let room = RoomId::new();
@@ -196,69 +196,38 @@
         let (source, _) = isolated_source(reader);
 
         let delivery = source
-            .deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw)
+            .deliver(&ctx_in(room))
             .await;
         assert!(
             delivery.items.len() > DEFAULT_GROUNDING,
-            "a 4k-token budget must widen the window past the {DEFAULT_GROUNDING}-message \
+            "the window must reach past the {DEFAULT_GROUNDING}-message \
              recipe floor, got {}",
             delivery.items.len()
         );
         assert_eq!(
             delivery.items.len(),
             20,
-            "all 20 short turns fit the budget — the packer, not a count, decides"
+            "all 20 turns are delivered, whatever the budget"
         );
     }
 
-    // what this catches: BREADTH OVER VERBATIM DEPTH (#128/#146, measured
-    // 2026-07-13: live persona prompts held THREE messages total in a busy
-    // room — the whole perceivable world — so any low-frequency speaker was
-    // displaced in seconds and the operator went unheard for hours). Long
-    // turns must render as head-trimmed summaries so a small budget holds
-    // MANY turns: the oldest (operator) message survives trimmed, the newest
-    // stays verbatim. Under the old whole-message packer this exact input
-    // delivered 3 items and the operator message was gone.
+    // what this catches: a head cut in the source (#128/#146 trimmed long turns to a
+    // per-turn cap before her view saw them, and NEVER CLIP THE NEWEST END). Every turn
+    // arrives whole at any budget; how much of the conversation she sees is the view's
+    // levels, and a turn it cannot fit leaves whole at a start, never as a cut head.
     #[tokio::test]
-    async fn small_budget_keeps_many_trimmed_turns_not_three_essays() {
+    async fn every_turn_arrives_whole_at_any_budget() {
         let room = RoomId::new();
         let long = |tag: &str| format!("{tag}: {}", "lorem ipsum dolor sit amet ".repeat(15));
-        let mut events = vec![event_in(
-            room,
-            Some(&long("OPERATOR your card is 0b1a6230")),
-            1,
-        )];
-        for (i, l) in (2..=5).enumerate() {
-            events.push(event_in(room, Some(&long(&format!("peer essay {i}"))), l));
-        }
-        events.push(event_in(room, Some(&long("newest peer question")), 6));
-        let reader = Arc::new(StubReader::new(events));
-        let (source, _) = isolated_source(reader);
-        let delivery = source
-            .deliver(&ctx_in(room), 400, ResolutionPreference::Raw)
-            .await;
-
-        assert!(
-            delivery.items.len() >= 6,
-            "breadth: all 6 turns fit a 400-token budget as trimmed heads, got {}",
-            delivery.items.len()
-        );
-        assert!(
-            delivery.items[0].content.starts_with("OPERATOR")
-                && delivery.items[0].content.contains("trimmed"),
-            "oldest low-frequency speaker survives, trimmed: {:?}",
-            delivery.items[0].content
-        );
-        let newest = &delivery.items.last().unwrap().content;
-        assert!(
-            newest.starts_with("newest peer question") && !newest.contains("trimmed"),
-            "the turn being responded to stays verbatim: {newest:?}"
-        );
-        assert!(
-            delivery.tokens_used <= 400,
-            "budget honored: {}",
-            delivery.tokens_used
-        );
+        let texts: Vec<String> = std::iter::once(long("OPERATOR your card is 0b1a6230"))
+            .chain((0..4).map(|i| long(&format!("peer essay {i}"))))
+            .chain(std::iter::once(long("newest peer question")))
+            .collect();
+        let events = texts.iter().enumerate().map(|(i, t)| event_in(room, Some(t), i as u64 + 1)).collect();
+        let (source, _) = isolated_source(Arc::new(StubReader::new(events)));
+        let delivery = source.deliver(&ctx_in(room)).await;
+        let seen: Vec<&str> = delivery.items.iter().map(|i| i.content.as_str()).collect();
+        assert_eq!(seen, texts.iter().map(String::as_str).collect::<Vec<_>>(), "every turn, whole, in order");
     }
 
     fn receipt_from(room: RoomId, peer: PeerId, thought: &str, act: &str, lamport: u64) -> TranscriptEvent {
@@ -285,91 +254,33 @@
         let (source, _) = isolated_source(Arc::new(StubReader::new(Vec::new())));
         let render = |events: &Vec<TranscriptEvent>| {
             let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
-            let (items, _, read_through, _) = AircRagSource::pack_digest(&digest, 4_000, false, None);
-            (items.into_iter().map(|i| i.content).collect::<Vec<_>>(), read_through.map(|e| e.event().lamport))
+            AircRagSource::digest_items(&digest, false).into_iter().map(|i| i.content).collect::<Vec<_>>()
         };
-        let (before, read_before) = render(&events);
+        let before = render(&events);
         assert_eq!(before.len(), 4, "{before:?}");
         assert!(before[1].starts_with("💭 thought two") && before[1].contains("2 act batches"), "the first run, folded, at its start: {:?}", before[1]);
         assert!(before[3].contains("thought three"), "the run after Kira's line is its own line: {:?}", before[3]);
-        assert_eq!(read_before, Some(5), "read through the newest receipt");
         // Another receipt from Atlas: the open run at the tail grows; nothing before
         // it changes by a byte.
         events.push(receipt_from(room, atlas, "thought four", "code/shell cat ✓", 6));
-        let (after, read_after) = render(&events);
+        let after = render(&events);
         assert_eq!(after.len(), 4);
         assert_eq!(&after[..3], &before[..3], "every line before the open run is byte-identical");
         assert!(after[3].starts_with("💭 thought four") && after[3].contains("2 act batches"), "{:?}", after[3]);
-        assert_eq!(read_after, Some(6));
     }
 
-    // what this catches (Cormac on #4806, point 2): in a receipts-only room the window
-    // starts on an OPEN run; keyed on the run's newest receipt the anchor looked
-    // scrolled out on every receipt and jumped each turn. Keyed on the run's first
-    // receipt it holds while the run grows.
+    // what this catches (Cormac on #4806, point 2): a receipts-only room is one open run
+    // that grows as one folded line at its first receipt, so the window's head holds.
     #[test]
-    fn an_open_run_at_the_window_start_holds_the_anchor_while_it_grows() {
+    fn an_open_run_at_the_window_start_stays_one_line_while_it_grows() {
         let room = RoomId::new();
         let atlas = PeerId::new();
-        let mut events: Vec<TranscriptEvent> = (1..=3).map(|l| receipt_from(room, atlas, &format!("thought {l}"), "code/read a ✓", l)).collect();
+        let events: Vec<TranscriptEvent> = (1..=4).map(|l| receipt_from(room, atlas, &format!("thought {l}"), "code/read a ✓", l)).collect();
         let (source, _) = isolated_source(Arc::new(StubReader::new(Vec::new())));
-        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
-        let (_, _, _, a0) = AircRagSource::pack_digest(&digest, 4_000, false, None);
-        let a0 = a0.expect("an anchor");
-        events.push(receipt_from(room, atlas, "thought 4", "code/read b ✓", 4));
-        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
-        let (items, _, _, a1) = AircRagSource::pack_digest(&digest, 4_000, false, Some(a0));
-        assert_eq!(a1, Some(a0), "the open run grew; its first receipt is still the start");
+        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events, 0, 0);
+        let items = AircRagSource::digest_items(&digest, false);
         assert_eq!(items.len(), 1);
         assert!(items[0].content.starts_with("💭 thought 4") && items[0].content.contains("4 act batches"), "{:?}", items[0].content);
-    }
-
-    // what this catches (Cormac's 5090 trace, 2026-10-05: 20-75 s of re-prefill per
-    // turn): the window's START holds still across turns while the suffix from it
-    // fits, so the first history message is byte-identical turn to turn and the
-    // engine's prefix survives; when it no longer fits, the start jumps FORWARD with
-    // HISTORY_SLACK of headroom, once, then holds again. Newest-first filling moved
-    // it by one line on every room event.
-    #[test]
-    fn the_history_start_holds_still_and_jumps_in_blocks() {
-        let room = RoomId::new();
-        let (source, _) = isolated_source(Arc::new(StubReader::new(Vec::new())));
-        let line = |l: u64| event_in(room, Some(&format!("peer{l}: line number {l} of the room, said with enough words that each line costs a real share of the window")), l);
-        let mut events: Vec<TranscriptEvent> = (1..=120).map(line).collect();
-        let budget = 300; // ~ sixty of these lines: half the room
-        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
-        // The first fill in a room shows everything the budget holds.
-        let (_, tokens0, _, a0) = AircRagSource::pack_digest(&digest, budget, false, None);
-        let a0 = a0.expect("an anchor");
-        assert!(tokens0 <= budget && tokens0 > ((budget as f32) * (1.0 - HISTORY_SLACK)) as u32, "full: {tokens0} of {budget}");
-        // One more event: the suffix from that start no longer fits, so the start
-        // jumps ONCE, forward, with headroom.
-        events.push(line(121));
-        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
-        let (items1, tokens1, _, a1) = AircRagSource::pack_digest(&digest, budget, false, Some(a0));
-        let a1 = a1.expect("an anchor");
-        assert_ne!(a1, a0, "the start jumped");
-        assert!(tokens1 <= ((budget as f32) * (1.0 - HISTORY_SLACK)) as u32, "the jump left headroom: {tokens1}");
-        let first1 = items1.first().unwrap().content.clone();
-        // Several more: the start HOLDS and the first message stays byte-identical;
-        // the new lines extend the window instead of replacing its head.
-        events.push(line(122));
-        events.push(line(123));
-        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
-        let (items2, tokens2, _, a2) = AircRagSource::pack_digest(&digest, budget, false, Some(a1));
-        assert_eq!(a2, Some(a1), "the start held");
-        assert_eq!(items2.first().unwrap().content, first1, "the first history message did not change");
-        assert!(tokens2 <= budget && items2.len() == items1.len() + 2, "{} → {}", items1.len(), items2.len());
-        // Enough traffic that it cannot hold: one more jump, headroom again, newest shown.
-        for l in 124..=200 {
-            events.push(line(l));
-        }
-        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
-        let (items3, tokens3, _, a3) = AircRagSource::pack_digest(&digest, budget, false, Some(a1));
-        let a3 = a3.expect("an anchor");
-        assert_ne!(a3, a1);
-        assert!(tokens3 <= ((budget as f32) * (1.0 - HISTORY_SLACK)) as u32, "{tokens3}");
-        assert!(items3.last().unwrap().content.contains("line number 200"), "the newest line is always shown");
     }
 
     // what this catches: THE LOOP WAS THE WINDOW (2026-09-03) — a run of one
@@ -392,7 +303,7 @@
         let reader = Arc::new(StubReader::new(events));
         let (source, _) = isolated_source(reader);
         let delivery = source
-            .deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw)
+            .deliver(&ctx_in(room))
             .await;
         assert_eq!(
             delivery.items.len(),
@@ -448,14 +359,14 @@
         // and the conversational path (receipts collapsed per author).
         let digest = source.builder.build_from_events(persona(), room.as_uuid(), events, 0, 0);
         for working in [false, true] {
-            let (items, _, _, _) = AircRagSource::pack_digest(&digest, 4_000, working, None);
+            let items = AircRagSource::digest_items(&digest, working);
             let seen: Vec<&str> = items.iter().map(|i| i.content.as_str()).collect();
             assert_eq!(seen.len(), 2, "working={working}: only the two real lines survive: {seen:?}");
             assert!(seen[0].starts_with("Kira:"), "{seen:?}");
             assert!(seen[1].starts_with("Atlas:"), "a line DISCUSSING an envelope is speech: {seen:?}");
         }
         // And the live path (the one every turn takes) delivers the same two.
-        let delivery = source.deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw).await;
+        let delivery = source.deliver(&ctx_in(room)).await;
         assert_eq!(delivery.items.len(), 2, "{:?}", delivery.items.iter().map(|i| &i.content).collect::<Vec<_>>());
     }
 
@@ -469,7 +380,7 @@
         let reader = Arc::new(StubReader::new(vec![event_in(room, Some("hi"), 1)]));
         let (source, _) = isolated_source(reader);
         let ctx = RagContext::for_persona(persona(), 1_000_000); // airc_room = None
-        let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
+        let delivery = source.deliver(&ctx).await;
         assert_eq!(
             delivery.items.len(),
             1,
@@ -484,16 +395,16 @@
         let reader = Arc::new(StubReader::new(vec![]));
         let (source, _) = isolated_source(reader);
         let ctx = RagContext::for_persona(persona(), 1_000_000);
-        let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
+        let delivery = source.deliver(&ctx).await;
         assert!(delivery.items.is_empty());
     }
 
     // what this catches: a pre-staged digest in the buffer is served WITHOUT
     // rebuilding (the hot path peeks the region's snapshot). We seed the buffer with
     // a digest the reader could not have produced, and confirm it's what's served.
-    // NOTE (#259): reuse now requires the staged digest to COVER the budget-derived
-    // window — the tiny budget here keeps that window at 1 so the staged snapshot
-    // qualifies; an under-grounded stage must be rebuilt wide instead (previous test).
+    // NOTE (#259): reuse requires the staged digest to hold at least what a rebuild would
+    // (the room's events after any top-up); here both hold one, so the stage is served,
+    // while an under-grounded stage is rebuilt wide instead (previous test).
     #[tokio::test]
     async fn serves_prestaged_digest_without_rebuild() {
         let room = RoomId::new();
@@ -511,7 +422,7 @@
         buffer.publish((persona(), room.as_uuid()), Arc::new(staged));
 
         let delivery = source
-            .deliver(&ctx_in(room), 8, ResolutionPreference::Raw)
+            .deliver(&ctx_in(room))
             .await;
         assert_eq!(delivery.items.len(), 1);
         assert_eq!(
@@ -529,10 +440,9 @@
         let mut other = RagContext::for_persona(Uuid::new_v4(), 1_000_000);
         other.substrate.airc_room = Some(room);
         let delivery = source
-            .deliver(&other, 1_000, ResolutionPreference::Raw)
+            .deliver(&other)
             .await;
         assert!(delivery.items.is_empty());
-        assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
     // what this catches: a reader error degrades to empty (cognition stays up), no
@@ -544,31 +454,46 @@
         reader.set_fail(true);
         let (source, _) = isolated_source(reader);
         let delivery = source
-            .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx_in(room))
             .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
     }
 
-    // what this catches: budget caps the window — only the newest messages that fit
-    // are packed, and there is NO continuation cursor (the digest is the unit).
+    struct CursorReader {
+        events: Vec<TranscriptEvent>,
+        advanced: Mutex<Vec<u64>>,
+    }
+    #[async_trait]
+    impl AircTranscriptReader for CursorReader {
+        async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError> {
+            Ok(self.events.iter().take(limit).cloned().collect())
+        }
+        async fn advance_read_cursor(&self, _persona: Uuid, _room: Uuid, event: &TranscriptEvent) -> Result<(), AircError> {
+            self.advanced.lock().unwrap().push(event.lamport);
+            Ok(())
+        }
+    }
+
+    // what this catches: delivery marking her read (it did, before any prompt existed, so
+    // a turn her view collapsed or an act that was refused still marked the room read, and
+    // running rag_inspect moved a resident's real cursor). Delivery moves nothing; the
+    // read receipt of a sent prompt moves it to exactly the event named, and an event the
+    // last digest does not hold moves nothing.
     #[tokio::test]
-    async fn budget_caps_window_no_continuation() {
+    async fn delivery_marks_nothing_read_and_the_receipt_marks_the_named_event() {
         let room = RoomId::new();
-        let reader = Arc::new(StubReader::new(vec![
-            event_in(room, Some("aaaaa"), 1),
-            event_in(room, Some("bbbbb"), 2),
-            event_in(room, Some("ccccc"), 3),
-        ]));
-        let (source, _) = isolated_source(reader);
-        let delivery = source
-            .deliver(&ctx_in(room), 4, ResolutionPreference::Raw)
-            .await;
-        assert_eq!(delivery.items.len(), 2, "two newest fit budget 4");
-        assert!(
-            !delivery.truncated,
-            "digest model has no continuation cursor"
-        );
+        let events: Vec<TranscriptEvent> = (1..=3).map(|l| event_in(room, Some(&format!("line {l}")), l)).collect();
+        let second = events[1].event_id.as_uuid();
+        let reader = Arc::new(CursorReader { events, advanced: Mutex::new(Vec::new()) });
+        let (source, _) = isolated_source(reader.clone());
+        let delivery = source.deliver(&ctx_in(room)).await;
+        assert_eq!(delivery.items.len(), 3);
+        assert!(!delivery.truncated, "the digest has no continuation cursor");
+        assert!(reader.advanced.lock().unwrap().is_empty(), "delivery is not reading");
+        source.mark_read(room.as_uuid(), second).await;
+        source.mark_read(room.as_uuid(), Uuid::new_v4()).await;
+        assert_eq!(*reader.advanced.lock().unwrap(), vec![2], "read through exactly what her prompt rendered");
     }
 
     struct StubHistory {
@@ -631,7 +556,7 @@
         }));
 
         let delivery = source
-            .deliver(&ctx_in(room), 400, ResolutionPreference::Raw)
+            .deliver(&ctx_in(room))
             .await;
         let texts: Vec<&str> = delivery.items.iter().map(|i| i.content.as_str()).collect();
         assert!(

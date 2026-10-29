@@ -186,42 +186,6 @@ pub struct RagSourceBudget {
     pub required: bool,
 }
 
-impl RagSourceBudget {
-    /// Existing retrieval appetite, resolved against this turn's capacity.
-    /// The source owns its atomic floor; the shared allocator still owns fitting.
-    pub fn retrieval(source_id: &str, floor: u32, window: u32, headroom: u32) -> Self {
-        let max = (((window as u64) * 6 / 10) as u32).min(headroom);
-        let floor = floor.min(max);
-        Self {
-            source_id: source_id.to_owned(),
-            priority: 10,
-            floor_tokens: floor,
-            min_tokens: COMFORTABLE_SOURCE_TOKENS.min(max).max(floor),
-            max_tokens: max,
-            required: false,
-        }
-    }
-
-    /// A lightweight source's existing window-relative offer. The denominator
-    /// belongs to that source's content policy, never to its identifier.
-    pub fn floorless_share(
-        source_id: &str,
-        window: u32,
-        headroom: u32,
-        denominator: std::num::NonZeroU32,
-    ) -> Self {
-        let mut claim = Self::retrieval(source_id, 0, window, headroom);
-        claim.min_tokens = 0;
-        claim.max_tokens = claim.max_tokens.min(window / denominator.get());
-        claim
-    }
-}
-
-/// Existing comfortable retrieval target (not the atomic survival floor).
-/// Measured first units are 6..40 tokens; a source can survive below this target.
-// context-budget-exempt: a per-source TARGET, capped by the resolved window/headroom
-pub(super) const COMFORTABLE_SOURCE_TOKENS: u32 = 500;
-
 /// Per-source outcome. Reported back from the allocator.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceAllocation {
@@ -257,100 +221,18 @@ pub enum AllocationState {
     UnderProvisioned,
 }
 
-/// Reserved tokens — fixed costs that come off the top before any
-/// source allocation. `system` is the system prompt + identity
-/// header overhead; `completion` is the tokens reserved for the
-/// model's output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReservedTokens {
-    pub system: u32,
-    pub completion: u32,
-}
-
-impl ReservedTokens {
-    pub fn total(self) -> u32 {
-        self.system.saturating_add(self.completion)
-    }
-
-    /// THE window-scaled reservation shape (#424 dedup — this derivation was
-    /// byte-identical in `unified.rs` and `rag_inspect.rs`; one logical
-    /// decision lives in one place). Reservations scale as a percentage of
-    /// the window per [[intent-driven-api-not-hot-patches]]: a 2048-window
-    /// persona can't reserve a flat 4000 for completion (negative headroom →
-    /// all sources get 0 → cognition fires with no RAG content → LLM defaults
-    /// to the grammar-shortest "will_respond=false" attractor), while an
-    /// M-series 32k persona shouldn't be pinned to Compat-tier crumbs.
-    ///
-    /// - system: 10% of window, clamped [128, 512]
-    /// - completion: 25% of window, clamped [256, 4_000]
-    ///
-    /// This is a FALLBACK shape, not a budgeter: the substrate's real
-    /// budgeter (profile/model-characteristic driven) can override via a
-    /// richer reservation API. NOTE the 4_000 completion ceiling is the RAG
-    /// *reservation* only — the generation ceiling itself is deliberately
-    /// uncapped (`llm_deliberation_faculty::completion_budget_for`, Joel
-    /// 2026-07-13: stop choking context); whether this reservation should
-    /// follow it up on large windows is an open budgeting question, not a
-    /// dedup question.
-    pub fn scaled_for_window(context_window: u32) -> Self {
-        Self {
-            system: (context_window / 10).clamp(128, 512),
-            completion: (context_window / 4).clamp(256, 4_000),
-        }
-    }
-
-    /// Actual tokens left for sources after this reservation. Exhausted capacity
-    /// is zero, never a fabricated minimum; the allocator reports underprovisioning.
-    pub fn headroom_within(self, context_window: u32) -> u32 {
-        context_window.saturating_sub(self.total())
-    }
-}
-
-/// Full allocation result.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct BudgetAllocation {
-    pub context_window: u32,
-    pub reserved: ReservedTokens,
-    pub available_for_sources: u32,
-    pub allocations: Vec<SourceAllocation>,
-    pub total_allocated: u32,
-    pub unallocated: u32,
-    /// True if any required source ended up `UnderProvisioned`.
-    /// Caller MUST handle this — escalate to operator, request
-    /// lower-resolution content from sources, or switch models.
-    pub escalation_needed: bool,
-    /// Warnings collected during allocation — non-fatal but
-    /// surfaced for operator visibility (e.g., "floors exceeded
-    /// available budget; dropped required=false sources").
-    pub warnings: Vec<String>,
-}
-
 //=============================================================================
 // SOURCE-OWNED DELIVERY (the no-clipping mechanism)
 //=============================================================================
-/// What "resolution" of content the allocator wants from a source.
-/// The source delivers at the resolution that fits its budget;
-/// compression is a substrate-side fallback, never a clip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResolutionPreference {
-    /// Verbatim, full fidelity. L1 raw — recent messages, current
-    /// engrams in their original form.
-    Raw,
-    /// L2-style outlined gist. Used when raw doesn't fit but the
-    /// source has a compressed form available.
-    Compressed,
-    /// Single-sentence digest per item.
-    Summarized,
-    /// Metadata-only ("3 engrams from coding session, gist available
-    /// on demand via cursor"). Last resort before drop.
-    Placeholder,
-}
-
 /// One delivered item — already a complete atomic unit by the
 /// source's definition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RagItem {
+    /// Stable for the item's life within its source (a card id, a post id, a peer id, an
+    /// engram id): what her view keys the item by, so it appends only when this item
+    /// changes. Empty in captures written before keys.
+    #[serde(default)]
+    pub key: String,
     /// Ready-to-include text. The source has serialized, formatted,
     /// and verified structural completeness. Allocator concatenates
     /// directly into the prompt.
@@ -361,27 +243,64 @@ pub struct RagItem {
     /// content hash. Lets prompt assembly + sentinel verifiers
     /// trace what made it in.
     pub metadata: serde_json::Value,
+    /// A coarser level between whole and pointer (a post's category and first line, a
+    /// memory's gist), the view's choice when the whole does not fit (FLOW plan §2d).
+    /// Absent in captures written before levels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// What the item is and how to reopen it (an id and the verb): its cost once collapsed.
+    /// `None` when a collapsed item leaves her view entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pointer: Option<String>,
+}
+
+impl RagItem {
+    /// An item at its whole level, priced by the one estimator, with no coarser levels yet.
+    pub fn whole(key: impl Into<String>, content: impl Into<String>, metadata: serde_json::Value) -> Self {
+        let content = content.into();
+        let tokens = continuum_base::token_estimate::estimate_prompt_tokens(&content);
+        Self { key: key.into(), content, tokens, metadata, summary: None, pointer: None }
+    }
+
+    /// With a summary level.
+    pub fn with_summary(mut self, summary: impl Into<String>) -> Self {
+        self.summary = Some(summary.into());
+        self
+    }
+
+    /// With a pointer level.
+    pub fn with_pointer(mut self, pointer: impl Into<String>) -> Self {
+        self.pointer = Some(pointer.into());
+        self
+    }
 }
 
 /// What a source returns when asked to deliver.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RagDelivery {
     pub source_id: String,
-    /// Items already pre-validated as complete atomic units. Never
-    /// partial. Sum of `items[i].tokens` <= the budget the source
-    /// was given.
+    /// Every item the source holds, each a complete unit at its levels. Never partial and
+    /// never sized: the one allocation in her prompt view chooses each item's level.
     pub items: Vec<RagItem>,
     /// Actual tokens consumed across all items.
     pub tokens_used: u32,
-    /// True → the source has more than it delivered; the remainder reaches
-    /// the reader through the source's `expand_command` (whole-or-handle).
-    /// No production allocator resumes a position today — truncation is
-    /// notice metadata, not a resumable handle (ruling a; card e049aa82).
+    /// True → the source holds more than it delivered (a room's scrollback beyond its
+    /// fetch); the rest reaches the reader through the source's `expand_command`. Never a
+    /// budget cut: sources no longer take one.
     pub truncated: bool,
-    /// What resolution the source actually used. May differ from
-    /// the requested resolution if the source's content can't fit
-    /// at the requested resolution.
-    pub resolution_used: ResolutionPreference,
+}
+
+impl RagDelivery {
+    /// Every item a source holds, `tokens_used` summed from them.
+    pub fn of(source_id: &str, items: Vec<RagItem>, truncated: bool) -> Self {
+        let tokens_used = items.iter().fold(0u32, |sum, item| sum.saturating_add(item.tokens));
+        Self { source_id: source_id.to_owned(), items, tokens_used, truncated }
+    }
+
+    /// A source with nothing to say this turn.
+    pub fn empty(source_id: &str) -> Self {
+        Self::of(source_id, Vec::new(), false)
+    }
 }
 
 /// Deserializes both wire forms of a delivered RAG pack. Current captures carry
@@ -404,7 +323,6 @@ impl<'de> Deserialize<'de> for RagDelivery {
             tokens_used: u32,
             /// Current form; absent on pre-ruling-a lines.
             truncated: Option<bool>,
-            resolution_used: ResolutionPreference,
             /// Legacy form; never emitted today — read only for old JSONL.
             continuation: Option<serde_json::Value>,
         }
@@ -422,7 +340,6 @@ impl<'de> Deserialize<'de> for RagDelivery {
             items: w.items,
             tokens_used: w.tokens_used,
             truncated,
-            resolution_used: w.resolution_used,
         })
     }
 }
@@ -476,193 +393,16 @@ pub trait RagSource: Send + Sync {
     /// the same forcing function as persona's `room_board_source::RoomBoardReader::peer_names`.
     fn expand_command(&self) -> Option<&'static str>;
 
-    /// The cost, in tokens, of the SMALLEST COMPLETE STATEMENT this source can
-    /// make — its first atomic unit, not its comfortable size.
+    /// Every item this source holds, each at its levels (whole, `summary`, `pointer`). A
+    /// source never takes a size: the one allocation in her prompt view decides which level
+    /// each item gets (FLOW-IMPLEMENTATION-PLAN §2d). Before this each source was handed its
+    /// own budget (a quarter of the window per grounding faculty, a second flexbox in
+    /// `compose_for_turn`) and cut or head-trimmed to it before the view ever saw it.
     ///
-    /// This is the allocator's floor for the source, and the allocator's rule
-    /// for a floor that doesn't fit is to drop the source ENTIRELY. So this
-    /// number decides, alone, whether a citizen under budget pressure hears
-    /// anything at all from this source.
-    ///
-    /// ### The defect this exists to kill (measured 2026-08-06)
-    ///
-    /// Every source was assigned a hardcoded floor of **500** tokens by
-    /// `unified.rs`, a number unrelated to any of them. Their real first units,
-    /// measured off a live prompt: room 6, board 26, workspace-map 32,
-    /// recall 40 — about **104 tokens for one complete unit from all six**.
-    /// On a node whose grounding budget measured 0..214, every source was
-    /// dropped on 100% of turns (137 of 137 for one citizen, 132 of 132 for
-    /// another) while asking for 12-80x more than it needed to say something
-    /// true. That is what made grounding all-or-nothing instead of degrading:
-    /// a source that could have delivered a complete 26-token headline was
-    /// never asked for it.
-    ///
-    /// So: answer with what your FIRST unit actually costs. Not what you'd
-    /// like. `0` is legitimate and means "I have no floor — give me whatever is
-    /// left over" (the lightweight roster/doctrine shape). There is no default
-    /// impl on purpose: a default would let a new source silently inherit
-    /// someone else's appetite, which is exactly how the 500 got everywhere.
-    fn floor_tokens(&self) -> u32;
-
-    /// Declare this source's appetite independently of its name or decoration.
-    /// This is input to the existing allocator, not a second allocation path.
-    fn budget_claim(&self, window: u32, headroom: u32) -> RagSourceBudget {
-        RagSourceBudget::retrieval(self.source_id(), self.floor_tokens(), window, headroom)
-    }
-
-    /// Deliver as many complete atomic units as fit within `budget`.
-    /// The source decides what counts as complete; allocator only
-    /// trusts that `delivery.tokens_used <= budget`.
-    ///
-    /// `ctx` carries the per-call substrate context (persona scope,
-    /// timing, room handle). Sources MUST validate that
-    /// `ctx.persona_id == self.persona_id` if they're bound to a
+    /// `ctx` carries the per-call substrate context (persona scope, timing, room handle).
+    /// Sources MUST validate that `ctx.persona_id == self.persona_id` if they're bound to a
     /// specific persona at construction.
-    ///
-    /// If `resolution = Raw` doesn't fit, the source MAY automatically
-    /// fall back to a lower resolution and report
-    /// `delivery.resolution_used`. The source decides when fallback
-    /// is preferable to delivering fewer items at higher resolution.
-    async fn deliver(
-        &self,
-        ctx: &RagContext,
-        budget: u32,
-        resolution: ResolutionPreference,
-    ) -> RagDelivery;
-}
-
-//=============================================================================
-// ADAPTER TRAIT — POLYMORPHISM RAIL
-//=============================================================================
-/// The allocation strategy. Ship one heuristic impl
-/// (`FlexboxRagBudgetAdapter`); future learnable adapters
-/// (`LearnedRagBudgetAdapter` reading telemetry from
-/// `MemoryParameterAdapter`) slot in without changing callers per
-/// the adapter-first methodology.
-pub trait RagBudgetAdapter: Send + Sync {
-    fn name(&self) -> &'static str;
-
-    /// Allocate tokens to each source. Pure-function — no I/O, no
-    /// async. Sources are CALLED later with their allocation by
-    /// the prompt-assembly layer.
-    ///
-    /// `ctx` first per the Android Context pattern. Allocators may
-    /// use it for telemetry stamping, persona-specific tuning (a
-    /// future `LearnedRagBudgetAdapter` reads per-persona regret
-    /// signals from `MemoryParameterAdapter`), or for stable
-    /// deterministic seeds keyed on `(ctx.persona_id, ctx.turn_id)`.
-    fn allocate(
-        &self,
-        ctx: &RagContext,
-        context_window: u32,
-        reserved: ReservedTokens,
-        sources: &[RagSourceBudget],
-    ) -> BudgetAllocation;
-}
-
-//=============================================================================
-// FLEXBOX ADAPTER — THE FIRST CONCRETE IMPL
-//=============================================================================
-/// CSS-flexbox-inspired allocation. Algorithm (anti-clipping):
-///
-/// 1. Reserve system + completion off the top
-/// 2. **Floor pass** — allocate `floor_tokens` to every source.
-///    Floors are unconditional; if floor totals exceed available,
-///    drop required=false sources by priority (lowest first) until
-///    required floors fit. If even required floors can't fit, set
-///    affected sources to `UnderProvisioned` + flag escalation.
-/// 3. **Min pass** — top up to `min_tokens` for sources by priority.
-///    If a source can't reach `min_tokens` but is at >= `floor_tokens`,
-///    its state is `FloorOnly`.
-/// 4. **Grow pass** — distribute remaining tokens by priority weight,
-///    capped at `max_tokens` per source. Iterate until no movement
-///    (capped sources release tokens to non-capped).
-/// 5. Report — each source's state classifies the outcome.
-pub struct FlexboxRagBudgetAdapter;
-
-impl FlexboxRagBudgetAdapter {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for FlexboxRagBudgetAdapter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
-    fn name(&self) -> &'static str {
-        "flexbox"
-    }
-
-    fn allocate(
-        &self,
-        _ctx: &RagContext,
-        context_window: u32,
-        reserved: ReservedTokens,
-        sources: &[RagSourceBudget],
-    ) -> BudgetAllocation {
-        let available = reserved.headroom_within(context_window);
-
-        if available == 0 {
-            let warnings = vec![format!(
-                "reserved tokens ({}) >= context window ({}); no budget for sources",
-                reserved.total(),
-                context_window
-            )];
-            return empty_allocation(context_window, reserved, sources, warnings, true);
-        }
-
-        let FlexAllocation {
-            allocations,
-            unallocated,
-            escalation_needed,
-            warnings,
-        } = flex_allocate(available, sources);
-        let mut total_allocated = 0u32;
-        for allocation in &allocations {
-            total_allocated = total_allocated.saturating_add(allocation.allocated_tokens);
-            // The allocator decided how much of her mind each source gets, and
-            // until now said NOTHING. So when a grounding block failed to
-            // appear, "the source abstained" and "the source was granted zero"
-            // were indistinguishable from outside — which is exactly the
-            // ambiguity that survived the #331 room fix: gate passing, board
-            // non-empty, block still absent, no way to tell why.
-            //
-            // Emitted per source per allocation: what it ASKED for and what it
-            // GOT. A source at allocated=0 (or below its own floor) is a
-            // faculty the persona cannot hear this turn, and that must be a
-            // readable fact, not an inference. [[observability-as-substrate]]
-            if allocation.allocated_tokens == 0
-                || allocation.allocated_tokens < allocation.requested_floor
-            {
-                tracing::info!(
-                    probe_class = "rag.budget.starved",
-                    source = %allocation.source_id,
-                    granted = allocation.allocated_tokens,
-                    floor = allocation.requested_floor,
-                    min = allocation.requested_min,
-                    max = allocation.requested_max,
-                    state = ?allocation.state,
-                    context_window,
-                    "source granted less than its own floor — this faculty is silent this turn"
-                );
-            }
-        }
-
-        BudgetAllocation {
-            context_window,
-            reserved,
-            available_for_sources: available,
-            allocations,
-            total_allocated,
-            unallocated,
-            escalation_needed,
-            warnings,
-        }
-    }
+    async fn deliver(&self, ctx: &RagContext) -> RagDelivery;
 }
 
 /// What [`flex_allocate`] decided: every claim's grant in INPUT order, the tokens no

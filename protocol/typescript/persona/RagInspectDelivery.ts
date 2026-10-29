@@ -2,7 +2,7 @@
 import type { RagInspectItem } from "./RagInspectItem";
 
 /**
- * One source's delivery — its budget, what it served, and the per-
+ * One source's delivery — what it served, and the per-
  * item rationale.
  */
-export type RagInspectDelivery = { sourceId: string, budgetRequested: number, tokensUsed: number, hasContinuation: boolean, items: Array<RagInspectItem>, };
+export type RagInspectDelivery = { sourceId: string, tokensUsed: number, hasContinuation: boolean, items: Array<RagInspectItem>, };

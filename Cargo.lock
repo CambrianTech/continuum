@@ -2761,6 +2761,7 @@ dependencies = [
  "continuum-memory",
  "continuum-perception",
  "continuum-positron",
+ "continuum-process",
  "dashmap",
  "dirs 5.0.1",
  "fs2",
@@ -3023,6 +3024,7 @@ dependencies = [
  "continuum-orm-derive",
  "continuum-perception",
  "continuum-positron",
+ "continuum-process",
  "continuum-sentinel",
  "continuum-service",
  "continuum-serving",
@@ -3160,6 +3162,7 @@ dependencies = [
  "continuum-cli-lifecycle",
  "continuum-host",
  "continuum-kernel",
+ "continuum-process",
  "continuum-service",
  "continuum-tool-protocol",
  "dashmap",
@@ -3260,6 +3263,7 @@ dependencies = [
  "continuum-engine",
  "continuum-host",
  "continuum-kernel",
+ "continuum-process",
  "dashmap",
  "futures",
  "inventory",
@@ -3297,6 +3301,7 @@ dependencies = [
  "continuum-engine",
  "continuum-kernel",
  "continuum-mind",
+ "continuum-process",
  "continuum-service",
  "dashmap",
  "futures",
@@ -3342,6 +3347,7 @@ dependencies = [
  "continuum-engine",
  "continuum-git",
  "continuum-kernel",
+ "continuum-process",
  "dashmap",
  "futures",
  "ignore",
@@ -3533,6 +3539,7 @@ dependencies = [
  "continuum-memory",
  "continuum-perception",
  "continuum-positron",
+ "continuum-process",
  "continuum-rooms",
  "continuum-store",
  "continuum-text-analysis",
@@ -3630,6 +3637,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-process"
+version = "0.1.0"
+dependencies = [
+ "airc-core",
+ "continuum-base",
+ "continuum-kernel",
+ "libc",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "windows-sys 0.60.2",
+]
+
+[[package]]
 name = "continuum-prompt"
 version = "0.1.0"
 dependencies = [
@@ -3675,6 +3697,7 @@ dependencies = [
  "continuum-base",
  "continuum-engine",
  "continuum-kernel",
+ "continuum-process",
  "dashmap",
  "futures",
  "futures-util",
