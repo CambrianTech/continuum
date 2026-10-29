@@ -127,15 +127,16 @@ function Get-CoreEngineIdleSlot {
     # names and `current` does not name. The lane records name the exe each lane launched, so
     # this needs no process-table read, which a service-session lane defeats (its path is
     # unreadable from the operator's session). One implementation for bash and PowerShell.
-    # $null when this CLI predates the verb: the one deploy after the verbs land is driven by
-    # the OLD CLI, and the caller keeps the process-table selection for that deploy, saying so.
+    # The CLI must CLAIM the slot (`idle-slot --owner-pid`, Codex on #5535): one that cannot is
+    # refused before anything is built or written. There is no unclaimed selection.
     param([string]$Cli, [Parameter(Mandatory = $true)][string]$InstallRoot, [switch]$SkipIfBusy, [string[]]$ReservedSlots = @())
     # Native stderr under 'Stop' is a terminating error in Windows PowerShell 5.1; the exit code
     # is the contract here, so read it rather than the error stream.
     $ErrorActionPreference = 'Continue'
-    if (-not $Cli -or -not (Test-Path -LiteralPath $Cli)) { return $null }
-    try { $help = (Invoke-InstallerProcess $Cli @('--help') 2>&1 | Out-String) } catch { return $null }
-    if ($help -notmatch 'continuum engine idle-slot --owner-pid') { return $null }
+    $refusal = "The lifecycle CLI ($Cli) cannot claim engine slots (no 'continuum engine idle-slot --owner-pid'). Update the lifecycle tool first; nothing was built or changed."
+    if (-not $Cli -or -not (Test-Path -LiteralPath $Cli)) { throw $refusal }
+    try { $help = (Invoke-InstallerProcess $Cli @('--help') 2>&1 | Out-String) } catch { throw "$refusal ($_)" }
+    if ($help -notmatch 'continuum engine idle-slot --owner-pid') { throw $refusal }
     $saved = $env:CONTINUUM_HOME
     try {
         $env:CONTINUUM_HOME = $InstallRoot
@@ -218,61 +219,32 @@ function Get-CoreKeptEngineSlot {
 
 function Select-CoreEngineSlot {
     param([string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'), $Descriptor, [string]$Cli, [switch]$SkipIfBusy)
-    $root = ConvertTo-CoreImagePath (Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) 'bin')
     $receipted = @(Get-CoreReceiptedEngineSlots -InstallRoot $InstallRoot -Descriptor $Descriptor)
     $fromCore = Get-CoreEngineIdleSlot -Cli $Cli -InstallRoot $InstallRoot -SkipIfBusy:$SkipIfBusy -ReservedSlots $receipted
     if ($fromCore -eq 'BUSY') { return $null }
-    if ($fromCore) {
-        # $fromCore is claimed for this process: every refusal below releases it first.
-        $kept = $false
-        try {
-            if (@($receipted | Where-Object { [string]::Equals($_, $fromCore, [StringComparison]::OrdinalIgnoreCase) }).Count) {
-                # The verb prefers a slot that is neither current nor previous, so on a node whose records
-                # agree with its pointers this never fires. When it does, the records disagree, and
-                # overwriting would destroy a release a receipt still owns: refuse, and let the supported
-                # receipt reconciliation retire the record first.
-                if ($SkipIfBusy) { return $null }
-                throw "The core named $fromCore idle, but an installer release receipt still names it; refusing to overwrite a receipted engine."
-            }
-            # Belt and braces: a live engine whose path IS readable must not sit in the answer.
-            $readable = @(Get-CimInstance Win32_Process -ErrorAction Stop |
-                Where-Object { $_.Name -eq 'llama-server.exe' -and $_.ExecutablePath } |
-                ForEach-Object { ConvertTo-CoreImagePath $_.ExecutablePath })
-            if (@($readable | Where-Object { $_.StartsWith($fromCore + '\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
-                throw "The core named $fromCore idle, but a running engine executes from it; refusing to overwrite it."
-            }
-            $kept = $true
-            return $fromCore
-        } finally {
-            if (-not $kept) { Invoke-CoreEngineRelease -Cli $Cli -InstallRoot $InstallRoot -Slot $fromCore }
+    # $fromCore is claimed for this process: every refusal below releases it first.
+    $kept = $false
+    try {
+        if (@($receipted | Where-Object { [string]::Equals($_, $fromCore, [StringComparison]::OrdinalIgnoreCase) }).Count) {
+            # The verb prefers a slot that is neither current nor previous, so on a node whose records
+            # agree with its pointers this never fires. When it does, the records disagree, and
+            # overwriting would destroy a release a receipt still owns: refuse, and let the supported
+            # receipt reconciliation retire the record first.
+            if ($SkipIfBusy) { return $null }
+            throw "The core named $fromCore idle, but an installer release receipt still names it; refusing to overwrite a receipted engine."
         }
-    }
-    Write-Warning 'This CLI predates engine slots: selecting the engine slot from the process table for this deploy; the next deploy asks the core.'
-    # Engines have an independent lifetime: a warm lane can outlive its core.
-    # Keep room for that mapped engine, the registered release, and a candidate.
-    $engines = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq 'llama-server.exe' })
-    # A lane the supervisor started runs in the service session, and its path is unreadable from
-    # the operator's session: WMI's ExecutablePath is empty and OpenProcess(QUERY_LIMITED) is
-    # denied (5090, 2026-09-27). Refusing on that made the engine arm unrunnable whenever a lane
-    # was up. An unreadable engine counts as the REGISTERED engine (the only one the supervisor
-    # launches), which the descriptor adds below; should one ever live in another slot, Windows
-    # locks a running image, so installing over it fails loudly rather than replacing it.
-    $enginePaths = @($engines | Where-Object { $_.ExecutablePath } | ForEach-Object { ConvertTo-CoreImagePath $_.ExecutablePath })
-    if ($Descriptor.engine) { $enginePaths += ConvertTo-CoreImagePath $Descriptor.engine }
-    elseif (@($engines | Where-Object { -not $_.ExecutablePath }).Count) { throw 'A running inference engine is unreadable and no engine is registered; refusing to pick a slot.' }
-    $engineSlot = $null
-    foreach ($name in @('engine-a', 'engine-b', 'engine-c')) {
-        $candidate = Join-Path $root $name
-        if (@($receipted | Where-Object { [string]::Equals($_, $candidate, [StringComparison]::OrdinalIgnoreCase) }).Count) { continue }
-        if (-not @($enginePaths | Where-Object { $_.StartsWith($candidate + '\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
-            $engineSlot = $candidate; break
+        # Belt and braces: a live engine whose path IS readable must not sit in the answer.
+        $readable = @(Get-CimInstance Win32_Process -ErrorAction Stop |
+            Where-Object { $_.Name -eq 'llama-server.exe' -and $_.ExecutablePath } |
+            ForEach-Object { ConvertTo-CoreImagePath $_.ExecutablePath })
+        if (@($readable | Where-Object { $_.StartsWith($fromCore + '\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
+            throw "The core named $fromCore idle, but a running engine executes from it; refusing to overwrite it."
         }
+        $kept = $true
+        return $fromCore
+    } finally {
+        if (-not $kept) { Invoke-CoreEngineRelease -Cli $Cli -InstallRoot $InstallRoot -Slot $fromCore }
     }
-    if (-not $engineSlot) {
-        if ($SkipIfBusy) { return $null }
-        throw 'All installed engine slots are live or registered; refusing to overwrite an inference engine.'
-    }
-    return $engineSlot
 }
 
 function Invoke-CoreEnginePromote {

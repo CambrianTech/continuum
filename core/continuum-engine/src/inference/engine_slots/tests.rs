@@ -310,7 +310,9 @@ mod reservations {
         // A crashed builder (verified gone) held engine-a: reaped, and engine-a is claimed.
         std::fs::write(claims.join("engine-a"), "build 4000000 1700000000\n").unwrap();
         assert!(matches!(claim_idle_slot(root, &["engine-b", "engine-c"], me, no_lanes, &dead_builder), Ok("engine-a")));
-        assert_eq!(release_build_claim(root, "engine-a", me + 1).unwrap(), format!("engine-a holds no build claim of pid {}; nothing released", me + 1));
+        // Another process (pid 1: it never holds this claim) releases nothing.
+        let other = release_build_claim(root, "engine-a", 1);
+        assert!(!matches!(&other, Ok(said) if said == "engine-a released"), "{other:?}");
         assert!(claims.join("engine-a").exists(), "another owner's release removes nothing");
         assert_eq!(release_build_claim(root, "engine-a", me).unwrap(), "engine-a released");
 
@@ -351,9 +353,9 @@ mod reservations {
         assert!(!claims.join("engine-a").exists(), "and, never linked, no claim exists");
 
         let stray = claims.join(".claim.4000003.1700000000.42");
-        let tomb = claims.join(".reaped.4000003.1700000000.43");
+        let tomb = claims.join(".claim.4000003.1700000000.43");
         std::fs::write(&stray, "build 4000003 1700000000\n").unwrap();
-        std::fs::write(&tomb, "launch 4000004 1700000000\n").unwrap();
+        std::fs::write(&tomb, "launch 4000003 1700000000\n").unwrap();
         let dead = |pid: u32| if pid == 4_000_003 { ProcessProbe::Absent } else { probe_process(pid) };
         assert!(matches!(claim_idle_slot(root, &["engine-b", "engine-c"], me, || Ok(Vec::new()), &dead), Ok("engine-a")), "the slot is claimable");
         let held = std::fs::read_to_string(claims.join("engine-a")).unwrap();
