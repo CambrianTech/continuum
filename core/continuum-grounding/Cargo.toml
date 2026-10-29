@@ -1,0 +1,23 @@
+[package]
+name = "continuum-grounding"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Grounding sources and their delivery contract: the flex RAG budget, cached sources, grounding invalidation. A leaf of the cognition crate tree (docs/architecture/COGNITION-CRATE-TREE.md)."
+
+[dependencies]
+continuum-base = { path = "../continuum-base" }
+continuum-kernel = { path = "../continuum-kernel" }
+airc-core.workspace = true
+airc-lib.workspace = true
+async-trait.workspace = true
+futures = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
+tokio = { workspace = true, features = ["test-util"] }
