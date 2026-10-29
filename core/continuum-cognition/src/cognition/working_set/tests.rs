@@ -493,6 +493,18 @@
     }
 
     #[test]
+    fn assembly_without_a_growth_observation_does_not_create_a_publication_floor() {
+        let reg = WorkingSetRegistry::new();
+        let mind = p(206);
+        reg.record_in_memory(mind, 200_000, 1);
+        assert_eq!(reg.sent_median_of(&[mind]), None);
+        assert_eq!(reg.sent_ceiling_of(&[mind]), None);
+        assert_eq!(reg.ceiling_of(&[mind]), Some(200_000));
+        reg.record_sent_in_memory(mind, 30_000, 2);
+        assert_eq!(reg.sent_median_of(&[mind]), Some(30_000));
+    }
+
+    #[test]
     fn growth_history_ages_out_peaks_but_never_learns_a_starved_windows_echo()
         -> Result<(), Box<dyn std::error::Error>>
     {

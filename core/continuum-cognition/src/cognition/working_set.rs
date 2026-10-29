@@ -186,10 +186,14 @@ fn push_growth(d: &mut PersonaDemand, tokens: u32) {
 
 /// Migration uses recent untrimmed demand until growth samples arrive. Old files
 /// with no ring use their last demand; sent-only legacy records have only sent_peak.
+/// No historical growth sample means no growth vote; assembly alone is not one.
 /// Never substitute post-fit need: a starved window must still request growth.
 fn growth_tokens(d: &PersonaDemand) -> u32 {
     if let Some(tokens) = median_of(&d.growth_recent) {
         return tokens;
+    }
+    if d.sent_peak == 0 {
+        return 0;
     }
     let demand = requirement_tokens(d);
     if demand > 0 { demand } else { d.sent_peak }
