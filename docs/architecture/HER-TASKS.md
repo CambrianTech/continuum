@@ -57,6 +57,42 @@ every capability and gains what it lacked: a typed handle, an end on every path 
 delivery by owner, and the wake. A command is the one-step case; a helper mind is a sentinel whose
 step is a mind.
 
+## Her sentinels, designed from what works for an agent like Claude Code
+
+Two levels on one primitive: a **task** is work with a handle whose end wakes her; a **sentinel** is
+a task with a mind inside (an LLM loop with its own tools and steps). What makes agents useful to
+Claude Code, taken whole:
+
+| What Claude Code's agent has | What it buys | Her sentinel |
+|---|---|---|
+| Start an agent with a brief, in the background | delegation without blocking | `sentinel/start { brief, steps?, tools? }` returns a handle at once |
+| Only the conclusion comes back | the parent's context stays clean; the agent's file dumps never enter it | the end carries the sentinel's report; its trace stays behind a handle (her one budget decides what she sees) |
+| Fresh agent or a fork that inherits the parent's context | cheap specialists, or a copy that already knows everything | fresh (brief only) or **fork** (starts from her own context) |
+| Agent types (explore read-only, plan, general) | the right tools and permissions per job | a sentinel declares its tool subtree (`code/read/**` only, or full hands) and its confinement |
+| Isolation in its own worktree | parallel edits never collide | each writing sentinel gets its own worktree and build dir |
+| Continue a finished agent with a message | follow-ups keep the agent's context | `sentinel/send { handle, message }` wakes it with its context intact |
+| Several agents in parallel, notified as each ends | fan-out research and builds | many sentinels in flight; each end is its own wake |
+| Stop, list, read output | control | the registry's `task/stop`, `task/list`, `task/output` |
+
+## Where she goes past Hermes, opencode and Claude Code
+
+Those harnesses run agents on a remote API that knows nothing of the parent. Ours run on the same
+engine as her, so:
+
+1. **A fork costs no prefill.** A forked sentinel copies her warm KV sequence (`seq_cp` in the
+   engine, SERVING-ENGINE.md), so it starts already holding everything she has read. Elsewhere a fork
+   re-sends the whole context.
+2. **A sentinel inherits her genome.** It runs with her active genes, or a gene she picks for the
+   job, so a specialist is her, specialised, rather than a stranger with a brief.
+3. **Its work is her curriculum.** A sentinel's turns are captured like hers; what it learned
+   reaches the dream stage, so delegating also teaches her.
+4. **It can run anywhere on the grid.** A sentinel is placed by capability: a build on a machine with
+   free cores, a long research run on an idle node, its end delivered back to her by owner.
+5. **It survives restarts and deploys.** Durable rows and owner delivery mean a sentinel started
+   tonight still reports to her tomorrow, after any number of core deploys.
+6. **It is scheduled with every other mind.** Sentinels are minds to the one scheduler (goal 9):
+   a cooling sentinel pages its KV to RAM like any resident, so many can wait cheaply.
+
 ## The contract
 
 One owner, in the kernel command layer, because every command already passes through it and
@@ -121,7 +157,8 @@ task whose end is its report, a peer's review as a task that ends when the verdi
 | T2 | owner sink + `Wake::TaskEnded` + durable rows | unit: an unregistered (forgotten) handle's end reaches working memory and wakes her; a restart delivers `Lost` |
 | T3 | act path: every call starts + lands; delete the list, shell handback, private bus | replay: a captured Aris trace runs with zero poll acts; shell timeout publishes an end |
 | T4 | `task/list`, `task/output`, `task/stop` | command tests through the generator |
-| T5 | sentinel runs, `agent/*` and genome jobs as task kinds (their ids, topics and list/status/cancel verbs deleted); delete `agent/wait`, `sentinel/await`, synchronous `sentinel/pipeline` | each kind's end, including panic and stop, wakes the owner |
+| T5a | sentinel as a task with a mind inside: start (fresh or fork), conclusion-only end, send, own worktree, declared tool subtree | a fork starts with zero re-prefill (engine reuse probe); a sentinel's end wakes its owner |
+| T5b | sentinel runs, `agent/*` and genome jobs as task kinds (their ids, topics and list/status/cancel verbs deleted); delete `agent/wait`, `sentinel/await`, synchronous `sentinel/pipeline` | each kind's end, including panic and stop, wakes the owner |
 | T6 | ratchet: no new `*-poll` verb, no blocking wait in a tool handler | source-hygiene test |
 
 Live receipts after T3 (15-minute read, M5): poll acts per resident hour (Aris 18/34 today ->
