@@ -166,3 +166,18 @@ fn a_thought_renders_the_same_whatever_the_served_window() {
     memory.set_served_window(131_072);
     assert_eq!(render(&memory), narrow, "the window changed and the thought's rendering did not");
 }
+
+// what this catches: her floor growing with every act she ever took (Aris, the M5, 2026-10-29:
+// 95 pointers at ~190 chars before anything whole fit). Her oldest acts fold into ONE line that
+// names the first and last #n and how many, never a list of ids; the banner folds with them, and
+// a run with no act in it has nothing to name.
+#[test]
+fn her_folded_acts_name_their_range_and_count_in_one_line() {
+    let memory = WorkingMemory::new(2);
+    let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
+    let item = |key: &str| continuum_context::source::Item::whole(key, super::ContextMessage::user(format!("act {key}")));
+    let run: Vec<_> = std::iter::once(item("banner")).chain((3200..=3330).map(|seq: u64| item(&seq.to_string()))).collect();
+    let Some(block) = actions.fold(&run) else { panic!("a run with acts folds") };
+    assert_eq!(block.text, "[actions #3200-#3330: 131 earlier acts, folded at this start]");
+    assert!(actions.fold(&[item("banner")]).is_none(), "the banner alone has no act to name");
+}

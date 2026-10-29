@@ -199,7 +199,7 @@ fn a_restored_view_renders_the_same_bytes_and_keeps_appending() {
     let mut actions = Fake::new("actions", 1);
     actions.push("#1", &"x".repeat(9_000));
     actions.push("#2", "short");
-    let (mut view, _) = View::start(vec!["head".into()], &[&actions], |claims| vec![claims[0].pointer_chars + 10]).unwrap();
+    let (mut view, _) = View::start(vec!["head".into()], &[&actions], |claims| vec![claims[0].floor_chars + 10]).unwrap();
     view.advance(&[&actions]);
     let saved = serde_json::to_string(&view).unwrap();
     let mut restored: View<String> = serde_json::from_str(&saved).unwrap();
@@ -415,7 +415,159 @@ fn an_evicted_body_is_priced_whole_and_rendered_whole_when_granted() -> Result<(
     assert_eq!(claims[0].full_chars, body.chars() + "an older result".to_owned().chars());
     let (view, _) = View::start(Vec::new(), &[&spilled], all_full)?;
     assert!(rendered(&view).contains(&body), "granted whole, it renders the loaded body");
-    let (tight, _) = View::start(Vec::new(), &[&spilled], |claims: &[Claim]| claims.iter().map(|c| c.pointer_chars).collect())?;
+    let (tight, _) = View::start(Vec::new(), &[&spilled], |claims: &[Claim]| claims.iter().map(|c| c.floor_chars).collect())?;
     assert!(!rendered(&tight).contains(&body) && rendered(&tight).contains("reopen by its handle"), "granted only its floor, it is its pointer");
+    Ok(())
+}
+
+/// A source shaped like her actions after #5595 kept a record for every saved result: numbered
+/// items, each with a ~190-char pointer, folding its oldest run into one line.
+struct Folding {
+    items: Vec<(u64, String, Option<String>)>,
+}
+
+impl Folding {
+    fn new(count: u64, size: usize) -> Self {
+        Self { items: (1..=count).map(|seq| (seq, "r".repeat(size), None)).collect() }
+    }
+    fn push(&mut self, size: usize) {
+        let seq = self.items.len() as u64 + 1;
+        self.items.push((seq, "r".repeat(size), None));
+    }
+    fn pointers(&self) -> usize {
+        self.items().iter().map(|item| item.pointer.as_ref().map_or(0, String::len)).sum()
+    }
+}
+
+impl Source<String> for Folding {
+    fn name(&self) -> &str {
+        "actions"
+    }
+    fn priority(&self) -> u8 {
+        1
+    }
+    fn items(&self) -> Vec<Item<String>> {
+        self.items
+            .iter()
+            .map(|(seq, full, summary)| Item {
+                key: seq.to_string(),
+                full: full.clone(),
+                summary: summary.clone(),
+                pointer: Some(format!("[result #{seq}; room r; operation code/read; output handle: tool/output {seq:0>16} — collapsed; {}]", "p".repeat(80))),
+                stored: None,
+            })
+            .collect()
+    }
+    fn fold(&self, folded: &[Item<String>]) -> Option<String> {
+        let first = folded.first()?;
+        let last = folded.last()?;
+        Some(format!("[actions #{}-#{}: {} earlier acts, folded at this start]", first.key, last.key, folded.len()))
+    }
+}
+
+fn fold_blocks(view: &View<String>) -> usize {
+    view.render().filter(|text| text.starts_with("[actions #")).count()
+}
+
+// what this catches: a floor that is the sum of every pointer she ever held (Aris, the M5,
+// 2026-10-29 22:00Z: 97 results, 2 whole, ~95 pointers x ~190 chars before anything whole fit).
+// A grant far below that sum still shows her newest items whole, and the oldest run is ONE block,
+// rendered where its oldest item stood; the claim's floor is that block, its want every whole.
+#[test]
+fn a_hundred_results_under_a_tight_grant_fold_into_one_block_and_the_newest_stay_whole() -> Result<(), GrantMismatch> {
+    let actions = Folding::new(100, 1_000);
+    let claim = &claims(&[&actions])[0];
+    assert!(claim.floor_chars < 100, "the floor is one block, not {} chars of pointers", actions.pointers());
+    assert_eq!(claim.full_chars, 100 * 1_000, "a folded item still wants its whole");
+    let grant = claim.floor_chars + 3 * 1_000;
+    assert!(grant < actions.pointers());
+    let (view, start) = View::start(Vec::new(), &[&actions], |_| vec![grant])?;
+    let shown: Vec<String> = view.render().cloned().collect();
+    assert_eq!(fold_blocks(&view), 1);
+    assert!(shown[0].starts_with("[actions #1-#97: 97 earlier acts"), "{}", shown[0]);
+    assert_eq!(&shown[1..], ["r".repeat(1_000), "r".repeat(1_000), "r".repeat(1_000)]);
+    assert_eq!((start.folded, start.collapsed), (97, 0));
+    assert!(view.chars() <= grant);
+    assert!(!view.renders("actions", "1"), "a folded item is not read");
+    Ok(())
+}
+
+// what this catches: an older item kept more detailed than a newer one under any grant (goal 7:
+// shrink oldest first), which with folding would leave a fold block AFTER a pointer or a whole.
+// Under every grant from the floor to the whole, the folded items are the oldest run and the
+// pointers the run after it. (Above the pointer an item with no summary is its own summary, so
+// a short whole may sit older than a big read's outline; that rule is tested above.)
+#[test]
+fn no_folded_item_is_newer_than_a_pointer_summary_or_whole_item() -> Result<(), GrantMismatch> {
+    let mut actions = Folding::new(0, 0);
+    for size in [400, 3_000, 250, 9_000, 600, 1_200, 300, 5_000, 700, 450] {
+        actions.push(size);
+    }
+    for (index, item) in actions.items.iter_mut().enumerate() {
+        if index % 3 == 1 {
+            item.2 = Some("s".repeat(item.1.len() / 5));
+        }
+    }
+    let claim = &claims(&[&actions])[0];
+    for grant in (claim.floor_chars..=claim.full_chars).step_by(97) {
+        let (view, _) = View::start(Vec::new(), &[&actions], |_| vec![grant])?;
+        let ranks: Vec<u8> = actions.items().iter().map(|item| rank(&view.held_level(&key("actions", &item.key))).min(rank(&Level::Summary))).collect();
+        assert!(ranks.windows(2).all(|pair| pair[0] <= pair[1]), "grant {grant}: levels oldest -> newest {ranks:?}");
+        assert!(fold_blocks(&view) <= 1);
+    }
+    Ok(())
+}
+
+// what this catches: folding changing a source that never opted in. Without a fold its floor is
+// the sum of its pointers and a floor grant collapses every item to its pointer, as before.
+#[test]
+fn a_source_without_a_fold_floors_at_the_sum_of_its_pointers() -> Result<(), GrantMismatch> {
+    let mut actions = Fake::new("actions", 1);
+    for act in 1..=5 {
+        actions.push(&format!("#{act}"), &"r".repeat(1_000));
+    }
+    let pointers: usize = actions.items().iter().map(|item| item.pointer.as_ref().map_or(0, String::len)).sum();
+    assert_eq!(claims(&[&actions])[0].floor_chars, pointers);
+    let (view, start) = View::start(Vec::new(), &[&actions], |_| vec![pointers])?;
+    assert_eq!((start.collapsed, start.folded), (5, 0));
+    assert_eq!(view.chars(), pointers);
+    Ok(())
+}
+
+// what this catches: a squeezed start keeping her results folded while a later window has room
+// for them whole, and the opposite churn (Cormac): a start that would raise folded items only to
+// their pointers is not a restore, or every act that affords one more pointer turns the view over
+// and loses the prefix for a line the fold block already covers.
+#[test]
+fn only_a_rise_past_the_pointer_restores_what_a_squeezed_start_folded() -> Result<(), GrantMismatch> {
+    let actions = Folding::new(20, 100_000);
+    let floor = claims(&[&actions])[0].floor_chars;
+    let (view, start) = View::start(Vec::new(), &[&actions], |_| vec![floor])?;
+    assert_eq!(start.folded, 20, "a floor grant folds the whole run");
+    let pointers = actions.pointers();
+    let (pointed, _) = View::start(Vec::new(), &[&actions], |_| vec![pointers])?;
+    assert_eq!(fold_blocks(&pointed), 0, "precondition: the pointer grant raises every item to its pointer");
+    assert!(!view.start_would_restore(&[&actions], |_| vec![pointers])?, "pointers only: no turnover");
+    assert!(view.start_would_restore(&[&actions], all_full)?, "room for them whole: a start gives them back");
+    Ok(())
+}
+
+// what this catches: the fold block rewriting itself act to act (it is fixed at its start, so
+// the prefix holds), a folded item arriving on its own mid-epoch, and a floor that grows with her
+// next result (Cormac). One more act appends one result, keeps the floor one block of the same
+// size, and under the same grant is no reason to turn over.
+#[test]
+fn an_act_appends_one_result_and_neither_turns_over_nor_grows_the_floor() -> Result<(), GrantMismatch> {
+    let mut actions = Folding::new(100, 1_000);
+    let floor = claims(&[&actions])[0].floor_chars;
+    let grant = floor + 3 * 1_000;
+    let (mut view, _) = View::start(Vec::new(), &[&actions], |_| vec![grant])?;
+    let before = rendered(&view);
+    actions.push(1_000);
+    assert_eq!(view.advance(&[&actions]), Advance { items: 1, chars: 1_000 });
+    assert!(rendered(&view).starts_with(&before), "the act rewrote the prefix");
+    assert_eq!(fold_blocks(&view), 1, "the fold block is not re-rendered mid-epoch");
+    assert_eq!(claims(&[&actions])[0].floor_chars, floor, "one more act, the same one-block floor");
+    assert!(!view.start_would_restore(&[&actions], |_| vec![grant])?, "the same grant restores nothing");
     Ok(())
 }
