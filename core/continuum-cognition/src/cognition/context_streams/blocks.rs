@@ -56,7 +56,7 @@ impl Source<ContextMessage> for Grounding {
             // reopen it by, so collapsed it is still its truthful minimum, never a one-liner.
             let full = self.render(self.text.clone());
             let pointer = self.render(self.minimum.clone());
-            return vec![Item { key: "block".to_owned(), full, summary: None, pointer: Some(pointer) }];
+            return vec![Item { key: "block".to_owned(), full, summary: None, pointer: Some(pointer), stored: None }];
         }
         let whole = self.at(|unit| &unit.content);
         let summary = self.units.iter().any(|unit| unit.summary.is_some()).then(|| {
@@ -69,7 +69,8 @@ impl Source<ContextMessage> for Grounding {
             key: "block".to_owned(),
             full: self.render(whole),
             summary: summary.map(|summary| self.render(summary)),
-            pointer: Some(pointer.map_or_else(|| self.render(self.minimum.clone()), |pointer| self.render(pointer))), // map_or_else: units with no coarser level keep the block's truthful minimum
+            pointer: Some(pointer.map_or_else(|| self.render(self.minimum.clone()), |pointer| self.render(pointer))), // map_or_else: units with no coarser level keep the block's truthful minimum,
+            stored: None,
         }]
     }
 }

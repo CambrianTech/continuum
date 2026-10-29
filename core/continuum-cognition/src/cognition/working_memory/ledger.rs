@@ -334,6 +334,7 @@ impl WorkingMemory {
                     result: Some(tail),
                     handle,
                     written_pointer: None,
+                    stored_chars: None,
                 },
                 budget.receipt_archive_chars(),
             );
@@ -347,7 +348,8 @@ impl WorkingMemory {
         // the cap was then moved to settlement only. A coding turn is 100+ acts between
         // settlements: on the M5 (2026-10-16) the rings persisted at 213 results / 686k
         // chars, 155 / 1.09M, 123 / 442k, 49 / 138k, and fit_messages was the only bound.
-        self.collapse_results_over_cap();
+        // Now a storage budget (FOCUS rule 7): bodies leave RAM, never her view.
+        self.evict_resident_results();
         // Head into the rolling recency trail: proprioception ("I did #n X") + the
         // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
         // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the

@@ -219,11 +219,13 @@ impl LlmDeliberationFaculty {
             .map(|claim| claim.floor_tokens as usize)
             .sum();
         let irreducible_room = after_reserves.saturating_sub(view_floor);
+        // Her view already carries every block that rides the conversation. Measured BEFORE her
+        // newest result is fitted: demand is the sum of wants (FOCUS-CONTRACT rule 5), so a result
+        // shown at a smaller level still asks for its whole, or the window never grows for it.
+        let unfitted_message_tokens = all_messages.tokens();
         // Her newest result alone over what the window leaves it is shown at a smaller level
         // with its handle, never dropped (goal 7); one that fits is untouched.
         let newest_result_reduced = self.fit_newest_result(&mut all_messages, irreducible_room);
-        // Her view already carries every block that rides the conversation.
-        let unfitted_message_tokens = all_messages.tokens();
         // KEEP THE OVERFLOW. This used to be one chained `saturating_sub` ending in
         // `- all_messages.required_tokens()`, and the saturation is where the diagnosis
         // died: "over by 31,000" and "exactly at the line" both arrive as `0`, so the one
@@ -425,6 +427,20 @@ impl LlmDeliberationFaculty {
             source
         }));
         let plan = crate::cognition::rag_budget::flex_allocate(context_window, &claims);
+        let allocation = Some(crate::ai::provenance::AllocationReceipt {
+            window: context_window,
+            revision: env!("CONTINUUM_BUILD_GIT_SHA").to_owned(),
+            claims: claims
+                .iter()
+                .map(|claim| crate::ai::provenance::ClaimGrant {
+                    source: claim.source_id.clone(),
+                    priority: claim.priority,
+                    floor: claim.floor_tokens,
+                    want: claim.max_tokens,
+                    grant: plan.granted(&claim.source_id),
+                })
+                .collect(),
+        });
         let tools_grant = calibration.prompt_budget(plan.granted(FLEX_TOOLS) as usize);
         let (selected, tools_refusal) = self.granted_tools(ws, tools, tools_grant);
         let budget_floor = crate::cognition::rag_budget::turn_need(&claims).saturating_sub(claims.iter().find(|c| c.source_id == FLEX_REPLY).map_or(0, |c| c.floor_tokens)).saturating_add(reply_need);
@@ -764,6 +780,7 @@ impl LlmDeliberationFaculty {
             segments,
             newest_result_reduced,
             newest_result_tokens,
+            allocation,
             tools: selected.into_owned(),
             tools_grant,
         }

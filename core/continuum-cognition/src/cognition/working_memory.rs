@@ -48,7 +48,7 @@ use parking_lot::Mutex;
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 
 // How many recent steps to carry forward is NOT a constant. It is
-// `ContextBudget::working_memory_steps()` — the COUNT sibling of the per-step SIZE bound
+// `ContextBudget::WORKING_MEMORY_STEPS` — the COUNT sibling of the per-step SIZE bound
 // right below, derived from the same calibrated fractions.
 //
 // It used to be `DEFAULT_WORKING_MEMORY_CAPACITY = 3`, the one bare number left behind when
@@ -541,6 +541,7 @@ impl VolatileSnapshot {
             handle: None,
             written_pointer: None,
             summary: None,
+            stored_chars: None,
         };
         let mut records: BTreeMap<u64, action_log::ActionRecord> = BTreeMap::new();
         let mut unkeyed = 0usize;
@@ -700,6 +701,8 @@ mod perception;
 pub use faculty::WorkingMemoryFaculty;
 pub(crate) use faculty::render_dispatched;
 pub(crate) use ledger::operation_level;
+#[cfg(test)]
+pub(crate) use perception::RESULTS_RESIDENT_CHARS;
 
 impl Drop for WorkingMemory {
     /// A mind that is gone points at nothing: its saved results may be evicted again.

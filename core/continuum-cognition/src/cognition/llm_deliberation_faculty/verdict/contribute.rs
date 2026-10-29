@@ -307,7 +307,7 @@ impl LlmDeliberationFaculty {
             // previous value is also what keeps the initializer honest).
             sent_allowance = request.max_tokens.or(sent_allowance);
             let result = self
-                .generate_for_workspace(ws, &binding, fit_window, request, receipts)
+                .generate_for_workspace(ws, &binding, fit_window, request, view.allocation.clone(), receipts)
                 .await?;
             gen_await_ms = gen_await_ms.saturating_add(started.elapsed().as_millis() as u64);
             match result {

@@ -307,10 +307,10 @@ impl WorkingMemory {
         *self.receipt_children.lock() = snap.receipt_children;
         *self.view.lock() = snap.context_view;
         *self.open_views.lock() = super::super::open_views::OpenViews::from_saved(snap.open_views);
-        // Against the REAL window only; an unknown one folds nothing (the rule lives in
-        // `collapse_results_over_cap`): a floor here folded results the served window holds,
-        // cap 1,536 measured at restore on the 5090, card df0035bf.
-        self.collapse_results_over_cap();
+        // Restored bodies are bound by the storage budget, never the window: a floor here once
+        // folded results the served window held (cap 1,536 at restore on the 5090, card
+        // df0035bf), and now nothing about the window decides what she sees (FLOW §2d).
+        self.evict_resident_results();
         self.publish_live_handles();
         {
             let mut f = self.action_fps.lock();

@@ -42,6 +42,7 @@ impl Source<ContextMessage> for Conversation {
                 // itself, so an update too large to show is never unknown.
                 summary: None,
                 pointer: turn.pointer.clone().map(|text| ContextMessage { role: turn.role, text }),
+                stored: None,
             })
             .collect()
     }

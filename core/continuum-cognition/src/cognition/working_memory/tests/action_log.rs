@@ -10,7 +10,7 @@ use super::*;
 fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
     let wm = WorkingMemory::new(8);
     wm.set_served_window(16_384);
-    let cap = wm.budget().recent_results_chars();
+    let cap = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
     // A short first line per result: that line is the ledger's, the body the ring's.
     wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), None, saved("first-handle"));
     for act in 2..=5 {
@@ -58,7 +58,7 @@ fn a_restart_keeps_every_act_as_she_read_it() {
     wm.set_served_window(16_384);
     wm.set_scope(Some("/work/foo".into()));
     let room = Uuid::new_v4();
-    let cap = wm.budget().recent_results_chars();
+    let cap = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
     wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), Some(room), saved("first-handle"));
     for act in 2..=5 {
         wm.record_receipt_typed(&[], &format!("act {act}\n{}", "s".repeat(cap / 2)), Some(room), saved("ring-test"));
@@ -85,7 +85,7 @@ fn a_restart_keeps_every_act_as_she_read_it() {
 fn a_checkpoint_keeps_the_shape_the_previous_build_reads() {
     let wm = WorkingMemory::new(8);
     wm.set_served_window(16_384);
-    let cap = wm.budget().recent_results_chars();
+    let cap = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
     wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), None, saved("first-handle"));
     for act in 2..=5 {
         record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));

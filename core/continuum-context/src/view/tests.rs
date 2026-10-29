@@ -36,13 +36,14 @@ impl Source<String> for Fake {
                 full: text.clone(),
                 summary: None,
                 pointer: Some(format!("[{key}: {} chars, reopen by key]", text.len())),
+                stored: None,
             })
             .collect()
     }
     fn retired(&self) -> Vec<Item<String>> {
         self.retired
             .iter()
-            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), summary: None, pointer: Some(text.clone()) })
+            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), summary: None, pointer: Some(text.clone()), stored: None })
             .collect()
     }
 }
@@ -179,7 +180,7 @@ fn an_item_without_a_pointer_leaves_the_view_when_collapsed() {
             1
         }
         fn items(&self) -> Vec<Item<String>> {
-            self.0.iter().map(|t| Item { key: (*t).to_owned(), full: (*t).to_owned(), summary: None, pointer: None }).collect()
+            self.0.iter().map(|t| Item { key: (*t).to_owned(), full: (*t).to_owned(), summary: None, pointer: None, stored: None }).collect()
         }
     }
     let mut turns = Turns(vec!["one", "two", "three"]);
@@ -248,6 +249,7 @@ impl Source<String> for Leveled {
                 full: full.clone(),
                 summary: summary.clone(),
                 pointer: Some(format!("[{key}]")),
+                stored: None,
             })
             .collect()
     }
@@ -365,5 +367,54 @@ fn a_start_with_room_restores_what_a_squeezed_start_collapsed() -> Result<(), Gr
     // what this catches: an allocator answering for the wrong number of sources read as "nothing
     // to restore" (Codex on #5564). It is the start's own typed refusal.
     assert_eq!(view.start_would_restore(&[&actions], |_| vec![]), Err(GrantMismatch { claims: 1, grants: 0 }));
+    Ok(())
+}
+
+/// A source whose newest body was evicted from RAM: resident it holds only its pointer, the
+/// whole is stored and loads through `Source::load`.
+struct Spilled {
+    body: String,
+}
+
+impl Source<String> for Spilled {
+    fn name(&self) -> &str {
+        "results"
+    }
+    fn priority(&self) -> u8 {
+        5
+    }
+    fn items(&self) -> Vec<Item<String>> {
+        let pointer = "[result #3341: saved, reopen by its handle]".to_owned();
+        vec![
+            Item { key: "3340".to_owned(), full: "an older result".to_owned(), summary: None, pointer: Some("[result #3340]".to_owned()), stored: None },
+            Item {
+                key: "3341".to_owned(),
+                full: pointer.clone(),
+                summary: None,
+                pointer: Some(pointer),
+                stored: Some(crate::source::StoredWhole { chars: self.body.chars(), handle: "spill/3341".to_owned() }),
+            },
+        ]
+    }
+    fn load(&self, item: &Item<String>) -> Option<String> {
+        (item.stored.as_ref()?.handle == "spill/3341").then(|| self.body.clone())
+    }
+}
+
+// what this catches (Aiko on the M5, 2026-10-29 19:19:58Z: her newest result #3341 rendered at
+// 129 chars while 8-9k tokens sat unallocated): a body evicted from RAM priced and rendered as
+// its resident pointer, so storage decided what she saw. Its claim prices the WHOLE (full_chars
+// and the newest end), and a grant that holds it renders the loaded body, not the pointer.
+#[test]
+fn an_evicted_body_is_priced_whole_and_rendered_whole_when_granted() -> Result<(), GrantMismatch> {
+    let body = "line of her newest result\n".repeat(200);
+    let spilled = Spilled { body: body.clone() };
+    let claims = claims(&[&spilled]);
+    assert_eq!(claims[0].newest_chars, body.chars(), "the newest end is her whole result");
+    assert_eq!(claims[0].full_chars, body.chars() + "an older result".to_owned().chars());
+    let (view, _) = View::start(Vec::new(), &[&spilled], all_full)?;
+    assert!(rendered(&view).contains(&body), "granted whole, it renders the loaded body");
+    let (tight, _) = View::start(Vec::new(), &[&spilled], |claims: &[Claim]| claims.iter().map(|c| c.pointer_chars).collect())?;
+    assert!(!rendered(&tight).contains(&body) && rendered(&tight).contains("reopen by its handle"), "granted only its floor, it is its pointer");
     Ok(())
 }

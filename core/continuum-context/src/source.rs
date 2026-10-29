@@ -23,12 +23,28 @@ pub struct Item<T> {
     /// item leaves the view entirely once collapsed (a conversation turn whose room history
     /// holds it, where a one-line pointer would cost about what the turn does).
     pub pointer: Option<T>,
+    /// The whole is stored, not resident: `full` then holds what is in memory (its pointer or
+    /// summary) and the view prices the whole level from `stored.chars` without reading it.
+    /// Only an item the allocation grants WHOLE is loaded, once per render, through the
+    /// render's loader. Residency is not visibility: evicting a body from RAM never changes
+    /// what she can see (Cormac's proposal, FLOW plan §2d; the RAM storage budget is by bytes,
+    /// from governed RAM, never from the window).
+    pub stored: Option<StoredWhole>,
+}
+
+/// Where a non-resident whole lives and what it costs, measured when it was stored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredWhole {
+    /// The whole's exact size in chars, known at spill time: the allocation's price for it.
+    pub chars: usize,
+    /// The handle the render's loader opens (a spill path, a result id).
+    pub handle: String,
 }
 
 impl<T> Item<T> {
     /// An item that is resident whole, with no coarser levels yet.
     pub fn whole(key: impl Into<String>, full: T) -> Self {
-        Self { key: key.into(), full, summary: None, pointer: None }
+        Self { key: key.into(), full, summary: None, pointer: None, stored: None }
     }
 }
 
@@ -60,5 +76,22 @@ pub trait Source<T: Block> {
         Vec::new()
     }
 
+    /// Load the whole of one of this source's stored items (its `stored` handle), called only
+    /// for an item the allocation granted WHOLE. The default stores nothing; a source that
+    /// spills bodies (her results) overrides it. `None` renders what is resident.
+    fn load(&self, _item: &Item<T>) -> Option<T> {
+        None
+    }
 }
 
+/// What an item's whole level costs: its stored size when the whole is not resident, else
+/// the resident text's size. The allocation prices from this and never reads a stored body.
+pub fn whole_chars<T: Block>(item: &Item<T>) -> usize {
+    item.stored.as_ref().map_or_else(|| item.full.chars(), |stored| stored.chars) // map_or_else: a resident item is priced by its own text
+}
+
+/// The item at its whole level: a stored body loaded through its source, else what is resident.
+pub fn whole<T: Block>(source: &(impl Source<T> + ?Sized), item: Item<T>) -> T {
+    let loaded = item.stored.as_ref().and_then(|_| source.load(&item));
+    loaded.unwrap_or(item.full) // unwrap_or: an unloadable body renders its resident level (pointer or summary), never nothing
+}

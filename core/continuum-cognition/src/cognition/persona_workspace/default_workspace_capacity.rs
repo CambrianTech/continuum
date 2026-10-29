@@ -315,9 +315,10 @@ pub(super) fn assemble_workspace_cycle(
     // turns record nothing). Built HERE (before recall) so recall can share it in and
     // suppress an engram the recency channel already carries — see below.
     // Depth comes from the BUDGET, never a constant: the count sibling of the per-step size
-    // bound, off the same live window. See `ContextBudget::working_memory_steps`.
+    // bound, a ratio of two window fractions and so the same on every window: no live window is
+    // read to build it. See `ContextBudget::WORKING_MEMORY_STEPS`.
     let working_memory = Arc::new(WorkingMemory::new(
-        crate::cognition::context_budget::ContextBudget::live_or_floor().working_memory_steps(),
+        crate::cognition::context_budget::ContextBudget::WORKING_MEMORY_STEPS,
     ));
     // Persistence belongs to resident registration, independently of whether
     // recall runs inline or deferred. Constructing a fork grants no disk access.

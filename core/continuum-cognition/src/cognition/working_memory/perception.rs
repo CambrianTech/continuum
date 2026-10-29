@@ -2,6 +2,18 @@
 
 use super::*;
 
+/// The RAM her results' bodies may hold, in characters: a storage budget, not a view size
+/// (FOCUS-CONTRACT rule 7). Past it the oldest saved bodies move to their handles on disk and
+/// stay visible at every level.
+// derived-or-floor: floor. Storage only: past it a body is one local file read away when her view
+// grants it whole. About 2 MiB per mind at the 2-byte char upper bound, sized above the largest
+// ring measured (1.09M chars on a coding turn, 2026-10-16), so eviction is rare.
+pub(crate) const RESULTS_RESIDENT_CHARS: usize = 1 << 20;
+
+/// One act as her view renders it: seq, full, summary, pointer, and its stored whole (rendered
+/// chars, handle) when its body is not resident.
+pub(crate) type ActRendering = (u64, String, Option<String>, String, Option<(usize, String)>);
+
 impl WorkingMemory {
     /// Typed snapshot of the window, oldest → newest — the kind-aware sibling
     /// of [`Self::recent`] for consumers that render BY KIND (the steps-taken
@@ -219,7 +231,11 @@ impl WorkingMemory {
     /// else what its pointer says; the pointer names the handle that reopens it, or is the
     /// ledger line when nothing was saved. The act still in flight is not among them (it
     /// rides whole as the newest message of the turn); the flag says whether there is one.
-    pub(crate) fn action_renderings(&self) -> (Vec<(u64, String, Option<String>, String)>, bool) {
+    /// Each act as her view's actions source renders it: (seq, full, summary, pointer, stored).
+    /// `stored` is the whole's rendered length and handle once its body left RAM for its
+    /// handle (`evict_resident_results`): `full` is then the pointer, and the view prices and
+    /// loads the whole through the source (`continuum_context::StoredWhole`).
+    pub(crate) fn action_renderings(&self) -> (Vec<ActRendering>, bool) {
         let active = self.in_flight_action_seq();
         let actions = self.actions.lock();
         let in_flight = active.is_some_and(|seq| actions.get(seq).is_some());
@@ -241,12 +257,27 @@ impl WorkingMemory {
                     // Unsaved and off the ledger: what it was, which never collapses anyway.
                     (None, None, None) => format!("[action #{}] {}", record.seq, record.operation),
                 };
+                let stored = match (&record.result, &record.handle, record.stored_chars) {
+                    (None, Some(handle), Some(chars)) => {
+                        let label = format!("[result {attribution}{workspace}] ").chars().count();
+                        Some((label + chars, handle.clone()))
+                    }
+                    _ => None,
+                };
                 let full = whole.unwrap_or_else(|| pointer.clone());
                 let summary = record.summary.as_deref().map(|summary| format!("[result {attribution}{workspace} — summary; expand with tool/output] {summary}"));
-                (record.seq, full, summary, pointer)
+                (record.seq, full, summary, pointer, stored)
             })
             .collect();
         (renderings, in_flight)
+    }
+
+    /// The label an act's whole carries in her view (`[result #n; …] `), for a stored whole
+    /// loaded back from its handle, so it reads exactly as it did resident.
+    pub(crate) fn action_whole_label(&self, seq: u64) -> Option<String> {
+        let actions = self.actions.lock();
+        let record = actions.get(seq)?;
+        Some(format!("[result {}{}] ", ResultAttribution::of(record), workspace_label(record.scope.as_deref())))
     }
 
     pub fn recent_results_messages(&self) -> Vec<String> {
@@ -277,8 +308,8 @@ impl WorkingMemory {
             "Recent results of your own actions (oldest first; #n matches the action ledger):"
                 .to_string(), None,
         ));
-        // Every eligible result rides as a message of its own: the ring's SIZE is bounded at
-        // receipt by the window share (`collapse_results_over_cap`), never by a count here.
+        // Every eligible result rides as a message of its own: the ring's RAM is bounded at
+        // receipt by its storage budget (`evict_resident_results`), never by a count here.
         // A count fold ("newest 16 as messages, the rest as index lines", 2026-10-16) rotated
         // the head on EVERY act, which on a KV that cannot shift re-prefilled everything
         // after it; the chars cap with hysteresis rotates once per burst.
@@ -387,6 +418,31 @@ impl WorkingMemory {
         crate::cognition::tool_executor::spill::publish_live_handles(self.instance, handles);
     }
 
+    /// Bound the RAM her results' bodies hold (FOCUS-CONTRACT rule 7: a storage budget, never
+    /// what she sees). Past [`RESULTS_RESIDENT_CHARS`] the oldest saved bodies leave RAM for their
+    /// handles, down to half of it (hysteresis: nothing moves until the budget is passed). Each
+    /// keeps its measured length, so her view still prices its whole level and loads it when
+    /// the allocation grants it (`continuum_context::StoredWhole`, the actions source's `load`).
+    /// The newest result always stays; an unsaved result stays whole (no handle could reload
+    /// it). The window plays no part: it once did (`recent_results_chars`), and then this
+    /// decided what she read before her view saw her claims (FLOW §2d).
+    pub(super) fn evict_resident_results(&self) {
+        self.evict_resident_results_over(RESULTS_RESIDENT_CHARS);
+    }
+
+    pub(crate) fn evict_resident_results_over(&self, budget: usize) {
+        let total = self.actions.lock().collapse_over(budget).total;
+        self.publish_live_handles();
+        if total > budget {
+            continuum_base::probe!(
+                class = "wm.results.unsaved_over_storage",
+                total = %total,
+                budget = %budget,
+                "results whose save failed stay resident over the storage budget"
+            );
+        }
+    }
+
     /// Record that the persona SETTLED — produced an utterance and closed the current
     /// concern. Pushes a [`WM_SETTLEMENT_PREFIX`]-marked boundary into the same rolling
     /// buffer (honest proprioception: "I already answered X", perceivable by the mind
@@ -394,50 +450,10 @@ impl WorkingMemory {
     /// (identical call re-issued WITHIN one settling, before any answer) from a
     /// legitimate re-use of the same tool for a genuinely NEW concern after an answer.
     /// Blank is ignored. Oldest ages out past capacity, same rolling scratchpad.
-    /// Enforce the recent-results char cap by COLLAPSING oldest entries to queryable
-    /// pointers (spill handle when the body is on disk; identity otherwise). Called at every
-    /// RECEIPT and at settlement, against a known window only. Hysteresis: nothing moves
-    /// until the share is exceeded, then the oldest collapse down to HALF the share, so the
-    /// prompt head is byte-stable between two bursts (a pop_front per act rotated the head
-    /// and re-prefilled everything after it on a KV that cannot shift, 2026-08-24; a
-    /// settlement-only cap let a coding turn hold 1.09M chars of results, 2026-10-16). The
-    /// newest result always stays; an unsaved result stays whole.
-    ///
-    /// COLLAPSE IN CHUNKS (2026-09-13, the KV divergence audit): over 55 consecutive
-    /// captured turns, the FIRST block to differ from the previous prompt was the oldest
-    /// surviving `[result #n]` in 28 of them — evicting one entry per settle rotated the
-    /// prompt's head by one entry EVERY turn. Collapsing to HALF the cap in one jump keeps
-    /// the surviving head byte-identical for ~cap/2 chars of new results; the prefix reuse
-    /// those turns get is worth more than the half-cap of oldest tails they briefly forgo
-    /// (the pointers keep them queryable). Same law as `fit_messages`' chunked window start.
-    pub(super) fn collapse_results_over_cap(&self) {
-        // Against a KNOWN window only, for every caller (receipt, settlement, restore): an
-        // unknown budget's results share is the MIN_SERVE_CTX floor (`recent_results_chars`),
-        // and the window can be unknown at any of them — before serving is ready at restore,
-        // or when a lane relaunches between the prompt and the tool's return (no loadout to
-        // pin). Folding against the floor collapses results her real window holds; the next
-        // call with a known window collapses for real (Cormac on #5112).
-        let budget = self.budget();
-        if !budget.is_known() {
-            return;
-        }
-        let cap = budget.recent_results_chars();
-        let total = self.actions.lock().collapse_over(cap).total;
-        self.publish_live_handles();
-        if total > cap {
-            continuum_base::probe!(
-                class = "wm.results.unsaved_over_share",
-                total = %total,
-                cap = %cap,
-                "results whose save failed are kept whole over the results share"
-            );
-        }
-    }
-
     pub fn record_settlement(&self, answer_head: &str, room: Option<Uuid>) {
         // Deferred ring hygiene: the settle just closed, the next prompt
         // re-prefills regardless — collapse over-cap results NOW, never mid-settle.
-        self.collapse_results_over_cap();
+        self.evict_resident_results();
         let a = answer_head.trim();
         let scope = self.scope.lock().clone();
         // Existing authored-settlement boundary, not proof the task was completed.

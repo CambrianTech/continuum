@@ -2761,6 +2761,7 @@ dependencies = [
  "continuum-memory",
  "continuum-perception",
  "continuum-positron",
+ "continuum-process",
  "dashmap",
  "dirs 5.0.1",
  "fs2",
@@ -2787,7 +2788,6 @@ dependencies = [
  "tracing",
  "ts-rs 12.0.1",
  "uuid",
- "continuum-process",
 ]
 
 [[package]]
@@ -3023,6 +3023,7 @@ dependencies = [
  "continuum-orm-derive",
  "continuum-perception",
  "continuum-positron",
+ "continuum-process",
  "continuum-sentinel",
  "continuum-service",
  "continuum-serving",
@@ -3093,7 +3094,6 @@ dependencies = [
  "wide",
  "windows-sys 0.60.2",
  "zip 0.6.6",
- "continuum-process",
 ]
 
 [[package]]
@@ -3147,7 +3147,6 @@ dependencies = [
 name = "continuum-engine"
 version = "0.1.0"
 dependencies = [
- "continuum-process",
  "airc-core",
  "airc-lib",
  "airc-protocol",
@@ -3162,6 +3161,7 @@ dependencies = [
  "continuum-cli-lifecycle",
  "continuum-host",
  "continuum-kernel",
+ "continuum-process",
  "continuum-service",
  "continuum-tool-protocol",
  "dashmap",
@@ -3246,6 +3246,7 @@ dependencies = [
  "continuum-engine",
  "continuum-host",
  "continuum-kernel",
+ "continuum-process",
  "dashmap",
  "futures",
  "inventory",
@@ -3261,7 +3262,6 @@ dependencies = [
  "tracing",
  "ts-rs 12.0.1",
  "uuid",
- "continuum-process",
 ]
 
 [[package]]
@@ -3284,6 +3284,7 @@ dependencies = [
  "continuum-engine",
  "continuum-kernel",
  "continuum-mind",
+ "continuum-process",
  "continuum-service",
  "dashmap",
  "futures",
@@ -3298,7 +3299,6 @@ dependencies = [
  "tracing",
  "ts-rs 12.0.1",
  "uuid",
- "continuum-process",
 ]
 
 [[package]]
@@ -3322,7 +3322,6 @@ dependencies = [
 name = "continuum-hands"
 version = "0.1.0"
 dependencies = [
- "continuum-process",
  "airc-core",
  "airc-lib",
  "airc-work",
@@ -3331,6 +3330,7 @@ dependencies = [
  "continuum-engine",
  "continuum-git",
  "continuum-kernel",
+ "continuum-process",
  "dashmap",
  "futures",
  "ignore",
@@ -3522,6 +3522,7 @@ dependencies = [
  "continuum-memory",
  "continuum-perception",
  "continuum-positron",
+ "continuum-process",
  "continuum-rooms",
  "continuum-store",
  "continuum-text-analysis",
@@ -3550,7 +3551,6 @@ dependencies = [
  "tracing",
  "ts-rs 12.0.1",
  "uuid",
- "continuum-process",
 ]
 
 [[package]]
@@ -3675,12 +3675,12 @@ dependencies = [
 name = "continuum-sentinel"
 version = "0.1.0"
 dependencies = [
- "continuum-process",
  "async-trait",
  "chrono",
  "continuum-base",
  "continuum-engine",
  "continuum-kernel",
+ "continuum-process",
  "dashmap",
  "futures",
  "futures-util",

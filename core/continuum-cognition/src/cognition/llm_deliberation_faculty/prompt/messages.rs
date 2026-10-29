@@ -294,10 +294,10 @@ impl LlmDeliberationFaculty {
         // only a truncation notice. Oversized output paging belongs to the
         // existing spill/tool-output producer, never to a generic byte reducer.
         input.update(b"active_result");
-        let (latest_result, demoted_result) = match self.working_memory.as_ref() {
-            None => (Vec::new(), None),
+        let latest_result = match self.working_memory.as_ref() {
+            None => Vec::new(),
             Some(wm) => match wm.active_action_full() {
-                None => (Vec::new(), None),
+                None => Vec::new(),
                 Some((seq, full)) => {
                     let message = wm.full_result_message(seq, &full);
                     // Provenance remains part of request identity. Typed calls and
@@ -305,10 +305,11 @@ impl LlmDeliberationFaculty {
                     field(&mut input, message.as_bytes());
                     let observations = wm.active_action_observations(seq);
                     let calls = wm.active_action_native_calls(seq);
-                    let (mut group, tail) = if calls.is_empty() {
-                        // Legacy receipts have no native IDs to echo.
-                        let (head, tail) = self.split_action_result(message);
-                        (vec![head], tail)
+                    let mut group = if calls.is_empty() {
+                        // Legacy receipts have no native IDs to echo. Whole: the one allocation
+                        // reduces it by level when it alone exceeds her window
+                        // (`fit_newest_result`), never a head cut here (FOCUS-CONTRACT rule 4).
+                        vec![ChatMessage::text("user", message)]
                     } else {
                         let results: Vec<_> = observations.iter().map(|o| o.output.result.clone()).collect();
                         for observation in &observations {
@@ -329,7 +330,7 @@ impl LlmDeliberationFaculty {
                             parts.push(crate::ai::types::ContentPart::Text { text: wm.result_label(seq) });
                         }
                         // This entire required group survives fitting or faults together.
-                        (vec![calls, results], None)
+                        vec![calls, results]
                     };
                     if let Some(visual) = visual.filter(|v| v.seq == seq && !observations.is_empty()) {
                         // Legacy checkpoints can still own pixels without original
@@ -350,7 +351,7 @@ impl LlmDeliberationFaculty {
                             result.content = crate::ai::types::MessageContent::Parts(parts);
                         }
                     }
-                    (group, tail)
+                    group
                 }
             },
         };
@@ -367,10 +368,6 @@ impl LlmDeliberationFaculty {
             stimulus = Some(ChatMessage::text("user", ws.world_state.clone()));
         }
         input.update([(!latest_result.is_empty()) as u8]);
-        let mut messages = messages;
-        // The action result's demoted TAIL rides in ordinary history, after prior history:
-        // without this it would be silently dropped.
-        messages.extend(demoted_result);
         let action_statement = self
             .working_memory
             .as_ref()
@@ -394,105 +391,4 @@ impl LlmDeliberationFaculty {
             action_statement,
         }
     }
-
-    /// Split this turn's room updates into the part that is REQUIRED and the part
-    /// that merely wants to be there. Nothing is discarded.
-    ///
-    /// Room updates are required input — `required_tokens` counts them and
-    /// `fit_messages` never drops them — so an unbounded room is a citizen who can
-    /// no longer think. But simply CUTTING the excess would be worse than the bug:
-    /// a task, a correction, or an instruction that arrived earlier in the batch
-    /// would be deleted before she ever read it, and she would have no way to know
-    /// something was taken.
-    ///
-    /// So the overflow is DEMOTED, not dropped. The newest share stays required; the
-    /// older remainder is returned to be appended to ordinary history, where it is
-    /// still shown whenever the window has room and is trimmed by the existing
-    /// front-drop only under real pressure — the same treatment every other past
-    /// message gets. The information survives; only its claim on the required budget
-    /// does not.
-    ///
-    /// Returns `(required_newest, demoted_older)`, both chronological.
-    /// Split the action result into the REQUIRED head and a DEMOTED tail.
-    ///
-    /// The result of the citizen's last act is required input — she cannot reason about
-    /// what her hands just did if it is dropped — and it was also UNBOUNDED. A single
-    /// `code/read` or `code/shell` output therefore claimed the whole window as
-    /// irreducible payload, and `fit_messages` refused the turn, and she went mute while
-    /// holding her card.
-    ///
-    /// Measured 2026-09-10 on a 23,040-token lane: `required_payload = 18,629` against
-    /// `after_reserves = 15,688`, over by 2,941, with `grounding_tokens = 113` proving
-    /// grounding innocent and `received = 2` proving it was ONE enormous message. 836
-    /// consecutive refusals, zero acts, zero inference, for the whole of a benchmark
-    /// round. The build had already bounded room updates (#3947) and stopped grounding
-    /// vetoing the turn (#3954) — this was the same class, one field over.
-    ///
-    /// The code here used to say oversized output "belongs to the existing
-    /// spill/tool-output producer, never to a generic byte reducer". That is a good rule
-    /// about WHO SHOULD SHRINK IT, and it was enforced nowhere: nothing checked that the
-    /// producer had, so an unspilled result walked straight into required input.
-    ///
-    /// DEMOTED, never discarded (Joel, 2026-09-09: "maybe trim clipped or killed
-    /// important information the persona needed to complete things"). The head stays
-    /// required so the act's outcome — status, error, the first lines that say what
-    /// happened — is always in front of her; the tail becomes ordinary history, still
-    /// rendered whenever the window allows, and still re-readable through its spill
-    /// handle. A cut on a CHAR boundary would split a UTF-8 sequence, so the split walks
-    /// to a line boundary and says how much moved.
-    pub(in super::super) fn split_action_result(&self, message: String) -> (ChatMessage, Option<ChatMessage>) {
-        let window = self.working_window() as usize;
-        let cap = window / Self::RESULT_SHARE_DENOM as usize;
-        let whole = ChatMessage::text("user", message.clone());
-        if Self::messages_cost(std::slice::from_ref(&whole)) <= cap {
-            return (whole, None);
-        }
-        // WHICH HALF IS REQUIRED IS DECIDED BY WIRE ORDER, not by preference.
-        //
-        // History renders BEFORE the required slot (`prompt.history.extend(latest_result)`
-        // appends the required part last). So keeping the HEAD required would place the
-        // result's beginning AFTER its middle on the wire — she would read it backwards.
-        // Keeping the TAIL required puts the demoted beginning in history and the ending
-        // in the required slot, which is the original order, and it keeps the payload
-        // ending byte-for-byte where the existing wire test expects it.
-        //
-        // Walk lines from the END while the tail still fits its share.
-        let lines: Vec<&str> = message.split_inclusive('\n').collect();
-        let mut take = 0usize;
-        let mut tail = String::new();
-        for line in lines.iter().rev() {
-            let candidate = format!("{line}{tail}");
-            let cost = Self::messages_cost(std::slice::from_ref(&ChatMessage::text(
-                "user",
-                candidate.clone(),
-            )));
-            // The LAST line is always required even if it alone exceeds the share: a
-            // required slot holding none of her result tells her nothing about what her
-            // hands just did, and a genuinely impossible payload is the existing capacity
-            // fault's job to report honestly.
-            if take == 0 || cost <= cap {
-                tail = candidate;
-                take += 1;
-            } else {
-                break;
-            }
-        }
-        if take >= lines.len() {
-            return (whole, None);
-        }
-        let head: String = lines[..lines.len() - take].concat();
-        let head_msg = ChatMessage::text("user", head);
-        let tail_msg = ChatMessage::text("user", tail);
-        continuum_base::probe!(
-            class = "delib.action_result.demoted",
-            persona = %self.persona_name,
-            window = window,
-            cap = cap,
-            required_tokens = Self::messages_cost(std::slice::from_ref(&tail_msg)),
-            demoted_tokens = Self::messages_cost(std::slice::from_ref(&head_msg)),
-            "the action result exceeded its share of the window — its ending stays              REQUIRED and the earlier part was demoted to ordinary history, still rendered              when the window allows and still re-readable via its spill handle. Nothing              was discarded: an unbounded required result is what makes one big tool output              a mute citizen."
-        );
-        (tail_msg, Some(head_msg))
-    }
-
 }
