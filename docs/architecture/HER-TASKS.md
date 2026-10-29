@@ -46,6 +46,17 @@ Each copy decides part of the same thing, so each is partly wrong in its own way
 microkernel rule ([[microkernel-centralize-logic-extensions-behind-narrow-contracts]]) says
 build the owner, not another guard.
 
+## Sentinels are her agents
+
+Sentinels are the most capable of the copies above, not a kind to be thinned: a sentinel runs a
+pipeline of steps (shell, watch, `coding_agent`, `web_research`), checkpoints, escalates and keeps
+logs. They are to her what agents are to Claude Code: she delegates a piece of work, keeps
+thinking, and is told when it is done. So the registry takes its lifecycle from the sentinel
+(start, status, logs, checkpoint, cancel) and generalizes it down to the kernel; the sentinel keeps
+every capability and gains what it lacked: a typed handle, an end on every path (panic included),
+delivery by owner, and the wake. A command is the one-step case; a helper mind is a sentinel whose
+step is a mind.
+
 ## The contract
 
 One owner, in the kernel command layer, because every command already passes through it and
@@ -53,7 +64,7 @@ every crate above may depend on it: **`TaskRegistry`** (`continuum-kernel::runti
 
 ```rust
 pub struct TaskId(Uuid);                 // typed; rendered with shown_id, never sliced
-pub enum TaskKind { Command(CommandUri), Sentinel(SentinelId), Mind(PersonaId) }
+pub enum TaskKind { Command(CommandUri), Sentinel(SentinelId) }  // a helper mind is a sentinel step
 pub enum TaskEnd { Done(Value), Failed(String), TimedOut, Stopped, Lost }
 
 impl TaskRegistry {
