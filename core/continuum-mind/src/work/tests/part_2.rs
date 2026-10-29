@@ -183,6 +183,46 @@ use super::*;
         );
     }
 
+    /// what this catches (card 57d51f97): a reviewer's send-back retires its own round
+    /// and returns the parent to work — no fall-through rewrites the review card to
+    /// Blocked or opens a nested round. Regression for the `return Ok(next)` restore in
+    /// the verdict branch of advance.rs.
+    #[tokio::test]
+    pub(super) async fn a_send_back_closes_the_round_and_returns_the_parent_to_work() {
+        let home = tempfile::tempdir().expect("temp airc home");
+        let airc = Arc::new(
+            Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .expect("a local airc scope opens without a daemon"),
+        );
+        let room = airc.join("continuum").await.expect("join the project room");
+        let repo = RepoId::new("github.com/CambrianTech/continuum").expect("repo id");
+        let parent = airc
+            .create_work_card_in(&room, CreateWorkCard::new(repo.clone(), "a fix", Priority::P1))
+            .await
+            .expect("parent card created");
+        raw_advance(&airc, parent, CardState::Review, "test").await.expect("to review");
+        let review = airc
+            .create_work_card_in(
+                &room,
+                CreateWorkCard::new(repo.clone(), "review: a fix", Priority::P1).reviewing(parent),
+            )
+            .await
+            .expect("review card created");
+        let landed = advance_card_state_effective(&airc, review, CardState::Blocked, "test", None)
+            .await
+            .expect("the reviewer's send-back lands");
+        assert_eq!(landed, CardState::InProgress, "send-back returns the parent to work");
+        let (_, pcard) = card_in_subscribed_rooms(&airc, parent).await.expect("parent on the board");
+        assert_eq!(pcard.state, CardState::InProgress, "the parent is back in progress for revision");
+        let (_, rcard) = card_in_subscribed_rooms(&airc, review).await.expect("round on the board");
+        assert_eq!(
+            rcard.state,
+            CardState::Closed,
+            "the retired round stays closed — not rewritten to Blocked, no nested round opened"
+        );
+    }
+
     /// what this catches: card 29621b9f — resolving a subscribed room's card id
     /// succeeded, then work/get looked only on the current board and refused it.
     /// Exercise the actual read path after subscribing without moving focus, and
