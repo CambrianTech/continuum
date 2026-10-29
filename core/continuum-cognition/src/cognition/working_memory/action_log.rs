@@ -157,17 +157,20 @@ impl ActionLog {
     }
 
     /// The records a shed may move to their handles, oldest first: resident, saved, not the
-    /// newest result, and vouched for by `saved(seq, handle)` (its output is there to reload).
-    /// Everything else is the last copy of what she read, so it stays.
+    /// newest result, and vouched for by `saved(seq, handle, body)` (its saved copy loads back
+    /// to this body). Everything else is the last copy of what she read, so it stays. Lazy:
+    /// `saved` runs only for the records a caller actually takes.
     pub fn evictable<'a>(
         &'a self,
-        saved: &'a dyn Fn(u64, &str) -> bool,
+        saved: &'a dyn Fn(u64, &str, &str) -> bool,
     ) -> impl Iterator<Item = &'a ActionRecord> + 'a {
         let newest = self.retained().last().map(|record| record.seq);
         self.records.iter().filter(move |record| {
-            record.result.is_some()
-                && Some(record.seq) != newest
-                && record.handle.as_deref().is_some_and(|handle| saved(record.seq, handle))
+            Some(record.seq) != newest
+                && match (&record.result, &record.handle) {
+                    (Some(body), Some(handle)) => saved(record.seq, handle, body),
+                    _ => false,
+                }
         })
     }
 
@@ -175,7 +178,7 @@ impl ActionLog {
     /// resident. Each keeps its measured length (`stored_chars`) and its handle, so her view
     /// still prices and reloads its whole. Exactly to the budget: the memory owner decides
     /// when, so there is no hysteresis here.
-    pub fn collapse_over(&mut self, budget: u64, saved: &dyn Fn(u64, &str) -> bool) -> Collapsed {
+    pub fn collapse_over(&mut self, budget: u64, saved: &dyn Fn(u64, &str, &str) -> bool) -> Collapsed {
         let mut total = self.resident_bytes();
         if total <= budget {
             return Collapsed { total };

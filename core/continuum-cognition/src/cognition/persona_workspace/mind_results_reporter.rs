@@ -4,21 +4,23 @@
 //! a number (Joel, 2026-10-29; it replaced `RESULTS_RESIDENT_CHARS = 1 << 20`, a cap per mind
 //! at receipt). This reporter is the only thing that moves a body to its handle in production
 //! (`WorkingMemory::evict_resident_results_over`). It sheds oldest-first across every resident
-//! mind, public and private, and never moves the newest result of a mind or a body whose saved
-//! output is not there to reload (the last copy).
+//! mind, public and private, and never moves a mind's newest result or a body whose saved copy
+//! is not PROVEN to load back to it (the last copy).
 //!
 //! Accounting is BYTES of resident bodies (`String::len`), never characters: characters are
 //! the view's price (`stored_chars`). Each record owns its body (no shared backing), so the sum
 //! over records is the RAM they hold; a working memory reached twice is counted once.
 //!
-//! No filesystem access under a mind's lock: her candidates are read under it, each saved
-//! output is checked after it drops, and the eviction moves only the `(seq, handle)` pairs that
-//! check vouched for.
+//! Proof without a filesystem read under a mind's lock: the shed plans from memory only, reads
+//! each planned candidate's saved copy through the spill owner's one read (`spill::saved_whole`,
+//! the same text her view's `load` renders) and digests it after the lock drops; under the lock
+//! a body moves only if its record still names that handle and its digest matches.
 //!
-//! Known limit: the shed target is the host's RAM overrun past this priority's gate, so a
-//! level raised by swap activity alone, with RAM use under the gate, sheds nothing here.
+//! NOT FULL GOVERNOR COVERAGE: the shed target is the host's RAM overrun past this priority's
+//! gate (`over_gate`). Pressure raised by swap activity alone, with RAM use under the gate,
+//! makes `over_gate` return 0 and sheds nothing here.
 
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use continuum_kernel::system_resources::{
@@ -29,7 +31,8 @@ use tokio::sync::watch;
 use uuid::Uuid;
 
 use super::PersonaWorkspaceRegistry;
-use crate::cognition::working_memory::{ResidentResults, WorkingMemory};
+use crate::cognition::tool_executor::spill::{self, WholeDigest};
+use crate::cognition::working_memory::{ResidentResults, ShedCandidate, WorkingMemory};
 
 const NAME: &str = "mind_results";
 
@@ -42,30 +45,40 @@ const PRIORITY: MemoryPriority = MemoryPriority::Interactive;
 /// Why a body stays resident through a shed: it is the last copy of what she read.
 #[derive(Debug)]
 pub(crate) enum LastCopy {
-    /// The handle does not name an output this mind can resolve.
-    Unresolvable(std::io::Error),
-    /// The handle resolves, but its saved output is not there to reload.
-    Missing(PathBuf),
+    /// Its saved copy could not be read back (no such handle, no file, no permission, not text).
+    Unreadable(std::io::Error),
+    /// Its saved copy reads back, but not to this body.
+    Mismatch,
 }
 
-impl std::fmt::Display for LastCopy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl LastCopy {
+    fn reason(&self) -> &'static str {
         match self {
-            Self::Unresolvable(error) => write!(f, "handle does not resolve: {error}"),
-            Self::Missing(path) => write!(f, "saved output missing at {}", path.display()),
+            Self::Unreadable(_) => "unreadable",
+            Self::Mismatch => "mismatch",
         }
     }
+
+    fn probe(&self, persona: Uuid, handle: &str) {
+        let detail = match self {
+            Self::Unreadable(error) => error.to_string(),
+            Self::Mismatch => "its saved copy does not load back to the resident body".to_owned(),
+        };
+        continuum_base::probe!(
+            class = "wm.results.last_copy_kept",
+            persona_id = %persona,
+            handle = %handle,
+            reason = self.reason(),
+            detail = %detail,
+            "a resident result stays through a shed: its saved copy cannot reproduce it"
+        );
+    }
 }
 
-/// Whether `persona`'s saved output for `handle` is there to reload, so its body may leave RAM.
-pub(crate) fn saved_output(persona: Uuid, handle: &str) -> Result<(), LastCopy> {
-    let path = crate::cognition::tool_executor::spill::resolve(persona, handle)
-        .map_err(LastCopy::Unresolvable)?;
-    if path.is_file() {
-        Ok(())
-    } else {
-        Err(LastCopy::Missing(path))
-    }
+/// What `persona`'s saved copy for `handle` loads back to, as a digest: read outside every
+/// mind's lock, compared with the resident body under it.
+fn saved_copy(persona: Uuid, handle: &str) -> Result<WholeDigest, LastCopy> {
+    spill::saved_digest(persona, handle).map_err(LastCopy::Unreadable)
 }
 
 /// The resident minds the reporter accounts: `(persona, working memory)`, each memory once.
@@ -112,46 +125,36 @@ pub(crate) fn over_gate(snapshot: &PressureSnapshot) -> u64 {
     used.saturating_sub(gate)
 }
 
-/// One mind's resident result bodies as the memory owner accounts them: what a shed may move
-/// (its saved output vouched for, outside her lock) and what it may not.
+/// One mind's resident result bodies, read from memory alone: what a shed may plan to move
+/// (saved, not the newest) and what it may not.
 #[derive(Debug, Clone)]
 pub(crate) struct Residency {
     pub resident_bytes: u64,
-    /// The newest result and every last copy: what no shed may move.
+    /// The newest result and every unsaved body. A saved copy that fails its proof at shed
+    /// time stays too; that is found only then, by reading it.
     pub pinned_bytes: u64,
-    /// Vouched candidates, oldest first.
-    pub evictable: Vec<crate::cognition::working_memory::ShedCandidate>,
+    /// Saved candidates, oldest first.
+    pub evictable: Vec<ShedCandidate>,
 }
 
-/// Read `memory`'s candidates under her lock, then vouch for each saved output after it drops.
-pub(crate) fn residency(
-    persona: Uuid,
-    memory: &WorkingMemory,
-    saved: &dyn Fn(Uuid, &str) -> bool,
-) -> Residency {
+pub(crate) fn residency(memory: &WorkingMemory) -> Residency {
     let ResidentResults {
         resident_bytes,
         candidates,
     } = memory.resident_results();
-    let evictable: Vec<_> = candidates
-        .into_iter()
-        .filter(|candidate| saved(persona, &candidate.handle))
-        .collect();
-    let movable: u64 = evictable.iter().map(|candidate| candidate.bytes).sum();
+    let movable: u64 = candidates.iter().map(|candidate| candidate.bytes).sum();
     Residency {
         resident_bytes,
         pinned_bytes: resident_bytes - movable,
-        evictable,
+        evictable: candidates,
     }
 }
 
-/// Per mind, the bytes to keep resident so the total comes down to `allocation`, moving the
-/// oldest bodies across every mind first (`None`: leave that mind untouched). Within a mind
-/// the oldest received are the lowest `seq`, so each budget moves exactly that mind's chosen
-/// oldest bodies through `evict_resident_results_over`.
-pub(crate) fn plan_shed(minds: &[Residency], allocation: u64) -> Vec<Option<u64>> {
+/// Per mind, the candidates to move so the total comes down to `allocation`, the oldest
+/// received across every mind first.
+pub(crate) fn plan_shed(minds: &[Residency], allocation: u64) -> Vec<HashSet<u64>> {
     let total: u64 = minds.iter().map(|mind| mind.resident_bytes).sum();
-    let mut freed = vec![0u64; minds.len()];
+    let mut chosen = vec![HashSet::new(); minds.len()];
     if total > allocation {
         let mut candidates: Vec<(Option<u64>, u64, usize, u64)> = minds
             .iter()
@@ -159,63 +162,68 @@ pub(crate) fn plan_shed(minds: &[Residency], allocation: u64) -> Vec<Option<u64>
             .flat_map(|(index, mind)| {
                 mind.evictable
                     .iter()
-                    .map(move |r| (r.received_ms, r.seq, index, r.bytes))
+                    .map(move |c| (c.received_ms, c.seq, index, c.bytes))
             })
             .collect();
         candidates.sort_unstable();
         let mut need = total - allocation;
-        for (_, _, index, bytes) in candidates {
+        for (_, seq, index, bytes) in candidates {
             if need == 0 {
                 break;
             }
-            freed[index] += bytes;
+            chosen[index].insert(seq);
             need = need.saturating_sub(bytes);
         }
     }
-    minds
-        .iter()
-        .zip(freed)
-        .map(|(mind, freed)| (freed > 0).then(|| mind.resident_bytes - freed))
-        .collect()
+    chosen
 }
 
-/// Shed every mind's resident bodies down to `allocation` bytes in total, oldest first.
-/// `saved` vouches that a persona's handle has its output there to reload.
-pub(crate) fn shed_to(minds: &Minds, allocation: u64, saved: &dyn Fn(Uuid, &str) -> bool) {
-    let residencies: Vec<Residency> = minds
-        .iter()
-        .map(|(persona, memory)| residency(*persona, memory, saved))
-        .collect();
-    let budgets = plan_shed(&residencies, allocation);
-    for (((_, memory), mind), budget) in minds.iter().zip(&residencies).zip(budgets) {
-        if let Some(budget) = budget {
-            // Only what was vouched for, and only if the record still names that handle.
-            let vouched: std::collections::HashMap<u64, &str> = mind
-                .evictable
-                .iter()
-                .map(|candidate| (candidate.seq, candidate.handle.as_str()))
-                .collect();
-            memory.evict_resident_results_over(budget, &|seq, handle| {
-                vouched.get(&seq).is_some_and(|vouched| *vouched == handle)
-            });
+/// Shed every mind's resident bodies down to `allocation` bytes in total, oldest first. Each
+/// planned body moves only once its saved copy is proven to load back to it; a copy that
+/// cannot keeps the body resident and says why (`LastCopy`).
+pub(crate) fn shed_to(minds: &Minds, allocation: u64) {
+    let residencies: Vec<Residency> = minds.iter().map(|(_, memory)| residency(memory)).collect();
+    let plans = plan_shed(&residencies, allocation);
+    for (((persona, memory), mind), chosen) in minds.iter().zip(&residencies).zip(plans) {
+        if chosen.is_empty() {
+            continue;
         }
-    }
-}
-
-/// `saved` for production: a body whose output is not there stays, and says why.
-fn vouched(persona: Uuid, handle: &str) -> bool {
-    match saved_output(persona, handle) {
-        Ok(()) => true,
-        Err(last_copy) => {
-            continuum_base::probe!(
-                class = "wm.results.last_copy_kept",
-                persona_id = %persona,
-                handle = %handle,
-                reason = %last_copy,
-                "a resident result stays through a shed: its saved output is not there to reload"
-            );
-            false
-        }
+        // Outside her lock: read and digest each planned copy.
+        let proven: HashMap<u64, (&str, WholeDigest)> = mind
+            .evictable
+            .iter()
+            .filter(|candidate| chosen.contains(&candidate.seq))
+            .filter_map(|candidate| match saved_copy(*persona, &candidate.handle) {
+                Ok(digest) => Some((candidate.seq, (candidate.handle.as_str(), digest))),
+                Err(last_copy) => {
+                    last_copy.probe(*persona, &candidate.handle);
+                    None
+                }
+            })
+            .collect();
+        let movable: u64 = mind
+            .evictable
+            .iter()
+            .filter(|c| proven.contains_key(&c.seq))
+            .map(|c| c.bytes)
+            .sum();
+        // Under her lock: only a record still naming the proven handle, whose body matches.
+        memory.evict_resident_results_over(
+            mind.resident_bytes.saturating_sub(movable),
+            &|seq, handle, body| {
+                let Some((proven_handle, digest)) = proven.get(&seq) else {
+                    return false;
+                };
+                if *proven_handle != handle {
+                    return false;
+                }
+                let reproduces = WholeDigest::of(body) == *digest;
+                if !reproduces {
+                    LastCopy::Mismatch.probe(*persona, handle);
+                }
+                reproduces
+            },
+        );
     }
 }
 
@@ -243,16 +251,15 @@ impl MemoryReporter for MindResultsReporter {
     }
 
     /// It wants to keep everything it holds (`preferred = max = resident`); its floor is what
-    /// no shed may move (each mind's newest result and every last copy).
+    /// no shed may move (each mind's newest result and every unsaved body). Read from memory
+    /// alone: a saved copy that fails its proof is found only when a shed reads it.
     fn budget(&self) -> MemoryBudgetSpec {
         let minds = self.registry.resident_working_memories();
         let (resident, pinned) =
             minds
                 .iter()
-                .fold((0u64, 0u64), |(resident, pinned), (persona, memory)| {
-                    let mind = residency(*persona, memory, &|persona, handle| {
-                        saved_output(persona, handle).is_ok()
-                    });
+                .fold((0u64, 0u64), |(resident, pinned), (_, memory)| {
+                    let mind = residency(memory);
                     (resident + mind.resident_bytes, pinned + mind.pinned_bytes)
                 });
         MemoryBudgetSpec {
@@ -290,7 +297,7 @@ impl MemoryReporter for MindResultsReporter {
         }
         let minds = self.registry.resident_working_memories();
         let before = resident_bytes(&minds);
-        shed_to(&minds, before.saturating_sub(over), &vouched);
+        shed_to(&minds, before.saturating_sub(over));
         continuum_base::probe!(
             class = "wm.results.shed",
             level = %level,
