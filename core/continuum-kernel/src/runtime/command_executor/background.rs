@@ -70,24 +70,25 @@ impl CommandExecutor {
                     )),
                 };
             let outcome = outcome.and_then(|result| {
-                TaskOutput::try_from(&result)
-                    .map(|output| (result, output))
-                    .map_err(DispatchFailure::uncertain)
+                TaskOutput::try_from(result).map_err(DispatchFailure::uncertain)
             });
-            let (end, outcome) = match outcome {
-                Ok((result, output)) => (TaskEnd::Done(output), Ok(result)),
-                Err(error) => (
-                    TaskEnd::Failed {
-                        message: error.message.clone(),
-                        outcome: error.outcome,
-                    },
-                    Err(error),
-                ),
+            let end = match outcome {
+                Ok(output) => TaskEnd::Done(output),
+                Err(error) => TaskEnd::Failed {
+                    message: error.message,
+                    outcome: error.outcome,
+                },
             };
-            if let Err(error) = ledger.finish(handle, owner, end).await {
-                tracing::error!(%handle, %owner, %error, "task ended but terminal persistence failed; acceptance remains unresolved");
-                return;
-            }
+            let winner = match ledger.finish(handle, owner, end).await {
+                Ok(winner) => winner,
+                Err(error) => {
+                    tracing::error!(%handle, %owner, %error, "task ended but terminal persistence failed; acceptance remains unresolved");
+                    return;
+                }
+            };
+            // A competing supervisor may have persisted a different terminal first.
+            // Every delivery must project that durable winner, never this writer's loser.
+            let outcome = completion(winner);
             this.emit_command_completed(
                 command.path(),
                 &outcome,
@@ -96,5 +97,93 @@ impl CommandExecutor {
             );
         });
         Ok(handle)
+    }
+}
+
+fn completion(end: TaskEnd) -> Result<crate::runtime::CommandResult, DispatchFailure> {
+    match end {
+        TaskEnd::Done(output) => Ok(output.into()),
+        TaskEnd::Failed { message, outcome } => Err(DispatchFailure { message, outcome }),
+        TaskEnd::TimedOut => Err(DispatchFailure::uncertain("task timed out".into())),
+        TaskEnd::Stopped => Err(DispatchFailure::uncertain("task stopped".into())),
+        TaskEnd::Lost => Err(DispatchFailure::uncertain("task execution lost".into())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::DispatchOutcome;
+    use super::*;
+    use crate::runtime::{
+        CommandInterceptor, CommandResult, InterceptorOutcome, MessageBus, ModuleRegistry,
+    };
+
+    struct GatedResult {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl CommandInterceptor for GatedResult {
+        fn name(&self) -> &'static str {
+            "gated-test-result"
+        }
+        async fn try_route(
+            &self,
+            _: &str,
+            _: &Value,
+            _: Option<&CallerIdentity>,
+        ) -> Result<InterceptorOutcome, String> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(InterceptorOutcome::Handled(CommandResult::Json(
+                Value::Null,
+            )))
+        }
+    }
+
+    #[tokio::test]
+    async fn notification_projects_durable_winner_not_competing_result() -> Result<(), String> {
+        let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+        let ledger = Arc::new(TaskLedger::new(adapter).await?);
+        let gate = Arc::new(GatedResult {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        let bus = Arc::new(MessageBus::new());
+        let mut events = bus.receiver();
+        let executor = Arc::new(
+            CommandExecutor::new(Arc::new(ModuleRegistry::new()))
+                .with_message_bus(bus)
+                .with_interceptor(gate.clone()),
+        );
+        executor.set_task_ledger(ledger.clone())?;
+        let owner = Uuid::new_v4();
+        let caller = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(owner));
+        let task = executor
+            .dispatch_background("test/result", Value::Null, Some(caller))
+            .await
+            .map_err(|error| error.message)?;
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await
+            .map_err(|error| error.to_string())?;
+        // Inject another writer's committed terminal; this tests arbitration,
+        // not permission to declare a running command stopped.
+        let winner = TaskEnd::Failed {
+            message: "previous terminal".into(),
+            outcome: DispatchOutcome::Uncertain,
+        };
+        ledger.finish(task, owner, winner.clone()).await?;
+        gate.release.notify_one();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        assert_eq!(event.name, "command:completed");
+        assert_eq!(event.payload["handle"], task.to_string());
+        assert_eq!(event.payload["success"], false);
+        assert_eq!(event.payload["error"], "previous terminal");
+        assert_eq!(ledger.pending(task, owner).await?, Some(winner));
+        Ok(())
     }
 }

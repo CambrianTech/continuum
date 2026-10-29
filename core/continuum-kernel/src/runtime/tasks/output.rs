@@ -27,19 +27,12 @@ impl TryFrom<CommandResult> for TaskOutput {
     }
 }
 
-impl TryFrom<&CommandResult> for TaskOutput {
-    type Error = String;
-
-    fn try_from(result: &CommandResult) -> Result<Self, Self::Error> {
-        match result {
-            CommandResult::Json(value) => Ok(Self::Json(value.clone())),
-            CommandResult::Binary { metadata, data } => Ok(Self::Binary {
-                metadata: metadata.clone(),
-                data: data.clone(),
-            }),
-            CommandResult::Handle(handle) => Ok(Self::Handle(handle.clone())),
-            CommandResult::Stream(_) => Err(CommandResult::stream_protocol_error()),
-            CommandResult::Lambda(_) => Err(CommandResult::lambda_protocol_error()),
+impl From<TaskOutput> for CommandResult {
+    fn from(output: TaskOutput) -> Self {
+        match output {
+            TaskOutput::Json(value) => Self::Json(value),
+            TaskOutput::Binary { metadata, data } => Self::Binary { metadata, data },
+            TaskOutput::Handle(handle) => Self::Handle(handle),
         }
     }
 }
