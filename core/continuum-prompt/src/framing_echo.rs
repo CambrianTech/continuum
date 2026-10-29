@@ -495,7 +495,7 @@ mod tests {
         );
         assert_eq!(echoes_turn_framing("I'll PASS on this one — reply with the single word PASS is what the block says, and this moment does not call for me.", me), None, "discussing PASS is speech");
         // The clause the gate keys on must be the block's own words, never a retyped copy.
-        assert!(crate::cognition::prompt_assembly::SILENCE_AFFORDANCE_BLOCK.contains(PRESENCE_PASS_CLAUSE));
+        assert!(crate::prompt_assembly::SILENCE_AFFORDANCE_BLOCK.contains(PRESENCE_PASS_CLAUSE));
         assert_eq!(echoes_turn_framing("[answered] ```python\n# Mark this room's activity concluded (o)\n```", me), Some("window_tag_echo"));
         assert_eq!(
             echoes_turn_framing("[answer]\nThe general, reusable knowledge they share is that repetition of a message will produce the same result.\n\nAfter your reply, on its own final line, list which numbered prior beliefs are now outdated, wrong, or replaced by better understanding", me),

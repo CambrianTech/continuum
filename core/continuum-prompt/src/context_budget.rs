@@ -91,13 +91,13 @@ impl ContextBudget {
     /// ~18k tokens (9.3k of tool registry, 9k of conversation) — fifteen minutes before the
     /// first token, on a box whose served window said 32k was fine. So the total here is
     /// `min(served window, TTFT_BUDGET × measured prefill t/s)`, floored at the serving
-    /// stack's own minimum ([`crate::inference::prefill_rate::affordable_prompt_tokens`]),
+    /// stack's own minimum ([`continuum_engine::inference::prefill_rate::affordable_prompt_tokens`]),
     /// and every fraction below scales with it — the tool menu, recall, the digest. One
     /// owner, one rule: the frontier keeps its window (500 t/s buys it whole), the small
     /// tier gets the prompt it can afford. No trusted rate for the served model = the
     /// served window rules, as before.
     pub fn from_window(context_window: u32) -> Self {
-        Self::from_window_for(context_window, crate::cognition::audience::current())
+        Self::from_window_for(context_window, crate::audience::current())
     }
 
     /// [`Self::from_window`] for a named audience instead of the running turn's. For STATE
@@ -106,7 +106,7 @@ impl ContextBudget {
     /// Unattended one, rewriting its collapsed-pointer block each swing and re-prefilling
     /// everything after it (M5 2026-10-17: affordable 17-19k vs ~6k tokens alternating; the
     /// pointer block was the first divergence on 40 of 62 turns, ~9k fresh tokens each).
-    pub fn from_window_for(context_window: u32, audience: crate::inference::prefill_rate::Audience) -> Self {
+    pub fn from_window_for(context_window: u32, audience: continuum_engine::inference::prefill_rate::Audience) -> Self {
         let affordable = Self::prefill_affordable_window_for(context_window, audience);
         Self {
             total_chars: (affordable > 0)
@@ -127,7 +127,7 @@ impl ContextBudget {
     /// `WorkspaceCycle` to read a model binding off (a command handler, a bus listener).
     /// Not-ready or not-yet-served resolves to [`Self::unknown`], never to a stand-in number.
     pub fn live() -> Self {
-        let serving = crate::inference::llama_server::current_serving();
+        let serving = continuum_engine::inference::llama_server::current_serving();
         if serving.ready && serving.served_context_window > 0 {
             Self::from_window(serving.served_context_window)
         } else {
@@ -136,7 +136,7 @@ impl ContextBudget {
     }
 
     /// Like [`Self::live`], but an unknown window resolves to the substrate's own declared
-    /// minimum ([`MIN_SERVE_CTX`](crate::inference::planning::MIN_SERVE_CTX)) instead of
+    /// minimum ([`MIN_SERVE_CTX`](continuum_engine::inference::planning::MIN_SERVE_CTX)) instead of
     /// "no bound".
     ///
     /// Use this ONLY where an unbounded value would break assembly rather than be trimmed
@@ -154,7 +154,7 @@ impl ContextBudget {
         if live.total_chars.is_some() {
             live
         } else {
-            Self::from_window(crate::inference::planning::MIN_SERVE_CTX)
+            Self::from_window(continuum_engine::inference::planning::MIN_SERVE_CTX)
         }
     }
 
@@ -172,25 +172,25 @@ impl ContextBudget {
 /// without them.
 ///
 /// Every rung that carries a number goes through the same
-/// [`crate::inference::prefill_rate::affordable_prompt_tokens`] as before; only the
+/// [`continuum_engine::inference::prefill_rate::affordable_prompt_tokens`] as before; only the
 /// rung-less case is new, and it lands on the bootstrap working set, not the window.
 fn affordable_for_rate(
-    rate: crate::inference::prefill_rate::MeasuredRate,
+    rate: continuum_engine::inference::prefill_rate::MeasuredRate,
     served: u32,
-    audience: crate::inference::prefill_rate::Audience,
+    audience: continuum_engine::inference::prefill_rate::Audience,
     cache_fraction: Option<f64>,
 ) -> u32 {
     let affordable = match rate.tps.filter(|t| t.is_finite() && *t > 0.0) {
-        Some(tps) => crate::inference::prefill_rate::affordable_prompt_tokens(
+        Some(tps) => continuum_engine::inference::prefill_rate::affordable_prompt_tokens(
             tps,
-            crate::inference::planning::MIN_SERVE_CTX,
+            continuum_engine::inference::planning::MIN_SERVE_CTX,
             served,
             audience,
         ),
         // No rung at all — nothing measured on this box, ever. The substrate's own
         // bootstrap working set is what it already assumes an unmeasured mind needs
         // (`UNMEASURED_FILL_FLOOR_TOKENS`), never the window, never a second constant.
-        None => u32::try_from(crate::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS)
+        None => u32::try_from(continuum_engine::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS)
             .unwrap_or(served) // unwrap_or: a floor that cannot be a u32 is not a floor; the window is the only other truth
             .min(served),
     };
@@ -219,17 +219,17 @@ const MAX_CACHE_CREDIT: f64 = 0.75;
 /// The served window clamped to what the served lane can prefill inside the turn's
 /// time-to-first-token budget.
 ///
-/// The rate comes off the ladder ([`crate::inference::prefill_rate::measured_rate_for`]):
+/// The rate comes off the ladder ([`continuum_engine::inference::prefill_rate::measured_rate_for`]):
 /// fresh, else stale, else the slowest curve this box holds. With no rung at all the
 /// bootstrap working set governs — never the served window, which is the one answer that
 /// cannot be right when nothing is known (card a2578811). `served` is still returned when
 /// there is no served MODEL to have a rate for: an absent subject, not an absent
 /// measurement. One row when the clamp binds, lifts, or changes rung; never per call.
-fn prefill_affordable_window_for(served: u32, audience: crate::inference::prefill_rate::Audience) -> u32 {
+fn prefill_affordable_window_for(served: u32, audience: continuum_engine::inference::prefill_rate::Audience) -> u32 {
     if served == 0 {
         return 0;
     }
-    let Some(model) = crate::inference::llama_server::current_serving().active_model else {
+    let Some(model) = continuum_engine::inference::llama_server::current_serving().active_model else {
         return served;
     };
     // AN UNKNOWN RATE IS NOT PERMISSION FOR THE WHOLE WINDOW (card a2578811). This read
@@ -264,13 +264,13 @@ fn prefill_affordable_window_for(served: u32, audience: crate::inference::prefil
     // `rate <= prompt_tokens / bound_s` — fed back as a rung that can only LOWER the EMA,
     // so each cancel shrinks the next prompt until one completes and re-measures for real.
     // The failure becomes the evidence. Card a2578811; not in this change.
-    let rate = crate::inference::prefill_rate::measured_rate_for(&model);
-    let affordable = Self::affordable_for_rate(rate, served, audience, crate::inference::prefill_knee::cache_fraction());
+    let rate = continuum_engine::inference::prefill_rate::measured_rate_for(&model);
+    let affordable = Self::affordable_for_rate(rate, served, audience, continuum_engine::inference::prefill_knee::cache_fraction());
     static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
     let shape = ((served as u64) << 32)
         | (affordable as u64) << 3
         | (rate.source as u64) << 1
-        | (audience == crate::inference::prefill_rate::Audience::Unattended) as u64;
+        | (audience == continuum_engine::inference::prefill_rate::Audience::Unattended) as u64;
     if LAST.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
         continuum_base::probe!(
             class = "cognition.budget.prefill_bound",
@@ -509,7 +509,7 @@ const RECALL_DENOM: usize = 10;
         match self.total_chars {
             Some(_) => self.fraction(16),
             None => {
-                Self::from_window(crate::inference::planning::MIN_SERVE_CTX).fraction(16)
+                Self::from_window(continuum_engine::inference::planning::MIN_SERVE_CTX).fraction(16)
             }
         }
     }
@@ -529,7 +529,7 @@ const RECALL_DENOM: usize = 10;
         // for her). The prompt's own fit drops the oldest history when a turn does not fit.
         match self.served_chars.or(self.total_chars) {
             Some(chars) => chars,
-            None => Self::from_window(crate::inference::planning::MIN_SERVE_CTX).served_chars.unwrap_or(0),
+            None => Self::from_window(continuum_engine::inference::planning::MIN_SERVE_CTX).served_chars.unwrap_or(0),
         }
     }
 }
@@ -553,7 +553,7 @@ mod tests {
     // scales the bound, credited at most MAX_CACHE_CREDIT, never past the window.
     #[test]
     fn the_prefill_bound_credits_the_measured_cache() {
-        use crate::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
+        use continuum_engine::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
         let rate = MeasuredRate { tps: Some(100.0), source: RateSource::Fresh };
         let cold = ContextBudget::affordable_for_rate(rate, 34_560, Audience::Unattended, None);
         let half = ContextBudget::affordable_for_rate(rate, 200_000, Audience::Unattended, Some(0.5));
@@ -565,7 +565,7 @@ mod tests {
 
     #[test]
     fn an_unmeasured_prefill_rate_never_buys_the_whole_window() {
-        use crate::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
+        use continuum_engine::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
         let served = 26_000;
         let afford = |r| ContextBudget::affordable_for_rate(r, served, Audience::Interactive, None);
 
@@ -581,7 +581,7 @@ mod tests {
         let got = afford(MeasuredRate { tps: Some(12.5), source: RateSource::Stale });
         assert_eq!(
             got,
-            crate::inference::planning::MIN_SERVE_CTX,
+            continuum_engine::inference::planning::MIN_SERVE_CTX,
             "last hour's rate is still evidence about this box — it must bound the prompt, not be discarded"
         );
         assert!(got < served, "the whole window is what the cancel loop was made of");
@@ -590,7 +590,7 @@ mod tests {
         let got = afford(MeasuredRate::UNKNOWN);
         assert_eq!(
             got,
-            crate::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS as u32,
+            continuum_engine::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS as u32,
             "nothing measured on this box ever — the substrate's own bootstrap working set governs"
         );
         assert!(got < served, "an absence must never resolve to the largest prompt available");
@@ -617,7 +617,7 @@ mod tests {
         // window. These are deterministic policy inputs, not hardware receipts.
         for (window, rate, expected) in [
             (51_712, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }, 12_928),
-            (51_712, MeasuredRate::UNKNOWN, crate::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS / 4),
+            (51_712, MeasuredRate::UNKNOWN, continuum_engine::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS / 4),
             (256, MeasuredRate::UNKNOWN, 64),
             (256, MeasuredRate { tps: Some(12.5), source: RateSource::Stale }, 64),
             (0, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }, 0),

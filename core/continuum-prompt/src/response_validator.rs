@@ -66,7 +66,7 @@ pub fn clean_and_validate(
     let cleaned = clean_response(raw_response);
     // Gate 0 — the turn's own framing reflected back is a PASS, not a post
     // (cognition::framing_echo; the wake-prompt echo of 2026-09-05).
-    if let Some(marker) = crate::cognition::framing_echo::echoes_turn_framing(&cleaned.text, None) {
+    if let Some(marker) = crate::framing_echo::echoes_turn_framing(&cleaned.text, None) {
         continuum_base::probe!(
             class = "cognition.framing_echo",
             persona = %persona_id,
@@ -90,7 +90,7 @@ pub fn clean_and_validate(
     // rule to the room was one of the two that broke it. A constraint that must hold
     // cannot live only in the prompt; these two are decidable without the model's
     // cooperation, so they are decided here.
-    if let Some(marker) = crate::cognition::not_speech::is_not_speech(&cleaned.text) {
+    if let Some(marker) = crate::not_speech::is_not_speech(&cleaned.text) {
         continuum_base::probe!(
             class = "cognition.not_speech",
             persona = %persona_id,

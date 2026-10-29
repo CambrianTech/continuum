@@ -27,10 +27,10 @@ use continuum_base::token_estimate::estimate_prompt_tokens;
 /// units; preserving that policy avoids silently recalibrating existing text.
 /// Media bytes are excluded; the finalized provider quote owns media/template cost.
 pub fn estimate_message_content_tokens(
-    content: &crate::ai::types::MessageContent,
+    content: &continuum_engine::ai::types::MessageContent,
     estimate: impl Fn(&str) -> usize,
 ) -> usize {
-    use crate::ai::types::{ContentPart, MessageContent};
+    use continuum_engine::ai::types::{ContentPart, MessageContent};
     match content {
         MessageContent::Text(text) => estimate(text),
         MessageContent::Parts(parts) => parts.iter().fold(0usize, |total, part| {
@@ -175,7 +175,7 @@ mod tests {
         assert_eq!(estimate_prompt_tokens("abcdefgh"), 3);
         // multibyte counted by chars, not bytes: 4 chars / 4 + 1 = 2.
         assert_eq!(estimate_prompt_tokens("日本語訳"), 2);
-        use crate::ai::types::{ContentPart, ImageInput, MessageContent};
+        use continuum_engine::ai::types::{ContentPart, ImageInput, MessageContent};
         let parts = MessageContent::Parts(vec![
             ContentPart::ToolUse {
                 id: "call".into(),

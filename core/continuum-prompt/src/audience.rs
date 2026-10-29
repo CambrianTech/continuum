@@ -1,12 +1,12 @@
 //! WHO IS WAITING on this turn — the typed input the TTFT budget derives from
-//! ([`crate::inference::prefill_rate::Audience`], card 7496ed9d). Chosen at the turn
+//! ([`continuum_engine::inference::prefill_rate::Audience`], card 7496ed9d). Chosen at the turn
 //! seam and carried as a task-local, so every render-budget read inside the turn
 //! (`ContextBudget::from_window` and everything downstream of it) sees the same answer
 //! without threading a parameter through forty callers. Unset = `Interactive`, the
 //! conservative default: a seam that forgot to declare itself renders the prompt a
 //! waiting person can afford, never a bigger one.
 
-use crate::inference::prefill_rate::Audience;
+use continuum_engine::inference::prefill_rate::Audience;
 
 tokio::task_local! {
     static AUDIENCE: Audience;

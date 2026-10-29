@@ -11,7 +11,7 @@
 //!
 //! Pure comparison plus one small per-persona record of the previous request's messages.
 
-use crate::ai::types::TextGenerationRequest;
+use continuum_engine::ai::types::TextGenerationRequest;
 use std::sync::LazyLock;
 
 /// A request as the prefix comparison reads it: the system prompt, then each message
@@ -169,7 +169,7 @@ pub(crate) fn split_reuse(extends_previous: bool, previous_prompt_tokens: Option
 /// Stage the request about to be sent. An earlier request of this persona that never settled
 /// (it failed, or returned without timings) leaves the engine's slot state unknown, so the
 /// committed record is dropped and this request's split says nothing.
-pub(crate) fn stage_reuse(persona: uuid::Uuid, request_id: &str, req: &TextGenerationRequest) {
+pub fn stage_reuse(persona: uuid::Uuid, request_id: &str, req: &TextGenerationRequest) {
     if PENDING.insert(persona, (request_id.to_string(), fingerprint(req))).is_some() {
         COMMITTED.remove(&persona);
     }
@@ -178,7 +178,7 @@ pub(crate) fn stage_reuse(persona: uuid::Uuid, request_id: &str, req: &TextGener
 /// Settle the request once it completed: `timing` is the engine's `(cache_n, prompt_n)`, or
 /// `None` for a failure or a provider without timings. Probes the split, then commits this
 /// request as the one the next is compared with, only when the engine answered with timings.
-pub(crate) fn settle_reuse(persona: uuid::Uuid, request_id: &str, timing: Option<(u32, u32)>) {
+pub fn settle_reuse(persona: uuid::Uuid, request_id: &str, timing: Option<(u32, u32)>) {
     // Only THIS request's staging is taken: a late completion of an older request must not
     // erase a newer one staged since (Codex on #4487).
     let Some((_, (_, now))) = PENDING.remove_if(&persona, |_, (staged_id, _)| staged_id == request_id) else {
@@ -226,7 +226,7 @@ pub(crate) fn settle_reuse(persona: uuid::Uuid, request_id: &str, timing: Option
 
 /// Compare this request with the persona's previous one and probe the result; the first
 /// request a persona sends has nothing to compare against and says nothing.
-pub(crate) fn observe(persona: uuid::Uuid, req: &TextGenerationRequest) {
+pub fn observe(persona: uuid::Uuid, req: &TextGenerationRequest) {
     let now = rendered(req);
     let found = LAST.get(&persona).map(|previous| compare(&previous, &now));
     LAST.insert(persona, now);
@@ -291,7 +291,7 @@ mod tests {
         let persona = uuid::Uuid::new_v4();
         let req = |text: &str| {
             let mut r = TextGenerationRequest::default();
-            r.messages = vec![crate::ai::types::ChatMessage::text("user", text)];
+            r.messages = vec![continuum_engine::ai::types::ChatMessage::text("user", text)];
             r
         };
         stage_reuse(persona, "a", &req("one"));
@@ -330,7 +330,7 @@ mod tests {
     // change at index 1, ahead of every message.
     #[test]
     fn a_changed_tool_surface_is_a_prompt_change_at_the_system_turn() {
-        use crate::ai::types::{ChatMessage, NativeToolSpec};
+        use continuum_engine::ai::types::{ChatMessage, NativeToolSpec};
         let mut a = TextGenerationRequest::default();
         a.system_prompt = Some("you are Kimi".into());
         a.messages = vec![ChatMessage::text("user", "fix the bug")];
@@ -338,7 +338,7 @@ mod tests {
         let tool = |name: &str| NativeToolSpec {
             name: name.into(),
             description: String::new(),
-            input_schema: crate::ai::types::ToolInputSchema {
+            input_schema: continuum_engine::ai::types::ToolInputSchema {
                 schema_type: "object".into(),
                 properties: serde_json::json!({}),
                 required: None,
