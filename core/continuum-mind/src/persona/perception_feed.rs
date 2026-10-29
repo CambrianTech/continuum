@@ -60,6 +60,7 @@ pub fn register(
     events_tx: Option<mpsc::Sender<Arc<TranscriptEvent>>>,
 ) {
     attach_her_rooms(&region);
+    crate::cognition::dispatch_listener::install_task_ended_waker(task_ended);
     let identity = crate::cognition::conversation::persona_identity::PersonaIdentity::new(peer.as_uuid(), agent_name.to_string());
     registry()
         .lock()
@@ -113,6 +114,15 @@ pub fn awareness_of(persona: Uuid, now_ms: u64) -> Option<super::awareness::Awar
     let resident = reg.get(&persona)?;
     let region = resident.region.lock().unwrap_or_else(|e| e.into_inner());
     Some(region.snapshot(now_ms))
+}
+
+/// Work she sent away ended: wake her on her one channel. A full channel drops the wake; the
+/// result is already filed in her working memory, so her next wake of any kind shows it.
+pub fn task_ended(persona: Uuid, task: Uuid) {
+    let residents = registry().lock().unwrap_or_else(|p| p.into_inner()); // a poisoned registry still answers; same policy as every lock in this crate
+    let Some(resident) = residents.get(&persona) else { return };
+    let sent = resident.wake_tx.try_send(Wake::TaskEnded { task }).is_ok();
+    continuum_base::probe!(class = "mind.wake.task_ended", persona = %persona, task = %task, sent, "work she sent away ended; she is woken");
 }
 
 pub fn unregister(persona: Uuid) {

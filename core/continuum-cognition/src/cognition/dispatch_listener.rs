@@ -69,11 +69,33 @@ pub fn fold_completion(wm: &WorkingMemory, ev: CommandCompletedEvent) -> bool {
     true
 }
 
+/// Wakes the owner of an ended task. The mind installs it (`perception_feed::task_ended`): the
+/// end becomes a `Wake::TaskEnded` on her one wake channel, so the result she was not waiting
+/// on still reaches her. Not installed (tests, a fork with no mind) = filed only.
+pub type TaskEndedWaker = fn(owner: uuid::Uuid, task: uuid::Uuid);
+
+static TASK_ENDED_WAKER: parking_lot::RwLock<Option<TaskEndedWaker>> = parking_lot::RwLock::new(None);
+
+/// Install the one waker. A second install replaces the first.
+pub fn install_task_ended_waker(waker: TaskEndedWaker) {
+    *TASK_ENDED_WAKER.write() = Some(waker);
+}
+
+/// File an end into her working memory and, when it was hers, wake her with it.
+fn deliver(wm: &WorkingMemory, ev: CommandCompletedEvent, owner: uuid::Uuid) -> bool {
+    let task = ev.handle;
+    let hers = fold_completion(wm, ev);
+    if let (true, Some(wake), Some(task)) = (hers, *TASK_ENDED_WAKER.read(), task) {
+        wake(owner, task);
+    }
+    hers
+}
+
 /// Spawn the listener for one persona. Holds the persona's `WorkingMemory` (Arc) and a bus
 /// receiver; runs until the process exits. A broadcast lag or a non-parsing payload is
 /// skipped, never fatal — the mind keeps perceiving. Idempotent per persona: spawn once at
 /// persona bring-up.
-pub fn spawn(bus: Arc<MessageBus>, working_memory: Arc<WorkingMemory>) {
+pub fn spawn(bus: Arc<MessageBus>, working_memory: Arc<WorkingMemory>, owner: uuid::Uuid) {
     let mut rx = bus.receiver();
     tokio::spawn(async move {
         loop {
@@ -90,7 +112,7 @@ pub fn spawn(bus: Arc<MessageBus>, working_memory: Arc<WorkingMemory>) {
             let Ok(ev) = serde_json::from_value::<CommandCompletedEvent>((*event.payload).clone()) else { // typed decode needs owned; one copy at THIS consumer, not per receiver
                 continue;
             };
-            fold_completion(&working_memory, ev);
+            deliver(&working_memory, ev, owner);
         }
     });
 }
@@ -98,6 +120,25 @@ pub fn spawn(bus: Arc<MessageBus>, working_memory: Arc<WorkingMemory>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static WOKEN: parking_lot::Mutex<Vec<(uuid::Uuid, uuid::Uuid)>> = parking_lot::Mutex::new(Vec::new());
+    fn record_wake(owner: uuid::Uuid, task: uuid::Uuid) {
+        WOKEN.lock().push((owner, task));
+    }
+
+    // what this catches: an end she was not waiting on never reaching her. Her own end is
+    // filed AND wakes her (owner, task); an end that is not hers neither files nor wakes.
+    #[test]
+    fn her_ended_task_wakes_her_and_anothers_does_not() {
+        install_task_ended_waker(record_wake);
+        let wm = WorkingMemory::new(8);
+        let (owner, mine, theirs) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        wm.record_dispatch_event(mine, "cargo test", "running", DispatchStatus::Running);
+        assert!(deliver(&wm, ev(Some(mine), false, serde_json::json!("")), owner));
+        assert!(!deliver(&wm, ev(Some(theirs), true, serde_json::json!("ok")), owner));
+        let woken: Vec<_> = WOKEN.lock().iter().copied().filter(|(o, _)| *o == owner).collect();
+        assert_eq!(woken, vec![(owner, mine)]);
+    }
 
     fn ev(
         handle: Option<uuid::Uuid>,

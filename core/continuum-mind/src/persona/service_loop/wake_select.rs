@@ -63,6 +63,7 @@ pub(super) async fn await_wake(
             }
             crate::cognition::conversation::Wake::Continuation => Wake::Mind { why: "continuation", room: her_continuation_room(me) },
             crate::cognition::conversation::Wake::Resume => Wake::Mind { why: "resume", room: her_continuation_room(me) },
+            crate::cognition::conversation::Wake::TaskEnded { .. } => Wake::Mind { why: "task_ended", room: her_continuation_room(me) },
         },
         _ = sleep_until_some(mind.perceive_recheck.map(|(at, _)| at)), if deferred_input.permits_self_tick() => {
             let activity = mind.perceive_recheck.take().map(|(_, a)| a);
@@ -93,6 +94,7 @@ pub(super) async fn await_wake(
                         }
                         Some(crate::cognition::conversation::Wake::Continuation) => Wake::Mind { why: "continuation", room: her_continuation_room(me) },
                         Some(crate::cognition::conversation::Wake::Resume) => Wake::Mind { why: "resume", room: her_continuation_room(me) },
+                        Some(crate::cognition::conversation::Wake::TaskEnded { .. }) => Wake::Mind { why: "task_ended", room: her_continuation_room(me) },
                         None => Wake::Idle,
                     }
                 }

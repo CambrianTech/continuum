@@ -374,7 +374,7 @@ pub(super) fn assemble_workspace_cycle(
             .and_then(|t| t.command_executor())
             .and_then(|exec| exec.message_bus())
         {
-            super::super::dispatch_listener::spawn(bus, Arc::clone(&working_memory));
+            super::super::dispatch_listener::spawn(bus, Arc::clone(&working_memory), cfg.persona_id);
         }
     }
     // The CognitionModule tick checkpoints the registry's current residents.

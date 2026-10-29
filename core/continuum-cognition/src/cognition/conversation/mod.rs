@@ -180,4 +180,7 @@ pub enum Wake {
     Continuation,
     /// First wake after a restart: continue what she was doing.
     Resume,
+    /// Work she sent away ended (a command past its act's window, a sentinel): its result is
+    /// already in her working memory. She is woken whether or not she remembers the handle.
+    TaskEnded { task: Uuid },
 }
