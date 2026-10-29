@@ -246,7 +246,7 @@ The owner of this contract is [FOCUS-CONTRACT.md](FOCUS-CONTRACT.md); this secti
 - She keeps all of her context; only its level changes.
 - A directed line raises its claim and the flow's interactive class; the episode stays warm and resumes.
 
-**Measured non-compliance, as of 2026-10-28** (`fable/working-window`; the full map is on card 23ad5675). Since then #5564 (one allocation sizes her prompt and every reader complies) and #5573 (results storage never decides what she sees) removed the working-memory share and the tool-surface re-pricing listed below; read this as the 10-28 baseline, not the current state:
+**Measured non-compliance, as of 2026-10-28** (`fable/working-window`; the full map is on card 23ad5675). Since then #5564 (one allocation sizes her prompt and every reader complies) and #5573 (results storage never decides what she sees) replaced two items below: the results share (`collapse_results_over_cap`) and the tools' fixed window/4 claim (now the core hands' floor); read this as the 10-28 baseline, not the current state:
 ~40 production sites size prompt content outside the allocation.
 - **Conversation** runs a second flexbox in `compose_for_turn` over the 159k served window, plus a
   per-turn cap and head cuts.
