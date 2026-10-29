@@ -11,8 +11,9 @@ use std::collections::{HashSet, VecDeque};
 
 use uuid::Uuid;
 
-/// How many collapsed results keep their pointer (and their saved whole) reachable. The
-/// bound the collapsed-pointer index already had; the ledger line outlives it.
+/// How many collapsed results the legacy results ring lists as pointer lines (and the
+/// checkpoint's rollback shape carries). A rendering count only: every record that names a
+/// handle keeps it live and stays in the log (`receipt_keys`, `prune`).
 const POINTER_INDEX: usize = 12;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -140,9 +141,14 @@ impl ActionLog {
     }
 
     /// Every receipt whose dependencies must stay reachable: each retained result's key and
-    /// each indexed pointer's handle.
+    /// every handle a record names. A body moved to its handle exists only on disk, so its
+    /// handle is live for as long as its record is, however many pointers are newer.
     pub fn receipt_keys(&self) -> HashSet<String> {
-        self.retained().chain(self.indexed_pointers()).map(ActionRecord::receipt_key).collect()
+        self.records
+            .iter()
+            .filter(|record| record.result.is_some() || record.handle.is_some())
+            .map(ActionRecord::receipt_key)
+            .collect()
     }
 
     /// The RAM every resident body holds, in bytes.
@@ -150,15 +156,18 @@ impl ActionLog {
         self.records.iter().map(ActionRecord::resident_bytes).sum()
     }
 
-    /// The records a shed may move to their handles, oldest first: resident, saved (`saved`
-    /// says the handle's output is there to reload), and not the newest result. Everything
-    /// else is the last copy of what she read, so it stays.
-    pub fn evictable<'a>(&'a self, saved: &'a dyn Fn(&str) -> bool) -> impl Iterator<Item = &'a ActionRecord> + 'a {
+    /// The records a shed may move to their handles, oldest first: resident, saved, not the
+    /// newest result, and vouched for by `saved(seq, handle)` (its output is there to reload).
+    /// Everything else is the last copy of what she read, so it stays.
+    pub fn evictable<'a>(
+        &'a self,
+        saved: &'a dyn Fn(u64, &str) -> bool,
+    ) -> impl Iterator<Item = &'a ActionRecord> + 'a {
         let newest = self.retained().last().map(|record| record.seq);
         self.records.iter().filter(move |record| {
             record.result.is_some()
                 && Some(record.seq) != newest
-                && record.handle.as_deref().is_some_and(|handle| saved(handle))
+                && record.handle.as_deref().is_some_and(|handle| saved(record.seq, handle))
         })
     }
 
@@ -166,7 +175,7 @@ impl ActionLog {
     /// resident. Each keeps its measured length (`stored_chars`) and its handle, so her view
     /// still prices and reloads its whole. Exactly to the budget: the memory owner decides
     /// when, so there is no hysteresis here.
-    pub fn collapse_over(&mut self, budget: u64, saved: &dyn Fn(&str) -> bool) -> Collapsed {
+    pub fn collapse_over(&mut self, budget: u64, saved: &dyn Fn(u64, &str) -> bool) -> Collapsed {
         let mut total = self.resident_bytes();
         if total <= budget {
             return Collapsed { total };
@@ -190,16 +199,12 @@ impl ActionLog {
         Collapsed { total }
     }
 
-    /// Drop the records nothing shows any more: past the ledger's share, collapsed, and
-    /// no longer indexed as a pointer.
+    /// Drop the records nothing can reach any more: past the ledger's share, no body in RAM,
+    /// and no handle to reload one from. A record naming a handle stays, since its whole is
+    /// reachable through her view (`StoredWhole`) for as long as the record is.
     fn prune(&mut self, archive_chars: usize) {
-        let keep: HashSet<u64> = self
-            .archive(archive_chars)
-            .into_iter()
-            .map(|(record, _)| record)
-            .chain(self.indexed_pointers())
-            .map(|record| record.seq)
-            .collect();
-        self.records.retain(|record| record.result.is_some() || keep.contains(&record.seq));
+        let keep: HashSet<u64> = self.archive(archive_chars).into_iter().map(|(record, _)| record.seq).collect();
+        self.records
+            .retain(|record| record.result.is_some() || record.handle.is_some() || keep.contains(&record.seq));
     }
 }

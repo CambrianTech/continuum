@@ -138,7 +138,7 @@ fn the_shed_target_is_the_hosts_overrun_past_the_monitors_gate() {
         "no poll yet: nothing to shed"
     );
     let total = 100 * 1024 * 1024 * 1024u64;
-    let gate = (total as f64 * MemoryPriority::Background.pressure_gate()) as u64;
+    let gate = (total as f64 * MemoryPriority::Interactive.pressure_gate()) as u64;
     let snapshot = |used: u64| PressureSnapshot {
         total_bytes: total,
         available_bytes: total - used,

@@ -10,6 +10,13 @@
 //! Accounting is BYTES of resident bodies (`String::len`), never characters: characters are
 //! the view's price (`stored_chars`). Each record owns its body (no shared backing), so the sum
 //! over records is the RAM they hold; a working memory reached twice is counted once.
+//!
+//! No filesystem access under a mind's lock: her candidates are read under it, each saved
+//! output is checked after it drops, and the eviction moves only the `(seq, handle)` pairs that
+//! check vouched for.
+//!
+//! Known limit: the shed target is the host's RAM overrun past this priority's gate, so a
+//! level raised by swap activity alone, with RAM use under the gate, sheds nothing here.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,15 +29,15 @@ use tokio::sync::watch;
 use uuid::Uuid;
 
 use super::PersonaWorkspaceRegistry;
-use crate::cognition::working_memory::{Residency, WorkingMemory};
+use crate::cognition::working_memory::{ResidentResults, WorkingMemory};
 
 const NAME: &str = "mind_results";
 
-/// A cache of state that can spill: every body it sheds is already saved whole to its handle
-/// and reloads when her view grants it. That is `Background` ("caches, pre-computed data, idle
-/// resources"), not `Interactive` (state a mind cannot work without: the newest result and the
-/// last copies are that, and the shed never moves them).
-const PRIORITY: MemoryPriority = MemoryPriority::Background;
+/// Her results are working state for her current task ("active persona state"), not an idle
+/// cache: `Interactive`. Its gate (0.80) is where the monitor's Warning starts, so a shed gives
+/// up only the overrun past it, not every movable body at the first Warning as `Background`'s
+/// 0.60 gate would.
+const PRIORITY: MemoryPriority = MemoryPriority::Interactive;
 
 /// Why a body stays resident through a shed: it is the last copy of what she read.
 #[derive(Debug)]
@@ -105,6 +112,39 @@ pub(crate) fn over_gate(snapshot: &PressureSnapshot) -> u64 {
     used.saturating_sub(gate)
 }
 
+/// One mind's resident result bodies as the memory owner accounts them: what a shed may move
+/// (its saved output vouched for, outside her lock) and what it may not.
+#[derive(Debug, Clone)]
+pub(crate) struct Residency {
+    pub resident_bytes: u64,
+    /// The newest result and every last copy: what no shed may move.
+    pub pinned_bytes: u64,
+    /// Vouched candidates, oldest first.
+    pub evictable: Vec<crate::cognition::working_memory::ShedCandidate>,
+}
+
+/// Read `memory`'s candidates under her lock, then vouch for each saved output after it drops.
+pub(crate) fn residency(
+    persona: Uuid,
+    memory: &WorkingMemory,
+    saved: &dyn Fn(Uuid, &str) -> bool,
+) -> Residency {
+    let ResidentResults {
+        resident_bytes,
+        candidates,
+    } = memory.resident_results();
+    let evictable: Vec<_> = candidates
+        .into_iter()
+        .filter(|candidate| saved(persona, &candidate.handle))
+        .collect();
+    let movable: u64 = evictable.iter().map(|candidate| candidate.bytes).sum();
+    Residency {
+        resident_bytes,
+        pinned_bytes: resident_bytes - movable,
+        evictable,
+    }
+}
+
 /// Per mind, the bytes to keep resident so the total comes down to `allocation`, moving the
 /// oldest bodies across every mind first (`None`: leave that mind untouched). Within a mind
 /// the oldest received are the lowest `seq`, so each budget moves exactly that mind's chosen
@@ -144,11 +184,20 @@ pub(crate) fn plan_shed(minds: &[Residency], allocation: u64) -> Vec<Option<u64>
 pub(crate) fn shed_to(minds: &Minds, allocation: u64, saved: &dyn Fn(Uuid, &str) -> bool) {
     let residencies: Vec<Residency> = minds
         .iter()
-        .map(|(persona, memory)| memory.residency(&|handle| saved(*persona, handle)))
+        .map(|(persona, memory)| residency(*persona, memory, saved))
         .collect();
-    for ((persona, memory), budget) in minds.iter().zip(plan_shed(&residencies, allocation)) {
+    let budgets = plan_shed(&residencies, allocation);
+    for (((_, memory), mind), budget) in minds.iter().zip(&residencies).zip(budgets) {
         if let Some(budget) = budget {
-            memory.evict_resident_results_over(budget, &|handle| saved(*persona, handle));
+            // Only what was vouched for, and only if the record still names that handle.
+            let vouched: std::collections::HashMap<u64, &str> = mind
+                .evictable
+                .iter()
+                .map(|candidate| (candidate.seq, candidate.handle.as_str()))
+                .collect();
+            memory.evict_resident_results_over(budget, &|seq, handle| {
+                vouched.get(&seq).is_some_and(|vouched| *vouched == handle)
+            });
         }
     }
 }
@@ -201,12 +250,10 @@ impl MemoryReporter for MindResultsReporter {
             minds
                 .iter()
                 .fold((0u64, 0u64), |(resident, pinned), (persona, memory)| {
-                    let residency =
-                        memory.residency(&|handle| saved_output(*persona, handle).is_ok());
-                    (
-                        resident + residency.resident_bytes,
-                        pinned + residency.pinned_bytes,
-                    )
+                    let mind = residency(*persona, memory, &|persona, handle| {
+                        saved_output(persona, handle).is_ok()
+                    });
+                    (resident + mind.resident_bytes, pinned + mind.pinned_bytes)
                 });
         MemoryBudgetSpec {
             name: NAME.to_string(),

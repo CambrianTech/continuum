@@ -10,25 +10,25 @@
 
 use super::*;
 
-/// One resident body a shed may move to its handle.
+/// One resident body a shed may move to its handle, if its saved output is there to reload
+/// (the caller checks that outside her lock).
 #[derive(Debug, Clone)]
-pub(crate) struct EvictableResult {
+pub(crate) struct ShedCandidate {
     /// When it was received; `None` (an older build's record) sheds first.
     pub received_ms: Option<u64>,
     pub seq: u64,
+    pub handle: String,
     pub bytes: u64,
 }
 
-/// One mind's resident result bodies, as the memory owner accounts them.
+/// One mind's resident result bodies, read under her lock with no filesystem access.
 #[derive(Debug, Clone)]
-pub(crate) struct Residency {
+pub(crate) struct ResidentResults {
     /// Bytes of every resident body.
     pub resident_bytes: u64,
-    /// Bytes no shed may move: the newest result, and every body whose saved output is not
-    /// there to reload (unsaved, or its output missing).
-    pub pinned_bytes: u64,
-    /// What a shed may move, oldest first.
-    pub evictable: Vec<EvictableResult>,
+    /// Saved bodies other than the newest, oldest first: what a shed may move once each
+    /// candidate's output is vouched for.
+    pub candidates: Vec<ShedCandidate>,
 }
 
 impl WorkingMemory {
@@ -37,32 +37,37 @@ impl WorkingMemory {
         self.actions.lock().resident_bytes()
     }
 
-    /// Her resident bodies split into what a shed may move and what it may not. `saved` says a
-    /// handle's output is there to reload; the caller owns that check (it knows her persona).
-    pub(crate) fn residency(&self, saved: &dyn Fn(&str) -> bool) -> Residency {
+    /// Her resident bodies and the saved ones a shed could move. Only memory is read under the
+    /// lock: whether each handle's output is there is the caller's check, made after it drops.
+    pub(crate) fn resident_results(&self) -> ResidentResults {
         let actions = self.actions.lock();
-        let resident_bytes = actions.resident_bytes();
-        let evictable: Vec<EvictableResult> = actions
-            .evictable(saved)
-            .map(|record| EvictableResult {
-                received_ms: record.received_ms,
-                seq: record.seq,
-                bytes: record.resident_bytes(),
+        let candidates = actions
+            .evictable(&|_, _| true)
+            .filter_map(|record| {
+                Some(ShedCandidate {
+                    received_ms: record.received_ms,
+                    seq: record.seq,
+                    handle: record.handle.clone()?,
+                    bytes: record.resident_bytes(),
+                })
             })
             .collect();
-        let movable: u64 = evictable.iter().map(|result| result.bytes).sum();
-        Residency {
-            resident_bytes,
-            pinned_bytes: resident_bytes - movable,
-            evictable,
+        ResidentResults {
+            resident_bytes: actions.resident_bytes(),
+            candidates,
         }
     }
 
     /// THE eviction verb: move the oldest saved bodies to their handles until at most `budget`
-    /// bytes stay resident. Only the memory owner's shed calls it in production. A body whose
-    /// output `saved` cannot vouch for stays, and so does the newest; past the budget after
-    /// that, the overrun is reported, never forced.
-    pub(crate) fn evict_resident_results_over(&self, budget: u64, saved: &dyn Fn(&str) -> bool) {
+    /// bytes stay resident. Only the memory owner's shed calls it in production, with `saved`
+    /// answering from the `(seq, handle)` pairs it vouched for outside the lock, so a record
+    /// that changed since (a different handle, or gone) is not moved. The newest stays, and
+    /// past the budget after that the overrun is reported, never forced.
+    pub(crate) fn evict_resident_results_over(
+        &self,
+        budget: u64,
+        saved: &dyn Fn(u64, &str) -> bool,
+    ) {
         let total = self.actions.lock().collapse_over(budget, saved).total;
         self.publish_live_handles();
         if total > budget {

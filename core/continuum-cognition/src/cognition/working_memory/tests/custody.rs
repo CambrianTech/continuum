@@ -136,6 +136,54 @@ fn a_mind_s_saved_handles_are_live_until_it_drops() {
     assert!(!live(&file), "released when the mind drops");
 }
 
+// what this catches: a body moved to disk losing its last copy. Liveness (and the log itself)
+// once covered only the newest 12 collapsed pointers (`POINTER_INDEX`), so a shed that moved
+// many bodies left the older handles evictable under disk pressure while her view still priced
+// their wholes. Every record that names a handle keeps it live, however many pointers are newer.
+#[test]
+fn a_moved_body_s_handle_stays_live_behind_any_number_of_newer_pointers() {
+    let handle = || format!("{:016x}", Uuid::new_v4().as_u128() as u64);
+    let live = |h: &str| crate::cognition::tool_executor::spill::is_live(&std::path::PathBuf::from(format!("/spill/p/{h}.log")));
+    let wm = WorkingMemory::new(8);
+    wm.set_served_window(16_384);
+    let first = handle();
+    wm.record_receipt_typed(&[], &"f".repeat(BODY), None, saved(&first));
+    for _ in 0..30 {
+        record_receipt_with(&wm, &handle());
+    }
+    shed(&wm, 0);
+    for _ in 0..30 {
+        record_receipt_with(&wm, &handle());
+    }
+    shed(&wm, 0);
+    assert!(live(&first), "the oldest moved body's handle is still protected");
+    let (acts, _) = wm.action_renderings();
+    let oldest = acts.first().expect("test: the first act");
+    assert_eq!(oldest.4.as_ref().map(|(_, h)| h.as_str()), Some(first.as_str()), "its record stays, priced and reloadable");
+    drop(wm);
+    assert!(!live(&first), "released when the mind drops");
+}
+
+fn record_receipt_with(wm: &WorkingMemory, handle: &str) {
+    wm.record_receipt_typed(&[], &format!("{handle} {}", "s".repeat(BODY)), None, saved(handle));
+}
+
+// what this catches: a shed moving a record it never checked. The memory owner vouches for each
+// saved output outside her lock, then evicts by `(seq, handle)`; a record that no longer names
+// the vouched handle stays resident.
+#[test]
+fn a_shed_moves_only_the_records_it_vouched_for() {
+    let wm = WorkingMemory::new(8);
+    wm.record_receipt_typed(&[], &"a".repeat(BODY), None, saved("vouched-a"));
+    wm.record_receipt_typed(&[], &"b".repeat(BODY), None, saved("vouched-b"));
+    wm.record_receipt_typed(&[], "newest", None, saved("vouched-c"));
+    let seq_of = |h: &str| wm.snapshot().actions.iter().find(|r| r.handle.as_deref() == Some(h)).map(|r| r.seq).expect("test: seq");
+    let (a, b) = (seq_of("vouched-a"), seq_of("vouched-b"));
+    wm.evict_resident_results_over(0, &|seq, handle| (seq == a && handle == "a-changed") || (seq == b && handle == "vouched-b"));
+    let resident: Vec<_> = wm.snapshot().actions.into_iter().filter(|r| r.result.is_some()).filter_map(|r| r.handle).collect();
+    assert_eq!(resident, ["vouched-a", "vouched-c"], "a changed since it was vouched for; only b moved");
+}
+
 // what this catches (Codex on #4987): per-call results reachable only while the ENTRY that
 // carried their acts survives. Entries roll over at capacity while the receipt that points
 // at those results stays in the ring, then collapses to a pointer, then is checkpointed and

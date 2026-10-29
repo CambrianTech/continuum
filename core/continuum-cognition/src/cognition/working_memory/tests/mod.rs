@@ -29,5 +29,5 @@ const BODY: usize = 4_096;
 /// Shed `wm`'s resident bodies down to `budget` bytes, as the memory owner's reporter does,
 /// with every handle's saved output vouched for.
 fn shed(wm: &WorkingMemory, budget: usize) {
-    wm.evict_resident_results_over(budget as u64, &|_| true);
+    wm.evict_resident_results_over(budget as u64, &|_, _| true);
 }

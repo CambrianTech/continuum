@@ -96,7 +96,7 @@ fn an_evicted_result_is_still_seen_whole_through_its_stored_level() {
     memory.record_receipt_typed(&[], "the newest stays resident", None, pin.retain(persona, "the newest stays resident"));
     let (before, _) = memory.action_renderings();
     let resident_whole = before.first().map(|act| act.1.clone()).expect("test: the first act");
-    memory.evict_resident_results_over(1, &|_| true);
+    memory.evict_resident_results_over(1, &|_, _| true);
     let (acts, _) = memory.action_renderings();
     let (seq, full, _, pointer, stored) = acts.first().cloned().expect("test: the first act");
     let (chars, _) = stored.expect("evicted to its handle and priced");
