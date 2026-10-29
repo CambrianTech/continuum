@@ -107,6 +107,31 @@ use super::*;
         }
     }
 
+    // what this catches (the 5090 2026-10-28 20:16Z, job c9e5b989): a dispatch 2 ms after a
+    // handoff met "503 Loading model" at /train/measure and FAILED its job with no partition, so
+    // the examples it had just been returned belonged to no one. An engine still loading creates
+    // nothing and refuses as certain (TrainerUnavailable: the trigger retries the batch).
+    #[tokio::test]
+    pub(super) async fn an_engine_still_loading_creates_no_job_and_the_dispatch_retries() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "loading").await;
+        let t = {
+            let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
+            t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 2048)));
+            t
+        };
+        let artifacts = tempfile::tempdir().expect("test: dir");
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(artifacts.path().to_path_buf());
+        let refused = t.create_job(r).await;
+        assert!(matches!(&refused, Err(FineTuningError::TrainerUnavailable(why)) if why.contains("503")), "{refused:?}");
+        assert!(seen.lock().unwrap().is_none(), "no run was posted");
+        let created: Vec<_> = std::fs::read_dir(artifacts.path()).expect("test: dir").flatten().map(|e| e.file_name()).collect();
+        assert!(created.is_empty(), "no job directory, request or partition exists: {created:?}");
+        server.abort();
+    }
+
     // what this catches (Codex on #4498): a footprint filed under the window SENT when the
     // engine ran a smaller graph sized to the data. The lane serves 61,696 a slot; the engine
     // trains at 15,360; the measured graph is filed under w15360, so it can never be leased for

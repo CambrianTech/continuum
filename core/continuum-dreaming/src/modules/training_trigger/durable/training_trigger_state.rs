@@ -490,6 +490,19 @@ impl TrainingTriggerState {
                 .is_some_and(|batch| batch.examples.len() >= batch.min_examples as usize)
     }
 
+    /// What the recovery pass dispatches: whatever submit would, and a bucket holding a return
+    /// below its threshold ([`PendingBatch::returned`]). Submit keeps the threshold, so a return
+    /// lands, its acceptance persists, and the next pass dispatches it: a crash between the two
+    /// leaves the mark on disk, and the dispatch intent makes it exactly once.
+    pub(crate) fn ready_to_recover(&self, key: &BucketKey) -> bool {
+        if self.ready_to_dispatch(key) {
+            return true;
+        }
+        !self.active_dispatches.contains_key(key)
+            && self.held_for(key).is_none()
+            && self.buckets.get(key).is_some_and(|batch| batch.returned)
+    }
+
     /// The training job for this bucket's `(persona, trait, base)` on the job board, if
     /// one is in flight: the job a held fill's examples wait for.
     pub(crate) fn job_in_flight_for(&self, key: &BucketKey) -> Option<Uuid> {

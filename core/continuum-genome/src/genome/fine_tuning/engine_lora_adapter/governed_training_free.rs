@@ -315,6 +315,20 @@ pub(super) fn after_lost_post(status: Option<&TrainStatus>, ours: impl Fn(&Train
     }
 }
 
+/// Why the engine's measure of her examples failed.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum MeasureError {
+    /// The engine is not ready to answer: still loading its model (HTTP 503), or not yet
+    /// listening. Nothing about her examples is known, so nothing is decided from it (the
+    /// 5090 2026-10-28 20:16Z: a re-dispatch 2 ms after a handoff failed its job on
+    /// "503 Loading model" and stranded the examples it had just been returned).
+    #[error("{0}")]
+    NotReady(String),
+    /// The engine answered, and the measure failed.
+    #[error("{0}")]
+    Failed(String),
+}
+
 /// Every example measured at `window` by the engine's own fit rule, by request index.
 pub(super) async fn measure_examples(
     http: &reqwest::Client,
@@ -322,7 +336,8 @@ pub(super) async fn measure_examples(
     examples: &[EngineExample],
     fit: &str,
     window: u32,
-) -> Result<Vec<MeasuredExample>, String> {
+) -> Result<Vec<MeasuredExample>, MeasureError> {
+    use MeasureError::{Failed, NotReady};
     #[derive(Deserialize)]
     struct Reply {
         examples: Vec<MeasuredExample>,
@@ -335,19 +350,23 @@ pub(super) async fn measure_examples(
             .timeout(MEASURE_TIMEOUT)
             .send()
             .await
-            .map_err(|e| format!("POST /train/measure on {lane}: {e}"))?;
+            .map_err(|e| {
+                let why = format!("POST /train/measure on {lane}: {e}");
+                if e.is_connect() { NotReady(why) } else { Failed(why) }
+            })?;
         let code = r.status();
         if !code.is_success() {
             let why = r.text().await.unwrap_or_default(); // unwrap_or_default: an unreadable refusal body still fails the measure
-            return Err(format!("POST /train/measure on {lane}: HTTP {code}: {why}"));
+            let why = format!("POST /train/measure on {lane}: HTTP {code}: {why}");
+            return Err(if code == reqwest::StatusCode::SERVICE_UNAVAILABLE { NotReady(why) } else { Failed(why) });
         }
-        let reply: Reply = r.json().await.map_err(|e| format!("POST /train/measure on {lane}: {e}"))?;
+        let reply: Reply = r.json().await.map_err(|e| Failed(format!("POST /train/measure on {lane}: {e}")))?;
         if reply.examples.len() != batch.len() {
-            return Err(format!(
+            return Err(Failed(format!(
                 "POST /train/measure on {lane}: {} rows for {} examples",
                 reply.examples.len(),
                 batch.len()
-            ));
+            )));
         }
         rows.extend(reply.examples.into_iter().map(|mut row| {
             row.index += batch_index * MEASURE_BATCH;

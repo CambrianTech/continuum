@@ -191,6 +191,14 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // before it answers, so the POST's wait is sized by it (post_wait_for; Cormac on #4946)
         let measure_started = std::time::Instant::now();
         let at_served = measure_examples(&self.http, &lane, &body.examples, body.fit, served_sent).await;
+        // AN ENGINE STILL LOADING DECIDES NOTHING: nothing of this job exists yet (no request.json,
+        // no run, no partition), so the dispatch refuses as certain and retries the batch once the
+        // engine serves, rather than failing a job whose examples then belong to no one.
+        if let Err(MeasureError::NotReady(why)) = &at_served {
+            return Err(FineTuningError::TrainerUnavailable(format!(
+                "job {id}: the engine is not ready to measure her examples ({why}); nothing was created, and the dispatch retries once it serves"
+            )));
+        }
         let render_per_example = measure_started.elapsed().div_f64(body.examples.len().max(1) as f64);
         let need = at_served.as_ref().map_or(served_sent, |rows| window_for_need(rows, served_sent));
         // THE WALK THE WINDOW ALLOWS (Cormac, (iii)): the exact walk carries its gradient across

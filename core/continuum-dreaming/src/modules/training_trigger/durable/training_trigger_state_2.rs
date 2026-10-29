@@ -418,7 +418,7 @@ impl TrainingTriggerState {
                         state.hydrated.remove(&key);
                     }
                     match state.hydrate_bucket(&key).await {
-                        Ok(true) if state.ready_to_dispatch(&key) => {
+                        Ok(true) if state.ready_to_recover(&key) => {
                             state.dispatch_pending(&key).await
                         }
                         Ok(_) => DispatchResult::Empty,

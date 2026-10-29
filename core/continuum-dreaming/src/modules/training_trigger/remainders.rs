@@ -49,7 +49,7 @@ impl TrainingTriggerState {
                     class = "training.job.remainder_returned",
                     job = %job.local_id,
                     persona = %job.persona_name,
-                    "an ended job's parked examples went back to her bucket, whole; the next dispatch re-plans them"
+                    "an ended job's parked examples went back to her bucket, whole; the recovery pass dispatches them (a return is ready below its threshold)"
                 ),
                 Ok(Remainder::Submitted(outcome)) => {
                     continuum_base::probe!(
@@ -83,5 +83,61 @@ impl TrainingTriggerState {
             }
         }
         board.requeue_ended(retry);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::commands::training_trigger::submit::{return_request, submit_batch, ReturnScope, SubmitParams};
+    use crate::commands::training_trigger::test_support::{build_runtime_with_registry, ex};
+    use crate::genome::fine_tuning::{FineTuningRegistry, RecordingFineTuningAdapter, RECORDING_BASE_PREFIX};
+    use crate::runtime::ServiceModule;
+    use std::sync::Arc;
+
+    // what this catches (the windows 5090 2026-10-28 20:16Z; Codex on #5575): her canonical
+    // returned examples landed in a bucket below its threshold (11 of 16) and waited for examples
+    // a quiet persona never produces, so a reviewed correction never trained. A return is ready
+    // below its threshold BY ITS DURABLE ACCEPTANCE: the core dies after the return and before any
+    // dispatch, the next owner's recovery dispatches it whole, and a third owner dispatches nothing
+    // again. A plain submit below its threshold stays held: historical buckets are never flushed.
+    #[tokio::test]
+    async fn a_return_dispatches_below_its_threshold_once_across_restarts() {
+        let (adapter, _db) = crate::orm::store::fresh_adapter().await;
+        let recorder = Arc::new(RecordingFineTuningAdapter::new());
+        let providers = Arc::new(FineTuningRegistry::new());
+        providers.register(recorder.clone());
+        let base = format!("{RECORDING_BASE_PREFIX}-returned");
+        let (returned_to, plain) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let (first, executor) = build_runtime_with_registry(adapter.clone(), Some(providers.clone())).await;
+        let request: crate::genome::fine_tuning::types::TrainingJobRequest = serde_json::from_value(serde_json::json!({
+            "personaId": returned_to, "personaName": "Kimi", "baseModel": base, "traitKind": "code/owner",
+            "dataset": {"examples": [ex("p0", "c"), ex("p1", "c"), ex("p2", "c")], "source": "operator_curated", "validationSplit": 0.0}
+        }))
+        .expect("test: request");
+        let landed = return_request(&first.state, request, uuid::Uuid::new_v4(), ReturnScope::Whole).await.expect("test: returned");
+        assert!(landed.success && landed.job_handle.is_none(), "the return lands and holds; the pass dispatches it: {landed:?}");
+        let held = submit_batch(&first.state, SubmitParams {
+            submission_id: None, persona_id: plain, persona_name: "Sahar".into(), base_model: base.clone(), trait_kind: "code/owner".into(),
+            examples: vec![ex("q0", "c")], source: crate::genome::fine_tuning::types::TrainingSource::OperatorCurated, eval_set: None,
+            lora: None, schedule: None, local_artifact_dir: None, preferred_provider: None, min_examples: None, validation_split: None,
+        }).await.expect("test: submitted");
+        assert!(held.success, "{held:?}");
+        // the core dies after the acceptance, before any pass ran
+        first.shutdown().await.expect("test: shutdown");
+        drop((first, executor));
+        let dispatched = |persona: uuid::Uuid| -> Vec<Vec<String>> {
+            recorder.captures().lock().expect("test: captures").iter()
+                .filter(|r| r.persona_id == persona)
+                .map(|r| r.dataset.examples.iter().map(|e| e.prompt.clone()).collect())
+                .collect()
+        };
+        for owner in 0..2 {
+            let (next, _executor) = build_runtime_with_registry(adapter.clone(), Some(providers.clone())).await;
+            next.state.recover_tick().await.expect("test: recovery");
+            assert_eq!(dispatched(returned_to), vec![vec!["p0".to_string(), "p1".into(), "p2".into()]], "owner {owner}: the return dispatched whole, exactly once");
+            assert!(dispatched(plain).is_empty(), "owner {owner}: a plain submit below its threshold still waits for it");
+            assert_eq!(next.state.bucket_example_count(plain, "code/owner", &base), Some(1));
+            next.shutdown().await.expect("test: shutdown");
+        }
     }
 }

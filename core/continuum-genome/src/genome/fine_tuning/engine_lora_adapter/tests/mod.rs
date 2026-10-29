@@ -341,8 +341,14 @@
             // fork #51's measure: each example is as long as the window it is measured at (so the
             // planned window is the served one, as before the partition) and trains in any window
             // once its history is dropped (tokens_min 64), except under "short_turns" (each 3,000
-            // whole), "park_odd" (odd prompts fit no window) and "park_all" (none fits)
+            // whole), "park_odd" (odd prompts fit no window) and "park_all" (none fits); under
+            // "loading" the engine is still loading its model and answers 503, as llama-server does
             .route("/train/measure", post(move |axum::Json(b): axum::Json<Value>| async move {
+                use axum::response::IntoResponse;
+                if mode == "loading" {
+                    return (axum::http::StatusCode::SERVICE_UNAVAILABLE, axum::Json(json!({"error": {
+                        "code": 503, "message": "Loading model", "type": "unavailable_error"}}))).into_response();
+                }
                 let examples = b.get("examples").and_then(Value::as_array).cloned().unwrap_or_default();
                 let at = b["window"].as_u64().unwrap_or(256);
                 let rows: Vec<Value> = examples
@@ -367,7 +373,7 @@
                         json!({"index": i, "tokens_full": full, "tokens_min": min, "tokens_trained": if skipped { 0 } else { full }, "fit": fit})
                     })
                     .collect();
-                axum::Json(json!({"ok": true, "window": b["window"], "examples": rows}))
+                axum::Json(json!({"ok": true, "window": b["window"], "examples": rows})).into_response()
             }))
             .route("/train", post(move |axum::Json(b): axum::Json<Value>| {
                 let lane = l1.clone();

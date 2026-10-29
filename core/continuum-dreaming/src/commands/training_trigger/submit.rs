@@ -306,6 +306,8 @@ async fn submit_batch_inner(state: &Arc<TrainingTriggerState>, p: SubmitParams, 
     let batch = PendingBatch {
         submission_ids: Vec::new(),
         submission_examples: Vec::new(),
+        submission_returned: Vec::new(),
+        returned: returned_job.is_some(),
         persona_name: p.persona_name,
         source: p.source,
         examples: p.examples,

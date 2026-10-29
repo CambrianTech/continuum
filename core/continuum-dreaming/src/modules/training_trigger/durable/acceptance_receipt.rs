@@ -524,6 +524,9 @@ pub(super) fn budget_split(batch: PendingBatch, base_model: &str) -> (PendingBat
     let mut rest = taken.clone();
     rest.submission_ids = taken.submission_ids.split_off(take);
     rest.submission_examples = taken.submission_examples.split_off(take);
+    rest.submission_returned = taken.submission_returned.split_off(take.min(taken.submission_returned.len()));
+    taken.returned = taken.submission_returned.contains(&true);
+    rest.returned = rest.submission_returned.contains(&true);
     rest.examples = taken.examples.split_off(split_at);
     (taken, Some(rest))
 }
@@ -540,10 +543,13 @@ pub(super) fn append_batch(
         current.min_examples = current.min_examples.min(incoming.min_examples);
         current.submission_ids.push(id);
         current.submission_examples.push(incoming.examples.len() as u32);
+        current.submission_returned.push(incoming.returned);
+        current.returned |= incoming.returned;
         current.examples.append(&mut incoming.examples);
     } else {
         incoming.submission_ids = vec![id];
         incoming.submission_examples = vec![incoming.examples.len() as u32];
+        incoming.submission_returned = vec![incoming.returned];
         *current = Some(incoming);
     }
     Ok(())
