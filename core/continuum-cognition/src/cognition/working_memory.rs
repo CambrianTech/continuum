@@ -558,6 +558,7 @@ impl VolatileSnapshot {
             written_pointer: None,
             summary: None,
             stored_chars: None,
+            received_ms: None,
         };
         let mut records: BTreeMap<u64, action_log::ActionRecord> = BTreeMap::new();
         let mut unkeyed = 0usize;
@@ -713,12 +714,12 @@ mod continuity;
 mod faculty;
 mod ledger;
 mod perception;
+mod residency;
 
 pub use faculty::WorkingMemoryFaculty;
 pub(crate) use faculty::render_dispatched;
 pub(crate) use ledger::operation_level;
-#[cfg(test)]
-pub(crate) use perception::RESULTS_RESIDENT_CHARS;
+pub(crate) use residency::Residency;
 
 impl Drop for WorkingMemory {
     /// A mind that is gone points at nothing: its saved results may be evicted again.

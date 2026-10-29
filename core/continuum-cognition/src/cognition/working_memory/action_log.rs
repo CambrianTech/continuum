@@ -47,6 +47,12 @@ pub(crate) struct ActionRecord {
     /// before this was kept (their whole then has no price: they show at pointer level).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stored_chars: Option<usize>,
+    /// When the result was received (ms since the Unix epoch): the one clock that orders every
+    /// mind's resident results oldest-first when the memory owner sheds across minds. `None`
+    /// for a record from a build before this was kept, which sheds first (it is older than any
+    /// result received since).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub received_ms: Option<u64>,
 }
 
 impl ActionRecord {
@@ -56,15 +62,17 @@ impl ActionRecord {
         super::receipt_key(self.seq, self.handle.as_deref())
     }
 
-    fn result_chars(&self) -> usize {
-        self.result.as_ref().map_or(0, |result| result.chars().count() + 1)
+    /// The RAM its resident body holds, in bytes: what the memory owner accounts, never a
+    /// character count (that is `stored_chars`, the view's price).
+    pub fn resident_bytes(&self) -> u64 {
+        self.result.as_ref().map_or(0, |result| result.len() as u64)
     }
 }
 
 /// What a collapse left behind.
 pub(super) struct Collapsed {
-    /// Characters still retained in full.
-    pub total: usize,
+    /// Bytes still resident.
+    pub total: u64,
 }
 
 #[derive(Debug, Default)]
@@ -137,24 +145,45 @@ impl ActionLog {
         self.retained().chain(self.indexed_pointers()).map(ActionRecord::receipt_key).collect()
     }
 
-    /// Collapse the oldest saved results to their handles once the retained results exceed
-    /// `cap`, down to half of it, so the head of what she reads stays byte-stable between two
-    /// bursts. The newest result always stays, and an unsaved one stays whole.
-    pub fn collapse_over(&mut self, cap: usize) -> Collapsed {
-        let mut total: usize = self.records.iter().map(ActionRecord::result_chars).sum();
-        if total <= cap {
+    /// The RAM every resident body holds, in bytes.
+    pub fn resident_bytes(&self) -> u64 {
+        self.records.iter().map(ActionRecord::resident_bytes).sum()
+    }
+
+    /// The records a shed may move to their handles, oldest first: resident, saved (`saved`
+    /// says the handle's output is there to reload), and not the newest result. Everything
+    /// else is the last copy of what she read, so it stays.
+    pub fn evictable<'a>(&'a self, saved: &'a dyn Fn(&str) -> bool) -> impl Iterator<Item = &'a ActionRecord> + 'a {
+        let newest = self.retained().last().map(|record| record.seq);
+        self.records.iter().filter(move |record| {
+            record.result.is_some()
+                && Some(record.seq) != newest
+                && record.handle.as_deref().is_some_and(|handle| saved(handle))
+        })
+    }
+
+    /// Move the oldest evictable bodies to their handles until at most `budget` bytes stay
+    /// resident. Each keeps its measured length (`stored_chars`) and its handle, so her view
+    /// still prices and reloads its whole. Exactly to the budget: the memory owner decides
+    /// when, so there is no hysteresis here.
+    pub fn collapse_over(&mut self, budget: u64, saved: &dyn Fn(&str) -> bool) -> Collapsed {
+        let mut total = self.resident_bytes();
+        if total <= budget {
             return Collapsed { total };
         }
-        let target = cap / 2;
-        let newest = self.retained().last().map(|record| record.seq);
-        for record in self.records.iter_mut() {
-            if total <= target {
-                break;
-            }
-            if record.result.is_none() || record.handle.is_none() || Some(record.seq) == newest {
-                continue;
-            }
-            total -= record.result_chars();
+        let chosen: HashSet<u64> = {
+            let mut over = total - budget;
+            self.evictable(saved)
+                .take_while(|record| {
+                    let take = over > 0;
+                    over = over.saturating_sub(record.resident_bytes());
+                    take
+                })
+                .map(|record| record.seq)
+                .collect()
+        };
+        for record in self.records.iter_mut().filter(|record| chosen.contains(&record.seq)) {
+            total -= record.resident_bytes();
             record.stored_chars = record.result.as_ref().map(|result| result.chars().count());
             record.result = None;
         }
