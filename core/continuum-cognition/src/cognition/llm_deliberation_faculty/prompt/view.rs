@@ -480,7 +480,11 @@ impl LlmDeliberationFaculty {
         )));
         // Her view within what the allocation granted its sources (`epoch.rs`): the only place
         // it is ever collapsed.
-        self.fit_view(&mut all_messages, view, &plan, view_room as usize, calibration);
+        // A broken allocator contract refuses the turn (`budget_fault`), never a prompt sent anyway.
+        let view_fault = self
+            .fit_view(&mut all_messages, view, &plan, view_room as usize, calibration)
+            .err()
+            .map(|mismatch| format!("her view could not be sized: {mismatch}"));
         self.view_sent();
         self.retain_tools(&selected, tools_refusal.is_some());
         // Her view as the allocation sized it: the fit below never cuts it.
@@ -725,7 +729,9 @@ impl LlmDeliberationFaculty {
             .saturating_add(selected.tokens);
         // THE ONE BUDGET'S INVARIANT (`budget.rs`), at the one place the messages are final.
         // A required input that cannot fit is a capacity refusal, decided by the fit above.
-        let budget_fault = if capacity_error.is_none() {
+        let budget_fault = if let Some(fault) = view_fault {
+            Some(fault)
+        } else if capacity_error.is_none() {
             self.budget_violation(&BudgetLedger {
                 context_window,
                 calibration,

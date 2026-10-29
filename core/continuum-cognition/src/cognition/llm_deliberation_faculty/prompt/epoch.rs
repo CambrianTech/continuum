@@ -96,9 +96,9 @@ impl LlmDeliberationFaculty {
         plan: &crate::cognition::rag_budget::FlexAllocation,
         room: usize,
         calibration: super::types::PromptCalibration,
-    ) {
+    ) -> Result<(), continuum_context::view::GrantMismatch> {
         if view.len == 0 {
-            return;
+            return Ok(());
         }
         // In the allocation's unit: grants and room are charged tokens (`calibration.charge`),
         // so the view is charged too. Compared raw, a view near its grant passed here and the
@@ -122,17 +122,11 @@ impl LlmDeliberationFaculty {
         if fits {
             match self.view_would_restore(&prompt.streams, |claims: &[Claim]| start_grants(claims, plan, granted + room, appended_per_act)) {
                 Ok(true) => {}
-                Ok(false) => return,
-                // Said like a turnover's refusal, and her view stays as it is.
-                Err(mismatch) => {
-                    continuum_base::probe!(
-                        class = "delib.view.refused",
-                        persona = %self.persona_name,
-                        mismatch = %mismatch,
-                        "her view could not be checked for what a start would restore"
-                    );
-                    return;
-                }
+                Ok(false) => return Ok(()),
+                // An allocator that answered for the wrong number of sources refuses the turn:
+                // the held view stays as state, but a prompt built on a broken contract is never
+                // sent (Codex on #5564).
+                Err(mismatch) => return Err(mismatch),
             }
         }
         // Admission before a turnover: redo this act's append within what the act granted her
@@ -154,7 +148,7 @@ impl LlmDeliberationFaculty {
                     );
                     prompt.grounding_at = admitted.len();
                     prompt.history.splice(0..view.len, admitted);
-                    return;
+                    return Ok(());
                 }
             }
         }
@@ -175,7 +169,7 @@ impl LlmDeliberationFaculty {
             .collect();
         let started = self.turn_over_view_with(&prompt.streams, &shed, |claims: &[Claim]| {
             start_grants(claims, plan, granted + room, appended_per_act)
-        });
+        })?;
         prompt.grounding_at = started.len();
         prompt.history.splice(0..view.len, started);
         continuum_base::probe!(
@@ -190,6 +184,7 @@ impl LlmDeliberationFaculty {
             "her view outgrew what the window granted its sources and started a new epoch, \
              its growing sources leaving a reserve as large as their start"
         );
+        Ok(())
     }
 
     /// Append this act's changes to her view and return its messages, and whether this act
@@ -286,7 +281,7 @@ impl LlmDeliberationFaculty {
         streams: &Streams,
         shed: &[&str],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
-    ) -> Vec<ChatMessage> {
+    ) -> Result<Vec<ChatMessage>, continuum_context::view::GrantMismatch> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(MemoryStreams::of);
         let mut sources = Self::view_sources(streams, memory_streams.as_ref());
@@ -319,17 +314,21 @@ impl LlmDeliberationFaculty {
                     memory.reclaim_ended_notices();
                 }
             }
-            Err(mismatch) => continuum_base::probe!(
-                class = "delib.view.refused",
-                persona = %self.persona_name,
-                mismatch = %mismatch,
-                "her view could not turn over"
-            ),
+            // The held view stays as state; the turn built on it is refused (Codex on #5564).
+            Err(mismatch) => {
+                continuum_base::probe!(
+                    class = "delib.view.refused",
+                    persona = %self.persona_name,
+                    mismatch = %mismatch,
+                    "her view could not turn over"
+                );
+                return Err(mismatch);
+            }
         }
         if let Some(memory) = memory {
             memory.keep_view(held.clone());
         }
-        Self::render(held.as_ref())
+        Ok(Self::render(held.as_ref()))
     }
 
     /// Every source whole, outside her view's state: what this turn's history would cost with
