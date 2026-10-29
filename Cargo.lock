@@ -3320,6 +3320,7 @@ dependencies = [
  "continuum-client",
  "continuum-host",
  "continuum-orm-derive",
+ "continuum-tasks",
  "dashmap",
  "dirs 5.0.1",
  "ed25519-dalek",
@@ -3641,6 +3642,17 @@ dependencies = [
  "tokio",
  "tracing",
  "ts-rs 12.0.1",
+ "uuid",
+]
+
+[[package]]
+name = "continuum-tasks"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tokio",
  "uuid",
 ]
 

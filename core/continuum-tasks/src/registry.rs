@@ -36,7 +36,7 @@ impl TaskRegistry {
     /// runs the work and ends it; the watch is held by whoever may wait on it for a window.
     pub fn start(self: &Arc<Self>, owner: Option<Owner>, kind: TaskKind) -> (TaskGuard, TaskWatch) {
         let id = TaskId::new();
-        let row = TaskRow { id, owner, kind, started_ms: now_ms() };
+        let row = TaskRow { id, owner, kind, started_ms: continuum_base::time::EpochMs::now().millis() };
         let (stop, stop_rx) = watch::channel(false);
         let (ended_tx, ended_rx) = watch::channel(None);
         self.running.lock().insert(id, Running { row, stop });
@@ -141,10 +141,4 @@ impl TaskWatch {
             Err(_) => Landing::Running(self.id),
         }
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64) // a clock before 1970 reads 0: display only, never a decision
 }

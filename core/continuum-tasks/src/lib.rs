@@ -4,7 +4,7 @@
 //!
 //! One job, below the kernel: the command executor, sentinels and minds build on it. The
 //! lineage is an operating system's process table: a task is a process, its end is a signal
-//! to its owner. Design: docs/architecture/HER-TASKS.md.
+//! to its owner. Design: docs/architecture/HER-TASKS.md. Depends only on continuum-base.
 
 mod registry;
 mod types;

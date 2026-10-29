@@ -15,7 +15,7 @@ pub(crate) struct CompletionPublisher {
 
 impl EndSink for CompletionPublisher {
     fn ended(&self, row: &TaskRow, end: &TaskEnd) {
-        let event = completed_event(row, end, now_ms());
+        let event = completed_event(row, end, continuum_base::time::EpochMs::now().millis());
         match serde_json::to_value(&event) {
             Ok(payload) => self.bus.publish_async_only(COMMAND_COMPLETED_TOPIC, payload),
             // Plain fields with no exotic types: unreachable, and a telemetry encode must
@@ -46,10 +46,6 @@ pub(crate) fn completed_event(row: &TaskRow, end: &TaskEnd, now_ms: u64) -> Comm
         handle: Some(row.id.as_uuid()),
         result,
     }
-}
-
-fn now_ms() -> u64 {
-    continuum_base::time::EpochMs::now().millis()
 }
 
 #[cfg(test)]

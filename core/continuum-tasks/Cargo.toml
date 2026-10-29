@@ -5,6 +5,7 @@ edition = "2021"
 description = "The task contract (docs/architecture/HER-TASKS.md): work started with a handle, exactly one end on every path, delivered to its owner. Below the kernel; depends on nothing in Continuum."
 
 [dependencies]
+continuum-base = { path = "../continuum-base" }
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
