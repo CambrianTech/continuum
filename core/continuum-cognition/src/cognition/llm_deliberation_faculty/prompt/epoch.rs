@@ -52,7 +52,7 @@ impl LlmDeliberationFaculty {
 
     /// Her view's sources as claims in the window's one allocation, each `view/<source>`,
     /// priced in the unit the final fit charges ([`Self::message_cost`], template overhead
-    /// included): floor = the source collapsed, want = the source whole, at the source's
+    /// included): floor = the source folded or collapsed, want = the source whole, at the source's
     /// priority. There is no separate history claim for the view, so the allocation that
     /// weighs her reply also decides, once, how much of her context she reads.
     pub(in super::super) fn view_claims(&self, streams: &Streams) -> Vec<crate::cognition::rag_budget::RagSourceBudget> {
@@ -63,7 +63,9 @@ impl LlmDeliberationFaculty {
             .map(|source| {
                 let items = source.items();
                 let cost = |message: &ContextMessage| Self::message_cost(&message.to_chat());
-                let floor: usize = items.iter().map(|item| item.pointer.as_ref().map_or(0, cost)).sum(); // map_or: an item that leaves when collapsed costs nothing
+                // Its floor from the view's one owner: one fold block when the source folds its
+                // oldest run, else each item's pointer, so the allocation prices the true floor.
+                let floor = continuum_context::view::floor(source, &items, cost);
                 // An item's WHOLE level, stored or resident (`whole_chars`): a body evicted from RAM
                 // is priced from its measured size, never as the pointer resident in its place,
                 // or the allocation would never grant room to see it (FOCUS-CONTRACT rule 7).
@@ -313,6 +315,7 @@ impl LlmDeliberationFaculty {
                     epoch = start.epoch,
                     start_chars = start.chars,
                     collapsed_items = start.collapsed,
+                    folded_items = start.folded,
                     "her view started a new epoch: the one re-prefill an epoch costs, collapsed \
                      by the flexbox at its start"
                 );

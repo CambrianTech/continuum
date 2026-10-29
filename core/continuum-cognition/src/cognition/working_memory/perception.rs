@@ -127,10 +127,14 @@ impl WorkingMemory {
         format!("Full result of your most recent action ({attribution}):\n{full}")
     }
 
-    /// The handle the saved whole of act `seq` is reopened by (`tool/output`), `None` when its
-    /// save failed: such a result has no other copy, so it is never shown as less than whole.
-    pub(crate) fn saved_handle(&self, seq: u64) -> Option<String> {
-        self.actions.lock().get(seq).and_then(|record| record.handle.clone())
+    /// The handle the saved whole of act `seq` is reopened by (`tool/output`, by handle or by
+    /// `act`): the one resolution of an act number to its saved output. A refusal when no
+    /// record carries `seq`, or when its save failed: such a result has no other copy, so it
+    /// is never shown as less than whole.
+    pub fn saved_handle(&self, seq: u64) -> Result<String, ActOutputRefusal> {
+        let actions = self.actions.lock();
+        let record = actions.get(seq).ok_or(ActOutputRefusal::Unknown { act: seq })?;
+        record.handle.clone().ok_or(ActOutputRefusal::Unsaved { act: seq })
     }
 
     /// The provenance of the act whose native results the turn carries: `[result #n; room …;

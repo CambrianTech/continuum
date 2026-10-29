@@ -716,6 +716,7 @@ mod ledger;
 mod perception;
 mod residency;
 
+pub use action_log::ActOutputRefusal;
 pub use faculty::WorkingMemoryFaculty;
 pub(crate) use faculty::render_dispatched;
 pub(crate) use ledger::operation_level;

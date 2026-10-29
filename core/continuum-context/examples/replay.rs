@@ -135,7 +135,7 @@ fn item(key: String, text: String) -> Item<String> {
 /// goes to sources by priority level, highest first, sources of one level sharing in
 /// proportion to what each wants. (In the core this is `flex_allocate`.)
 fn allocate(claims: &[continuum_context::view::Claim], budget: usize) -> Vec<usize> {
-    let mut grants: Vec<usize> = claims.iter().map(|claim| claim.pointer_chars).collect();
+    let mut grants: Vec<usize> = claims.iter().map(|claim| claim.floor_chars).collect();
     let mut spare = budget.saturating_sub(grants.iter().sum());
     let mut levels: Vec<u8> = claims.iter().map(|claim| claim.priority).collect();
     levels.sort_unstable_by(|a, b| b.cmp(a));

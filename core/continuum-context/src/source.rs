@@ -82,6 +82,16 @@ pub trait Source<T: Block> {
     fn load(&self, _item: &Item<T>) -> Option<T> {
         None
     }
+
+    /// One block standing for `folded`, the contiguous oldest run of this source's items at a
+    /// start: the range it covers and how to reopen one, its length independent of the run's
+    /// (never a list of ids). It reads only the run's ends, O(1) in the run: a start asks once
+    /// per item it raises. The view folds the run only when this block is smaller than the
+    /// run's pointers, so a source's floor stops growing with every item it ever held. Fixed
+    /// for the epoch it starts. The default cannot fold: its items floor at their pointers.
+    fn fold(&self, _folded: &[Item<T>]) -> Option<T> {
+        None
+    }
 }
 
 /// What an item's whole level costs: its stored size when the whole is not resident, else

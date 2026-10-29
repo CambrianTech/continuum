@@ -87,6 +87,22 @@ impl Source<ContextMessage> for Actions<'_> {
         Some(ContextMessage::user(format!("{label}{body}")))
     }
 
+    /// Her oldest acts as one line: the first and last `#n`, how many, and how one reopens
+    /// (`tool/output` with `act`), so her floor is one block however many acts she has taken
+    /// (Aris, the M5, 2026-10-29: 95 pointers at ~190 chars before anything whole fit). Reads
+    /// only the run's ends: the banner, when it is in the run, is its first item and folds
+    /// with it. `None` for a run with no act in it (the banner alone): nothing to name.
+    fn fold(&self, folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
+        // The banner stands as itself ahead of the run (the view never folds a standing head),
+        // so the run is her acts alone, keyed by their #n.
+        let first: u64 = folded.first()?.key.parse().ok()?;
+        let last: u64 = folded.last()?.key.parse().ok()?;
+        let count = folded.len();
+        Some(ContextMessage::user(format!(
+            "[actions #{first}-#{last}: {count} earlier acts folded; reopen one with tool/output act=<n>]"
+        )))
+    }
+
     /// Once she has acted, the void said earlier in this epoch is superseded, never edited:
     /// her view reads as the timeline it is (the statement was true when it was made).
     fn retired(&self) -> Vec<Item<ContextMessage>> {
