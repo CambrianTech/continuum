@@ -125,17 +125,22 @@ fn levels<T: Block>(items: &[Item<T>], grant: usize) -> Vec<Level> {
     let mut levels = vec![Level::Pointer; items.len()];
     let mut ceiling = Level::Full;
     for (item, level) in items.iter().zip(levels.iter_mut()).rev() {
-        let full = item.full.chars().saturating_sub(pointer_chars(item));
-        let summary = item.summary.as_ref().map(|s| s.chars().saturating_sub(pointer_chars(item)));
-        if ceiling == Level::Full && full <= spare {
-            spare -= full;
+        // A level replaces the item's pointer, already paid in the floor: it is affordable when
+        // its size fits the spare plus that pointer, and what it leaves is spare + pointer - size.
+        // An item smaller than its own pointer gives the difference back instead of losing it.
+        let pointer = pointer_chars(item);
+        let full = item.full.chars();
+        let summary = item.summary.as_ref().map(Block::chars);
+        let afford = |size: usize, spare: usize| size <= spare + pointer;
+        if ceiling == Level::Full && afford(full, spare) {
+            spare = spare + pointer - full;
             *level = Level::Full;
             continue;
         }
         if ceiling == Level::Summary || ceiling == Level::Full {
             match summary {
-                Some(summary) if summary <= spare => {
-                    spare -= summary;
+                Some(summary) if afford(summary, spare) => {
+                    spare = spare + pointer - summary;
                     *level = Level::Summary;
                     ceiling = Level::Summary;
                     continue;
@@ -144,8 +149,8 @@ fn levels<T: Block>(items: &[Item<T>], grant: usize) -> Vec<Level> {
                 // short result stays whole when it fits, and the ceiling holds. Without this a
                 // short result older than one big read fell to its pointer and collapsed every
                 // older item with it (Cormac on #5426).
-                None if ceiling == Level::Summary && full <= spare => {
-                    spare -= full;
+                None if ceiling == Level::Summary && afford(full, spare) => {
+                    spare = spare + pointer - full;
                     *level = Level::Full;
                     continue;
                 }
