@@ -213,7 +213,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap());
         assert_eq!(
             schema_tokens,
-            faculty.select_tool_surface(&ws).tokens
+            faculty.prompt_view(&ws).tools.tokens
         );
         let wire_tokens =
             LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
@@ -304,11 +304,11 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
     let window = 8192u32;
     for oversized_part in 0..5 {
         let persona = Uuid::new_v4();
-        // Parts 0-2 must never reach the adapter, so an EMPTY script proves it.
-        // Parts 3-4 shed their enrichment and go on to think, so they need a real
-        // response — reaching the model is the outcome those cases assert.
+        // Part 0 (the oversized stimulus) must never reach the adapter, so an EMPTY script
+        // proves it. Parts 1-4 bound, shed or collapse and go on to think, so they need a
+        // real response — reaching the model is the outcome those cases assert.
         let adapter = Arc::new(ScriptedAdapter::new(
-            if oversized_part >= 3 || oversized_part == 1 {
+            if oversized_part != 0 {
                 vec![make_response(FinishReason::Stop, "PASS", None)]
             } else {
                 vec![]
@@ -365,15 +365,20 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
                 .with_context_window(window)
                 .with_working_memory(wm)
                 .with_working_set(registry.clone());
-        // Parts 3-4 shed their standing grounding (#3954) and part 1 caps its
-        // oversized action result and demotes the rest — all three now THINK
-        // instead of refusing. What still faults is a genuinely irreducible
-        // payload: the stimulus (part 0) and a room update (part 2), neither of
-        // which any bound may drop without answering a question she was never
-        // shown.
-        let bounded_case = oversized_part >= 3 || oversized_part == 1;
+        // Parts 3-4 shed their standing grounding (#3954), part 1 caps its oversized
+        // action result and demotes the rest, and part 2's room update is a turn of her
+        // view that collapses to its handle (`chat/history`) — all four now THINK
+        // instead of refusing. What still faults is the genuinely irreducible payload:
+        // the stimulus (part 0), the question she is answering.
+        let bounded_case = oversized_part != 0;
         let grounding_case = bounded_case;
         let view = faculty.prompt_view(&ws);
+        if oversized_part == 2 {
+            assert!(
+                view.messages.iter().any(|m| m.content_text().contains("reread with chat/history")),
+                "an oversized room update is never unknown: the index names where it is"
+            );
+        }
         if grounding_case {
             assert!(
                 view.capacity_error.is_none(),
@@ -581,7 +586,7 @@ async fn a_refused_tail_rebuilds_her_request_without_it_once() {
         let rebuilt = &seen[1];
         assert!(rebuilt.tail_tools.is_none(), "the rebuilt request carries no tail");
         let offered: Vec<&str> = rebuilt.tools.iter().flatten().map(|tool| tool.name.as_str()).collect();
-        let activity = faculty.select_activity_surface(&ws);
+        let activity = faculty.tool_surface().select_granted(&ws.room_affordances, faculty.prompt_view(&ws).tools_grant).expect("activity fits granted tools");
         let expected: Vec<&str> = activity.specs.iter().flat_map(|specs| specs.iter()).map(|tool| tool.name.as_str()).collect();
         assert!(!offered.is_empty() && offered == expected, "she is offered exactly her activity's surface: {offered:?}");
         if refusals == 1 {
@@ -590,4 +595,27 @@ async fn a_refused_tail_rebuilds_her_request_without_it_once() {
             assert!(contribution.fault.is_some(), "a refusal after the rebuild is a named fault");
         }
     }
+}
+
+// what this catches: a prompt built on a broken allocator contract sent anyway (Codex on #5564).
+// An allocator answering for the wrong number of view sources is a GrantMismatch; it reaches the
+// turn's budget_fault and contribute refuses it before the adapter is ever called.
+#[tokio::test(flavor = "current_thread")]
+async fn an_allocator_answering_for_the_wrong_sources_refuses_the_turn_before_dispatch() {
+    use crate::cognition::workspace::Burst;
+    let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter.clone())
+        .with_context_window(32_768)
+        .with_tools(vec![read_tool()]);
+    let room = crate::identity::ActivityRoom::mint();
+    let turns: Vec<_> = (0..20)
+        .map(|i| BurstTurn::attributed(i % 2 == 0, if i % 2 == 0 { "Ivar" } else { "Peer" }, format!("line {i} ").repeat(20), Some(i)))
+        .collect();
+    let ws = Workspace::new(Burst::from_turns(room, turns));
+    crate::cognition::llm_deliberation_faculty::prompt::SHORT_GRANTS.with(|short| short.set(true));
+    let outcome = faculty.contribute(&ws).await;
+    crate::cognition::llm_deliberation_faculty::prompt::SHORT_GRANTS.with(|short| short.set(false));
+    let fault = outcome.expect("a contribution").fault.expect("the turn is refused");
+    assert!(format!("{fault:?}").contains("could not be sized"), "{fault:?}");
+    assert_eq!(adapter.call_count(), 0, "nothing was sent to inference");
 }

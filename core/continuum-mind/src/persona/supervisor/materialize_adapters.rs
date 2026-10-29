@@ -197,12 +197,10 @@ pub async fn materialize_adapters(
             identity.agent_name.clone(),
             rag_engine,
         );
-        let airc_source: Arc<dyn crate::cognition::rag_budget::RagSource> =
-            Arc::new(crate::persona::airc_source::AircRagSource::new(
-                identity.peer_id.as_uuid(),
-                runtime.clone(),
-            ));
-        cognition.set_airc_source(airc_source);
+        // One airc source: it delivers her rooms to cognition and takes the read receipt
+        // of every sent prompt (her cursor moves through what she was shown, never at delivery).
+        let airc = Arc::new(crate::persona::airc_source::AircRagSource::new(identity.peer_id.as_uuid(), runtime.clone()));
+        cognition.set_airc_source(Arc::clone(&airc) as Arc<dyn crate::cognition::rag_budget::RagSource>);
 
         // WHO IS PRESENT, read from the SAME `RosterViewState` the browser renders
         // (#408 + the RenderTarget pattern). Her room's OWN store, so a citizen in
@@ -231,16 +229,17 @@ pub async fn materialize_adapters(
         cognition.set_roster_source(roster_source.clone());
 
 
-        // Her awareness across ALL her activities (EVENT-MIND §6, the strip): one block,
-        // loudest first, with her continuation and her dial, read from her perception
-        // region by persona. The region boots when her conversation attaches; until then
-        // the source delivers nothing, which is the truth.
+        // Her awareness across ALL her activities (EVENT-MIND §6, the strip): a line per
+        // activity, loudest first, with her continuation and her dial, read from her
+        // perception region by persona. The region boots when her conversation attaches;
+        // until then the source delivers nothing, which is the truth. A grounding faculty
+        // below: it was bound only to compose_for_turn, whose delivery of it nothing read,
+        // so the strip never reached her prompt.
         let awareness_source: Arc<dyn crate::cognition::rag_budget::RagSource> =
             Arc::new(crate::persona::awareness_source::AwarenessRagSource::new(
                 identity.peer_id.as_uuid(),
                 Some(runtime.clone()),
             ));
-        cognition.set_awareness_source(awareness_source);
 
         // Bind the room-doctrine source from the same runtime (upcasts to
         // `AircDoctrineReader`). Grounds the persona in the room's nature
@@ -375,8 +374,6 @@ pub async fn materialize_adapters(
                 (raw_doctrine, raw_wall)
             }
         };
-        // Same dual-wire as the roster: one Arc, legacy path + brain faculty.
-        cognition.set_doctrine_source(doctrine_source.clone());
 
         // Room-board source: grounds the persona in the CURRENT ROOM's WHOLE
         // work board — every card, its column, priority, and owner — read live
@@ -505,6 +502,10 @@ pub async fn materialize_adapters(
                 // The persona's own live work across rooms — enriching framing so
                 // it knows what it's working on (cross-activity, dynamic, no
                 // hardcoded card state). Defer-tolerant.
+                // Where else she is needed while she works here: it changes every turn.
+                crate::cognition::persona_workspace::GroundingSource::framing(awareness_source)
+                    .defer_tolerant()
+                    .volatile_content(),
                 crate::cognition::persona_workspace::GroundingSource::framing(active_work_source)
                     .defer_tolerant()
                     // Claim states flap per turn — floor stays, stable-tier
@@ -583,6 +584,7 @@ pub async fn materialize_adapters(
             // benchmark-reproducibility knob, never a life-path setting (#207).
             suppress_recall: false,
             forked: false,
+            read_receipt: Some(Arc::clone(&airc) as Arc<dyn crate::cognition::llm_deliberation_faculty::ReadReceipt>),
         };
         // A checkpoint can be locked by offline adoption. Waiting and reading
         // belong off the async runtime workers; registration publishes nothing

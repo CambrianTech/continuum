@@ -65,7 +65,7 @@ async fn live_window_reductions_bound_actual_requests_and_persist() {
         let schemas = crate::cognition::tool_surface::tool_surface_tokens_of(
             request.tools.as_ref().expect("native tools retained"),
         );
-        assert_eq!(schemas, faculty.select_tool_surface(&ws).tokens);
+        assert_eq!(schemas, faculty.prompt_view(&ws).tools.tokens);
         assert_eq!(request.max_tokens, Some(expected_view.completion_reserve));
         let cost = LlmDeliberationFaculty::framing_cost(
             request.system_prompt.as_deref().expect("system framing"),

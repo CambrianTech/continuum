@@ -110,6 +110,10 @@ pub struct PersonaBrainConfig {
     /// page per room and never queue behind the living mind's act, since it acts beside
     /// her (`slots::PageKey::Fork`). `false` for every resident.
     pub forked: bool,
+    /// Where her sent prompts' read receipts go: her airc source, which advances her room
+    /// cursor through what each sent prompt rendered. `None` (a fork, an eval, a harness)
+    /// marks nothing read.
+    pub read_receipt: Option<Arc<dyn super::super::llm_deliberation_faculty::ReadReceipt>>,
 }
 
 /// Whether a grounding source must run synchronously on the inference loop, or
@@ -433,15 +437,10 @@ pub(super) fn assemble_workspace_cycle(
     // synchronous so it's never `None` on the first tick. Eval/harness keep
     // everything synchronous (`defer_grounding == false`) — their tight settle-loops
     // never yield to the worker, so deferral there would measure a starved mind.
-    // Per-source grounding ceiling scales with the LIVE served window (task #50's
-    // single-sourced `cfg.context_window`), exactly like recall's budget above —
-    // never a baked constant (task #124). A 128k model lets each source hold its
-    // full board/map/roster; a tight window shrinks them honestly; the packer keeps
-    // the total ≤ window.
-    let grounding_budget = super::super::rag_source_faculty::grounding_budget_for(cfg.context_window);
+    // No per-source ceiling: each source delivers every item at its levels and her prompt
+    // view's one allocation decides what she sees (FLOW-IMPLEMENTATION-PLAN §2d).
     for g in cfg.grounding_sources {
         let faculty = RagSourceFaculty::new(cfg.persona_id, g.source, g.policy)
-            .with_budget(grounding_budget)
             .with_volatile_content(g.volatile_content)
             // Deferrability is also a LOUDNESS contract, not only a scheduling one
             // (#3873). ColdStartCritical means "absent here is a wrong turn", so a
@@ -509,6 +508,10 @@ pub(super) fn assemble_workspace_cycle(
                 ws
             });
     let mut deliberation = if cfg.forked { deliberation.forked() } else { deliberation };
+    // A fork copies the living config but never marks her rooms read: it acts beside her.
+    if let Some(receipt) = cfg.read_receipt.clone().filter(|_| !cfg.forked) {
+        deliberation = deliberation.with_read_receipt(receipt);
+    }
     if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the

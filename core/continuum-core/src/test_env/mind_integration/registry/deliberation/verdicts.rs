@@ -384,7 +384,7 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
             // budget-shed one.
             let minimum = GroundingPlan::minimum(&ws);
             let fixed = LlmDeliberationFaculty::framing_cost(&framing.stable)
-                + faculty.select_tool_surface(&ws).tokens
+                + faculty.prompt_view(&ws).tools.tokens
                 + minimum.context_reserve()
                 + minimum.trailing_tokens()
                 + unfitted.required_tokens()
@@ -515,7 +515,7 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
         );
         let tools = request.tools.as_ref().expect("actual native surface");
         let tool_tokens = crate::cognition::tool_surface::tool_surface_tokens_of(tools);
-        assert_eq!(tool_tokens, faculty.select_tool_surface(&ws).tokens);
+        assert_eq!(tool_tokens, faculty.prompt_view(&ws).tools.tokens);
         let wire = LlmDeliberationFaculty::framing_cost(system)
             + LlmDeliberationFaculty::messages_cost(&request.messages)
             + tool_tokens

@@ -26,6 +26,8 @@ pub struct Claim {
     pub pointer_chars: usize,
     /// What the source costs in full: its want.
     pub full_chars: usize,
+    /// Its newest item in full: the newest end a start never collapses when it fits.
+    pub newest_chars: usize,
 }
 
 /// The allocator answered for a different number of sources than it was asked about.
@@ -99,6 +101,15 @@ enum Level {
     Pointer,
 }
 
+/// How much of an item a level shows, for comparing two levels of one item.
+fn rank(level: &Level) -> u8 {
+    match level {
+        Level::Pointer => 0,
+        Level::Summary => 1,
+        Level::Full => 2,
+    }
+}
+
 /// The level a `grant` of characters gives each item. Every item starts at its pointer (the
 /// floor); what the grant leaves above it is spent newest first, each item taking the most
 /// detail that still fits, and never more detail than the item after it: shrinking is oldest
@@ -116,17 +127,22 @@ fn levels<T: Block>(items: &[Item<T>], grant: usize) -> Vec<Level> {
     let mut levels = vec![Level::Pointer; items.len()];
     let mut ceiling = Level::Full;
     for (item, level) in items.iter().zip(levels.iter_mut()).rev() {
-        let full = item.full.chars().saturating_sub(pointer_chars(item));
-        let summary = item.summary.as_ref().map(|s| s.chars().saturating_sub(pointer_chars(item)));
-        if ceiling == Level::Full && full <= spare {
-            spare -= full;
+        // A level replaces the item's pointer, already paid in the floor: it is affordable when
+        // its size fits the spare plus that pointer, and what it leaves is spare + pointer - size.
+        // An item smaller than its own pointer gives the difference back instead of losing it.
+        let pointer = pointer_chars(item);
+        let full = item.full.chars();
+        let summary = item.summary.as_ref().map(Block::chars);
+        let afford = |size: usize, spare: usize| size <= spare + pointer;
+        if ceiling == Level::Full && afford(full, spare) {
+            spare = spare + pointer - full;
             *level = Level::Full;
             continue;
         }
         if ceiling == Level::Summary || ceiling == Level::Full {
             match summary {
-                Some(summary) if summary <= spare => {
-                    spare -= summary;
+                Some(summary) if afford(summary, spare) => {
+                    spare = spare + pointer - summary;
                     *level = Level::Summary;
                     ceiling = Level::Summary;
                     continue;
@@ -135,8 +151,8 @@ fn levels<T: Block>(items: &[Item<T>], grant: usize) -> Vec<Level> {
                 // short result stays whole when it fits, and the ceiling holds. Without this a
                 // short result older than one big read fell to its pointer and collapsed every
                 // older item with it (Cormac on #5426).
-                None if ceiling == Level::Summary && full <= spare => {
-                    spare -= full;
+                None if ceiling == Level::Summary && afford(full, spare) => {
+                    spare = spare + pointer - full;
                     *level = Level::Full;
                     continue;
                 }
@@ -154,6 +170,7 @@ fn claim<T: Block>(source: &dyn Source<T>, items: &[Item<T>]) -> Claim {
         priority: source.priority(),
         pointer_chars: items.iter().map(pointer_chars).sum(),
         full_chars: items.iter().map(|item| item.full.chars()).sum(),
+        newest_chars: items.last().map_or(0, |item| item.full.chars()), // map_or: a source with no items has no newest end
     }
 }
 
@@ -194,6 +211,40 @@ impl<T: Block> View<T> {
         Ok(start)
     }
 
+    /// Whether a start under the grants `allocate` answers would show her more than this epoch
+    /// holds: an item it already holds that the start would render at a higher level (whole, or
+    /// a summary of what it holds as a pointer). An epoch only appends, so after a squeezed start
+    /// her items stayed collapsed while the window had room for them (Aiko, the M5, 2026-10-29:
+    /// her last fifteen results as handles in a 42k-char prompt on a 55k-token window). This is
+    /// the turnover that gives them back.
+    /// An allocator that answers for a different number of sources is the same refusal a start
+    /// gives ([`GrantMismatch`]), never a quiet "nothing to restore" (Codex on #5564).
+    pub fn start_would_restore(&self, sources: &[&dyn Source<T>], allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Result<bool, GrantMismatch> {
+        let sources = self.motion.order(sources);
+        let offered: Vec<Vec<Item<T>>> = sources.iter().map(|source| source.items()).collect();
+        let claims: Vec<Claim> = sources.iter().zip(&offered).map(|(source, items)| claim(*source, items)).collect();
+        let grants = allocate(&claims);
+        if grants.len() != claims.len() {
+            return Err(GrantMismatch { claims: claims.len(), grants: grants.len() });
+        }
+        Ok(sources.iter().zip(&offered).zip(&grants).any(|((source, items), grant)| {
+            levels(items, *grant).iter().zip(items).any(|(level, item)| {
+                let id = key(source.name(), &item.key);
+                self.epoch.holds(&id) && rank(level) > rank(&self.held_level(&id))
+            })
+        }))
+    }
+
+    fn held_level(&self, id: &SourceId) -> Level {
+        if self.collapsed.contains(id) {
+            Level::Pointer
+        } else if self.summarized.contains(id) {
+            Level::Summary
+        } else {
+            Level::Full
+        }
+    }
+
     /// Render a start with `sources` in the order `motion` measured to keep the most of the
     /// previous start, and record what each rendered. A refusal hands `motion` back.
     fn begin(
@@ -223,6 +274,7 @@ impl<T: Block> View<T> {
             let mut rendered = Vec::with_capacity(items.len());
             for (item, level) in items.into_iter().zip(levels) {
                 let id = key(source.name(), &item.key);
+                let item_key = item.key.clone(); // its fingerprint after the level consumed it; once per item per start
                 let text = match level {
                     Level::Full => Some(item.full),
                     Level::Summary => {
@@ -235,7 +287,7 @@ impl<T: Block> View<T> {
                     }
                 };
                 if let Some(text) = text {
-                    rendered.push((fingerprint(&item.key, &text), text.chars()));
+                    rendered.push((fingerprint(&item_key, &text), text.chars()));
                     view.epoch.observe(id, text);
                 }
             }
@@ -249,6 +301,14 @@ impl<T: Block> View<T> {
     /// Append what changed in each source since the last act, each item at the rendering its
     /// epoch start chose. An item first seen mid-epoch arrives in full: the allocator weighs
     /// it at the next start.
+    /// Whether her view shows `source`'s item `item` this epoch, whole or as its summary. A
+    /// collapsed item renders at most its pointer, which is not reading it: the read receipt
+    /// (her room cursor) only advances through what this answers true for.
+    pub fn renders(&self, source: &str, item: &str) -> bool {
+        let id = key(source, item);
+        self.epoch.holds(&id) && !self.collapsed.contains(&id)
+    }
+
     pub fn advance(&mut self, sources: &[&dyn Source<T>]) -> Advance {
         self.act = Some(self.epoch.mark());
         self.append(sources, None)

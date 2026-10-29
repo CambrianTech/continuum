@@ -286,7 +286,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
         estimated_prompt_tokens: estimate, completion_reserve: 0,
         capacity_error: None, budget_fault: None, protocol_error: None, segments: Vec::new(),
         newest_result_reduced: false, newest_result_tokens: 0,
-        messages: roomy.messages,
+        messages: roomy.messages, tools: crate::cognition::tool_surface::SelectedSurface::none(), tools_grant: 0,
     };
     let corrected = faculty.refit_rejected_prompt(snapshot, estimate as u32 + 1, estimate as u32, 0).unwrap();
     assert!(corrected.estimated_prompt_tokens < estimate);
@@ -781,7 +781,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
         "the newest burst line must survive once the budget prices the surface it \
                  actually sends — if this regresses, the accounting is double-counting the \
                  withheld registry again (card dec1a7ff); selected={}, estimated={}, reserve={}, capacity={:?}\n{}",
-        faculty.select_tool_surface(&ws).tokens,
+        faculty.prompt_view(&ws).tools.tokens,
         view.estimated_prompt_tokens,
         view.completion_reserve,
         view.capacity_error,

@@ -206,38 +206,6 @@ pub fn flex_allocate(available: u32, claims: &[RagSourceBudget]) -> FlexAllocati
     }
 }
 
-pub(super) fn empty_allocation(
-    context_window: u32,
-    reserved: ReservedTokens,
-    sources: &[RagSourceBudget],
-    warnings: Vec<String>,
-    escalation_needed: bool,
-) -> BudgetAllocation {
-    BudgetAllocation {
-        context_window,
-        reserved,
-        available_for_sources: 0,
-        allocations: sources
-            .iter()
-            .map(|s| SourceAllocation {
-                source_id: s.source_id.to_string(),
-                allocated_tokens: 0,
-                requested_floor: s.floor_tokens,
-                requested_min: s.min_tokens,
-                requested_max: s.max_tokens,
-                state: if s.required {
-                    AllocationState::UnderProvisioned
-                } else {
-                    AllocationState::Dropped
-                },
-            })
-            .collect(),
-        total_allocated: 0,
-        unallocated: 0,
-        escalation_needed,
-        warnings,
-    }
-}
 
 //=============================================================================
 // TEST STUB SOURCE — proves the trait shape compiles + composes
@@ -274,52 +242,12 @@ impl RagSource for StubRagSource {
         None
     }
 
-    /// Test/stub source — floorless, so allocator tests exercise the grow pass
-    /// rather than accidentally encoding a production floor.
-    fn floor_tokens(&self) -> u32 {
-        0
-    }
-
-    async fn deliver(
-        &self,
-        ctx: &RagContext,
-        budget: u32,
-        _resolution: ResolutionPreference,
-    ) -> RagDelivery {
-        // Defense-in-depth identity check: this source is bound to
-        // a specific persona at construction; refuse calls from a
-        // different ctx.persona_id by returning empty (no panics,
-        // no half-state — graceful degradation).
+    async fn deliver(&self, ctx: &RagContext) -> RagDelivery {
+        // Defense-in-depth identity check: this source is bound to a specific persona at
+        // construction; another persona's ctx gets nothing (no panics, no half-state).
         if ctx.persona_id != self.persona_id {
-            return RagDelivery {
-                source_id: self.source_id.to_string(),
-                items: Vec::new(),
-                tokens_used: 0,
-                truncated: false,
-                resolution_used: ResolutionPreference::Placeholder,
-            };
+            return RagDelivery::empty(self.source_id);
         }
-
-        let mut taken = Vec::new();
-        let mut used: u32 = 0;
-        for item in &self.items {
-            if used.saturating_add(item.tokens) > budget {
-                break;
-            }
-            used += item.tokens;
-            taken.push(item.clone());
-        }
-        // Ruling a: no positional cursor — truncation is notice metadata,
-        // and the next deliver re-derives from scratch (a larger budget
-        // simply fits more).
-        let truncated = taken.len() < self.items.len();
-        RagDelivery {
-            source_id: self.source_id.to_string(),
-            items: taken,
-            tokens_used: used,
-            truncated,
-            resolution_used: ResolutionPreference::Raw,
-        }
+        RagDelivery::of(self.source_id, self.items.clone(), false)
     }
-
 }

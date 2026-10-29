@@ -144,6 +144,23 @@ impl LlmDeliberationFaculty {
                 return Some(Contribution::deliberation_fault(fault.clone()));
             }
             if let Some(error) = view.capacity_error {
+                // Required input past the WORKING window is served from the whole slot, once,
+                // never refused while the slot has room (`ContextBudget::working_window`).
+                let (served_fit, served_calibration) = self.prompt_fit_served(&binding);
+                if served_fit > fit_window {
+                    continuum_base::probe!(
+                        class = "delib.prompt.working_window_exceeded",
+                        persona = %self.persona_name,
+                        required_tokens = error.required_tokens,
+                        working_window = fit_window,
+                        served_window = served_fit,
+                        "required input exceeds the working window: this act is fitted to the served window instead"
+                    );
+                    fit_window = served_fit;
+                    calibration = served_calibration;
+                    view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
+                    continue;
+                }
                 continuum_base::probe!(
                     class = "delib.prompt.capacity",
                     persona = %self.persona_name,
@@ -206,14 +223,19 @@ impl LlmDeliberationFaculty {
             // the structured-turns refactor that fixes the echo loop.
             // A verb not on her native surface still DISPATCHES: `act_observe` resolves any
             // call by name, and the system prompt's menu plus `commands/help` reach it.
-            // WHICH surface she is offered is a question about her ACTIVITY and the served
-            // window, never about this turn: the schemas sit right after the system prompt,
-            // so a surface that moves between acts re-prefills everything after it (goal 10;
-            // `cognition::tool_surface` has the measurement). The decision lives in
-            // [`Self::select_tool_surface`] so the budget in `prompt_view_within` reaches the
-            // SAME answer (card dec1a7ff).
+            // The view retains the tool level bought by the shared allocation for this epoch.
+            // Send that same selection so accounting, wire bytes and prefix reuse agree.
             if request_template.is_none() {
-                let mut selected = if tail_refused { self.select_activity_surface(ws) } else { self.select_tool_surface(ws) };
+                // What her view's allocation bought; a server that refuses `tail_tools` gets the
+                // activity surface at the same grant, without her learned head.
+                let mut selected = if tail_refused {
+                    match self.surface.select_granted(&ws.room_affordances, view.tools_grant) {
+                        Ok(activity) => activity.into_owned(),
+                        Err(_) => view.tools.clone(), // unreachable in practice: the view ran this same activity selection at this grant and it succeeded
+                    }
+                } else {
+                    view.tools.clone()
+                };
                 // Verbs she loaded into the tail ride beside the head, callable natively.
                 let tail = std::mem::take(&mut selected.tail);
                 if selected.reason == SurfaceReason::CoreHandsForWindow {
@@ -228,11 +250,10 @@ impl LlmDeliberationFaculty {
                         hands = self.surface.hands().len() as u64,
                         surface_tokens = selected.tokens as u64,
                         withheld_tokens = selected.demand_tokens().saturating_sub(selected.tokens) as u64,
-                        budget_tokens = super::super::super::context_budget::ContextBudget::from_window_unbounded(served)
-                            .tool_surface_tokens() as u64,
+                        budget_tokens = view.tools_grant as u64,
                         context_window = served,
-                        "her extended hands exceed the served window's tool share: \
-                         offering her core hands; the discovery pair still reaches the rest"
+                        "her one allocation granted her core hands, not her extended ones: \
+                         the discovery pair still reaches the rest"
                     );
                 }
                 // Selection and budget accounting borrow the cached schemas. Only the
@@ -391,6 +412,8 @@ impl LlmDeliberationFaculty {
                 }
             }
         };
+        // Sent and answered: she read what this prompt rendered (read_receipt.rs), never before.
+        self.send_read_receipt(ws).await;
         let messages = &view.messages;
         let lifecycle_recorded = self
             .prompt_capture

@@ -230,12 +230,11 @@ impl OpenViews {
     /// view is open here.
     /// Attach her stated reasoning to every view the acts of this receipt touched (the views
     /// whose `touched_seq` is `seq`), clipped to `max_chars` (her window-relative echo budget).
-    pub fn annotate(&mut self, seq: u64, intent: &str, max_chars: usize) -> bool {
-        let note = intent.split_whitespace().collect::<Vec<_>>().join(" ");
+    pub fn annotate(&mut self, seq: u64, label: &str) -> bool {
+        let note = label.split_whitespace().collect::<Vec<_>>().join(" ");
         if note.is_empty() {
             return false;
         }
-        let note: String = note.chars().take(max_chars).collect();
         let mut changed = false;
         for view in self.views.iter_mut().filter(|v| v.touched_seq == seq) {
             if view.note.as_deref() != Some(note.as_str()) {

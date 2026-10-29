@@ -19,11 +19,12 @@
         }
     }
 
-    fn reserved(system: u32, completion: u32) -> ReservedTokens {
-        ReservedTokens { system, completion }
+    /// The window less a fixed reservation: what the one allocation is handed.
+    fn reserved(system: u32, completion: u32) -> u32 {
+        system.saturating_add(completion)
     }
 
-    fn alloc_for<'a>(result: &'a BudgetAllocation, id: &str) -> &'a SourceAllocation {
+    fn alloc_for<'a>(result: &'a FlexAllocation, id: &str) -> &'a SourceAllocation {
         result
             .allocations
             .iter()
@@ -31,23 +32,9 @@
             .unwrap()
     }
 
-    fn ctx() -> RagContext {
-        RagContext::for_persona(
-            uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
-            1_000_000,
-        )
-    }
-
     #[test]
     fn empty_context_window_under_provisions_required() {
-        let adapter = FlexboxRagBudgetAdapter::new();
-        let result = adapter.allocate(
-            &ctx(),
-            500,
-            reserved(400, 200),
-            &[budget("conversation", 10, 100, 200, 1000, true)],
-        );
-        assert_eq!(result.available_for_sources, 0);
+        let result = flex_allocate(500u32.saturating_sub(reserved(400, 200)), &[budget("conversation", 10, 100, 200, 1000, true)]);
         assert!(result.escalation_needed);
         assert_eq!(
             alloc_for(&result, "conversation").state,
@@ -57,13 +44,7 @@
 
     #[test]
     fn single_required_source_satisfied() {
-        let adapter = FlexboxRagBudgetAdapter::new();
-        let result = adapter.allocate(
-            &ctx(),
-            10_000,
-            reserved(500, 2000),
-            &[budget("conversation", 10, 200, 500, 5000, true)],
-        );
+        let result = flex_allocate(10_000u32.saturating_sub(reserved(500, 2000)), &[budget("conversation", 10, 200, 500, 5000, true)]);
         let conv = alloc_for(&result, "conversation");
         assert!(conv.allocated_tokens >= 500);
         assert_eq!(conv.state, AllocationState::Satisfied);
@@ -72,18 +53,12 @@
 
     #[test]
     fn priority_distributes_remaining_proportionally() {
-        let adapter = FlexboxRagBudgetAdapter::new();
         // max well above expected share so neither caps before the
         // priority ratio gets to express.
-        let result = adapter.allocate(
-            &ctx(),
-            10_000,
-            reserved(0, 0),
-            &[
+        let result = flex_allocate(10_000u32.saturating_sub(reserved(0, 0)), &[
                 budget("conversation", 10, 100, 500, 50_000, true),
                 budget("memories", 5, 100, 500, 50_000, true),
-            ],
-        );
+            ]);
         let conv = alloc_for(&result, "conversation");
         let mem = alloc_for(&result, "memories");
         // Both got their mins (500). Remaining 9000 distributed by
@@ -98,16 +73,10 @@
 
     #[test]
     fn optional_source_drops_when_floor_cant_fit() {
-        let adapter = FlexboxRagBudgetAdapter::new();
-        let result = adapter.allocate(
-            &ctx(),
-            1_000,
-            reserved(500, 200),
-            &[
+        let result = flex_allocate(1_000u32.saturating_sub(reserved(500, 200)), &[
                 budget("conversation", 10, 200, 200, 500, true),
                 budget("artifacts", 3, 200, 200, 500, false),
-            ],
-        );
+            ]);
         // Conversation required, gets its 200 floor. Remaining 100 <
         // artifacts floor 200, so artifacts is Dropped.
         let conv = alloc_for(&result, "conversation");
@@ -121,16 +90,10 @@
 
     #[test]
     fn required_under_provisions_when_floor_cant_fit() {
-        let adapter = FlexboxRagBudgetAdapter::new();
-        let result = adapter.allocate(
-            &ctx(),
-            300,
-            reserved(100, 100),
-            &[
+        let result = flex_allocate(300u32.saturating_sub(reserved(100, 100)), &[
                 budget("conversation", 10, 200, 200, 500, true),
                 budget("memories", 5, 200, 200, 500, true),
-            ],
-        );
+            ]);
         // Available = 100; conv floor 200 takes it all; memories floor
         // 200 can't fit → UnderProvisioned + escalate.
         assert!(result.escalation_needed);
@@ -145,16 +108,10 @@
         // Joel's recent-universal floor doctrine: even if min is
         // squeezed, floor is unconditional. Here floor == min so the
         // test verifies the floor lands BEFORE the min pass.
-        let adapter = FlexboxRagBudgetAdapter::new();
-        let result = adapter.allocate(
-            &ctx(),
-            2_000,
-            reserved(0, 0),
-            &[
+        let result = flex_allocate(2_000u32.saturating_sub(reserved(0, 0)), &[
                 budget("conversation", 10, 500, 500, 1000, true),
                 budget("memories", 5, 200, 600, 1500, false),
-            ],
-        );
+            ]);
         let conv = alloc_for(&result, "conversation");
         let mem = alloc_for(&result, "memories");
         assert!(conv.allocated_tokens >= 500);
@@ -163,16 +120,10 @@
 
     #[test]
     fn max_caps_distribution() {
-        let adapter = FlexboxRagBudgetAdapter::new();
-        let result = adapter.allocate(
-            &ctx(),
-            10_000,
-            reserved(0, 0),
-            &[
+        let result = flex_allocate(10_000u32.saturating_sub(reserved(0, 0)), &[
                 budget("tiny", 10, 0, 0, 100, false),
                 budget("big", 5, 0, 0, 9_000, false),
-            ],
-        );
+            ]);
         let tiny = alloc_for(&result, "tiny");
         let big = alloc_for(&result, "big");
         assert_eq!(tiny.allocated_tokens, 100); // capped
@@ -185,25 +136,14 @@
     fn deterministic_priority_tiebreak() {
         // Two sources at same priority must allocate identically across
         // runs. Use source_id alpha order.
-        let adapter = FlexboxRagBudgetAdapter::new();
-        let result_a = adapter.allocate(
-            &ctx(),
-            10_000,
-            reserved(0, 0),
-            &[
+        let result_a = flex_allocate(10_000u32.saturating_sub(reserved(0, 0)), &[
                 budget("a", 5, 0, 500, 2000, false),
                 budget("b", 5, 0, 500, 2000, false),
-            ],
-        );
-        let result_b = adapter.allocate(
-            &ctx(),
-            10_000,
-            reserved(0, 0),
-            &[
+            ]);
+        let result_b = flex_allocate(10_000u32.saturating_sub(reserved(0, 0)), &[
                 budget("b", 5, 0, 500, 2000, false),
                 budget("a", 5, 0, 500, 2000, false),
-            ],
-        );
+            ]);
         let a_in_a = alloc_for(&result_a, "a").allocated_tokens;
         let a_in_b = alloc_for(&result_b, "a").allocated_tokens;
         assert_eq!(a_in_a, a_in_b, "allocation must be input-order-independent");
@@ -211,89 +151,21 @@
 
     // ---- Source trait + stub tests ----
 
-    fn item(text: &str, tokens: u32) -> RagItem {
-        RagItem {
-            content: text.to_string(),
-            tokens,
-            metadata: serde_json::json!({}),
-        }
-    }
-
     fn persona() -> uuid::Uuid {
         uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()
     }
 
+    // what this catches: a source sizing itself (FLOW plan §2d). The stub delivers every item
+    // it holds whatever is large, and refuses another persona's ctx with nothing.
     #[tokio::test]
-    async fn stub_source_delivers_what_fits() {
-        let source = StubRagSource::new(
-            "stub",
-            persona(),
-            vec![item("a", 10), item("b", 20), item("c", 100)],
-        );
-        let delivery = source.deliver(&ctx(), 50, ResolutionPreference::Raw).await;
-        // a (10) + b (20) = 30 fits, c (100) doesn't.
+    async fn a_source_delivers_every_item_and_only_to_its_persona() {
+        let items = vec![RagItem::whole("a", "a", serde_json::json!({})), RagItem::whole("huge", "x".repeat(40_000), serde_json::json!({}))];
+        let source = StubRagSource::new("stub", persona(), items);
+        let delivery = source.deliver(&RagContext::for_persona(persona(), 1_000_000)).await;
         assert_eq!(delivery.items.len(), 2);
-        assert_eq!(delivery.tokens_used, 30);
-        assert!(delivery.truncated);
-    }
-
-    #[tokio::test]
-    async fn stub_source_truncation_flag_and_fresh_rederive() {
-        // Ruling a: no resumable handle — the flag says "more exists",
-        // and the next deliver re-derives from scratch, so a larger
-        // budget simply fits more.
-        let source = StubRagSource::new(
-            "stub",
-            persona(),
-            vec![item("a", 10), item("b", 10), item("c", 10), item("d", 10)],
-        );
-        let first = source.deliver(&ctx(), 20, ResolutionPreference::Raw).await;
-        assert_eq!(first.items.len(), 2);
-        assert!(first.truncated, "two items left undelivered");
-
-        // Fresh re-derive with a budget that fits everything.
-        let second = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
-        assert_eq!(second.items.len(), 4);
-        assert!(!second.truncated);
-    }
-
-    #[tokio::test]
-    async fn stub_source_not_truncated_when_all_fit() {
-        let source = StubRagSource::new("stub", persona(), vec![item("a", 10)]);
-        let first = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
-        assert_eq!(first.items.len(), 1);
-        assert!(!first.truncated, "everything fit — nothing omitted");
-    }
-
-    #[tokio::test]
-    async fn stub_source_never_partial_includes() {
-        // The no-clipping invariant: even with budget mid-item, the
-        // source skips the over-budget item rather than partial-include.
-        let source = StubRagSource::new("stub", persona(), vec![item("huge", 500)]);
-        let delivery = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
-        assert_eq!(delivery.items.len(), 0);
-        assert_eq!(delivery.tokens_used, 0);
-        // Truncated set because the item still exists, just didn't
-        // fit at this budget.
-        assert!(delivery.truncated);
-    }
-
-
-
-    #[tokio::test]
-    async fn stub_source_refuses_wrong_persona_ctx() {
-        // The defense-in-depth check: source bound to persona A,
-        // called with ctx for persona B — must return empty rather
-        // than serve B's caller with A's content.
-        let pax = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000abc").unwrap();
+        assert!(!delivery.truncated);
         let maya = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000def").unwrap();
-        let pax_source = StubRagSource::new("stub", pax, vec![item("a", 10)]);
-        let maya_ctx = RagContext::for_persona(maya, 1_000_000);
-        let delivery = pax_source
-            .deliver(&maya_ctx, 100, ResolutionPreference::Raw)
-            .await;
-        assert_eq!(delivery.items.len(), 0);
-        assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
+        assert!(source.deliver(&RagContext::for_persona(maya, 1_000_000)).await.items.is_empty());
     }
 
     // what this catches (#338, measured live 2026-08-06): a source being dropped
@@ -313,7 +185,6 @@
     // sizes, every source still speaks. Floor is survival; min is appetite.
     #[test]
     fn sources_survive_at_their_first_unit_when_budget_wont_fit_their_appetite() {
-        let adapter = FlexboxRagBudgetAdapter::new();
         // Real measured first units; 500 is the comfortable target each would
         // like. Total floors = 104, total appetites = 2000.
         let sources = [
@@ -324,15 +195,7 @@
         ];
         // 214 tokens — the live starved budget. Fits all four floors (104),
         // fits not even ONE comfortable size.
-        let alloc = adapter.allocate(
-            &RagContext::for_persona(uuid::Uuid::nil(), 0),
-            214,
-            ReservedTokens {
-                system: 0,
-                completion: 0,
-            },
-            &sources,
-        );
+        let alloc = flex_allocate(214, &sources);
         for (i, s) in sources.iter().enumerate() {
             assert!(
                 alloc.allocations[i].allocated_tokens >= s.floor_tokens,
@@ -347,43 +210,6 @@
                 "`{}` was DROPPED at a budget that fits its floor — this is the #338 defect",
                 s.source_id,
             );
-        }
-    }
-
-    /// What this catches: the window-scaled reservation stays ONE derivation
-    /// with the documented shape — a second hand-copied variant (the exact
-    /// duplication this replaced across unified.rs / rag_inspect.rs) shows up
-    /// as a drift here. Exhausted windows must not fabricate source capacity
-    /// (card 2bbee27a); construction and allocation share the same headroom.
-    #[test]
-    fn reserved_tokens_scaled_shape_is_the_one_derivation() {
-        // Compat-tier 2048: percentages, floors active.
-        let small = ReservedTokens::scaled_for_window(2048);
-        assert_eq!(small.system, 204); // 10%, inside [128, 512]
-        assert_eq!(small.completion, 512); // 25%, inside [256, 4_000]
-        assert_eq!(small.headroom_within(2048), 2048 - 204 - 512);
-
-        // M-series 32k: both ceilings engage.
-        let big = ReservedTokens::scaled_for_window(32_768);
-        assert_eq!(big.system, 512);
-        assert_eq!(big.completion, 4_000);
-        assert_eq!(big.headroom_within(32_768), 32_768 - 4_512);
-
-        // Reservations exhaust the window: report no capacity rather than 512
-        // tokens that the lane cannot hold.
-        let tiny = ReservedTokens::scaled_for_window(256);
-        assert_eq!((tiny.system, tiny.completion), (128, 256));
-        assert_eq!(tiny.headroom_within(256), 0);
-        for window in [0, 256, 384, 400, 512, 2_048, 51_712] {
-            let reserved = ReservedTokens::scaled_for_window(window);
-            let allocation = FlexboxRagBudgetAdapter::new().allocate(
-                &RagContext::for_persona(uuid::Uuid::nil(), 0),
-                window,
-                reserved,
-                &[],
-            );
-            assert_eq!(reserved.headroom_within(window), allocation.available_for_sources);
-            assert!(allocation.available_for_sources <= window);
         }
     }
 

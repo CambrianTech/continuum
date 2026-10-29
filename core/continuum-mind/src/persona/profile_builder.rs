@@ -190,10 +190,7 @@ pub fn build_profile(
     // profile uses the default budget.
     let chat_template = model.chat_template.clone();
     let stop_sequences = model.stop_sequences.clone();
-    let sampling = SamplingProfile::from_model(
-        &model.sampling,
-        crate::persona::inference_profile::default_max_new_tokens(),
-    );
+    let sampling = SamplingProfile::from_model(&model.sampling);
 
     Ok(PersonaInferenceProfile {
         persona_id,
@@ -394,12 +391,6 @@ mod tests {
             "the row's WIDER anti-loop window overrides the floor — per-model tuning is live"
         );
         assert!((profile.sampling.frequency_penalty - 0.45).abs() < 1e-6);
-        // max_new_tokens is a ROLE budget, not a model fact — so it's the default,
-        // NOT carried from ModelSampling (which deliberately has no such field).
-        assert_eq!(
-            profile.sampling.max_new_tokens,
-            crate::persona::inference_profile::default_max_new_tokens()
-        );
     }
 
     /// Tier-shaped n_gpu_layers: MSeries+ goes full GPU (-1), Compat

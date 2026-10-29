@@ -100,17 +100,47 @@ impl LlmDeliberationFaculty {
                 stimulus = Some(ChatMessage::text(role, line));
                 continue;
             }
-            let key = match turn.occurred_at_ms {
-                Some(ms) => format!("{ms}/{}", turn.author),
-                // An opaque stimulus has no time: its position among the turns is its identity.
-                None => format!("#{index}"),
+            // A room turn is its event (unique, and what her read receipt names); a turn without
+            // one keys by time and author, an opaque stimulus by its position.
+            let key = match (turn.source, turn.occurred_at_ms) {
+                (Some(source), _) => source.event.to_string(),
+                (None, Some(ms)) => format!("{ms}/{}", turn.author),
+                (None, None) => format!("#{index}"),
             };
             let role = if turn.is_self {
                 crate::cognition::context_streams::Role::Assistant
             } else {
                 crate::cognition::context_streams::Role::User
             };
-            turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line });
+            turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line, pointer: None });
+        }
+        // Messages that reached her room during this turn are conversation too, after the
+        // burst, keyed by their event: in her view they append like any turn, and one
+        // already in the burst keeps its place. They rode the fresh tail as required input
+        // under a quarter-of-the-window share (ROOM_UPDATE_SHARE_DENOM), a second budget.
+        for update in ws.room_updates.iter() {
+            let key = update.event_id.to_string();
+            if turns.iter().any(|turn| turn.key == key) {
+                continue;
+            }
+            let line = update.render_room_update();
+            turns.push(crate::cognition::context_streams::conversation::Turn { key, role: crate::cognition::context_streams::Role::User, line, pointer: None });
+        }
+        // One line after them that never collapses: how many arrived and where the rest
+        // are. An update her window cannot hold whole then leaves only this, never
+        // vanishes unknown; a handle per update would put every one in the conversation's
+        // floor and crowd out the newest (40 handles took its room in the busy-room test).
+        if let Some(newest) = ws.room_updates.last() {
+            let line = format!(
+                "[{} room message(s) arrived during this turn; any not shown above: reread with chat/history]",
+                ws.room_updates.len()
+            );
+            turns.push(crate::cognition::context_streams::conversation::Turn {
+                key: format!("room-updates/{}", newest.event_id),
+                role: crate::cognition::context_streams::Role::User,
+                pointer: Some(line.clone()),
+                line,
+            });
         }
         // What follows the view in this act's prompt: facts, the clock, demoted payloads.
         let mut messages: Vec<ChatMessage> = Vec::new();
@@ -238,7 +268,7 @@ impl LlmDeliberationFaculty {
                 };
                 let text = render(GroundingPiece::whole(c));
                 let minimum = if c.standing_grounding { render(GroundingPiece::minimum(c)) } else { text.clone() };
-                crate::cognition::context_streams::blocks::Grounding { faculty: c.faculty.as_str().to_owned(), text, minimum }
+                crate::cognition::context_streams::blocks::Grounding { faculty: c.faculty.as_str().to_owned(), text, minimum, units: std::sync::Arc::clone(&c.units) }
             })
             .collect();
         let result_pointers = Vec::new();
@@ -337,17 +367,10 @@ impl LlmDeliberationFaculty {
             stimulus = Some(ChatMessage::text("user", ws.world_state.clone()));
         }
         input.update([(!latest_result.is_empty()) as u8]);
-        // Demoted room updates ride in ordinary history: still shown when the window
-        // has room, trimmed by the existing front-drop only under pressure. They are
-        // chronologically newer than prior history, so they append to its end.
-        let (room_updates, demoted_updates) = self.split_room_updates(ws);
         let mut messages = messages;
-        // The action result's demoted TAIL rides the same way, and goes in FIRST: it is
-        // the outcome of the act that preceded these room updates, so appending it before
-        // them keeps history in the order it happened. Without this the tail would be
-        // silently dropped, which is the discarding this whole split exists to avoid.
+        // The action result's demoted TAIL rides in ordinary history, after prior history:
+        // without this it would be silently dropped.
         messages.extend(demoted_result);
-        messages.extend(demoted_updates);
         let action_statement = self
             .working_memory
             .as_ref()
@@ -369,7 +392,6 @@ impl LlmDeliberationFaculty {
             stimulus,
             latest_result,
             action_statement,
-            room_updates,
         }
     }
 
@@ -419,7 +441,7 @@ impl LlmDeliberationFaculty {
     /// handle. A cut on a CHAR boundary would split a UTF-8 sequence, so the split walks
     /// to a line boundary and says how much moved.
     pub(in super::super) fn split_action_result(&self, message: String) -> (ChatMessage, Option<ChatMessage>) {
-        let window = self.binding.load().context_window as usize;
+        let window = self.working_window() as usize;
         let cap = window / Self::RESULT_SHARE_DENOM as usize;
         let whole = ChatMessage::text("user", message.clone());
         if Self::messages_cost(std::slice::from_ref(&whole)) <= cap {
@@ -473,43 +495,4 @@ impl LlmDeliberationFaculty {
         (tail_msg, Some(head_msg))
     }
 
-    pub(in super::super) fn split_room_updates(&self, ws: &Workspace) -> (Vec<ChatMessage>, Vec<ChatMessage>) {
-        let window = self.binding.load().context_window as usize;
-        let cap = window / Self::ROOM_UPDATE_SHARE_DENOM as usize;
-        let mut required: Vec<ChatMessage> = Vec::new();
-        let mut demoted: Vec<ChatMessage> = Vec::new();
-        let mut used = 0usize;
-        // Newest first so the REQUIRED half is the freshest room state.
-        for message in ws.room_updates.iter().rev() {
-            let rendered = ChatMessage::text("user", message.render_room_update());
-            let cost = Self::messages_cost(std::slice::from_ref(&rendered));
-            // The newest update is always required, even if it alone exceeds the
-            // share: one oversized message must not silently demote the very
-            // stimulus the turn exists to answer. If it genuinely cannot fit, the
-            // existing capacity fault says so honestly.
-            if required.is_empty() || used.saturating_add(cost) <= cap {
-                used += cost;
-                required.push(rendered);
-            } else {
-                demoted.push(rendered);
-            }
-        }
-        required.reverse();
-        demoted.reverse();
-        if !demoted.is_empty() {
-            let demoted_tokens = Self::messages_cost(&demoted);
-            continuum_base::probe!(
-                class = "delib.room_updates.demoted",
-                persona = %self.persona_name,
-                window = window,
-                cap = cap,
-                required = required.len(),
-                required_tokens = used,
-                demoted = demoted.len(),
-                demoted_tokens = demoted_tokens,
-                "required room payload exceeded its share of the window — the newest                  stay REQUIRED and the older were demoted to ordinary history, which                  is still rendered when the window allows. Nothing was discarded: an                  unbounded required payload is what makes a busy room a mute citizen."
-            );
-        }
-        (required, demoted)
-    }
 }

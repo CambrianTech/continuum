@@ -183,9 +183,7 @@ pub fn spawn_publish_invalidator(
 mod tests {
     use super::*;
     use crate::cached_source::{CachedRagSource, DirtyHandle};
-    use crate::rag_budget::{
-         RagContext, RagDelivery, RagSource, ResolutionPreference,
-    };
+    use crate::rag_budget::{RagContext, RagDelivery, RagSource};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -201,26 +199,20 @@ mod tests {
         fn expand_command(&self) -> Option<&'static str> {
             None
         }
-        fn floor_tokens(&self) -> u32 {
-            1
-        }
-        async fn deliver(
-            &self,
-            _ctx: &RagContext,
-            _budget: u32,
-            _resolution: ResolutionPreference,
-        ) -> RagDelivery {
+        async fn deliver(&self, _ctx: &RagContext) -> RagDelivery {
             let n = self.fetches.fetch_add(1, Ordering::SeqCst) + 1;
             RagDelivery {
                 source_id: "counting".to_string(),
                 items: vec![crate::rag_budget::RagItem {
+                    key: String::new(),
+                    summary: None,
+                    pointer: None,
                     content: format!("fetch #{n}"),
                     tokens: 4,
                     metadata: serde_json::json!({}),
                 }],
                 tokens_used: 4,
                 truncated: false,
-                resolution_used: ResolutionPreference::Raw,
             }
         }
     }
@@ -285,13 +277,13 @@ mod tests {
         drop(dirty); // wiring done — cache liveness now keys the listener
 
         let ctx = RagContext::for_persona(uuid::Uuid::new_v4(), 0);
-        let d = cached.deliver(&ctx, 100, ResolutionPreference::Raw).await;
+        let d = cached.deliver(&ctx).await;
         assert_eq!(d.items[0].content, "fetch #1");
 
         // Read-only completion → cache keeps serving.
         bus.publish_async_only(COMMAND_COMPLETED_TOPIC, completed("code/read"));
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let d = cached.deliver(&ctx, 100, ResolutionPreference::Raw).await;
+        let d = cached.deliver(&ctx).await;
         assert_eq!(
             d.items[0].content, "fetch #1",
             "read-only completion must not dirty"
@@ -302,7 +294,7 @@ mod tests {
         let mut refetched = false;
         for _ in 0..100 {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            let d = cached.deliver(&ctx, 100, ResolutionPreference::Raw).await;
+            let d = cached.deliver(&ctx).await;
             if d.items[0].content == "fetch #2" {
                 refetched = true;
                 break;

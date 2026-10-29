@@ -325,3 +325,45 @@ fn a_short_item_without_a_summary_stays_whole_under_a_summary_ceiling() -> Resul
     assert_eq!((start.collapsed, start.summarized), (0, 2));
     Ok(())
 }
+
+// what this catches: a read receipt naming a turn she never saw. `renders` answers true only
+// for an item her view shows whole (or summarized) this epoch, never for one collapsed to its
+// pointer or one the view never held.
+#[test]
+fn renders_is_true_only_for_what_her_view_shows() -> Result<(), GrantMismatch> {
+    let mut actions = Fake::new("actions", 1);
+    actions.push("#1", &"x".repeat(9_000));
+    actions.push("#2", "short");
+    let pointer = |item: &Item<String>| item.pointer.as_ref().map_or(0, String::len);
+    let floor: usize = actions.items().iter().map(pointer).sum();
+    let (view, _) = View::start(vec![], &[&actions], |_| vec![floor + 10])?;
+    assert!(!view.renders("actions", "#1"), "collapsed to its pointer: not read");
+    assert!(view.renders("actions", "#2"), "whole: read");
+    assert!(!view.renders("actions", "#3"), "never held");
+    assert!(!view.renders("conversation", "#2"), "another source's key");
+    Ok(())
+}
+
+
+// what this catches: a squeezed start keeping her collapsed for the rest of the epoch. The view
+// only appends, so items a tight start collapsed stayed handles while the window had room (Aiko,
+// the M5, 2026-10-29: her last fifteen results as handles in a 42k-char prompt on a 55k-token
+// window). A start under grants with room restores them; under the same grants it does not, so a
+// fitting view is never turned over for nothing.
+#[test]
+fn a_start_with_room_restores_what_a_squeezed_start_collapsed() -> Result<(), GrantMismatch> {
+    let mut actions = Fake::new("actions", 1);
+    actions.push("#1", &"x".repeat(9_000));
+    actions.push("#2", "short");
+    let pointer = |item: &Item<String>| item.pointer.as_ref().map_or(0, String::len);
+    let floor: usize = actions.items().iter().map(pointer).sum();
+    let squeezed = floor + 10;
+    let (view, _) = View::start(vec![], &[&actions], |_| vec![squeezed])?;
+    assert!(!view.renders("actions", "#1"), "the squeezed start collapsed the big item");
+    assert!(view.start_would_restore(&[&actions], all_full)?, "room for it: a start gives it back");
+    assert!(!view.start_would_restore(&[&actions], |_| vec![squeezed])?, "the same grants: nothing to restore");
+    // what this catches: an allocator answering for the wrong number of sources read as "nothing
+    // to restore" (Codex on #5564). It is the start's own typed refusal.
+    assert_eq!(view.start_would_restore(&[&actions], |_| vec![]), Err(GrantMismatch { claims: 1, grants: 0 }));
+    Ok(())
+}

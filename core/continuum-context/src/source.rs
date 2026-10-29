@@ -25,6 +25,13 @@ pub struct Item<T> {
     pub pointer: Option<T>,
 }
 
+impl<T> Item<T> {
+    /// An item that is resident whole, with no coarser levels yet.
+    pub fn whole(key: impl Into<String>, full: T) -> Self {
+        Self { key: key.into(), full, summary: None, pointer: None }
+    }
+}
+
 /// A source of a mind's context.
 pub trait Source<T: Block> {
     /// Namespaces the source's item keys in the epoch; unique among her sources.
@@ -52,4 +59,6 @@ pub trait Source<T: Block> {
     fn retired(&self) -> Vec<Item<T>> {
         Vec::new()
     }
+
 }
+

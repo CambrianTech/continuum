@@ -8,11 +8,11 @@ use crate::cognition::context_streams::conversation::{Conversation, Turn};
 use crate::cognition::context_streams::Role;
 
 fn block(faculty: &str, text: &str) -> Grounding {
-    Grounding { faculty: faculty.to_owned(), text: text.to_owned(), minimum: text.to_owned() }
+    Grounding::atomic(faculty, text)
 }
 
 fn turn(n: usize) -> Turn {
-    Turn { key: format!("turn-{n}"), role: Role::User, line: format!("[occurred {n}] Operator: turn {n}") }
+    Turn { key: format!("turn-{n}"), role: Role::User, line: format!("[occurred {n}] Operator: turn {n}"), pointer: None }
 }
 
 /// One act's sources: a room window of six turns starting at `first_turn`, a settled map, the

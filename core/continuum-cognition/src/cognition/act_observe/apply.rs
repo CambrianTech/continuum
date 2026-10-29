@@ -7,7 +7,6 @@ use continuum_base::time::EpochMs;
 use uuid::Uuid;
 
 use crate::ai::types::{ToolCall, ToolResult};
-use crate::cognition::context_budget::ContextBudget;
 use crate::cognition::workspace::WorkspaceCycle;
 
 use super::observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
@@ -153,16 +152,6 @@ pub async fn apply_act(
     if let Some((_, w)) = cycle.model_loadout() {
         body.working_memory.set_served_window(w);
     }
-    // ONE budget for what an act's results may hold: working memory's own, which is the
-    // same for every turn of hers. Sized from the running turn's audience, a room turn
-    // (Interactive) cut a 440-line read at 12,960 chars while the ring the result joins next
-    // budgets ~26k (Benchy, the M5, 2026-10-17 23:06Z: "more than this window's 12960-char
-    // share", the same file re-read every turn, no write).
-    let budget = if cycle.model_loadout().is_some() {
-        body.working_memory.budget()
-    } else {
-        ContextBudget::unknown()
-    };
     let ctx = crate::cognition::tool_executor::ToolExecutionContext {
         persona_id: body.persona_id,
         persona_name: body.persona_name.clone(),
@@ -303,7 +292,7 @@ pub async fn apply_act(
     let batch_result = tokio::time::timeout(
         TOOL_BATCH_CEILING,
         executor
-            .execute_native_batch_pinned(&dispatched, &ctx, budget.latest_action_chars(), &pin),
+            .execute_native_batch_pinned(&dispatched, &ctx, &pin),
     )
     .await
     .unwrap_or_else(|_| { // timeout elapsed = the hang this bound exists to convert; the closure builds the honest error
@@ -437,7 +426,7 @@ pub async fn apply_act(
             },
             status: ActStatus::Executed,
         };
-        observation.push_str(&obs.render_recency(intent, &budget));
+        observation.push_str(&obs.render_recency(intent));
         recall_observation.push_str(&obs.render_recall(intent));
         // (The canvas feed publishes at the tool-executor seam, PRE-fold — a
         // flood-sized ObserveResult here is already a spilled preview that no

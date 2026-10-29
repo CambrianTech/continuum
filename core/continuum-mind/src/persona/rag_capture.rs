@@ -13,7 +13,7 @@
 //! ### What this module provides (slice 11 — capture side)
 //!
 //! - `RagCaptureEvent` — a tagged record of one fact in the turn
-//!   (TurnStart, BudgetAllocated, SourceDelivered, TurnEnd).
+//!   (TurnStart, SourceDelivered, TurnEnd).
 //! - `RagCaptureSink` trait — abstract recording surface.
 //! - `NoopRagCaptureSink` — production-safe default. Drops events on
 //!   the floor; zero overhead when capture isn't in use.
@@ -60,10 +60,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::cognition::rag_budget::{
-    BudgetAllocation, RagContext, RagDelivery, RagSource, RagSourceBudget,
-    ReservedTokens, ResolutionPreference,
-};
+use crate::cognition::rag_budget::{RagContext, RagDelivery, RagSource};
 
 //=============================================================================
 // EVENT MODEL — one fact about the turn, tagged
@@ -83,18 +80,7 @@ pub enum RagCaptureEvent {
         captured_at_ms: u64,
         persona_id: uuid::Uuid,
         turn_id: Option<uuid::Uuid>,
-        context_window: u32,
-        reserved: ReservedTokens,
-        source_budgets: Vec<RagSourceBudget>,
         context: RagContext,
-    },
-    /// The budget allocator decided who gets what. Emitted by the
-    /// caller after `RagBudgetAdapter::allocate` returns.
-    BudgetAllocated {
-        captured_at_ms: u64,
-        persona_id: uuid::Uuid,
-        turn_id: Option<uuid::Uuid>,
-        allocation: BudgetAllocation,
     },
     /// A source delivered. Emitted by `RecordingRagSource` decorator
     /// automatically after every `deliver`.
@@ -103,8 +89,6 @@ pub enum RagCaptureEvent {
         persona_id: uuid::Uuid,
         turn_id: Option<uuid::Uuid>,
         source_id: String,
-        budget_requested: u32,
-        resolution_requested: ResolutionPreference,
         delivery: RagDelivery,
     },
     /// Caller signals the end of a turn. Optional — replay can
@@ -120,7 +104,6 @@ impl RagCaptureEvent {
     pub fn persona_id(&self) -> uuid::Uuid {
         match self {
             Self::TurnStart { persona_id, .. }
-            | Self::BudgetAllocated { persona_id, .. }
             | Self::SourceDelivered { persona_id, .. }
             | Self::TurnEnd { persona_id, .. } => *persona_id,
         }
@@ -129,7 +112,6 @@ impl RagCaptureEvent {
     pub fn turn_id(&self) -> Option<uuid::Uuid> {
         match self {
             Self::TurnStart { turn_id, .. }
-            | Self::BudgetAllocated { turn_id, .. }
             | Self::SourceDelivered { turn_id, .. }
             | Self::TurnEnd { turn_id, .. } => *turn_id,
         }
@@ -248,7 +230,7 @@ impl RagCaptureSink for JsonlRagCaptureSink {
 ///
 /// ```ignore
 /// let source = RecordingRagSource::new(
-///     EngramSource::new(persona_id, admission_state),
+///     ViewStateRagSource::<RosterViewState>::per_room(rooms),
 ///     capture_sink.clone(),
 /// );
 /// ```
@@ -282,29 +264,13 @@ impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
         self.inner.expand_command()
     }
 
-    /// Delegates: capture is transparent, so the wrapped source's floor is the floor.
-    fn floor_tokens(&self) -> u32 {
-        self.inner.floor_tokens()
-    }
-
-    fn budget_claim(&self, window: u32, headroom: u32) -> crate::cognition::rag_budget::RagSourceBudget {
-        self.inner.budget_claim(window, headroom)
-    }
-
-    async fn deliver(
-        &self,
-        ctx: &RagContext,
-        budget: u32,
-        resolution: ResolutionPreference,
-    ) -> RagDelivery {
-        let delivery = self.inner.deliver(ctx, budget, resolution).await;
+    async fn deliver(&self, ctx: &RagContext) -> RagDelivery {
+        let delivery = self.inner.deliver(ctx).await;
         let event = RagCaptureEvent::SourceDelivered {
             captured_at_ms: ctx.now_ms,
             persona_id: ctx.persona_id,
             turn_id: ctx.turn_id,
             source_id: self.inner.source_id().to_string(),
-            budget_requested: budget,
-            resolution_requested: resolution,
             delivery: delivery.clone(),
         };
         if turn_is_private(ctx) {
@@ -379,12 +345,8 @@ mod tests {
         RagContext::for_persona(persona(), 1_000_000)
     }
 
-    fn item(text: &str, tokens: u32) -> RagItem {
-        RagItem {
-            content: text.to_string(),
-            tokens,
-            metadata: serde_json::json!({}),
-        }
+    fn item(text: &str) -> RagItem {
+        RagItem::whole(text, text, serde_json::json!({}))
     }
 
     // ---- Sink-level tests ----
@@ -430,12 +392,6 @@ mod tests {
             captured_at_ms: 1_000,
             persona_id: persona(),
             turn_id: Some(Uuid::new_v4()),
-            context_window: 32_768,
-            reserved: ReservedTokens {
-                system: 500,
-                completion: 2_000,
-            },
-            source_budgets: vec![],
             context: ctx(),
         });
         sink.record(RagCaptureEvent::TurnEnd {
@@ -486,12 +442,10 @@ mod tests {
 
     #[tokio::test]
     async fn recording_decorator_passes_through_delivery() {
-        let inner = StubRagSource::new("stub", persona(), vec![item("hello", 5), item("world", 5)]);
+        let inner = StubRagSource::new("stub", persona(), vec![item("hello"), item("world")]);
         let sink: Arc<dyn RagCaptureSink> = Arc::new(InMemoryRagCaptureSink::new());
         let recorder = RecordingRagSource::new(inner, sink.clone());
-        let delivery = recorder
-            .deliver(&ctx(), 100, ResolutionPreference::Raw)
-            .await;
+        let delivery = recorder.deliver(&ctx()).await;
         // Wrapped source's items pass through.
         assert_eq!(delivery.items.len(), 2);
         // source_id pass-through.
@@ -500,26 +454,20 @@ mod tests {
 
     #[tokio::test]
     async fn recording_decorator_records_each_deliver() {
-        let inner = StubRagSource::new("stub", persona(), vec![item("a", 5)]);
+        let inner = StubRagSource::new("stub", persona(), vec![item("a")]);
         let sink = Arc::new(InMemoryRagCaptureSink::new());
         let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
         let recorder = RecordingRagSource::new(inner, sink_dyn);
-        recorder
-            .deliver(&ctx(), 100, ResolutionPreference::Raw)
-            .await;
+        recorder.deliver(&ctx()).await;
         let events = sink.events();
         assert_eq!(events.len(), 1);
         match &events[0] {
             RagCaptureEvent::SourceDelivered {
                 source_id,
-                budget_requested,
-                resolution_requested,
                 delivery,
                 ..
             } => {
                 assert_eq!(source_id, "stub");
-                assert_eq!(*budget_requested, 100);
-                assert_eq!(*resolution_requested, ResolutionPreference::Raw);
                 assert_eq!(delivery.items.len(), 1);
             }
             other => panic!("expected SourceDelivered, got {other:?}"),
@@ -527,31 +475,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recording_decorator_records_truncated_delivery() {
-        let inner = StubRagSource::new(
-            "stub",
-            persona(),
-            vec![item("a", 5), item("b", 5), item("c", 5)],
-        );
-        let sink = Arc::new(InMemoryRagCaptureSink::new());
-        let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
-        let recorder = RecordingRagSource::new(inner, sink_dyn);
-        // Budget tight enough that the stub truncates (one of three fits).
-        let first = recorder.deliver(&ctx(), 5, ResolutionPreference::Raw).await;
-        assert!(first.truncated, "stub has more than fit");
-        let events = sink.events();
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            RagCaptureEvent::SourceDelivered { delivery, .. } => {
-                assert!(delivery.truncated, "truncation must reach the capture record");
-            }
-            other => panic!("expected SourceDelivered, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
     async fn recording_decorator_records_persona_and_turn_id() {
-        let inner = StubRagSource::new("stub", persona(), vec![item("a", 5)]);
+        let inner = StubRagSource::new("stub", persona(), vec![item("a")]);
         let sink = Arc::new(InMemoryRagCaptureSink::new());
         let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
         let recorder = RecordingRagSource::new(inner, sink_dyn);
@@ -560,7 +485,7 @@ mod tests {
         let mut ctx_with_turn = ctx();
         ctx_with_turn.substrate.turn_id = Some(turn_id);
         recorder
-            .deliver(&ctx_with_turn, 100, ResolutionPreference::Raw)
+            .deliver(&ctx_with_turn)
             .await;
         let events = sink.events();
         let ev = &events[0];
@@ -575,19 +500,19 @@ mod tests {
             persona_id: persona(),
             turn_id: Some(Uuid::new_v4()),
             source_id: "stub".to_string(),
-            budget_requested: 100,
-            resolution_requested: ResolutionPreference::Compressed,
-            delivery: RagDelivery {
-                source_id: "stub".to_string(),
-                items: vec![item("hi", 2)],
-                tokens_used: 2,
-                truncated: false,
-                resolution_used: ResolutionPreference::Compressed,
-            },
+            delivery: RagDelivery::of("stub", vec![item("hi").with_summary("h").with_pointer("[hi]")], false),
         };
         let json = serde_json::to_string(&event).unwrap();
         let round: RagCaptureEvent = serde_json::from_str(&json).unwrap();
-        // The kind discriminant survives.
-        assert!(matches!(round, RagCaptureEvent::SourceDelivered { .. }));
+        // The kind discriminant and the item levels survive.
+        match round {
+            RagCaptureEvent::SourceDelivered { delivery, .. } => {
+                assert_eq!(delivery.items[0].pointer.as_deref(), Some("[hi]"));
+            }
+            other => panic!("expected SourceDelivered, got {other:?}"),
+        }
+        // A line written before levels (budget fields, no key or levels) still reads.
+        let old = r#"{"kind":"source_delivered","captured_at_ms":1,"persona_id":"00000000-0000-0000-0000-000000000aaa","turn_id":null,"source_id":"stub","budget_requested":100,"resolution_requested":"raw","delivery":{"source_id":"stub","items":[{"content":"hi","tokens":2,"metadata":{}}],"tokens_used":2,"truncated":false,"resolution_used":"raw"}}"#;
+        assert!(serde_json::from_str::<RagCaptureEvent>(old).is_ok(), "pre-levels captures replay");
     }
 }

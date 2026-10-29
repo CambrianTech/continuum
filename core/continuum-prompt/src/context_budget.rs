@@ -35,12 +35,11 @@
 //! | dispatch result     | 4_000        |  1/12  (4_096)                 |
 //! | rendered tool slice | 12_000       |  1/4   (12_288)                |
 //! | tool catalog summary| 96           |  1/512 (96, exact)             |
-//! | echoed args         | 600 †        | ~1/64  (768)                   |
 //!
-//! † the echoed-args bound is the one value that was NOT battle-tuned — it was invented
-//! (by me) on 2026-08-03, the same day this module was written to delete it. It shares the
-//! trail-head fraction because it plays the same role: a recognizable stub of something she
-//! already has in full elsewhere.
+//! The echoed-args bound (600, invented on 2026-08-03, never tuned) is gone: a result's header
+//! shows her call's single-line arguments whole and names its multi-line bodies by shape, and the
+//! intent rides as its first line (act_observe::recency::render_call_args, intent_label). A shape
+//! rule, never a size, so nothing here sizes it.
 //!
 //! So the fractions below are not a new guess: they are the tuning that was already there,
 //! expressed against the thing it was always implicitly relative to. On a 16k lane every
@@ -114,6 +113,26 @@ impl ContextBudget {
             served_chars: (context_window > 0)
                 .then(|| (context_window as usize).saturating_mul(GUARD_CHARS_PER_TOKEN)),
         }
+    }
+
+    /// The window her prompt is fitted to: the knee the dyno measured in her own traffic, never
+    /// above the served slot. Stable by construction: it does not move with load, so it never
+    /// turns an epoch over mid-flight.
+    ///
+    /// Why a token count from the dyno and not a rate: the knee is where a smaller window's
+    /// turnovers start to cost more than the smaller context saves, and it is counted in
+    /// tokens of her own requests, so it does not depend on how fast the engine is. A rate
+    /// does, and moves with load. Deriving the window from the live prefill-rate EMA
+    /// (f45f090a6, M5 2026-10-28) moved it 48k -> 40k -> 32k as contention lowered the rate,
+    /// refused Aris twice at 32k and turned epochs over 74 times in 37 minutes. Rolled back.
+    ///
+    /// Measured 2026-10-28 (continuum-context replay --append-tail over all four residents'
+    /// captures, `~/.continuum/evidence/2026-10-28-working-window/`): at 48k, prefill per
+    /// request fell ~3x (Benchy 110 -> 41 s, Aiko 81 -> 24, Aris 113 -> 33, Atlas 94 -> 20)
+    /// with zero handles dropped; 32k doubled turnovers. Re-measure by rerunning the replay;
+    /// the act inspector tracking the knee continuously is the next step.
+    pub fn working_window(served: u32) -> u32 {
+        Self::working_window_when(served, continuum_engine::inference::llama_server::current_serving().active_model.is_some())
     }
 
     /// The served window only — the KV-capacity reading, for seams that must not be
@@ -292,8 +311,21 @@ fn prefill_affordable_window_for(served: u32, audience: continuum_engine::infere
     affordable
 }
 
-/// Share of the served window recall may spend. See [`ContextBudget::recall_tokens`].
-const RECALL_DENOM: usize = 10;
+/// The working window's measured knee, in tokens (see [`Self::working_window`]).
+// derived-or-floor: derived — the dyno's knee over the M5 residents' own captures, 2026-10-28
+// (~/.continuum/evidence/2026-10-28-working-window/): 48k cut prefill per request ~3x with
+// zero handles dropped; 32k doubled turnovers; 64k kept 1.5-2x more prefill.
+const WORKING_WINDOW_TOKENS: u32 = 49_152;
+
+/// PURE: the working window for a served slot of `served` tokens, when a model is `serving`: the
+/// measured knee, never above the slot. With nothing served (a fixture) it is the served window.
+fn working_window_when(served: u32, serving: bool) -> u32 {
+    if served == 0 || !serving {
+        return served;
+    }
+    Self::WORKING_WINDOW_TOKENS.min(served)
+}
+
 
     /// Whether a window is known: every bound below is a real number, not "no bound".
     pub fn is_known(&self) -> bool {
@@ -376,122 +408,6 @@ const RECALL_DENOM: usize = 10;
         self.fraction(4)
     }
 
-    /// One source's grounding offer, in tokens. Preserve the source bridge's
-    /// window-relative share (task #124: 4096 on a 16k window), but apply the
-    /// same measured prefill affordability as recall, tools and working memory.
-    /// This is an offer ceiling, not a reservation: the existing prompt fitter
-    /// still allocates the assembled context and preserves complete source units.
-    /// Grounding and tool-output rendering have separate policy names even though
-    /// their current shares agree; changing one must not silently change the other.
-    pub fn grounding_tokens(&self) -> usize {
-        match self.total_chars {
-            Some(total) => (total / GUARD_CHARS_PER_TOKEN) / 4,
-            None => usize::MAX,
-        }
-    }
-
-    /// ONE tool's one-line summary in the catalog she is offered. A catalog lists ~100 tools,
-    /// so an unbounded description per line re-creates the dump this bound exists to prevent —
-    /// but on a roomy window she can afford a fuller clause per tool, which is real PX. At a
-    /// 16k lane this is exactly the 96 chars the old constant hard-coded.
-    pub fn catalog_summary_chars(&self) -> usize {
-        self.fraction(512)
-    }
-
-    /// Default CEILING on one response's generated length, in TOKENS (not chars) — the role's
-    /// fallback budget when it declares none. An eighth of the window: enough that a real
-    /// answer (a function, a diff, a traceback walk) is never truncated mid-thought, while
-    /// still leaving the prompt its room. #45's doctrine is that the adapter owns generation
-    /// length; this is the fallback for a role that says nothing, and like every other bound
-    /// here it must scale — a `512` default silently truncates every model's answers equally,
-    /// whether it holds 4k or 1M.
-    pub fn default_response_tokens(&self) -> u32 {
-        match self.total_chars {
-            // total_chars = window * GUARD_CHARS_PER_TOKEN, so /8 in tokens is /(8*ratio) here.
-            Some(total) => ((total / GUARD_CHARS_PER_TOKEN) / 8).min(u32::MAX as usize) as u32,
-            None => u32::MAX,
-        }
-    }
-
-    /// Tokens recall may spend surfacing past memories.
-    ///
-    /// Recall is ONE perception faculty among many (roster, doctrine, working memory)
-    /// plus the room transcript and the identity prompt — it must never crowd them
-    /// out. `1/RECALL_DENOM` keeps the live message dominant while still carrying the
-    /// relevant past, and it SCALES: a 1M-context model gets proportionally more
-    /// recall instead of a fixed 4k-shaped slice.
-    ///
-    /// Moved here 2026-08-20 from `recall_faculty.rs`, where it lived as
-    /// `RECALL_WINDOW_FRACTION: f32 = 0.10` — a bare float that this module's own
-    /// guard could not see, because the guard's type list stopped at the integers.
-    /// Widening it to floats surfaced this on the first run.
-    pub fn recall_tokens(&self) -> usize {
-        match self.total_chars {
-            Some(total) => (total / GUARD_CHARS_PER_TOKEN) / Self::RECALL_DENOM,
-            None => usize::MAX,
-        }
-    }
-
-    /// Share of the window the TOOL MENU may occupy. See [`Self::tool_surface_tokens`].
-    const TOOL_SURFACE_DENOM: usize = 4;
-
-    /// The most the offered tool schemas may cost before the surface must narrow to her
-    /// hands. A menu, not a meal: `1/TOOL_SURFACE_DENOM` of the served window.
-    ///
-    /// ## Why a bound existed nowhere, and what it cost
-    ///
-    /// `native_tool_specs` is DERIVED — every command marked `NATIVE = true` is offered
-    /// automatically. That is the right architecture, and it means the surface grows as an
-    /// unbounded side effect of a flag set in another file (+52 % in two weeks, #460). The
-    /// per-turn COST was already memoized (`describe_tool_tokens`) and compared against
-    /// nothing.
-    ///
-    /// Measured 2026-09-07 04:1xZ on IntelMac (card e20e064f): a 0.5B citizen on a 32,768
-    /// window took 37 schemas ≈ 8,735 tokens — larger than her framing (3,189) and her
-    /// entire conversation (3,551) combined — for `demand_tokens` 31,895 against 32,768,
-    /// i.e. 97.3 % of the window consumed before she wrote a token. She published her
-    /// prompt preamble to the room instead of answering.
-    ///
-    /// ## Why `1/4`, calibrated rather than invented
-    ///
-    /// Chosen so the lanes where the full surface DEMONSTRABLY works keep it, and only the
-    /// ones where it crowds out the conversation narrow. Against the same 8,735-token
-    /// surface:
-    ///
-    /// | served window | 1/4 allowance | full surface |
-    /// |---------------|---------------|--------------|
-    /// | 50,944 (M5 Ornith lane)   | 12,736 | fits — unchanged |
-    /// | 32,768 (IntelMac 0.5B)    |  8,192 | narrows — the measured failure |
-    /// | 24,832 (5090 per-slot)    |  6,208 | narrows |
-    ///
-    /// `4` is also the denominator this module already uses for the two other "one big
-    /// thing may take a quarter" bounds (latest action, rendered tool slice), so the menu
-    /// is held to the same share as the single largest piece of content beside it.
-    ///
-    /// ## What narrowing must NOT mean
-    ///
-    /// Not amputation. Trimming the set outright is the #206 cliff — measured 14/14 SWE
-    /// acts spent on `commands/help` with 0 edits, because a citizen who cannot see a verb
-    /// and cannot look one up has only the asking-tool left. The narrowed surface is her
-    /// HANDS, which by construction retain the `commands/` discovery pair, so anything
-    /// withheld is still exactly one `commands/list` away. Bound the menu; never remove the
-    /// index.
-    ///
-    /// Unknown window folds nothing, per the module's unknown-window contract — an unknown
-    /// window must never become an invented one.
-    pub fn tool_surface_tokens(&self) -> usize {
-        match self.total_chars {
-            Some(total) => (total / GUARD_CHARS_PER_TOKEN) / Self::TOOL_SURFACE_DENOM,
-            None => usize::MAX,
-        }
-    }
-
-    /// Echo of ONE argument value back into the recency channel. The tightest bound, and
-    /// deliberately so: she WROTE these one generation ago, so echoing a whole file's
-    /// `content` back at her buys nothing and costs the window.
-    pub fn echoed_arg_chars(&self) -> usize {
-        self.fraction(64)
-    }
 
     /// Total char share of the PROPRIOCEPTION RECEIPT ARCHIVE — the receipts-ONLY ring in
     /// [`WorkingMemory`](super::working_memory::WorkingMemory) that makes act history
@@ -610,25 +526,16 @@ mod tests {
             1_024
         );
 
-        // Card 2bbee27a: grounding previously bypassed this rate ladder and
-        // offered a quarter of raw KV capacity while the other context sources
-        // used measured affordability. Exercise those same known/unknown rungs
-        // at the current 51,712-token geometry and a smaller-than-serve-floor
-        // window. These are deterministic policy inputs, not hardware receipts.
-        for (window, rate, expected) in [
-            (51_712, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }, 12_928),
-            (51_712, MeasuredRate::UNKNOWN, continuum_engine::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS / 4),
-            (256, MeasuredRate::UNKNOWN, 64),
-            (256, MeasuredRate { tps: Some(12.5), source: RateSource::Stale }, 64),
-            (0, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }, 0),
+        // Every rung, known or unknown, stays within the lane at the current geometry and a
+        // smaller-than-serve-floor window (deterministic policy inputs, not hardware receipts).
+        for (window, rate) in [
+            (51_712, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }),
+            (51_712, MeasuredRate::UNKNOWN),
+            (256, MeasuredRate::UNKNOWN),
+            (256, MeasuredRate { tps: Some(12.5), source: RateSource::Stale }),
+            (0, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }),
         ] {
-            let affordable = ContextBudget::affordable_for_rate(rate, window, Audience::Interactive, None);
-            assert!(affordable <= window);
-            if window > 0 {
-                let budget = ContextBudget::from_window_unbounded(affordable);
-                assert_eq!(budget.grounding_tokens(), expected as usize);
-                assert!(budget.grounding_tokens() <= window as usize);
-            }
+            assert!(ContextBudget::affordable_for_rate(rate, window, Audience::Interactive, None) <= window);
         }
     }
 
@@ -652,49 +559,6 @@ mod tests {
         assert_eq!(b.latest_action_chars(), 16_384 * GUARD_CHARS_PER_TOKEN);
         near(b.dispatch_result_chars(), 4_000); // DISPATCH_RESULT_MAX_CHARS
         near(b.render_slice_chars(), 12_000); // RENDER_BUDGET_CHARS
-        near(b.catalog_summary_chars(), 96); // SUMMARY_MAX_CHARS
-                                             // Echoed args share the trail-head fraction (see the module doc's † note — the old
-                                             // 600 was invented, not tuned, so it is not a calibration target).
-        assert_eq!(b.echoed_arg_chars(), b.trail_head_chars());
-    }
-
-    /// what this catches: the tool-menu bound drifting off the lanes it was calibrated
-    /// against, in EITHER direction. `TOOL_SURFACE_DENOM` was chosen so the lanes where the
-    /// full 37-schema surface demonstrably works keep it, and only the ones where it crowds
-    /// out the conversation narrow — so both halves are asserted. Raising the denominator
-    /// silently amputates a working lane; lowering it re-admits the failure below.
-    ///
-    /// The 8,735 figure is measured, not assumed: IntelMac 2026-09-07, `tools_n=37`, and
-    /// `llm_deliberation_faculty`'s own comment independently puts 37 schemas at ~8.5k.
-    /// On that day a 0.5B on a 32,768 window spent it and reached `over_window` 0.973,
-    /// then published its prompt preamble to the room instead of answering (card e20e064f).
-    #[test]
-    fn the_tool_menu_bound_admits_the_lanes_it_was_calibrated_to_admit() {
-        const MEASURED_37_SCHEMA_SURFACE: usize = 8_735;
-
-        // The M5's Ornith lane carries the full surface today and must keep carrying it —
-        // this fix must not narrow a lane that was never the problem.
-        assert!(
-            ContextBudget::from_window(50_944).tool_surface_tokens() >= MEASURED_37_SCHEMA_SURFACE,
-            "a 50,944-token lane must still be offered the whole surface"
-        );
-        // The measured failure, and the 5090's per-slot window beside it.
-        for window in [32_768u32, 24_832] {
-            assert!(
-                ContextBudget::from_window(window).tool_surface_tokens()
-                    < MEASURED_37_SCHEMA_SURFACE,
-                "a {window}-token window cannot afford 37 schemas and must narrow to hands"
-            );
-        }
-    }
-
-    /// what this catches: an unknown window inventing a tool-menu bound. Same contract as
-    /// every other bound here — unknown folds NOTHING, because an unknown window that
-    /// becomes a number is the exact bug this module exists to kill. A narrowing driven by
-    /// a guessed window would hide verbs from a citizen for no measured reason.
-    #[test]
-    fn an_unknown_window_never_narrows_the_tool_menu() {
-        assert_eq!(ContextBudget::unknown().tool_surface_tokens(), usize::MAX);
     }
 
     /// what this catches: the whole point of the module — a big window must actually GET a
@@ -762,6 +626,17 @@ mod tests {
         let b = ContextBudget::unknown();
         assert_eq!(b.latest_action_chars(), usize::MAX);
         assert_eq!(b.trail_head_chars(), usize::MAX);
-        assert_eq!(b.echoed_arg_chars(), usize::MAX);
+    }
+
+    // what this catches: a working window that moves with load (f45f090a6 shrank it 48k ->
+    // 32k under contention and refused a resident) or exceeds the slot. With no served model
+    // (every test) it is the served window, as before.
+    #[test]
+    fn the_working_window_is_the_measured_knee_and_never_exceeds_the_slot() {
+        assert_eq!(ContextBudget::working_window_when(159_232, true), 49_152, "serving a wide slot: the measured knee");
+        assert_eq!(ContextBudget::working_window_when(32_768, true), 32_768, "never above the slot");
+        assert_eq!(ContextBudget::working_window_when(159_232, false), 159_232, "nothing served (a fixture): the served window");
+        assert_eq!(ContextBudget::working_window_when(0, true), 0);
+        assert_eq!(ContextBudget::working_window(159_232), 159_232, "no served model in a test: the served window");
     }
 }

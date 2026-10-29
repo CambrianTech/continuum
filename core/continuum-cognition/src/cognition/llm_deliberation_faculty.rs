@@ -97,6 +97,8 @@ mod admission;
 pub(crate) mod admission_clock;
 use self::request::*;
 mod reply_claim;
+mod read_receipt;
+pub use read_receipt::ReadReceipt;
 use self::reply_claim::*;
 mod verdict;
 mod tool_surface;
@@ -152,6 +154,9 @@ const FLEX_HISTORY: &str = "history";
 
 const FLEX_REPLY: &str = "reply";
 
+/// Her hands (`prompt/tools_epoch.rs`): floor = the epoch's level or core hands, want = all.
+const FLEX_TOOLS: &str = "tools";
+
 /// The reasoner faculty. Persona-scoped; shared model backend.
 pub struct LlmDeliberationFaculty {
     persona_id: Uuid,
@@ -185,7 +190,7 @@ pub struct LlmDeliberationFaculty {
     tools: Vec<NativeToolSpec>,
     /// Her native tool surfaces (the whole registry, her hands, her core hands), built
     /// once per tool assignment in canonical order; which one a turn sends is
-    /// [`Self::select_tool_surface`], from the activity and the served window only.
+    /// the retained tools in [`Self::prompt_view`], selected from the shared allocation.
     surface: ToolSurface,
     /// Where this faculty records its chain-of-thought after a verdict, so the
     /// persona can resume its train of thought next turn (the
@@ -199,6 +204,8 @@ pub struct LlmDeliberationFaculty {
     /// The live spawn path attaches a per-persona JSONL sink. See
     /// [`prompt_capture`](crate::cognition::prompt_capture).
     prompt_capture: Option<Arc<dyn crate::cognition::prompt_capture::PromptCaptureSink>>,
+    /// Where a sent prompt's read receipt goes (`read_receipt.rs`); `None` marks nothing read.
+    read_receipt: Option<Arc<dyn read_receipt::ReadReceipt>>,
     /// The persona's paged-in genome — the LoRA layers this faculty injects into
     /// every generation request ([`GenomeHandle`]). Shared with the owning
     /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle), which pages skills
@@ -232,6 +239,8 @@ pub struct LlmDeliberationFaculty {
     context_view: parking_lot::Mutex<
         Option<continuum_context::view::View<crate::cognition::context_streams::ContextMessage>>,
     >,
+    /// The tool level her current view epoch chose (`prompt/tools_epoch.rs`).
+    tools_epoch: parking_lot::Mutex<Option<prompt::ToolsEpoch>>,
     /// A measurement fork's (`fork_eval_cycle`): its turns warm their own page, never hers.
     forked: bool,
 }
@@ -259,10 +268,12 @@ impl LlmDeliberationFaculty {
             surface: ToolSurface::default(),
             working_memory: None,
             prompt_capture: None,
+            read_receipt: None,
             genome: empty_genome(),
             decoding: relaxed_decoding(),
             working_set: None,
             context_view: parking_lot::Mutex::new(None),
+            tools_epoch: parking_lot::Mutex::new(None),
             forked: false,
         }
     }
@@ -450,24 +461,6 @@ impl LlmDeliberationFaculty {
     /// it with her need, and a turn cut inside its answer records that channel at DOUBLE,
     /// so an act that really needs more room earns it back within a turn.
     const COMPLETION_COLD_PRIOR_TOKENS: u32 = crate::inference::planning::MIN_SERVE_CTX;
-
-    /// The share of the served window the REQUIRED room payload may occupy.
-    ///
-    /// Room updates are required input — a citizen must see what was said to her —
-    /// so `fit_messages` may not drop them the way it drops old history. Unbounded,
-    /// that makes a BUSY ROOM into a mute citizen: measured 2026-09-09 on BigMama,
-    /// `delib.turn.demand` reported `conversation_tokens=53522` against a 23,040
-    /// window (`over_window=3.14`). The required side then exceeded the whole
-    /// budget, `grounding_budget` saturated to 0, and `GroundingPlan::minimum`
-    /// refused 192 of 229 cognition cycles — 84% — with
-    /// "requires 810 tokens, but only 0 are available". Both live citizens were
-    /// mute for hours while `serving/status` read `ready: true`.
-    ///
-    /// The window is not the fault and raising it does not fix this: the room grows
-    /// without bound and any fixed window is eventually 3x under. What is bounded
-    /// here is what the turn REQUIRES; the rest of the room is still reachable
-    /// through history and recall.
-    const ROOM_UPDATE_SHARE_DENOM: u32 = 4;
 
     /// The action result's share of the window before its tail is DEMOTED to ordinary
     /// history. Same denominator as the room payload for the same reason: no single
