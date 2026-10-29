@@ -708,8 +708,10 @@ fn occupancy_of(shape: TurnShape, prefill_tps: f64, decode_tps: f64) -> Option<s
     Some(std::time::Duration::from_secs_f64(secs))
 }
 
-/// Append one request's exact message list to `<dir>/<persona>.wire.jsonl` (the wire capture,
-/// sink 4 of PRIVACY-OF-THOUGHT.md). A turn in her mind room writes nothing.
+/// Append one request's message list, whole, to `<dir>/<persona>.wire.jsonl` (the wire capture,
+/// sink 4 of PRIVACY-OF-THOUGHT.md). A turn in her mind room writes nothing. The boundary is the
+/// ADAPTER'S INPUT (`TextGenerationRequest::messages`), not the HTTP body an adapter serializes
+/// from it; a write failure is silent here, so a missing row is never evidence no request ran.
 fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &str, room_id: Uuid, request: &TextGenerationRequest) {
     if crate::cognition::mind_room::is_private_room(persona_id, room_id) {
         crate::cognition::mind_room::note_withheld(persona_id, "wire_capture");
@@ -718,11 +720,10 @@ fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &s
     let row = serde_json::json!({
         "ts_ms": continuum_base::time::EpochMs::now().millis(),
         "persona": persona_name,
-        "messages": request
-            .messages
-            .iter()
-            .map(|m| serde_json::json!({"role": m.role, "text": m.content_text()}))
-            .collect::<Vec<_>>(),
+        // Whole messages, every part: a text-only projection dropped native tool calls and
+        // results, so her newest result read as a bare label in the one input of record
+        // (Aiko, the M5, 2026-10-29: a result counted as lost was on the wire).
+        "messages": request.messages,
     });
     let _ = std::fs::create_dir_all(dir);
     use std::io::Write as _;
