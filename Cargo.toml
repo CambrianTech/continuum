@@ -37,6 +37,7 @@ members = [
     "core/continuum-vitals",
     "core/continuum-prompt",
     "core/continuum-grounding",
+    "core/continuum-engram",
     "core/continuum-text-analysis",
     "core/continuum-academy",
     "core/continuum-live",

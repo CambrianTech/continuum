@@ -49,7 +49,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::orm::Entity;
+use continuum_kernel::orm::Entity;
 
 //=============================================================================
 // CORE: ENGRAM
@@ -830,7 +830,7 @@ mod tests {
     /// loses that field. This test makes that drift visible.
     #[test]
     fn engram_orm_schema_has_base_columns_and_domain_fields() {
-        use crate::orm::OrmEntity;
+        use continuum_kernel::orm::OrmEntity;
         let schema = Engram::collection_schema();
         assert_eq!(schema.collection, "engrams");
 
@@ -868,8 +868,8 @@ mod tests {
     /// boot-path registration; same shape RoleTemplate slice 1 used.
     #[test]
     fn engram_registers_and_resolves_through_orm_registry() {
-        use crate::orm::entity::OrmEntityRegistry;
-        use crate::orm::OrmEntity;
+        use continuum_kernel::orm::entity::OrmEntityRegistry;
+        use continuum_kernel::orm::OrmEntity;
         let registry = OrmEntityRegistry::new();
         registry
             .register::<Engram>()
@@ -894,9 +894,9 @@ mod tests {
     /// derive → OrmStore → adapter → SQLite → adapter → derive chain.
     #[tokio::test]
     async fn engram_round_trips_through_orm_store_with_derived_schema() {
-        use crate::orm::adapter::StorageAdapter;
-        use crate::orm::sqlite::SqliteAdapter;
-        use crate::orm::OrmStore;
+        use continuum_kernel::orm::adapter::StorageAdapter;
+        use continuum_kernel::orm::sqlite::SqliteAdapter;
+        use continuum_kernel::orm::OrmStore;
         use std::sync::Arc;
 
         let tmp = tempfile::tempdir().expect("tempdir");

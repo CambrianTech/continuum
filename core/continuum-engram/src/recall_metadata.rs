@@ -72,7 +72,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::orm::{BaseEntity, Entity};
+use continuum_kernel::orm::{BaseEntity, Entity};
 
 /// Per-engram volatile recall state. Cloneable + Copy because all
 /// fields are primitives — recall scoring reads a cheap snapshot

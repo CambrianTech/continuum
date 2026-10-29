@@ -385,7 +385,7 @@
     /// to one but not the other.
     #[test]
     fn engram_recall_metadata_schema_has_expected_columns() {
-        use crate::orm::OrmEntity;
+        use continuum_kernel::orm::OrmEntity;
         let schema = EngramRecallMetadata::collection_schema();
         assert_eq!(schema.collection, "engram_recall_metadata");
         let names: std::collections::BTreeSet<&str> =
@@ -416,8 +416,8 @@
     /// the cascade IS the invariant.
     #[test]
     fn engram_recall_metadata_carries_fk_to_engrams_with_cascade() {
-        use crate::orm::types::CascadeRule;
-        use crate::orm::OrmEntity;
+        use continuum_kernel::orm::types::CascadeRule;
+        use continuum_kernel::orm::OrmEntity;
         let schema = EngramRecallMetadata::collection_schema();
         let engram_id_field = schema
             .fields
@@ -445,10 +445,10 @@
     /// that the substrate's persistence is now genuinely relational.
     #[tokio::test]
     async fn engram_recall_metadata_cascade_deletes_with_engram() {
-        use crate::orm::adapter::StorageAdapter;
-        use crate::orm::sqlite::SqliteAdapter;
-        use crate::orm::OrmStore;
-        use crate::cognition::engram::{AircMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
+        use continuum_kernel::orm::adapter::StorageAdapter;
+        use continuum_kernel::orm::sqlite::SqliteAdapter;
+        use continuum_kernel::orm::OrmStore;
+        use crate::engram::{AircMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
         use std::sync::Arc;
 
         let tmp = tempfile::tempdir().expect("tempdir");

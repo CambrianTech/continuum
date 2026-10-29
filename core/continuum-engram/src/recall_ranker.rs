@@ -153,7 +153,7 @@ impl RecallRanker for SignificanceRanker {
         candidates
             .iter()
             .map(|c| {
-                let rel = crate::ai::embedding::cosine_similarity(query, c.embedding);
+                let rel = continuum_engine::ai::embedding::cosine_similarity(query, c.embedding);
                 let score = blend(c.salience, rel, self.relevance_weight);
                 let (passes, attention_bid) = if !gated {
                     (true, score)
