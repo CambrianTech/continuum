@@ -119,6 +119,7 @@ pub(super) async fn verify_deployed_build_against(
     ) {
         Ok(line) => {
             println!("{line}");
+            println!("{}", verify_engine_pin().await?);
             if let Some(note) = cli_note {
                 println!("{note}");
             }
@@ -165,4 +166,64 @@ pub(super) fn describe_running_core(socket: &str) -> String {
         desc.push_str(&format!(", image {}", img.display()));
     }
     desc
+}
+
+/// How long `deploy-verify` gives the core to hold its node to the pinned engine: the core
+/// re-pins before its next launch or reconcile, which follows boot within seconds.
+const ENGINE_PIN_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The engine half of a deploy's receipt (card a3e92354): the running core reports the engine
+/// its source pins and the stamp of the slot it runs, and a stamp naming another commit fails
+/// the deploy. The M5 ran a stale engine for 2.5 h on 2026-10-27 behind two "deploy verified"
+/// lines that checked only the core.
+async fn verify_engine_pin() -> Result<String, String> {
+    let started = std::time::Instant::now();
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+    loop {
+        tick.tick().await;
+        let reply = running_core_provenance("ping", "engine-verify").await?;
+        let field = |name: &str| reply.get(name).and_then(|v| v.as_str()).map(str::to_string);
+        match engine_verdict(field("enginePin").as_deref(), field("engineStamp").as_deref()) {
+            // The core re-pins on its next launch or reconcile: ask again until the wait ends.
+            Err(_) if started.elapsed() < ENGINE_PIN_WAIT => continue,
+            verdict => return verdict,
+        }
+    }
+}
+
+/// PURE: the engine verdict from what `ping` reported.
+fn engine_verdict(pin: Option<&str>, stamp: Option<&str>) -> Result<String, String> {
+    let Some(pin) = pin.filter(|p| !p.is_empty()) else {
+        return Ok("engine: this core predates the engine pin report (card a3e92354); not checked".into());
+    };
+    let Some(stamp) = stamp else {
+        return Ok(format!("engine: an operator's own engine or no owned install; not held to pin {pin}"));
+    };
+    let commit = stamp.split(':').next().unwrap_or(stamp); // unwrap_or: split always yields one piece
+    if sha_matches(commit, pin) {
+        Ok(format!("✅ engine verified: slot stamp {stamp} is this core's pin"))
+    } else {
+        Err(format!(
+            "ENGINE NOT PINNED: the node runs engine {stamp} but this core pins {pin}. No slot holds the \
+             pin on this backend (`continuum install` builds it), or a promote was refused (read the \
+             `serving.engine.repin_refused` probe)"
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: a deploy verified on the core's SHA alone while the node runs an engine
+    // its source does not pin (the M5, 2026-10-27, e7e1077b3 under a 741b0175b pin).
+    #[test]
+    fn a_deploy_whose_engine_is_not_the_pin_fails() {
+        let pin = "741b0175b9a728530b7dcccaa2b6a039c47e5d9e";
+        assert!(engine_verdict(Some(pin), Some("741b0175b:metal")).is_ok());
+        assert!(engine_verdict(Some(pin), Some("741b0175b:cuda:120")).is_ok());
+        assert!(engine_verdict(Some(pin), Some("e7e1077b3:metal")).unwrap_err().contains("ENGINE NOT PINNED"));
+        assert!(engine_verdict(Some(pin), None).is_ok(), "an operator's engine is theirs");
+        assert!(engine_verdict(None, Some("e7e1077b3:metal")).is_ok(), "an older core cannot report its pin");
+    }
 }

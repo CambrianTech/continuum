@@ -402,6 +402,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // override, no stamp) is "engine OK": never a spurious relaunch. Not a resize, so
             // neither the trade guard nor the memory gate applies: the relaunch is at the
             // same size, onto the binary already on disk.
+            super::engine_pin::hold_current_engine_to_pin();
             let installed_engine = installed_engine_commit();
             let served_engine_probe = ctrl.served_engine_build().await;
             // The same reading decides what this engine process can take (`tail_tools`); an

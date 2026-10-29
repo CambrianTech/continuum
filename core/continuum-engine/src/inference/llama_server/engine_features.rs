@@ -15,8 +15,7 @@
 
 use crate::inference::engine_residency::EngineIncarnation;
 
-/// The fork commit this tree pins, compiled in from the one file a PR edits to move it.
-const PINNED_ENGINE: &str = include_str!("../../../../vendor/LLAMA_CPP_PIN");
+use super::engine_pin::PINNED_ENGINE;
 
 /// The build one engine incarnation reported in its own `/props`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

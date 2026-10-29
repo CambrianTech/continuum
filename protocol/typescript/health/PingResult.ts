@@ -33,4 +33,15 @@ buildNumber: number,
  * number orders SOURCE, sha names it, built-at dates the BINARY — catching
  * a rebuild of old source after a fix landed, which number+sha both miss).
  */
-builtAt: string, };
+builtAt: string, 
+/**
+ * The llama.cpp fork commit this core's source pins (`vendor/LLAMA_CPP_PIN`): the engine
+ * it holds its node to (card a3e92354).
+ */
+enginePin: string, 
+/**
+ * The stamp of the engine slot this node runs (`<commit>:<backend>`); absent under an
+ * operator's own engine or with no owned install. `deploy-verify` fails a deploy whose
+ * stamp does not name `engine_pin`.
+ */
+engineStamp?: string, };
