@@ -539,12 +539,12 @@ async fn a_pass_closes_superseded_rounds_and_leaves_newer_ones_open() {
     let s1 = airc
         .submit_work_in(
             &room,
-            SubmitWork {
-                submission_id: SubmissionId::new(),
+            airc_lib::SubmitWork {
+                submission_id: airc_work::SubmissionId::new(),
                 card_id: parent,
                 claim_id: claim,
                 instance: "ordinary".into(),
-                base_sha: GitObjectId::new("a".repeat(40)).unwrap(),
+                base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
                 artifact: artifact.clone(),
             },
         )
@@ -563,12 +563,12 @@ async fn a_pass_closes_superseded_rounds_and_leaves_newer_ones_open() {
     let s2 = airc
         .submit_work_in(
             &room,
-            SubmitWork {
-                submission_id: SubmissionId::new(),
+            airc_lib::SubmitWork {
+                submission_id: airc_work::SubmissionId::new(),
                 card_id: parent,
                 claim_id: claim,
                 instance: "ordinary".into(),
-                base_sha: GitObjectId::new("b".repeat(40)).unwrap(),
+                base_sha: airc_work::GitObjectId::new("b".repeat(40)).unwrap(),
                 artifact,
             },
         )
@@ -654,12 +654,12 @@ async fn a_pass_leaves_rounds_reviewing_newer_work_open() {
     let s1 = airc
         .submit_work_in(
             &room,
-            SubmitWork {
-                submission_id: SubmissionId::new(),
+            airc_lib::SubmitWork {
+                submission_id: airc_work::SubmissionId::new(),
                 card_id: parent,
                 claim_id: claim,
                 instance: "ordinary".into(),
-                base_sha: GitObjectId::new("a".repeat(40)).unwrap(),
+                base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
                 artifact: artifact.clone(),
             },
         )
@@ -678,12 +678,12 @@ async fn a_pass_leaves_rounds_reviewing_newer_work_open() {
     let s2 = airc
         .submit_work_in(
             &room,
-            SubmitWork {
-                submission_id: SubmissionId::new(),
+            airc_lib::SubmitWork {
+                submission_id: airc_work::SubmissionId::new(),
                 card_id: parent,
                 claim_id: claim,
                 instance: "ordinary".into(),
-                base_sha: GitObjectId::new("b".repeat(40)).unwrap(),
+                base_sha: airc_work::GitObjectId::new("b".repeat(40)).unwrap(),
                 artifact,
             },
         )
