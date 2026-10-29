@@ -121,6 +121,21 @@ pub fn cache_pool_pressure(own: f64, volume: f64) -> f64 {
     own.max(volume)
 }
 
+/// One derived-artifact cache's pressure: `bytes` over its `budget`, raised to the fill of
+/// the volume it sits on (no volume sample = its budget alone). Shared by every build-cache
+/// pool so each reads the volume the same way.
+pub(super) fn cache_pressure_on_volume(
+    bytes: u64,
+    budget: u64,
+    volume: Option<&crate::system_resources::drives::DriveInfo>,
+) -> f64 {
+    let own = bytes as f64 / budget.max(1) as f64;
+    let volume = volume.filter(|volume| volume.total_bytes > 0)
+        .map(|volume| volume.total_bytes.saturating_sub(volume.available_bytes) as f64 / volume.total_bytes as f64)
+        .unwrap_or(0.0);
+    cache_pool_pressure(own, volume)
+}
+
 /// Non-blocking exclusive flock on `path`. `Some(file)` holds the lock
 /// until dropped; `None` = someone else (a live cargo build) holds it.
 /// A missing lock file is created — holding it makes a cargo invocation
@@ -391,11 +406,7 @@ impl CargoTargetPool {
     }
 
     pub(super) fn pressure_for_volume(&self, volume: Option<&crate::system_resources::drives::DriveInfo>) -> f64 {
-        let own = self.tracked.bytes() as f64 / self.budget_for_volume(volume).max(1) as f64;
-        let volume = volume.filter(|volume| volume.total_bytes > 0)
-            .map(|volume| volume.total_bytes.saturating_sub(volume.available_bytes) as f64 / volume.total_bytes as f64)
-            .unwrap_or(0.0);
-        cache_pool_pressure(own, volume)
+        cache_pressure_on_volume(self.tracked.bytes(), self.budget_for_volume(volume), volume)
     }
 
     pub fn new(tracked: Arc<TrackedDir>, budget_bytes: u64) -> Self {

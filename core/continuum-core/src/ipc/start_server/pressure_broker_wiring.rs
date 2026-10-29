@@ -87,6 +87,15 @@ pub(super) fn register_pressure_broker(
             crate::clog_warn!("Cargo disk ownership binding refused: {error}");
         }
 
+        // Per-worktree cargo targets (`cache/wt-targets/<worktree>`): one whole target per
+        // git worktree, evicted least-recently-built first and never one a build lock, a
+        // running image, a writer lease or serving custody holds. Unowned until the M5 hit
+        // ENOSPC with 448 GB there on 2026-10-29.
+        if let Some(dir) = crate::system_resources::tracked_dir("wt-targets") {
+            broker.register(Arc::new(crate::system_resources::WorktreeTargetsPool::new(dir))
+                as Arc<dyn crate::paging::pool::ResourcePool>);
+        }
+
         // Rotation-generation eviction owners (2026-08-06): the
         // substrate's own `logs` + `probes` dirs. These were the two
         // directories continuum writes to most continuously and the

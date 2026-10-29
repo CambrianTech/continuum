@@ -700,6 +700,17 @@ pub(super) async fn observe_citizen_target(path: &Path, peer: uuid::Uuid) -> Res
     writer_registry()?.observe_citizen_target(path, peer).await
 }
 
+/// Whether a writer admitted through [`admit_cargo_target`] still holds its lease
+/// ([`CargoAdmission::kept`], kept by the child process until its tree ends) on a root at,
+/// beneath or above `dir`. No installed registry means no writer was admitted, so no lease.
+pub(crate) fn cargo_root_leased(dir: &Path) -> bool {
+    writer_registry().is_ok_and(|registry| {
+        registry.0.lock().active.keys().any(|root| {
+            crate::paths::has_path_prefix(root, dir) || crate::paths::has_path_prefix(dir, root)
+        })
+    })
+}
+
 /// Called while holding this citizen's hands, which also excludes discovery's
 /// ownership publication. A whole-workspace owner must not bypass child pools.
 pub(crate) fn citizen_has_cargo_owner(peer: uuid::Uuid) -> Result<bool, String> {

@@ -552,7 +552,7 @@
         }
     }
 
-    mod serving_tier {
+    pub(super) mod serving_tier {
         use super::*;
 
         /// Set an mtime on a path that may be a FILE or a DIRECTORY.
@@ -571,7 +571,7 @@
         /// directory opened as a file is invisible on macOS/Linux and
         /// fatal on Windows, so it survives review on the platform the
         /// author is using.
-        fn set_mtime(path: &Path, t: std::time::SystemTime) {
+        pub(in crate::system_resources::disk_eviction) fn set_mtime(path: &Path, t: std::time::SystemTime) {
             #[cfg(windows)]
             let f = {
                 use std::os::windows::fs::OpenOptionsExt;

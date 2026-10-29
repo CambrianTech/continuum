@@ -14,6 +14,10 @@ pub(super) const OWNED: &[&str] = &[
         // Same owner, same loop, same reasoning — the airc build tree is derived
         // artifacts like its two siblings, so it is OWNED rather than deferred.
         "cargo-target-airc",
+        // Owner: WorktreeTargetsPool — a directory of per-worktree cargo targets, each
+        // derived output; whole unheld dirs go least-recently-built first, never one a cargo
+        // lock, a running image, a writer lease or serving custody holds.
+        "wt-targets",
         // Owner: CitizenWorkspacePool — dormant, non-resident WORKSPACES only, and
         // only after complete verified preservation. Memory is never evicted.
         "citizens",
