@@ -167,9 +167,9 @@ async fn reclaim_at(path: &Path, port: u16) -> ReclaimOutcome {
     // The pid is alive — but is it OUR orphan, or a reused pid? Verify before we
     // ever send a signal. If we cannot positively identify it as a llama-server
     // (different command, or `ps` unavailable), we refuse to kill it.
-    match super::lane_process::command_name(pid) {
+    match continuum_process::command_name(pid) {
         Some(comm) if comm.contains("llama-server") => {
-            super::lane_process::kill9(pid);
+            continuum_process::kill9(pid);
             let freed = super::lane_process::wait_port_free(port, PORT_RELEASE_BUDGET).await;
             clear_at(path);
             if freed {

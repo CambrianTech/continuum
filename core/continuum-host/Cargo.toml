@@ -7,6 +7,9 @@ description = "The host OS seam: one module per capability whose behaviour diffe
 [dependencies]
 tokio = { workspace = true } # local_stream: the async local socket (a Unix domain socket, a Windows named pipe)
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2" # process_exit: proc_pidinfo, the only call that tells a macOS zombie from a running process
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
 

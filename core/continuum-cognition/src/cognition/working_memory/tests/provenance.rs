@@ -205,7 +205,7 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
     // Actual settlement collapses old results; its pointers must still tell
     // the mind which activity and operation the retained handle belongs to.
     for _ in 0..4 {
-        record_saved(&restored, &"x".repeat(restored.budget().recent_results_chars()));
+        record_saved(&restored, &"x".repeat(crate::cognition::working_memory::RESULTS_RESIDENT_CHARS));
     }
     restored.record_settlement("reported", None);
     assert!(restored.recent_results_messages().join("\n").contains(

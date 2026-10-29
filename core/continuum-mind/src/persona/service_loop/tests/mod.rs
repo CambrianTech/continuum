@@ -465,18 +465,20 @@
     // regression for the 2026-08-06 anchor/receipt contradiction
     #[test]
     pub(super) fn an_absent_board_source_yields_no_anchor_at_all() {
-        use crate::cognition::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
+        use crate::cognition::rag_budget::{RagDelivery, RagItem};
 
         let delivery = |source_id: &str, items: Vec<RagItem>| RagDelivery {
             source_id: source_id.to_string(),
             items,
             tokens_used: 0,
             truncated: false,
-            resolution_used: ResolutionPreference::Raw,
         };
         // The ENUM, not a spelling. If the wire form ever changes, this fixture changes
         // with it automatically instead of quietly testing a string that no longer occurs.
         let card = |state: airc_work::CardState| RagItem {
+            key: String::new(),
+            summary: None,
+            pointer: None,
             content: "#00f2a380 self-heal #2: receive-binding re-derive".to_string(),
             tokens: 8,
             metadata: serde_json::json!({ "card_id": "00f2a380", "state": state }),
@@ -537,13 +539,15 @@
         let delivery = crate::cognition::rag_budget::RagDelivery {
             source_id: "airc".to_string(),
             items: vec![crate::cognition::rag_budget::RagItem {
+                key: String::new(),
+                summary: None,
+                pointer: None,
                 content: "hello there".to_string(),
                 tokens: 0,
                 metadata: serde_json::json!({ "peer_id": "peer-2" }),
             }],
             tokens_used: 0,
             truncated: false,
-            resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
         };
         let turns = build_workspace_turns(&[delivery], "peer-1", "Asha", None);
         assert!(
@@ -564,12 +568,18 @@
             source_id: "active-work".to_string(),
             items: vec![
                 crate::cognition::rag_budget::RagItem {
+                    key: String::new(),
+                    summary: None,
+                    pointer: None,
                     content: "card 20fe404a \"macOS install acceptance checks\" (P1, owner YOU)"
                         .to_string(),
                     tokens: 0,
                     metadata: serde_json::json!({}),
                 },
                 crate::cognition::rag_budget::RagItem {
+                    key: String::new(),
+                    summary: None,
+                    pointer: None,
                     content: "[work] Your claim on card 33a0e899 \"conway\" is no longer held by you (lease expired or released)."
                         .to_string(),
                     tokens: 0,
@@ -578,7 +588,6 @@
             ],
             tokens_used: 0,
             truncated: false,
-            resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
         };
         let turns = build_workspace_turns(&[work], "peer-1", "Asha", None);
         assert_eq!(turns.len(), 1);
@@ -606,7 +615,7 @@
     /// thought. [[alignment-through-mutual-self-interest]].
     pub(super) mod burst_fingerprint_drive {
         use super::super::burst_fingerprint;
-        use crate::cognition::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
+        use crate::cognition::rag_budget::{RagDelivery, RagItem};
         use serde_json::json;
 
         const ME: &str = "me-peer";
@@ -617,11 +626,13 @@
                 items,
                 tokens_used: 0,
                 truncated: false,
-                resolution_used: ResolutionPreference::Raw,
             }
         }
         fn chat(peer_id: &str, content: &str) -> RagItem {
             RagItem {
+                key: String::new(),
+                summary: None,
+                pointer: None,
                 content: content.to_string(),
                 tokens: 0,
                 metadata: json!({ "peer_id": peer_id }),
@@ -629,6 +640,9 @@
         }
         fn card(content: &str) -> RagItem {
             RagItem {
+                key: String::new(),
+                summary: None,
+                pointer: None,
                 content: content.to_string(),
                 tokens: 0,
                 metadata: json!({}),

@@ -127,6 +127,8 @@ impl LlmDeliberationFaculty {
         binding: &ModelBinding,
         context_window: u32,
         mut request: TextGenerationRequest,
+        // The allocation her prompt was fitted under: the receipt carries it with the capture.
+        allocation: Option<crate::ai::provenance::AllocationReceipt>,
         receipts: &mut Vec<crate::ai::provenance::GenerationReceipt>,
     ) -> Option<Result<TextGenerationResponse, crate::ai::inference_error::InferenceError>> {
         // Identity belongs to the submitted adapter request. Provider response IDs
@@ -297,7 +299,8 @@ impl LlmDeliberationFaculty {
                 ),
             }
             .with_capture(completed.as_deref())
-            .with_genes(genes),
+            .with_genes(genes)
+            .with_allocation(allocation),
         );
         Some(gen_result)
     }

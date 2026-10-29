@@ -68,6 +68,7 @@ mod speech_discipline_trait;
 pub use speech_discipline_trait::*;
 mod redrive;
 mod credit_acceptance_region;
+mod settle_slots;
 pub use credit_acceptance_region::{CreditAcceptanceRegion, Resolve};
 mod claim_following;
 pub use claim_following::{ClaimFollowingCapture, OpenCapture};
@@ -95,6 +96,7 @@ pub mod test_support {
             capture: None,
             genes: Vec::new(),
             gene_scales: Vec::new(),
+            allocation: None,
         }
     }
 

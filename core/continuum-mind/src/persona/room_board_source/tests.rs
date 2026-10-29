@@ -81,7 +81,7 @@
         let reader = Arc::new(StubReader::new(snapshot(cards)));
         let source = RoomBoardSource::new(persona(), reader);
         let delivery = source
-            .deliver(&ctx(), 4_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         let lead = delivery
             .items
@@ -178,21 +178,14 @@
     // renders into the [room-kanban] grounding block — every card with its
     // column, title, priority, and owner. This is the Observer perceiving the
     // board (task #117 O6), distinct from active-work's own-claims-only view.
-    // what this catches: THE BOARD EATING THE PROMPT. The per-card loop used to be bounded
-    // only by remaining budget, so it grew with the backlog — measured live 2026-08-17 at 38
-    // cards / 9,284 chars / 49.7% of an 18,697-char system prompt on a routine ambient turn,
-    // ~3,100 of ~12,286 prefill tokens, paid by every citizen on every self-tick. The
-    // property that makes it a defect and not just a cost: a team accumulating work gets
-    // progressively SLOWER at doing it.
-    //
-    // Pins all three halves of the fix — the cap holds, her OWN card survives the cut even
-    // when it is the oldest on the board (relevance order, not board order), and the headline
-    // still reports the TRUE totals so nothing is hidden, only shortened.
+    // what this catches: the board delivering a SLICE. Sources no longer take a size or a
+    // count cap (the one allocation in her prompt view picks each item's level), so a
+    // 41-card board delivers 41 keyed cards in relevance order — her OWN card first even
+    // when it is the oldest — each with a pointer to collapse to, and the headline still
+    // reports the true totals.
     #[tokio::test]
-    async fn a_large_board_is_capped_and_keeps_her_own_card_first() {
+    async fn a_large_board_delivers_every_card_keyed_with_her_own_first() {
         let mut cards: Vec<WorkCard> = Vec::new();
-        // Hers, and DELIBERATELY the oldest — under the old board-order loop with a cap this
-        // would be the first thing cut, which is the worst possible card to lose.
         let mut mine = card("MY held card", CardState::InProgress, Some(
             airc_core::PeerId::from_uuid(persona()),
         ));
@@ -207,43 +200,29 @@
 
         let reader = Arc::new(StubReader::new(snapshot(cards)));
         let source = RoomBoardSource::new(persona(), reader);
-        // A budget large enough that the CAP, not the budget, is what binds — otherwise this
-        // would pass for the old reason and prove nothing.
-        let delivery = source
-            .deliver(&ctx(), 100_000, ResolutionPreference::Raw)
-            .await;
+        let delivery = source.deliver(&ctx()).await;
 
         let rendered: Vec<&RagItem> = delivery
             .items
             .iter()
-            .filter(|i| i.metadata.get("card_id").is_some())
+            .filter(|i| i.key.starts_with("card:"))
             .collect();
-        assert!(
-            rendered.len() <= MAX_RENDERED_CARDS,
-            "board must be capped at {MAX_RENDERED_CARDS}, rendered {} of {total} — \
-             an uncapped board grows into the prompt as the backlog grows",
-            rendered.len()
-        );
-        assert!(
-            rendered.len() >= 10,
-            "the cap must still cover both 5-card leads, got {}",
-            rendered.len()
-        );
+        assert_eq!(rendered.len(), total, "every card is delivered, none dropped for size");
         assert!(
             rendered[0].content.contains("MY held card"),
-            "her OWN card must survive the cut and lead, even as the oldest on the board: {}",
+            "her OWN card leads, even as the oldest on the board: {}",
             rendered[0].content
         );
-        // Counts stay TRUE — shortening the render must never shrink the reported board.
+        let keys: std::collections::HashSet<_> = rendered.iter().map(|i| i.key.as_str()).collect();
+        assert_eq!(keys.len(), total, "one stable key per card");
+        assert!(rendered.iter().all(|i| i.pointer.as_deref().is_some_and(|p| p.contains("work/list"))));
+        assert!(!delivery.truncated);
         let headline = &delivery.items[0];
+        assert_eq!(headline.key, "headline");
         assert_eq!(headline.metadata["kind"], "board-headline");
         assert_eq!(headline.metadata["held_count"], 1);
         assert_eq!(headline.metadata["open_count"], 40);
-        assert!(
-            headline.content.contains("40 claimable"),
-            "headline reports the real total, not the rendered slice: {}",
-            headline.content
-        );
+        assert!(headline.content.contains("40 claimable"), "{}", headline.content);
     }
 
     #[tokio::test]
@@ -255,12 +234,13 @@
         ])));
         let source = RoomBoardSource::new(persona(), reader);
         let delivery = source
-            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         // Headline first, then the available-work lead, then the card list.
         assert_eq!(delivery.items.len(), 4);
         assert_eq!(delivery.items[0].metadata["kind"], "board-headline");
         assert_eq!(delivery.items[1].metadata["kind"], "available-work-lead");
+        assert_eq!(delivery.items[1].key, "lead:available");
         let cards: Vec<&RagItem> = delivery
             .items
             .iter()
@@ -288,10 +268,10 @@
     // you HOLD 1 card" — and "[available work] 8 claimable" was unit two and died.
     // She then reported "no open tasks" and was CORRECT about what she could see,
     // in a room with 8 claimable cards. Four citizens looped on that all day.
-    // The FIRST unit must therefore state BOTH counts, and be small enough to
-    // survive a budget that delivers grounding at all.
+    // The FIRST unit must therefore state BOTH counts as one keyed, tiny item (the
+    // allocation collapses oldest-first, and the headline is never the oldest).
     #[tokio::test]
-    async fn the_first_board_unit_states_both_counts_so_a_prefix_take_cannot_halve_it() {
+    async fn the_headline_leads_and_states_both_counts_in_one_keyed_item() {
         let me = persona();
         let mut held = card(
             "The card I hold",
@@ -306,7 +286,7 @@
         let reader = Arc::new(StubReader::new(snapshot(cards.clone())));
         let source = RoomBoardSource::new(me, reader);
         let delivery = source
-            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
 
         let first = &delivery.items[0];
@@ -314,6 +294,8 @@
             first.metadata["kind"], "board-headline",
             "the headline must LEAD"
         );
+        assert_eq!(first.key, "headline");
+        assert!(first.pointer.is_none(), "the headline is its own shortest statement");
         assert!(first.content.contains("hold 1"), "{}", first.content);
         assert!(first.content.contains("2 claimable"), "{}", first.content);
         // Cheap enough that any budget delivering grounding at all delivers BOTH
@@ -334,7 +316,7 @@
                 .collect();
             let source = RoomBoardSource::new(me, Arc::new(StubReader::new(snapshot(local_cards))));
             let full = source
-                .deliver_with_workspace(&ctx(), 2_000, ResolutionPreference::Raw, true)
+                .deliver_with_workspace(&ctx(), true)
                 .await;
             let headline = &full.items[0];
             assert_eq!(headline.metadata["kind"], "board-headline");
@@ -357,25 +339,6 @@
                     .count(),
                 if local_hold { 3 } else { 2 }
             );
-            let tight = source
-                .deliver_with_workspace(&ctx(), headline.tokens, ResolutionPreference::Raw, true)
-                .await;
-            assert_eq!(tight.items[0].content, headline.content);
-            assert_eq!(tight.items[0].metadata, headline.metadata);
-            assert!(tight.tokens_used <= headline.tokens);
-            let short = source
-                .deliver_with_workspace(
-                    &ctx(),
-                    headline.tokens - 1,
-                    ResolutionPreference::Raw,
-                    true,
-                )
-                .await;
-            assert!(!short
-                .items
-                .iter()
-                .any(|item| item.metadata["kind"] == "board-headline"));
-            assert!(short.tokens_used < headline.tokens);
         }
     }
 
@@ -398,7 +361,7 @@
             Arc::new(StubReader::new(snapshot(vec![live, lapsed])).with_name(asha, "Asha"));
         let source = RoomBoardSource::new(persona(), reader);
         let delivery = source
-            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         let cards: Vec<&RagItem> = delivery
             .items
@@ -441,7 +404,7 @@
         ])));
         let source = RoomBoardSource::new(persona(), reader);
         let d = source
-            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         // Found by KIND, not by index: the headline now leads, and a test that
         // pins position breaks every time the delivery grows a unit.
@@ -462,7 +425,7 @@
             Some(holder),
         )])));
         let d2 = RoomBoardSource::new(persona(), claimed_only)
-            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         assert!(d2.items.iter().all(|i| i.metadata.get("kind").is_none()));
     }
@@ -474,7 +437,7 @@
         let reader = Arc::new(StubReader::new(snapshot(vec![])));
         let source = RoomBoardSource::new(persona(), reader);
         let delivery = source
-            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
@@ -493,10 +456,9 @@
         reader.set_fail(true);
         let source = RoomBoardSource::new(persona(), reader);
         let delivery = source
-            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         assert!(delivery.items.is_empty());
-        assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
     // what this catches: cross-persona ctx gets nothing (defense in depth).
@@ -510,14 +472,9 @@
         let source = RoomBoardSource::new(persona(), reader);
         let alien = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
         let delivery = source
-            .deliver(
-                &RagContext::for_persona(alien, 1_000_000),
-                1_000,
-                ResolutionPreference::Raw,
-            )
+            .deliver(&RagContext::for_persona(alien, 1_000_000))
             .await;
         assert!(delivery.items.is_empty());
-        assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
     // what this catches: the your-work salience (2026-07-11, "did they wander
@@ -559,23 +516,19 @@
         // Reproduce the title-only starvation with the actual held-task title size:
         // the focused signed guidance fits, but repeating the title/details does not.
         board.cards[0].title = "Continuation-resume deletion PR: remove deliver_continuation machinery + positional cursor (ruling a) — caller inventory attached, closes prior review with record standing".into();
-        let focused_cost = estimate_tokens(&RoomBoardSource::submission_guidance(&board.cards[0], &board).unwrap());
         let reader = Arc::new(StubReader::new(board).in_room(room));
         let source = RoomBoardSource::new(me, reader.clone()).for_room(room);
         let activity = RagContext::for_persona_in_room(me, ctx().now_ms, room);
-        // Production room-kanban desired allocation (rag_budget preset).
-        let delivery = source.deliver(&activity, 500, ResolutionPreference::Raw).await;
-        let headline_cost: u32 = delivery.items.iter()
-            .filter(|item| item.metadata.get("kind").and_then(|v| v.as_str()) == Some("board-headline"))
-            .map(|item| item.tokens).sum();
-        let constrained_budget = headline_cost + focused_cost;
-        let constrained = source.deliver(&activity, constrained_budget, ResolutionPreference::Raw).await;
-        let constrained_text = constrained.items.iter().map(|item| item.content.as_str()).collect::<Vec<_>>().join("\n");
-        assert!(constrained_text.contains("Revise the work"), "{constrained_text}");
-        assert!(constrained_text.contains(&candidate.submission_id.to_string()));
-        assert!(constrained_text.contains(&candidate.card_id.to_string()));
-        assert!(!constrained_text.contains("Continuation-resume deletion PR"));
-        assert!(constrained.tokens_used <= constrained_budget);
+        let delivery = source.deliver(&activity).await;
+        // what this catches: the focused signed verdict is its own keyed item with a
+        // pointer, and the held card still delivers whole beside it (no packing).
+        let focused = delivery.items.iter()
+            .find(|item| item.metadata.get("kind").and_then(|v| v.as_str()) == Some("focused-submission"))
+            .expect("focused submission item");
+        assert_eq!(focused.key, format!("submission:{}", candidate.card_id.as_uuid()));
+        assert!(focused.content.contains("Revise the work"));
+        assert!(focused.pointer.is_some());
+        assert!(delivery.items.iter().any(|item| item.content.contains("Continuation-resume deletion PR")));
         let content = delivery.items.iter().map(|item| item.content.as_str()).collect::<Vec<_>>().join("\n");
         assert!(content.contains("Revise the work"));
         assert!(content.contains("all 32 signed verdicts, reviewers, and evidence"));
@@ -585,7 +538,7 @@
         assert!(!content.contains(&old.review_id.to_string()));
         assert_eq!(*reader.last_room.lock().unwrap(), Some(Some(room)));
         let elsewhere = RagContext::for_persona_in_room(me, ctx().now_ms, uuid::Uuid::new_v4());
-        assert!(source.deliver(&elsewhere, 2_000, ResolutionPreference::Raw).await.items.is_empty());
+        assert!(source.deliver(&elsewhere).await.items.is_empty());
         assert_eq!(*reader.last_room.lock().unwrap(), Some(elsewhere.airc_room.map(|room| room.as_uuid())));
 
         // Regression 04dc5e95: the production deferred wrapper must preserve the
@@ -597,7 +550,6 @@
         };
         let deferred = DeferredFaculty::spawn(Arc::new(
             RagSourceFaculty::new(me, Arc::new(source), SaliencePolicy::StandingFraming)
-                .with_budget(500)
                 .with_clock(Arc::new(|| ctx().now_ms)),
         ));
         let wake = uuid::Uuid::new_v4();
@@ -643,7 +595,7 @@
         let reader = Arc::new(StubReader::new(snapshot(vec![mine, theirs])));
         let source = RoomBoardSource::new(me, reader);
         let delivery = source
-            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         let all: String = delivery
             .items
@@ -694,7 +646,7 @@
         let reader = Arc::new(StubReader::new(snapshot(vec![stale_mine, live_mine, closed_mine])));
         let source = RoomBoardSource::new(me, reader);
         let delivery = source
-            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         let all: String = delivery
             .items
@@ -729,31 +681,6 @@
         assert!(!closed.contains("claimable") && !closed.contains("resume it"), "{closed}");
     }
 
-    // what this catches: a board too large for the budget truncates to the
-    // cards that fit and NEVER overspends — a truncated board is truthful for
-    // what it names, and truncation is bounded (no partial card, no overspend).
-    #[tokio::test]
-    async fn oversized_board_truncates_within_budget() {
-        // Each rendered card ~= tens of tokens; a tiny budget admits only a few.
-        let cards: Vec<WorkCard> = (0..50)
-            .map(|i| card(&format!("card number {i}"), CardState::Open, None))
-            .collect();
-        let reader = Arc::new(StubReader::new(snapshot(cards)));
-        let source = RoomBoardSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 40, ResolutionPreference::Raw).await;
-        assert!(
-            !delivery.items.is_empty(),
-            "at least one card fits budget 40"
-        );
-        assert!(
-            delivery.tokens_used <= 40,
-            "overspent: {} > 40",
-            delivery.tokens_used
-        );
-        assert!(delivery.items.len() < 50, "truncated below the full board");
-        assert!(!delivery.truncated);
-    }
-
     // what this catches: the exam-bleed regression (glass-boxed live 2026-07-10,
     // Hermes-8B OURS 38% < RAW 52%) — a room-BOUND board delivering into a turn
     // in a DIFFERENT context. A turn stamped with another room (or the eval
@@ -784,7 +711,7 @@
         let same = RagContext::for_persona_in_room(p, 1_000, home);
         assert!(
             !source
-                .deliver(&same, 500, ResolutionPreference::Raw)
+                .deliver(&same)
                 .await
                 .items
                 .is_empty(),
@@ -799,7 +726,7 @@
         let other = RagContext::for_persona_in_room(p, 1_000, bench);
         assert!(
             !source
-                .deliver(&other, 500, ResolutionPreference::Raw)
+                .deliver(&other)
                 .await
                 .items
                 .is_empty(),
@@ -817,7 +744,7 @@
         let exam = RagContext::for_persona_in_room(p, 1_000, uuid::Uuid::nil());
         assert!(
             source
-                .deliver(&exam, 500, ResolutionPreference::Raw)
+                .deliver(&exam)
                 .await
                 .items
                 .is_empty(),
@@ -833,7 +760,7 @@
         let unstamped = RagContext::for_persona(p, 1_000);
         assert!(
             !source
-                .deliver(&unstamped, 500, ResolutionPreference::Raw)
+                .deliver(&unstamped)
                 .await
                 .items
                 .is_empty(),

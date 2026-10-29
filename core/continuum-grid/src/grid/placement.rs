@@ -122,7 +122,9 @@ pub async fn follow_the_fleet(
         if mv == PlacementMove::ReturnRemote {
             let asked = match sw.airc_handle() {
                 Some(a) => crate::persona::placement_reservation::request_reservation(&a, peer, sw.persona_id()).await,
-                None => Err("no airc handle for her — cannot ask the seat".to_string()),
+                None => Err(crate::persona::placement_reservation::ReservationAskError::Transport(
+                    "no airc handle for her — cannot ask the seat".to_string(),
+                )), // no local wire at all: closest typed class is transport (nothing was sent, so no fault row either)
             };
             match asked {
                 Ok(g) if g.granted => continuum_base::probe!(
@@ -151,8 +153,9 @@ pub async fn follow_the_fleet(
                         class = "placement.return.refused",
                         persona = %sw.persona_name(),
                         peer = %peer,
+                        kind = e.kind(), // capability vs transport without parsing reason (card 8e4c42de)
                         reason = %e,
-                        "the seat did not answer the return ask in time — she stays home"
+                        "the return ask produced no grant this tick — she stays home"
                     );
                     mv = PlacementMove::Stay;
                 }
@@ -198,7 +201,10 @@ pub async fn follow_the_fleet(
             "her seat's beacon offers no slot this tick — no return ask sent; she stays home until it does"
         );
     }
-    let moves = choose_offloads(local, &peers, rank_of, &at_home);
+    let moves = choose_offloads(local, &peers, rank_of, &at_home, &|mind| {
+        working_set.sent_median_of(&[mind])
+            .map(crate::inference::planning::serving_plan::prompt_floor_of)
+    });
     if !moves.is_empty() {
         let by_id: std::collections::HashMap<Uuid, Arc<PlacementSwitch>> =
             switches().into_iter().map(|s| (s.persona_id(), s)).collect();
@@ -222,7 +228,9 @@ pub async fn follow_the_fleet(
             // home this tick, receipted (S1b).
             let asked = match sw.airc_handle() {
                 Some(a) => crate::persona::placement_reservation::request_reservation(&a, peer, mind).await,
-                None => Err("no airc handle for her — cannot ask the seat".to_string()),
+                None => Err(crate::persona::placement_reservation::ReservationAskError::Transport(
+                    "no airc handle for her — cannot ask the seat".to_string(),
+                )), // no local wire at all: closest typed class is transport (nothing was sent, so no fault row either)
             };
             let grant = match asked {
                 Ok(g) if g.granted => g,
@@ -245,8 +253,9 @@ pub async fn follow_the_fleet(
                         class = "placement.spill.refused",
                         persona = %sw.persona_name(),
                         peer = %peer,
+                        kind = e.kind(), // capability vs transport without parsing reason (card 8e4c42de)
                         reason = %e,
-                        "the seat did not grant a slot in time — she stays home"
+                        "the spill ask produced no grant this tick — she stays home"
                     );
                     continue;
                 }

@@ -212,6 +212,13 @@ impl WorkspaceCycle {
             .map(|handle| handle.load().adapter.clone())
     }
 
+    /// The whole live binding {adapter, model, window} as ONE read — what the re-home
+    /// owner compares against the served snapshot. `None` for a cycle with no
+    /// deliberation faculty.
+    pub fn current_binding(&self) -> Option<Arc<ModelBinding>> {
+        self.model_binding.as_ref().map(|handle| handle.load_full())
+    }
+
     /// The adapter AND the served-model id it must be asked for, as one read of
     /// the shared binding. Background regions must send BOTH: the model id
     /// selects the route/template on the serving side, and omitting it produced
@@ -245,9 +252,8 @@ impl WorkspaceCycle {
     /// id the next generation asks for (`ModelBinding.model` doc: `None` → the
     /// adapter's default). This resolution matters live: the boot upstart binds
     /// `model: None` (the shared served adapter already carries the active model
-    /// as its default), and the re-home reconciler (`ipc/mod.rs`) adopts the
-    /// FIRST served model as baseline *without* a rebind — so on a stable host
-    /// the explicit id stays `None` forever. Reporting the raw field left every
+    /// as its default), and a binding stored without an explicit id keeps it
+    /// `None` until a re-home names one. Reporting the raw field left every
     /// live roster LOADOUT as "ctx only, no model name" (the tile regression this
     /// fixes). An adapter with an empty default resolves to honest-absent.
     pub fn model_loadout(&self) -> Option<(Option<String>, u32)> {

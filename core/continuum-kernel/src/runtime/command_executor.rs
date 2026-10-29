@@ -488,7 +488,7 @@ impl CommandExecutor {
         }
         .instrument(span);
         // The command runs inside every scope (the hands' admission is a task-local its
-        // children inherit until their tree has ended: `lane_process::run_owned`).
+        // children inherit until their tree has ended: `continuum_process::run_owned`).
         super::dispatch_hook::wrap_all(&scopes, Box::pin(command)).await
     }
 

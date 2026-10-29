@@ -266,30 +266,61 @@ impl TrainingTriggerState {
     /// Reconstruct only the exact dispatched input of this canonical job. Engine jobs
     /// can end before writing request.json; an older submission's directory is not an
     /// alias for the newer job. Dispatch order and every submission's policy survive.
+    /// A store that is not ready or cannot be read is [`JobInputError::Unavailable`] (asked
+    /// again later); a dispatch that does not prove the job is [`JobInputError::Unproven`].
     pub(crate) async fn dispatched_request(
         &self,
         key: &BucketKey,
         dispatch: Uuid,
         job: Uuid,
-    ) -> Result<crate::genome::fine_tuning::types::TrainingJobRequest, String> {
-        self.require_ready()?;
-        let store = self.durable.require()?;
-        let intent = store.dispatches.find_by_id(dispatch).await.map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("job {job} has no durable dispatch {dispatch}"))?;
+    ) -> Result<crate::genome::fine_tuning::types::TrainingJobRequest, JobInputError> {
+        use JobInputError::{Unavailable, Unproven};
+        self.require_ready().map_err(Unavailable)?;
+        let store = self.durable.require().map_err(Unavailable)?;
+        let intent = store.dispatches.find_by_id(dispatch).await.map_err(|e| Unavailable(e.to_string()))?
+            .ok_or_else(|| Unproven(format!("job {job} has no durable dispatch {dispatch}")))?;
         if intent.key() != *key || !matches!(&intent.phase, DispatchPhase::Dispatched { handle, .. } if handle.local_id == job) {
-            return Err(format!("dispatch {dispatch} does not prove ownership of job {job}"));
+            return Err(Unproven(format!("dispatch {dispatch} does not prove ownership of job {job}")));
         }
         let mut batch = None;
         for id in &intent.submission_ids {
-            let row = store.submissions.find_by_id(*id).await.map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("dispatch {dispatch} lost submission {id}"))?;
+            let row = store.submissions.find_by_id(*id).await.map_err(|e| Unavailable(e.to_string()))?
+                .ok_or_else(|| Unproven(format!("dispatch {dispatch} lost submission {id}")))?;
             if row.key() != *key || row.is_pending || row.dispatch_id != Some(dispatch) {
-                return Err(format!("submission {id} does not belong to dispatch {dispatch}"));
+                return Err(Unproven(format!("submission {id} does not belong to dispatch {dispatch}")));
             }
-            append_batch(&mut batch, *id, store.effective_batch(&row).await?)?;
+            let effective = store.effective_batch(&row).await.map_err(Unavailable)?;
+            append_batch(&mut batch, *id, effective).map_err(Unproven)?;
         }
-        let batch = batch.ok_or_else(|| format!("dispatch {dispatch} has no submitted examples"))?;
+        let batch = batch.ok_or_else(|| Unproven(format!("dispatch {dispatch} has no submitted examples")))?;
         Ok(batch.training_request(key.persona_id, &key.trait_kind, &key.base_model))
+    }
+
+    /// THE original input of a job a previous core left behind, for its return and its resume
+    /// alike: a trigger-owned job's comes from its verified durable dispatch, since adapter
+    /// request files can materialize provider defaults (a return into an empty bucket then reads
+    /// as another policy) and an in-engine job never writes one at all (the Windows 5090,
+    /// 2026-10-28: 8b46862c's directory held only partition.json, so its resume found nothing;
+    /// card 3c3634d2). Only a job with no trigger dispatch uses its legacy request file.
+    pub(crate) async fn job_input(
+        &self,
+        job: &crate::genome::fine_tuning::job_board::OrphanedJob,
+        dir: &std::path::Path,
+    ) -> Result<crate::genome::fine_tuning::types::TrainingJobRequest, JobInputError> {
+        match job.trigger_dispatch_id {
+            Some(dispatch) => {
+                let key = BucketKey { persona_id: job.persona_id, trait_kind: job.trait_kind.clone(), base_model: job.base_model.clone() };
+                self.dispatched_request(&key, dispatch, job.local_id).await
+            }
+            // a request file confirmed absent is Missing for good; one that exists and cannot be
+            // read (a Windows sharing violation) or a directory that cannot be checked is asked
+            // again (card c2dd200c)
+            None => match dir.join("request.json").try_exists() {
+                Ok(false) => Err(JobInputError::Missing(format!("{}: no request.json and no trigger dispatch", dir.display()))),
+                Ok(true) => crate::genome::fine_tuning::job_dir::read_job_request(dir).map_err(JobInputError::Unavailable),
+                Err(e) => Err(JobInputError::Unavailable(format!("{}: {e}", dir.display()))),
+            },
+        }
     }
 
     /// Bridge the old return identity without accepting its examples twice on upgrade.
@@ -459,6 +490,19 @@ impl TrainingTriggerState {
                 .is_some_and(|batch| batch.examples.len() >= batch.min_examples as usize)
     }
 
+    /// What the recovery pass dispatches: whatever submit would, and a bucket holding a return
+    /// below its threshold ([`PendingBatch::returned`]). Submit keeps the threshold, so a return
+    /// lands, its acceptance persists, and the next pass dispatches it: a crash between the two
+    /// leaves the mark on disk, and the dispatch intent makes it exactly once.
+    pub(crate) fn ready_to_recover(&self, key: &BucketKey) -> bool {
+        if self.ready_to_dispatch(key) {
+            return true;
+        }
+        !self.active_dispatches.contains_key(key)
+            && self.held_for(key).is_none()
+            && self.buckets.get(key).is_some_and(|batch| batch.returned)
+    }
+
     /// The training job for this bucket's `(persona, trait, base)` on the job board, if
     /// one is in flight: the job a held fill's examples wait for.
     pub(crate) fn job_in_flight_for(&self, key: &BucketKey) -> Option<Uuid> {
@@ -536,6 +580,27 @@ impl TrainingTriggerState {
                 kind: "PersistenceFailed",
                 error,
             },
+        }
+    }
+}
+
+/// Why a job's original input could not be had.
+#[derive(Debug)]
+pub(crate) enum JobInputError {
+    /// Its durable dispatch does not prove this job's input (absent, another job's, or a
+    /// submission that is not its own). Permanent.
+    Unproven(String),
+    /// A job with no trigger dispatch has no request file. Permanent.
+    Missing(String),
+    /// What would prove it could not be read now: the trigger's durable state not recovered or
+    /// unreadable, or a request file that exists and cannot be read. Asked again later.
+    Unavailable(String),
+}
+
+impl std::fmt::Display for JobInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unproven(why) | Self::Missing(why) | Self::Unavailable(why) => f.write_str(why),
         }
     }
 }

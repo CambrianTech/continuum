@@ -26,6 +26,7 @@
     fn rig(active: &str, bytes: u64) -> (ServingConsumer, watch::Sender<ServingSnapshot>) {
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
             loading_model: None,
+            held_for: None,
             // test fixture: no live readiness was ever CONFIRMED here.
             ready_verified_at_ms: None,
             active_model: Some(active.to_string()),
@@ -151,6 +152,7 @@
     fn shape_rig(bytes_per_lane: u64) -> (ServingConsumer, watch::Sender<ServingSnapshot>) {
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
             loading_model: None,
+            held_for: None,
             ready_verified_at_ms: Some(1_000),
             active_model: Some("qwen3.8-27b".into()),
             ready: true,
@@ -308,6 +310,7 @@
         let seen_w = seen.clone();
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
             loading_model: None,
+            held_for: None,
             // test fixture: no live readiness was ever CONFIRMED here.
             ready_verified_at_ms: None,
             active_model: Some("coder-14b".into()),
@@ -422,6 +425,7 @@
     ) {
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
             loading_model: None,
+            held_for: None,
             // test fixture: no live readiness was ever CONFIRMED here.
             ready_verified_at_ms: None,
             active_model: Some(active.to_string()),

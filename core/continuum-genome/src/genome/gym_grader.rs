@@ -312,11 +312,11 @@ async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(),
     }
 }
 
-/// Run one grader subprocess under the grade timeout, OWNED (`lane_process::run_owned`): a
+/// Run one grader subprocess under the grade timeout, OWNED (`continuum_process::run_owned`): a
 /// step that overruns, or whose grade is dropped, is ended with everything it started (model
 /// code can spawn), never orphaned to init burning a core.
 async fn run_capped(cmd: tokio::process::Command, label: &str, timeout_secs: u64) -> Result<std::process::Output, String> {
-    use crate::inference::lane_process::{run_owned, Ended};
+    use continuum_process::{run_owned, Ended};
     let out = run_owned(cmd, Some(std::time::Duration::from_secs(timeout_secs)), "gym-grader", std::sync::Arc::default())
         .await
         .map_err(|e| format!("{label} spawn failed: {e}"))?;
