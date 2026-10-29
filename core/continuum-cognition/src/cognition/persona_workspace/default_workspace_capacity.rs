@@ -653,8 +653,9 @@ pub struct PersonaWorkspaceRegistry {
     /// crosses between her public and private turns except what she publishes. It is never in
     /// `cycles`, so the volatile checkpoint never writes it to disk in plaintext (until her
     /// sealed store exists, a restart forgets her private scratchpad, which is the honest cost).
-    /// Lock order: `cycles`, then `templates`, then `mind_cycles`.
-    pub(super) mind_cycles: Mutex<HashMap<Uuid, Arc<WorkspaceCycle>>>,
+    /// Lock order: `cycles`, then `templates`, then `mind_cycles`. Its working memory is held
+    /// beside it so the memory owner accounts and sheds her private results too.
+    pub(super) mind_cycles: Mutex<HashMap<Uuid, ResidentWorkspace>>,
 }
 
 pub(super) struct ResidentWorkspace {

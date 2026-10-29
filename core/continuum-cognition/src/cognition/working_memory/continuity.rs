@@ -307,10 +307,9 @@ impl WorkingMemory {
         *self.receipt_children.lock() = snap.receipt_children;
         *self.view.lock() = snap.context_view;
         *self.open_views.lock() = super::super::open_views::OpenViews::from_saved(snap.open_views);
-        // Restored bodies are bound by the storage budget, never the window: a floor here once
-        // folded results the served window held (cap 1,536 at restore on the 5090, card
-        // df0035bf), and now nothing about the window decides what she sees (FLOW §2d).
-        self.evict_resident_results();
+        // Restored bodies stay resident until the memory owner sheds: neither the window (a
+        // floor here once folded what the served window held, card df0035bf; FLOW §2d) nor a
+        // size cap decides at restore.
         self.publish_live_handles();
         {
             let mut f = self.action_fps.lock();

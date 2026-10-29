@@ -169,22 +169,24 @@ impl PersonaWorkspaceRegistry {
     /// private turns at the next turn boundary. `None` when she has no live cycle or template.
     pub fn mind_cycle(&self, persona_id: &Uuid) -> Option<Arc<WorkspaceCycle>> {
         let live = self.get(persona_id)?;
-        let cached = self.mind_cycles.lock().get(persona_id).cloned();
+        let cached = self.mind_cycles.lock().get(persona_id).map(|entry| Arc::clone(&entry.cycle));
         let mind = match cached {
             Some(mind) => mind,
             None => {
                 let _assembly = self.assembly.lock();
                 // Bound to its own statement: a guard in an `if let` scrutinee would live into
                 // the `else` and deadlock on the insert below (non-reentrant lock).
-                let built_meanwhile = self.mind_cycles.lock().get(persona_id).cloned();
+                let built_meanwhile = self.mind_cycles.lock().get(persona_id).map(|entry| Arc::clone(&entry.cycle));
                 if let Some(mind) = built_meanwhile {
                     mind
                 } else {
                     let mut cfg = self.templates.lock().get(persona_id)?.clone();
                     cfg.defer_recall = false;
-                    let (cycle, _working_memory) = assemble_workspace_cycle(cfg, None, Capture::Withheld);
+                    let (cycle, working_memory) = assemble_workspace_cycle(cfg, None, Capture::Withheld);
                     let cycle = Arc::new(cycle);
-                    self.mind_cycles.lock().insert(*persona_id, Arc::clone(&cycle));
+                    self.mind_cycles
+                        .lock()
+                        .insert(*persona_id, ResidentWorkspace { cycle: Arc::clone(&cycle), working_memory });
                     cycle
                 }
             }

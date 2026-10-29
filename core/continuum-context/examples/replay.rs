@@ -42,11 +42,18 @@
 //! `--chars-per-token <r>` prices the window at the core's own estimate instead of the
 //! engine's bill; `--keyed-turn` keys the standing turn text into the epoch; `--trace`
 //! prints each act's view against what it may hold.
+//!
+//! `--acts` is the act inspector (`replay/acts/`): one row per request each resident sent, joined
+//! to the engine log and her view's probes, with her summary; see `replay/acts/mod.rs`.
 
 use std::collections::BTreeMap;
 
 use continuum_context::source::{Item, Source};
 
+#[path = "replay/acts/mod.rs"]
+mod acts;
+#[path = "replay/captures.rs"]
+mod captures;
 #[path = "replay/validate.rs"]
 mod validate;
 #[path = "replay/append.rs"]
@@ -264,10 +271,7 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
     let mut sent = head.clone();
     let mut push = |source: &str, items: Vec<Item<String>>| sources.entry(source.to_owned()).or_default().extend(items);
     for message in request["messages"].as_array().into_iter().flatten() {
-        let text = match &message["content"] {
-            serde_json::Value::String(text) => text.clone(),
-            other => other.to_string(),
-        };
+        let text = captures::text(message);
         sent.push('\n');
         sent.push_str(&text);
         if let Some(key) = turn_key(&text) {
@@ -488,6 +492,10 @@ fn request_chars(request: &serde_json::Value, tools: &str) -> usize {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--acts") {
+        return acts::main(args.into_iter().filter(|arg| arg != "--acts").collect());
+    }
     let (mut room, mut purpose, mut keyed_turn, mut trace, mut paths) = (String::new(), String::from("deliberation"), false, false, Vec::new());
     // The growing sources' share of what a start leaves: `start_grants` gives them half.
     let mut share = 2usize;
@@ -499,7 +507,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut reply_override: Option<u64> = None;
     let mut fixed_tools: Option<String> = None;
     let (mut outline_results, mut generational, mut paged_reads) = (false, false, false);
-    let mut args = std::env::args().skip(1);
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--room" => room = args.next().ok_or("--room needs an id prefix")?,
@@ -535,22 +543,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => paths.push(arg),
         }
     }
-    let mut rows = Vec::new();
-    let mut billed: BTreeMap<String, u64> = BTreeMap::new();
-    for path in &paths {
-        for line in std::fs::read_to_string(path)?.lines() {
-            let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-            match event["event"].as_str() {
-                Some("submitted") => rows.push(event),
-                Some("completed") => {
-                    if let (Some(id), Some(tokens)) = (event["request_id"].as_str(), event["response"]["usage"]["inputTokens"].as_u64()) {
-                        billed.insert(id.to_owned(), tokens);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
+    let captured = captures::load(&paths, captures::Window::default())?;
+    let billed: BTreeMap<&str, u64> = captured
+        .terminal
+        .iter()
+        .filter(|(_, end)| end["event"] == "completed")
+        .filter_map(|(id, end)| Some((id.as_str(), end["response"]["usage"]["inputTokens"].as_u64()?)))
+        .collect();
+    let mut rows = captured.submitted;
     // Chars per token as the engine billed this resident's own requests.
     let per_token: Vec<f64> = rows
         .iter()

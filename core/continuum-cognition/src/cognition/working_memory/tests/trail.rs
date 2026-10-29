@@ -11,8 +11,7 @@ use super::*;
 #[test]
 fn recent_results_survive_subsequent_acts_and_stay_bounded() {
     let wm = WorkingMemory::new(8);
-    // A known window: the receipt-time collapse folds nothing against an unknown one
-    // (the act→observe seam pins the served window before any receipt in production).
+    // A known window, as the act→observe seam pins it before any receipt in production.
     wm.set_served_window(16_384);
     record_saved(&wm, "[action] code/run(sol.rs) error[E0601]: `main` function not found");
     record_saved(&wm, "[action] code/list() sol.rs sol2.rs");
@@ -22,17 +21,13 @@ fn recent_results_survive_subsequent_acts_and_stay_bounded() {
         block.contains("E0601"),
         "the compile error must survive later trivial acts: {block}"
     );
-    // PREMISE (2026-10-16, the third premise): the share is enforced at EVERY receipt,
-    // in a BURST with hysteresis. 2026-08-24 moved it to settlement because per-act
-    // eviction rotated the head on every act; a coding turn then held 100+ results
-    // between settlements (the M5: 1.09M chars persisted for one mind). So: flooding
-    // past the share collapses the OLDEST to pointers once, down to half the share…
-    let cap = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
-    // Whole results an eighth of the share each, so several fit and the collapse is visible.
-    let unit = (cap / 8).max(1);
+    // A shed (only the memory owner's, under pressure) collapses the OLDEST to pointers,
+    // and every result still shown is shown whole.
+    let unit = BODY;
     for _ in 0..8 {
         record_saved(&wm, &"x".repeat(unit));
     }
+    shed(&wm, 4 * unit);
     let messages = wm.recent_results_messages();
     let kept: Vec<&String> = messages.iter().filter(|m| m.starts_with("[result ")).collect();
     assert!(!kept.is_empty(), "the newest results stay");
@@ -43,18 +38,11 @@ fn recent_results_survive_subsequent_acts_and_stay_bounded() {
     assert!(messages.iter().any(|m| m.contains("collapsed")), "the rest are pointers");
     assert!(
         !messages.join("\n").contains("E0601"),
-        "the oldest collapse to pointers once the share is exceeded — bounded, not immortal"
+        "the oldest collapse to pointers once shed — bounded, not immortal"
     );
-    // …in ONE CHUNK: the collapse lands at half the cap so the surviving head
-    // stays byte-identical across the next receipts and settles (the KV divergence
-    // audit, 2026-09-13: the oldest surviving result was the first differing block in
-    // 28 of 55 consecutive turns under one-entry-per-settle eviction).
-    let total: usize = kept.len() * unit;
-    assert!(
-        total <= cap / 2 + unit,
-        "an over-cap collapse lands at half the cap, not at the cap: {total} > {}",
-        cap / 2
-    );
+    assert!(wm.resident_result_bytes() <= 4 * unit as u64, "down to the allocation: {}", wm.resident_result_bytes());
+    // Between sheds the ring only appends: receipts and settles move nothing, so the head
+    // stays byte-identical (the KV divergence audit, 2026-09-13).
     let head_after_collapse = wm.recent_results_messages().get(1).cloned();
     record_saved(&wm, "[action] code/read(a.rs) fine");
     wm.record_settlement("one", None);
@@ -63,7 +51,7 @@ fn recent_results_survive_subsequent_acts_and_stay_bounded() {
     assert_eq!(
         wm.recent_results_messages().get(1).cloned(),
         head_after_collapse,
-        "the ledger head is byte-stable across receipts and settles that fit under the cap"
+        "the ledger head is byte-stable across receipts and settles between sheds"
     );
 }
 
