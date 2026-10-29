@@ -105,7 +105,7 @@ impl<K: Eq + Hash + Copy, V> BoundedRoomLedger<K, V> {
     /// Remove and return this key's value. `None` for an evicted room, same as
     /// for a room that was never written. See the module doc on why eviction must
     /// not read as recovery.
-    pub(crate) fn take(&mut self, key: &K) -> Option<V> {
+    pub fn take(&mut self, key: &K) -> Option<V> {
         let taken = self.entries.remove(key)?;
         if let Some(at) = self.order.iter().position(|k| k == key) {
             self.order.remove(at);
@@ -115,7 +115,7 @@ impl<K: Eq + Hash + Copy, V> BoundedRoomLedger<K, V> {
 
     /// Mutable access, inserting `default` first if absent. Counts as a WRITE for
     /// recency, which is what makes an actively-observed room un-evictable.
-    pub(crate) fn entry_or(&mut self, key: K, default: V) -> &mut V {
+    pub fn entry_or(&mut self, key: K, default: V) -> &mut V {
         if self.entries.contains_key(&key) {
             self.touch(key);
         } else {

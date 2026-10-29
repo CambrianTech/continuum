@@ -5,6 +5,10 @@ edition = "2021"
 publish = false
 description = "A mind's vitals: the health and turn ledgers, turn ingress, grid allocation, the vitals pulse, the activity gate, directed pending and mind events. A leaf of the cognition crate tree (docs/architecture/COGNITION-CRATE-TREE.md)."
 
+[features]
+# Test-only helpers other crates' tests use (CLAUDE.md: fixtures behind test-fixtures, never in a production link).
+test-fixtures = []
+
 [dependencies]
 continuum-base = { path = "../continuum-base" }
 continuum-kernel = { path = "../continuum-kernel" }

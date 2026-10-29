@@ -60,7 +60,8 @@ pub fn acknowledge(persona: Uuid, observed: Observation) {
     );
 }
 
-#[cfg(test)]
+/// Test fixture: forget a persona's pending directed lines (cognition's tests use it).
+#[cfg(any(test, feature = "test-fixtures"))]
 pub fn clear(persona: Uuid) {
     acknowledge(persona, observe(persona));
 }

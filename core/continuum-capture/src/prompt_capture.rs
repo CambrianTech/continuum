@@ -263,7 +263,7 @@ pub struct JsonlPromptCaptureSink {
     store: Arc<Mutex<Store>>,
 }
 impl JsonlPromptCaptureSink {
-    pub(crate) fn open_for_persona(persona_id: Uuid) -> std::io::Result<Self> {
+    pub fn open_for_persona(persona_id: Uuid) -> std::io::Result<Self> {
         let dir = crate::capture::fixture_dir(FIXTURE_DIR).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -289,7 +289,7 @@ impl JsonlPromptCaptureSink {
             store,
         })
     }
-    pub(crate) fn with_session(mut self, session_id: Uuid) -> Self {
+    pub fn with_session(mut self, session_id: Uuid) -> Self {
         self.session_id = session_id;
         self
     }
@@ -505,7 +505,7 @@ fn recorded_response_failed(response: &serde_json::Value) -> bool {
 /// Compatibility projection for existing prompt inspection and dataset miners.
 /// Only a completed response is a training candidate. Failed/cancelled/pending
 /// calls remain visible through playback, never promoted to completed examples.
-pub(crate) fn legacy_projection(
+pub fn legacy_projection(
     detail: PlaybackDetail,
 ) -> std::io::Result<Option<serde_json::Value>> {
     let malformed =
