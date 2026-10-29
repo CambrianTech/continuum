@@ -1,10 +1,14 @@
 //! OpenAI Chat Completions (`POST /v1/chat/completions`): Hermes, opencode, and most agents.
 
-use super::{event, input_schema, place_system, sampling, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
+use super::decode::{self, present};
+use super::{event, place_system, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
 use continuum_engine::ai::adapter::GenerationChunk;
 use continuum_engine::ai::types::ImageInput;
 use continuum_engine::ai::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse, ToolChoice};
 use serde_json::{json, Value};
+
+/// OpenAI's documented ceiling for `temperature` (Chat Completions and Responses alike).
+pub(super) const OPENAI_TEMPERATURE_MAX: f64 = 2.0;
 
 /// One streamed answer.
 pub(crate) struct Chat {
@@ -22,20 +26,16 @@ impl Wire for Chat {
         let (system_prompt, messages) = place_system(None, conversation(messages)?);
         let mut request = TextGenerationRequest {
             model: Some(model.to_owned()),
-            max_tokens: body
-                .get("max_completion_tokens")
-                .or_else(|| body.get("max_tokens"))
-                .and_then(Value::as_u64)
-                .map(|t| t as u32),
+            max_tokens: decode::token_limit(&body, &["max_completion_tokens", "max_tokens"])?,
             system_prompt,
             messages,
-            tools: body.get("tools").and_then(Value::as_array).map(|tools| tools.iter().filter_map(tool).collect()),
-            tool_choice: body.get("tool_choice").and_then(tool_choice),
+            tools: decode::tools(&body, tool)?,
+            tool_choice: tool_choice(&body)?,
             purpose: Some(continuum_engine::inference::request_body::DRIVER_PURPOSE.into()),
             ..Default::default()
         };
-        sampling(&body, &mut request);
-        Ok(Call { request, stream: body.get("stream").and_then(Value::as_bool).unwrap_or(false) }) // unwrap_or: the API's default is not streamed
+        decode::sampling(&body, &mut request, OPENAI_TEMPERATURE_MAX)?;
+        Ok(Call { request, stream: decode::streamed(&body)? })
     }
 
     fn answer(response: &TextGenerationResponse, id: &str) -> Value {
@@ -199,21 +199,27 @@ pub(super) fn image(url: &str) -> ImageInput {
     }
 }
 
-fn tool(value: &Value) -> Option<NativeToolSpec> {
-    let function = value.get("function")?;
-    Some(NativeToolSpec {
-        name: function.get("name").and_then(Value::as_str)?.to_owned(),
-        description: function.get("description").and_then(Value::as_str).unwrap_or_default().to_owned(), // unwrap_or_default: a tool may have no description
-        input_schema: input_schema(&function["parameters"]),
-    })
+/// A Chat Completions tool: `{type: "function", function: {name, description, parameters}}`.
+fn tool(entry: &Value) -> Result<NativeToolSpec, String> {
+    match decode::tool_type(entry)? {
+        Some("function") => {}
+        Some(other) => return Err(decode::unserved(other, "`function`")),
+        None => return Err("has no `type`".into()),
+    }
+    let function = entry.get("function").filter(|f| f.is_object()).ok_or("has no `function` object")?;
+    decode::tool_spec(function.get("name"), function.get("description"), function.get("parameters"))
 }
 
-pub(super) fn tool_choice(value: &Value) -> Option<ToolChoice> {
-    match value {
-        Value::String(mode) => Some(ToolChoice::Mode(if mode == "required" { "any".into() } else { mode.clone() })),
-        Value::Object(_) => Some(ToolChoice::Specific {
-            name: value.get("function").and_then(|f| f.get("name")).or_else(|| value.get("name")).and_then(Value::as_str)?.to_owned(),
-        }),
-        _ => None,
+/// The OpenAI `tool_choice`: a mode (`required` is the engine's `any`), or one function by
+/// name (`{type: "function", function: {name}}` here, `{type: "function", name}` in
+/// Responses).
+pub(super) fn tool_choice(body: &Value) -> Result<Option<ToolChoice>, BadRequest> {
+    match present(body, "tool_choice") {
+        None => Ok(None),
+        Some(Value::String(mode)) => decode::choice_mode(mode, &[("none", "none"), ("auto", "auto"), ("required", "any")]).map(Some),
+        Some(choice @ Value::Object(_)) => {
+            decode::choice_named(choice.get("function").and_then(|f| f.get("name")).or_else(|| choice.get("name"))).map(Some)
+        }
+        Some(other) => Err(BadRequest(format!("`tool_choice` must be a mode or an object, got {}", decode::kind(other)))),
     }
 }

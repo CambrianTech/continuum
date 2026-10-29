@@ -14,6 +14,7 @@ use crate::ai::types::{ChatMessage, ImageInput, MessageContent};
 
 use super::embedding::{build_embedding_body, parse_embedding_response, parse_embedding_usage};
 
+mod a_ready_burst_reaches_the_consumer_one_chunk_per_poll;
 mod lane_transport;
 mod lora_page_in;
 mod prefill_progress_is_liveness;

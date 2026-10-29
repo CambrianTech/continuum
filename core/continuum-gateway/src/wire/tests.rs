@@ -141,13 +141,13 @@ fn responses_groups_items_refuses_missing_state_and_numbers_its_events() {
             {"type": "function_call_output", "call_id": "c2", "output": "B"},
             {"type": "reasoning", "summary": []},
         ],
-        "tools": [{"type": "function", "name": "read", "parameters": {"type": "object", "properties": {"p": {"type": "string"}}}}, {"type": "web_search"}],
+        "tools": [{"type": "function", "name": "read", "parameters": {"type": "object", "properties": {"p": {"type": "string"}}}}],
     }))
     .expect("test: decodes");
     assert_eq!(call.request.system_prompt.as_deref(), Some("You are Grok.\n\nSandbox: workspace-write."), "a leading developer item joins the instructions");
     assert_eq!(call.request.messages.len(), 4, "user, one assistant turn with both calls, two tool replies");
     assert_eq!(parts(&call.request.messages[1]).len(), 2);
-    assert_eq!(call.request.tools.as_ref().map(Vec::len), Some(1), "provider built-ins are not ours");
+    assert_eq!(call.request.tools.as_ref().map(Vec::len), Some(1));
 
     let mut s = Responses::streamer("qwen", "resp_1");
     let mut frames = s.opened();
@@ -160,4 +160,91 @@ fn responses_groups_items_refuses_missing_state_and_numbers_its_events() {
     assert_eq!(last["type"], "response.completed");
     assert_eq!(last["response"]["output"][0]["content"][0]["text"], "Reading it.");
     assert_eq!(last["response"]["output"][1]["call_id"], "call_1");
+}
+
+/// Decode `body` in each format with `fields` merged in; every one must refuse.
+fn refused_by_every_format(fields: Value) -> Vec<String> {
+    let merge = |mut body: Value| {
+        for (key, value) in fields.as_object().expect("test: fields are an object") {
+            body[key] = value.clone();
+        }
+        body
+    };
+    let anthropic = merge(json!({"model": "qwen", "max_tokens": 64, "messages": [{"role": "user", "content": "go"}]}));
+    let chat = merge(json!({"model": "qwen", "messages": [{"role": "user", "content": "go"}]}));
+    let responses = merge(json!({"model": "qwen", "input": "go"}));
+    [
+        Anthropic::decode(anthropic).err().map(|BadRequest(why)| why),
+        Chat::decode(chat).err().map(|BadRequest(why)| why),
+        Responses::decode(responses).err().map(|BadRequest(why)| why),
+    ]
+    .into_iter()
+    .map(|why| why.unwrap_or_else(|| panic!("test: {fields} must refuse in every format")))
+    .collect()
+}
+
+// what this catches: a malformed tool entry filtered out of the list (`filter_map`), so the
+// model runs without a tool the agent declared and the agent never learns why. Decode is the
+// first step of `server::serve`, so a refusal here is before selection and generation.
+#[test]
+fn a_malformed_tool_entry_refuses_the_call_in_every_format() {
+    let anthropic = Anthropic::decode(json!({"model": "qwen", "max_tokens": 64, "messages": [{"role": "user", "content": "go"}],
+        "tools": [{"name": "ls", "input_schema": {"type": "object"}}, {"description": "no name", "input_schema": {"type": "object"}}]}));
+    let chat = Chat::decode(json!({"model": "qwen", "messages": [{"role": "user", "content": "go"}],
+        "tools": [{"type": "function", "function": {"name": "ls", "parameters": {"type": "object", "required": ["dir", 7]}}}]}));
+    let responses = Responses::decode(json!({"model": "qwen", "input": "go",
+        "tools": [{"type": "function", "name": "ls", "parameters": "not a schema"}]}));
+    for (format, outcome) in [("anthropic", anthropic), ("chat", chat), ("responses", responses)] {
+        let Err(BadRequest(why)) = outcome else { panic!("test: {format} must refuse a malformed tool") };
+        assert!(why.starts_with("`tools["), "{format} names the entry: {why}");
+    }
+    let whys = refused_by_every_format(json!({"tools": {"name": "ls"}}));
+    assert!(whys.iter().all(|why| why.contains("must be an array")), "{whys:?}");
+}
+
+// what this catches: a provider built-in tool (web search, a server tool) silently dropped,
+// so the agent expects a capability the model was never shown.
+#[test]
+fn an_unsupported_tool_type_refuses_the_call() {
+    let anthropic = Anthropic::decode(json!({"model": "qwen", "max_tokens": 64, "messages": [{"role": "user", "content": "go"}],
+        "tools": [{"type": "web_search_20250305", "name": "web_search"}]}));
+    let chat = Chat::decode(json!({"model": "qwen", "messages": [{"role": "user", "content": "go"}],
+        "tools": [{"type": "custom", "custom": {"name": "apply_patch"}}]}));
+    let responses = Responses::decode(json!({"model": "qwen", "input": "go", "tools": [{"type": "web_search"}]}));
+    for (format, outcome) in [("anthropic", anthropic), ("chat", chat), ("responses", responses)] {
+        let Err(BadRequest(why)) = outcome else { panic!("test: {format} must refuse an unserved tool type") };
+        assert!(why.contains("does not serve"), "{format} says why: {why}");
+    }
+}
+
+// what this catches: `u64 as u32` wrapping a token limit (4294967296 became 0, 4294967297
+// became 1) and a zero limit reaching the engine.
+#[test]
+fn an_out_of_range_token_limit_refuses_the_call() {
+    for limit in [json!(4_294_967_296u64), json!(0), json!(-1), json!(1.5), json!("64")] {
+        let anthropic = Anthropic::decode(json!({"model": "qwen", "max_tokens": limit, "messages": [{"role": "user", "content": "go"}]}));
+        let chat = Chat::decode(json!({"model": "qwen", "max_completion_tokens": limit, "messages": [{"role": "user", "content": "go"}]}));
+        let older = Chat::decode(json!({"model": "qwen", "max_completion_tokens": 64, "max_tokens": limit, "messages": [{"role": "user", "content": "go"}]}));
+        let responses = Responses::decode(json!({"model": "qwen", "max_output_tokens": limit, "input": "go"}));
+        for (format, outcome) in [("anthropic", anthropic), ("chat", chat), ("chat max_tokens", older), ("responses", responses)] {
+            assert!(outcome.is_err(), "{format} must refuse a token limit of {limit}");
+        }
+    }
+    let largest = Chat::decode(json!({"model": "qwen", "max_tokens": u32::MAX, "messages": [{"role": "user", "content": "go"}]}));
+    assert_eq!(largest.expect("test: the largest u32 is a limit").request.max_tokens, Some(u32::MAX));
+}
+
+// what this catches: a stop sequence that is not a string dropped from the list, so the
+// answer runs past where the agent asked it to stop; and other sampling fields of the wrong
+// type or range ignored instead of refused.
+#[test]
+fn malformed_sampling_refuses_the_call() {
+    let whys = refused_by_every_format(json!({"stop": ["END", 7]}));
+    assert!(whys.iter().all(|why| why.contains("`stop[1]`")), "{whys:?}");
+    refused_by_every_format(json!({"stop_sequences": {"END": true}}));
+    refused_by_every_format(json!({"temperature": "warm"}));
+    refused_by_every_format(json!({"top_p": 1.5}));
+    refused_by_every_format(json!({"stream": "yes"}));
+    let call = Chat::decode(json!({"model": "qwen", "stop": ["END", "STOP"], "messages": [{"role": "user", "content": "go"}]}));
+    assert_eq!(call.expect("test: decodes").request.stop_sequences, Some(vec!["END".to_string(), "STOP".to_string()]));
 }

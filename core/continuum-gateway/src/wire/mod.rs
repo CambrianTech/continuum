@@ -1,11 +1,12 @@
 //! The APIs agents speak, each an adapter holding only its diff.
 //!
 //! A format decodes the agent's body into one [`Call`] and encodes the engine's answer back,
-//! whole or as a stream. Everything they share (selection, generation, the SSE transport,
-//! errors) lives once in `route` and `server`.
+//! whole or as a stream. Everything they share lives once: the checked field decoders in
+//! [`decode`], selection, generation, the SSE transport and errors in `route` and `server`.
 
 pub(crate) mod anthropic;
 pub(crate) mod chat;
+pub(crate) mod decode;
 pub(crate) mod responses;
 
 use continuum_engine::ai::adapter::GenerationChunk;
@@ -110,19 +111,6 @@ pub(crate) fn text_of(value: &Value) -> String {
     }
 }
 
-/// A JSON-schema object as the engine's tool input schema.
-pub(crate) fn input_schema(schema: &Value) -> continuum_engine::ai::ToolInputSchema {
-    continuum_engine::ai::ToolInputSchema {
-        schema_type: "object".into(),
-        properties: schema.get("properties").cloned().unwrap_or_else(|| Value::Object(Default::default())), // unwrap_or_else: a tool with no parameters has empty properties
-        required: schema
-            .get("required")
-            .and_then(Value::as_array)
-            .map(|r| r.iter().filter_map(Value::as_str).map(str::to_owned).collect()),
-        definitions: schema.get("$defs").or_else(|| schema.get("definitions")).cloned(),
-    }
-}
-
 /// Where system text may go. The engine's chat templates accept one system message, first
 /// (Qwen's raises "System message must be at the beginning"), and agents send more: Claude
 /// Code a `system` message after the user's turn (its hook and environment context), Codex
@@ -168,17 +156,6 @@ pub(crate) fn plain_text(content: &MessageContent) -> String {
 /// Prompt tokens the engine reused from a warm page this call, when it measured them.
 pub(crate) fn cached_tokens(response: &TextGenerationResponse) -> Option<u32> {
     response.timing.as_ref().map(|t| t.cached_tokens)
-}
-
-/// The sampling fields every format names the same way: temperature, top_p, stop.
-pub(crate) fn sampling(body: &Value, request: &mut TextGenerationRequest) {
-    request.temperature = body.get("temperature").and_then(Value::as_f64).map(|t| t as f32);
-    request.top_p = body.get("top_p").and_then(Value::as_f64).map(|t| t as f32);
-    request.stop_sequences = match body.get("stop").or_else(|| body.get("stop_sequences")) {
-        Some(Value::String(s)) => Some(vec![s.clone()]),
-        Some(Value::Array(a)) => Some(a.iter().filter_map(Value::as_str).map(str::to_owned).collect()),
-        _ => None,
-    };
 }
 
 #[cfg(test)]

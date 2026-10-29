@@ -1,10 +1,13 @@
 //! Anthropic Messages (`POST /v1/messages`): Claude Code, via `ANTHROPIC_BASE_URL`.
 
-use super::{event, input_schema, place_system, sampling, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
+use super::{decode, event, place_system, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
 use continuum_engine::ai::adapter::GenerationChunk;
 use continuum_engine::ai::types::ImageInput;
 use continuum_engine::ai::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse, ToolChoice};
 use serde_json::{json, Value};
+
+/// Anthropic's documented ceiling for `temperature`.
+const ANTHROPIC_TEMPERATURE_MAX: f64 = 1.0;
 
 /// One streamed answer: the open content block with its index, and the next index.
 pub(crate) struct Anthropic {
@@ -25,22 +28,22 @@ impl Wire for Anthropic {
 
     fn decode(body: Value) -> Result<Call, BadRequest> {
         let model = body.get("model").and_then(Value::as_str).ok_or_else(|| BadRequest("`model` is required".into()))?;
-        let max_tokens = body.get("max_tokens").and_then(Value::as_u64).ok_or_else(|| BadRequest("`max_tokens` is required".into()))?;
+        let max_tokens = decode::token_limit(&body, &["max_tokens"])?.ok_or_else(|| BadRequest("`max_tokens` is required".into()))?;
         let messages = body.get("messages").and_then(Value::as_array).ok_or_else(|| BadRequest("`messages` is required".into()))?;
         let mut request = TextGenerationRequest {
             model: Some(model.to_owned()),
-            max_tokens: Some(max_tokens as u32),
-            top_k: body.get("top_k").and_then(Value::as_u64).map(|k| k as u32),
+            max_tokens: Some(max_tokens),
+            top_k: decode::count(&body, "top_k", 0)?,
             system_prompt: body.get("system").map(text_of).filter(|s| !s.is_empty()),
             messages: messages.iter().map(message).collect::<Result<_, _>>()?,
-            tools: body.get("tools").and_then(Value::as_array).map(|tools| tools.iter().filter_map(tool).collect()),
-            tool_choice: body.get("tool_choice").and_then(tool_choice),
+            tools: decode::tools(&body, tool)?,
+            tool_choice: tool_choice(&body)?,
             purpose: Some(continuum_engine::inference::request_body::DRIVER_PURPOSE.into()),
             ..Default::default()
         };
-        sampling(&body, &mut request);
+        decode::sampling(&body, &mut request, ANTHROPIC_TEMPERATURE_MAX)?;
         (request.system_prompt, request.messages) = place_system(request.system_prompt.take(), std::mem::take(&mut request.messages));
-        Ok(Call { request, stream: body.get("stream").and_then(Value::as_bool).unwrap_or(false) }) // unwrap_or: the API's default is not streamed
+        Ok(Call { request, stream: decode::streamed(&body)? })
     }
 
     fn answer(response: &TextGenerationResponse, id: &str) -> Value {
@@ -206,17 +209,27 @@ fn part(block: &Value) -> Option<ContentPart> {
     }
 }
 
-fn tool(value: &Value) -> Option<NativeToolSpec> {
-    Some(NativeToolSpec {
-        name: value.get("name").and_then(Value::as_str)?.to_owned(),
-        description: value.get("description").and_then(Value::as_str).unwrap_or_default().to_owned(), // unwrap_or_default: a tool may have no description
-        input_schema: input_schema(value.get("input_schema")?),
-    })
+/// An Anthropic tool: `{name, description, input_schema}`, untyped or `type: "custom"`. A
+/// server tool (`web_search_*`, `bash_*`, `text_editor_*`) is refused, never dropped: Claude
+/// Code would expect a tool the model was never shown.
+fn tool(entry: &Value) -> Result<NativeToolSpec, String> {
+    match decode::tool_type(entry)? {
+        None | Some("custom") => {
+            let schema = entry.get("input_schema").filter(|s| !s.is_null()).ok_or("has no `input_schema`")?;
+            decode::tool_spec(entry.get("name"), entry.get("description"), Some(schema))
+        }
+        Some(other) => Err(decode::unserved(other, "custom")),
+    }
 }
 
-fn tool_choice(value: &Value) -> Option<ToolChoice> {
-    match value.get("type").and_then(Value::as_str)? {
-        "tool" => Some(ToolChoice::Specific { name: value.get("name").and_then(Value::as_str)?.to_owned() }),
-        mode => Some(ToolChoice::Mode(mode.to_owned())),
+/// The Anthropic `tool_choice`: `{type: auto | any | none}`, or `{type: "tool", name}`.
+fn tool_choice(body: &Value) -> Result<Option<ToolChoice>, BadRequest> {
+    let Some(choice) = decode::present(body, "tool_choice") else {
+        return Ok(None);
+    };
+    match choice.get("type").and_then(Value::as_str) {
+        Some("tool") => decode::choice_named(choice.get("name")).map(Some),
+        Some(mode) => decode::choice_mode(mode, &[("auto", "auto"), ("any", "any"), ("none", "none")]).map(Some),
+        None => Err(BadRequest("`tool_choice` has no `type`".into())),
     }
 }
