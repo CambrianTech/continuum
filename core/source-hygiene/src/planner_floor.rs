@@ -8,7 +8,8 @@
 //! result bodies, so residents saw 36 of 40 results as bare headers.
 //!
 //! What counts: one violation per line of code (tests included, comments not) that names
-//! `MIN_SERVE_CTX` outside the planner modules below. An unknown window is represented as
+//! `MIN_SERVE_CTX` outside the planner modules below. It counts the NAME only: an alias of it or
+//! a literal 2048 standing in for a window is not caught here. An unknown window is represented as
 //! unknown (`None`), never as this number. Counted by grep on 0f92b593f (2026-10-29): 28 lines in
 //! 15 files, all in the mind, the prompt budget, the academy and their tests. It falls to 0
 //! as the window becomes the turn's admission grant (one owner) instead of a cached copy.
@@ -18,15 +19,24 @@ use super::{split_code_and_comment, SourceFile, SourceRule, Violation};
 /// The planner: the only modules where the floor means what it says. Paths as audited
 /// (module crates are unprefixed): continuum-engine's planning and single-purpose lanes,
 /// continuum-serving's consumer and daemon, continuum-grid's placement, and continuum-core's
-/// provisioning placement planner.
-const PLANNER: &[&str] = &[
+/// provisioning placement planner. Directories match as a slash-delimited prefix and files
+/// exactly, so a sibling (`grid/placement.rs_extra`, `modules/serving_daemon_x.rs`) is not
+/// exempt (Codex on #5593).
+const PLANNER_DIRS: &[&str] = &[
     "inference/planning/",
     "inference/single_purpose_lane/",
+    "modules/serving_daemon/",
+];
+const PLANNER_FILES: &[&str] = &[
     "modules/serving_consumer.rs",
-    "modules/serving_daemon",
+    "modules/serving_daemon.rs",
     "grid/placement.rs",
     "provisioning/placement_planner.rs",
 ];
+
+fn in_the_planner(rel: &str) -> bool {
+    PLANNER_DIRS.iter().any(|dir| rel.starts_with(dir)) || PLANNER_FILES.contains(&rel)
+}
 
 const FLOOR: &str = "MIN_SERVE_CTX";
 
@@ -38,7 +48,7 @@ impl SourceRule for PlannerFloorOutsideThePlanner {
     }
 
     fn check(&self, file: &SourceFile) -> Vec<Violation> {
-        if PLANNER.iter().any(|p| file.rel.starts_with(p)) {
+        if in_the_planner(&file.rel) {
             return Vec::new();
         }
         file.raw
@@ -136,6 +146,39 @@ mod tests {
             flagged("grid/placement.rs", "window >= MIN_SERVE_CTX"),
             0,
             "grid placement"
+        );
+    }
+
+    // what this catches (Codex on #5593): the exemption widening to a sibling. A file named like a
+    // planner file plus a suffix, or a neighbour of the daemon directory, is checked like any other.
+    #[test]
+    fn a_sibling_of_a_planner_path_is_not_exempt() {
+        let flagged = |rel: &str| {
+            PlannerFloorOutsideThePlanner
+                .check(&SourceFile::for_test(rel, "let w = MIN_SERVE_CTX;"))
+                .len()
+        };
+        assert_eq!(flagged("grid/placement.rs"), 0, "the planner file itself");
+        assert_eq!(
+            flagged("modules/serving_daemon/launch_window.rs"),
+            0,
+            "inside the daemon directory"
+        );
+        assert_eq!(
+            flagged("modules/serving_daemon.rs"),
+            0,
+            "the daemon module file"
+        );
+        assert_eq!(flagged("grid/placement.rs_extra"), 1, "a file sibling");
+        assert_eq!(
+            flagged("modules/serving_daemon_x.rs"),
+            1,
+            "a directory sibling"
+        );
+        assert_eq!(
+            flagged("modules/serving_consumer.rs_backup"),
+            1,
+            "a backup sibling"
         );
     }
 }
