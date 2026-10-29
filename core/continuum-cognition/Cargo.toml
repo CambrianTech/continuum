@@ -82,6 +82,7 @@ continuum-client = { path = "../../client/continuum-client", features = ["test-f
 continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
 continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
 continuum-vitals = { path = "../continuum-vitals", features = ["test-fixtures"] }
+continuum-rooms = { path = "../continuum-rooms", features = ["test-fixtures"] }
 continuum-experience = { path = "../continuum-experience", features = ["test-fixtures"] }
 
 [features]
