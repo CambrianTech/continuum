@@ -498,3 +498,229 @@ use super::*;
         .expect("origin stays optional on the wire");
         assert!(matches!(p.origin, WorkClaimOrigin::Explicit));
     }
+
+// A PASS CLOSES THE ROUNDS IT SUPERSEDES AND LEAVES NEWER ONES OPEN. Review cards are per
+// round: when a pass lands on one of them, the parent closes on that round's submission and
+// every OTHER open review card whose candidate is at or behind it reviews an artifact that
+// just got approved — left alone they stay claimable P1s forever (the stale accumulation this
+// card exists to end). A round whose candidate is NEWER than the accepted one still has a
+// live question on it and must survive. The sweep resolves each candidate through its typed
+// submission binding, falling back to the newest submission for legacy untyped rounds.
+#[tokio::test]
+async fn a_pass_closes_superseded_rounds_and_leaves_newer_ones_open() {
+    let home = tempfile::tempdir().expect("temp airc home");
+    let airc = Arc::new(
+        Airc::open_with_wire_root_for_test(home.path(), home.path())
+            .await
+            .expect("airc scope opens without a daemon"),
+    );
+    let room = airc.join("continuum").await.expect("join the project room");
+    let repo = RepoId::new("github.com/CambrianTech/continuum").expect("repo id");
+
+    // Two rounds of work on one parent: submit S1, open review round 1; send it back and
+    // resubmit as S2 (reusing the same claim — nothing in a submission requires the latest
+    // claim), open review round 2. The board then holds submissions newest-first [S2, S1].
+    let parent = airc
+        .create_work_card_in(&room, CreateWorkCard::new(repo.clone(), "a fix", Priority::P1))
+        .await
+        .expect("parent card created");
+    raw_advance(&airc, parent, CardState::Review, "test").await;
+
+    let claim = airc
+        .claim_work_card(ClaimWorkCard { card_id: parent, ttl_ms: 600_000 })
+        .await
+        .expect("the round's work is claimed");
+    let artifact = SubmissionArtifact {
+        hash: ContentHash::from_bytes(b"patch"),
+        size_bytes: 5,
+        mime: Some("text/x-patch".into()),
+    };
+
+    let s1 = airc
+        .submit_work_in(
+            &room,
+            SubmitWork {
+                submission_id: SubmissionId::new(),
+                card_id: parent,
+                claim_id: claim,
+                instance: "ordinary".into(),
+                base_sha: GitObjectId::new("a".repeat(40)).unwrap(),
+                artifact: artifact.clone(),
+            },
+        )
+        .await
+        .expect("round 1 submitted");
+    let r1 = airc
+        .ensure_submission_review_in(
+            &room,
+            parent,
+            s1.submission_id,
+            CreateWorkCard::new(repo.clone(), "review: round 1", Priority::P1),
+        )
+        .await
+        .expect("round 1 gets its review card");
+
+    let s2 = airc
+        .submit_work_in(
+            &room,
+            SubmitWork {
+                submission_id: SubmissionId::new(),
+                card_id: parent,
+                claim_id: claim,
+                instance: "ordinary".into(),
+                base_sha: GitObjectId::new("b".repeat(40)).unwrap(),
+                artifact,
+            },
+        )
+        .await
+        .expect("round 2 resubmitted on the same claim");
+    let r2 = airc
+        .ensure_submission_review_in(
+            &room,
+            parent,
+            s2.submission_id,
+            CreateWorkCard::new(repo.clone(), "review: round 2", Priority::P1),
+        )
+        .await
+        .expect("round 2 gets its review card");
+    assert_ne!(r1, r2, "each round has its own deterministic review card");
+
+    // The reviewer passes the NEWER round: accepted candidate is S2 (index 0), so R1's
+    // candidate S1 sits behind it and must be closed by the sweep — while the verdict
+    // itself lands on R2, closing it too. No stale claimable P1s survive a pass.
+    let landed = advance_card_state_effective(&airc, r2, CardState::Closed, "test", None)
+        .await
+        .expect("a pass on the newest round lands");
+    assert_eq!(
+        landed,
+        CardState::Closed,
+        "the effective state is the parent's: no PR, so it closes on the pass"
+    );
+    let (_, pcard) = card_in_subscribed_rooms(&airc, parent).await.expect("parent on the board");
+    assert_eq!(pcard.state, CardState::Closed, "the parent closed on the pass");
+    let (_, r1card) = card_in_subscribed_rooms(&airc, r1)
+        .await
+        .expect("round 1 on the board");
+    assert_eq!(
+        r1card.state,
+        CardState::Closed,
+        "the superseded round was swept — no stale claimable P1 survives a pass"
+    );
+    let (_, r2card) = card_in_subscribed_rooms(&airc, r2)
+        .await
+        .expect("round 2 on the board");
+    assert_eq!(
+        r2card.state,
+        CardState::Closed,
+        "the verdict's own round stays closed — not rewritten by the fall-through this fix removes"
+    );
+}
+
+// A PASS DOES NOT CLOSE ROUNDS THAT REVIEW NEWER WORK. The sweep must tie closing to the
+// accepted submission (blocking #3 of 99c64d55): a round whose bound candidate is newer
+// than what just passed still has a live question on it, and closing it would discard a
+// judgment of work that postdates the pass — exactly the over-closing this fix exists to
+// prevent. Passing the OLDER round here settles S1 (index 1) while R2 reviews S2 (index
+// 0): only the verdict's own card closes behind it; R2 must survive.
+#[tokio::test]
+async fn a_pass_leaves_rounds_reviewing_newer_work_open() {
+    let home = tempfile::tempdir().expect("temp airc home");
+    let airc = Arc::new(
+        Airc::open_with_wire_root_for_test(home.path(), home.path())
+            .await
+            .expect("airc scope opens without a daemon"),
+    );
+    let room = airc.join("continuum").await.expect("join the project room");
+    let repo = RepoId::new("github.com/CambrianTech/continuum").expect("repo id");
+
+    // The same two-round board as its sibling test: submissions newest-first [S2, S1],
+    // typed review rounds R1 on S1 and R2 on S2.
+    let parent = airc
+        .create_work_card_in(&room, CreateWorkCard::new(repo.clone(), "a fix", Priority::P1))
+        .await
+        .expect("parent card created");
+    raw_advance(&airc, parent, CardState::Review, "test").await;
+
+    let claim = airc
+        .claim_work_card(ClaimWorkCard { card_id: parent, ttl_ms: 600_000 })
+        .await
+        .expect("the round's work is claimed");
+    let artifact = SubmissionArtifact {
+        hash: ContentHash::from_bytes(b"patch"),
+        size_bytes: 5,
+        mime: Some("text/x-patch".into()),
+    };
+
+    let s1 = airc
+        .submit_work_in(
+            &room,
+            SubmitWork {
+                submission_id: SubmissionId::new(),
+                card_id: parent,
+                claim_id: claim,
+                instance: "ordinary".into(),
+                base_sha: GitObjectId::new("a".repeat(40)).unwrap(),
+                artifact: artifact.clone(),
+            },
+        )
+        .await
+        .expect("round 1 submitted");
+    let r1 = airc
+        .ensure_submission_review_in(
+            &room,
+            parent,
+            s1.submission_id,
+            CreateWorkCard::new(repo.clone(), "review: round 1", Priority::P1),
+        )
+        .await
+        .expect("round 1 gets its review card");
+
+    let s2 = airc
+        .submit_work_in(
+            &room,
+            SubmitWork {
+                submission_id: SubmissionId::new(),
+                card_id: parent,
+                claim_id: claim,
+                instance: "ordinary".into(),
+                base_sha: GitObjectId::new("b".repeat(40)).unwrap(),
+                artifact,
+            },
+        )
+        .await
+        .expect("round 2 resubmitted on the same claim");
+    let r2 = airc
+        .ensure_submission_review_in(
+            &room,
+            parent,
+            s2.submission_id,
+            CreateWorkCard::new(repo.clone(), "review: round 2", Priority::P1),
+        )
+        .await
+        .expect("round 2 gets its review card");
+    assert_ne!(r1, r2, "each round has its own deterministic review card");
+
+    // The reviewer passes the OLDER round: accepted candidate is S1 (index 1). R2's
+    // candidate S2 sits AHEAD of it — newer work than what just passed — so the sweep
+    // must leave R2 open for its own verdict.
+    let landed = advance_card_state_effective(&airc, r1, CardState::Closed, "test", None)
+        .await
+        .expect("a pass on the older round lands");
+    assert_eq!(
+        landed,
+        CardState::Closed,
+        "the effective state is the parent's: no PR, so it closes on the pass"
+    );
+    let (_, r1card) = card_in_subscribed_rooms(&airc, r1)
+        .await
+        .expect("round 1 on the board");
+    assert_eq!(r1card.state, CardState::Closed, "the verdict's own round closed");
+    let (_, r2card) = card_in_subscribed_rooms(&airc, r2)
+        .await
+        .expect("round 2 on the board");
+    assert_ne!(
+        r2card.state,
+        CardState::Closed,
+        "the round reviewing newer work stays open — a pass must not close it"
+    );
+}
