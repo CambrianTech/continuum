@@ -543,7 +543,7 @@ impl From<GitError> for String {
 /// whole or an input that wasn't delivered; a deadline that ended it says its effect is UNKNOWN
 /// (a push may have landed), never that nothing happened.
 pub async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &str)], input: Option<Vec<u8>>) -> Result<String, GitError> {
-    use crate::inference::lane_process::{run_owned_with_input, Answer, Why};
+    use continuum_process::{run_owned_with_input, Answer, Why};
     let bound = match deadline() {
         Some(at) => {
             let left = at.saturating_duration_since(tokio::time::Instant::now());

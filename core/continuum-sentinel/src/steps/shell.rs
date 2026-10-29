@@ -70,11 +70,11 @@ pub async fn execute(
 
     // owned (lane_process::run_owned): at the bound, or when the pipeline is dropped, the step's
     // command and everything it started are ended; kill_on_drop ended only the direct child
-    let output = continuum_engine::inference::lane_process::run_owned(command, Some(Duration::from_secs(timeout_secs)), "sentinel-shell", std::sync::Arc::default()).await;
+    let output = continuum_process::run_owned(command, Some(Duration::from_secs(timeout_secs)), "sentinel-shell", std::sync::Arc::default()).await;
 
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    use continuum_engine::inference::lane_process::Ended;
+    use continuum_process::Ended;
     let output = match output {
         Ok(output) => output,
         Err(e) => return Err(step_err(pipeline_ctx.handle_id, &format!("Shell step failed to execute '{actual_cmd}'"), e)),

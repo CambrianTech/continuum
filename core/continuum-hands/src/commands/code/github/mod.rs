@@ -84,9 +84,9 @@ impl From<GhRunError> for CommandError {
 /// outlives `bound` is ended with everything it started (`gh repo clone` runs `git` as a
 /// descendant), and the timeout names what isn't confirmed gone.
 ///
-/// [`lane_process::run_owned`]: crate::inference::lane_process::run_owned
+/// [`lane_process::run_owned`]: continuum_process::run_owned
 async fn run_gh_owned(root: &Path, args: &[String], bound: Option<std::time::Duration>) -> Result<String, GhRunError> {
-    use crate::inference::lane_process::{run_owned, Ended};
+    use continuum_process::{run_owned, Ended};
     let joined = args.join(" ");
     let out = run_owned(gh_command(root, args), bound, "gh", std::sync::Arc::default()).await.map_err(|e| GhRunError::Spawn(e.to_string()))?;
     match out.ended {

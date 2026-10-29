@@ -21,8 +21,7 @@
 /// 42 read alive whenever any pid containing "42" existed (the bug deploy_claim had already
 /// fixed with exactly this lookup).
 
-mod kill9;
-pub use kill9::*;
+pub use continuum_process::{Answer, Captured, CaptureEnd, command_name, confirm_gone, descendants, end_tree, Ended, holding, kill_if_same, KILL_POLL, kill9, OwnedOutput, recheck, run_owned, run_owned_with_input, RunCapture, signal_if_same, still_present, StreamCapture, Unanswered, Why};
 mod parse_tasklist_image_name;
 pub use parse_tasklist_image_name::*;
 

@@ -109,9 +109,9 @@ pub(crate) async fn run_cargo(
     );
     cmd.env("CARGO_TERM_COLOR", "never");
     cmd.env("CARGO_TARGET_DIR", target);
-    let out = crate::identity::hands_gate::scoped_admitted(crate::inference::lane_process::holding(
+    let out = crate::identity::hands_gate::scoped_admitted(continuum_process::holding(
         cargo_grant.kept(),
-        crate::inference::lane_process::run_owned(
+        continuum_process::run_owned(
             cmd,
             Some(timeout), "cargo", std::sync::Arc::default(),
         ),
@@ -128,8 +128,8 @@ pub(crate) async fn run_cargo(
         stderr.push_str(&format!("\n[{note}]"));
     }
     let (exit_code, timed_out) = match out.ended {
-        crate::inference::lane_process::Ended::Exited(status) => (status.code(), false),
-        crate::inference::lane_process::Ended::TimedOut { unconfirmed } => {
+        continuum_process::Ended::Exited(status) => (status.code(), false),
+        continuum_process::Ended::TimedOut { unconfirmed } => {
             if !unconfirmed.is_empty() {
                 stderr.push_str(&format!("\n[cargo was ended at the timeout; not confirmed gone: {unconfirmed:?}]"));
             }

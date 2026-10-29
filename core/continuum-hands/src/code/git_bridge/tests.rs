@@ -532,7 +532,7 @@
             assert!(lingering.unknown.is_empty(), "no tree it started is unknown: {lingering:?}");
             let mut still = lingering.processes;
             while !still.is_empty() {
-                still = crate::inference::lane_process::recheck(&still);
+                still = continuum_process::recheck(&still);
                 crate::identity::hands_gate::retain_processes(context, still.clone());
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
