@@ -326,6 +326,21 @@ pub fn resolve(persona_id: Uuid, handle: &str) -> std::io::Result<PathBuf> {
     resolve_in(&spill_root()?, persona_id, handle)
 }
 
+/// THE read of a saved result as her view loads it back: the saved output, trimmed as the
+/// record keeps its result (`record_receipt_inner`). Her view's `load` and the memory owner's
+/// proof ([`reproduces`]) both read through here, so "verified" means "loads back to this text".
+pub fn saved_whole(persona_id: Uuid, handle: &str) -> std::io::Result<String> {
+    let text = fs::read_to_string(resolve(persona_id, handle)?)?;
+    Ok(text.trim().to_owned())
+}
+
+/// Whether `persona_id`'s saved output for `handle` loads back ([`saved_whole`]) to exactly
+/// `body`: the proof that the copy can stand in for a body leaving RAM. `Err` when it cannot be
+/// read back at all.
+pub fn reproduces(persona_id: Uuid, handle: &str, body: &str) -> std::io::Result<bool> {
+    Ok(saved_whole(persona_id, handle)? == body)
+}
+
 // ── root-injected cores (the filesystem seam; unit-tested against a tempdir so
 //    tests never pollute ~/.continuum — the isolation lesson of task #7) ──────
 

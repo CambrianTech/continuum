@@ -295,8 +295,8 @@ impl WorkingMemory {
         // wall_source.rs 25+ times in four hours and landed no edit because every earlier
         // read reached her next turn as its last ~2,100 chars (Joel: "the clipping I've
         // yelled about for months"). The producer already fitted it (whole, or its
-        // handle: `spill::LivePin::whole_or_handle`); the budget decides how many of these units
-        // fit (`recent_results_chars`) and the rest collapse to pointers at settlement.
+        // handle: `spill::LivePin::whole_or_handle`); her view decides how much of each she
+        // sees, and the memory owner's shed alone moves a body to its handle (`residency`).
         {
             let tail = a.to_string();
             // A receipt can contain several operations. Retain their typed names
@@ -335,21 +335,14 @@ impl WorkingMemory {
                     handle,
                     written_pointer: None,
                     stored_chars: None,
+                    received_ms: Some(continuum_base::time::EpochMs::now().millis()),
                 },
                 budget.receipt_archive_chars(),
             );
         }
-        // The ring's share is enforced HERE, at every receipt, with hysteresis: nothing
-        // moves until the share is exceeded, then the oldest collapse to pointers down to
-        // half of it, so the prefix ahead of the newest entries is byte-stable for the whole
-        // run between two bursts. History: eviction on every act past ~3 (2026-08-24) rotated
-        // the head each act, and on a KV that cannot shift (`kv_shiftable = Some(false)`,
-        // "cache_reuse is not supported by this context") re-prefilled everything after it;
-        // the cap was then moved to settlement only. A coding turn is 100+ acts between
-        // settlements: on the M5 (2026-10-16) the rings persisted at 213 results / 686k
-        // chars, 155 / 1.09M, 123 / 442k, 49 / 138k, and fit_messages was the only bound.
-        // Now a storage budget (FOCUS rule 7): bodies leave RAM, never her view.
-        self.evict_resident_results();
+        // No size cap here: the body stays in RAM until the one memory owner sheds
+        // (`residency`). A cap at receipt was a hand-rigged number (`RESULTS_RESIDENT_CHARS`,
+        // 1 << 20 chars) deciding what RAM could hold; the pressure monitor measures it.
         // Head into the rolling recency trail: proprioception ("I did #n X") + the
         // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
         // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the

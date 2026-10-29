@@ -83,10 +83,8 @@ impl Source<ContextMessage> for Actions<'_> {
         let stored = item.stored.as_ref()?;
         let seq: u64 = item.key.parse().ok()?;
         let label = self.memory.action_whole_label(seq)?;
-        let path = crate::cognition::tool_executor::spill::resolve(self.persona, &stored.handle).ok()?;
-        let body = std::fs::read_to_string(path).ok()?;
-        // the record keeps its result trimmed (`record_receipt_inner`); loaded back, it reads the same
-        Some(ContextMessage::user(format!("{label}{}", body.trim())))
+        let body = crate::cognition::tool_executor::spill::saved_whole(self.persona, &stored.handle).ok()?;
+        Some(ContextMessage::user(format!("{label}{body}")))
     }
 
     /// Once she has acted, the void said earlier in this epoch is superseded, never edited:
