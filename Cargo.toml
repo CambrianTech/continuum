@@ -43,6 +43,7 @@ members = [
     "core/continuum-academy",
     "core/continuum-live",
     "core/continuum-hands",
+    "core/continuum-process",
     "core/continuum-engine",
     "core/continuum-models",
     "core/continuum-serving",

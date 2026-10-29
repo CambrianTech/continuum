@@ -10,6 +10,7 @@ repository = "https://github.com/CambrianTech/continuum"
 build = "../continuum-core/build.rs"
 
 [dependencies]
+continuum-process = { path = "../continuum-process" }
 continuum-academy = { path = "../continuum-academy" }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }

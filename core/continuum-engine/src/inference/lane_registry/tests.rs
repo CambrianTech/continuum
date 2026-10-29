@@ -154,7 +154,7 @@ async fn shutdown_confirmation_waits_for_exit_and_preserves_replacements() {
         }]
     };
     assert_eq!(
-        confirm_pending(unresolved(), pending(), lane_process::KILL_POLL)
+        confirm_pending(unresolved(), pending(), continuum_process::KILL_POLL)
             .await
             .expect("confirmation"),
         unresolved()
@@ -170,10 +170,10 @@ async fn shutdown_confirmation_waits_for_exit_and_preserves_replacements() {
         start_time: started_s + 1,
         ..identity
     };
-    assert!(!lane_process::signal_if_same(recycled).expect("replaced identity is not signalled"));
+    assert!(!continuum_process::signal_if_same(recycled).expect("replaced identity is not signalled"));
     assert!(child.try_wait().expect("child status").is_none());
     assert!(
-        lane_process::confirm_gone(vec![recycled], lane_process::KILL_POLL)
+        continuum_process::confirm_gone(vec![recycled], continuum_process::KILL_POLL)
             .await
             .is_empty()
     );
@@ -206,7 +206,7 @@ async fn shutdown_confirmation_waits_for_exit_and_preserves_replacements() {
     };
     record_in(dir.path(), &replacement).expect("replacement");
     assert_eq!(
-        confirm_pending(unresolved(), pending(), lane_process::KILL_POLL)
+        confirm_pending(unresolved(), pending(), continuum_process::KILL_POLL)
             .await
             .expect("confirmation"),
         unresolved()
@@ -227,7 +227,7 @@ async fn shutdown_confirmation_waits_for_exit_and_preserves_replacements() {
         pid: signal_pid,
         start_time: table.process(Pid::from_u32(signal_pid)).expect("live child").start_time(),
     };
-    assert!(lane_process::signal_if_same(signal_identity).expect("native termination accepted"));
+    assert!(continuum_process::signal_if_same(signal_identity).expect("native termination accepted"));
     tokio::time::timeout(Duration::from_secs(5), signalled.wait())
         .await.expect("bounded signalled exit").expect("reaped child");
 

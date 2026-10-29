@@ -121,7 +121,7 @@ impl LlamaServerProcess {
         // command name. Owned and adopted predecessors were handled above.
         if !crate::inference::lane_process::wait_port_free(port, Duration::from_secs(8)).await {
             let occupant = match crate::inference::lane_process::pid_listening_on_port(port) {
-                Some(pid) => match crate::inference::lane_process::command_name(pid) {
+                Some(pid) => match continuum_process::command_name(pid) {
                     Some(command) => format!("pid {pid}, command {command:?}"),
                     None => format!("pid {pid}, command unavailable"),
                 },
