@@ -400,6 +400,93 @@ The plan cannot manufacture stable device identity from a marketing name. Likewi
 state handle is not transferable across engine instances unless its compatibility and
 restore contract explicitly establish that transfer.
 
+## Fault 3: a mind's memory is decided in many places (2026-10-29)
+
+Joel: "all rag, disk, memory everything must be managed from one state or it falls apart.
+Separate decisions break the whole."
+
+### What broke
+
+On the M5 after every core restart on 2026-10-29, the residents saw 36 of 40 of their own
+results as bare headers, so they re-read and re-polled what they had already done. Each piece
+that caused it was locally reasonable:
+
+1. The personas came up while the engine was still loading. Their `ModelBinding` copied the
+   provisional window, `MIN_SERVE_CTX` (2048), a planner floor used as if it were a measurement
+   (`materialize_adapters.rs`).
+2. The re-home reconciler compared model names only, so it never corrected the window.
+3. Working memory copied that window (`set_served_window`), derived its own results share from
+   it (8,192 chars) and deleted result bodies beyond half of it (`collapse_results_over_cap`).
+4. The view's one allocation then priced each item at a "full" text that was already only its
+   header. No grant could restore a body another owner had deleted.
+5. The wire capture recorded only text parts, so the newest result, which rides as a native
+   tool result, looked lost when it was not.
+
+Evidence: `~/.continuum/evidence/2026-10-29-aiko-bare-results/` on the M5.
+
+The window alone has eleven copies (the binding, `PersonaBrainConfig`, the profile, working
+memory's atomic, the `ContextBudget` stand-ins, recall, the spawner, academy, vitals, the DMR
+launch window, the reply floors). Results have three separate deciders: working memory's share,
+the view's levels, and the newest-result path. Every copy goes stale on its own schedule, and
+every gap between copies was filled with a stand-in.
+
+### The design: one state, one allocator, capacity only from grants
+
+A mind's memory is one hierarchy with one owner. The tiers are the engine's KV (what the
+prompt holds), RAM, and disk. It is not a set of caches each deciding for itself.
+
+- **One record per item.** Every result, file view, message, recall or perception item has one
+  record in her state: its key, its whole size, where its bytes live now (KV, RAM, disk), and
+  the level it is shown at. Moving an item between tiers changes its record; nothing is deleted
+  by a side rule. A body on disk is still hers and comes back when the allocator grants it room.
+- **One decision per act.** The allocator places every item against the capacities it was
+  granted, and the prompt is a rendering of that placement, never a second decision.
+  `continuum-context`'s `View` and levels are that allocator's prompt tier; working memory
+  stores records and does not choose what she sees.
+- **Capacity only from grants, never from copies or constants.**
+  - Prompt: the engine's admission grant for this turn carries the slot's measured window
+    (`KvPageContract.context` via `TurnAdmission`). A turn is fitted only after it is admitted;
+    no grant means no dispatch, and the existing admission queue already holds an unready turn.
+  - RAM and disk: a per-mind storage budget from the host's measured resources (the one
+    `PressureBroker` / resource owner), the same for every mind on that host.
+  - A planner floor (`MIN_SERVE_CTX`) sizes lanes inside the planner and is never a mind's
+    window. The `planner_floor_outside_the_planner` ratchet enforces it.
+- **The instruments read the same state.** The wire capture records whole messages, and the
+  per-act probe reports each item's tier and level from the one record, so a diagnosis reads
+  the decision itself rather than reconstructing it.
+
+### Cut order (each lands, then the next)
+
+1. **Stop-gap, live now.** The reconciler rebinds every local resident whose binding differs
+   from the served (model, window) (#5590). A stop keeps the engine up for the next core to
+   adopt (#5396), so personas come up against a ready engine.
+2. **Instruments.** The `planner_floor_outside_the_planner` ratchet (fable/no-window-standin)
+   and a whole-message wire capture (fable/wire-capture-whole).
+3. **Storage is a tier, not a share.** Results live in a per-mind storage budget, keep their
+   whole size and handle when evicted, and load back whole when granted (#5573, Cormac). Then
+   delete working memory's window copy: `served_window`, `set_served_window`, the `apply.rs`
+   push, and the floor fallbacks in `receipt_archive_chars` / `recent_results_chars`.
+4. **The admission grant carries the window** (engine; Codex with Fable). Lift `admit_turn` and
+   the lane permit above prompt fitting, so admission returns
+   `Grant { slot, per_slot_window }`. Price eviction from her measured working set, not from
+   this prompt's size. A remote lane's grant carries the responder's reported slot.
+   Validator: no prompt is fitted without a grant.
+5. **Deliberation fits to the grant** (Fable). Delete the deadband and its CAS write-back,
+   `ModelBinding.context_window`, `PersonaBrainConfig.context_window` and the window arm of
+   `CapacityReadiness`. The reconciler goes back to rebinding on a model change only.
+6. **The mind side** (Fable). Delete the profile's window caching and the
+   `BOOTSTRAP_WORKING_SET` remote stand-in, the spawner floors, `live_or_floor`, and the academy
+   and vitals stand-ins. Move the DMR launch window and the exam lane window into planning.
+   Recall reads the grant.
+7. **The reply's cold prior** has no measurement yet (`COMPLETION_COLD_PRIOR_TOKENS` is derived
+   from the planner floor). Measure the reply need from a mind's first turns (card), then
+   delete it. The ratchet reaches zero here.
+
+Gate for the whole fault: on a restart where the engine is not ready when personas
+materialize, a resident's next prompt holds her results at the levels the one allocation
+grants. The fixture replays the 2026-10-29 capture through the real allocator: no bare result
+the grant could hold, the newest whole, and retained across a restart.
+
 ## Tests are contracts
 
 - A required capability is resolved and adopted, or the launch refuses with its cause.
