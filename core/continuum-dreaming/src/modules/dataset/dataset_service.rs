@@ -97,7 +97,7 @@ impl DatasetService {
         // a reader that resolved its own path would miss the turns once the homes differ.
         let turns_dir = match p.turns_dir.as_deref() {
             Some(dir) => PathBuf::from(dir),
-            None => crate::cognition::capture::fixture_dir(crate::persona::recorder::RESPOND_FIXTURE_DIR)
+            None => continuum_capture::fixture_dir(crate::persona::recorder::RESPOND_FIXTURE_DIR)
                 .ok_or("no home directory: cannot find the recorder's turns; pass turnsDir")?,
         };
         if !turns_dir.is_dir() {
@@ -166,7 +166,7 @@ impl DatasetService {
             .as_deref()
             .map(PathBuf::from)
             .or_else(|| {
-                crate::cognition::capture::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR)
+                continuum_capture::fixture_dir(continuum_capture::FIXTURE_DIR)
             })
             .ok_or_else(|| "cannot resolve capture home directory".to_string())?;
         if !dir.is_dir() {
@@ -195,7 +195,7 @@ impl DatasetService {
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            let captures = crate::cognition::prompt_capture::completed_file(&path, usize::MAX)
+            let captures = continuum_capture::completed_file(&path, usize::MAX)
                 .map_err(|error| format!("capture {}: {error}", path.display()))?;
             for cap in captures {
                 if let Some(pid) = p.persona_id.as_ref().map(|r| r.as_str()) {

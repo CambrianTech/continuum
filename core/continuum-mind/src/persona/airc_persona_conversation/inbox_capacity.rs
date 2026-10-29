@@ -379,8 +379,8 @@ impl PersonaConversation for AircPersonaConversation {
         // it is never published, so no airc channel (not even one named by the room's
         // uuid) ever carries it. Saying it to the room is publishing; that is her act.
         let me = self.own_peer_id;
-        if crate::cognition::mind_room::is_private_room(me, room_id) {
-            crate::cognition::mind_room::note_withheld(me, "speech");
+        if continuum_capture::mind_room::is_private_room(me, room_id) {
+            continuum_capture::mind_room::note_withheld(me, "speech");
             return Ok(());
         }
         self.runtime

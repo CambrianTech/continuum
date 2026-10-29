@@ -281,7 +281,7 @@ pub async fn activity_room_for(
     context: Option<crate::identity::hands_context::HandsContext>,
     wake_room: Uuid,
 ) -> Uuid {
-    if crate::cognition::mind_room::is_private_room(persona_id, wake_room) {
+    if continuum_capture::mind_room::is_private_room(persona_id, wake_room) {
         return wake_room;
     }
     let Some(card) = acting_card_in(persona_id, context) else {

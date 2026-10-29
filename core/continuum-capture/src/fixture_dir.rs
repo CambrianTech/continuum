@@ -9,5 +9,5 @@ use std::path::PathBuf;
 /// `fixtures/prompt-captures`) under the one resolved continuum home, so `$CONTINUUM_HOME`
 /// moves every capture writer and reader together (card 3c8b03ae). No home, no captures.
 pub fn fixture_dir(relative: &str) -> Option<PathBuf> {
-    crate::paths::continuum_home().ok().map(|home| home.join(relative))
+    continuum_engine::paths::continuum_home().ok().map(|home| home.join(relative))
 }

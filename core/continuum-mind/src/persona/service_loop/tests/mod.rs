@@ -82,7 +82,7 @@
         use crate::ai::adapter::GenerationChunk;
         use crate::persona::stream_rail;
         let her = Uuid::new_v4();
-        let mind = crate::cognition::mind_room::mind_room_id(her).to_string();
+        let mind = continuum_capture::mind_room::mind_room_id(her).to_string();
         let mut output = stream_rail::subscribe();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let owner = spawn_token_forwarder(rx, None, "Kimi".into(), Some(mind.clone()), Some(her.to_string()));

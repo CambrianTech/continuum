@@ -20,6 +20,7 @@ continuum-mind = { path = "../continuum-mind" }
 continuum-academy = { path = "../continuum-academy" }
 continuum-genome = { path = "../continuum-genome" }
 continuum-engine = { path = "../continuum-engine" }
+continuum-capture = { path = "../continuum-capture" }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-base = { path = "../continuum-base" }
 continuum-host = { path = "../continuum-host" }

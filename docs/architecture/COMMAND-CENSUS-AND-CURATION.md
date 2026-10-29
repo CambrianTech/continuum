@@ -106,7 +106,7 @@ Of the 50 `cognition/*` arms, ~30 exist **only** because TypeScript used to driv
 - inference-coordinator: no commands (bootstrap) — nothing to migrate.
 
 ### genome-loop cluster (37) → KEEP, collapse sentinel aliases
-- **KEEP:** forge/run,train,train-status,export,health,probe,decide; dataset/import-csv,from-turns,from-captures,import-realclasseval,list,info; genome/job-create,job-status,job-cancel; genome/training-trigger/submit,flush,status; plasticity/analyze,compact,compress,topology,pipeline; sentinel/await,status,list,cancel,resume,list-checkpoints,extend-budget,approve,logs/{list,read,tail},local-inference-port,local-inference-start.
+- **KEEP:** forge/run,train,train-status,export,health,probe,decide; dataset/import-csv,from-turns,from-captures,import-realclasseval,list,info; genome/job-create,job-status,job-cancel; genome/training-trigger/submit,flush,status; plasticity/analyze,compact,compress,topology,pipeline; sentinel/await,status,list,cancel,resume,list-checkpoints,extend-budget,approve,logs/{list,read,tail}; gateway/status,env (the driver gateway replaced sentinel/local-inference-port,start, 2026-10-27).
 - **DELETE aliases:** sentinel/execute, sentinel/pipeline (→sentinel/run, finding #6).
 - **Receives (finding #3):** genome/activate-skill, genome/state, genome/evict, genome/coverage, genome/select-model from cognition/*.
 - **Access:** forge/train, genome/job-*, dataset/* → Privileged; reads (status/list/info/probe) → AiSafe.

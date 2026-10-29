@@ -2821,6 +2821,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-capture"
+version = "0.1.0"
+dependencies = [
+ "continuum-base",
+ "continuum-engine",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "ts-rs 12.0.1",
+ "uuid",
+]
+
+[[package]]
 name = "continuum-cli"
 version = "0.1.0"
 dependencies = [
@@ -2905,6 +2919,7 @@ dependencies = [
  "chrono",
  "continuum-airc-protocol",
  "continuum-base",
+ "continuum-capture",
  "continuum-cli-lifecycle",
  "continuum-client",
  "continuum-context",
@@ -2980,6 +2995,7 @@ dependencies = [
  "continuum-airc-protocol",
  "continuum-base",
  "continuum-bridge-protocol",
+ "continuum-capture",
  "continuum-cli-lifecycle",
  "continuum-client",
  "continuum-context",
@@ -2987,6 +3003,7 @@ dependencies = [
  "continuum-embedding",
  "continuum-engine",
  "continuum-experience",
+ "continuum-gateway",
  "continuum-genome",
  "continuum-git",
  "continuum-grid",
@@ -3083,6 +3100,7 @@ dependencies = [
  "chrono",
  "continuum-academy",
  "continuum-base",
+ "continuum-capture",
  "continuum-client",
  "continuum-engine",
  "continuum-genome",
@@ -3188,6 +3206,23 @@ dependencies = [
  "tokio",
  "tracing",
  "ts-rs 12.0.1",
+ "uuid",
+]
+
+[[package]]
+name = "continuum-gateway"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "continuum-base",
+ "continuum-capture",
+ "continuum-engine",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tracing",
  "uuid",
 ]
 
@@ -3443,6 +3478,7 @@ dependencies = [
  "continuum-academy",
  "continuum-airc-protocol",
  "continuum-base",
+ "continuum-capture",
  "continuum-cli-lifecycle",
  "continuum-client",
  "continuum-cognition",

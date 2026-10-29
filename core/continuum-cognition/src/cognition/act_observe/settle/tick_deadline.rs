@@ -309,10 +309,10 @@ pub(super) async fn drive_with_input<'c>(
     // (build step 2) it is not written at all.
     let private = cycle
         .acting()
-        .is_some_and(|body| crate::cognition::mind_room::is_private_room(body.persona_id, turn_room));
+        .is_some_and(|body| continuum_capture::mind_room::is_private_room(body.persona_id, turn_room));
     if private {
         if let Some(body) = cycle.acting() {
-            crate::cognition::mind_room::note_withheld(body.persona_id, "experience_and_credit");
+            continuum_capture::mind_room::note_withheld(body.persona_id, "experience_and_credit");
         }
         return settled;
     }

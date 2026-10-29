@@ -202,8 +202,8 @@ pub struct LlmDeliberationFaculty {
     /// Verbatim LLM-I/O capture — the exact system prompt + message thread sent and
     /// the raw response, per agent-loop iteration. `None` → no capture (zero cost).
     /// The live spawn path attaches a per-persona JSONL sink. See
-    /// [`prompt_capture`](crate::cognition::prompt_capture).
-    prompt_capture: Option<Arc<dyn crate::cognition::prompt_capture::PromptCaptureSink>>,
+    /// [`prompt_capture`](continuum_capture).
+    prompt_capture: Option<Arc<dyn continuum_capture::PromptCaptureSink>>,
     /// Where a sent prompt's read receipt goes (`read_receipt.rs`); `None` marks nothing read.
     read_receipt: Option<Arc<dyn read_receipt::ReadReceipt>>,
     /// The persona's paged-in genome — the LoRA layers this faculty injects into
@@ -319,7 +319,7 @@ impl LlmDeliberationFaculty {
     /// faculty makes is appended to it (best-effort). Off by default.
     pub fn with_prompt_capture(
         mut self,
-        sink: Arc<dyn crate::cognition::prompt_capture::PromptCaptureSink>,
+        sink: Arc<dyn continuum_capture::PromptCaptureSink>,
     ) -> Self {
         self.prompt_capture = Some(sink);
         self
@@ -712,8 +712,8 @@ fn occupancy_of(shape: TurnShape, prefill_tps: f64, decode_tps: f64) -> Option<s
 /// Append one request's exact message list to `<dir>/<persona>.wire.jsonl` (the wire capture,
 /// sink 4 of PRIVACY-OF-THOUGHT.md). A turn in her mind room writes nothing.
 fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &str, room_id: Uuid, request: &TextGenerationRequest) {
-    if crate::cognition::mind_room::is_private_room(persona_id, room_id) {
-        crate::cognition::mind_room::note_withheld(persona_id, "wire_capture");
+    if continuum_capture::mind_room::is_private_room(persona_id, room_id) {
+        continuum_capture::mind_room::note_withheld(persona_id, "wire_capture");
         return;
     }
     let row = serde_json::json!({

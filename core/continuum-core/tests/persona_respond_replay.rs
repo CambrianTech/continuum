@@ -109,7 +109,7 @@ async fn ensure_llamacpp_registered() {
 
 /// Where the recorder writes turns, through the recorder's own owner (card 3c8b03ae).
 fn fixture_dir() -> PathBuf {
-    continuum_core::cognition::capture::fixture_dir(continuum_core::persona::recorder::RESPOND_FIXTURE_DIR)
+    continuum_capture::fixture_dir(continuum_core::persona::recorder::RESPOND_FIXTURE_DIR)
         .expect("a continuum home to read the recorder's turns from")
 }
 

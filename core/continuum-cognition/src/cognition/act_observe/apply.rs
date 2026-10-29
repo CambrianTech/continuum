@@ -138,7 +138,7 @@ pub async fn apply_act(
     };
     // Perception and execution share the activity resolved by the bound-turn owner.
     // Private turns retain their mind room at that boundary.
-    let private = crate::cognition::mind_room::is_private_room(body.persona_id, room_id);
+    let private = continuum_capture::mind_room::is_private_room(body.persona_id, room_id);
 
     // Call history is not a cache-validity proof. Reads can change, failures can
     // recover, and earlier results may no longer fit the prompt. Execute through
@@ -569,7 +569,7 @@ pub async fn apply_act(
         // the room whose line triggered the turn (`acting_card_of`).
         let receipt_room = room_id;
         if private {
-            crate::cognition::mind_room::note_withheld(body.persona_id, "thought_line");
+            continuum_capture::mind_room::note_withheld(body.persona_id, "thought_line");
         } else if !lines.is_empty() {
             if let Some(published) =
                 crate::cognition::extensions::publish_in_room(body.persona_id, receipt_room, lines.join("\n")).await

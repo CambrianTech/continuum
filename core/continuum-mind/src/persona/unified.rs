@@ -352,7 +352,7 @@ mod tests {
         let mut pc =
             PersonaCognition::with_capture_sink(id, "Kimi".into(), Arc::new(RagEngine::new()), sink_dyn);
         pc.set_airc_source(Arc::new(CannedSource { id: "airc", items: 2 }));
-        let mind = crate::cognition::mind_room::mind_room_id(id);
+        let mind = continuum_capture::mind_room::mind_room_id(id);
         let _ = pc.compose_for_turn(1_000_000, Some(mind)).await;
         assert!(sink.is_empty(), "her mind room: no capture events, got {}", sink.len());
         let _ = pc.compose_for_turn(1_000_000, Some(Uuid::new_v4())).await;
