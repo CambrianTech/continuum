@@ -95,8 +95,14 @@ engine as her, so:
 
 ## The contract
 
-One owner, in the kernel command layer, because every command already passes through it and
-every crate above may depend on it: **`TaskRegistry`** (`continuum-kernel::runtime::tasks`).
+One owner, in its own crate: **`continuum-tasks`**, holding only the task contract
+(`TaskRegistry`, `TaskId`, `TaskEnd`, the owner sink trait). It sits below `continuum-kernel`
+and depends only on `continuum-base`, so the command executor, sentinels, minds and the grid
+all build on one narrow interface, and the crate checks in seconds on its own. The lineage is
+the operating systems that became manageable this way: the registry is a process table, an end
+waking her is a signal, a sentinel is a process with its own address space (its worktree and
+its context), and a fork from her warm KV is a copy-on-write `fork()`. Each primitive lives
+once; every kind of task is only its difference.
 
 ```rust
 pub struct TaskId(Uuid);                 // typed; rendered with shown_id, never sliced
@@ -153,7 +159,7 @@ task whose end is its report, a peer's review as a task that ends when the verdi
 
 | Slice | Change | Validator |
 |---|---|---|
-| T1 | `TaskRegistry` with ends on every path | unit: done, failed, panic, abort, timeout, stop, process killed each emit exactly one `task:ended` |
+| T1 | crate `continuum-tasks`: `TaskRegistry` with ends on every path; the kernel executor runs on it | unit: done, failed, panic, abort, timeout, stop, process killed each emit exactly one `task:ended` |
 | T2 | owner sink + `Wake::TaskEnded` + durable rows | unit: an unregistered (forgotten) handle's end reaches working memory and wakes her; a restart delivers `Lost` |
 | T3 | act path: every call starts + lands; delete the list, shell handback, private bus | replay: a captured Aris trace runs with zero poll acts; shell timeout publishes an end |
 | T4 | `task/list`, `task/output`, `task/stop` | command tests through the generator |
