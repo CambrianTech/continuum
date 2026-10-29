@@ -330,4 +330,36 @@ mod reservations {
         drop(second);
         assert!(!claims.join("engine-a").exists(), "the last launch releases it");
     }
+
+    // what this catches (Codex on #5535): a crash between creating a claim and writing its
+    // owner left an EMPTY claim, holding its slot until an operator removed it. A claim is
+    // published whole or not at all: a builder that staged its claim and died before linking
+    // leaves no claim (the slot stays claimable), and the scratch files a dead writer left are
+    // swept, while a live writer's are not.
+    #[test]
+    fn a_claim_is_published_whole_or_not_at_all_and_dead_strays_are_swept() {
+        use crate::inference::engine_residency::{probe_process, ProcessProbe};
+        use crate::inference::engine_slots::claim::{stage, ClaimKind, Owner};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let claims = root.join("reservations");
+        std::fs::create_dir_all(&claims).unwrap();
+        let me = std::process::id();
+
+        let staged = stage(&claims, &Owner::of(ClaimKind::Build, me).unwrap()).unwrap();
+        assert!(staged.is_file(), "the claim was written");
+        assert!(!claims.join("engine-a").exists(), "and, never linked, no claim exists");
+
+        let stray = claims.join(".claim.4000003.1700000000.42");
+        let tomb = claims.join(".reaped.4000003.1700000000.43");
+        std::fs::write(&stray, "build 4000003 1700000000\n").unwrap();
+        std::fs::write(&tomb, "launch 4000004 1700000000\n").unwrap();
+        let dead = |pid: u32| if pid == 4_000_003 { ProcessProbe::Absent } else { probe_process(pid) };
+        assert!(matches!(claim_idle_slot(root, &["engine-b", "engine-c"], me, || Ok(Vec::new()), &dead), Ok("engine-a")), "the slot is claimable");
+        let held = std::fs::read_to_string(claims.join("engine-a")).unwrap();
+        assert!(held.starts_with(&format!("build {me} ")) && held.ends_with('\n'), "the published claim is whole: {held:?}");
+        assert!(!stray.exists() && !tomb.exists(), "a dead writer's scratch files are swept");
+        assert!(staged.exists(), "a live writer's scratch file is not");
+        assert_eq!(release_build_claim(root, "engine-a", me).unwrap(), "engine-a released");
+    }
 }

@@ -3,8 +3,10 @@
 //! A slot is overwritten by a build and run by a launch. Each used to decide from a reading the
 //! other could invalidate: `idle-slot` printed an unclaimed path, so a builder could select A,
 //! pause, and overwrite A after a launch had validated it. Now both take the same claim before
-//! acting: the file `<slot root>/reservations/<slot>`, created with `create_new` (O_EXCL), so
-//! exactly one owner holds a slot. A build claims it in `continuum engine idle-slot --owner-pid`
+//! acting: the file `<slot root>/reservations/<slot>`, so exactly one owner holds a slot. It is
+//! written whole to a scratch file and published with `hard_link`, which fails when the claim
+//! exists (the same exclusive create) and never exposes an empty or partial claim; a crash
+//! between the two leaves only a scratch file, swept once its writer is verified gone. A build claims it in `continuum engine idle-slot --owner-pid`
 //! (for the installer script's process, released by `release-slot` from its exit trap or
 //! `finally`); a launch claims it from the pin hold until its lane record names the slot.
 //!
@@ -13,7 +15,8 @@
 //!
 //! A claim names its owner (kind, pid, OS start time). One whose owner is VERIFIED gone is
 //! reaped by whoever next wants the slot, so a crashed installer or core never pins it forever;
-//! one whose owner cannot be read, or whose file cannot be parsed, holds (fail closed).
+//! one whose owner cannot be read holds (fail closed), and one that cannot be parsed can only be
+//! corruption: it holds and is said (`serving.engine.claim_corrupt`).
 
 use super::*;
 use crate::inference::engine_residency::{
@@ -25,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// The directory under the slot root holding the claims, one file per claimed slot.
 const DIR: &str = "reservations";
 
-/// Distinguishes this process's reap tombstones.
+/// Distinguishes this process's scratch files (staged claims, reap tombstones).
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 /// Who holds a slot.
@@ -48,7 +51,7 @@ impl ClaimKind {
 
 /// A claim's owner, as written in its file: `<kind> <pid> <start_s>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Owner {
+pub(super) struct Owner {
     kind: ClaimKind,
     pid: u32,
     started_s: u64,
@@ -56,7 +59,7 @@ struct Owner {
 
 impl Owner {
     /// `pid` as a claim owner: its start time must be readable, or the claim could never decay.
-    fn of(kind: ClaimKind, pid: u32) -> Result<Self, String> {
+    pub(super) fn of(kind: ClaimKind, pid: u32) -> Result<Self, String> {
         let started_s = process_start_s(pid).ok_or_else(|| {
             format!(
                 "the start time of pid {pid} is unreadable: a claim it held could never be reaped"
@@ -92,40 +95,49 @@ fn claim_path(root: &Path, slot: &str) -> PathBuf {
     root.join(DIR).join(slot)
 }
 
-/// Create `slot`'s claim for `owner`, atomically: `true` when this call holds it now, `false`
-/// when another live (or unreadable) owner does. A verified-dead owner's claim is reaped first.
-fn try_claim(
-    root: &Path,
-    slot: &'static str,
-    owner: &Owner,
+/// A unique scratch name in the claims dir, naming its writer (`.<what>.<pid>.<start_s>.<nonce>`)
+/// so a stray one left by a crash is swept once that writer is verified gone.
+fn scratch_name(what: &str) -> Result<String, String> {
+    let pid = std::process::id();
+    let started_s = process_start_s(pid)
+        .ok_or("this process's start time is unreadable: its scratch files could never be swept")?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos()); // uniqueness salt only; the counter alone already separates this process's names
+    Ok(format!(
+        ".{what}.{pid}.{started_s}.{}{nanos:09}",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+/// Write `owner`'s claim, complete and synced, to a scratch file beside the claims: the claim is
+/// then published whole by [`link_claim`], never observed empty or partial.
+pub(super) fn stage(dir: &Path, owner: &Owner) -> Result<PathBuf, String> {
+    let staged = dir.join(scratch_name("claim")?);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staged)
+        .map_err(|e| format!("{}: {e}", staged.display()))?;
+    file.write_all(owner.render().as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|e| format!("{}: {e}", staged.display()))?;
+    Ok(staged)
+}
+
+/// Publish `staged` as the claim at `path`: `hard_link` fails with AlreadyExists when the claim
+/// exists, so it is the same exclusive create, and it never overwrites. A verified-dead owner's
+/// claim is reaped first. `true` when this call holds the claim now.
+fn link_claim(
+    staged: &Path,
+    path: &Path,
     probe: &dyn Fn(u32) -> ProcessProbe,
 ) -> Result<bool, String> {
-    let path = claim_path(root, slot);
-    let dir = root.join(DIR);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     for _ in 0..2 {
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                let written = file
-                    .write_all(owner.render().as_bytes())
-                    .and_then(|()| file.sync_all());
-                return match written {
-                    Ok(()) => Ok(true),
-                    Err(e) => {
-                        drop(file);
-                        std::fs::remove_file(&path).map_err(|r| {
-                            format!("{}: {e}; and removing it: {r}", path.display())
-                        })?;
-                        Err(format!("{}: {e}", path.display()))
-                    }
-                };
-            }
+        match std::fs::hard_link(staged, path) {
+            Ok(()) => return Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                if !reap_if_dead(&path, probe)? {
+                if !reap_if_dead(path, probe)? {
                     return Ok(false);
                 }
             }
@@ -135,26 +147,80 @@ fn try_claim(
     Ok(false) // reaped, and another owner claimed it first: it is theirs
 }
 
+/// Remove a scratch file this process wrote; a failure leaves a stray its sweep removes later.
+fn discard(scratch: &Path) {
+    if let Err(e) = std::fs::remove_file(scratch) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            continuum_base::probe!(class = "serving.engine.claim_scratch_kept", path = %scratch.display(), error = %e,
+                "an engine claim scratch file could not be removed: it is swept once this process is gone");
+        }
+    }
+}
+
+/// Remove scratch files (`.claim.` staged, `.reaped.` tombstones) whose writer, named in the
+/// file name, is verified gone: what a crash between staging and linking leaves behind.
+pub(super) fn sweep_strays(dir: &Path, probe: &dyn Fn(u32) -> ProcessProbe) -> Result<(), String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let mut fields = name.split('.').skip(1); // "", what, pid, start, nonce
+        let writer = match (fields.next(), fields.next(), fields.next()) {
+            (Some("claim" | "reaped"), Some(pid), Some(start)) => {
+                pid.parse::<u32>().ok().zip(start.parse::<u64>().ok())
+            }
+            _ => continue,
+        };
+        if writer.is_some_and(|(pid, started_s)| {
+            process_liveness_with(pid, started_s, probe) == Liveness::Dead
+        }) {
+            discard(&entry.path());
+        }
+    }
+    Ok(())
+}
+
+/// Claim `slot` for `owner`, atomically and whole: `true` when this call holds it now, `false`
+/// when another live (or unreadable) owner does.
+fn try_claim(
+    root: &Path,
+    slot: &'static str,
+    owner: &Owner,
+    probe: &dyn Fn(u32) -> ProcessProbe,
+) -> Result<bool, String> {
+    let dir = root.join(DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    sweep_strays(&dir, probe)?;
+    let staged = stage(&dir, owner)?;
+    let claimed = link_claim(&staged, &claim_path(root, slot), probe);
+    discard(&staged);
+    claimed
+}
+
 /// Remove `path`'s claim when its owner is verified gone. The claim is MOVED aside first (an
 /// atomic rename) and its owner read again from the moved file, so a claim another process took
-/// after this one was read is put back (`hard_link` never overwrites) instead of deleted.
+/// after this one was read is put back (`hard_link` never overwrites) instead of deleted. Claims
+/// are only ever published whole, so one that cannot be parsed is corruption: it holds, said.
 fn reap_if_dead(path: &Path, probe: &dyn Fn(u32) -> ProcessProbe) -> Result<bool, String> {
-    let dead = |file: &Path| {
-        std::fs::read_to_string(file)
-            .ok()
-            .and_then(|text| Owner::parse(&text))
-            .is_some_and(|owner| {
-                process_liveness_with(owner.pid, owner.started_s, probe) == Liveness::Dead
-            })
+    let dead = |file: &Path| match std::fs::read_to_string(file)
+        .ok()
+        .and_then(|text| Owner::parse(&text))
+    {
+        Some(owner) => process_liveness_with(owner.pid, owner.started_s, probe) == Liveness::Dead,
+        None => {
+            continuum_base::probe!(class = "serving.engine.claim_corrupt", path = %file.display(),
+                "an engine slot claim is unreadable or corrupt: it keeps holding its slot until an operator removes it");
+            false
+        }
     };
     if !dead(path) {
         return Ok(false);
     }
-    let tomb = path.with_file_name(format!(
-        ".reaped.{}.{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
+    let tomb = path.with_file_name(scratch_name("reaped")?);
     match std::fs::rename(path, &tomb) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true), // another reaper took it
@@ -162,7 +228,7 @@ fn reap_if_dead(path: &Path, probe: &dyn Fn(u32) -> ProcessProbe) -> Result<bool
     }
     if !dead(&tomb) {
         let restored = std::fs::hard_link(&tomb, path);
-        std::fs::remove_file(&tomb).map_err(|e| format!("{}: {e}", tomb.display()))?;
+        discard(&tomb);
         return restored.map(|()| false).map_err(|e| {
             format!(
                 "a live claim on {} was moved and could not be restored: {e}",
@@ -170,7 +236,7 @@ fn reap_if_dead(path: &Path, probe: &dyn Fn(u32) -> ProcessProbe) -> Result<bool
             )
         });
     }
-    std::fs::remove_file(&tomb).map_err(|e| format!("{}: {e}", tomb.display()))?;
+    discard(&tomb);
     Ok(true)
 }
 
