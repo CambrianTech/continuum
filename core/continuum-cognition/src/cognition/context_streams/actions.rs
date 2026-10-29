@@ -19,7 +19,7 @@ pub(crate) struct Actions<'a> {
 impl Actions<'_> {
     fn standing(key: &str, text: String) -> Item<ContextMessage> {
         let message = ContextMessage::user(text);
-        Item { stored: None, key: key.to_owned(), full: message.clone(), summary: None, pointer: Some(message) }
+        Item { key: key.to_owned(), full: message.clone(), summary: None, pointer: Some(message) }
     }
 }
 
@@ -65,7 +65,6 @@ impl Source<ContextMessage> for Actions<'_> {
         }
         let mut items = vec![banner];
         items.extend(acts.into_iter().map(|(seq, full, summary, pointer)| Item {
-            stored: None,
             key: seq.to_string(),
             full: ContextMessage::user(full),
             summary: summary.map(ContextMessage::user),

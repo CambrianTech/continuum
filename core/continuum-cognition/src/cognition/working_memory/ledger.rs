@@ -331,7 +331,7 @@ impl WorkingMemory {
                     scope: scope.clone(),
                     operation: label,
                     head: Some(archive_head(seq, a, &acts, budget.trail_head_chars())),
-                    summary: result_summary(&tail, &acts, &budget),
+                    summary: result_summary(&tail, &acts),
                     result: Some(tail),
                     handle,
                     written_pointer: None,
@@ -488,7 +488,7 @@ pub(crate) fn operation_level(text: &str, act: Option<&Observation>) -> Option<S
 /// an error or a second file after a long read is never lost: one code outline over the whole
 /// batch dropped every unnumbered line after the first numbered one (Codex on #5422). `None` when
 /// the result is its own best summary (more than a quarter of it).
-fn result_summary(result: &str, acts: &[Observation], budget: &crate::cognition::context_budget::ContextBudget) -> Option<String> {
+fn result_summary(result: &str, acts: &[Observation]) -> Option<String> {
     use continuum_context::levels::LEVEL_RATIO;
     let level = operation_level;
     match acts {

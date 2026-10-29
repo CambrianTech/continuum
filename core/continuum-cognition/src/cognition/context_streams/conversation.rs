@@ -34,7 +34,6 @@ impl Source<ContextMessage> for Conversation {
         self.turns
             .iter()
             .map(|turn| Item {
-                stored: None,
                 key: turn.key.clone(),
                 full: ContextMessage { role: turn.role, text: turn.line.clone() },
                 // Collapsed, a turn leaves her view: the room's history holds it, and the

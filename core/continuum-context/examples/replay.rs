@@ -121,7 +121,7 @@ impl Source<String> for Captured {
 fn item(key: String, text: String) -> Item<String> {
     let pointer: String = text.lines().next().unwrap_or_default().chars().take(185).collect();
     let pointer = if pointer.len() < text.len() { pointer } else { text.clone() };
-    Item { stored: None, key, pointer: Some(pointer), summary: None, full: text }
+    Item { key, pointer: Some(pointer), summary: None, full: text }
 }
 
 /// The one allocation, modelled: every source gets its floor, then the rest of `budget`

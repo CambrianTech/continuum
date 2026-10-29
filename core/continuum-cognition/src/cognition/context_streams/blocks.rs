@@ -56,7 +56,7 @@ impl Source<ContextMessage> for Grounding {
             // reopen it by, so collapsed it is still its truthful minimum, never a one-liner.
             let full = self.render(self.text.clone());
             let pointer = self.render(self.minimum.clone());
-            return vec![Item { stored: None, key: "block".to_owned(), full, summary: None, pointer: Some(pointer) }];
+            return vec![Item { key: "block".to_owned(), full, summary: None, pointer: Some(pointer) }];
         }
         let whole = self.at(|unit| &unit.content);
         let summary = self.units.iter().any(|unit| unit.summary.is_some()).then(|| {
@@ -66,7 +66,6 @@ impl Source<ContextMessage> for Grounding {
         let summary = summary.filter(|summary| *summary != whole);
         let pointer = (pointer != whole).then_some(pointer);
         vec![Item {
-            stored: None,
             key: "block".to_owned(),
             full: self.render(whole),
             summary: summary.map(|summary| self.render(summary)),
