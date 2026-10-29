@@ -29,10 +29,10 @@ use super::{SourceFile, SourceRule, Violation};
 /// The prompt assembly, where every message must come from the view or the tail's renderer.
 const PROMPT_ASSEMBLY: &str = "cognition/llm_deliberation_faculty/prompt/";
 
-pub struct PromptMessagesOutsideTheView;
-pub struct CollapseOutsideTheView;
-pub struct HandChurnLabels;
-pub struct PromptSelfSizing;
+struct PromptMessagesOutsideTheView;
+struct CollapseOutsideTheView;
+struct HandChurnLabels;
+struct PromptSelfSizing;
 
 /// The one allocation's owners: the prompt assembly runs it; `context_budget.rs` and the
 /// allocator module define what it uses.
