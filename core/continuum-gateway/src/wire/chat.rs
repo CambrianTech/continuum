@@ -59,6 +59,7 @@ impl Wire for Chat {
             ErrorKind::InvalidRequest => ("invalid_request_error", "invalid_request"),
             ErrorKind::NotFound => ("invalid_request_error", "model_not_found"),
             ErrorKind::Engine => ("server_error", "engine_error"),
+            ErrorKind::CaptureUnavailable => ("server_error", "capture_unavailable"),
         };
         json!({"error": {"message": message, "type": kind, "code": code}})
     }

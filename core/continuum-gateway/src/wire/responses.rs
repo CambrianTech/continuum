@@ -57,6 +57,7 @@ impl Wire for Responses {
             ErrorKind::InvalidRequest => "invalid_request",
             ErrorKind::NotFound => "model_not_found",
             ErrorKind::Engine => "server_error",
+            ErrorKind::CaptureUnavailable => "capture_unavailable",
         };
         json!({"error": {"message": message, "type": "invalid_request_error", "code": code}})
     }

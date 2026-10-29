@@ -22,8 +22,9 @@ pub(crate) struct Call {
 #[derive(Debug)]
 pub(crate) struct BadRequest(pub String);
 
-/// One API an agent speaks. `Self` is the encoder of one streamed answer.
-pub(crate) trait Wire: Send + 'static {
+/// One API an agent speaks. `Self` is the encoder of one streamed answer, held in place by
+/// the answer's body ([`crate::answer::Answer`]).
+pub(crate) trait Wire: Send + Unpin + 'static {
     /// The format's name, for probes.
     const NAME: &'static str;
     fn decode(body: Value) -> Result<Call, BadRequest>;
@@ -48,6 +49,8 @@ pub(crate) enum ErrorKind {
     InvalidRequest,
     NotFound,
     Engine,
+    /// The call's capture cannot be opened: refused rather than served unrecorded.
+    CaptureUnavailable,
 }
 
 /// One server-sent event of a streamed answer: its name, if the format names events, and data.

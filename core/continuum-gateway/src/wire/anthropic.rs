@@ -66,7 +66,7 @@ impl Wire for Anthropic {
         let kind = match kind {
             ErrorKind::InvalidRequest => "invalid_request_error",
             ErrorKind::NotFound => "not_found_error",
-            ErrorKind::Engine => "api_error",
+            ErrorKind::Engine | ErrorKind::CaptureUnavailable => "api_error",
         };
         json!({"type": "error", "error": {"type": kind, "message": message}})
     }
