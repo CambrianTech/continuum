@@ -2821,6 +2821,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-capture"
+version = "0.1.0"
+dependencies = [
+ "continuum-base",
+ "continuum-engine",
+ "continuum-kernel",
+ "continuum-rooms",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "ts-rs 12.0.1",
+ "uuid",
+]
+
+[[package]]
 name = "continuum-cli"
 version = "0.1.0"
 dependencies = [
@@ -2905,12 +2921,15 @@ dependencies = [
  "chrono",
  "continuum-airc-protocol",
  "continuum-base",
+ "continuum-capture",
  "continuum-cli-lifecycle",
  "continuum-client",
  "continuum-context",
  "continuum-engine",
+ "continuum-engram",
  "continuum-experience",
  "continuum-genome",
+ "continuum-grounding",
  "continuum-hands",
  "continuum-host",
  "continuum-kernel",
@@ -2918,8 +2937,11 @@ dependencies = [
  "continuum-memory",
  "continuum-perception",
  "continuum-positron",
+ "continuum-prompt",
+ "continuum-rooms",
  "continuum-service",
  "continuum-text-analysis",
+ "continuum-vitals",
  "dashmap",
  "dirs 5.0.1",
  "fs2",
@@ -3171,6 +3193,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-engram"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "continuum-base",
+ "continuum-engine",
+ "continuum-kernel",
+ "dashmap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "ts-rs 12.0.1",
+ "uuid",
+]
+
+[[package]]
 name = "continuum-experience"
 version = "0.1.0"
 dependencies = [
@@ -3253,6 +3293,23 @@ dependencies = [
  "tokio",
  "tracing",
  "ts-rs 12.0.1",
+ "uuid",
+]
+
+[[package]]
+name = "continuum-grounding"
+version = "0.1.0"
+dependencies = [
+ "airc-core",
+ "airc-lib",
+ "async-trait",
+ "continuum-base",
+ "continuum-kernel",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -3555,6 +3612,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-prompt"
+version = "0.1.0"
+dependencies = [
+ "continuum-base",
+ "continuum-engine",
+ "continuum-kernel",
+ "continuum-text-analysis",
+ "dashmap",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "continuum-rooms"
+version = "0.1.0"
+dependencies = [
+ "airc-blobs",
+ "airc-core",
+ "airc-lib",
+ "airc-work",
+ "chrono",
+ "continuum-base",
+ "continuum-cli-lifecycle",
+ "continuum-experience",
+ "continuum-kernel",
+ "continuum-positron",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "continuum-sentinel"
 version = "0.1.0"
 dependencies = [
@@ -3662,6 +3756,22 @@ dependencies = [
  "serde",
  "serde_json",
  "ts-rs 12.0.1",
+ "uuid",
+]
+
+[[package]]
+name = "continuum-vitals"
+version = "0.1.0"
+dependencies = [
+ "continuum-base",
+ "continuum-engine",
+ "continuum-experience",
+ "continuum-kernel",
+ "dashmap",
+ "parking_lot",
+ "serde",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 
