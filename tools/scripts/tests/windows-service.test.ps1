@@ -2081,7 +2081,10 @@ public static class RegisteredGsudoFixture {
         else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
     }
     Set-Content -LiteralPath $fakeCli -Value @'
-if ($args[0] -eq '--help') { 'continuum engine idle-slot'; 'continuum engine promote <slot> <commit:backend>'; exit 0 }
+if ($args[0] -eq '--help') { 'continuum engine idle-slot --owner-pid <pid>'; 'continuum engine promote <slot> <commit:backend>'; exit 0 }
+if ($args[0] -eq 'engine' -and $args[1] -eq 'release-slot') {
+    Add-Content -LiteralPath (Join-Path $env:CONTINUUM_HOME 'released') -Value "$($args[2]) $($args[4])"; exit 0
+}
 $payload = Get-ManagedPayloadRoot -HomeRoot $env:CONTINUUM_HOME
 if ($args[0] -eq 'engine' -and $args[1] -eq 'promote') {
     if ($env:FAKE_PROMOTE_RC) { 'refused'; exit ([int]$env:FAKE_PROMOTE_RC) }
@@ -2144,6 +2147,11 @@ exit 64
         $refused = $false
         try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'release receipt still names it' }
         if (-not $refused) { throw 'A slot the active receipt names was staged into' }
+        # Codex on #5535: the core CLAIMED engine-c for this installer; a refusal releases it.
+        $released = Join-Path $installed 'released'
+        if (-not (Test-Path -LiteralPath $released) -or -not @(Get-Content -LiteralPath $released | Where-Object { $_ -ceq "engine-c $PID" }).Count) {
+            throw 'A refused claimed slot was not released'
+        }
         if ($null -ne (Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli -SkipIfBusy)) { throw 'A deploy staged into a receipted slot instead of skipping' }
         Remove-Item -LiteralPath $activeReceipt
         Set-Content -LiteralPath $previousReceipt -Value (& $receiptNaming 'engine-c')

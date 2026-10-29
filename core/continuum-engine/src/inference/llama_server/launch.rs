@@ -27,8 +27,8 @@ impl LlamaServerProcess {
         let (_, port) = split_host_port(&self.root);
         let lanes = target.parallel_lanes();
         let total_ctx = target.served_total_ctx();
-        // Custody of the checked engine's slot, before the incumbent is retired: refused here,
-        // the incumbent is never touched.
+        // The claim on the checked engine's slot, before the incumbent is retired: refused here
+        // (a build or another launch holds it), the incumbent is never touched.
         let engine_custody = prepared.take_engine_custody()?;
         if let Some(receipt) = &engine_install {
             receipt.confirm().await.map_err(LlamaServerError::Spawn)?;
@@ -230,7 +230,7 @@ impl LlamaServerProcess {
                 None
             }
         };
-        // The last observation before the spawn: the reserved slot still holds the validated
+        // The last observation before the spawn: the claimed slot still holds the validated
         // build, so what spawns is what was checked (`checked_engine`).
         prepared.confirm_engine()?;
         // Clone before OS spawn, so allocation cannot strand an uninstalled child.
@@ -366,7 +366,7 @@ impl LlamaServerProcess {
             }
         }
         // The lane record names the engine now, and is the slot's custody from here on, as for
-        // any running lane: the launch's reservation is released. Without a record it stays
+        // any running lane: the launch's slot claim is released. Without a record it stays
         // beside the child until its exit, like the page-dir reservation below.
         *self.retained_engine_slot.lock() = if lane_recorded { None } else { engine_custody };
 

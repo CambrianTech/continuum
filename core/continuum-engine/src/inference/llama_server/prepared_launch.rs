@@ -6,9 +6,9 @@ pub(super) struct PreparedLocalLaunch {
     pub(super) target: ServingTarget,
     /// The engine checked against the pin when this launch was prepared: the ONLY binary it runs.
     pub(super) engine: super::checked_engine::CheckedEngine,
-    /// The slot reservation taken when `engine` was checked, until the first launch of this
-    /// recipe takes it (a relaunch of a retained recipe reserves anew).
-    pub(super) engine_custody: Arc<parking_lot::Mutex<Option<crate::inference::engine_slots::SlotReservation>>>,
+    /// The slot claim taken when `engine` was checked, until the first launch of this recipe
+    /// takes it (a relaunch of a retained recipe claims anew).
+    pub(super) engine_custody: Arc<parking_lot::Mutex<Option<crate::inference::engine_slots::SlotClaim>>>,
     pub(super) endpoint: String,
     pub(super) invocation: crate::inference::lane_args::LaneInvocation,
     pub(super) engine_install: Option<crate::inference::engine_install::EngineInstallReceipt>,
@@ -45,18 +45,18 @@ impl PreparedLocalLaunch {
         self.engine.program()
     }
 
-    /// The custody of this launch's slot: the reservation taken at prepare, or a new one for a
-    /// recipe launched again (see [`super::checked_engine`]).
+    /// The claim on this launch's slot: the one taken at prepare, or a new one for a recipe
+    /// launched again (see [`super::checked_engine`]).
     pub(super) fn take_engine_custody(
         &self,
-    ) -> Result<Option<crate::inference::engine_slots::SlotReservation>, LlamaServerError> {
+    ) -> Result<Option<crate::inference::engine_slots::SlotClaim>, LlamaServerError> {
         let taken = self.engine_custody.lock().take();
         match taken {
-            Some(reservation) => {
+            Some(claim) => {
                 self.confirm_engine()?;
-                Ok(Some(reservation))
+                Ok(Some(claim))
             }
-            None => self.engine.reserve().map_err(LlamaServerError::EngineUnpinned),
+            None => self.engine.claim_slot().map_err(LlamaServerError::EngineUnpinned),
         }
     }
 

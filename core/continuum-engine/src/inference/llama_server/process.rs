@@ -48,9 +48,9 @@ pub struct LlamaServerProcess {
     /// not be written — kept until the owned child reports exit
     /// (see [`PageDirReservation`]). Empty when the record carries the dir.
     pub(super) retained_page_dir: Arc<parking_lot::Mutex<Option<PageDirReservation>>>,
-    /// The engine slot reservation of the CURRENT child when its registry record could not be
+    /// The engine slot claim of the CURRENT child when its registry record could not be
     /// written: kept until the owned child reports exit. Empty when the record names the slot.
-    pub(super) retained_engine_slot: Arc<parking_lot::Mutex<Option<crate::inference::engine_slots::SlotReservation>>>,
+    pub(super) retained_engine_slot: Arc<parking_lot::Mutex<Option<crate::inference::engine_slots::SlotClaim>>>,
     /// True for THE host's live persona lane (pins the canonical port, writes the
     /// reclaim pidfile, reaps a crashed predecessor's orphan). False for an
     /// [`EphemeralServingLane`]'s `with_root` process, which owns its own scanned

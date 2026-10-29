@@ -136,8 +136,9 @@ pub enum EngineUnpinned {
     /// before the launch reserved it): the launch refuses rather than run what nobody checked.
     #[error("engine slot {slot} was validated against pin {pin} as {stamp} but now holds {now_stamp:?}: nothing launches; the next reconcile validates the slots again")]
     Rebuilt { pin: String, slot: &'static str, stamp: String, now_stamp: Option<String> },
-    /// The validated slot could not be reserved, so a build could choose it under the launch.
-    #[error("engine slot {slot} (pin {pin}) could not be reserved for the launch: {reason}")]
+    /// The validated slot could not be claimed (a build holds it, or the claim could not be
+    /// written): nothing launches and the incumbent keeps serving.
+    #[error("engine slot {slot} (pin {pin}) could not be claimed for the launch: {reason}")]
     Unreserved { pin: String, slot: &'static str, reason: String },
 }
 

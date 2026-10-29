@@ -25,8 +25,8 @@ impl LlamaServerProcess {
         // The slot this core's source pins, never whichever one `current` was left naming: an
         // unpinned node refuses here, before the incumbent is touched (`EngineUnpinned`).
         let engine = self.checked_engine()?;
-        // Custody from the moment of validation: no build chooses this slot while it is held.
-        let engine_custody = engine.reserve().map_err(LlamaServerError::EngineUnpinned)?;
+        // The slot's claim from the moment of validation: no build claims it while this holds.
+        let engine_custody = engine.claim_slot().map_err(LlamaServerError::EngineUnpinned)?;
         let bin = engine.program().to_string();
         // Resolve the GGUF from the model struct already in hand — no re-fetch by
         // id. No file → fail loud; we never serve a substitute model

@@ -24,8 +24,9 @@
 use std::path::{Path, PathBuf};
 
 mod attempts;
-mod reservation;
-pub use reservation::SlotReservation;
+mod claim;
+pub(crate) use claim::{claim_idle_slot, release_build_claim};
+pub use claim::SlotClaim;
 
 /// The slots, bounded by construction: the current engine, one a lane may still run, and one to
 /// build into.
@@ -244,36 +245,29 @@ fn idle_slot_reserved(
     reserved: &[&str],
     populated: impl Fn(&str) -> bool,
 ) -> Result<&'static str, NotIdle> {
+    idle_candidates(root, current, previous, live, reserved, populated).first().copied().ok_or(NotIdle::AllInUse)
+}
+
+/// PURE: every idle slot (see [`idle_slot`]), the preferred first: `previous` (the rollback)
+/// last. What a builder tries to claim, in order ([`claim`]).
+fn idle_candidates(
+    root: &Path,
+    current: Option<&str>,
+    previous: Option<&str>,
+    live: &[Option<PathBuf>],
+    reserved: &[&str],
+    populated: impl Fn(&str) -> bool,
+) -> Vec<&'static str> {
     let unknown_lane = live.iter().any(Option::is_none);
-    let free: Vec<&'static str> = SLOTS
+    let (mut free, rollback): (Vec<&'static str>, Vec<&'static str>) = SLOTS
         .into_iter()
         .filter(|slot| Some(*slot) != current)
         .filter(|slot| !reserved.contains(slot))
         .filter(|slot| !live.iter().flatten().any(|bin| slot_of(root, bin) == Some(*slot)))
         .filter(|slot| !(unknown_lane && populated(slot)))
-        .collect();
-    free.iter()
-        .find(|slot| Some(**slot) != previous)
-        .or(free.first())
-        .copied()
-        .ok_or(NotIdle::AllInUse)
-}
-
-/// The slot every builder builds into (`continuum engine idle-slot`): not one an installer
-/// `excluded`, a live launch reserves ([`SlotReservation`]), or a live lane runs. Reservations
-/// are read BEFORE the lane records: a launch drops its reservation only after its record is
-/// written, so a selection never misses both.
-pub fn select_idle_slot(
-    root: &Path,
-    excluded: &[&str],
-    live_lanes: impl FnOnce() -> Result<Vec<Option<PathBuf>>, String>,
-) -> Result<&'static str, VerbError> {
-    let mut reserved = excluded.to_vec();
-    reserved.extend(reservation::reserved_slots(root).map_err(VerbError::Failed)?);
-    let live = live_lanes().map_err(VerbError::Failed)?;
-    let populated = |s: &str| slot_bin(root, s).is_file();
-    idle_slot_reserved(root, current_slot(root), previous_slot(root), &live, &reserved, populated)
-        .map_err(|NotIdle::AllInUse| VerbError::NoIdleSlot)
+        .partition(|slot| Some(*slot) != previous);
+    free.extend(rollback);
+    free
 }
 
 /// The recorded engine of every live lane (a record whose pid is still a llama-server), read
@@ -354,7 +348,7 @@ impl std::fmt::Display for VerbError {
             VerbError::DeferredFailedAttempt(reason) => write!(f, "{reason}"),
             VerbError::NoIdleSlot => write!(
                 f,
-                "every engine slot is current or run by a live lane: the engine build is skipped this deploy"
+                "every engine slot is current, run by a live lane or claimed: the engine build is skipped this deploy"
             ),
             VerbError::Failed(reason) => f.write_str(reason),
         }
@@ -373,21 +367,30 @@ pub fn run_verb(args: &[String]) -> Result<String, VerbError> {
     let root = root(&home).map_err(VerbError::Failed)?;
     let usage = || {
         VerbError::Failed(
-            "usage: continuum engine root | idle-slot | promote <slot> <commit:backend> | attempt <slot> | retry <slot> <commit:backend> <artifact-identity> | rollback <failed-slot>".into(),
+            "usage: continuum engine root | idle-slot --owner-pid <pid> [--exclude-slot <slot>]... | release-slot <slot> --owner-pid <pid> | promote <slot> <commit:backend> | attempt <slot> | retry <slot> <commit:backend> <artifact-identity> | rollback <failed-slot>".into(),
         )
     };
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["root"] => Ok(root.to_string_lossy().into_owned()),
-        ["idle-slot", exclusions @ ..] => {
+        ["idle-slot", options @ ..] => {
             let mut reserved = Vec::new();
-            for pair in exclusions.chunks(2) {
+            let mut owner = None;
+            for pair in options.chunks(2) {
                 match pair {
                     ["--exclude-slot", slot] if SLOTS.contains(slot) => reserved.push(*slot),
+                    ["--owner-pid", pid] => owner = Some(pid.parse::<u32>().map_err(|_| usage())?),
                     _ => return Err(usage()),
                 }
             }
-            let slot = select_idle_slot(&root, &reserved, live_lane_engines)?;
+            // The claim is the builder's (the installer script's process), so it outlives this
+            // verb; the path is printed only once it is held.
+            let owner = owner.ok_or_else(usage)?;
+            let slot = claim::claim_idle_slot(&root, &reserved, owner, live_lane_engines, &crate::inference::engine_residency::probe_process)?;
             Ok(root.join(slot).to_string_lossy().into_owned())
+        }
+        ["release-slot", slot, "--owner-pid", pid] => {
+            let pid = pid.parse::<u32>().map_err(|_| usage())?;
+            claim::release_build_claim(&root, slot, pid).map_err(VerbError::Failed)
         }
         ["promote", slot, stamp] | ["retry", slot, stamp, _] => {
             // A live lane may run the slot only when promoting it switches nothing: it is

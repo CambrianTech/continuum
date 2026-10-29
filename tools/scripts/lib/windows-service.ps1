@@ -135,17 +135,16 @@ function Get-CoreEngineIdleSlot {
     $ErrorActionPreference = 'Continue'
     if (-not $Cli -or -not (Test-Path -LiteralPath $Cli)) { return $null }
     try { $help = (Invoke-InstallerProcess $Cli @('--help') 2>&1 | Out-String) } catch { return $null }
-    if ($help -notmatch 'continuum engine idle-slot') { return $null }
+    if ($help -notmatch 'continuum engine idle-slot --owner-pid') { return $null }
     $saved = $env:CONTINUUM_HOME
     try {
         $env:CONTINUUM_HOME = $InstallRoot
-        $arguments = @('engine', 'idle-slot')
-        # New CLIs apply installer reservations inside the same lane-aware selector.
-        # Older CLIs still face the receipt guard below; never guess an alternative.
-        if ($help -match '--exclude-slot') {
-            foreach ($reserved in $ReservedSlots) {
-                $arguments += @('--exclude-slot', (Split-Path $reserved -Leaf))
-            }
+        # The answer is CLAIMED for this PowerShell process (one exclusive claim per slot, the
+        # same one a launch takes): no launch runs it while it is rebuilt. The caller releases it
+        # (Invoke-CoreEngineRelease) in a finally; a killed installer's claim is reaped once gone.
+        $arguments = @('engine', 'idle-slot', '--owner-pid', [string]$PID)
+        foreach ($reserved in $ReservedSlots) {
+            $arguments += @('--exclude-slot', (Split-Path $reserved -Leaf))
         }
         $answer = @(Invoke-InstallerProcess $Cli $arguments 2>$null)
         $code = $LASTEXITCODE
@@ -161,9 +160,26 @@ function Get-CoreEngineIdleSlot {
     $root = ConvertTo-CoreImagePath (Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) 'bin')
     $slot = ConvertTo-CoreImagePath ([string]$answer[-1]).Trim()
     if (-not @('engine-a', 'engine-b', 'engine-c' | Where-Object { [string]::Equals($slot, (Join-Path $root $_), [StringComparison]::OrdinalIgnoreCase) }).Count) {
+        Invoke-CoreEngineRelease -Cli $Cli -InstallRoot $InstallRoot -Slot $slot
         throw "continuum engine idle-slot answered $slot, which is not an engine slot under $root."
     }
     return $slot
+}
+
+function Invoke-CoreEngineRelease {
+    # Release this PowerShell process's build claim on $Slot (taken by Get-CoreEngineIdleSlot).
+    # Idempotent: a slot this process does not hold releases nothing. A failure is said, never
+    # thrown from a finally: the claim is reaped once this process has exited.
+    param([string]$Cli, [Parameter(Mandatory = $true)][string]$InstallRoot, [Parameter(Mandatory = $true)][string]$Slot)
+    $ErrorActionPreference = 'Continue'
+    if (-not $Cli -or -not (Test-Path -LiteralPath $Cli)) { return }
+    $saved = $env:CONTINUUM_HOME
+    try {
+        $env:CONTINUUM_HOME = $InstallRoot
+        $said = (Invoke-InstallerProcess $Cli @('engine', 'release-slot', (Split-Path $Slot -Leaf), '--owner-pid', [string]$PID) 2>&1 | Out-String).Trim()
+        $code = $LASTEXITCODE
+    } finally { $env:CONTINUUM_HOME = $saved }
+    if ($code -ne 0) { Write-Warning "The build claim on $Slot was not released (exit $code): $said; it is reaped once this installer has exited." }
 }
 
 function Get-CoreReceiptedEngineSlots {
@@ -207,22 +223,29 @@ function Select-CoreEngineSlot {
     $fromCore = Get-CoreEngineIdleSlot -Cli $Cli -InstallRoot $InstallRoot -SkipIfBusy:$SkipIfBusy -ReservedSlots $receipted
     if ($fromCore -eq 'BUSY') { return $null }
     if ($fromCore) {
-        if (@($receipted | Where-Object { [string]::Equals($_, $fromCore, [StringComparison]::OrdinalIgnoreCase) }).Count) {
-            # The verb prefers a slot that is neither current nor previous, so on a node whose records
-            # agree with its pointers this never fires. When it does, the records disagree, and
-            # overwriting would destroy a release a receipt still owns: refuse, and let the supported
-            # receipt reconciliation retire the record first.
-            if ($SkipIfBusy) { return $null }
-            throw "The core named $fromCore idle, but an installer release receipt still names it; refusing to overwrite a receipted engine."
+        # $fromCore is claimed for this process: every refusal below releases it first.
+        $kept = $false
+        try {
+            if (@($receipted | Where-Object { [string]::Equals($_, $fromCore, [StringComparison]::OrdinalIgnoreCase) }).Count) {
+                # The verb prefers a slot that is neither current nor previous, so on a node whose records
+                # agree with its pointers this never fires. When it does, the records disagree, and
+                # overwriting would destroy a release a receipt still owns: refuse, and let the supported
+                # receipt reconciliation retire the record first.
+                if ($SkipIfBusy) { return $null }
+                throw "The core named $fromCore idle, but an installer release receipt still names it; refusing to overwrite a receipted engine."
+            }
+            # Belt and braces: a live engine whose path IS readable must not sit in the answer.
+            $readable = @(Get-CimInstance Win32_Process -ErrorAction Stop |
+                Where-Object { $_.Name -eq 'llama-server.exe' -and $_.ExecutablePath } |
+                ForEach-Object { ConvertTo-CoreImagePath $_.ExecutablePath })
+            if (@($readable | Where-Object { $_.StartsWith($fromCore + '\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
+                throw "The core named $fromCore idle, but a running engine executes from it; refusing to overwrite it."
+            }
+            $kept = $true
+            return $fromCore
+        } finally {
+            if (-not $kept) { Invoke-CoreEngineRelease -Cli $Cli -InstallRoot $InstallRoot -Slot $fromCore }
         }
-        # Belt and braces: a live engine whose path IS readable must not sit in the answer.
-        $readable = @(Get-CimInstance Win32_Process -ErrorAction Stop |
-            Where-Object { $_.Name -eq 'llama-server.exe' -and $_.ExecutablePath } |
-            ForEach-Object { ConvertTo-CoreImagePath $_.ExecutablePath })
-        if (@($readable | Where-Object { $_.StartsWith($fromCore + '\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
-            throw "The core named $fromCore idle, but a running engine executes from it; refusing to overwrite it."
-        }
-        return $fromCore
     }
     Write-Warning 'This CLI predates engine slots: selecting the engine slot from the process table for this deploy; the next deploy asks the core.'
     # Engines have an independent lifetime: a warm lane can outlive its core.
@@ -346,23 +369,28 @@ function Prepare-CoreServiceEngine {
         Write-Warning "Engine not prepared this deploy: $why."
         return
     }
-    Mod-LlamaServer -RepoRoot $RepoRoot -InstallDirectory $slot -RequireReceipt
-    $after = Get-CoreEngineRequirement -RepoRoot $RepoRoot
-    if ($after.source_revision -cne $requirement.source_revision -or $after.backend -cne $requirement.backend) {
-        throw 'Tracked engine requirement changed during preparation.'
+    # $slot is claimed for this process until the build ends, whatever the outcome.
+    try {
+        Mod-LlamaServer -RepoRoot $RepoRoot -InstallDirectory $slot -RequireReceipt
+        $after = Get-CoreEngineRequirement -RepoRoot $RepoRoot
+        if ($after.source_revision -cne $requirement.source_revision -or $after.backend -cne $requirement.backend) {
+            throw 'Tracked engine requirement changed during preparation.'
+        }
+        $drift = Get-CoreEngineDrift -Directory $slot -Requirement $requirement
+        if ($drift) { throw $drift }
+        $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
+        if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed during engine preparation.' }
+        # The verified slot becomes the engine by the core's own verb, for install and unattended
+        # deploy alike (card d5584dfc); install still registers it as the release's bootstrap engine.
+        $promoted = Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $slot
+        if ($null -eq $promoted) {
+            [IO.File]::WriteAllText($ReceiptPath, 'SKIP: failed engine attempt deferred; verified current engine preserved', (New-Object Text.UTF8Encoding $false))
+            return
+        }
+        [IO.File]::WriteAllText($ReceiptPath, (Join-Path $slot 'llama-server.exe'), (New-Object Text.UTF8Encoding $false))
+    } finally {
+        Invoke-CoreEngineRelease -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $slot
     }
-    $drift = Get-CoreEngineDrift -Directory $slot -Requirement $requirement
-    if ($drift) { throw $drift }
-    $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
-    if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed during engine preparation.' }
-    # The verified slot becomes the engine by the core's own verb, for install and unattended
-    # deploy alike (card d5584dfc); install still registers it as the release's bootstrap engine.
-    $promoted = Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $slot
-    if ($null -eq $promoted) {
-        [IO.File]::WriteAllText($ReceiptPath, 'SKIP: failed engine attempt deferred; verified current engine preserved', (New-Object Text.UTF8Encoding $false))
-        return
-    }
-    [IO.File]::WriteAllText($ReceiptPath, (Join-Path $slot 'llama-server.exe'), (New-Object Text.UTF8Encoding $false))
 }
 
 function Get-CoreBrowserReleaseDrift {

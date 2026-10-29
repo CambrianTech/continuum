@@ -10,6 +10,8 @@
 #   current      the current slot at the pin is a no-op: no idle-slot query, no promote
 #   none idle    exit 3 skips the engine build, exits 0, promotes nothing
 #   refused      any other idle-slot failure fails loud, never guesses a slot
+#   claim        idle-slot claims the slot for THIS installer's pid, and the same pid releases it
+#                at exit (a launch can never run a slot a build holds; Codex on #5535)
 set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 scratch_root="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
@@ -45,7 +47,7 @@ cat > "$scratch/bin/continuum" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--help" ]; then
   echo "usage: continuum ..."
-  [ -z "${OLD_CLI:-}" ] && echo "       continuum engine idle-slot           print the engine slot"
+  [ -z "${OLD_CLI:-}" ] && echo "       continuum engine idle-slot --owner-pid <pid>   claim and print the engine slot"
   exit 0
 fi
 [ "${1:-}" = "engine" ] || exit 64
@@ -56,6 +58,7 @@ echo "$*" >> "$FIXTURE_LOG"
 case "$1" in
   idle-slot) [ "$IDLE_RC" = 0 ] && echo "$root/$IDLE_SLOT"; exit "$IDLE_RC" ;;
   promote) [ "${PROMOTE_RC:-0}" = 0 ] || exit "$PROMOTE_RC"; printf '%s\n' "$2" > "$root/current"; exit 0 ;;
+  release-slot) exit 0 ;;
 esac
 exit 64
 SH
@@ -89,6 +92,9 @@ IDLE_RC=0 IDLE_SLOT=engine-a run || fail "migrate: exit $?"
 [ "$(cat "$CONTINUUM_HOME/bin/engine-a/.llama-server.stamp")" = "$want" ] || fail "migrate: slot not stamped"
 grep -qx "promote engine-a $want" "$scratch/log" || fail "migrate: not promoted with the pin"
 [ -x "$CONTINUUM_HOME/bin/llama-server" ] || fail "migrate: the pre-slot engine a lane may run was removed"
+claimer="$(sed -n 's/^idle-slot --owner-pid \([0-9][0-9]*\)$/\1/p' "$scratch/log")"
+[ -n "$claimer" ] || fail "claim: idle-slot was not asked to claim for the installer: $(cat "$scratch/log")"
+grep -qx "release-slot engine-a --owner-pid $claimer" "$scratch/log" || fail "claim: the installer did not release its claim: $(cat "$scratch/log")"
 
 # current: the active slot already at the pin is a no-op.
 fresh_home; engine_at "$CONTINUUM_HOME/bin/engine-b" "$want"; echo engine-b > "$CONTINUUM_HOME/bin/current"

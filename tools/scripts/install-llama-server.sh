@@ -173,6 +173,13 @@ if [[ "$BACKEND" == cuda ]]; then STAMP_WANT+=":$CMAKE_CUDA_ARCHITECTURES"; fi
 SLOT=""
 CLI="${CONTINUUM_CLI:-$(command -v continuum || true)}"
 engine_cli() { CONTINUUM_HOME="$CONTINUUM_HOME" "$CLI" engine "$@"; }
+# `idle-slot --owner-pid $$` CLAIMS the slot it prints for this script (one exclusive claim per
+# slot, the same one a launch takes), so no launch runs it while it is rebuilt. The claim is
+# released at exit, whatever the outcome; a killed script's claim is reaped once it is gone.
+release_slot() {
+  engine_cli release-slot "$SLOT" --owner-pid $$ >&2 \
+    || echo "⚠ the build claim on $SLOT was not released; it is reaped once this installer has exited" >&2
+}
 promote_slot() {
   local result=0
   engine_cli promote "$SLOT" "$STAMP_WANT" >&2 || result=$?
@@ -191,7 +198,7 @@ promote_slot() {
 }
 case "$(uname -s)" in
   Darwin|Linux)
-    if [ -z "$CLI" ] || ! "$CLI" --help 2>&1 | grep -q "continuum engine idle-slot"; then
+    if [ -z "$CLI" ] || ! "$CLI" --help 2>&1 | grep -q "continuum engine idle-slot --owner-pid"; then
       echo "→ the deployed CLI has no engine slots yet: installing to $INSTALL_DIR this once; the next deploy uses the slots" >&2
     else
       current_slot="$(tr -d '[:space:]' < "$INSTALL_DIR/current" 2>/dev/null || true)"
@@ -220,17 +227,18 @@ case "$(uname -s)" in
         done
       fi
       set +e
-      slot_dir="$(engine_cli idle-slot)"
+      slot_dir="$(engine_cli idle-slot --owner-pid $$)"
       rc=$?
       set -e
       if [ "$rc" -eq 3 ]; then
-        echo "⚠ every engine slot is current or run by a live lane: the engine build is skipped this deploy; the lanes keep their engine" >&2
+        echo "⚠ every engine slot is current, run by a live lane or claimed: the engine build is skipped this deploy; the lanes keep their engine" >&2
         exit 0
       elif [ "$rc" -ne 0 ] || [ -z "$slot_dir" ]; then
         echo "✗ FATAL: \`continuum engine idle-slot\` failed (exit $rc); no slot can be proven idle, so nothing is built." >&2
         exit 1
       fi
       SLOT="$(basename "$slot_dir")"
+      trap release_slot EXIT
       LEGACY_BIN="$INSTALL_BIN"
       LEGACY_STAMP="$STAMP_FILE"
       INSTALL_DIR="$slot_dir"

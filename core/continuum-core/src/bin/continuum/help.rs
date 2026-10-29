@@ -134,7 +134,8 @@ pub(super) fn usage() -> String {
        continuum checkpoint inspect --source <volatile.json> --persona-id <uuid> --plan <new-file>\n                                       save an explicit digest-bound selection; no checkpoint changed\n  \
        continuum checkpoint adopt --plan <file> --legacy-writers-stopped\n                                       preserve both snapshots and adopt the selected bytes offline;\n                                       stop legacy cores and automatic launchers first; no final-flush claim\n  \
        continuum engine root                print the managed engine root\n  \
-       continuum engine idle-slot [--exclude-slot engine-a|engine-b|engine-c]...\n                                       print a lane-safe slot outside installer custody (exit 3: none idle)\n  \
+       continuum engine idle-slot --owner-pid <pid> [--exclude-slot engine-a|engine-b|engine-c]...\n                                       claim and print a lane-safe slot for builder <pid> (exit 3: none idle)\n  \
+       continuum engine release-slot <slot> --owner-pid <pid>\n                                       release builder <pid>'s claim on a slot\n  \
        continuum engine promote <slot> <commit:backend>\n                                       make a verified slot the current engine\n  \
        continuum engine attempt <slot>       inspect admitted artifact and failure disposition\n  \
        continuum deploy-consume --retry-resource <build-sha> <condition-sha256>\n                                       authorize one exact saved resource retry\n  \
