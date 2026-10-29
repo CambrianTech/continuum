@@ -708,8 +708,10 @@ fn occupancy_of(shape: TurnShape, prefill_tps: f64, decode_tps: f64) -> Option<s
     Some(std::time::Duration::from_secs_f64(secs))
 }
 
-/// Append one request's exact message list to `<dir>/<persona>.wire.jsonl` (the wire capture,
-/// sink 4 of PRIVACY-OF-THOUGHT.md). A turn in her mind room writes nothing.
+/// Append one request's message list, whole, to `<dir>/<persona>.wire.jsonl` (the wire capture,
+/// sink 4 of PRIVACY-OF-THOUGHT.md). A turn in her mind room writes nothing. The boundary is the
+/// ADAPTER'S INPUT (`TextGenerationRequest::messages`), not the HTTP body an adapter serializes
+/// from it; a write failure is silent here, so a missing row is never evidence no request ran.
 fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &str, room_id: Uuid, request: &TextGenerationRequest) {
     if crate::cognition::mind_room::is_private_room(persona_id, room_id) {
         crate::cognition::mind_room::note_withheld(persona_id, "wire_capture");
