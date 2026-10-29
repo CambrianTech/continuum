@@ -401,13 +401,17 @@ impl LlmDeliberationFaculty {
                 required: false,
             },
             reply,
-            // Her hands, above grounding (`tools_epoch.rs`): floor = core hands, target = the
-            // level this epoch chose, want = her whole surface.
+            // Her hands, above grounding (`tools_epoch.rs`): floor = core hands, want = her whole
+            // surface, and priority decides between them like every other claim. The level this
+            // epoch chose is never a minimum: re-priced after a refusal scaled the calibration it
+            // took two thirds of the window ahead of her whole conversation (22,167 of 29,440,
+            // a_scaled_calibration_after_turnovers). A grant below it is a surface change the
+            // epoch_level_lost probe reports.
             crate::cognition::rag_budget::RagSourceBudget {
                 source_id: FLEX_TOOLS.to_owned(),
                 priority: 7,
                 floor_tokens: tools_floor,
-                min_tokens: claim(tools.level).max(tools_floor),
+                min_tokens: tools_floor,
                 max_tokens: claim(tools.want).max(tools_floor),
                 required: true,
             },

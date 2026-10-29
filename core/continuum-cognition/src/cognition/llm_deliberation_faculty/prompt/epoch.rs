@@ -114,13 +114,18 @@ impl LlmDeliberationFaculty {
         // The epoch keeps appending into window no claim took: its rendering carries the
         // versions it superseded, which no claim counts, so measured against its grants alone
         // it read as over with 74k of the window unallocated (Atlas, the M5, 2026-10-22).
-        if view_tokens <= granted + room {
+        // What the epoch being replaced appended per act: the growth the next one reserves.
+        let appended_per_act = self.context_view.lock().as_ref().and_then(View::appended_per_act);
+        let fits = view_tokens <= granted + room;
+        // A view that fits still turns over when a start would give her back what a squeezed
+        // start collapsed: the epoch only appends, so it never would on its own.
+        if fits && !self.view_would_restore(&prompt.streams, |claims: &[Claim]| start_grants(claims, plan, granted + room, appended_per_act)) {
             return;
         }
         // Admission before a turnover: redo this act's append within what the act granted her
         // view, an arrival too large for it reduced to its outline or pointer
         // (`View::readmit`). An act that started the view has nothing to redo.
-        if !view.started {
+        if !fits && !view.started {
             if let Some(admitted) = self.admit_view(&prompt.streams, view_tokens, granted + room) {
                 let admitted_tokens = calibration.charge(Self::messages_cost(&admitted));
                 if admitted_tokens <= granted + room {
@@ -140,8 +145,6 @@ impl LlmDeliberationFaculty {
                 }
             }
         }
-        // What the epoch being replaced appended per act: the growth the next one reserves.
-        let appended_per_act = self.context_view.lock().as_ref().and_then(View::appended_per_act);
         // A source the allocation could not grant its floor is shed from this epoch: its
         // floor is what it renders collapsed, so starting it anyway put the view over its
         // grant and left the fit to cut it (an atomic standing block, its minimum the whole
@@ -257,6 +260,14 @@ impl LlmDeliberationFaculty {
 
     /// Start a new epoch of her view within `budget_chars`, the flexbox granting each
     /// source its share by priority, without the `shed` sources.
+    /// Whether her view, started now under `allocate`'s grants, would show her more than it holds.
+    fn view_would_restore(&self, streams: &Streams, allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> bool {
+        let memory = self.working_memory.as_deref();
+        let memory_streams = memory.map(MemoryStreams::of);
+        let sources = Self::view_sources(streams, memory_streams.as_ref());
+        self.context_view.lock().as_ref().is_some_and(|view| view.start_would_restore(&sources, allocate))
+    }
+
     fn turn_over_view_with(
         &self,
         streams: &Streams,
