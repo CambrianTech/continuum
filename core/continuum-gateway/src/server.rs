@@ -52,53 +52,36 @@ async fn serve<W: Wire>(headers: axum::http::HeaderMap, Json(body): Json<Value>)
     continuum_base::probe!(class = "gateway.call", wire = W::NAME, model = %model, stream = call.stream, session = %session, remembered = remembered,
         tools = call.request.tools.as_ref().map_or(0, Vec::len) as u64, messages = call.request.messages.len() as u64,
         "an agent's call reached the engine through the gateway");
-    let mut lease = crate::session::record(session, &id, W::NAME, &call.request);
+    // Recorded or refused: an agent's call is never served outside the one capture.
+    let opened = continuum_capture::prompt_capture::JsonlPromptCaptureSink::open_for_persona(session);
+    let mut lease = match crate::session::record(opened, session, &id, W::NAME, &call.request) {
+        Ok(lease) => lease,
+        Err(unavailable) => return capture_refused::<W>(&unavailable),
+    };
     if !call.stream {
         let outcome = route::generate(&adapter, call.request).await;
-        if let Some(lease) = lease.as_mut() {
-            match &outcome {
-                Ok(response) => lease.finish(Some(response), None),
-                Err(error) => lease.finish(None, Some(&format!("{error:?}"))),
-            };
-        }
+        crate::session::settle(&mut lease, &outcome);
         return match outcome {
             Ok(response) => Json(W::answer(&response, &id)).into_response(),
             Err(error) => refused::<W>(error),
         };
     }
-    let (chunks, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let (events, out) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        let mut encoder = W::streamer(&model, &id);
-        let generation = tokio::spawn(async move { route::stream(&adapter, call.request, chunks).await });
-        let send = |batch: Vec<crate::wire::Frame>| batch.into_iter().all(|f| events.send(Ok::<_, std::convert::Infallible>(f.into_event())).is_ok());
-        if !send(encoder.opened()) {
-            return; // the agent left; the lease records the call as cancelled when dropped
-        }
-        while let Some(chunk) = received.recv().await {
-            if !send(encoder.chunk(&chunk)) {
-                return;
-            }
-        }
-        let closing = match generation.await {
-            Ok(Ok(response)) => {
-                if let Some(lease) = lease.as_mut() {
-                    lease.finish(Some(&response), None);
-                }
-                encoder.finished(&response)
-            }
-            Ok(Err(RouteError::Engine(why))) => {
-                if let Some(lease) = lease.as_mut() {
-                    lease.finish(None, Some(&why));
-                }
-                encoder.failed(&why)
-            }
-            Ok(Err(RouteError::UnknownModel { model, .. })) => encoder.failed(&format!("model `{model}` is not served here")),
-            Err(join) => encoder.failed(&format!("generation task ended: {join}")),
-        };
-        send(closing);
-    });
-    Sse::new(tokio_stream::wrappers::UnboundedReceiverStream::new(out)).keep_alive(KeepAlive::default()).into_response()
+    // The body owns the generation and its lease: the agent leaving drops both (`answer`).
+    let (chunks, received) = tokio::sync::mpsc::unbounded_channel();
+    let generation = async move {
+        let outcome = route::stream(&adapter, call.request, chunks).await;
+        crate::session::settle(&mut lease, &outcome);
+        outcome
+    };
+    let answer = crate::answer::Answer::new(W::streamer(&model, &id), generation, received);
+    let events = tokio_stream::StreamExt::map(answer, |frame| Ok::<_, std::convert::Infallible>(frame.into_event()));
+    Sse::new(events).keep_alive(KeepAlive::default()).into_response()
+}
+
+/// The capture could not be opened: the call is refused, since serving it would leave a
+/// generation the act inspector, replay and Dreaming can never read.
+pub(crate) fn capture_refused<W: Wire>(unavailable: &crate::session::CaptureUnavailable) -> Response {
+    refuse::<W>(StatusCode::SERVICE_UNAVAILABLE, ErrorKind::CaptureUnavailable, &unavailable.to_string())
 }
 
 fn refused<W: Wire>(error: RouteError) -> Response {
