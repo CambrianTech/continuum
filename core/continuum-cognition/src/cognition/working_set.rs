@@ -192,8 +192,13 @@ fn push_sent(d: &mut PersonaDemand, sent_tokens: u32) {
 /// record written before the ring existed holds only its lifetime peak: it stands on her
 /// typical demand, the same rule [`requirement_tokens`] states, else on that peak.
 pub fn growth_sample(d: &PersonaDemand) -> Option<u32> {
-    let recent = d.sent_recent.iter().copied().max().filter(|&t| t > 0);
-    recent.or_else(|| (d.sent_peak > 0).then(|| typical_tokens(d).unwrap_or(d.sent_peak)))
+    if let Some(recent) = d.sent_recent.iter().copied().max().filter(|&t| t > 0) {
+        return Some(recent);
+    }
+    if d.sent_peak == 0 {
+        return None;
+    }
+    typical_tokens(d).or(Some(d.sent_peak))
 }
 
 fn median_of(ring: &[u32; RECENT_TURNS]) -> Option<u32> {
