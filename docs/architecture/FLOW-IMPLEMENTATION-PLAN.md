@@ -213,6 +213,8 @@ this same mistake.
 
 ## 2d. Focus: the flexbox budget, with full compliance (Joel, 2026-10-28)
 
+The owner of this contract is [FOCUS-CONTRACT.md](FOCUS-CONTRACT.md); this section is the flow plan's view of it, and where the two differ, FOCUS-CONTRACT wins.
+
 > "We called this flexbox budgeting." "Ideally it even helps us shrink down during what we've seen the
 > coding models excel at, like as it starts to develop it's not a cluttered mind." "In human terms this
 > is focus." "Others shrink. She still has all of the context. Requires adherence."
@@ -244,7 +246,7 @@ this same mistake.
 - She keeps all of her context; only its level changes.
 - A directed line raises its claim and the flow's interactive class; the episode stays warm and resumes.
 
-**Measured non-compliance** (2026-10-28, `fable/working-window`; the full map is on card 23ad5675):
+**Measured non-compliance, as of 2026-10-28** (`fable/working-window`; the full map is on card 23ad5675). Since then #5564 (one allocation sizes her prompt and every reader complies) and #5573 (results storage never decides what she sees) removed the working-memory share and the tool-surface re-pricing listed below; read this as the 10-28 baseline, not the current state:
 ~40 production sites size prompt content outside the allocation.
 - **Conversation** runs a second flexbox in `compose_for_turn` over the 159k served window, plus a
   per-turn cap and head cuts.
