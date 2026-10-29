@@ -3516,6 +3516,7 @@ dependencies = [
  "continuum-memory",
  "continuum-perception",
  "continuum-positron",
+ "continuum-rooms",
  "continuum-store",
  "continuum-text-analysis",
  "dashmap",
