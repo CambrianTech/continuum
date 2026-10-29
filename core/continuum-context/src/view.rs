@@ -131,7 +131,7 @@ fn levels<T: Block>(items: &[Item<T>], grant: usize) -> Vec<Level> {
         // its size fits the spare plus that pointer, and what it leaves is spare + pointer - size.
         // An item smaller than its own pointer gives the difference back instead of losing it.
         let pointer = pointer_chars(item);
-        let full = item.full.chars();
+        let full = crate::source::whole_chars(item);
         let summary = item.summary.as_ref().map(Block::chars);
         let afford = |size: usize, spare: usize| size <= spare + pointer;
         if ceiling == Level::Full && afford(full, spare) {
@@ -169,8 +169,8 @@ fn claim<T: Block>(source: &dyn Source<T>, items: &[Item<T>]) -> Claim {
         source: source.name().to_owned(),
         priority: source.priority(),
         pointer_chars: items.iter().map(pointer_chars).sum(),
-        full_chars: items.iter().map(|item| item.full.chars()).sum(),
-        newest_chars: items.last().map_or(0, |item| item.full.chars()), // map_or: a source with no items has no newest end
+        full_chars: items.iter().map(crate::source::whole_chars).sum(),
+        newest_chars: items.last().map_or(0, crate::source::whole_chars), // map_or: a source with no items has no newest end
     }
 }
 
@@ -276,7 +276,7 @@ impl<T: Block> View<T> {
                 let id = key(source.name(), &item.key);
                 let item_key = item.key.clone(); // its fingerprint after the level consumed it; once per item per start
                 let text = match level {
-                    Level::Full => Some(item.full),
+                    Level::Full => Some(crate::source::whole(&**source, item)),
                     Level::Summary => {
                         view.summarized.insert(id.clone());
                         item.summary
@@ -351,12 +351,12 @@ impl<T: Block> View<T> {
                 // new turn), so it always arrives whole: admission never drops what she has
                 // not seen.
                 let fits = |chars: usize| limit.map_or(true, |(limit, _)| self.epoch.chars() + chars <= limit); // map_or: no limit admits every arrival whole
-                let oversized = limit.is_some_and(|(_, oversized)| item.full.chars() > oversized);
+                let oversized = limit.is_some_and(|(_, oversized)| crate::source::whole_chars(&item) > oversized);
                 let level = if self.collapsed.contains(&id) {
                     Level::Pointer
                 } else if self.summarized.contains(&id) {
                     Level::Summary
-                } else if self.epoch.holds(&id) || item.pointer.is_none() || !oversized || fits(item.full.chars()) {
+                } else if self.epoch.holds(&id) || item.pointer.is_none() || !oversized || fits(crate::source::whole_chars(&item)) {
                     Level::Full
                 } else if item.summary.as_ref().is_some_and(|summary| fits(summary.chars())) {
                     self.summarized.insert(id.clone());
@@ -366,7 +366,7 @@ impl<T: Block> View<T> {
                     Level::Pointer
                 };
                 let text = match level {
-                    Level::Full => Some(item.full),
+                    Level::Full => Some(crate::source::whole(&**source, item)),
                     Level::Summary => item.summary.or(item.pointer),
                     Level::Pointer => item.pointer,
                 };

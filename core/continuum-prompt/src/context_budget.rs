@@ -380,9 +380,9 @@ fn working_window_when(served: u32, serving: bool) -> u32 {
     ///
     /// Long-horizon agentic work is exactly the case a 3-deep scratchpad cannot serve.
     /// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
-    pub fn working_memory_steps(&self) -> usize {
-        (TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM).max(1)
-    }
+    /// Window-independent by construction, so it needs no budget instance: a resident's
+    /// memory is built before (and outlives) any one served window.
+    pub const WORKING_MEMORY_STEPS: usize = if TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM > 1 { TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM } else { 1 };
 
     /// The result of her most recent act: WHOLE, up to the window she is served. It used to be
     /// a quarter of a prefill-bounded total (later floored at an eighth of the window), so her
@@ -419,7 +419,7 @@ fn working_window_when(served: u32, serving: bool) -> u32 {
     /// acts on a 16k lane and hundreds on a big one.
     ///
     /// Unknown window → the `MIN_SERVE_CTX` floor share, not "no bound": this bounds a
-    /// STORED buffer, and (per [`Self::working_memory_steps`]'s precedent) an unbounded
+    /// STORED buffer, and (per [`Self::WORKING_MEMORY_STEPS`]'s precedent) an unbounded
     /// buffer is not an honest no-bound — it is a leak.
     pub fn receipt_archive_chars(&self) -> usize {
         match self.total_chars {
@@ -590,34 +590,10 @@ mod tests {
     // without the other, this test says so.
     #[test]
     fn working_memory_depth_is_derived_from_the_budget_not_a_constant() {
-        let small = ContextBudget::from_window(4_096);
-        let lane = ContextBudget::from_window(16_384);
-        let huge = ContextBudget::from_window(1_000_000);
-
-        assert_eq!(
-            lane.working_memory_steps(),
-            TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM
-        );
-        assert_eq!(
-            small.working_memory_steps(),
-            lane.working_memory_steps(),
-            "depth is a RATIO of two window fractions, so it does not shrink on a small lane"
-        );
-        assert_eq!(
-            huge.working_memory_steps(),
-            lane.working_memory_steps(),
-            "nor grow on a huge one — a bigger window buys richer steps, not more of them"
-        );
+        assert_eq!(ContextBudget::WORKING_MEMORY_STEPS, TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM);
         assert!(
-            lane.working_memory_steps() > 3,
+            ContextBudget::WORKING_MEMORY_STEPS > 3,
             "must be deeper than the 3-step scratchpad that lost 19 of 21 steps"
-        );
-        // An unknown window must still yield a USABLE depth. Unlike a char bound, an
-        // unbounded COUNT is not "no bound" — it is an unbounded buffer, so the honest
-        // answer here is the derived ratio, not usize::MAX.
-        assert_eq!(
-            ContextBudget::unknown().working_memory_steps(),
-            lane.working_memory_steps()
         );
     }
 

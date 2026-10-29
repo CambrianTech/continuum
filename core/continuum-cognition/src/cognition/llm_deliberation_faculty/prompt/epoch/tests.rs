@@ -60,7 +60,7 @@ fn two_acts_and_a_turnover(conversation_first: bool) -> (usize, usize, usize) {
     let memory = WorkingMemory::new(8);
     memory.record_receipt("I ran code/list Result: 4 files");
     memory.record_settlement("listed", None);
-    let memory_streams = MemoryStreams::of(&memory);
+    let memory_streams = MemoryStreams::of(&memory, uuid::Uuid::nil());
     let first = streams(0, "RECALL: the repro lives in tests/");
     let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
     let (mut view, _) = View::start(Vec::new(), &ordered(&first, &memory_streams, conversation_first), whole)
@@ -96,7 +96,7 @@ fn two_acts_and_a_turnover(conversation_first: bool) -> (usize, usize, usize) {
 #[test]
 fn consecutive_acts_share_the_whole_view_and_a_turnover_keeps_the_settled_front() {
     let memory = WorkingMemory::new(8);
-    let memory_streams = MemoryStreams::of(&memory);
+    let memory_streams = MemoryStreams::of(&memory, uuid::Uuid::nil());
     let now = streams(0, "RECALL: one");
     let names: Vec<&str> =
         LlmDeliberationFaculty::view_sources(&now, Some(&memory_streams)).iter().map(|s| s.name()).collect();

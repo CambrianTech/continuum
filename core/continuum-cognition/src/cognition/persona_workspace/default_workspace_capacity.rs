@@ -315,9 +315,10 @@ pub(super) fn assemble_workspace_cycle(
     // turns record nothing). Built HERE (before recall) so recall can share it in and
     // suppress an engram the recency channel already carries — see below.
     // Depth comes from the BUDGET, never a constant: the count sibling of the per-step size
-    // bound, off the same live window. See `ContextBudget::working_memory_steps`.
+    // bound, a ratio of two window fractions and so the same on every window: no live window is
+    // read to build it. See `ContextBudget::WORKING_MEMORY_STEPS`.
     let working_memory = Arc::new(WorkingMemory::new(
-        crate::cognition::context_budget::ContextBudget::live_or_floor().working_memory_steps(),
+        crate::cognition::context_budget::ContextBudget::WORKING_MEMORY_STEPS,
     ));
     // Persistence belongs to resident registration, independently of whether
     // recall runs inline or deferred. Constructing a fork grants no disk access.
@@ -329,6 +330,13 @@ pub(super) fn assemble_workspace_cycle(
         // only a real failure (BigMama's live receipt on the 5090, card df0035bf). The pin
         // holds them live until `restore` below publishes the memory's own set.
         let restore_pin = persisted.wm.retain_handleless(cfg.persona_id);
+        // Results the old window share evicted carry no stored size: price each from its saved
+        // output, so her view can show it whole again (FOCUS-CONTRACT rule 7).
+        let persona = cfg.persona_id;
+        persisted.wm.price_evicted_wholes(|handle| {
+            let path = crate::cognition::tool_executor::spill::resolve(persona, handle).ok()?;
+            std::fs::read_to_string(path).ok().map(|body| body.trim().chars().count())
+        });
         // The previous life's handoff re-seeds this one: her ledger and card are known at
         // the NEXT seam too, without a wall read (card 49b5e806).
         if let Some(handoff) = persisted.wm.handoff.as_ref() {

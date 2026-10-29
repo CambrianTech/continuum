@@ -57,14 +57,21 @@ impl LlmDeliberationFaculty {
     /// weighs her reply also decides, once, how much of her context she reads.
     pub(in super::super) fn view_claims(&self, streams: &Streams) -> Vec<crate::cognition::rag_budget::RagSourceBudget> {
         let memory = self.working_memory.as_deref();
-        let memory_streams = memory.map(MemoryStreams::of);
+        let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         Self::view_sources(streams, memory_streams.as_ref())
             .into_iter()
             .map(|source| {
                 let items = source.items();
                 let cost = |message: &ContextMessage| Self::message_cost(&message.to_chat());
                 let floor: usize = items.iter().map(|item| item.pointer.as_ref().map_or(0, cost)).sum(); // map_or: an item that leaves when collapsed costs nothing
-                let want: usize = items.iter().map(|item| cost(&item.full)).sum();
+                // An item's WHOLE level, stored or resident (`whole_chars`): a body evicted from RAM
+                // is priced from its measured size, never as the pointer resident in its place,
+                // or the allocation would never grant room to see it (FOCUS-CONTRACT rule 7).
+                let whole = |item: &continuum_context::source::Item<ContextMessage>| {
+                    let extra = continuum_context::source::whole_chars(item).saturating_sub(item.full.text.chars().count());
+                    cost(&item.full) + extra / continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN
+                };
+                let want: usize = items.iter().map(whole).sum();
                 crate::cognition::rag_budget::RagSourceBudget {
                     source_id: format!("{VIEW_CLAIM}{}", source.name()),
                     priority: source.priority(),
@@ -192,7 +199,7 @@ impl LlmDeliberationFaculty {
     /// caller to size).
     fn advance_view(&self, streams: &Streams) -> (Vec<ChatMessage>, bool) {
         let memory = self.working_memory.as_deref();
-        let memory_streams = memory.map(MemoryStreams::of);
+        let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
         let mut held = self.context_view.lock();
         // A restart resumes the view her checkpoint kept, the same bytes the engine's saved
@@ -242,7 +249,7 @@ impl LlmDeliberationFaculty {
     /// the caller re-checks the result in tokens). `None` when there is no unsent act to redo.
     fn admit_view(&self, streams: &Streams, view_tokens: usize, budget_tokens: usize) -> Option<Vec<ChatMessage>> {
         let memory = self.working_memory.as_deref();
-        let memory_streams = memory.map(MemoryStreams::of);
+        let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
         let mut held = self.context_view.lock();
         let view = held.as_mut()?;
@@ -271,7 +278,7 @@ impl LlmDeliberationFaculty {
     /// Whether her view, started now under `allocate`'s grants, would show her more than it holds.
     fn view_would_restore(&self, streams: &Streams, allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Result<bool, continuum_context::view::GrantMismatch> {
         let memory = self.working_memory.as_deref();
-        let memory_streams = memory.map(MemoryStreams::of);
+        let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
         self.context_view.lock().as_ref().map_or(Ok(false), |view| view.start_would_restore(&sources, allocate)) // map_or: no view yet holds nothing to restore
     }
@@ -283,7 +290,7 @@ impl LlmDeliberationFaculty {
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
     ) -> Result<Vec<ChatMessage>, continuum_context::view::GrantMismatch> {
         let memory = self.working_memory.as_deref();
-        let memory_streams = memory.map(MemoryStreams::of);
+        let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let mut sources = Self::view_sources(streams, memory_streams.as_ref());
         sources.retain(|source| !shed.contains(&source.name()));
         let mut held = self.context_view.lock();
@@ -336,7 +343,7 @@ impl LlmDeliberationFaculty {
     #[cfg(any(test, feature = "test-fixtures"))]
     pub(in super::super) fn whole_view(&self, streams: &Streams) -> Vec<ChatMessage> {
         let memory = self.working_memory.as_deref();
-        let memory_streams = memory.map(MemoryStreams::of);
+        let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
         let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
         match View::start(Vec::new(), &sources, whole) {

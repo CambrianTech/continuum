@@ -14,12 +14,14 @@ use crate::cognition::working_memory::WorkingMemory;
 
 pub(crate) struct Actions<'a> {
     pub memory: &'a WorkingMemory,
+    /// Whose spill directory a stored whole is read from (`load`).
+    pub persona: uuid::Uuid,
 }
 
 impl Actions<'_> {
     fn standing(key: &str, text: String) -> Item<ContextMessage> {
         let message = ContextMessage::user(text);
-        Item { key: key.to_owned(), full: message.clone(), summary: None, pointer: Some(message) }
+        Item { key: key.to_owned(), full: message.clone(), summary: None, pointer: Some(message), stored: None }
     }
 }
 
@@ -64,13 +66,27 @@ impl Source<ContextMessage> for Actions<'_> {
             return vec![banner, Self::standing("none", none)];
         }
         let mut items = vec![banner];
-        items.extend(acts.into_iter().map(|(seq, full, summary, pointer)| Item {
+        items.extend(acts.into_iter().map(|(seq, full, summary, pointer, stored)| Item {
+            stored: stored.map(|(chars, handle)| continuum_context::source::StoredWhole { chars, handle }),
             key: seq.to_string(),
             full: ContextMessage::user(full),
             summary: summary.map(ContextMessage::user),
             pointer: Some(ContextMessage::user(pointer)),
         }));
         items
+    }
+
+    /// A whole her working memory evicted from RAM (storage, never visibility: FOCUS-CONTRACT
+    /// rule 7), read back from its spill file when her view grants it whole, labelled as it
+    /// read resident. `None` (the resident pointer renders) when the file is gone or unreadable.
+    fn load(&self, item: &Item<ContextMessage>) -> Option<ContextMessage> {
+        let stored = item.stored.as_ref()?;
+        let seq: u64 = item.key.parse().ok()?;
+        let label = self.memory.action_whole_label(seq)?;
+        let path = crate::cognition::tool_executor::spill::resolve(self.persona, &stored.handle).ok()?;
+        let body = std::fs::read_to_string(path).ok()?;
+        // the record keeps its result trimmed (`record_receipt_inner`); loaded back, it reads the same
+        Some(ContextMessage::user(format!("{label}{}", body.trim())))
     }
 
     /// Once she has acted, the void said earlier in this epoch is superseded, never edited:

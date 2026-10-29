@@ -462,11 +462,6 @@ impl LlmDeliberationFaculty {
     /// so an act that really needs more room earns it back within a turn.
     const COMPLETION_COLD_PRIOR_TOKENS: u32 = crate::inference::planning::MIN_SERVE_CTX;
 
-    /// The action result's share of the window before its tail is DEMOTED to ordinary
-    /// history. Same denominator as the room payload for the same reason: no single
-    /// required item may claim more than a quarter of the window, because the moment one
-    /// does, every other required item is competing for what is left and the turn refuses.
-    const RESULT_SHARE_DENOM: u32 = 4;
 
     /// The most an ACT turn may generate — a RUNAWAY bound, not a budget.
     /// Measured acts that COMMITTED a tool call ran 4,188–9,818 tokens on the

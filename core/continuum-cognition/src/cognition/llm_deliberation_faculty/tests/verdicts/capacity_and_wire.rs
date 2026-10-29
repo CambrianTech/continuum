@@ -27,7 +27,8 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             "src/lib.rs:42: concrete_review_target\n{{\"payload\":\"{}\"}}\nclaimable_now: 29\ntotal_on_board: 43",
             "x".repeat(window as usize * 2),
         );
-        wm.record_receipt(&result);
+        // saved, as the act path saves every result too large to keep in RAM (`spill`)
+        wm.record_receipt_typed(&[], &result, None, crate::ai::types::ResultCustody::Whole { handle: "wire-evidence".into() });
         let faculty =
             LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
                 .with_context_window(window)
@@ -148,49 +149,20 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             .messages
             .iter()
             .any(|message| message.content_text().contains(stimulus)));
-        // WHAT IS GUARANTEED ON THE WIRE CHANGED HERE, deliberately.
-        //
-        // This used to assert the ENTIRE action result arrived byte-for-byte,
-        // because the result was REQUIRED input and required input is never
-        // dropped. That is precisely what muted citizens: one `code/read` of a
-        // large file claimed the whole window as irreducible payload and
-        // `fit_messages` refused every turn — measured 2026-09-10, required 18,629
-        // against 15,688 available, 836 consecutive refusals, zero acts for an
-        // entire benchmark round while she held the card.
-        //
-        // Now the result is capped at its share and the earlier part is DEMOTED to
-        // ordinary history: rendered whenever the window allows, evicted by the
-        // normal front-drop when it does not, and always re-readable through its
-        // spill handle. So the honest guarantee is:
-        //
-        //   - the result's ENDING is always on the wire (it stays required), and
-        //   - nothing is DISCARDED at the split — `split_action_result` is pinned
-        //     byte-exact by `an_oversized_result_is_split_not_swallowed_whole`.
-        //
-        // A 16k-token single line on a 32k window cannot be both demoted and
-        // retained; asserting otherwise would just be asserting the mute back.
-        let wire_text: String = request
-            .messages
-            .iter()
-            .map(|message| message.content_text().to_string())
-            .collect();
+        // WHAT IS GUARANTEED ON THE WIRE (FOCUS-CONTRACT rule 4). The 2026-09-10 mute (one
+        // `code/read` required whole, 836 refusals) was first cured by a head cut at a window
+        // share (`split_action_result`); that cut is gone. Her newest result is reduced by LEVEL
+        // in the one allocation: whole when it fits, else its summary or pointer, which names
+        // the handle the whole is read through. Either way it is the last thing she reads.
         let ending = result
             .rsplit_once('\n')
             .map(|(_, last)| last)
             .filter(|last| !last.is_empty())
             .unwrap_or(result.as_str());
+        let last = request.messages.last().expect("test: a request has messages").content_text();
         assert!(
-            request
-                .messages
-                .last()
-                .unwrap()
-                .content_text()
-                .ends_with(ending),
-            "the result's ENDING is the last thing she reads — she must always see                      what her own act produced, never only a footer"
-        );
-        assert!(
-            wire_text.contains(ending),
-            "and it is genuinely on the wire, not merely implied"
+            last.ends_with(ending) || last.contains("wire-evidence"),
+            "her newest result is the last thing she reads, whole or at a level naming its handle"
         );
 
         // The held card's context reaches her in the assembled-context message after her
@@ -321,9 +293,14 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
         let mut ws = if oversized_part == 0 {
             Workspace::new(&oversized)
         } else if oversized_part == 1 {
-            wm.record_receipt(&format!(
-                "{oversized}\nclaimable_now: 29\ntotal_on_board: 43"
-            ));
+            // saved, as the act path saves every result too large to keep whole: with its handle
+            // she reads it at a level, never a refusal (FOCUS-CONTRACT rule 4)
+            wm.record_receipt_typed(
+                &[],
+                &format!("{oversized}\nclaimable_now: 29\ntotal_on_board: 43"),
+                None,
+                crate::ai::types::ResultCustody::Whole { handle: "capacity-evidence".into() },
+            );
             let mut ws = Workspace::new("");
             ws.turns.clear();
             ws.self_initiated = true;
@@ -365,9 +342,9 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
                 .with_context_window(window)
                 .with_working_memory(wm)
                 .with_working_set(registry.clone());
-        // Parts 3-4 shed their standing grounding (#3954), part 1 caps its oversized
-        // action result and demotes the rest, and part 2's room update is a turn of her
-        // view that collapses to its handle (`chat/history`) — all four now THINK
+        // Parts 3-4 shed their standing grounding (#3954), part 1's oversized saved
+        // result arrives at a level naming its handle, and part 2's room update is a turn
+        // of her view that collapses to its handle (`chat/history`) — all four now THINK
         // instead of refusing. What still faults is the genuinely irreducible payload:
         // the stimulus (part 0), the question she is answering.
         let bounded_case = oversized_part != 0;
