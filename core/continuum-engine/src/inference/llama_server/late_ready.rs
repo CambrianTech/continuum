@@ -232,7 +232,7 @@ impl LlamaServerProcess {
 
 #[cfg(test)]
 mod tests {
-    use super::super::engine_features::{evidence_takes_tail_tools, pinned_build};
+    use super::super::engine_features::{evidence_takes_tail_tools, pinned_build, ServedEngine};
     use super::*;
 
     fn contract(model: &str, ctx: &str) -> LaunchContract {
@@ -600,12 +600,13 @@ mod tests {
         release(process).await;
     }
 
-    // what this catches (Codex on 07644dc3f): a launch that fails after its candidate's evidence
-    // was published (a wait that did not end slow, so the launch is discarded) leaving that
-    // evidence advertised. Discarding the launch puts the incumbent's evidence back.
+    // what this catches (Codex on 07644dc3f and 2b37cbfab): a launch that fails after its
+    // candidate's evidence was published (a wait that did not end slow, so the launch is
+    // discarded) leaving that evidence advertised, or bringing back the evidence of the incumbent
+    // its transition already retired. Discarding the launch leaves no evidence at all.
     #[tokio::test]
-    async fn a_discarded_launch_withdraws_the_candidates_evidence() {
-        const TEST: &str = "a_discarded_launch_withdraws_the_candidates_evidence";
+    async fn a_discarded_launch_leaves_no_evidence_not_the_retired_incumbents() {
+        const TEST: &str = "a_discarded_launch_leaves_no_evidence_not_the_retired_incumbents";
         if serve_as_stand_in() {
             return;
         }
@@ -618,7 +619,10 @@ mod tests {
         let tail = process.loading.lock().take().map(|kept| kept.tail).expect("the kept launch");
         Kept::new(&process, tail).settle(&LlamaServerError::Spawn("the engine exited while loading".into()));
         assert!(process.loading.lock().is_none(), "a launch that did not end slow is discarded");
-        assert!(evidence_takes_tail_tools(cell), "the incumbent's evidence is back");
+        // The transition retired the incumbent before publication: a discarded candidate leaves no
+        // evidence, never the dead incumbent's capability (Codex on 2b37cbfab).
+        assert_eq!(*cell.lock(), ServedEngine::default(), "a discarded candidate leaves no evidence");
+        assert!(!evidence_takes_tail_tools(cell), "and no retired engine's capability");
         release(process).await;
     }
 }

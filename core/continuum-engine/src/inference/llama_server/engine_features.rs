@@ -77,41 +77,48 @@ pub(super) fn observe_served_engine(now: Option<EngineIncarnation>, props: Resul
 ///
 /// Published any earlier, a launch refused before its transition (a restoration, receipt or
 /// inputs check, a superseded admission, a refused checkpoint or retirement) advertised the
-/// unlaunched candidate's capability for the incumbent still serving (Codex on 07644dc3f). Dropped
-/// without [`LaunchedEvidence::keep`] (the launch failed, was cancelled, or its kept launch was
-/// discarded), it puts the incumbent's evidence back, unless a newer reading replaced it.
+/// unlaunched candidate's capability for the incumbent still serving (Codex on 07644dc3f).
+///
+/// Published here, the transition has already retired the incumbent, so a candidate dropped
+/// without [`LaunchedEvidence::keep`] (failed, cancelled, or its kept launch discarded) leaves NO
+/// evidence: restoring the retired incumbent's facts would advertise a dead engine's capability
+/// (Codex on 2b37cbfab). It clears only while the cell still holds what it published, so a newer
+/// reading is never overwritten. An incarnation that could not be read publishes no stamp: a
+/// capability is claimed only for a process the core can name.
 #[must_use = "dropping the publication withdraws it"]
 pub(super) struct LaunchedEvidence {
     cell: &'static ServedEvidence,
     published: ServedEngine,
-    /// What the cell held before; `None` once the candidate's evidence is kept.
-    incumbent: Option<ServedEngine>,
+    kept: bool,
 }
 
 impl LaunchedEvidence {
     /// Publish `program`'s slot stamp as the evidence for the spawned `incarnation`.
     pub(super) fn publish(cell: &'static ServedEvidence, program: &str, incarnation: Option<EngineIncarnation>) -> Self {
-        let build = crate::inference::engine_slots::stamp_of_bin(std::path::Path::new(program))
-            .and_then(|stamp| stamp.split(':').next().map(str::to_owned));
+        let build = incarnation.as_ref().and_then(|_| {
+            crate::inference::engine_slots::stamp_of_bin(std::path::Path::new(program))
+                .and_then(|stamp| stamp.split(':').next().map(str::to_owned))
+        });
         let published = ServedEngine { incarnation, build };
-        let incumbent = std::mem::replace(&mut *cell.lock(), published.clone());
-        Self { cell, published, incumbent: Some(incumbent) }
+        *cell.lock() = published.clone();
+        Self { cell, published, kept: false }
     }
 
     /// The candidate is published as the serving engine: its evidence stands until the engine's
     /// own `/props` replaces it.
     pub(super) fn keep(mut self) {
-        self.incumbent = None;
+        self.kept = true;
     }
 }
 
 impl Drop for LaunchedEvidence {
     fn drop(&mut self) {
-        if let Some(incumbent) = self.incumbent.take() {
-            let mut cell = self.cell.lock();
-            if *cell == self.published {
-                *cell = incumbent;
-            }
+        if self.kept {
+            return;
+        }
+        let mut cell = self.cell.lock();
+        if *cell == self.published {
+            *cell = ServedEngine::default();
         }
     }
 }
