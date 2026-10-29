@@ -112,7 +112,7 @@ mod replay {
         507242,
     ];
     /// `delib.gate.wait_estimate_exceeded persona=Aris waited_secs=260 bound_secs=260`.
-    const ARIS_BOUND: Duration = Duration::from_secs(260);
+    const ARIS_BOUND: Duration = Duration::from_secs(260); // derived-or-floor: the bound the live gate reported for Aris in the M5 log line above; this validator replays that measurement
     const HOURS: usize = 6;
     const HORIZON: Duration = Duration::from_secs(HOURS as u64 * 3600);
     const WORK_MINDS: usize = 3;
