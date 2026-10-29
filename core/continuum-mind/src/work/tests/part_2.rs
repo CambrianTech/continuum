@@ -524,7 +524,6 @@ async fn a_pass_closes_superseded_rounds_and_leaves_newer_ones_open() {
         .create_work_card_in(&room, CreateWorkCard::new(repo.clone(), "a fix", Priority::P1))
         .await
         .expect("parent card created");
-    raw_advance(&airc, parent, CardState::Review, "test").await;
 
     let claim = airc
         .claim_work_card(ClaimWorkCard { card_id: parent, ttl_ms: 600_000 })
@@ -639,7 +638,6 @@ async fn a_pass_leaves_rounds_reviewing_newer_work_open() {
         .create_work_card_in(&room, CreateWorkCard::new(repo.clone(), "a fix", Priority::P1))
         .await
         .expect("parent card created");
-    raw_advance(&airc, parent, CardState::Review, "test").await;
 
     let claim = airc
         .claim_work_card(ClaimWorkCard { card_id: parent, ttl_ms: 600_000 })
