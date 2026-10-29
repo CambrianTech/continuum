@@ -54,6 +54,25 @@ fn fold_of<T: Block>(
         .filter(|block| block.chars() < pointer_chars)
 }
 
+/// How many of `items`' leading items stand as themselves: an item with no summary, nothing
+/// stored and a pointer as long as its whole has nothing to give up, so folding it saves nothing
+/// and only moves the front of her view (her `[actions]` banner folded into the block broke the
+/// prefix a turnover keeps, `consecutive_acts_share_the_whole_view_and_a_turnover_keeps_the_settled_front`).
+/// They render as themselves at the floor; the fold run is the oldest items after them.
+fn standing_head<T: Block>(items: &[Item<T>]) -> usize {
+    items
+        .iter()
+        .take_while(|item| {
+            item.summary.is_none()
+                && item.stored.is_none()
+                && item
+                    .pointer
+                    .as_ref()
+                    .is_some_and(|pointer| pointer.chars() == item.full.chars())
+        })
+        .count()
+}
+
 /// What `items` of `source` cost at their floor, in the unit `cost` prices a block in: the one
 /// owner of a source's floor, for the view's own claim and any caller pricing it in tokens.
 /// Whether the floor is the fold block or the pointers is [`fold_of`]'s decision, the view's.
@@ -62,17 +81,19 @@ pub fn floor<T: Block>(
     items: &[Item<T>],
     cost: impl Fn(&T) -> usize,
 ) -> usize {
-    let pointer_chars = items
-        .iter()
-        .map(|item| item.pointer.as_ref().map_or(0, Block::chars))
-        .sum(); // map_or: an item that leaves when collapsed costs nothing
-    match fold_of(source, items, pointer_chars) {
-        Some(block) => cost(&block),
-        None => items
-            .iter()
-            .map(|item| item.pointer.as_ref().map_or(0, &cost))
-            .sum(), // map_or: as above
-    }
+    let head = standing_head(items);
+    let pointers = |run: &[Item<T>], cost: &dyn Fn(&T) -> usize| -> usize {
+        run.iter()
+            .map(|item| item.pointer.as_ref().map_or(0, cost))
+            .sum() // map_or: an item that leaves when collapsed costs nothing
+    };
+    let (standing, rest) = items.split_at(head);
+    let rest_chars = pointers(rest, &|block: &T| block.chars());
+    pointers(standing, &cost)
+        + match fold_of(source, rest, rest_chars) {
+            Some(block) => cost(&block),
+            None => pointers(rest, &cost),
+        }
 }
 
 /// The level a `grant` of characters gives each item. Every item starts at the floor (folded
@@ -107,9 +128,19 @@ pub(super) fn allot<T: Block>(
         let below = pointers[pointers.len() - 1];
         pointers.push(below + item.pointer.as_ref().map_or(0, Block::chars)); // map_or: an item that leaves when collapsed costs nothing
     }
-    let floor = |count: usize| match fold_of(source, &items[..count], pointers[count]) {
-        Some(block) => (block.chars(), Some(block)),
-        None => (pointers[count], None),
+    let head = standing_head(items);
+    let floor = |count: usize| {
+        if count <= head {
+            return (pointers[count], None);
+        }
+        match fold_of(
+            source,
+            &items[head..count],
+            pointers[count] - pointers[head],
+        ) {
+            Some(block) => (pointers[head] + block.chars(), Some(block)),
+            None => (pointers[count], None),
+        }
     };
     let mut levels = vec![Level::Pointer; items.len()];
     let (mut paid, _) = floor(items.len());
@@ -155,7 +186,7 @@ pub(super) fn allot<T: Block>(
     }
     let (_, fold) = floor(run);
     if fold.is_some() {
-        levels[..run].fill(Level::Folded);
+        levels[head..run].fill(Level::Folded);
     }
     Allotment { levels, fold }
 }

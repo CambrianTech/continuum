@@ -93,11 +93,11 @@ impl Source<ContextMessage> for Actions<'_> {
     /// only the run's ends: the banner, when it is in the run, is its first item and folds
     /// with it. `None` for a run with no act in it (the banner alone): nothing to name.
     fn fold(&self, folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
-        let banner = usize::from(folded.first().is_some_and(|item| item.key.parse::<u64>().is_err()));
-        let acts = &folded[banner..];
-        let first: u64 = acts.first()?.key.parse().ok()?;
-        let last: u64 = acts.last()?.key.parse().ok()?;
-        let count = acts.len();
+        // The banner stands as itself ahead of the run (the view never folds a standing head),
+        // so the run is her acts alone, keyed by their #n.
+        let first: u64 = folded.first()?.key.parse().ok()?;
+        let last: u64 = folded.last()?.key.parse().ok()?;
+        let count = folded.len();
         Some(ContextMessage::user(format!(
             "[actions #{first}-#{last}: {count} earlier acts folded; reopen one with tool/output act=<n>]"
         )))
