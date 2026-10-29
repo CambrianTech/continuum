@@ -15,11 +15,11 @@ use uuid::Uuid;
 /// projected for the room, keyed by member id. The sibling of the airc
 /// attach-cursor file — node-local durable state under `~/.continuum/state/`.
 fn directory_path(room_id: &Uuid) -> Option<PathBuf> {
-    dirs::home_dir().map(|h| {
-        h.join(".continuum")
-            .join("state")
-            .join(format!("room-directory-{room_id}.json"))
-    })
+    // The one continuum home (it honours $CONTINUUM_HOME and a test's own home), never a
+    // hand-built ~/.continuum: none means no directory to read or write, said by the caller.
+    continuum_kernel::paths::continuum_home()
+        .ok()
+        .map(|home| home.join("state").join(format!("room-directory-{room_id}.json")))
 }
 
 /// Every slot in EVERY room directory on this node — the scope-wide "who
@@ -29,7 +29,7 @@ fn directory_path(room_id: &Uuid) -> Option<PathBuf> {
 /// bursts, and the recent-events page provably doesn't (2026-08-31: a
 /// 4000-event page during a solve burst hid every quiet peer).
 pub fn scope_directory_slots() -> Vec<RosterSlotView> {
-    let Some(state) = dirs::home_dir().map(|h| h.join(".continuum").join("state")) else {
+    let Some(state) = continuum_kernel::paths::continuum_home().ok().map(|home| home.join("state")) else {
         return Vec::new();
     };
     let Ok(entries) = std::fs::read_dir(&state) else {

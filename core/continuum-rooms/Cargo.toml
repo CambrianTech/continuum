@@ -3,6 +3,8 @@ name = "continuum-rooms"
 version = "0.1.0"
 edition = "2021"
 publish = false
+# Handoff stamps the build it ran on (CONTINUUM_BUILD_GIT_SHA): core's build script is the one owner.
+build = "../continuum-core/build.rs"
 description = "A mind's rooms and cards: card holders, the handoff record, the room directory and roster, the mind room, presence glyphs, the bounded room ledger. A leaf of the cognition crate tree (docs/architecture/COGNITION-CRATE-TREE.md)."
 
 [dependencies]

@@ -6,6 +6,7 @@ publish = false
 description = "Prompt assembly and its budgets: prompt assembly, context and token budgets, prefix reuse, audience, framing-echo and not-speech checks, response validation. A leaf of the cognition crate tree (docs/architecture/COGNITION-CRATE-TREE.md)."
 
 [dependencies]
+tracing.workspace = true  # continuum_base::probe! expands to tracing::event
 continuum-base = { path = "../continuum-base" }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }
