@@ -86,7 +86,11 @@ async fn serve<W: Wire>(State(abandoned): State<Signal>, headers: axum::http::He
         crate::session::settle(&mut lease, &outcome);
         outcome
     };
-    let answer = crate::answer::Answer::new(W::streamer(&model, &id), generation, received, abandoned.raised());
+    streamed(crate::answer::Answer::new(W::streamer(&model, &id), generation, received, abandoned.raised()))
+}
+
+/// A streamed answer as the SSE response its body is.
+pub(crate) fn streamed<W: Wire>(answer: crate::answer::Answer<W>) -> Response {
     let events = tokio_stream::StreamExt::map(answer, |frame| Ok::<_, std::convert::Infallible>(frame.into_event()));
     Sse::new(events).keep_alive(KeepAlive::default()).into_response()
 }

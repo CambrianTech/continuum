@@ -27,6 +27,9 @@
 //!   that sent around it would break it. Pinned against the real producer by
 //!   `continuum-engine` `ai/openai_adapter/tests/a_ready_burst_*` and here by
 //!   `a_stalled_agent_stops_a_ready_burst_at_one_chunk_ahead`.
+//! - **The node stops:** `abandoned` ends an answer that is being read, with the reason. An
+//!   agent that stopped reading never polls this body again, so the stop also cuts its
+//!   connection (`crate::sever`): hyper drops the body and the generation with it.
 
 use std::collections::VecDeque;
 use std::future::Future;
