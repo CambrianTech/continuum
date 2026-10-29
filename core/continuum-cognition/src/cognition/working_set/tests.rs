@@ -488,4 +488,8 @@
         let legacy = PersonaDemand { sent_peak: 339_156, recent: [35_000; RECENT_TURNS], ..PersonaDemand::default() };
         assert_eq!(growth_sample(&legacy), Some(35_000), "a record from before the ring stands on her typical turn");
         assert_eq!(growth_sample(&PersonaDemand { sent_peak: 9_000, ..PersonaDemand::default() }), Some(9_000));
+        // A mind that never sent a growth sample sets no floor, however large her typical turn:
+        // the re-home tests' plans moved when such a record contributed one (#5579 CI).
+        let never_sent = PersonaDemand { recent: [35_000; RECENT_TURNS], ..PersonaDemand::default() };
+        assert_eq!(growth_sample(&never_sent), None);
     }

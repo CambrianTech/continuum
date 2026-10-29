@@ -188,17 +188,12 @@ fn push_sent(d: &mut PersonaDemand, sent_tokens: u32) {
 }
 
 /// Her growth sample for the lane floor: the largest of her RECENT growth samples, never a
-/// lifetime peak. A record without that ring (written before it existed) stands on her typical
-/// demand, the same rule [`requirement_tokens`] states, and only a record with neither on its
-/// legacy peak.
+/// lifetime peak. A mind that never sent a growth sample has none, so she sets no floor. A
+/// record written before the ring existed holds only its lifetime peak: it stands on her
+/// typical demand, the same rule [`requirement_tokens`] states, else on that peak.
 pub fn growth_sample(d: &PersonaDemand) -> Option<u32> {
-    d.sent_recent
-        .iter()
-        .copied()
-        .max()
-        .filter(|&t| t > 0)
-        .or_else(|| typical_tokens(d))
-        .or_else(|| (d.sent_peak > 0).then_some(d.sent_peak))
+    let recent = d.sent_recent.iter().copied().max().filter(|&t| t > 0);
+    recent.or_else(|| (d.sent_peak > 0).then(|| typical_tokens(d).unwrap_or(d.sent_peak)))
 }
 
 fn median_of(ring: &[u32; RECENT_TURNS]) -> Option<u32> {
