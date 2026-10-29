@@ -364,3 +364,35 @@ fn an_unsaved_result_keeps_its_bytes_through_settlement_and_restore() {
     restored.restore(wm.snapshot());
     assert!(whole(&restored), "and through restore");
 }
+
+// what this catches (Fable on #5573; Aiko on the M5, 2026-10-29): results an earlier life evicted
+// by the old window share carry a handle but no stored size, so after a deploy her view priced
+// their whole at nothing and showed them as pointers forever. A restore prices each from its
+// saved output; one whose output can't be read stays a pointer, never a guessed size.
+#[test]
+fn a_restore_prices_a_legacy_evicted_result_from_its_saved_output() {
+    let wm = WorkingMemory::new(8);
+    let persona = Uuid::new_v4();
+    let pin = crate::cognition::tool_executor::spill::LivePin::new();
+    let body = "a line of the saved output\n".repeat(50);
+    wm.record_receipt_typed(&[], &body, None, pin.retain(persona, &body));
+    wm.record_receipt_typed(&[], "a result whose output is gone", None, pin.retain(persona, "a result whose output is gone"));
+    wm.record_receipt_typed(&[], "the newest stays resident", None, pin.retain(persona, "the newest stays resident"));
+    wm.evict_resident_results_over(1);
+    let mut snapshot = wm.snapshot();
+    snapshot.actions = snapshot.action_records();
+    // the shape the old share left: body gone, handle kept, no stored size
+    let legacy: Vec<_> = snapshot.actions.iter_mut().filter(|r| r.result.is_none()).map(|r| {
+        r.stored_chars = None;
+        r.handle.clone().expect("test: saved")
+    }).collect();
+    assert_eq!(legacy.len(), 2, "two evicted, the newest resident");
+    let measured = body.trim().chars().count();
+    snapshot.price_evicted_wholes(|handle| (handle == legacy[0]).then_some(measured));
+    let restored = WorkingMemory::new(8);
+    restored.restore(snapshot);
+    let (acts, _) = restored.action_renderings();
+    let label = restored.action_whole_label(acts[0].0).expect("test: a label").chars().count();
+    assert_eq!(acts[0].4.as_ref().map(|(chars, _)| *chars), Some(label + measured), "priced from its saved output, label included");
+    assert_eq!(acts[1].4, None, "an output that can't be read stays a pointer");
+}

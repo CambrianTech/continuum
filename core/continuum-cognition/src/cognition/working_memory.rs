@@ -522,6 +522,22 @@ impl VolatileSnapshot {
         pin
     }
 
+    /// Price the whole of every result an earlier life evicted before `stored_chars` was kept:
+    /// its body left RAM for its handle by the old window share (Aiko on the M5, 2026-10-29),
+    /// so its whole had no price and showed at pointer level. `whole_of` measures the saved
+    /// output a handle names (`None`: not saved or unreadable, which stays a pointer, honestly).
+    /// Once per restore, before the mind acts, so no read happens under an inference grant.
+    pub fn price_evicted_wholes(&mut self, whole_of: impl Fn(&str) -> Option<usize>) {
+        if self.actions.is_empty() {
+            self.actions = self.action_records();
+        }
+        for record in self.actions.iter_mut().filter(|r| r.result.is_none() && r.stored_chars.is_none()) {
+            if let Some(handle) = record.handle.as_deref() {
+                record.stored_chars = whole_of(handle);
+            }
+        }
+    }
+
     /// Her actions as records: the records it carries, or, for a checkpoint written before
     /// them, the ring, archive and pointer index read back into records. Those older lines
     /// are keyed by the `#n` this owner wrote at their head (one with none is dropped and

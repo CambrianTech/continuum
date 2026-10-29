@@ -330,6 +330,13 @@ pub(super) fn assemble_workspace_cycle(
         // only a real failure (BigMama's live receipt on the 5090, card df0035bf). The pin
         // holds them live until `restore` below publishes the memory's own set.
         let restore_pin = persisted.wm.retain_handleless(cfg.persona_id);
+        // Results the old window share evicted carry no stored size: price each from its saved
+        // output, so her view can show it whole again (FOCUS-CONTRACT rule 7).
+        let persona = cfg.persona_id;
+        persisted.wm.price_evicted_wholes(|handle| {
+            let path = crate::cognition::tool_executor::spill::resolve(persona, handle).ok()?;
+            std::fs::read_to_string(path).ok().map(|body| body.trim().chars().count())
+        });
         // The previous life's handoff re-seeds this one: her ledger and card are known at
         // the NEXT seam too, without a wall read (card 49b5e806).
         if let Some(handoff) = persisted.wm.handoff.as_ref() {
