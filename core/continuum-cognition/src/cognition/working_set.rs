@@ -149,6 +149,17 @@ pub struct PersonaDemand {
     /// Next slot to overwrite in `need_recent`.
     #[serde(default)]
     pub need_next: u8,
+    /// The last [`RECENT_TURNS`] growth samples (what `sent_peak` takes the max of, over a
+    /// lifetime): the lane floor reads their max, so one historic giant turn stops sizing
+    /// every plan forever. On the M5, 2026-10-28, all-time `sent_peak`s of 188-370k
+    /// (recent turns 20-43k) set a 423,945-token requirement no plan could meet, every
+    /// runnable plan was refused as below the floor, and four residents shared one
+    /// 27,904-token slot. Legacy files read empty.
+    #[serde(default)]
+    pub sent_recent: [u32; RECENT_TURNS],
+    /// Next slot to overwrite in `sent_recent`.
+    #[serde(default)]
+    pub sent_next: u8,
 }
 
 /// How many recent turns define "typical". Sixteen: a working session, not a
@@ -167,6 +178,27 @@ fn push_need(d: &mut PersonaDemand, need_tokens: u32) {
     let i = (d.need_next as usize) % RECENT_TURNS;
     d.need_recent[i] = need_tokens;
     d.need_next = ((i + 1) % RECENT_TURNS) as u8;
+}
+
+/// Push one growth sample into her sent ring (newest overwrites oldest).
+fn push_sent(d: &mut PersonaDemand, sent_tokens: u32) {
+    let i = (d.sent_next as usize) % RECENT_TURNS;
+    d.sent_recent[i] = sent_tokens;
+    d.sent_next = ((i + 1) % RECENT_TURNS) as u8;
+}
+
+/// Her growth sample for the lane floor: the largest of her RECENT growth samples, never a
+/// lifetime peak. A record without that ring (written before it existed) stands on her typical
+/// demand, the same rule [`requirement_tokens`] states, and only a record with neither on its
+/// legacy peak.
+pub fn growth_sample(d: &PersonaDemand) -> Option<u32> {
+    d.sent_recent
+        .iter()
+        .copied()
+        .max()
+        .filter(|&t| t > 0)
+        .or_else(|| typical_tokens(d))
+        .or_else(|| (d.sent_peak > 0).then_some(d.sent_peak))
 }
 
 fn median_of(ring: &[u32; RECENT_TURNS]) -> Option<u32> {
@@ -490,8 +522,15 @@ impl WorkingSetRegistry {
         *self
             .observed
             .entry(persona)
-            .and_modify(|d| d.sent_peak = d.sent_peak.max(sent_tokens))
-            .or_insert(PersonaDemand { last_seen_ms: now_ms, sent_peak: sent_tokens, ..PersonaDemand::default() })
+            .and_modify(|d| {
+                d.sent_peak = d.sent_peak.max(sent_tokens);
+                push_sent(d, sent_tokens);
+            })
+            .or_insert_with(|| {
+                let mut d = PersonaDemand { last_seen_ms: now_ms, sent_peak: sent_tokens, ..PersonaDemand::default() };
+                push_sent(&mut d, sent_tokens);
+                d
+            })
     }
 
     /// Record the post-fit size of a turn the fit HELD — her need (see
@@ -526,8 +565,8 @@ impl WorkingSetRegistry {
             .filter(|&t| t > 0)
     }
 
-    /// Typical growth sample among `personas` — the median of their retained
-    /// starvation-aware peaks. The planner's per-lane floor follows this, not the ceiling: one mind
+    /// Typical growth sample among `personas` — the median of their RECENT starvation-aware
+    /// peaks ([`growth_sample`], never a lifetime max). The planner's per-lane floor follows this, not the ceiling: one mind
     /// with a 96k prompt must not size every lane to 120k and starve the roster
     /// (2026-09-14: 16 residents on 3 lanes). The outlier is reconciled down to the
     /// served window instead.
@@ -543,7 +582,7 @@ impl WorkingSetRegistry {
     pub fn sent_median_with(&self, personas: &[Uuid], extra: &[u32]) -> Option<u32> {
         let mut peaks: Vec<u32> = personas
             .iter()
-            .filter_map(|p| self.observed.get(p).map(|e| e.value().sent_peak))
+            .filter_map(|p| self.observed.get(p).and_then(|e| growth_sample(e.value())))
             .chain(extra.iter().copied())
             .filter(|&t| t > 0)
             .collect();
@@ -553,13 +592,12 @@ impl WorkingSetRegistry {
         peaks.sort_unstable();
         Some(peaks[peaks.len() / 2])
     }
-    /// Largest retained growth sample among `personas`, including unmet demand.
+    /// Largest recent growth sample among `personas`, including unmet demand ([`growth_sample`]).
     pub fn sent_ceiling_of(&self, personas: &[Uuid]) -> Option<u32> {
         personas
             .iter()
-            .filter_map(|p| self.observed.get(p).map(|e| e.value().sent_peak))
+            .filter_map(|p| self.observed.get(p).and_then(|e| growth_sample(e.value())))
             .max()
-            .filter(|&t| t > 0)
     }
 
     /// Record one completed generation's measured output for `persona`.
