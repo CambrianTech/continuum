@@ -425,7 +425,7 @@ async fn a_cancelled_eval_keeps_its_world_until_its_forks_are_confirmed_ended() 
     // 10 s is this test's bound on a SIGKILLed `sleep` being reaped, not a product timeout.
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while world_dir.exists() || !state.file_engines.is_empty() || acting_root_in(persona, context).is_some() {
-            tokio::time::sleep(crate::inference::lane_process::KILL_POLL).await;
+            tokio::time::sleep(continuum_process::KILL_POLL).await;
         }
     })
     .await

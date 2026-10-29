@@ -37,7 +37,7 @@ impl LlamaServerProcess {
         // said so on its own stderr while coming up — refuse the lane, loudly.
         if debug_flag.is_set() {
             if let Some(pid) = child_pid {
-                crate::inference::lane_process::kill9(pid);
+                continuum_process::kill9(pid);
             }
             continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.debug_build_refused",
                 bin = %prepared.engine_program,
@@ -116,7 +116,7 @@ impl LlamaServerProcess {
             let zero_offload = matches!(self.offload.get(), Some((0, total)) if total > 0);
             if channel_says_cpu || declined || zero_offload {
                 if let Some(pid) = child_pid {
-                    crate::inference::lane_process::kill9(pid);
+                    continuum_process::kill9(pid);
                 }
                 let residency_line = residency
                     .as_ref()

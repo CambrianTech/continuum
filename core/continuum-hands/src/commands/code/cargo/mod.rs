@@ -83,7 +83,7 @@ pub(crate) struct CargoRun {
 
 /// Run `cargo <args>` in `root` under a wall-clock timeout, capturing output.
 ///
-/// The build is OWNED (`lane_process::run_owned`): at the timeout, or when this command is
+/// The build is OWNED (`continuum_process::run_owned`): at the timeout, or when this command is
 /// dropped, cargo and the rustc/build scripts it started are ended, never orphaned to init
 /// burning a core, and it holds the hands' admission until they have. A timeout is reported
 /// as `timed_out: true` with what cargo wrote first, NOT an error: a hung build IS information

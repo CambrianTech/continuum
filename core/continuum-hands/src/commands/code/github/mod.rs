@@ -79,12 +79,12 @@ impl From<GhRunError> for CommandError {
     }
 }
 
-/// Run one `gh` invocation in `root` as an owned process ([`lane_process::run_owned`]), with an
+/// Run one `gh` invocation in `root` as an owned process ([`continuum_process::run_owned`]), with an
 /// optional bound: the ONE execution both [`run_gh`] and [`run_gh_within`] use. A `gh` that
 /// outlives `bound` is ended with everything it started (`gh repo clone` runs `git` as a
 /// descendant), and the timeout names what isn't confirmed gone.
 ///
-/// [`lane_process::run_owned`]: continuum_process::run_owned
+/// [`continuum_process::run_owned`]: continuum_process::run_owned
 async fn run_gh_owned(root: &Path, args: &[String], bound: Option<std::time::Duration>) -> Result<String, GhRunError> {
     use continuum_process::{run_owned, Ended};
     let joined = args.join(" ");

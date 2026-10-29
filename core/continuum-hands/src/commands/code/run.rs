@@ -274,7 +274,7 @@ fn read_whole(out: &continuum_process::OwnedOutput) -> bool {
 }
 
 /// Compile the given complete Rust program with `rustc`, then run the produced
-/// binary — each step under `timeout`, owned (`lane_process::run_owned`). Returns the ground
+/// binary — each step under `timeout`, owned (`continuum_process::run_owned`). Returns the ground
 /// truth of what happened: a COMPILE error is reported as the run result (ok=false,
 /// rustc's stderr), not hidden — the persona reads the compiler's errors and
 /// self-corrects exactly as she would a runtime panic. `Err` is reserved for a
@@ -366,7 +366,7 @@ async fn compile_and_run_rust(
 
     let started = std::time::Instant::now();
 
-    // 1. Compile, owned (lane_process::run_owned) so a runaway rustc is ended; a non-success
+    // 1. Compile, owned (continuum_process::run_owned) so a runaway rustc is ended; a non-success
     //    exit is a RESULT (the persona must SEE the compiler errors), only a spawn failure is
     //    an error.
     let mut rustc = hands.command(
@@ -387,7 +387,7 @@ async fn compile_and_run_rust(
         _ => return Ok(result_of(&compiled, "rustc", started.elapsed().as_millis() as u64, timeout.as_secs(), " (rustc)")),
     }
 
-    // 2. Run the compiled binary, owned (lane_process::run_owned): at the safety timeout,
+    // 2. Run the compiled binary, owned (continuum_process::run_owned): at the safety timeout,
     //    or when this command is dropped, it and everything it started are ended, never
     //    orphaned to init burning a core (observed: 6h+ runaway at 100% CPU).
     let mut child = hands.command(&bin, &[], None);

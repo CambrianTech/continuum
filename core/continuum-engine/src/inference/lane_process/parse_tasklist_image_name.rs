@@ -1,4 +1,4 @@
-use super::*;
+use continuum_process::{command_name, kill9};
 
 /// Positively identify `pid` as one of OUR llama-server children — the guard every
 /// reap decision runs before signalling. `false` for a dead pid, a reused pid now

@@ -17,15 +17,15 @@ pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: to
         return;
     }
     command.arg("--help");
-    // owned (lane_process::run_owned): a help probe that hangs is ended with anything it started
-    let probe = crate::inference::lane_process::run_owned(command, Some(Duration::from_secs(10)), "engine-help-probe", std::sync::Arc::default()).await;
+    // owned (continuum_process::run_owned): a help probe that hangs is ended with anything it started
+    let probe = continuum_process::run_owned(command, Some(Duration::from_secs(10)), "engine-help-probe", std::sync::Arc::default()).await;
     let (outcome, support, error) = match probe {
         Err(e) => ("probe_failed", None, e.to_string()),
         Ok(out) => match (&out.ended, out.capture_note()) {
-            (crate::inference::lane_process::Ended::TimedOut { .. }, _) => ("probe_timeout", None, "no answer in 10 s".to_string()),
+            (continuum_process::Ended::TimedOut { .. }, _) => ("probe_timeout", None, "no answer in 10 s".to_string()),
             // help text that wasn't read whole can't say which values it lists
             (_, Some(note)) => ("probe_failed", None, note),
-            (crate::inference::lane_process::Ended::Exited(_), None) => {
+            (continuum_process::Ended::Exited(_), None) => {
                 let mut text = String::from_utf8_lossy(&out.stdout.bytes).into_owned();
                 text.push('\n');
                 text.push_str(&String::from_utf8_lossy(&out.stderr.bytes));

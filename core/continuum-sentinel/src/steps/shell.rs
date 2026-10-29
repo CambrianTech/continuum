@@ -68,7 +68,7 @@ pub async fn execute(
         }
     }
 
-    // owned (lane_process::run_owned): at the bound, or when the pipeline is dropped, the step's
+    // owned (continuum_process::run_owned): at the bound, or when the pipeline is dropped, the step's
     // command and everything it started are ended; kill_on_drop ended only the direct child
     let output = continuum_process::run_owned(command, Some(Duration::from_secs(timeout_secs)), "sentinel-shell", std::sync::Arc::default()).await;
 
