@@ -76,8 +76,8 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
 /// honestly reaps+rebuilds when it doesn't. Reaping a 20GB-resident lane just
 /// to reload it 60s later made every reboot ~5min; with adoption it is the
 /// core swap alone (Joel 2026-08-23: "if it's taking so long we need to fix
-/// that first"). The standalone `stop` verb keeps FULL teardown — an operator
-/// who says stop means everything.
+/// that first"). Only `stop --engine` passes false: the full teardown, for when the engine's
+/// memory is wanted back (Joel 2026-10-29: "The engine is supposed to stay up").
 pub(super) async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
     // Unattended callers — the deploy consumer above all — NEVER escalate:
     // a consent prompt needs a human at the machine, and one raised from the supervisor
