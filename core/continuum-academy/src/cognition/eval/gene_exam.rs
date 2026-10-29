@@ -42,12 +42,13 @@ impl ExamHost for MindExamHost {
         let request = crate::genome::fine_tuning::job_dir::read_job_request(dir)
             .map_err(|e| ExamRefusal::Unexaminable(format!("its training request did not read: {e}")))?;
         let trained = crate::cognition::held_out::trained(&request.dataset.examples);
-        let family = correction_family(&trained).map_err(ExamRefusal::Unexaminable)?;
+        let correction = correction_summary(dir, &request.dataset.examples);
+        let declared = crate::cognition::correction_families::declared(&correction.cards).map_err(ExamRefusal::Unexaminable)?;
+        let family = correction_family(&trained, &declared).map_err(ExamRefusal::Unexaminable)?;
         let sets = family.iter().map(|set| load_set(set).map(|tasks| (set.clone(), tasks))).collect::<Result<Vec<_>, _>>()?;
         let (unseen, excluded) = unseen_tasks(&sets, &trained).map_err(ExamRefusal::Unexaminable)?;
         let retention_set = load_set(UNRELATED_SET)?;
         let (unrelated, unrelated_excluded) = retention(&retention_set, &trained).map_err(ExamRefusal::Unexaminable)?;
-        let correction = correction_summary(dir, &request.dataset.examples);
 
         // Her live lane, serving the gene's base.
         let serving = crate::inference::llama_server::await_ready_serving(crate::inference::llama_server::DEFAULT_SERVING_WAIT)
@@ -141,17 +142,22 @@ fn load_set(set: &str) -> Result<Vec<EvalTask>, ExamRefusal> {
     Ok(tasks)
 }
 
-/// PURE: the correction's task family, the sets of the graded tasks its examples recorded.
-/// `Err` when any example's task is unrecorded (its family can't be read whole), when it worked
-/// no graded task (nothing to draw related tasks from: a review names no set), or when it trained
-/// on the retention set itself (no retention arm would be left).
-fn correction_family(trained: &crate::cognition::held_out::Trained) -> Result<std::collections::BTreeSet<String>, String> {
+/// PURE: the correction's task family: the sets of the graded tasks its examples recorded, and
+/// the family declared for its cards (`correction_families`: a correction of ordinary work, whose
+/// examples name no graded task). `Err` when any example's task is unrecorded (its family can't
+/// be read whole), when it has neither (nothing to draw related tasks from: a review names no
+/// set), or when it touches the retention set (no retention arm would be left).
+fn correction_family(
+    trained: &crate::cognition::held_out::Trained,
+    declared: &std::collections::BTreeSet<String>,
+) -> Result<std::collections::BTreeSet<String>, String> {
     if trained.unknown() > 0 {
         return Err(format!("{} trained example(s) recorded no task: its task family can't be read", trained.unknown()));
     }
-    let family: std::collections::BTreeSet<String> = trained.tasks().iter().map(|t| t.set.clone()).collect();
+    let family: std::collections::BTreeSet<String> =
+        trained.tasks().iter().map(|t| t.set.clone()).chain(declared.iter().cloned()).collect();
     if family.is_empty() {
-        return Err("the correction worked no graded task: it has no task family to draw related tasks from".into());
+        return Err("the correction worked no graded task and no family is declared for its cards (docs/genome/correction-families.json): it has no task family to draw related tasks from".into());
     }
     if family.contains(UNRELATED_SET) {
         return Err(format!("the correction trained on the retention set {UNRELATED_SET}: no retention arm is left"));
@@ -265,20 +271,30 @@ mod tests {
     #[test]
     fn the_related_arm_is_the_corrections_own_task_family() {
         use crate::cognition::held_out::trained;
+        let none = std::collections::BTreeSet::new();
         let hard = trained(&[worked("hard-rs", "hard-rs/lru"), worked("hard-rs", "hard-rs/trie")]);
-        let family = correction_family(&hard).expect("a graded family");
+        let family = correction_family(&hard, &none).expect("a graded family");
         assert_eq!(family.into_iter().collect::<Vec<_>>(), ["hard-rs"], "its own set, never lc-related");
         let sets = [("hard-rs".to_string(), vec![task("hard-rs/lru"), task("hard-rs/trie"), task("hard-rs/heap")])];
         let (unseen, excluded) = unseen_tasks(&sets, &hard).expect("clean");
         assert_eq!((unseen.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), excluded), (vec!["hard-rs/heap"], 2));
 
         let two = trained(&[worked("hard-rs", "hard-rs/lru"), worked("coursework-0123456789ab", "coursework-0123456789ab/a")]);
-        assert_eq!(correction_family(&two).expect("graded").into_iter().collect::<Vec<_>>(), ["coursework-0123456789ab", "hard-rs"], "every set it worked");
+        assert_eq!(correction_family(&two, &none).expect("graded").into_iter().collect::<Vec<_>>(), ["coursework-0123456789ab", "hard-rs"], "every set it worked");
 
         let ordinary = trained(&[example(json!({"cardId": "c9", "task": "notATask"}))]);
-        assert!(correction_family(&ordinary).is_err_and(|why| why.contains("no graded task")), "ordinary work has no family to draw from");
-        assert!(correction_family(&trained(&[example(json!({}))])).is_err_and(|why| why.contains("recorded no task")));
-        assert!(correction_family(&trained(&[worked(UNRELATED_SET, "lc-unrelated/x")])).is_err_and(|why| why.contains("retention")));
+        assert!(correction_family(&ordinary, &none).is_err_and(|why| why.contains("no graded task")), "ordinary work has no family to draw from");
+        // what this catches (D5 part B): Kimi's canonical correction is ordinary reviewed work
+        // (every example notATask); its family is the one declared for its card, never relabeled
+        let declared: std::collections::BTreeSet<String> = ["lc-parent-scope".to_string()].into();
+        let reviewed_work = trained(&[example(json!({"cardId": "2de02f40-3058-4b6a-9760-32bcac75219f", "task": "notATask"}))]);
+        assert_eq!(correction_family(&reviewed_work, &declared).expect("declared").into_iter().collect::<Vec<_>>(), ["lc-parent-scope"]);
+        let family = [("lc-parent-scope".to_string(), vec![task("lc-parent-scope/a"), task("lc-parent-scope/b")])];
+        assert_eq!(unseen_tasks(&family, &reviewed_work).expect("clean").1, 0, "it never worked a task of its family: every one is unseen");
+        let retention_declared: std::collections::BTreeSet<String> = [UNRELATED_SET.to_string()].into();
+        assert!(correction_family(&reviewed_work, &retention_declared).is_err_and(|why| why.contains("retention")));
+        assert!(correction_family(&trained(&[example(json!({}))]), &none).is_err_and(|why| why.contains("recorded no task")));
+        assert!(correction_family(&trained(&[worked(UNRELATED_SET, "lc-unrelated/x")]), &none).is_err_and(|why| why.contains("retention")));
         assert!(unseen_tasks(&sets, &trained(&[worked("hard-rs", "hard-rs/lru"), worked("hard-rs", "hard-rs/trie"), worked("hard-rs", "hard-rs/heap")])).is_err(), "nothing left unseen");
 
         // what this catches (Codex on #5577): a correction that REVIEWED a retention task (a review
@@ -287,7 +303,7 @@ mod tests {
         let reviewed = |id: &str| example(json!({"cardId": "r1", "source": "card-credit", "task": {"reviewOf": id}}));
         let keep = [task("lc-unrelated/a"), task("lc-unrelated/b")];
         let mixed = trained(&[worked("hard-rs", "hard-rs/lru"), reviewed("lc-unrelated/a")]);
-        assert!(correction_family(&mixed).is_ok(), "a graded family with a review beside it");
+        assert!(correction_family(&mixed, &none).is_ok(), "a graded family with a review beside it");
         let (left, out) = retention(&keep, &mixed).expect("one retention task left");
         assert_eq!((left.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), out), (vec!["lc-unrelated/b"], 1));
         let all_seen = trained(&[worked("hard-rs", "hard-rs/lru"), reviewed("lc-unrelated/a"), reviewed("lc-unrelated/b")]);
