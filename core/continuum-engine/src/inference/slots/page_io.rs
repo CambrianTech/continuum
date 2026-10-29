@@ -28,10 +28,26 @@ use crate::runtime::admission_gate::{AdmissionGate, Permit};
 
 static PAGE_IO: AdmissionGate = AdmissionGate::new();
 
+/// The node's page-IO gate. Admission paths take it as an argument so a test drives the
+/// real admission and the real close on a gate of its own, never the process's.
+pub(crate) fn gate() -> &'static AdmissionGate {
+    &PAGE_IO
+}
+
+/// The refusal a stopping node gives anything that would page a resident out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PageIoClosed;
+
+impl std::fmt::Display for PageIoClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the node is stopping: page admission is closed")
+    }
+}
+
 /// Admit an admission that may page, or refuse because the node is stopping.
 #[must_use = "the permit holds page IO open until its ledger update"]
-pub(crate) fn admit() -> Option<Permit<'static>> {
-    PAGE_IO.admit()
+pub(crate) fn admit(gate: &'static AdmissionGate) -> Result<Permit<'static>, PageIoClosed> {
+    gate.admit().ok_or(PageIoClosed)
 }
 
 /// Page IO as a [`SettleBeforeStop`](crate::runtime::extensions::SettleBeforeStop)
@@ -115,13 +131,13 @@ pub(crate) async fn checkpoint_endpoint(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PageIoSettled {
-    in_flight_at_close: u64,
-    cut: u64,
+pub(crate) struct PageIoSettled {
+    pub(crate) in_flight_at_close: u64,
+    pub(crate) cut: u64,
 }
 
 /// Close `gate`, then wait for its in-flight page IO, at most `cap`.
-async fn settle(gate: &AdmissionGate, cap: Duration) -> PageIoSettled {
+pub(crate) async fn settle(gate: &AdmissionGate, cap: Duration) -> PageIoSettled {
     const POLL: Duration = Duration::from_millis(50);
     gate.close();
     let in_flight_at_close = gate.in_flight();
