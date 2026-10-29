@@ -37,14 +37,14 @@ pub mod engram;
 pub mod engram_graph;
 pub mod home;
 pub mod inbox_admission;
-pub mod mind_room;
+pub use continuum_rooms::mind_room;
 pub mod recall_metadata;
 pub mod trace;
 pub mod cached_source;
-pub mod card_facts;
-pub mod card_holder;
+pub use continuum_rooms::card_facts;
+pub use continuum_rooms::card_holder;
 pub mod grounding_invalidation;
-pub mod room_substrates;
+pub use continuum_rooms::room_substrates;
 pub mod framing_echo;
 pub mod not_speech;
 pub mod act_observe;
@@ -84,12 +84,8 @@ pub mod pass_intent;
 pub mod perception_facts;
 pub mod persona_tools;
 pub mod persona_workspace;
-/// The handoff record: her state at the seam, written before a stop, read first on wake
-/// (card 49b5e806).
-pub mod handoff;
-/// Bounded per-room diagnostics state, with the eviction decision CLAUDE.md
-/// requires of anything that accumulates (#3903 review).
-pub mod bounded_room_ledger;
+pub use continuum_rooms::handoff;
+pub use continuum_rooms::bounded_room_ledger;
 pub mod prompt_capture;
 pub(crate) mod prompt_prefix;
 pub mod rag_source_faculty;
@@ -98,7 +94,7 @@ pub mod recall_faculty;
 pub mod recall_ranker;
 pub mod audience;
 pub mod replay;
-pub mod room_roster;
+pub use continuum_rooms::room_roster;
 pub mod turn_ledger;
 pub mod response_orchestrator;
 pub mod response_validator;
@@ -126,12 +122,12 @@ pub mod faculty_ids;
 pub mod focus;
 pub mod health_ledger;
 pub mod mind_events;
-pub mod presence_glyph;
+pub use continuum_rooms::presence_glyph;
 pub mod prompt_assembly;
 pub mod rag_budget;
 pub mod redaction;
 pub mod resident_service;
-pub mod room_directory;
+pub use continuum_rooms::room_directory;
 
 pub use model_resolver::*;
 pub use response_orchestrator::{

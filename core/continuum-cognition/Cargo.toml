@@ -31,6 +31,7 @@ uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
 continuum-host = { path = "../continuum-host" }
 continuum-context = { path = "../continuum-context" }
+continuum-rooms = { path = "../continuum-rooms" }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
 tool-working-set = { path = "../tool-working-set" }  # the learned tool head: pure policy, no core dependency
 schemars = { version = "0.8", features = ["uuid1"] }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }

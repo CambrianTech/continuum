@@ -51,14 +51,14 @@ pub fn said_line(said: &str) -> String {
 /// compiler's stderr, and `code/shell` handing back a still-RUNNING handle, both
 /// read as success in the room. An accepted call is not a finished one, and a
 /// result nobody could decode is not a success either.
-pub fn act_line(verb: &str, object: &str, verdict: crate::sdk_codegen::ActVerdict) -> String {
+pub fn act_line(verb: &str, object: &str, verdict: continuum_kernel::sdk_codegen::ActVerdict) -> String {
     let mark = match verdict {
         v if v.failed() => FAIL,
         v if v.running() => RUNNING,
         // Unprojected keeps the old tick: the command never opted in, so this line
         // says exactly what it said before. Undecodable deliberately does NOT get a
         // tick — the substrate could not read the result and must not claim one.
-        crate::sdk_codegen::ActVerdict::Undecodable => UNKNOWN,
+        continuum_kernel::sdk_codegen::ActVerdict::Undecodable => UNKNOWN,
         _ => OK,
     };
     format!("{ACT} {verb} {object} {mark}")
@@ -67,7 +67,7 @@ pub fn act_line(verb: &str, object: &str, verdict: crate::sdk_codegen::ActVerdic
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdk_codegen::{ActVerdict, ToolVerdict};
+    use continuum_kernel::sdk_codegen::{ActVerdict, ToolVerdict};
 
     // what this catches: the plane sniff drifting from the writer — a thought
     // or act line the writer emits must read as presence at the head of the

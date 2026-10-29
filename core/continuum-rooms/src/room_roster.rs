@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// reader tells "armed and clean" from "had nothing to check against".
 pub fn present_names(room: Uuid) -> Vec<String> {
     let (outcome, names): (&str, Vec<String>) =
-        match crate::cognition::room_substrates::global_room_substrates().read_room(room) {
+        match crate::room_substrates::global_room_substrates().read_room(room) {
             None => ("no_substrate", Vec::new()),
             Some(substrate) => match substrate.cache().get(continuum_positron::RosterViewState::KIND) {
                 None => ("no_roster_envelope", Vec::new()),

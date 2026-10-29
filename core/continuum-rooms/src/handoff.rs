@@ -35,7 +35,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::experience::ledger::CardLedger;
+use continuum_experience::experience::ledger::CardLedger;
 use continuum_cli_lifecycle::deploy_claim::DeployClaim;
 
 /// WHY a volatile write happens — the one fact the handoff needs that the memory itself
@@ -151,7 +151,7 @@ pub fn note_unbound(persona: Uuid) {
 /// #4407). Her cards in Review and the review cards she holds are obligations.
 pub fn note_owned(persona: Uuid, owned: &[(airc_lib::Room, airc_lib::WorkCard)], now_ms: u64) {
     use airc_work::model::CardState;
-    let held = crate::cognition::card_holder::held_of_owned(owned.to_vec(), now_ms);
+    let held = crate::card_holder::held_of_owned(owned.to_vec(), now_ms);
     let mut obligations: Vec<airc_lib::WorkCard> = owned
         .iter()
         .filter(|(_, card)| matches!(card.state, CardState::Review))
@@ -224,7 +224,7 @@ pub fn torn_by_for(reason: SaveReason, root: Option<&std::path::Path>, now_ms: u
 }
 
 /// ONE deadline for every resident's staged read at a seam, derived from the phase that
-/// contains it: the runtime's save phase ([`crate::runtime::runtime::SHUTDOWN_PHASE`], 2 s)
+/// contains it: the runtime's save phase ([`continuum_kernel::runtime::runtime::SHUTDOWN_PHASE`], 2 s)
 /// is shared by every resident, and the seam writes them IN PARALLEL
 /// (`write_volatile_all`), so each resident's two git reads have this much of the phase
 /// and the rest is left for her snapshot, serialization and fsync. A resident whose tree
@@ -237,7 +237,7 @@ pub fn torn_by_for(reason: SaveReason, root: Option<&std::path::Path>, now_ms: u
 // derived-or-floor: derived — three fifths of the save phase, the remaining two fifths
 // are the resident's own write; every resident runs concurrently so N does not divide it.
 pub const STAGED_READ_BOUND: std::time::Duration = std::time::Duration::from_millis(
-    crate::runtime::runtime::SHUTDOWN_PHASE.as_millis() as u64 * 3 / 5,
+    continuum_kernel::runtime::runtime::SHUTDOWN_PHASE.as_millis() as u64 * 3 / 5,
 );
 
 /// Compose the record at the seam from the seed plus what only the seam knows.
@@ -486,7 +486,7 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
                 card.title.trim(),
                 card.state
             ));
-            if let Some(sub) = crate::cognition::card_holder::latest_submission(card) {
+            if let Some(sub) = crate::card_holder::latest_submission(card) {
                 out.push_str(&format!(
                     "\n  Latest submission on it: {}, made {} (re-fetch by id; do not re-make it).",
                     sub.submission_id.as_uuid(),
