@@ -14,11 +14,6 @@ impl LlamaServerProcess {
                 "prepared launch belongs to another endpoint".into(),
             ));
         }
-        if self.is_live_lane {
-            // A new engine process is coming: what the last one could take is not evidence
-            // for it (`tail_tools`); the reconcile reads the new one's own `/props`.
-            forget_served_engine();
-        }
         let restore_generation = restore_session.map(|session| session.expected.lock().clone());
         let restoring = restore_generation.is_some();
         if restoring {
@@ -259,6 +254,10 @@ impl LlamaServerProcess {
             *self.pending_resource_reservation.lock() = Some(grant);
         }
         self.install_child(child, generation.clone(), child_install, child_inputs);
+        // The transition drained the incumbent's readers and the candidate spawned: only now is
+        // its `tail_tools` evidence published, for this incarnation. The launch tail carries it,
+        // so a launch that fails, is cancelled or is discarded from here on withdraws it.
+        let evidence = self.publish_launched_evidence(&prepared.engine_program, child_pid);
         // Launch arguments are evidence of what we requested, not a readback of
         // cache capacity or occupancy. Adopted engines do not pass this seam.
         continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.prompt_cache.launch",
@@ -375,8 +374,17 @@ impl LlamaServerProcess {
             page_dir_ready,
             debug_flag,
             restoring,
+            evidence,
         };
         self.wait_and_publish(&transition, tail).await
+    }
+
+    /// Publish the spawned `pid`'s `tail_tools` evidence from `program`'s slot stamp, on a lane
+    /// that has an evidence cell ([`LaunchedEvidence`]).
+    pub(super) fn publish_launched_evidence(&self, program: &str, pid: Option<u32>) -> Option<LaunchedEvidence> {
+        let (_, port) = split_host_port(&self.root);
+        let incarnation = pid.and_then(|pid| crate::inference::engine_residency::EngineIncarnation::of(pid, port));
+        self.served_evidence.map(|cell| LaunchedEvidence::publish(cell, program, incarnation))
     }
 }
 
