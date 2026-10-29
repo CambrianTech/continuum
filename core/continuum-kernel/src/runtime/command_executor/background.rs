@@ -121,6 +121,7 @@ mod tests {
     struct GatedResult {
         entered: tokio::sync::Notify,
         release: tokio::sync::Notify,
+        unwind: bool,
     }
 
     #[async_trait::async_trait]
@@ -136,6 +137,11 @@ mod tests {
         ) -> Result<InterceptorOutcome, String> {
             self.entered.notify_one();
             self.release.notified().await;
+            if self.unwind {
+                // Fault injection: exercise the real supervisor's unwind boundary
+                // without relying on a process-global panic hook or aborting process.
+                std::panic::resume_unwind(Box::new("injected handler unwind"));
+            }
             Ok(InterceptorOutcome::Handled(CommandResult::Json(
                 Value::Null,
             )))
@@ -143,47 +149,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn notification_projects_durable_winner_not_competing_result() -> Result<(), String> {
+    async fn terminal_delivery_handles_competing_writers_and_unwinding_handlers(
+    ) -> Result<(), String> {
         let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
         let ledger = Arc::new(TaskLedger::new(adapter).await?);
-        let gate = Arc::new(GatedResult {
-            entered: tokio::sync::Notify::new(),
-            release: tokio::sync::Notify::new(),
-        });
-        let bus = Arc::new(MessageBus::new());
-        let mut events = bus.receiver();
-        let executor = Arc::new(
-            CommandExecutor::new(Arc::new(ModuleRegistry::new()))
-                .with_message_bus(bus)
-                .with_interceptor(gate.clone()),
-        );
-        executor.set_task_ledger(ledger.clone())?;
-        let owner = Uuid::new_v4();
-        let caller = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(owner));
-        let task = executor
-            .dispatch_background("test/result", Value::Null, Some(caller))
-            .await
-            .map_err(|error| error.message)?;
-        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
-            .await
-            .map_err(|error| error.to_string())?;
-        // Inject another writer's committed terminal; this tests arbitration,
-        // not permission to declare a running command stopped.
-        let winner = TaskEnd::Failed {
-            message: "previous terminal".into(),
-            outcome: DispatchOutcome::Uncertain,
-        };
-        ledger.finish(task, owner, winner.clone()).await?;
-        gate.release.notify_one();
-        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
-            .await
-            .map_err(|error| error.to_string())?
-            .map_err(|error| error.to_string())?;
-        assert_eq!(event.name, "command:completed");
-        assert_eq!(event.payload["handle"], task.to_string());
-        assert_eq!(event.payload["success"], false);
-        assert_eq!(event.payload["error"], "previous terminal");
-        assert_eq!(ledger.pending(task, owner).await?, Some(winner));
+        for unwind in [false, true] {
+            let gate = Arc::new(GatedResult {
+                entered: tokio::sync::Notify::new(),
+                release: tokio::sync::Notify::new(),
+                unwind,
+            });
+            let bus = Arc::new(MessageBus::new());
+            let mut events = bus.receiver();
+            let executor = Arc::new(
+                CommandExecutor::new(Arc::new(ModuleRegistry::new()))
+                    .with_message_bus(bus)
+                    .with_interceptor(gate.clone()),
+            );
+            executor.set_task_ledger(ledger.clone())?;
+            let owner = Uuid::new_v4();
+            let caller = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(owner));
+            let task = executor
+                .dispatch_background("test/result", Value::Null, Some(caller))
+                .await
+                .map_err(|error| error.message)?;
+            tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+                .await
+                .map_err(|error| error.to_string())?;
+            // Inject another writer's committed terminal; this tests arbitration,
+            // not permission to declare a running command stopped.
+            let winner = TaskEnd::Failed {
+                message: if unwind {
+                    "background command panicked"
+                } else {
+                    "previous terminal"
+                }
+                .into(),
+                outcome: DispatchOutcome::Uncertain,
+            };
+            if !unwind {
+                ledger.finish(task, owner, winner.clone()).await?;
+            }
+            gate.release.notify_one();
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+            assert_eq!(event.name, "command:completed");
+            assert_eq!(event.payload["handle"], task.to_string());
+            assert_eq!(event.payload["success"], false);
+            assert_eq!(
+                event.payload["error"],
+                if unwind {
+                    "background command panicked"
+                } else {
+                    "previous terminal"
+                }
+            );
+            assert_eq!(ledger.pending(task, owner).await?, Some(winner));
+        }
         Ok(())
     }
 }
