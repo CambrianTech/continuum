@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
-pub(crate) struct CaptureOwners<T> {
+pub struct CaptureOwners<T> {
     owners: Mutex<HashMap<PathBuf, Weak<Mutex<T>>>>,
 }
 impl<T> Default for CaptureOwners<T> {

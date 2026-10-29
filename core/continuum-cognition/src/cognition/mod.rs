@@ -93,6 +93,8 @@ pub use continuum_rooms::handoff;
 pub use continuum_rooms::bounded_room_ledger;
 pub mod prompt_capture;
 pub use continuum_prompt::prompt_prefix;
+pub use continuum_capture::prompt_capture;
+pub(crate) mod prompt_prefix;
 pub mod rag_source_faculty;
 pub mod rate_proposals;
 pub mod recall_faculty;
@@ -124,7 +126,7 @@ pub mod workspace_capture;
 // fixture policy, the faculty ids persona's sources deliver under, the one budget
 // allocator, text analysis, prompt assembly, redaction, the health ledger, presence
 // glyphs, mind events, the room directory and the focus registry.
-pub mod capture;
+pub use continuum_capture::capture;
 pub mod faculty_ids;
 pub mod focus;
 pub use continuum_vitals::health_ledger;
