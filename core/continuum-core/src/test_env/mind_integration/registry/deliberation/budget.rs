@@ -62,11 +62,13 @@ fn a_turn_is_budgeted_for_her_hands_not_for_the_registry() {
 // must still price her whole hands; report the core here and the pressure the probe exists
 // to measure disappears exactly when it starts mattering.
 // MUTATION-PROVED: make `demand_tokens` return `self.tokens` unconditionally and this fails.
+// The window is calibrated on a work turn, so the test asks with one: under the one allocation a
+// smaller turn leaves room and her hands fit, which is the allocation working, not a withheld surface.
 #[test]
 fn a_window_withheld_surface_still_reports_her_whole_hands_as_demand() {
     let (_fits, narrow) = calibrated_windows();
     let faculty = faculty_with_the_real_registry(narrow);
-    let selected = faculty.prompt_view(&Workspace::new("anything open?")).tools;
+    let selected = faculty.prompt_view(&work_turn()).tools;
     assert_eq!(selected.reason, SurfaceReason::CoreHandsForWindow, "this window's share cannot hold her hands");
     assert!(selected.tokens < faculty.tool_surface().hands_tokens(), "she is SENT her core hands");
     assert_eq!(
