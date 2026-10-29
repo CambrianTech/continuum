@@ -186,7 +186,7 @@ async fn verify_evidence(
         .ok_or_else(|| invalid("exact independent review post is unavailable"))?;
     verify_post(evidence, post)?;
     let reference =
-        eval_set_reference(&evidence.benchmark).ok_or_else(|| invalid("unknown gym recipe"))?;
+        crate::cognition::eval_set::eval_set_reference(&evidence.benchmark).ok_or_else(|| invalid("unknown gym recipe"))?;
     let task = crate::modules::benchmark_grade::normalized_gym_task(&reference, &evidence.instance)
         .map_err(invalid)?;
     if task.test.is_none() || task.dod_shell.is_some() {

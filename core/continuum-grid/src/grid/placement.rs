@@ -201,7 +201,10 @@ pub async fn follow_the_fleet(
             "her seat's beacon offers no slot this tick — no return ask sent; she stays home until it does"
         );
     }
-    let moves = choose_offloads(local, &peers, rank_of, &at_home);
+    let moves = choose_offloads(local, &peers, rank_of, &at_home, &|mind| {
+        working_set.sent_median_of(&[mind])
+            .map(crate::inference::planning::serving_plan::prompt_floor_of)
+    });
     if !moves.is_empty() {
         let by_id: std::collections::HashMap<Uuid, Arc<PlacementSwitch>> =
             switches().into_iter().map(|s| (s.persona_id(), s)).collect();

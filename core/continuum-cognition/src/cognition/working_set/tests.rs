@@ -58,7 +58,7 @@
         assert_eq!(d.peak_tokens, 176_154);
         assert_eq!(typical_tokens(&d), Some(45_000), "the median of recent turns");
         assert_eq!(requirement_tokens(&d), 45_000);
-        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [0; RECENT_TURNS], need_next: 0 };
+        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [0; RECENT_TURNS], need_next: 0, sent_recent: [0; RECENT_TURNS], sent_next: 0 };
         assert_eq!(requirement_tokens(&legacy), 29_911, "no ring: the last turn, never the peak");
         let ser: PersonaDemand = serde_json::from_str(r#"{"peak_tokens":1,"last_tokens":2,"last_seen_ms":3,"turns":4}"#).expect("legacy json");
         assert_eq!(typical_tokens(&ser), None);
@@ -468,3 +468,28 @@
         assert!(a2 < start2, "the control: verbatim samples contract ({start2} → {a2})");
     }
 
+    // what this catches: the lane floor sized by a lifetime peak (the M5, 2026-10-28: sent_peaks
+    // of 188-370k against recent turns of 20-43k set a 423,945-token requirement, every runnable
+    // plan was refused, and four residents shared one 27,904-token slot). The floor follows her
+    // recent growth samples; a legacy record with only a peak stands on her typical demand.
+    #[test]
+    fn a_historic_giant_turn_stops_setting_the_lane_floor() {
+        let reg = WorkingSetRegistry::new();
+        let (aris, benchy) = (Uuid::new_v4(), Uuid::new_v4());
+        reg.record_sent_in_memory(aris, 370_493, 1);
+        reg.record_sent_in_memory(benchy, 339_156, 1);
+        for turn in 0..RECENT_TURNS as u32 {
+            reg.record_sent_in_memory(aris, 21_000 + turn, 2);
+            reg.record_sent_in_memory(benchy, 24_000 + turn, 2);
+        }
+        let floor = reg.sent_median_of(&[aris, benchy]).expect("two residents");
+        assert!(floor < 30_000, "the floor follows recent turns, not the 339k-370k peaks: {floor}");
+        assert_eq!(reg.sent_ceiling_of(&[aris, benchy]), Some(24_000 + RECENT_TURNS as u32 - 1));
+        let legacy = PersonaDemand { sent_peak: 339_156, recent: [35_000; RECENT_TURNS], ..PersonaDemand::default() };
+        assert_eq!(growth_sample(&legacy), Some(35_000), "a record from before the ring stands on her typical turn");
+        assert_eq!(growth_sample(&PersonaDemand { sent_peak: 9_000, ..PersonaDemand::default() }), Some(9_000));
+        // A mind that never sent a growth sample sets no floor, however large her typical turn:
+        // the re-home tests' plans moved when such a record contributed one (#5579 CI).
+        let never_sent = PersonaDemand { recent: [35_000; RECENT_TURNS], ..PersonaDemand::default() };
+        assert_eq!(growth_sample(&never_sent), None);
+    }

@@ -76,6 +76,8 @@ use crate::sdk_codegen::DynCommand;
 
 mod attempt_evidence;
 mod durable;
+mod remainders;
+mod serving_wake;
 pub use durable::DispatchPhase;
 pub(crate) use durable::{DispatchFailure, DispatchResolution, DispatchResult, JobInputError, ResolveReport, RetireReport, RetireSelection};
 
@@ -142,6 +144,17 @@ pub(crate) struct PendingBatch {
     /// dispatch can take whole submissions (a time-budgeted run, `training_rate`).
     #[serde(skip)]
     pub(crate) submission_examples: Vec<u32>,
+    /// Which of `submission_ids` are returns, in the same order, so a split keeps [`Self::returned`]
+    /// exact for each part.
+    #[serde(skip)]
+    pub(crate) submission_returned: Vec<bool>,
+    /// This batch holds a RETURN: examples a job handed back, which met a threshold when they
+    /// were first dispatched. Persisted with the submission that accepts it, so the recovery
+    /// pass dispatches its bucket below the threshold after any restart, exactly once
+    /// (`ready_to_recover`; the windows 5090 2026-10-28 20:16Z: a return held at 11 of 16).
+    /// Rows accepted before this field read `false`: historical buckets keep their threshold.
+    #[serde(default)]
+    pub(crate) returned: bool,
     pub(crate) persona_name: String,
     pub(crate) source: TrainingSource,
     pub(crate) examples: Vec<TrainingExample>,
@@ -188,6 +201,9 @@ pub struct TrainingTriggerState {
     /// evidence either way; never resumed while held (Cormac on #4537: asked once and dropped,
     /// a transiently silent engine held serving off it for its whole life).
     held_orphans: std::sync::Mutex<Vec<(crate::genome::fine_tuning::job_board::OrphanedJob, u64)>>,
+    /// Ended jobs whose parked examples wait for her window, with the (needed, served) last
+    /// reported, so a held job is reported when that changes, not on every pass (card 565b3b64).
+    remainder_waits: std::sync::Mutex<std::collections::HashMap<Uuid, (u32, Option<u32>)>>,
     durable: LateBound<durable::DurableStore>,
     acceptance_gates: PerKeyGate<Uuid>,
     active_dispatches: DashMap<BucketKey, Arc<durable::ActiveDispatch>>,
@@ -274,6 +290,7 @@ impl TrainingTriggerState {
             executor: LateBound::new("training-trigger::executor"),
             resumed_orphans: std::sync::atomic::AtomicBool::new(false),
             held_orphans: std::sync::Mutex::new(Vec::new()),
+            remainder_waits: std::sync::Mutex::new(std::collections::HashMap::new()),
             durable: LateBound::new("training-trigger::durable-store"),
             acceptance_gates: PerKeyGate::new(),
             active_dispatches: DashMap::new(),
@@ -364,59 +381,14 @@ impl TrainingTriggerState {
             .or_else(|| self.active_dispatches.get(key).map(|active| active.batch.policy()))
     }
 
-    /// Hand back what each COMPLETED job parked (card 8a2334d9): the whole originals its
-    /// window couldn't hold, or its run skipped, which no route returned before. Through
-    /// `return_parked_remainder`, beside the one return: never an example the job trained, once
-    /// per job by its receipt, and a refused or failed return stays for the next tick.
-    pub(crate) async fn return_parked_remainders(self: &Arc<Self>) {
-        use crate::commands::training_trigger::return_::{return_parked_remainder, Remainder};
-        let board = crate::genome::fine_tuning::job_board::TrainingJobBoard::global();
-        let completed = board.take_completed();
-        if completed.is_empty() {
-            return;
-        }
-        let Some(root) = genome_root() else {
-            continuum_base::probe!(class = "training.job.remainder_unrooted", jobs = completed.len() as u64, "no home: completed jobs cannot be found to return what they parked");
-            return;
-        };
-        let mut retry = Vec::new();
-        for job in completed {
-            match return_parked_remainder(self, board, &root, &job).await {
-                Ok(Remainder::Nothing | Remainder::AlreadyReturned) => {}
-                Ok(Remainder::Submitted(outcome)) if outcome.success => continuum_base::probe!(
-                    class = "training.job.remainder_returned",
-                    job = %job.local_id,
-                    persona = %job.persona_name,
-                    "a completed job's parked examples went back to her bucket, whole; the next dispatch re-plans them"
-                ),
-                Ok(Remainder::Submitted(outcome)) => {
-                    continuum_base::probe!(
-                        class = "training.job.remainder_refused",
-                        job = %job.local_id,
-                        error = ?outcome.error,
-                        "the return of a completed job's parked examples was refused; they stay in its directory and are tried again"
-                    );
-                    retry.push(job);
-                }
-                // A malformed record is refused loudly and not retried: retrying reads the same bytes.
-                Err(error @ crate::sdk_codegen::CommandError::Invalid(_)) => continuum_base::probe!(
-                    class = "training.job.remainder_invalid",
-                    job = %job.local_id,
-                    error = %error,
-                    "a completed job's partition does not match its request; its parked examples stay in its directory for a human"
-                ),
-                Err(error) => {
-                    continuum_base::probe!(
-                        class = "training.job.remainder_failed",
-                        job = %job.local_id,
-                        error = %error,
-                        "the return of a completed job's parked examples failed; they stay in its directory and are tried again"
-                    );
-                    retry.push(job);
-                }
-            }
-        }
-        board.requeue_completed(retry);
+    /// Every recovery pass, in order: what the tick runs AND what a serving change wakes, one
+    /// list, so a pass added for one is never missing from the other (Cormac on #5562: the wake
+    /// ran two of four, and missed the remainder pass a grown window unblocks).
+    pub(crate) async fn recover_pass(self: &Arc<Self>) -> Result<(), String> {
+        self.resume_orphans_once().await;
+        self.return_refused_jobs().await;
+        self.return_parked_remainders().await;
+        self.recover_tick().await
     }
 
     /// Hand back the examples of jobs the ENGINE REFUSED, so her bucket re-fires and the next
@@ -463,7 +435,7 @@ impl TrainingTriggerState {
                     job = %id,
                     persona = %job.persona_name,
                     why = ?returnable,
-                    "a job that ended without training (engine refusal or replaced lane) handed its examples back to her bucket; the next dispatch re-plans"
+                    "a job that ended without training (engine refusal or replaced lane) handed its examples back to her bucket; the recovery pass dispatches them (a return is ready below its threshold)"
                 ),
                 Ok(outcome) => continuum_base::probe!(
                     class = "training.job.refusal_return_refused",
@@ -868,12 +840,14 @@ fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
 
 pub struct TrainingTriggerModule {
     pub(crate) state: Arc<TrainingTriggerState>,
+    serving_wake: serving_wake::ServingWake,
 }
 
 impl TrainingTriggerModule {
     pub fn new() -> Self {
         Self {
             state: Arc::new(TrainingTriggerState::new()),
+            serving_wake: Default::default(),
         }
     }
 
@@ -885,6 +859,7 @@ impl TrainingTriggerModule {
         state.test_job_board = board;
         Self {
             state: Arc::new(state),
+            serving_wake: Default::default(),
         }
     }
 }
@@ -911,14 +886,19 @@ impl ServiceModule for TrainingTriggerModule {
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
         self.state.data.install(ctx.storage("training-trigger")?);
-        self.state.ensure_storage().await
+        self.state.ensure_storage().await?;
+        self.serving_wake.start(self.state.clone()).await;
+        Ok(())
     }
 
     async fn tick(&self) -> Result<(), String> {
-        self.state.resume_orphans_once().await;
-        self.state.return_refused_jobs().await;
-        self.state.return_parked_remainders().await;
-        self.state.recover_tick().await
+        // The tick and serving changes have one recovery owner: concurrent
+        // passes must not drain each other's ended-job list before requeue.
+        if self.serving_wake.request_recovery() {
+            Ok(())
+        } else {
+            self.state.recover_pass().await
+        }
     }
 
     /// Expose the three dep-holding training-trigger verbs over this
@@ -954,6 +934,7 @@ impl ServiceModule for TrainingTriggerModule {
     }
 
     async fn shutdown(&self) -> Result<(), String> {
+        self.serving_wake.stop().await;
         self.state.drain_operations().await
     }
 }

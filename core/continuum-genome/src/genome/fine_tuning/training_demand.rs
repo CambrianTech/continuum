@@ -91,14 +91,15 @@ impl TrainingDemand {
         }
     }
 
-    /// Record what one partition or run learned: `parked` examples need these windows, `trained`
-    /// ones were trained by a run and owe nothing, every other entry is kept; `reservation` is
-    /// what the largest parked window costs, as a partition's footprints price it.
-    pub fn record(&self, parked: &[(String, u32)], trained: &[String], reservation: Option<Reservation>) -> std::io::Result<()> {
+    /// Record what changed: `parked` examples need these windows; `settled` ones owe nothing more
+    /// (a run trained them, or they were withdrawn from her training input: card 4545eafd); every
+    /// other entry is kept. `reservation` is what the largest parked window costs, as a
+    /// partition's footprints price it.
+    pub fn record(&self, parked: &[(String, u32)], settled: &[String], reservation: Option<Reservation>) -> std::io::Result<()> {
         let Some(path) = &self.path else { return Ok(()) };
         let before = self.read();
         let mut now = before.clone();
-        for key in trained {
+        for key in settled {
             now.examples.remove(key);
         }
         for (key, window) in parked {
@@ -120,9 +121,50 @@ impl TrainingDemand {
         continuum_host::durable::replace(&tmp, path)
     }
 
+    /// Settle `keys` strictly: a store that cannot be read or parsed (or no store) is an error,
+    /// never an empty one, so a caller that must clear before it commits never commits over a
+    /// clear that did not happen (Codex on #5572). A missing file has nothing to clear.
+    pub fn clear(&self, keys: &[String]) -> Result<(), String> {
+        let Some(path) = &self.path else { return Err("no continuum home: no demand store".into()) };
+        let before = self.read_strict()?;
+        let mut now = before.clone();
+        for key in keys {
+            now.examples.remove(key);
+        }
+        if now.examples.is_empty() {
+            now.reservation = None;
+        }
+        if now == before {
+            return Ok(());
+        }
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(&now).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", tmp.display()))?; // disk boundary: training-demand/<persona>.json, read back by serving's requirements_for
+        continuum_host::durable::replace(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
     /// The largest window an outstanding example needs. `None` when nothing waits.
     pub fn outstanding(&self) -> Option<u32> {
         self.read().examples.into_values().max()
+    }
+
+    /// Whether every one of `keys` is outstanding here: serving has been told what those examples
+    /// need. Empty `keys` is false: nothing to wait for is not a recorded demand. `Err` when the
+    /// store cannot answer (no store, unreadable, corrupt): never read as "not recorded", since
+    /// a caller acting on that would return examples it cannot record (Codex on #5569).
+    pub fn records_all(&self, keys: &[String]) -> Result<bool, String> {
+        let examples = self.read_strict()?.examples;
+        Ok(!keys.is_empty() && keys.iter().all(|key| examples.contains_key(key)))
+    }
+
+    /// The store as recorded: a missing file is an empty store; no store, or a file that cannot
+    /// be read or parsed, is an error.
+    fn read_strict(&self) -> Result<Recorded, String> {
+        let Some(path) = &self.path else { return Err("no continuum home: no demand store".into()) };
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: not a demand record ({e})", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Recorded::default()),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
     }
 
     /// How many examples wait.
