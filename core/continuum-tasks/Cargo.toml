@@ -1,0 +1,15 @@
+[package]
+name = "continuum-tasks"
+version = "0.1.0"
+edition = "2021"
+description = "The task contract (docs/architecture/HER-TASKS.md): work started with a handle, exactly one end on every path, delivered to its owner. Below the kernel; depends on nothing in Continuum."
+
+[dependencies]
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time", "test-util"] }

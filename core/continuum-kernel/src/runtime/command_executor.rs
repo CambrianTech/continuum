@@ -167,6 +167,10 @@ pub struct CommandExecutor {
     /// them inline against the owned `registry` + `interceptors` +
     /// TS bridge.
     remote_transport: Arc<dyn Transport>,
+    /// The node's tasks (docs/architecture/HER-TASKS.md): every background dispatch is one,
+    /// with a handle at once and exactly one end on every path, published by the sink
+    /// [`Self::with_message_bus`] installs.
+    tasks: Arc<continuum_tasks::TaskRegistry>,
 }
 
 impl CommandExecutor {
@@ -177,7 +181,13 @@ impl CommandExecutor {
             bus: None,
             policy: Arc::new(crate::routing::AllowAllPolicy),
             remote_transport: Arc::new(crate::routing::NotImplementedRemoteTransport),
+            tasks: continuum_tasks::TaskRegistry::new(),
         }
+    }
+
+    /// The node's task registry: list, stop and wait on running tasks.
+    pub fn tasks(&self) -> &Arc<continuum_tasks::TaskRegistry> {
+        &self.tasks
     }
 
     /// The trust this executor's policy resolves for `caller`: the same policy its gate uses
@@ -242,6 +252,7 @@ impl CommandExecutor {
     /// the bus is the Events primitive; this method composes it with
     /// the Commands primitive at the kernel's dispatch boundary.
     pub fn with_message_bus(mut self, bus: Arc<MessageBus>) -> Self {
+        self.tasks.add_sink(Arc::new(super::task_completion::CompletionPublisher { bus: Arc::clone(&bus) }));
         self.bus = Some(bus);
         self
     }
@@ -346,7 +357,6 @@ impl CommandExecutor {
             command.path(),
             &outcome,
             start.elapsed().as_millis() as u64,
-            None, // synchronous: the caller holds the return value
         );
         outcome
     }
@@ -364,20 +374,25 @@ impl CommandExecutor {
         params: Value,
         caller: Option<crate::routing::CallerIdentity>,
     ) -> uuid::Uuid {
-        let handle = uuid::Uuid::new_v4();
         let command: CommandUri = command.into();
+        // The task is owned by its caller, recorded here, so its end reaches the caller
+        // whether or not anything remembers the handle (HER-TASKS.md).
+        let owner = caller.as_ref().map(|c| continuum_tasks::Owner(c.peer_id.as_uuid()));
+        let (guard, _watch) = self.tasks.start(owner, continuum_tasks::TaskKind::Command(command.path().to_string()));
+        let handle = guard.id().as_uuid();
         let this = std::sync::Arc::clone(self);
         tokio::spawn(async move {
-            let start = std::time::Instant::now();
             // The caller's hands are bound and admitted inside dispatch, for this task's whole
-            // life: a release that began before its first poll refuses it by name.
-            let outcome = this.dispatch(&command, params, caller.as_ref()).await;
-            this.emit_command_completed(
-                command.path(),
-                &outcome,
-                start.elapsed().as_millis() as u64,
-                Some(handle),
-            );
+            // life: a release that began before its first poll refuses it by name. A panic
+            // here drops the guard, which ends the task as Lost: no path is silent.
+            let end = match this.dispatch(&command, params, caller.as_ref()).await {
+                Ok(result) => match result.to_json_value() {
+                    Ok(value) => continuum_tasks::TaskEnd::Done(value),
+                    Err(e) => continuum_tasks::TaskEnd::Failed(format!("the command ran but its result could not be encoded: {e}")),
+                },
+                Err(failure) => continuum_tasks::TaskEnd::Failed(failure.message),
+            };
+            guard.end(end);
         });
         handle
     }
@@ -607,24 +622,20 @@ impl CommandExecutor {
         command: &str,
         outcome: &Result<CommandResult, DispatchFailure>,
         duration_ms: u64,
-        handle: Option<uuid::Uuid>,
     ) {
         let Some(bus) = self.bus.as_ref() else {
             return;
         };
-        // The result rides the event ONLY for a tracked background dispatch (handle set),
-        // so the dispatcher learns the outcome from the event itself — no second call. Sync
-        // commands stay thin: the caller already holds the return value.
-        let result = handle
-            .and(outcome.as_ref().ok())
-            .and_then(|r| r.to_json_value().ok());
+        // A synchronous command's completion stays thin: its caller already holds the return
+        // value. A background dispatch is a task, and its end (with the result) is published
+        // by the task registry's sink (`task_completion`), on every path.
         let event = CommandCompletedEvent {
             command_name: command.to_string(),
             duration_ms,
             success: outcome.is_ok(),
             error: outcome.as_ref().err().map(|failure| failure.message.clone()),
-            handle,
-            result,
+            handle: None,
+            result: None,
         };
         match serde_json::to_value(&event) {
             Ok(payload) => bus.publish_async_only(COMMAND_COMPLETED_TOPIC, payload),

@@ -159,7 +159,7 @@ task whose end is its report, a peer's review as a task that ends when the verdi
 
 | Slice | Change | Validator |
 |---|---|---|
-| T1 | crate `continuum-tasks`: `TaskRegistry` with ends on every path; the kernel executor runs on it | unit: done, failed, panic, abort, timeout, stop, process killed each emit exactly one `task:ended` |
+| T1 (in #5581) | crate `continuum-tasks`: `TaskRegistry` with ends on every path; the kernel executor runs on it | unit: done, failed, panic, abort, timeout, stop, process killed each emit exactly one `task:ended` |
 | T2 | owner sink + `Wake::TaskEnded` + durable rows | unit: an unregistered (forgotten) handle's end reaches working memory and wakes her; a restart delivers `Lost` |
 | T3 | act path: every call starts + lands; delete the list, shell handback, private bus | replay: a captured Aris trace runs with zero poll acts; shell timeout publishes an end |
 | T4 | `task/list`, `task/output`, `task/stop` | command tests through the generator |

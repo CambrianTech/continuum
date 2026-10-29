@@ -35,6 +35,7 @@ pub mod cell_shapes;
 pub mod command_envelope;
 pub mod command_events;
 pub mod command_executor;
+mod task_completion;
 pub mod command_interceptor;
 pub mod dispatch_hook;
 pub mod extensions;
