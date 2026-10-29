@@ -6,6 +6,8 @@ mod view;
 mod system;
 mod messages;
 mod epoch;
+#[cfg(test)]
+pub(in super) use epoch::SHORT_GRANTS;
 mod budget;
 pub(super) use self::budget::BudgetLedger;
 #[cfg(test)]

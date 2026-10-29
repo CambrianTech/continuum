@@ -596,3 +596,26 @@ async fn a_refused_tail_rebuilds_her_request_without_it_once() {
         }
     }
 }
+
+// what this catches: a prompt built on a broken allocator contract sent anyway (Codex on #5564).
+// An allocator answering for the wrong number of view sources is a GrantMismatch; it reaches the
+// turn's budget_fault and contribute refuses it before the adapter is ever called.
+#[tokio::test(flavor = "current_thread")]
+async fn an_allocator_answering_for_the_wrong_sources_refuses_the_turn_before_dispatch() {
+    use crate::cognition::workspace::Burst;
+    let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter.clone())
+        .with_context_window(32_768)
+        .with_tools(vec![read_tool()]);
+    let room = crate::identity::ActivityRoom::mint();
+    let turns: Vec<_> = (0..20)
+        .map(|i| BurstTurn::attributed(i % 2 == 0, if i % 2 == 0 { "Ivar" } else { "Peer" }, format!("line {i} ").repeat(20), Some(i)))
+        .collect();
+    let ws = Workspace::new(Burst::from_turns(room, turns));
+    crate::cognition::llm_deliberation_faculty::prompt::SHORT_GRANTS.with(|short| short.set(true));
+    let outcome = faculty.contribute(&ws).await;
+    crate::cognition::llm_deliberation_faculty::prompt::SHORT_GRANTS.with(|short| short.set(false));
+    let fault = outcome.expect("a contribution").fault.expect("the turn is refused");
+    assert!(format!("{fault:?}").contains("could not be sized"), "{fault:?}");
+    assert_eq!(adapter.call_count(), 0, "nothing was sent to inference");
+}

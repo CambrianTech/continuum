@@ -426,6 +426,12 @@ impl LlmDeliberationFaculty {
 /// minimum, which `flex_allocate` serves first in priority order, and the lowest priority
 /// shares what is left. The newest end is never cut: a source keeps its newest items whole
 /// and collapses its oldest first, at the start only ([`View::turn_over`]).
+#[cfg(test)]
+thread_local! {
+    /// Set by a test: [`start_grants`] answers for one fewer source than it was asked.
+    pub(in super::super) static SHORT_GRANTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub(in super::super) fn start_grants(
     claims: &[Claim],
     plan: &crate::cognition::rag_budget::FlexAllocation,
@@ -493,7 +499,7 @@ pub(in super::super) fn start_grants(
         })
         .collect();
     let sized = crate::cognition::rag_budget::flex_allocate(LlmDeliberationFaculty::clamp_u32(start), &budgets);
-    claims
+    let grants: Vec<usize> = claims
         .iter()
         .zip(&grants)
         .zip(&sized.allocations)
@@ -502,7 +508,18 @@ pub(in super::super) fn start_grants(
             Some(a) => (u64::from(sized.allocated_tokens) * claim.full_chars as u64 / u64::from(a.requested_max.max(1))) as usize,
             None => 0,
         })
-        .collect()
+        .collect();
+    // Test seam (Codex on #5564): an allocator answering for one fewer source than asked, so a
+    // test drives the real prompt and contribute boundary with a mismatch.
+    #[cfg(test)]
+    let grants = {
+        let mut grants = grants;
+        if SHORT_GRANTS.with(std::cell::Cell::get) {
+            grants.pop();
+        }
+        grants
+    };
+    grants
 }
 
 #[cfg(test)]
