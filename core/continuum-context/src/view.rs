@@ -26,6 +26,8 @@ pub struct Claim {
     pub pointer_chars: usize,
     /// What the source costs in full: its want.
     pub full_chars: usize,
+    /// Its newest item in full: the newest end a start never collapses when it fits.
+    pub newest_chars: usize,
 }
 
 /// The allocator answered for a different number of sources than it was asked about.
@@ -168,6 +170,7 @@ fn claim<T: Block>(source: &dyn Source<T>, items: &[Item<T>]) -> Claim {
         priority: source.priority(),
         pointer_chars: items.iter().map(pointer_chars).sum(),
         full_chars: items.iter().map(|item| item.full.chars()).sum(),
+        newest_chars: items.last().map_or(0, |item| item.full.chars()), // map_or: a source with no items has no newest end
     }
 }
 

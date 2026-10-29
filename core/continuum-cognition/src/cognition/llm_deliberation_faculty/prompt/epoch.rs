@@ -442,12 +442,28 @@ pub(in super::super) fn start_grants(
     // newest end with them. A re-home back into a 160-turn room measured 331,230 tokens
     // appended in one act against a 20,693 grant, and her view rendered empty
     // (`provider_context_feedback_bounds_replay_and_scales_next_turn`, 2026-10-23). Such an
-    // epoch turns over on the next act whatever its start, so it keeps the ordinary start.
+    // epoch turns over on the next act whatever its start, so a reserve held for its growth is
+    // never used: it starts with the whole growable room. Halved, a 5,204-token start held 1,887
+    // chars and her history rendered empty after a scaled calibration
+    // (a_scaled_calibration_after_turnovers).
     let growing = if per_act_tokens < growable {
         (growable / EPOCH_START_SHARE).min(growable - per_act_tokens)
     } else {
-        growable / EPOCH_START_SHARE
+        growable
     };
+    // The newest end is never collapsed by the growth reserve (goal 7): halved, a 5,204-token
+    // growable start converted to 1,885 chars, less than her one newest turn of 2,040, so her
+    // history rendered empty after a scaled calibration (a_scaled_calibration_after_turnovers).
+    // The start covers each growing source's newest item whole when the growable room can.
+    let newest: usize = claims
+        .iter()
+        .zip(&grants)
+        .filter(|(claim, _)| claim.priority == lowest)
+        .filter_map(|(claim, grant)| {
+            grant.map(|a| (claim.newest_chars as u64 * u64::from(a.requested_max)).div_ceil(claim.full_chars.max(1) as u64) as usize)
+        })
+        .sum();
+    let growing = growing.max(newest.min(growable));
     let start = grounding + growing;
     let budgets: Vec<crate::cognition::rag_budget::RagSourceBudget> = claims
         .iter()
