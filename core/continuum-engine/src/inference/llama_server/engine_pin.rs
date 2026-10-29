@@ -132,11 +132,13 @@ pub enum EngineUnpinned {
     /// A deploy holds the claim and owns the slot pointers, and the current slot is not the pin.
     #[error("a deploy owns the engine slot pointers and the current slot does not hold pin {pin}: no launch until it finishes")]
     DeployInFlight { pin: String },
-    /// The slot validated for this launch stopped being the current engine with its validated
-    /// stamp before the spawn (a promotion, a vanished selector, a rebuilt slot): the launch
-    /// refuses rather than run an unprotected slot or the replacement nobody checked.
-    #[error("engine slot {slot} ({stamp}) was validated against pin {pin} but is no longer current with that stamp (current {current:?}, its stamp {now_stamp:?}): nothing launches; the next reconcile validates the new selection")]
-    Superseded { pin: String, slot: &'static str, stamp: String, current: Option<&'static str>, now_stamp: Option<String> },
+    /// The slot validated for this launch no longer holds the validated build (a build chose it
+    /// before the launch reserved it): the launch refuses rather than run what nobody checked.
+    #[error("engine slot {slot} was validated against pin {pin} as {stamp} but now holds {now_stamp:?}: nothing launches; the next reconcile validates the slots again")]
+    Rebuilt { pin: String, slot: &'static str, stamp: String, now_stamp: Option<String> },
+    /// The validated slot could not be reserved, so a build could choose it under the launch.
+    #[error("engine slot {slot} (pin {pin}) could not be reserved for the launch: {reason}")]
+    Unreserved { pin: String, slot: &'static str, reason: String },
 }
 
 /// What holding the node to its pin settled, when a launch may proceed: the slot that holds it
@@ -233,7 +235,8 @@ fn report(held: &Result<PinHeld, EngineUnpinned>, current: Option<&'static str>)
                 EngineUnpinned::Untargeted { .. } => "serving.engine.untargeted",
                 EngineUnpinned::PromoteRefused { .. } => "serving.engine.repin_refused",
                 EngineUnpinned::DeployInFlight { .. } => "serving.engine.pin_deferred_to_deploy",
-                EngineUnpinned::Superseded { .. } => "serving.engine.selection_moved",
+                EngineUnpinned::Rebuilt { .. } => "serving.engine.slot_rebuilt",
+                EngineUnpinned::Unreserved { .. } => "serving.engine.slot_unreserved",
             };
             let why = refusal.to_string();
             continuum_base::probe!(target: "continuum_core::inference::llama_server", class = class,

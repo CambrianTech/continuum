@@ -24,6 +24,8 @@
 use std::path::{Path, PathBuf};
 
 mod attempts;
+mod reservation;
+pub use reservation::SlotReservation;
 
 /// The slots, bounded by construction: the current engine, one a lane may still run, and one to
 /// build into.
@@ -257,6 +259,23 @@ fn idle_slot_reserved(
         .ok_or(NotIdle::AllInUse)
 }
 
+/// The slot every builder builds into (`continuum engine idle-slot`): not one an installer
+/// `excluded`, a live launch reserves ([`SlotReservation`]), or a live lane runs. Reservations
+/// are read BEFORE the lane records: a launch drops its reservation only after its record is
+/// written, so a selection never misses both.
+pub fn select_idle_slot(
+    root: &Path,
+    excluded: &[&str],
+    live_lanes: impl FnOnce() -> Result<Vec<Option<PathBuf>>, String>,
+) -> Result<&'static str, VerbError> {
+    let mut reserved = excluded.to_vec();
+    reserved.extend(reservation::reserved_slots(root).map_err(VerbError::Failed)?);
+    let live = live_lanes().map_err(VerbError::Failed)?;
+    let populated = |s: &str| slot_bin(root, s).is_file();
+    idle_slot_reserved(root, current_slot(root), previous_slot(root), &live, &reserved, populated)
+        .map_err(|NotIdle::AllInUse| VerbError::NoIdleSlot)
+}
+
 /// The recorded engine of every live lane (a record whose pid is still a llama-server), read
 /// fail-closed: an unreadable registry is an error, never an empty census that would call a
 /// running slot idle.
@@ -367,10 +386,7 @@ pub fn run_verb(args: &[String]) -> Result<String, VerbError> {
                     _ => return Err(usage()),
                 }
             }
-            let live = live_lane_engines().map_err(VerbError::Failed)?;
-            let populated = |s: &str| slot_bin(&root, s).is_file();
-            let slot = idle_slot_reserved(&root, current_slot(&root), previous_slot(&root), &live, &reserved, populated)
-            .map_err(|NotIdle::AllInUse| VerbError::NoIdleSlot)?;
+            let slot = select_idle_slot(&root, &reserved, live_lane_engines)?;
             Ok(root.join(slot).to_string_lossy().into_owned())
         }
         ["promote", slot, stamp] | ["retry", slot, stamp, _] => {

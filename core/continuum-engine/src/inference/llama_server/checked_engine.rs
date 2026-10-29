@@ -6,21 +6,19 @@
 //! `llama-server`. The hold now returns the binary it checked, and the launch runs that path and
 //! nothing else: there is no second resolution on the launch path.
 //!
-//! Custody until the spawned engine owns the slot. Once spawned, the lane record names the
-//! binary, and `engine_slots::idle_slot` never offers a slot a live lane runs to a build. Before
-//! that, the slot's protection is the other half of the same rule: `idle_slot` never offers the
-//! CURRENT slot. [`CheckedEngine::confirm`] re-reads that protection at the launch's brackets,
-//! beside the install receipt's own confirm (before the transition, and right before the spawn):
-//! the validated slot must still be current with the validated stamp. A promotion, a vanished
-//! selector or a rewritten stamp refuses with [`EngineUnpinned::Superseded`]; the replacement is
-//! never launched, and the next reconcile validates the new selection. After the last confirm,
-//! rebuilding the slot needs a promotion away from it AND a further engine build that chooses it,
-//! while the lane record lands as the child spawns.
+//! Custody is a [`SlotReservation`] in the slot owner, taken right after the hold (in `prepare`)
+//! or, for a retained recipe relaunched, before the transition retires the incumbent. Every
+//! builder's idle-slot selection honors it, so no build can choose the slot while the launch
+//! holds it, even after a deploy promotes another slot. The launch drops it once the lane
+//! record names the slot (the record is the custody from then on, as for any running lane).
+//! [`CheckedEngine::confirm`] is an observation, not custody: the slot still holds the
+//! validated stamp. It is read right after reserving (a build that chose the slot first has
+//! already removed its stamp) and again right before the spawn.
 
 use std::path::{Path, PathBuf};
 
 use super::engine_pin::{pinned_engine, EngineUnpinned, PinHeld};
-use crate::inference::engine_slots as slots;
+use crate::inference::engine_slots::{self as slots, SlotReservation};
 
 /// The engine a launch runs, fixed when the pin was held.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,38 +55,47 @@ impl CheckedEngine {
         }
     }
 
-    /// Whether the validated slot is still protected (current, with the validated stamp). An
-    /// operator's engine is theirs: nothing to confirm.
+    /// Take custody of the validated slot, then observe that it still holds the validated build.
+    /// `None` for an operator's engine: theirs, not a slot.
+    pub(super) fn reserve(&self) -> Result<Option<SlotReservation>, EngineUnpinned> {
+        let Self::Slot { root, slot, .. } = self else {
+            return Ok(None);
+        };
+        let reservation =
+            SlotReservation::acquire(root, slot).map_err(|reason| EngineUnpinned::Unreserved {
+                pin: pinned_engine().to_string(),
+                slot: *slot,
+                reason,
+            })?;
+        self.confirm()?;
+        Ok(Some(reservation))
+    }
+
+    /// Observe that the validated slot still holds the validated stamp. An operator's engine is
+    /// theirs: nothing to observe.
     pub(super) fn confirm(&self) -> Result<(), EngineUnpinned> {
         match self {
             Self::Operator { .. } => Ok(()),
             Self::Slot {
                 root, slot, stamp, ..
-            } => custody(
-                *slot,
-                stamp,
-                slots::current_slot(root),
-                slots::slot_stamp(root, slot),
-            ),
+            } => intact(*slot, stamp, slots::slot_stamp(root, slot)),
         }
     }
 }
 
-/// PURE: the validated `slot` (stamped `stamp`) is still in the custody `current` gives it.
-fn custody(
+/// PURE: the validated `slot` still holds `stamp`, its validated build.
+fn intact(
     slot: &'static str,
     stamp: &str,
-    current: Option<&'static str>,
     now_stamp: Option<String>,
 ) -> Result<(), EngineUnpinned> {
-    if current == Some(slot) && now_stamp.as_deref() == Some(stamp) {
+    if now_stamp.as_deref() == Some(stamp) {
         return Ok(());
     }
-    Err(EngineUnpinned::Superseded {
+    Err(EngineUnpinned::Rebuilt {
         pin: pinned_engine().to_string(),
         slot,
         stamp: stamp.to_string(),
-        current,
         now_stamp,
     })
 }
@@ -109,15 +116,17 @@ mod tests {
     }
 
     // what this catches (Codex on #5535 at 1dd2baa2b, the check-then-use race): the pin held on
-    // engine-a, then a deploy promotes engine-b (or the selector vanishes, or engine-a is
-    // rebuilt) before the spawn, and the launch re-resolves `current` and runs engine-b, the
-    // pre-slot install or PATH unchecked. The artifact's program stays engine-a's binary, and
-    // its custody refuses once engine-a is no longer current with the validated stamp; with a
-    // deploy holding the claim (the kept pinned-slot exception) the same promotion still cannot
-    // change what launches.
+    // engine-a, then a deploy promotes engine-b (or the selector vanishes) before the spawn, and
+    // either the launch re-resolves `current` (running engine-b, the pre-slot install or PATH
+    // unchecked) or the next build chooses engine-a and replaces it under the launch. While the
+    // reservation lives the selection never chooses engine-a and the launch keeps running the
+    // validated binary; dropping the reservation releases it; a build that took the slot first
+    // is observed (its stamp is gone or changed) and refused. With and without a deploy holding
+    // the claim (the kept pinned-slot exception).
     #[test]
-    fn a_selection_moved_after_validation_never_changes_what_launches() {
+    fn a_reserved_slot_is_never_built_over_and_the_launch_runs_what_it_validated() {
         let pinned = format!("{}:metal", pinned_engine());
+        let no_lanes = || Ok(Vec::new());
         for deploy_owns_pointers in [false, true] {
             let dir = tempfile::tempdir().expect("test: tempdir");
             let root = dir.path();
@@ -133,50 +142,67 @@ mod tests {
                 .to_string_lossy()
                 .into_owned();
             assert_eq!(checked.program(), validated);
-            assert_eq!(
-                checked.confirm(),
-                Ok(()),
-                "nothing moved: the validated slot launches"
-            );
+            let custody = checked
+                .reserve()
+                .expect("engine-a reserved")
+                .expect("a slot engine has custody");
 
+            // A deploy promotes engine-b; engine-c is held by an installer exclusion, so without
+            // the reservation the only idle slot would be engine-a.
             slots::promote(root, "engine-b", &pinned).expect("test: a deploy promotes engine-b");
+            assert!(
+                matches!(
+                    slots::select_idle_slot(root, &["engine-c"], no_lanes),
+                    Err(slots::VerbError::NoIdleSlot)
+                ),
+                "a reserved slot is never chosen (deploy_owns_pointers = {deploy_owns_pointers})"
+            );
             assert_eq!(
                 checked.program(),
                 validated,
                 "the promotion never redirects the launch"
             );
-            assert!(
-                matches!(
-                    checked.confirm(),
-                    Err(EngineUnpinned::Superseded {
-                        slot: "engine-a",
-                        current: Some("engine-b"),
-                        ..
-                    })
-                ),
-                "the unprotected slot refuses (deploy_owns_pointers = {deploy_owns_pointers})"
+            assert_eq!(
+                checked.confirm(),
+                Ok(()),
+                "the validated build is intact: it launches"
             );
 
-            slots::promote(root, "engine-a", &pinned).expect("test: engine-a current again");
             std::fs::remove_file(root.join("current")).expect("test: the selector vanishes");
             assert_eq!(
                 checked.program(),
                 validated,
                 "never the pre-slot install or PATH"
             );
-            assert!(matches!(
-                checked.confirm(),
-                Err(EngineUnpinned::Superseded { current: None, .. })
-            ));
+            assert_eq!(checked.confirm(), Ok(()));
+            slots::promote(root, "engine-b", &pinned).expect("test: engine-b current again");
 
-            slots::promote(root, "engine-a", &pinned).expect("test: engine-a current again");
+            drop(custody);
+            assert!(
+                matches!(
+                    slots::select_idle_slot(root, &["engine-c"], no_lanes),
+                    Ok("engine-a")
+                ),
+                "the dropped reservation releases the slot to builds"
+            );
+
             engine(root, "engine-a", "e7e1077b3:metal");
             assert!(
                 matches!(
-                    checked.confirm(),
-                    Err(EngineUnpinned::Superseded { now_stamp: Some(ref s), .. }) if s == "e7e1077b3:metal"
+                    checked.reserve(),
+                    Err(EngineUnpinned::Rebuilt {
+                        slot: "engine-a",
+                        ..
+                    })
                 ),
-                "a slot rebuilt under the launch refuses"
+                "a slot a build took before the reservation is observed and refused"
+            );
+            assert!(
+                matches!(
+                    slots::select_idle_slot(root, &["engine-c"], no_lanes),
+                    Ok("engine-a")
+                ),
+                "and that refused reservation released the slot again"
             );
         }
     }

@@ -165,6 +165,7 @@ async fn retiring_page_owner_requires_observed_child_exit() {
         let prepared = Arc::new(PreparedLocalLaunch {
             target: requested.clone(),
             engine: process.checked_engine().unwrap(),
+            engine_custody: Default::default(),
             endpoint: process.root.clone(),
             invocation: invocation.clone(),
             engine_install: engine_install.clone(),

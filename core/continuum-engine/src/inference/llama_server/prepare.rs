@@ -25,6 +25,8 @@ impl LlamaServerProcess {
         // The slot this core's source pins, never whichever one `current` was left naming: an
         // unpinned node refuses here, before the incumbent is touched (`EngineUnpinned`).
         let engine = self.checked_engine()?;
+        // Custody from the moment of validation: no build chooses this slot while it is held.
+        let engine_custody = engine.reserve().map_err(LlamaServerError::EngineUnpinned)?;
         let bin = engine.program().to_string();
         // Resolve the GGUF from the model struct already in hand — no re-fetch by
         // id. No file → fail loud; we never serve a substitute model
@@ -526,6 +528,7 @@ impl LlamaServerProcess {
         Ok(PreparedLocalLaunch {
             target: target.clone(),
             engine,
+            engine_custody: Arc::new(parking_lot::Mutex::new(engine_custody)),
             endpoint: self.root.clone(),
             invocation,
             engine_install,

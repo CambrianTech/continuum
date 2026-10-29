@@ -290,4 +290,35 @@ mod reservations {
         assert_eq!(idle_slot_reserved(root, Some("engine-c"), None, &live, &["engine-a"], |_| true), Err(NotIdle::AllInUse));
         assert_eq!(idle_slot_reserved(root, None, None, &[None], &["engine-a"], |_| true), Err(NotIdle::AllInUse));
     }
+
+    // what this catches (Codex on #5535): a launch reservation that pins a slot forever after
+    // its core crashed, or one dropped while its owner merely could not be inspected (a build
+    // then chose a slot a launch was about to run). A verified-dead owner's reservation decays
+    // and is removed; an unreadable owner or file holds its slot; a file naming no slot fails
+    // the read rather than being ignored; a reservation still being written is not one yet.
+    #[test]
+    fn launch_reservations_hold_until_their_owner_is_verified_gone() {
+        use crate::inference::engine_residency::ProcessProbe;
+        use crate::inference::engine_slots::reservation::reserved_slots_with;
+        let dir = tempfile::tempdir().unwrap();
+        let held = dir.path().join("reservations");
+        std::fs::create_dir_all(&held).unwrap();
+        std::fs::write(held.join("engine-a.10.0"), "10 1700000000\n").unwrap();
+        std::fs::write(held.join("engine-b.20.0"), "20 1700000500\n").unwrap();
+        std::fs::write(held.join("engine-c.30.0"), "garbage").unwrap();
+        std::fs::write(held.join(".engine-a.40.0.tmp"), "").unwrap();
+        let probe = |pid: u32| match pid {
+            10 => ProcessProbe::Absent,
+            20 => ProcessProbe::Unreadable,
+            _ => ProcessProbe::Present(1),
+        };
+        let mut reserved = reserved_slots_with(dir.path(), probe).unwrap();
+        reserved.sort_unstable();
+        assert_eq!(reserved, vec!["engine-b", "engine-c"], "dead decays; unreadable and garbled hold");
+        assert!(!held.join("engine-a.10.0").exists(), "a verified-dead owner's file is removed");
+
+        std::fs::write(held.join("engine-z.50.0"), "50 1\n").unwrap();
+        assert!(reserved_slots_with(dir.path(), probe).is_err(), "an unknown reservation fails closed");
+        assert_eq!(reserved_slots_with(Path::new("/nonexistent-engine-root"), probe), Ok(Vec::new()));
+    }
 }

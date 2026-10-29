@@ -36,10 +36,10 @@ pub enum LlamaServerError {
     #[error("incumbent retirement remains unverified; endpoint suspended: {0}")]
     RetirementPending(String),
     /// No slot holding this core's pinned engine is current, so no owned engine launches. Raised
-    /// in `prepare` and at the launch's first custody read, before any transition: an incumbent
-    /// keeps serving and its custody stands. `Superseded` can also come at the last read before
-    /// the spawn, after the transition: nothing is spawned, and the next reconcile launches the
-    /// newly selected slot once it validates.
+    /// in `prepare` and when the launch reserves its slot, before any transition: an incumbent
+    /// keeps serving and its custody stands. `Rebuilt` can also come at the last observation
+    /// before the spawn, after the transition: nothing is spawned, and the next reconcile
+    /// validates the slots again.
     #[error("no owned engine launches: {0}")]
     EngineUnpinned(super::engine_pin::EngineUnpinned),
 }

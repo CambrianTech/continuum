@@ -27,8 +27,9 @@ impl LlamaServerProcess {
         let (_, port) = split_host_port(&self.root);
         let lanes = target.parallel_lanes();
         let total_ctx = target.served_total_ctx();
-        // The checked engine is still its slot's: refused here, the incumbent is never touched.
-        prepared.confirm_engine()?;
+        // Custody of the checked engine's slot, before the incumbent is retired: refused here,
+        // the incumbent is never touched.
+        let engine_custody = prepared.take_engine_custody()?;
         if let Some(receipt) = &engine_install {
             receipt.confirm().await.map_err(LlamaServerError::Spawn)?;
         }
@@ -229,9 +230,8 @@ impl LlamaServerProcess {
                 None
             }
         };
-        // The last custody read before the spawn: the slot checked at prepare is still current
-        // with its stamp, so what spawns is what was validated (`checked_engine`), never a
-        // replacement promoted meanwhile. From the spawn on, its lane record protects the slot.
+        // The last observation before the spawn: the reserved slot still holds the validated
+        // build, so what spawns is what was checked (`checked_engine`).
         prepared.confirm_engine()?;
         // Clone before OS spawn, so allocation cannot strand an uninstalled child.
         let child_install = engine_install.clone();
@@ -330,6 +330,7 @@ impl LlamaServerProcess {
         // port; the registry is what closes the ephemeral-lane leak. Same as the
         // pidfile, a write failure only DISARMS future reclaim for this lane — it
         // never fails the serve.
+        let mut lane_recorded = false;
         if let Some(pid) = child_pid {
             let role = if self.is_live_lane {
                 crate::inference::lane_registry::LaneRole::Live
@@ -355,14 +356,19 @@ impl LlamaServerProcess {
             };
             // Record + release under the page-dir guard (one critical section); a
             // failed write keeps the reservation for the lane's lifetime.
-            if let Err(e) = page_dir_reservation.handoff(&rec) {
-                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_registry",
+            match page_dir_reservation.handoff(&rec) {
+                Ok(()) => lane_recorded = true,
+                Err(e) => continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_registry",
                     port = port,
                     error = e.to_string().as_str(),
                     "lane registry write failed — orphan reclaim disarmed for this lane",
-                );
+                ),
             }
         }
+        // The lane record names the engine now, and is the slot's custody from here on, as for
+        // any running lane: the launch's reservation is released. Without a record it stays
+        // beside the child until its exit, like the page-dir reservation below.
+        *self.retained_engine_slot.lock() = if lane_recorded { None } else { engine_custody };
 
         // A reservation the handoff could not release (record write failed) lives
         // as long as the child does — beside it, not in this frame.

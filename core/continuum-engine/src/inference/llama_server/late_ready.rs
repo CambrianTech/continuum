@@ -336,6 +336,7 @@ mod tests {
         Arc::new(PreparedLocalLaunch {
             target,
             engine: super::super::checked_engine::CheckedEngine::Operator { program: "llama-server".into() },
+            engine_custody: Default::default(),
             endpoint: root.to_string(),
             invocation: crate::inference::lane_args::LaneInvocation { args: vec!["-c".into(), ctx.into()], ..Default::default() },
             engine_install: None,
