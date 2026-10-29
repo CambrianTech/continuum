@@ -249,3 +249,21 @@ fn the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running() 
     assert!(!super::consumer_uses_service("macos"));
     assert!(!super::consumer_uses_service("linux"));
 }
+
+// what this catches (card 9beab2da, Codex on #5551): a training hold charged as a handoff
+// failure (three of them give up on the build) or kept as a durable resource deferral that waits
+// for an explicit retry; it releases on its own, so it is rechecked on the next pass with nothing
+// charged. The other classes keep their charges.
+#[test]
+fn a_held_handoff_charges_no_attempt_and_keeps_no_deferral() {
+    use continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition;
+    let core = std::path::PathBuf::from("prepared-core");
+    let held = "the engine is held for live work (genome-train:8b46862c on ggml-org/Qwen3.8-27B-GGUF (engine pid 37904, port 58057))";
+    assert_eq!(super::handoff_refusal(PublishedCoreError::Held(held.into()), core.clone()), super::HandoffRefusal::Blocked(held.into()));
+    assert_eq!(super::handoff_refusal(PublishedCoreError::SourcePending("pending".into()), core.clone()), super::HandoffRefusal::Blocked("pending".into()));
+    assert_eq!(super::handoff_refusal(PublishedCoreError::Artifact("refused".into()), core.clone()), super::HandoffRefusal::Failed("refused".into()));
+    assert!(matches!(
+        super::handoff_refusal(PublishedCoreError::OperationalBlocked("installer".into()), core),
+        super::HandoffRefusal::Deferred(d) if d.condition == ResourceCondition::OperationalUncertainty && d.reason == "installer"
+    ));
+}

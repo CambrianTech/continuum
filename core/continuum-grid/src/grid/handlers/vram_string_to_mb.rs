@@ -302,7 +302,7 @@ pub(super) fn job_signal(pid: i32, signal: JobSignal) -> Result<(), String> {
     {
         match signal {
             JobSignal::Terminate => {
-                crate::inference::lane_process::kill9(pid as u32);
+                continuum_process::kill9(pid as u32);
                 Ok(())
             }
             JobSignal::Stop | JobSignal::Continue => Err(

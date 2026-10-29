@@ -27,7 +27,7 @@ struct Gate {
     processes_in_flight: usize,
     /// What admitted work started and couldn't confirm ended (Codex root on #5026).
     lingering: Lingering,
-    /// What that work's callers held for it (the engine's `lane_process::holding`, a
+    /// What that work's callers held for it (the engine's `continuum_process::holding`, a
     /// checkout's sync lock): kept while anything lingers, released when a re-check finds
     /// nothing left (Codex reviewer on #5037).
     kept: Vec<crate::system_resources::disk_reporters::Kept>,
@@ -108,7 +108,7 @@ impl HandsLease {
         g.lingering.unknown.push(why);
     }
 
-    /// Keep what an unconfirmed end's caller held for it (the engine's `lane_process::holding`)
+    /// Keep what an unconfirmed end's caller held for it (the engine's `continuum_process::holding`)
     /// with what lingers, so an exclusion over a tree nobody confirmed ended stays held until a
     /// re-check finds nothing left ([`retain_processes`]), never only until the end's task returns.
     pub fn keep_held(&self, kept: &[crate::system_resources::disk_reporters::Kept]) {

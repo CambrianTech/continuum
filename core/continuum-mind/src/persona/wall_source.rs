@@ -3,7 +3,7 @@
 //!
 //! ### Why this source exists (the shared-layer grounding)
 //!
-//! The roster ([`RoomRosterSource`](super::room_roster_source)) grounds a
+//! The roster (the `RosterViewState` source) grounds a
 //! persona in WHO is present; the doctrine
 //! ([`RoomDoctrineSource`](super::room_doctrine_source)) in WHAT KIND of
 //! room it is (the participation contract). The WALL grounds it in the
@@ -46,9 +46,9 @@
 //!   defer-tolerant grounding faculty, like the active-work + workspace-map
 //!   sources.
 //! - Atomic unit = ONE pinned post. Unlike the doctrine (a single current
-//!   contract) the wall is a BOARD of many posts, so this source packs
-//!   whole posts greedily within budget and stamps `truncated` when posts
-//!   remain beyond it (ruling a: nothing resumes — see expand_command).
+//!   contract) the wall is a BOARD of many posts, so this source delivers
+//!   every pinned post as its own keyed item (key = post id) with a summary
+//!   and a pointer; the prompt view's one allocation picks each level.
 
 use std::sync::Arc;
 
@@ -56,16 +56,9 @@ use airc_core::doctrine::WallPostPublished;
 use airc_lib::AircError;
 use async_trait::async_trait;
 
-use crate::cognition::rag_budget::{
-     RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
-};
+use crate::cognition::rag_budget::{RagContext, RagDelivery, RagItem, RagSource};
 
 use crate::cognition::faculty_ids::WALL;
-
-/// Token estimate — the ONE canonical chars/4 estimator
-/// (`cognition::token_budget`), shared by every RAG source so the replay
-/// ledger's numbers match.
-use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
 
 /// Abstract reader over the airc room wall. Production rides on
 /// `airc_lib::Airc::wall_posts`; tests stub it without a daemon. Mirrors
@@ -139,8 +132,7 @@ fn ledgers_for_context(posts: Vec<WallPostPublished>, labels: Option<&CardLabels
             let Ok(ledger) = serde_json::from_str::<crate::experience::ledger::CardLedger>(&post.body) else {
                 return Some(post); // an unreadable ledger renders as it is, unlabelled
             };
-            let short = ledger.card_id.simple().to_string();
-            let short = &short[..8];
+            let short = airc_core::shown_id::shown_form(ledger.card_id);
             let head = match labels.get(&ledger.card_id) {
                 Some((_, state)) if crate::cognition::card_facts::is_concluded(state) => return None,
                 Some((title, state)) => {
@@ -281,124 +273,32 @@ impl WallSource {
         format!("{}{}", Self::label(post), post.body)
     }
 
-    /// Fit a single post to `budget` tokens, truncating the BODY (never the
-    /// label) with a marker — used only when the FIRST post of a
-    /// (sub)delivery doesn't fit whole, so partial guidance still grounds the
-    /// persona rather than dropping the post entirely. Same
-    /// `estimate_tokens(s) = s.chars()/4 + 1` arithmetic the doctrine source
-    /// fits under: a string of `4*budget-4` chars estimates to exactly
-    /// `budget`. Returns `None` when the budget can't carry the label +
-    /// marker PLUS at least one char of real BODY — a block that's only the
-    /// label and a truncation marker spends tokens to say nothing, strictly
-    /// worse than no block (the bug an over-eager char-truncation hits when
-    /// the category prefix alone fills a tiny budget).
-    fn fit_post(post: &WallPostPublished, budget: u32) -> Option<String> {
-        if budget == 0 {
-            return None;
-        }
-        let rendered = Self::render(post);
-        if estimate_tokens(&rendered) <= budget {
-            return Some(rendered);
-        }
-        const MARKER: &str = "\n…[post truncated]";
-        let label = Self::label(post);
-        let reserved = label.chars().count() + MARKER.chars().count();
-        let max_chars = (budget as usize).saturating_mul(4).saturating_sub(4);
-        if max_chars <= reserved {
-            // No room for the label + marker plus any real body content.
-            return None;
-        }
-        let body_chars = max_chars - reserved;
-        let body_prefix: String = post.body.chars().take(body_chars).collect();
-        if body_prefix.is_empty() {
-            return None;
-        }
-        Some(format!("{label}{body_prefix}{MARKER}"))
-    }
-
-    /// Build a [`RagItem`] for one pinned post from already-fitted content.
-    fn item(post: &WallPostPublished, content: String) -> RagItem {
-        let tokens = estimate_tokens(&content);
-        RagItem {
+    /// One pinned post as an item: whole `[category]\n{body}`, keyed by its post id.
+    /// Summary = `[category] <first line>` (a line boundary, never a mid-text cut), only
+    /// when the post has more than that line; pointer = the post id and the verb that
+    /// lists the wall again.
+    fn item(post: &WallPostPublished) -> RagItem {
+        let content = Self::render(post);
+        let first_line = post.body.lines().map(str::trim).find(|l| !l.is_empty());
+        let summary = first_line
+            .map(|line| format!("[{}] {line}", post.category))
+            .filter(|summary| summary.len() < content.len());
+        let mut item = RagItem::whole(
+            post.post_id.to_string(),
             content,
-            tokens,
-            metadata: serde_json::json!({
+            serde_json::json!({
                 "post_id": post.post_id.to_string(),
                 "category": post.category,
                 "supersedes": post.supersedes.map(|u| u.to_string()),
                 "published_by": post.published_by.as_uuid().to_string(),
                 "published_at_ms": post.published_at_ms,
             }),
+        )
+        .with_pointer(format!("[wall post {} ({}): persona/wall/list]", post.post_id, post.category));
+        if let Some(summary) = summary {
+            item = item.with_summary(summary);
         }
-    }
-
-    /// Pack whole pinned posts from `start` greedily within `budget`.
-    /// Returns the packed items, the tokens they consumed, and the index of
-    /// the first UNPACKED post (`Some(i)` → more remain, hand back a cursor;
-    /// `None` → the board is fully delivered).
-    ///
-    /// If the very first candidate doesn't fit whole, it is truncated with a
-    /// marker so partial guidance still lands (mirrors the doctrine source);
-    /// a budget too small to carry even a truncated post yields no block and
-    /// no cursor — the budget regime simply can't carry this board.
-    fn pack(
-        posts: &[WallPostPublished],
-        start: usize,
-        budget: u32,
-    ) -> (Vec<RagItem>, u32, Option<usize>) {
-        let mut items: Vec<RagItem> = Vec::new();
-        let mut used: u32 = 0;
-        let mut i = start;
-        while i < posts.len() {
-            let rendered = Self::render(&posts[i]);
-            let toks = estimate_tokens(&rendered);
-            if used.saturating_add(toks) <= budget {
-                // Whole post fits.
-                items.push(Self::item(&posts[i], rendered));
-                used += toks;
-                i += 1;
-            } else if items.is_empty() {
-                // Nothing packed yet and this post overflows alone →
-                // truncate its body to fill the budget, then stop. A
-                // truncated post fills what remains; the delivery stamps
-                // `truncated` so the caller sees it was cut (ruling a:
-                // nothing resumes from here).
-                if let Some(truncated) = Self::fit_post(&posts[i], budget) {
-                    let item = Self::item(&posts[i], truncated);
-                    used += item.tokens;
-                    items.push(item);
-                }
-                i += 1;
-                break;
-            } else {
-                // Already packed whole posts; stop — the rest stays out of
-                // budget and the delivery stamps `truncated`.
-                break;
-            }
-        }
-        let next = if i < posts.len() { Some(i) } else { None };
-        (items, used, next)
-    }
-
-    /// Wrap a packed slice into a delivery, stamping `truncated` when `next`
-    /// posts remain beyond the budget. Nothing resumes from here (ruling a):
-    /// the positional cursor and its room-binding went out with
-    /// deliver_continuation — the way to see the rest is this source's
-    /// expand_command verb (`persona/wall/list`).
-    fn delivery(
-        &self,
-        items: Vec<RagItem>,
-        used: u32,
-        next: Option<usize>,
-        resolution: ResolutionPreference,
-    ) -> RagDelivery {
-        RagDelivery {
-            source_id: WALL.to_string(),
-            items,
-            tokens_used: used,
-            truncated: next.is_some(),
-            resolution_used: resolution,
-        }
+        item
     }
 }
 
@@ -415,29 +315,12 @@ impl RagSource for WallSource {
         Some("persona/wall/list")
     }
 
-    /// One wall post's title line. A pinned document's NAME is a complete
-    /// statement — she knows the plan exists and can fetch it.
-    fn floor_tokens(&self) -> u32 {
-        32
-    }
-
-    async fn deliver(
-        &self,
-        ctx: &RagContext,
-        budget: u32,
-        resolution: ResolutionPreference,
-    ) -> RagDelivery {
-        let empty = |res| RagDelivery {
-            source_id: WALL.to_string(),
-            items: Vec::new(),
-            tokens_used: 0,
-            truncated: false,
-            resolution_used: res,
-        };
+    async fn deliver(&self, ctx: &RagContext) -> RagDelivery {
+        let empty = || RagDelivery::empty(WALL);
 
         // Persona-scoped (defense in depth, same shape as the roster/doctrine).
         if ctx.persona_id != self.persona_id {
-            return empty(ResolutionPreference::Placeholder);
+            return empty();
         }
         // ROOM-SCOPED, RESOLVED FROM THE TURN — not from the room this source was
         // bound to at construction. `supervisor.rs` builds it with
@@ -461,7 +344,7 @@ impl RagSource for WallSource {
                     persona_id = %ctx.persona_id,
                     "synthetic nil-room context — no wall, and no fallback to the bound room"
                 );
-                return empty(ResolutionPreference::Placeholder);
+                return empty();
             }
             Some(turn) => Some(turn),
             // An UNSTAMPED context (background consolidation, an idle tick) keeps the
@@ -506,7 +389,7 @@ impl RagSource for WallSource {
                     persona_id = %self.persona_id,
                     "wall_posts: read failed — empty delivery, cognition stays up"
                 );
-                return empty(ResolutionPreference::Placeholder);
+                return empty();
             }
         };
         continuum_base::probe!(
@@ -519,7 +402,7 @@ impl RagSource for WallSource {
         );
         // No pinned posts → no block (normal: most rooms have an empty wall).
         if posts.is_empty() {
-            return empty(resolution);
+            return empty();
         }
 
         // Ledgers, standings, recipes, child announcements and activity bundles are
@@ -529,22 +412,19 @@ impl RagSource for WallSource {
             crate::experience::wall_records::current_wall_records(posts),
             self.reader.card_labels(effective_room).await.as_ref(),
         );
-        let (items, used, next) = Self::pack(&posts, 0, budget);
-        if items.is_empty() {
-            // Budget too small to carry even a truncated first post.
-            return empty(resolution);
+        // Posts a concluded-ledger rule dropped can leave the board empty.
+        if posts.is_empty() {
+            return empty();
         }
+        let items: Vec<RagItem> = posts.iter().map(Self::item).collect();
 
         tracing::debug!(
             persona_id = %self.persona_id,
-            budget,
             posts = posts.len(),
-            delivered = items.len(),
-            tokens = used,
             "wall_posts: deliver"
         );
 
-        self.delivery(items, used, next, resolution)
+        RagDelivery::of(WALL, items, false)
     }
 
 }

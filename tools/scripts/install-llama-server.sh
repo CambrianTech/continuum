@@ -452,7 +452,7 @@ if [ -n "$EXE" ]; then
     cp -f "$_dll" "$INSTALL_DIR/" || {
       echo "✗ FATAL: could not install $(basename "$_dll") into $INSTALL_DIR." >&2
       echo "  On Windows this usually means a running llama-server holds it open." >&2
-      echo "  Stop the core (\`continuum stop\`) and rerun; do NOT ship a partial set." >&2
+      echo "  Stop the core and its engine (\`continuum stop --engine\`) and rerun; do NOT ship a partial set." >&2
       exit 1
     }
   done

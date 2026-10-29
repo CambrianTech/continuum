@@ -61,7 +61,7 @@ impl LlmDeliberationFaculty {
     /// reserves the head the next epoch would hold, so a turnover can adopt it and the shadow
     /// receipt (`delib.tool_head.epoch`) measures it. It changes what is SENT only on a server
     /// that takes `tail_tools`, where a verb outside the head stays callable.
-    fn with_learned_head<'a>(&'a self, selected: SelectedSurface<'a>, ws: &Workspace) -> SelectedSurface<'a> {
+    fn with_learned_head<'a>(&'a self, selected: SelectedSurface<'a>, ws: &Workspace, budget: usize) -> SelectedSurface<'a> {
         let Some(memory) = self.working_memory.as_deref() else {
             return selected;
         };
@@ -69,7 +69,6 @@ impl LlmDeliberationFaculty {
             return selected;
         };
         let binding = self.binding.load();
-        let budget = super::super::context_budget::ContextBudget::from_window_unbounded(binding.context_window).tool_surface_tokens();
         let head = memory.tool_head();
         let next = head.next(
             ws.now_ms.map_or_else(continuum_base::time::EpochMs::now, continuum_base::time::EpochMs::from_millis), // map_or_else: a workspace that carries no clock reading decides at now
@@ -92,36 +91,21 @@ impl LlmDeliberationFaculty {
         &self.surface
     }
 
-    /// The tool surface THIS turn sends, what it COSTS, and WHY, decided once and consulted
-    /// by both the budget and the request (card dec1a7ff: when the accounting priced the
-    /// registry while the request sent hands, the conversation was trimmed to fit room that
-    /// was never occupied).
-    ///
-    /// Its inputs are the activity's declaration and the SERVED window, never the turn:
-    /// consecutive acts in one activity send byte-identical schemas, so the prefix after the
-    /// system prompt survives (goal 10; [`crate::cognition::tool_surface`] has the why).
-    pub fn select_tool_surface(&self, ws: &Workspace) -> SelectedSurface<'_> {
-        self.with_learned_head(self.select_activity_surface(ws), ws)
+    /// Whole demand before focus allocation. The epoch owner records this beside
+    /// the grant; the grant never becomes a demand observation.
+    pub fn tool_claim_tokens(&self, ws: &Workspace) -> (usize, usize) {
+        let held = self.working_memory.as_ref().and_then(|wm| wm.tool_head().held()).unwrap_or_default(); // unwrap_or_default: no learned head contributes no extra verbs
+        self.surface.claim_with_head(&ws.room_affordances, &held)
     }
 
-    /// The activity's own surface, without her learned head: what she is offered when her
-    /// destination refused the tail (`InferenceError::TailToolsUnreachable`), so every verb she
-    /// sees is one she can call.
-    pub(super) fn select_activity_surface(&self, ws: &Workspace) -> SelectedSurface<'_> {
-        let selected = self.surface.select(&ws.room_affordances, self.binding.load().context_window);
-        if !ws.room_affordances.is_empty()
-            && !matches!(selected.reason, SurfaceReason::RoomAffordances | SurfaceReason::NoTools)
-        {
-            continuum_base::probe!(
-                class = "delib.surface.room_affordances_unmatched",
-                persona = %self.persona_name,
-                room = %ws.activity_room_id,
-                declared = ws.room_affordances.len(),
-                "the room's recipe declares affordances and none names a native verb: \
-                 the rule binds nothing here; offering her hands instead"
-            );
-        }
-        selected
+    /// Called at epoch start with the ONE allocation's tools grant. Retain the
+    /// returned selection for accounting and the wire until the next epoch.
+    pub fn select_tool_surface_granted(&self, ws: &Workspace, grant_tokens: usize) -> Result<SelectedSurface<'_>, usize> {
+        let (_, want) = self.tool_claim_tokens(ws);
+        let activity = self.surface.select_granted(&ws.room_affordances, grant_tokens)?;
+        let selected = self.with_learned_head(activity, ws, grant_tokens);
+        if selected.tokens > grant_tokens { return Err(selected.tokens); }
+        Ok(selected.with_demand(want))
     }
 
     /// Her view started a new epoch, the one moment her head may change: her tool head learns
@@ -181,7 +165,7 @@ impl LlmDeliberationFaculty {
         if self.surface.registry().is_empty() {
             return; // no hands offered — nothing to fit, nothing to warn about
         }
-        let window = self.binding.load().context_window;
+        let window = self.working_window();
         let needed = self.min_window_for_agentic_surface();
         if window >= needed {
             return;

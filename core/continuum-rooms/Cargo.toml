@@ -1,0 +1,29 @@
+[package]
+name = "continuum-rooms"
+version = "0.1.0"
+edition = "2021"
+publish = false
+# Handoff stamps the build it ran on (CONTINUUM_BUILD_GIT_SHA): core's build script is the one owner.
+build = "../continuum-core/build.rs"
+description = "A mind's rooms and cards: card holders, the handoff record, the room directory and roster, the mind room, presence glyphs, the bounded room ledger. A leaf of the cognition crate tree (docs/architecture/COGNITION-CRATE-TREE.md)."
+
+[features]
+# Test-only helpers other crates' tests use (BoundedRoomLedger::get); never in a production link.
+test-fixtures = []
+
+[dependencies]
+continuum-base = { path = "../continuum-base" }
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-experience = { path = "../continuum-experience" }
+continuum-positron = { path = "../continuum-positron" }
+continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }
+airc-core.workspace = true
+airc-blobs.workspace = true
+airc-lib.workspace = true
+airc-work.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+tracing.workspace = true
+uuid.workspace = true

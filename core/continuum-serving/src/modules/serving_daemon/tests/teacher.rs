@@ -32,13 +32,20 @@ async fn explicit_teacher_batch_keeps_shared_generation_owned_until_terminal() {
     crate::model_registry::init_global().expect("model registry for real teacher adapter");
     use crate::cognition::eval::EvalTask;
     use crate::cognition::eval::TeacherBatchRequest;
-    use axum::{routing::post, Router};
+    use axum::{routing::{get, post}, Router};
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
     let quoted_body = Arc::new(std::sync::Mutex::new(None::<axum::body::Bytes>));
     let quotes = Arc::new(AtomicUsize::new(0));
-    let app = Router::new().route("/v1/chat/completions/input_tokens", post({
+    // The shared llama adapter requires authoritative slot geometry before it
+    // can admit this teacher request. Match the fixture serving snapshot below.
+    let app = Router::new().route("/props", get(|| async {
+        axum::Json(serde_json::json!({
+            "total_slots": 2,
+            "default_generation_settings": {"n_ctx": 32768}
+        }))
+    })).route("/v1/chat/completions/input_tokens", post({
             let quoted_body = quoted_body.clone(); let quotes = quotes.clone();
             move |body: axum::body::Bytes| {
                 let quoted_body = quoted_body.clone(); let quotes = quotes.clone();

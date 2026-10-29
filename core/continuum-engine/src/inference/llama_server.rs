@@ -97,6 +97,7 @@ use engine_install::{
     ENGINE_STALE,
 };
 mod snapshot;
+pub mod serving_hold;
 use snapshot::SERVING_STATE;
 pub use snapshot::{
     await_ready_serving, await_snapshot_resettle, current_serving, has_reconciled,
@@ -147,6 +148,9 @@ pub use ephemeral::{
 
 mod control_impl;
 mod launch;
+mod ready_tail;
+mod late_ready;
+mod stderr_sink;
 mod adopted_retirement;
 mod placement_stamp;
 mod prepare;

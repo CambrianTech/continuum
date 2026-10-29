@@ -243,14 +243,13 @@ impl WorkingMemory {
     }
 
     /// Attach her stated reasoning for the act just recorded to the open views it touched,
-    /// so each view carries what she understood, not only how far she read. Clipped to the
-    /// window-relative echo budget her other stated reasoning uses.
+    /// so each view carries what she understood, not only how far she read. The note is the
+    /// intent's label, its first line: the same shape rule a result's header uses, never a size.
     pub fn annotate_open_views(&self, intent: &str) {
         let Some(seq) = self.next_action_seq.load(Ordering::Relaxed).checked_sub(1) else {
             return;
         };
-        let max_chars = self.budget().echoed_arg_chars();
-        self.open_views.lock().annotate(seq, intent, max_chars);
+        self.open_views.lock().annotate(seq, &crate::cognition::act_observe::intent_label(intent));
     }
 
     pub(crate) fn record_receipt_measured(
@@ -331,10 +330,11 @@ impl WorkingMemory {
                     scope: scope.clone(),
                     operation: label,
                     head: Some(archive_head(seq, a, &acts, budget.trail_head_chars())),
-                    summary: result_summary(&tail, &acts, &budget),
+                    summary: result_summary(&tail, &acts),
                     result: Some(tail),
                     handle,
                     written_pointer: None,
+                    stored_chars: None,
                 },
                 budget.receipt_archive_chars(),
             );
@@ -348,7 +348,8 @@ impl WorkingMemory {
         // the cap was then moved to settlement only. A coding turn is 100+ acts between
         // settlements: on the M5 (2026-10-16) the rings persisted at 213 results / 686k
         // chars, 155 / 1.09M, 123 / 442k, 49 / 138k, and fit_messages was the only bound.
-        self.collapse_results_over_cap();
+        // Now a storage budget (FOCUS rule 7): bodies leave RAM, never her view.
+        self.evict_resident_results();
         // Head into the rolling recency trail: proprioception ("I did #n X") + the
         // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
         // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the
@@ -488,7 +489,7 @@ pub(crate) fn operation_level(text: &str, act: Option<&Observation>) -> Option<S
 /// an error or a second file after a long read is never lost: one code outline over the whole
 /// batch dropped every unnumbered line after the first numbered one (Codex on #5422). `None` when
 /// the result is its own best summary (more than a quarter of it).
-fn result_summary(result: &str, acts: &[Observation], budget: &crate::cognition::context_budget::ContextBudget) -> Option<String> {
+fn result_summary(result: &str, acts: &[Observation]) -> Option<String> {
     use continuum_context::levels::LEVEL_RATIO;
     let level = operation_level;
     match acts {
@@ -497,7 +498,7 @@ fn result_summary(result: &str, acts: &[Observation], budget: &crate::cognition:
         many => {
             // Each part is the act as the receipt shows it (its header over its humanized body),
             // at its own level: the same seam the single-act branch reads through `result`.
-            let parts: String = many.iter().map(|act| act.render_summary_part(budget, |body| level(body, Some(act)))).collect();
+            let parts: String = many.iter().map(|act| act.render_summary_part(|body| level(body, Some(act)))).collect();
             (parts.chars().count() * LEVEL_RATIO <= result.chars().count()).then_some(parts)
         }
     }

@@ -1,0 +1,23 @@
+[package]
+name = "continuum-engram"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "A mind's engrams: the engram entity and graph, recall metadata and ranking, focus and its policy, the turn trace, redaction, the citizen home layout. A leaf of the cognition crate tree (docs/architecture/COGNITION-CRATE-TREE.md)."
+
+[dependencies]
+thiserror.workspace = true
+continuum-base = { path = "../continuum-base" }
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-engine = { path = "../continuum-engine" }
+async-trait.workspace = true
+dashmap = "6.1"
+serde.workspace = true
+serde_json.workspace = true
+ts-rs.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"

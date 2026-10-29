@@ -525,17 +525,15 @@ impl ToolExecutor for CommandToolExecutor {
         &self,
         calls: &[NativeToolCall],
         ctx: &ToolExecutionContext,
-        max_result_chars: usize,
     ) -> Result<NativeBatchOutcome, ToolError> {
         // No memory records this batch's handles, so its saves are pinned only while it runs.
-        self.execute_native_batch_pinned(calls, ctx, max_result_chars, &spill::LivePin::new()).await
+        self.execute_native_batch_pinned(calls, ctx, &spill::LivePin::new()).await
     }
 
     async fn execute_native_batch_pinned(
         &self,
         calls: &[NativeToolCall],
         ctx: &ToolExecutionContext,
-        max_result_chars: usize,
         pin: &spill::LivePin,
     ) -> Result<NativeBatchOutcome, ToolError> {
         // Scope the persona's connection to THIS turn's room (the third ID tier);
@@ -677,12 +675,12 @@ impl ToolExecutor for CommandToolExecutor {
                     // 2026-10-16: a 248-line read arrived as "1 lines (13449 chars)").
                     let full = crate::cognition::tool_executor::spill::result_text(&value);
                     {
-                        // Whole, or saved whole and handed back as its handle: never a
+                        // Saved whole and handed back whole with its handle: never a
                         // fragment. The HANDLE rides the result type-level so working
                         // memory can leave a queryable pointer when this result is later
                         // evicted (collapse, never delete — 2026-08-24).
                         let (content, custody) =
-                            pin.whole_or_handle(full, max_result_chars, ctx.persona_id).into_parts();
+                            pin.whole_or_handle(full, ctx.persona_id).into_parts();
                         NativeToolResult {
                             tool_use_id,
                             content,
@@ -730,10 +728,9 @@ impl ToolExecutor for CommandToolExecutor {
                         verdict: ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed),
                         dispatch_handle: None,
                     });
-                    // The same one decision as a success: whole, or saved and handed back.
+                    // The same custody as a success: saved whole, handed back whole.
                     let (content, custody) = pin.whole_or_handle(
                         persona_tool_error(attempted, raw),
-                        max_result_chars,
                         ctx.persona_id,
                     )
                     .into_parts();
@@ -840,7 +837,7 @@ pub mod test_support {
             input,
         }];
         let out = exec
-            .execute_native_batch(&calls, &ctx(), 8000)
+            .execute_native_batch(&calls, &ctx())
             .await
             .expect("batch itself succeeds — a failed CALL is a result, not a batch error");
         let r = &out.results[0];

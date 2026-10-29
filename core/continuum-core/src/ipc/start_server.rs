@@ -71,6 +71,7 @@ pub fn start_server(
     boot_mode: crate::runtime::BootMode,
 ) -> std::io::Result<()> {
     install_kernel_extensions();
+    continuum_base::probe!(class = "boot.step", step = "kernel_extensions_installed", "kernel extensions installed; the socket path and the model registry are next");
     let phase_started =
         model_registry_boot::prepare_socket_and_load_model_registry(socket_path, boot_mode)?;
 

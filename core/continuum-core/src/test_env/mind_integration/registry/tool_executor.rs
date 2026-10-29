@@ -57,7 +57,7 @@ async fn an_unprojected_command_is_untouched_at_the_executor() {
         input: json!({}),
     }];
     let out = exec
-        .execute_native_batch(&calls, &ctx(), 8000)
+        .execute_native_batch(&calls, &ctx())
         .await
         .expect("batch ok");
     assert_eq!(out.results[0].is_error, None);

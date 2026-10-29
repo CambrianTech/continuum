@@ -635,3 +635,23 @@ fn cannot_attest_refuses_reboot_and_never_renders_as_first_rollout() {
     assert!(!render_graceful_outcome(&GracefulStop::Durable("saved".into())).0);
     assert!(!render_graceful_outcome(&GracefulStop::NothingRunning).0);
 }
+
+// what this catches (card 9beab2da, Codex on #5551 at 04b1aa49b): a hold that decoded but whose
+// cause is Unknown (the residency record unreadable) mapped to Free, so the handoff proceeded
+// past work it could not see. Holds decoded from serving/status's own wire shape: none is Free,
+// resident work is LiveWork, an Unknown cause is Unreadable (deferred, forceable).
+#[test]
+fn a_decoded_hold_of_unknown_cause_is_unreadable_never_free() {
+    use continuum_cli_lifecycle::deploy_hold::HoldObservation;
+    use continuum_core::inference::llama_server::serving_hold::ServingHold;
+    let decode = |held: serde_json::Value| serde_json::from_value::<ServingHold>(held).expect("test: a serving/status held_for");
+    assert_eq!(observation_of(None), HoldObservation::Free);
+    let resident = decode(json!({"sinceMs": 1, "by": {"kind": "resident", "work": [{
+        "job": "8b46862c-a328-4904-9444-2ae9eeab143f", "consumer": "genome-train:8b46862c-a328-4904-9444-2ae9eeab143f",
+        "baseModel": "ggml-org/Qwen3.8-27B-GGUF", "enginePid": 37904, "engineStartedS": 1793118524, "port": 58057}]}}));
+    assert!(matches!(observation_of(Some(&resident)), HoldObservation::LiveWork(work) if work.contains("genome-train:8b46862c")));
+    let unknown = decode(json!({"sinceMs": 1, "by": {"kind": "unknown", "reason": "the residency record is unreadable"}}));
+    assert!(matches!(observation_of(Some(&unknown)), HoldObservation::Unreadable(why) if why.contains("residency record is unreadable")));
+    let empty = decode(json!({"sinceMs": 1, "by": {"kind": "resident", "work": []}}));
+    assert_eq!(observation_of(Some(&empty)), HoldObservation::Free);
+}

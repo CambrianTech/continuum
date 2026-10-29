@@ -7,19 +7,26 @@
     // what this catches (Cormac's chain test on #4946, card 3cef97ef; job 97e081e2): the WHOLE
     // path of a POST lost after the engine took the run. The engine's answer outlasts the POST's
     // wait, the core asks GET /train, finds this job's run, watches it to its end, and the job
-    // completes with its adapter collected: not failed while the engine trains, unadoptable.
+    // completes with its adapter collected: not failed while the engine trains, unadoptable. And
+    // (card ea157b1a) the examples it trained owe serving nothing more: her demand for them clears
+    // at the finish, and only there.
     #[tokio::test]
     pub(super) async fn a_run_whose_post_is_lost_is_watched_to_its_end_and_completes() {
         let train = tempfile::tempdir().expect("test: dir");
         let jobs = tempfile::tempdir().expect("test: dir");
         let (url, server, seen) = fake_lane(train.path().to_path_buf(), "lost_post").await;
-        let t = EngineLoraFineTuner::for_test(url, train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        let mut t = EngineLoraFineTuner::for_test(url, train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        t.demand_store = Some(jobs.path().join("training-demand"));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let demand = crate::genome::fine_tuning::training_demand::TrainingDemand::in_dir(t.demand_store.as_deref(), r.persona_id);
+        let parked_before: Vec<(String, u32)> = r.dataset.examples.iter().map(|e| (crate::genome::fine_tuning::training_demand::TrainingDemand::key_of(e), 65_536)).collect();
+        demand.record(&parked_before, &[], None).expect("test: her examples waited for a window");
         let h = t.create_job(r).await.expect("test: create");
         let end = wait_terminal(&t, &h).await;
         assert!(seen.lock().unwrap().is_some(), "the run was posted");
         assert!(matches!(end, TrainingStatus::Completed { .. }), "reconciled and watched to its end: {end:?}");
+        assert_eq!(demand.waiting(), 0, "the run trained them: her demand is met");
         server.abort();
     }
 
@@ -35,11 +42,17 @@
         let footprints = jobs.path().join("footprints.json");
         let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), 6 * 1024 * 1024 * 1024);
         t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 1536)));
+        t.demand_store = Some(jobs.path().join("training-demand"));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        // card ea157b1a: her examples were waiting; this run is sent them and refused
+        let demand = crate::genome::fine_tuning::training_demand::TrainingDemand::in_dir(t.demand_store.as_deref(), r.persona_id);
+        let parked_before: Vec<(String, u32)> = r.dataset.examples.iter().map(|e| (crate::genome::fine_tuning::training_demand::TrainingDemand::key_of(e), 65_536)).collect();
+        demand.record(&parked_before, &[], None).expect("test: her examples waited for a window");
         let h = t.create_job(r).await.expect("test: create");
         let end = wait_terminal(&t, &h).await;
         assert!(matches!(end, TrainingStatus::Failed { .. }), "refused: {end:?}");
+        assert_eq!(demand.waiting(), parked_before.len(), "sent and refused is not trained: her demand stands");
         let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: the refusal filed a footprint")).expect("test: json");
         let filed: Vec<u64> = rows.as_object().expect("test: rows").values().filter_map(|r| r["bytes"].as_u64()).collect();
         assert_eq!(filed, vec![(12_654.1f64 * 1024.0 * 1024.0) as u64], "the refused graph is filed");
@@ -100,7 +113,7 @@
         let dir = tempfile::tempdir().expect("test: dir");
         let store = Footprints::at(dir.path().join("fp.json"));
         let shape = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: true, chunk: 256, recompute: true };
-        store.record_with(&shape, 9 * gib, false, Uuid::nil()).expect("test: graph-only");
+        store.record_with(&shape, 9 * gib, false, None, Uuid::nil()).expect("test: graph-only");
         assert_eq!(store.get(&shape), None, "a graph-only row leases nothing: the shape calibrates");
         assert!(store.rows_like(&shape).is_empty(), "and is not fitted");
         // regression for card 030d70f0 (the 5090, 84 of 108 jobs failed): her refusals were filed
@@ -108,7 +121,7 @@
         // plan obeys, though the fit ignores it: at the floor chunk it caps the window.
         assert_eq!(store.bound(&shape), Some(9 * gib), "a graph-only row still bounds its shape");
         let served = Shape { window: 68_608, chunk: TRAINING_CHUNK_MIN, ..shape.clone() };
-        store.record_with(&served, 13 * gib, false, Uuid::nil()).expect("test: graph-only refusal at the served window");
+        store.record_with(&served, 13 * gib, false, None, Uuid::nil()).expect("test: graph-only refusal at the served window");
         let (rows, bounds) = (store.rows_like(&served), store.bound_rows_like(&served));
         assert!(rows.is_empty(), "the refusal is not fitted");
         assert!(choose_window(68_608, free, &rows, &bounds).window < 68_608, "but the next plan steps under the refused window");
@@ -116,15 +129,24 @@
         // engine's DEFAULT chunk, 18.6 GB, so the floor-chunk cap never sees it. The chunk ladder
         // must: it read None there and calibrated chunk 512 again each time.
         let default_chunk = Shape { window: 68_608, chunk: train_chunk_for(68_608, TRAINING_CHUNK), ..shape.clone() };
-        store.record_with(&default_chunk, 18_587_879_424, false, Uuid::nil()).expect("test: the 5090's row");
+        store.record_with(&default_chunk, 18_587_879_424, false, None, Uuid::nil()).expect("test: the 5090's row");
         let at = |c: u32| Shape { chunk: c, ..default_chunk.clone() };
         let (chunk, _) = choose_chunk(68_608, free, |c| store.need(&at(c), None).and_then(|n| n.decides(free)));
         assert!(chunk < default_chunk.chunk, "the refused default chunk is never calibrated again");
         assert_eq!(store.need(&at(default_chunk.chunk), Some(gib)).map(|n| (n.bytes, n.source)), Some((18_587_879_424, crate::inference::planning::training_plan::NeedSource::LowerBound)), "a measured bound outranks an optimistic fit");
-        store.record_with(&shape, 3 * gib, true, Uuid::nil()).expect("test: whole run");
+        store.record_with(&shape, 3 * gib, true, None, Uuid::nil()).expect("test: whole run");
         assert_eq!(store.get(&shape), Some(3 * gib), "a whole-run row replaces it, smaller or not");
-        store.record_with(&shape, 20 * gib, false, Uuid::nil()).expect("test: a rolled-back engine");
+        store.record_with(&shape, 20 * gib, false, None, Uuid::nil()).expect("test: a rolled-back engine");
         assert_eq!(store.get(&shape), Some(3 * gib), "and a graph-only row never replaces a whole-run one, larger or not");
+        // card 0d21e644: the row's one flag is stored under its first name, so every row on a
+        // node reads the same after the rename; and the block count an engine reported with a
+        // measurement is what depth rungs are halved from, the latest one standing
+        let text = std::fs::read_to_string(dir.path().join("fp.json")).expect("test: read");
+        assert!(text.contains("\"includesContext\": true") && !text.contains("wholeRun"), "stored under its first name: {text}");
+        assert_eq!(store.layers("m"), None, "no engine has reported the blocks yet: no rung");
+        store.record_refusal(&Shape { window: 3072, ..shape.clone() }, 4 * gib, Some(64), Uuid::nil()).expect("test: a refusal");
+        assert_eq!(store.layers("m"), Some(64));
+        assert_eq!(store.layers("other"), None, "another model's rows say nothing about this one");
     }
 
     // what this catches (Codex on #5261): with no continuum home the store used to resolve to a
@@ -135,7 +157,7 @@
     fn an_unrecorded_store_keeps_nothing_and_has_no_file() {
         let store = Footprints::unrecorded();
         let shape = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: true, chunk: 256, recompute: true };
-        store.record_with(&shape, 3 * 1024 * 1024 * 1024, true, Uuid::nil()).expect("test: an unrecorded record is not an error");
+        store.record_with(&shape, 3 * 1024 * 1024 * 1024, true, None, Uuid::nil()).expect("test: an unrecorded record is not an error");
         assert_eq!(store.get(&shape), None, "nothing was kept: the shape calibrates again");
         assert!(store.read_all().is_empty());
         assert!(store.path.is_none(), "no file to write, cwd-relative or otherwise");
@@ -163,7 +185,7 @@
         // the smallest is never returned into the same refusal forever.
         let dir = tempfile::tempdir().expect("test: tempdir");
         assert_eq!(read_returnable(dir.path()), None, "no record, no return");
-        let refused = Refusal { window: 1536, chunk: 512, graph_bytes: 12_654 << 20, error: "over budget".into() };
+        let refused = Refusal { window: 1536, chunk: 512, depth: None, layers: None, graph_bytes: 12_654 << 20, error: "over budget".into() };
         // #4904's legacy refusal.json is still read, as EngineRefused
         std::fs::write(dir.path().join(LEGACY_REFUSAL_FILE), serde_json::to_string(&refused).expect("test: json")).expect("test: legacy");
         assert_eq!(read_returnable(dir.path()), Some(Returnable::EngineRefused(refused.clone())));
@@ -175,9 +197,13 @@
         let floor = Refusal { window: TRAINING_WINDOW_MIN, chunk: TRAINING_CHUNK_MIN, ..refused.clone() };
         assert!(!refusal_has_smaller_rung(&floor), "the smallest chunk at the smallest window is the floor");
         assert!(
-            refusal_has_smaller_rung(&Refusal { window: 68_608, ..floor }),
+            refusal_has_smaller_rung(&Refusal { window: 68_608, ..floor.clone() }),
             "at the smallest chunk a larger window still steps down: the refusal filed its graph, so the next plan calculates a smaller window"
         );
+        // card 0d21e644: a shallower depth is a rung too, once the engine has reported its blocks
+        assert!(refusal_has_smaller_rung(&Refusal { layers: Some(64), ..floor.clone() }), "every block of 64 adapted: 32 is left");
+        assert!(refusal_has_smaller_rung(&Refusal { depth: Some(2), layers: Some(64), ..floor.clone() }), "two blocks: one is left");
+        assert!(!refusal_has_smaller_rung(&Refusal { depth: Some(1), layers: Some(64), ..floor }), "one block at the floor chunk and window: the ladder ends");
     }
 
     // what this catches (the 5090, 2026-10-11): at a 16,896-token window the engine kept 54 of
@@ -227,9 +253,9 @@
         let dir = tempfile::tempdir().expect("test: dir");
         let store = Footprints::at(dir.path().join("fp.json"));
         let fam = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: true, chunk: 256, recompute: true };
-        store.record_with(&fam, 7, true, Uuid::nil()).expect("test: record");
-        store.record_with(&Shape { window: 68608, chunk: 512, ..fam.clone() }, 9, true, Uuid::nil()).expect("test: record");
-        store.record_with(&Shape { recompute: false, ..fam.clone() }, 99, true, Uuid::nil()).expect("test: record");
+        store.record_with(&fam, 7, true, None, Uuid::nil()).expect("test: record");
+        store.record_with(&Shape { window: 68608, chunk: 512, ..fam.clone() }, 9, true, None, Uuid::nil()).expect("test: record");
+        store.record_with(&Shape { recompute: false, ..fam.clone() }, 99, true, None, Uuid::nil()).expect("test: record");
         let mut got = store.rows_like(&fam);
         got.sort_unstable();
         assert_eq!(got, vec![(1536, 256, 7), (68608, 512, 9)], "its own family only, at every window");
@@ -315,8 +341,14 @@
             // fork #51's measure: each example is as long as the window it is measured at (so the
             // planned window is the served one, as before the partition) and trains in any window
             // once its history is dropped (tokens_min 64), except under "short_turns" (each 3,000
-            // whole), "park_odd" (odd prompts fit no window) and "park_all" (none fits)
+            // whole), "park_odd" (odd prompts fit no window) and "park_all" (none fits); under
+            // "loading" the engine is still loading its model and answers 503, as llama-server does
             .route("/train/measure", post(move |axum::Json(b): axum::Json<Value>| async move {
+                use axum::response::IntoResponse;
+                if mode == "loading" {
+                    return (axum::http::StatusCode::SERVICE_UNAVAILABLE, axum::Json(json!({"error": {
+                        "code": 503, "message": "Loading model", "type": "unavailable_error"}}))).into_response();
+                }
                 let examples = b.get("examples").and_then(Value::as_array).cloned().unwrap_or_default();
                 let at = b["window"].as_u64().unwrap_or(256);
                 let rows: Vec<Value> = examples
@@ -341,7 +373,7 @@
                         json!({"index": i, "tokens_full": full, "tokens_min": min, "tokens_trained": if skipped { 0 } else { full }, "fit": fit})
                     })
                     .collect();
-                axum::Json(json!({"ok": true, "window": b["window"], "examples": rows}))
+                axum::Json(json!({"ok": true, "window": b["window"], "examples": rows})).into_response()
             }))
             .route("/train", post(move |axum::Json(b): axum::Json<Value>| {
                 let lane = l1.clone();
@@ -606,6 +638,59 @@
         server.abort();
     }
 
+    // what this catches (card 04679d57, gate 3): an in-engine gene the examiner can never judge.
+    // It proves what is unseen from the job's request.json (`read_job_request`), which this
+    // trainer never wrote: both of Kimi's exam receipts on the windows 5090 (2026-10-24) are
+    // "unexaminable: no training job recorded". The job now records the request as it arrived,
+    // before its run, readable by the examiner's own reader, with the provider's defaults never
+    // written as if they were the producer's.
+    #[tokio::test]
+    pub(super) async fn an_in_engine_job_records_the_request_it_trains_from_before_its_run() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, _seen) = fake_lane(train.path().to_path_buf(), "refused").await;
+        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), jobs.path().join("fp.json"), 6 * 1024 * 1024 * 1024);
+        t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 1536)));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        r.schedule = None; // the producer named none: the provider's default must not be recorded as hers
+        let h = t.create_job(r.clone()).await.expect("test: create");
+        let recorded = crate::genome::fine_tuning::job_dir::read_job_request(&jobs.path().join(h.local_id.to_string()))
+            .expect("test: the job's request is on disk, readable by the examiner's reader");
+        assert_eq!(recorded.dataset.examples.len(), r.dataset.examples.len(), "what the gene trains from");
+        assert_eq!(recorded.dataset.examples[0].prompt, "p");
+        assert!(recorded.schedule.is_none(), "the request as it arrived, before the provider's default schedule");
+        let _ = wait_terminal(&t, &h).await;
+        server.abort();
+    }
+
+    // what this catches (card ea157b1a, gate 3): a lived example parked because her served
+    // window cannot train it whole, with nothing telling serving what her learning needs (Kimi's
+    // reviewed correction, 51,670-64,041 tokens, parked for good at 49,664). The partition records
+    // the window that trains it whole for the serving requirement, and prices it only from a
+    // footprint of that very shape: none yet, so the reservation is unmeasured.
+    #[tokio::test]
+    pub(super) async fn a_parked_example_records_the_window_it_needs_for_serving() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, _seen) = fake_lane(train.path().to_path_buf(), "park_all").await;
+        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), jobs.path().join("fp.json"), 6 * 1024 * 1024 * 1024);
+        t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 1536)));
+        t.demand_store = Some(jobs.path().join("training-demand"));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.persona_id = Uuid::new_v4();
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        // every example parks (the engine measures each 40,000 tokens past the window): the job
+        // ends without a run, and its demand is recorded all the same
+        let h = t.create_job(r.clone()).await.expect("test: create");
+        let demand = crate::genome::fine_tuning::training_demand::TrainingDemand::in_dir(t.demand_store.as_deref(), r.persona_id);
+        assert_eq!(demand.outstanding(), Some(41_728), "her 41,536-token example needs a 41,728 window; her lane serves 1,536");
+        assert_eq!(demand.waiting(), r.dataset.examples.len());
+        let reserved = demand.reservation().expect("a parked example reserves");
+        assert_eq!((reserved.window, reserved.recorded_price(), reserved.job), (41_728, None, Some(h.local_id)), "no footprint of that shape yet: the reservation is unpriced, never priced from another window");
+        server.abort();
+    }
+
     // what this catches (BigMama on #4894; the 5090, 2026-10-10 04:34Z): a refused calibration
     // filing nothing, so every later dispatch calibrates at the same chunk and is refused the
     // same way. The refusal files the graph the engine measured under the chunk it ran; the
@@ -629,7 +714,7 @@
         assert_eq!(seen.lock().unwrap().clone().expect("test: posted")["chunk"].as_u64(), Some(512), "the first dispatch calibrates at the engine's default chunk");
         let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: the refusal filed a footprint")).unwrap();
         let (key, row) = rows.as_object().unwrap().iter().next().expect("test: one row");
-        assert_eq!(key, "ggml-org/Qwen3.8-27B-GGUF|w1536|r8|attn_q,attn_v|rc", "filed under the shape and the chunk that ran (512 is 1536's default: no chunk suffix), with recompute");
+        assert_eq!(key, "ggml-org/Qwen3.8-27B-GGUF|w1536|r8|attn_q,attn_v|rc|refused", "filed under the shape and the chunk that ran (512 is 1536's default: no chunk suffix), with recompute, as a refusal beside any run (card 0d21e644)");
         assert_eq!(row["bytes"].as_u64(), Some((12_654.1f64 * 1024.0 * 1024.0) as u64), "the graph the preflight measured");
         let h2 = t.create_job(r).await.expect("test: create again");
         let _ = wait_terminal(&t, &h2).await;
@@ -652,8 +737,8 @@
         let mib = 1024u64 * 1024;
         let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 1536, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: 256, recompute: true };
         let store = Footprints::at(footprints.clone());
-        store.record_with(&fam, 2598 * mib, true, Uuid::nil()).expect("test: row");
-        store.record_with(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, true, Uuid::nil()).expect("test: row");
+        store.record_with(&fam, 2598 * mib, true, None, Uuid::nil()).expect("test: row");
+        store.record_with(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, true, None, Uuid::nil()).expect("test: row");
         let model = GraphModel::fit(&store.rows_like(&fam)).expect("test: two windows");
         // her examples are 3,000 tokens whole: the window they need (3,072) is far under served, and
         // the grant holds it at the floor chunk but not at the served window
@@ -685,7 +770,7 @@
         let footprints = jobs.path().join("footprints.json");
         let gib = 1024u64 * 1024 * 1024;
         let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 3072, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK_MIN, recompute: true };
-        Footprints::at(footprints.clone()).record_with(&fam, 2 * gib, false, Uuid::nil()).expect("test: graph-only refusal");
+        Footprints::at(footprints.clone()).record_with(&fam, 2 * gib, false, None, Uuid::nil()).expect("test: graph-only refusal");
         let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, gib);
         t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 61_696)));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
@@ -705,6 +790,32 @@
         server.abort();
     }
 
+    // what this catches (card 0d21e644; Kimi's job 598e183c on the windows 5090, 2026-10-28,
+    // refused at window 45,056): the same measured no-fit as above, but the refusal's engine
+    // reported its 64 blocks. Before, the only rung left was a smaller window, which parks her
+    // longest turns. Now the dispatch steps DEPTH first: it posts the window that trains every
+    // example whole at half the blocks, an unmeasured shape whose run is the measurement.
+    #[tokio::test]
+    pub(super) async fn a_window_no_chunk_holds_is_trained_whole_at_a_shallower_depth_first() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "short_turns").await;
+        let footprints = jobs.path().join("footprints.json");
+        let gib = 1024u64 * 1024 * 1024;
+        let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 3072, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK_MIN, recompute: true };
+        Footprints::at(footprints.clone()).record_refusal(&fam, 2 * gib, Some(64), Uuid::nil()).expect("test: a refusal at every block");
+        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, gib);
+        t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 61_696)));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let h = t.create_job(r).await.expect("test: a job, not a park");
+        let _ = wait_terminal(&t, &h).await;
+        let posted = seen.lock().unwrap().clone().expect("test: posted");
+        assert_eq!(posted["window"].as_u64(), Some(3_072), "the window that trains every example whole");
+        assert_eq!(posted["top_layers"].as_u64(), Some(32), "at half the blocks, the first rung down");
+        server.abort();
+    }
+
     // what this catches (Codex on #4988): an example sent CUT through the middle fit. p1 is 6,000
     // tokens whole, the others 3,000. Whatever window memory allows between them (raised to the
     // shortest whole example, equal to it, or between it and the longest), p1 would train with its
@@ -715,8 +826,8 @@
         let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 1536, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: 256, recompute: true };
         let probe_dir = tempfile::tempdir().expect("test: dir");
         let probe = Footprints::at(probe_dir.path().join("fp.json"));
-        probe.record_with(&fam, 2598 * mib, true, Uuid::nil()).expect("test: row");
-        probe.record_with(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, true, Uuid::nil()).expect("test: row");
+        probe.record_with(&fam, 2598 * mib, true, None, Uuid::nil()).expect("test: row");
+        probe.record_with(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, true, None, Uuid::nil()).expect("test: row");
         let model = GraphModel::fit(&probe.rows_like(&fam)).expect("test: two windows");
         for (case, free) in [
             ("raised", model.bytes(3_072, TRAINING_CHUNK_MIN) - 1),

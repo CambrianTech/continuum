@@ -246,6 +246,7 @@ mod tests {
             capture: None,
             genes: Vec::new(),
             gene_scales: Vec::new(),
+            allocation: None,
         };
         serde_json::from_value(json!({
             "submissionId": id,

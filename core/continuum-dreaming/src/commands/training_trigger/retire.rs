@@ -247,6 +247,11 @@ mod tests {
         let pre_2 = submit(&executor, persona, vec![on_card(overturned, "pre-2")]).await;
         let kept = submit(&executor, persona, vec![on_card(other, "other-1")]).await;
         assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(4));
+        // card 4545eafd: a withdrawn example's demand clears; another card's stays
+        use crate::genome::fine_tuning::training_demand::TrainingDemand;
+        let demand = TrainingDemand::for_persona(persona);
+        let (withdrawn, staying) = (TrainingDemand::key_of(&on_card(overturned, "pre-1a")), TrainingDemand::key_of(&on_card(other, "other-1")));
+        demand.record(&[(withdrawn.clone(), 64_256), (staying.clone(), 51_712)], &[], None).expect("test: demand recorded");
 
         let json = retire_as_operator(
             &executor,
@@ -273,6 +278,8 @@ mod tests {
             Some(1),
             "the other card's row stays pending"
         );
+        assert!(!demand.records_all(std::slice::from_ref(&withdrawn)).expect("test: readable"), "a withdrawn example reserves nothing");
+        assert!(demand.records_all(std::slice::from_ref(&staying)).expect("test: readable"), "a pending one keeps its demand");
 
         // A second call for the same card changes nothing and says so.
         let again = retire_as_operator(
@@ -298,6 +305,43 @@ mod tests {
         assert_eq!(replayed["acceptance"]["replayed"], true, "got: {replayed}");
         assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(1));
         let _ = kept;
+    }
+
+    // what this catches (card 4545eafd; Codex on #5572): a retirement that commits over a demand
+    // clear that never happened. A corrupt demand store read leniently is "empty", the clear
+    // is a no-op, and the rows flip with the withdrawn examples' reservation left behind. A
+    // store that cannot answer fails the retirement: the rows stay pending, the file keeps its
+    // bytes, and once the store is repaired the same retirement finishes.
+    #[tokio::test]
+    async fn a_demand_store_that_cannot_answer_fails_the_retirement_and_flips_nothing() {
+        let (trigger, executor, _dir) = build_runtime_trigger_only().await;
+        let persona = Uuid::new_v4();
+        let card = Uuid::new_v4();
+        submit(&executor, persona, vec![on_card(card, "w-1"), on_card(card, "w-2")]).await;
+        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(2));
+        use crate::genome::fine_tuning::training_demand::TrainingDemand;
+        let root = crate::genome::fine_tuning::job_dir::genome_root().expect("test: a home");
+        let file = TrainingDemand::store_dir(&root).join(format!("{persona}.json"));
+        std::fs::create_dir_all(file.parent().expect("test: parent")).expect("test: dir");
+        std::fs::write(&file, b"{ torn").expect("test: corrupt store");
+
+        let failed = retire_as_operator(&executor, json!({ "cardId": card, "reason": "superseded" })).await;
+        let refused = match failed {
+            Ok(json) => json["success"] != true,
+            Err(_) => true,
+        };
+        assert!(refused, "a store that cannot answer fails the retirement");
+        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(2), "the rows stay pending");
+        assert_eq!(std::fs::read(&file).expect("test: read"), b"{ torn", "the store keeps its bytes");
+
+        std::fs::remove_file(&file).expect("test: repair the store");
+        let finished = retire_as_operator(&executor, json!({ "cardId": card, "reason": "superseded" })).await.expect("test: rerun");
+        assert_eq!(finished["success"], true, "the same retirement finishes once the store answers: {finished}");
+        // every row retired: the bucket is gone, not an empty one (Codex read CI: None)
+        assert!(
+            matches!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), None | Some(0)),
+            "nothing of hers stays pending"
+        );
     }
 
     // what this catches: a submission already carried into a job is not a pending row;

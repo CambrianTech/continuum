@@ -2,82 +2,22 @@
 
 use super::*;
 
-fn faculty_with_window(window: u32) -> LlmDeliberationFaculty {
-    LlmDeliberationFaculty::new(
-        Uuid::new_v4(),
-        "Sahar",
-        "You are Sahar.",
-        Arc::new(HeuristicInferenceAdapter::new()),
-    )
-    .with_context_window(window)
-}
-
-// what this catches: the live 2026-09-10 mute, and it is the THIRD instance of
-// one class. A `code/read` / `code/shell` output goes in as REQUIRED input, and
-// it was unbounded — so one big result claimed the whole window and
-// `fit_messages` refused every turn. Measured: required_payload 18,629 against
-// after_reserves 15,688 on a 23,040 lane, grounding only 113 (innocent),
-// received = 2 (ONE enormous message), 836 consecutive refusals, zero acts for
-// a whole benchmark round.
-#[test]
-fn an_oversized_result_is_split_not_swallowed_whole() {
-    let faculty = faculty_with_window(4_096);
-    let huge: String = (0..4_000)
-        .map(|i| {
-            format!(
-                "line {i} of a very large tool result
-"
-            )
-        })
-        .collect();
-    // (required, demoted) = (the result's ENDING, its earlier part). The ending
-    // is what stays required so the wire reads in the original order — see
-    // `split_action_result` for why history's position decides this.
-    let (required, demoted) = faculty.split_action_result(huge.clone());
-    let demoted = demoted.expect("an oversized result must yield a demoted part");
-
-    let cap = 4_096 / LlmDeliberationFaculty::RESULT_SHARE_DENOM as usize;
-    let required_cost =
-        LlmDeliberationFaculty::messages_cost(std::slice::from_ref(&required));
-    assert!(
-        required_cost <= cap,
-        "the required part must fit its share: {required_cost} > {cap}"
-    );
-
-    // NOTHING IS DISCARDED. Head + tail reconstitute the original exactly —
-    // the property that separates demotion from truncation, and the one Joel
-    // asked for by name after the first cut of #3947 dropped instead of demoted.
-    let rebuilt = format!("{}{}", demoted.content_text(), required.content_text());
-    assert_eq!(
-        rebuilt, huge,
-        "demoted + required must reconstitute the result byte-for-byte"
-    );
-}
-
-// what this catches: THE WIRING, which the three unit tests above cannot see.
-// They call `split_action_result` directly, so they stay green even when the
-// production build site stops calling it — verified by mutation, and that is
-// exactly the blind source-assertion mistake made earlier the same night. This
-// one goes through `prompt_view`, the real path, and fails the moment the
-// result is required whole again.
+// what this catches: the live 2026-09-10 mute (a `code/read` result several times the window
+// required whole: 836 consecutive refusals) WITHOUT its old cure, a head cut by a window share
+// (`split_action_result`, deleted with RESULT_SHARE_DENOM: FOCUS-CONTRACT rule 4, a result is
+// reduced by LEVEL in the one allocation, never cut). A legacy result (no native call ids) with
+// a saved handle goes through the real `prompt_view`: never refused, and what she reads names the
+// handle she can read the whole through. Native results are covered below (Aris).
 #[tokio::test]
-async fn a_huge_result_does_not_fault_the_turn_on_the_real_path() {
+async fn a_huge_legacy_result_arrives_reduced_with_its_handle_never_refused() {
+    use crate::ai::types::ResultCustody;
     use crate::cognition::working_memory::WorkingMemory;
 
     let window = 8_192u32;
     let wm = Arc::new(WorkingMemory::new(8));
     wm.set_served_window(window);
-    // A tool result several times the whole window — an ordinary `code/read`
-    // of a large file.
-    let huge: String = (0..6_000)
-        .map(|i| {
-            format!(
-                "line {i} of a very large tool result
-"
-            )
-        })
-        .collect();
-    wm.record_receipt(&huge);
+    let huge: String = (0..6_000).map(|i| format!("line {i} of a very large tool result\n")).collect();
+    wm.record_receipt_typed(&[], &huge, None, ResultCustody::Whole { handle: "legacy-evidence".into() });
 
     let faculty = LlmDeliberationFaculty::new(
         Uuid::new_v4(),
@@ -88,87 +28,11 @@ async fn a_huge_result_does_not_fault_the_turn_on_the_real_path() {
     .with_context_window(window)
     .with_working_memory(Arc::clone(&wm));
 
-    let ws = Workspace::new("what did that produce?");
-    let view = faculty.prompt_view(&ws);
-    assert!(
-        view.capacity_error.is_none(),
-        "one big tool result must not refuse the turn — she holds her card                      while refusing, so this strands a benchmark round: {:?}",
-        view.capacity_error
-    );
-    assert!(
-        !view.messages.is_empty(),
-        "and she must still be given her result to reason about"
-    );
-}
-
-// what this catches: a result that FITS must be left completely alone. A split
-// that fires unconditionally would push every ordinary tool result into history
-// and cost the citizen the outcome of her own act on the very next turn.
-#[test]
-fn a_result_that_fits_is_untouched() {
-    let faculty = faculty_with_window(32_768);
-    let small = "ok: wrote 3 lines
-"
-    .to_string();
-    let (required, demoted) = faculty.split_action_result(small.clone());
-    assert!(demoted.is_none(), "a small result has nothing to demote");
-    assert_eq!(required.content_text(), small);
-}
-
-// what this catches: the head must never be empty. If the FIRST line alone
-// exceeds the share, it is still required — a citizen handed a demotion notice
-// and none of her own result cannot reason about what her hands just did, and
-// the honest failure for a genuinely impossible payload is the existing
-// capacity fault, not a silently empty head.
-#[test]
-fn the_first_line_is_required_even_when_it_alone_exceeds_the_share() {
-    let faculty = faculty_with_window(1_024);
-    let one_giant_line = format!(
-        "{}
-",
-        "x".repeat(20_000)
-    );
-    let (required, demoted) = faculty.split_action_result(one_giant_line.clone());
-    assert!(
-        !required.content_text().is_empty(),
-        "the required part is never empty — she must see what her act produced"
-    );
-    let rebuilt = format!(
-        "{}{}",
-        demoted
-            .as_ref()
-            .map(|d| d.content_text())
-            .unwrap_or_default(),
-        required.content_text()
-    );
-    assert_eq!(rebuilt, one_giant_line, "still nothing discarded");
-}
-
-// what this catches: UTF-8 safety. Splitting on a byte or char budget can cut a
-// multi-byte sequence in half; line granularity cannot. A panic here would take
-// down the cognition cycle on any result containing non-ASCII — which is most
-// of them, since the results carry the citizens' own prose.
-#[test]
-fn splitting_never_cuts_a_multibyte_sequence() {
-    let faculty = faculty_with_window(2_048);
-    let multibyte: String = (0..2_000)
-        .map(|i| {
-            format!(
-                "строка {i} — ✅ 日本語テキスト
-"
-            )
-        })
-        .collect();
-    let (required, demoted) = faculty.split_action_result(multibyte.clone());
-    let rebuilt = format!(
-        "{}{}",
-        demoted
-            .as_ref()
-            .map(|d| d.content_text())
-            .unwrap_or_default(),
-        required.content_text()
-    );
-    assert_eq!(rebuilt, multibyte, "multibyte content survives the split");
+    let view = faculty.prompt_view(&Workspace::new("what did that produce?"));
+    assert!(view.capacity_error.is_none(), "one big result must not refuse the turn: {:?}", view.capacity_error);
+    let sent: String = view.messages.iter().map(|m| m.content_text()).collect();
+    assert!(sent.contains("legacy-evidence"), "she reads it at a level that names its handle");
+    assert!(sent.len() < huge.len(), "reduced, not sent whole into a window it is several times");
 }
 
 /// Her NEWEST result over her window (prompt/newest_result.rs): Aris on the M5, 2026-10-26.
@@ -214,8 +78,13 @@ mod the_newest_result_over_her_window {
 
     /// The same, generating through `adapter`.
     fn faculty_on(content: &str, adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter>) -> LlmDeliberationFaculty {
+        faculty_at(content, adapter, ARIS_WINDOW)
+    }
+
+    /// The same, served at `window`.
+    fn faculty_at(content: &str, adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter>, window: u32) -> LlmDeliberationFaculty {
         let wm = Arc::new(WorkingMemory::new(8));
-        wm.set_served_window(ARIS_WINDOW);
+        wm.set_served_window(window);
         let room = Uuid::new_v4();
         let call = ToolCall { id: "call-aris".into(), name: "work/submission".into(), input: json!({ "include_staged_evidence": true }) };
         wm.record_native_action_statement("Reading the staged evidence for my submission.", room, std::slice::from_ref(&call));
@@ -231,10 +100,10 @@ mod the_newest_result_over_her_window {
             },
             status: ActStatus::Executed,
         };
-        let rendered = observation.render_recency("", &wm.budget());
+        let rendered = observation.render_recency("");
         wm.record_receipt_typed(&[observation], &rendered, Some(room), ResultCustody::Whole { handle: HANDLE.into() });
         LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", adapter)
-            .with_context_window(ARIS_WINDOW)
+            .with_context_window(window)
             .with_working_memory(wm)
     }
 
@@ -274,6 +143,36 @@ mod the_newest_result_over_her_window {
         assert!(shown.contains("too large to show whole") && shown.contains(&format!("tool/output {HANDLE}")), "{}", &shown[..shown.len().min(600)]);
         assert!(shown.contains("lines between"), "it is her result's summary level, not only a pointer");
         assert!(shown.chars().count() * 4 <= whole.chars().count(), "a smaller level: {} of {}", shown.chars().count(), whole.chars().count());
+    }
+
+    // what this catches: Kimi on the windows 5090 (2026-10-28, refusal 1eef970d). Her view's
+    // required sources (notices, open views) are never shed, but her newest result was priced
+    // against the window less framing and tools alone: it fit there, stayed whole, and the view's
+    // floor then took its room, so the fit refused required 33,719 > 30,243 before sending, with
+    // no reduction offered. A result that fits the window alone but not beside her required view
+    // comes in at its summary with its handle, and the turn goes.
+    #[test]
+    fn a_result_her_required_view_leaves_no_room_for_comes_in_reduced_not_refused() {
+        // context-budget-exempt: a fixture window this test is run at (a result that fits it alone,
+        // and required notices that leave it too little room), not a budget the code sizes anything by.
+        const WINDOW: u32 = 60_000;
+        let whole = "a line of a file she read, about as long as source lines run\n".repeat(1_700);
+        let alone = faculty_at(&whole, Arc::new(HeuristicInferenceAdapter::new()), WINDOW);
+        let ws = Workspace::new("what does the file say?");
+        let view = alone.prompt_view_with_visual_feedback(&ws, WINDOW, PromptCalibration::default(), None);
+        assert!(view.capacity_error.is_none(), "alone, the result fits whole: {:?}", view.capacity_error);
+        assert_eq!(tool_results(&view), vec![("call-aris".to_owned(), whole.clone())], "and is untouched");
+        let beside = faculty_at(&whole, Arc::new(HeuristicInferenceAdapter::new()), WINDOW);
+        let memory = beside.working_memory.as_ref().expect("test: her memory"); // JUSTIFIED: test fixture
+        for n in 0..60 {
+            memory.pin_fact(&format!("held-{n}"), &format!("- a condition the substrate holds her to, number {n}: {}", "detail ".repeat(200)));
+        }
+        let view = beside.prompt_view_with_visual_feedback(&ws, WINDOW, PromptCalibration::default(), None);
+        assert!(view.capacity_error.is_none(), "beside her required view the turn is not refused: {:?}", view.capacity_error);
+        let results = tool_results(&view);
+        assert_eq!(results.len(), 1, "the native call/result pair is intact");
+        assert!(results[0].1.contains("too large to show whole") && results[0].1.contains(&format!("tool/output {HANDLE}")),
+            "it comes in reduced with its handle: {}", &results[0].1[..results[0].1.len().min(400)]);
     }
 
     // what this catches: the collapse firing on a result that fits, which would cost her the

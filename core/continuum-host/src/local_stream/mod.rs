@@ -135,4 +135,29 @@ mod tests {
         assert!(connect(&path).await.is_ok(), "the successor still serves");
         drop(successor);
     }
+
+    // what this catches (Codex on #5544): a cleanup that trusts only the custody token removing
+    // whatever replaced its socket outside custody. A regular file or a symlink now at the path is
+    // not the socket this bind created, so the old owner's cleanup leaves it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_old_cleanup_never_removes_what_replaced_its_socket() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for replacement in ["a regular file", "a symlink"] {
+            let path = dir.path().join("endpoint.sock");
+            let (listener, owned) = Listener::bind(&path).await.expect("bind");
+            drop(listener);
+            std::fs::remove_file(&path).expect("the socket goes");
+            if replacement == "a regular file" {
+                std::fs::write(&path, b"not a socket").expect("write the replacement");
+            } else {
+                let target = dir.path().join("elsewhere");
+                std::fs::write(&target, b"elsewhere").expect("the link's target");
+                std::os::unix::fs::symlink(&target, &path).expect("link the replacement");
+            }
+            owned.remove();
+            assert!(std::fs::symlink_metadata(&path).is_ok(), "{replacement} at the path survives the old cleanup");
+            std::fs::remove_file(&path).expect("tidy");
+        }
+    }
 }

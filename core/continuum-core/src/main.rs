@@ -232,6 +232,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    // An engine's log relay (card 1d7d6d4c): spawned by the core in the engine's process group,
+    // it outlives the core, so it starts nothing a core starts.
+    {
+        use continuum_core::inference::stderr_relay::process as relay;
+        if probe_args.get(1).is_some_and(|arg| arg == relay::FLAG) {
+            relay::main(relay::parse(&probe_args[2..])?)?;
+            return Ok(());
+        }
+    }
     if probe_args
         .get(1)
         .is_some_and(|arg| arg == continuum_cli_lifecycle::prebuilt_validation::EMBEDDING_FLAG)
@@ -598,6 +607,10 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
         "everything main did before starting the IPC thread"
     );
     let ipc_handle = std::thread::spawn(move || {
+        // Pre-bind boot steps are marked one by one (card d97d3681): Windows hung here for 300 s
+        // with nothing after `main_to_ipc_thread` and no stack sampler on that host, so each step
+        // says it finished and a stall names the step that did not.
+        continuum_base::probe!(class = "boot.step", step = "ipc_thread_started", "the IPC thread runs; start_server begins");
         if let Err(e) = start_server(
             &socket_path,
             ipc_livekit_manager,

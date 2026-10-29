@@ -47,16 +47,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::cognition::rag_budget::{
-     RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
-};
+use crate::cognition::rag_budget::{RagContext, RagDelivery, RagItem, RagSource};
 
 use crate::cognition::faculty_ids::WORKSPACE_MAP;
-
-/// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
-/// shared by every RAG source so the replay ledger's numbers match. (Was a private
-/// copy — converged.)
-use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
 
 /// The real shape of the workspace: the root the tools act in, plus its
 /// top-level directory names (the navigation structure a persona globs against).
@@ -320,30 +313,6 @@ impl WorkspaceMapSource {
             Arc::new(FixedRootWorkspaceLayoutReader::new(root)),
         )
     }
-
-    /// Fit the rendered map to `budget` tokens. The map is small (a root path +
-    /// a directory list) and never approaches the standing-framing budget in
-    /// practice; truncation exists only to honor the budget contract. Same shape
-    /// as the doctrine source: truncate with a marker, or emit no block when the
-    /// budget can't carry the marker plus real content.
-    fn fit_body(body: &str, budget: u32) -> Option<String> {
-        if budget == 0 {
-            return None;
-        }
-        if estimate_tokens(body) <= budget {
-            return Some(body.to_string());
-        }
-        const MARKER: &str = "\n…[workspace map truncated]";
-        let marker_chars = MARKER.chars().count();
-        let max_chars = (budget as usize).saturating_mul(4).saturating_sub(4);
-        if max_chars <= marker_chars {
-            return None;
-        }
-        let char_budget = max_chars - marker_chars;
-        let mut out: String = body.chars().take(char_budget).collect();
-        out.push_str(MARKER);
-        Some(out)
-    }
 }
 
 #[async_trait]
@@ -356,29 +325,12 @@ impl RagSource for WorkspaceMapSource {
         Some("code/tree")
     }
 
-    /// MEASURED 32 tokens: the root line naming the workspace and its top-level
-    /// entry count — the unit that distinguishes "empty" from "I cannot see it".
-    fn floor_tokens(&self) -> u32 {
-        40
-    }
-
-    async fn deliver(
-        &self,
-        ctx: &RagContext,
-        budget: u32,
-        resolution: ResolutionPreference,
-    ) -> RagDelivery {
-        let empty = |res| RagDelivery {
-            source_id: WORKSPACE_MAP.to_string(),
-            items: Vec::new(),
-            tokens_used: 0,
-            truncated: false,
-            resolution_used: res,
-        };
+    async fn deliver(&self, ctx: &RagContext) -> RagDelivery {
+        let empty = || RagDelivery::empty(WORKSPACE_MAP);
 
         // Persona-scoped (defense in depth, same shape as the roster/doctrine).
         if ctx.persona_id != self.persona_id {
-            return empty(ResolutionPreference::Placeholder);
+            return empty();
         }
 
         let layout = match self.reader.layout().await {
@@ -389,7 +341,7 @@ impl RagSource for WorkspaceMapSource {
                     persona_id = %self.persona_id,
                     "workspace_map: layout read failed — empty delivery, cognition stays up"
                 );
-                return empty(ResolutionPreference::Placeholder);
+                return empty();
             }
         };
 
@@ -408,34 +360,32 @@ impl RagSource for WorkspaceMapSource {
             body.push('\n');
             body.push_str(&line);
         }
-        let Some(content) = Self::fit_body(&body, budget) else {
-            return empty(resolution);
-        };
-        let tokens = estimate_tokens(&content);
 
         tracing::debug!(
             persona_id = %self.persona_id,
-            budget,
             dirs = layout.top_level_dirs.len(),
-            tokens,
             "workspace_map: deliver"
         );
 
-        RagDelivery {
-            source_id: WORKSPACE_MAP.to_string(),
-            items: vec![RagItem {
-                content,
-                tokens,
-                metadata: serde_json::json!({
-                    "root": layout.root.display().to_string(),
-                    "top_level_dirs": layout.top_level_dirs,
-                }),
-            }],
-            tokens_used: tokens,
-            // One current layout snapshot per turn; no pagination.
-            truncated: false,
-            resolution_used: resolution,
-        }
+        // The coarser level is the documented first unit: the root line plus the entry
+        // count, which is what tells "empty" from "I cannot see it".
+        let summary = format!(
+            "This workspace is rooted at: {} ({} top-level entries)",
+            layout.root.display(),
+            layout.top_level_entries,
+        );
+        let item = RagItem::whole(
+            "map",
+            body,
+            serde_json::json!({
+                "root": layout.root.display().to_string(),
+                "top_level_dirs": layout.top_level_dirs,
+            }),
+        )
+        .with_summary(summary)
+        .with_pointer("[workspace map: reopen with code/tree]");
+        // One current layout snapshot per turn; no pagination.
+        RagDelivery::of(WORKSPACE_MAP, vec![item], false)
     }
 
 }

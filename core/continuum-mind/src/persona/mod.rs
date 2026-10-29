@@ -50,7 +50,6 @@ pub mod cognition_pulse;
 pub mod substrate_governor;
 pub mod domain_classifier;
 pub mod durable_history;
-pub mod engram_source;
 pub mod evaluator;
 pub mod host;
 pub mod hw_tier_descriptor;

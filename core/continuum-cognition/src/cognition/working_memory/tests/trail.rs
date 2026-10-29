@@ -27,7 +27,7 @@ fn recent_results_survive_subsequent_acts_and_stay_bounded() {
     // eviction rotated the head on every act; a coding turn then held 100+ results
     // between settlements (the M5: 1.09M chars persisted for one mind). So: flooding
     // past the share collapses the OLDEST to pointers once, down to half the share…
-    let cap = wm.budget().recent_results_chars();
+    let cap = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
     // Whole results an eighth of the share each, so several fit and the collapse is visible.
     let unit = (cap / 8).max(1);
     for _ in 0..8 {

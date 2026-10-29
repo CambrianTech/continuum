@@ -151,6 +151,7 @@ use super::*;
             // benchmark-reproducibility knob set only by the eval fork.
             suppress_recall: false,
             forked: false,
+            read_receipt: None,
         }
     }
 
@@ -491,21 +492,12 @@ use super::*;
         }
 
         /// Test/stub source — floorless, so it never encodes a production floor.
-        fn floor_tokens(&self) -> u32 {
-            0
-        }
-        async fn deliver(
-            &self,
-            _ctx: &crate::cognition::rag_budget::RagContext,
-            _budget: u32,
-            resolution: crate::cognition::rag_budget::ResolutionPreference,
-        ) -> crate::cognition::rag_budget::RagDelivery {
+        async fn deliver(&self, _ctx: &crate::cognition::rag_budget::RagContext) -> crate::cognition::rag_budget::RagDelivery {
             crate::cognition::rag_budget::RagDelivery {
                 source_id: "classify-stub".to_string(),
                 items: Vec::new(),
                 tokens_used: 0,
                 truncated: false,
-                resolution_used: resolution,
             }
         }
     }
@@ -574,25 +566,19 @@ use super::*;
             }
 
             /// Test/stub source — floorless, so it never encodes a production floor.
-            fn floor_tokens(&self) -> u32 {
-                0
-            }
-            async fn deliver(
-                &self,
-                _ctx: &crate::cognition::rag_budget::RagContext,
-                _budget: u32,
-                resolution: crate::cognition::rag_budget::ResolutionPreference,
-            ) -> crate::cognition::rag_budget::RagDelivery {
+            async fn deliver(&self, _ctx: &crate::cognition::rag_budget::RagContext) -> crate::cognition::rag_budget::RagDelivery {
                 crate::cognition::rag_budget::RagDelivery {
                     source_id: "workspace-map".to_string(),
                     items: vec![crate::cognition::rag_budget::RagItem {
+                        key: String::new(),
+                        summary: None,
+                        pointer: None,
                         content: format!("workspace layout — {HANDS_MARKER}"),
                         tokens: 12,
                         metadata: serde_json::Value::Null,
                     }],
                     tokens_used: 12,
                     truncated: false,
-                    resolution_used: resolution,
                 }
             }
         }

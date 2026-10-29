@@ -115,7 +115,7 @@ async fn dispatch_verdict(
         input: json!({ "mode": mode }),
     }];
     let out = exec
-        .execute_native_batch(&calls, &ctx(), 8000)
+        .execute_native_batch(&calls, &ctx())
         .await
         .expect("batch itself succeeds");
     let r = out

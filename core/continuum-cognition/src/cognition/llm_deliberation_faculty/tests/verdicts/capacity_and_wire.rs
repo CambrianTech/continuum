@@ -27,7 +27,8 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             "src/lib.rs:42: concrete_review_target\n{{\"payload\":\"{}\"}}\nclaimable_now: 29\ntotal_on_board: 43",
             "x".repeat(window as usize * 2),
         );
-        wm.record_receipt(&result);
+        // saved, as the act path saves every result too large to keep in RAM (`spill`)
+        wm.record_receipt_typed(&[], &result, None, crate::ai::types::ResultCustody::Whole { handle: "wire-evidence".into() });
         let faculty =
             LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
                 .with_context_window(window)
@@ -148,49 +149,20 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             .messages
             .iter()
             .any(|message| message.content_text().contains(stimulus)));
-        // WHAT IS GUARANTEED ON THE WIRE CHANGED HERE, deliberately.
-        //
-        // This used to assert the ENTIRE action result arrived byte-for-byte,
-        // because the result was REQUIRED input and required input is never
-        // dropped. That is precisely what muted citizens: one `code/read` of a
-        // large file claimed the whole window as irreducible payload and
-        // `fit_messages` refused every turn — measured 2026-09-10, required 18,629
-        // against 15,688 available, 836 consecutive refusals, zero acts for an
-        // entire benchmark round while she held the card.
-        //
-        // Now the result is capped at its share and the earlier part is DEMOTED to
-        // ordinary history: rendered whenever the window allows, evicted by the
-        // normal front-drop when it does not, and always re-readable through its
-        // spill handle. So the honest guarantee is:
-        //
-        //   - the result's ENDING is always on the wire (it stays required), and
-        //   - nothing is DISCARDED at the split — `split_action_result` is pinned
-        //     byte-exact by `an_oversized_result_is_split_not_swallowed_whole`.
-        //
-        // A 16k-token single line on a 32k window cannot be both demoted and
-        // retained; asserting otherwise would just be asserting the mute back.
-        let wire_text: String = request
-            .messages
-            .iter()
-            .map(|message| message.content_text().to_string())
-            .collect();
+        // WHAT IS GUARANTEED ON THE WIRE (FOCUS-CONTRACT rule 4). The 2026-09-10 mute (one
+        // `code/read` required whole, 836 refusals) was first cured by a head cut at a window
+        // share (`split_action_result`); that cut is gone. Her newest result is reduced by LEVEL
+        // in the one allocation: whole when it fits, else its summary or pointer, which names
+        // the handle the whole is read through. Either way it is the last thing she reads.
         let ending = result
             .rsplit_once('\n')
             .map(|(_, last)| last)
             .filter(|last| !last.is_empty())
             .unwrap_or(result.as_str());
+        let last = request.messages.last().expect("test: a request has messages").content_text();
         assert!(
-            request
-                .messages
-                .last()
-                .unwrap()
-                .content_text()
-                .ends_with(ending),
-            "the result's ENDING is the last thing she reads — she must always see                      what her own act produced, never only a footer"
-        );
-        assert!(
-            wire_text.contains(ending),
-            "and it is genuinely on the wire, not merely implied"
+            last.ends_with(ending) || last.contains("wire-evidence"),
+            "her newest result is the last thing she reads, whole or at a level naming its handle"
         );
 
         // The held card's context reaches her in the assembled-context message after her
@@ -213,7 +185,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap());
         assert_eq!(
             schema_tokens,
-            faculty.select_tool_surface(&ws).tokens
+            faculty.prompt_view(&ws).tools.tokens
         );
         let wire_tokens =
             LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
@@ -304,11 +276,11 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
     let window = 8192u32;
     for oversized_part in 0..5 {
         let persona = Uuid::new_v4();
-        // Parts 0-2 must never reach the adapter, so an EMPTY script proves it.
-        // Parts 3-4 shed their enrichment and go on to think, so they need a real
-        // response — reaching the model is the outcome those cases assert.
+        // Part 0 (the oversized stimulus) must never reach the adapter, so an EMPTY script
+        // proves it. Parts 1-4 bound, shed or collapse and go on to think, so they need a
+        // real response — reaching the model is the outcome those cases assert.
         let adapter = Arc::new(ScriptedAdapter::new(
-            if oversized_part >= 3 || oversized_part == 1 {
+            if oversized_part != 0 {
                 vec![make_response(FinishReason::Stop, "PASS", None)]
             } else {
                 vec![]
@@ -321,9 +293,14 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
         let mut ws = if oversized_part == 0 {
             Workspace::new(&oversized)
         } else if oversized_part == 1 {
-            wm.record_receipt(&format!(
-                "{oversized}\nclaimable_now: 29\ntotal_on_board: 43"
-            ));
+            // saved, as the act path saves every result too large to keep whole: with its handle
+            // she reads it at a level, never a refusal (FOCUS-CONTRACT rule 4)
+            wm.record_receipt_typed(
+                &[],
+                &format!("{oversized}\nclaimable_now: 29\ntotal_on_board: 43"),
+                None,
+                crate::ai::types::ResultCustody::Whole { handle: "capacity-evidence".into() },
+            );
             let mut ws = Workspace::new("");
             ws.turns.clear();
             ws.self_initiated = true;
@@ -365,15 +342,20 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
                 .with_context_window(window)
                 .with_working_memory(wm)
                 .with_working_set(registry.clone());
-        // Parts 3-4 shed their standing grounding (#3954) and part 1 caps its
-        // oversized action result and demotes the rest — all three now THINK
-        // instead of refusing. What still faults is a genuinely irreducible
-        // payload: the stimulus (part 0) and a room update (part 2), neither of
-        // which any bound may drop without answering a question she was never
-        // shown.
-        let bounded_case = oversized_part >= 3 || oversized_part == 1;
+        // Parts 3-4 shed their standing grounding (#3954), part 1's oversized saved
+        // result arrives at a level naming its handle, and part 2's room update is a turn
+        // of her view that collapses to its handle (`chat/history`) — all four now THINK
+        // instead of refusing. What still faults is the genuinely irreducible payload:
+        // the stimulus (part 0), the question she is answering.
+        let bounded_case = oversized_part != 0;
         let grounding_case = bounded_case;
         let view = faculty.prompt_view(&ws);
+        if oversized_part == 2 {
+            assert!(
+                view.messages.iter().any(|m| m.content_text().contains("reread with chat/history")),
+                "an oversized room update is never unknown: the index names where it is"
+            );
+        }
         if grounding_case {
             assert!(
                 view.capacity_error.is_none(),
@@ -581,7 +563,7 @@ async fn a_refused_tail_rebuilds_her_request_without_it_once() {
         let rebuilt = &seen[1];
         assert!(rebuilt.tail_tools.is_none(), "the rebuilt request carries no tail");
         let offered: Vec<&str> = rebuilt.tools.iter().flatten().map(|tool| tool.name.as_str()).collect();
-        let activity = faculty.select_activity_surface(&ws);
+        let activity = faculty.tool_surface().select_granted(&ws.room_affordances, faculty.prompt_view(&ws).tools_grant).expect("activity fits granted tools");
         let expected: Vec<&str> = activity.specs.iter().flat_map(|specs| specs.iter()).map(|tool| tool.name.as_str()).collect();
         assert!(!offered.is_empty() && offered == expected, "she is offered exactly her activity's surface: {offered:?}");
         if refusals == 1 {
@@ -590,4 +572,27 @@ async fn a_refused_tail_rebuilds_her_request_without_it_once() {
             assert!(contribution.fault.is_some(), "a refusal after the rebuild is a named fault");
         }
     }
+}
+
+// what this catches: a prompt built on a broken allocator contract sent anyway (Codex on #5564).
+// An allocator answering for the wrong number of view sources is a GrantMismatch; it reaches the
+// turn's budget_fault and contribute refuses it before the adapter is ever called.
+#[tokio::test(flavor = "current_thread")]
+async fn an_allocator_answering_for_the_wrong_sources_refuses_the_turn_before_dispatch() {
+    use crate::cognition::workspace::Burst;
+    let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter.clone())
+        .with_context_window(32_768)
+        .with_tools(vec![read_tool()]);
+    let room = crate::identity::ActivityRoom::mint();
+    let turns: Vec<_> = (0..20)
+        .map(|i| BurstTurn::attributed(i % 2 == 0, if i % 2 == 0 { "Ivar" } else { "Peer" }, format!("line {i} ").repeat(20), Some(i)))
+        .collect();
+    let ws = Workspace::new(Burst::from_turns(room, turns));
+    crate::cognition::llm_deliberation_faculty::prompt::SHORT_GRANTS.with(|short| short.set(true));
+    let outcome = faculty.contribute(&ws).await;
+    crate::cognition::llm_deliberation_faculty::prompt::SHORT_GRANTS.with(|short| short.set(false));
+    let fault = outcome.expect("a contribution").fault.expect("the turn is refused");
+    assert!(format!("{fault:?}").contains("could not be sized"), "{fault:?}");
+    assert_eq!(adapter.call_count(), 0, "nothing was sent to inference");
 }

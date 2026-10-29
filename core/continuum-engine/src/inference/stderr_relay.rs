@@ -9,10 +9,11 @@
 //!
 //! The socket carries signals separately from the archive: a disk that fails still delivers
 //! every line to the core. Every loss is counted, never hidden: a subscriber that falls behind
-//! (`dropped_slow`), lines drained while no core was connected (`missed_disconnected`), a bind
-//! refused. A subscriber starts at the next line, never a replay, so an old fault is never
-//! raised again as new. The engine's incarnation is taken once, from the spawning core's own
-//! inherited handle, never from a socket client; until then every signal reads as unbound.
+//! (`dropped_slow`), lines drained while no core was connected (`missed_disconnected`), a
+//! connection past the bound (`subscribers_refused`). The first subscriber, the spawning core, gets the lines held from before it (the engine's
+//! load banner); every later one starts at the next line, never a replay, so an old fault is
+//! never raised again as new. The engine's incarnation is fixed when the spawning core starts the
+//! relay (the engine is spawned first, so the core knows it), never taken from a socket client.
 //! The relay ends when every holder of the engine's stderr has closed it.
 
 use std::io;
@@ -25,6 +26,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use continuum_host::local_stream::{self, ClientStream, Listener, ServerStream};
 use tokio::sync::broadcast;
+
+use super::engine_residency::EngineIncarnation;
 
 /// The relay's bounds.
 #[derive(Debug, Clone, Copy)]
@@ -52,13 +55,6 @@ impl Default for Config {
     }
 }
 
-/// One engine incarnation: its pid and its OS start time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Incarnation {
-    pub pid: u32,
-    pub started_s: u64,
-}
-
 /// What the relay says about itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Heartbeat {
@@ -69,9 +65,8 @@ pub struct Heartbeat {
     /// When the engine last wrote a line; the relay's own start until it has written one.
     pub last_line_ms: u64,
     pub relay_started_ms: u64,
-    /// The engine these lines are from; `None` until the spawning core has bound it.
-    pub incarnation: Option<Incarnation>,
-    pub binds_refused: u64,
+    /// The engine these lines are from, fixed by the core that spawned the relay.
+    pub incarnation: EngineIncarnation,
     pub subscribers_refused: u64,
     /// After this a consumer reads the relay's signals as unavailable.
     pub expires_at_ms: u64,
@@ -91,15 +86,18 @@ struct State {
     last_line_ms: AtomicU64,
     dropped_slow: AtomicU64,
     missed_disconnected: AtomicU64,
-    binds_refused: AtomicU64,
     subscribers_refused: AtomicU64,
     relay_started_ms: u64,
-    incarnation: parking_lot::Mutex<Option<Incarnation>>,
+    incarnation: EngineIncarnation,
     lines: broadcast::Sender<Frame>,
+    /// The lines drained before the first subscriber, held for it: that is the spawning core,
+    /// and the engine's load banner is what its watchers read. Taken once; after that a line
+    /// nobody is connected for is counted, never held.
+    startup: parking_lot::Mutex<Option<std::collections::VecDeque<Frame>>>,
 }
 
 impl State {
-    fn new(config: Config) -> Self {
+    fn new(config: Config, incarnation: EngineIncarnation) -> Self {
         let started = continuum_base::time::EpochMs::now().millis();
         let (lines, _) = broadcast::channel(config.queue.max(1));
         Self {
@@ -108,11 +106,11 @@ impl State {
             last_line_ms: AtomicU64::new(started),
             dropped_slow: AtomicU64::new(0),
             missed_disconnected: AtomicU64::new(0),
-            binds_refused: AtomicU64::new(0),
             subscribers_refused: AtomicU64::new(0),
             relay_started_ms: started,
-            incarnation: parking_lot::Mutex::new(None),
+            incarnation,
             lines,
+            startup: parking_lot::Mutex::new(Some(std::collections::VecDeque::new())),
         }
     }
 
@@ -124,8 +122,7 @@ impl State {
             missed_disconnected: self.missed_disconnected.load(Ordering::Relaxed),
             last_line_ms: self.last_line_ms.load(Ordering::Relaxed),
             relay_started_ms: self.relay_started_ms,
-            incarnation: *self.incarnation.lock(),
-            binds_refused: self.binds_refused.load(Ordering::Relaxed),
+            incarnation: self.incarnation,
             subscribers_refused: self.subscribers_refused.load(Ordering::Relaxed),
             expires_at_ms: continuum_base::time::EpochMs::now().millis().saturating_add(expires),
         }
@@ -152,7 +149,18 @@ impl super::child_log::LineWatch for Publish {
         let seq = self.0.seq.fetch_add(1, Ordering::Relaxed) + 1;
         self.0.last_line_ms.store(continuum_base::time::EpochMs::now().millis(), Ordering::Relaxed);
         let (text, truncated) = cut(line, self.0.config.line_bytes);
-        if self.0.lines.send(Frame::Line { seq, text, truncated }).is_err() {
+        let frame = Frame::Line { seq, text, truncated };
+        let mut startup = self.0.startup.lock();
+        if let Some(held) = startup.as_mut() {
+            if held.len() >= self.0.config.queue.max(1) {
+                held.pop_front();
+                self.0.missed_disconnected.fetch_add(1, Ordering::Relaxed);
+            }
+            held.push_back(frame);
+            return;
+        }
+        drop(startup);
+        if self.0.lines.send(frame).is_err() {
             self.0.missed_disconnected.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -164,46 +172,23 @@ pub struct RelayEnd {
     pub lines: u64,
 }
 
-/// Run a relay: drain `stderr` into the archive at `log`, serve frames on `socket`, and take the
-/// engine's incarnation only from `control`, the spawning core's inherited handle. Returns when
-/// `stderr` ends, that is when every writer has closed it.
-pub async fn run<R, C>(stderr: R, control: C, log: &Path, socket: &Path, config: Config) -> io::Result<RelayEnd>
+/// Run a relay for `incarnation`: drain `stderr` into the archive at `log` and serve frames on
+/// `socket`. Returns when `stderr` ends, that is when every writer has closed it.
+pub async fn run<R>(stderr: R, incarnation: EngineIncarnation, log: &Path, socket: &Path, config: Config) -> io::Result<RelayEnd>
 where
     R: AsyncRead + Unpin,
-    C: AsyncRead + Unpin + Send + 'static,
 {
     let (listener, owned) = Listener::bind(socket).await?;
-    let state = Arc::new(State::new(config));
+    let state = Arc::new(State::new(config, incarnation));
     let (shutdown, ended) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(serve(listener, Arc::clone(&state), ended));
-    let bind = tokio::spawn(read_bind(control, Arc::clone(&state)));
     let drained = super::child_log::pump(stderr, log, Box::new(Publish(Arc::clone(&state))), Arc::new(AtomicU64::new(0))).await;
     // Every writer has closed: every subscriber is ended (its connection closes, so its reader
     // sees the end) before the endpoint goes.
     let _ = shutdown.send(true);
     let _ = serving.await; // a serving task that panicked has nothing left to end
-    bind.abort();
     owned.remove();
     drained.map(|()| RelayEnd { lines: state.seq.load(Ordering::Relaxed) })
-}
-
-/// The first incarnation the spawning core writes binds the relay; any later one is refused and
-/// counted.
-async fn read_bind<C: AsyncRead + Unpin>(control: C, state: Arc<State>) {
-    let mut lines = BufReader::new(control).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        let Ok(incarnation) = serde_json::from_str::<Incarnation>(&line) else { // wire protocol: the spawning core's bind on its inherited control handle
-            state.binds_refused.fetch_add(1, Ordering::Relaxed);
-            continue;
-        };
-        let mut bound = state.incarnation.lock();
-        match *bound {
-            None => *bound = Some(incarnation),
-            Some(_) => {
-                state.binds_refused.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
 }
 
 /// Accept connections up to the bound, each one an owned task, until shutdown; then end every
@@ -235,13 +220,24 @@ async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(stream: &mut W, frame: &F
     stream.write_all(&bytes).await
 }
 
-/// One subscriber: a heartbeat first, then the lines drained from now on, and a heartbeat each
-/// period. A subscriber that falls behind loses the oldest frames, counted.
+/// One subscriber: a heartbeat first, then (for the first subscriber only) the lines held from
+/// before it, then the lines drained from now on, and a heartbeat each period. A subscriber that
+/// falls behind loses the oldest frames, counted.
 async fn subscriber(stream: ServerStream, state: Arc<State>) {
     let (mut reader, mut writer) = tokio::io::split(stream);
-    let mut lines = state.lines.subscribe();
+    // Subscribed and the held lines taken under one lock with the drain's hand-off, so no line
+    // falls between them or arrives twice.
+    let (mut lines, held) = {
+        let mut startup = state.startup.lock();
+        (state.lines.subscribe(), startup.take())
+    };
     if write_frame(&mut writer, &Frame::Heartbeat(state.heartbeat())).await.is_err() {
         return;
+    }
+    for frame in held.into_iter().flatten() {
+        if write_frame(&mut writer, &frame).await.is_err() {
+            return;
+        }
     }
     let mut beat = tokio::time::interval(state.config.heartbeat);
     beat.tick().await; // the first tick is immediate: the opening heartbeat is already sent
@@ -270,8 +266,9 @@ async fn subscriber(stream: ServerStream, state: Arc<State>) {
 }
 
 /// A consumer's side of a relay socket. The relay subscribes a connection before it sends that
-/// connection's opening heartbeat, so the lines a consumer receives are those drained after its
-/// first heartbeat; a line drained before it is counted in `missed_disconnected`.
+/// connection's opening heartbeat, so a consumer receives the lines drained after its first
+/// heartbeat; the first consumer also receives the lines held from before any connected. A line
+/// drained while nobody is connected after that is counted in `missed_disconnected`.
 pub struct Subscription {
     frames: tokio::io::Lines<BufReader<ClientStream>>,
 }
@@ -291,12 +288,15 @@ impl Subscription {
 }
 
 /// PURE: how long the engine named `expected` has been silent at `now_ms`, from a heartbeat.
-/// `None` (unavailable) when the heartbeat has expired, names no incarnation yet, or names
-/// another one: a predecessor's clock is never this engine's.
-pub fn silent_ms(heartbeat: &Heartbeat, expected: Incarnation, now_ms: u64) -> Option<u64> {
-    (now_ms < heartbeat.expires_at_ms && heartbeat.incarnation == Some(expected))
+/// `None` (unavailable) when the heartbeat has expired or names another incarnation: a
+/// predecessor's clock is never this engine's.
+pub fn silent_ms(heartbeat: &Heartbeat, expected: EngineIncarnation, now_ms: u64) -> Option<u64> {
+    (now_ms < heartbeat.expires_at_ms && heartbeat.incarnation == expected)
         .then(|| now_ms.saturating_sub(heartbeat.last_line_ms))
 }
+
+pub mod follow;
+pub mod process;
 
 #[cfg(test)]
 mod tests;
