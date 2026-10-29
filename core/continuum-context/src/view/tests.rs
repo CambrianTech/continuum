@@ -401,10 +401,11 @@ impl Source<String> for Spilled {
     }
 }
 
-// what this catches (Aiko on the M5, 2026-10-29 19:19:58Z: her newest result #3341 rendered at
-// 129 chars while 8-9k tokens sat unallocated): a body evicted from RAM priced and rendered as
-// its resident pointer, so storage decided what she saw. Its claim prices the WHOLE (full_chars
-// and the newest end), and a grant that holds it renders the loaded body, not the pointer.
+// what this catches: a body evicted from RAM priced and rendered as its resident pointer, so
+// storage decided what she saw (FOCUS-CONTRACT rule 7; on the M5 2026-10-29 working memory
+// deleted result bodies by a window share while the window had room for them). Its claim
+// prices the WHOLE (full_chars and the newest end), and a grant that holds it renders the
+// loaded body, not the pointer.
 #[test]
 fn an_evicted_body_is_priced_whole_and_rendered_whole_when_granted() -> Result<(), GrantMismatch> {
     let body = "line of her newest result\n".repeat(200);
