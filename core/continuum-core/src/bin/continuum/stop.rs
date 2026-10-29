@@ -38,9 +38,9 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
     // "the process is gone"; it now means "the process is gone AND every module's state
     // reached disk", which is the question anyone typing `stop` before an upgrade is
     // actually asking. A stop that could not save is a failure the shell can see.
-    // `--keep-engine` leaves the live serving lane for the next core to adopt (the reboot
-    // path): a build costs no model reload and nobody's KV. Plain `stop` reaps it.
-    match stop_with(options.keep_engine).await? {
+    // A stop ends the core; the engine stays for the next core to adopt (the reboot path), so
+    // a build costs no model reload and nobody's KV. Only `--engine` reaps it.
+    match stop_with(!options.engine).await? {
         // Nothing ran, so nothing was lost. Exiting non-zero here would report a data
         // loss that did not happen, and `stop` is used in scripts that would then treat a
         // clean no-op as a failure.
@@ -69,7 +69,7 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
 }
 
 /// The one teardown, parameterized by lane fate. `keep_lanes: true` keeps the engine for the
-/// next core (reboot, the install handoff, `stop --keep-engine`): a healthy llama-server about to be wanted again by the next
+/// next core (reboot, the install handoff, a plain `stop`): a healthy llama-server about to be wanted again by the next
 /// core stays up, and boot's serve-or-adopt reconcile adopts it at zero
 /// relaunches when the shape matches (regression-pinned:
 /// a_past_form_of_ourself_serving_enough_lanes_is_adopted_not_reaped) or
@@ -212,9 +212,9 @@ pub(super) async fn stop_with_policy(keep_lanes: bool, operator_present: bool, r
         request_graceful_stop(&may_drain).await
     };
     // `keep_lanes`: the engine stays for the next core to adopt. Its callers are reboot, the
-    // install handoff and `stop --keep-engine`; all three need what the guard checks (a core that
+    // install handoff and a plain `stop`; all three need what the guard checks (a core that
     // can attest its final checkpoint before its engine is handed on), so the one argument
-    // serves all three. Plain `stop` passes false.
+    // serves all three. Only `stop --engine` passes false.
     graceful.ensure_teardown_supported(keep_lanes)?;
     if require_durable {
         graceful.require_durable()?;
@@ -370,7 +370,7 @@ pub(super) async fn stop_with_policy(keep_lanes: bool, operator_present: bool, r
     // tool surface. `reboot` could not clear it either: reboot is stop + start,
     // and neither half owned lanes.
     if keep_lanes {
-        println!("  leaving serving lane(s) up for adoption by the next core (reboot path)");
+        println!("  leaving the engine up for the next core to adopt (`continuum stop --engine` ends it too)");
         let _ = std::fs::remove_file(&socket); // socket cleanup still ours — only the lane fate changed
         return Ok(graceful);
     }

@@ -52,11 +52,12 @@ pub struct TeardownPlan {
 /// does not know it exists.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct StopOptions {
-    /// `--keep-engine`: stop the core and leave the live serving lane (the engine, its loaded
-    /// weights and every mind's KV) running for the next core to adopt, as `reboot` does.
-    /// The build loop: stop the core, build on every core, start it again, with no model
-    /// reload and nobody's KV lost.
-    pub keep_engine: bool,
+    /// `--engine`: stop the engine too. By default a stop ends the core only: the engine is its
+    /// own resource, and its loaded weights and every mind's KV stay up for the next core to
+    /// adopt (`start` and `reboot` adopt it), so a stop, build and start costs no model reload
+    /// and nobody's KV (Joel, 2026-10-29: "The engine is supposed to stay up"). `--engine` is
+    /// for when its memory is wanted back.
+    pub engine: bool,
     pub elevated: bool,
     pub plan: Option<String>,
     pub plan_sha: Option<String>,
@@ -68,7 +69,7 @@ impl StopOptions {
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--keep-engine" => options.keep_engine = true,
+                "--engine" => options.engine = true,
                 "--elevated" => options.elevated = true,
                 "--plan" => options.plan = args.next(),
                 "--plan-sha" => options.plan_sha = args.next(),
@@ -86,8 +87,8 @@ impl StopOptions {
                     .to_string(),
             );
         }
-        if options.keep_engine && options.elevated {
-            return Err("stop: --keep-engine is an operator's stop; the consented child ends exactly one process".to_string());
+        if options.engine && options.elevated {
+            return Err("stop: --engine is an operator's stop; the consented child ends exactly one process".to_string());
         }
         Ok(options)
     }
@@ -292,9 +293,11 @@ mod tests {
         );
         assert!(unknown.contains("unknown option"), "{unknown}");
 
-        let keep = parse(&["--keep-engine"]).expect("an operator's stop that keeps the engine");
-        assert!(keep.keep_engine && !keep.elevated);
-        assert!(parse(&["--keep-engine", "--elevated", "--plan", "p.json", "--plan-sha", "abc"]).is_err());
+        // what this catches: a plain stop taking the engine down. The engine stays unless asked.
+        assert!(!parse(&[]).expect("a plain stop").engine, "a plain stop keeps the engine");
+        let all = parse(&["--engine"]).expect("an operator's stop that ends the engine too");
+        assert!(all.engine && !all.elevated);
+        assert!(parse(&["--engine", "--elevated", "--plan", "p.json", "--plan-sha", "abc"]).is_err());
 
         let child = parse(&["--elevated", "--plan", "p.json", "--plan-sha", "abc"])
             .expect("the bound child parses");
