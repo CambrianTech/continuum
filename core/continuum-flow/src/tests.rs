@@ -231,3 +231,51 @@ async fn a_reliable_stage_never_drops_a_result_and_a_signal_stage_keeps_the_newe
     }
     assert_eq!(*seen.lock().unwrap_or_else(|e| e.into_inner()), vec![1, 3], "the newest wake is handled"); // test: plain data
 }
+
+// Last producers may close concurrently while the worker sleeps or drains accepted input.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn simultaneous_last_producers_close_and_drain_the_stage() {
+    use std::sync::{Arc, Barrier};
+    struct Drain {
+        seen: Vec<u32>,
+        ended: Option<tokio::sync::oneshot::Sender<Vec<u32>>>,
+    }
+    impl Stage for Drain {
+        type Input = u32;
+        const QOS: Qos = Qos::Work;
+        const DEPTH: usize = 2;
+        async fn handle(&mut self, input: u32) { self.seen.push(input); }
+    }
+    impl Drop for Drain {
+        fn drop(&mut self) {
+            if let Some(ended) = self.ended.take() {
+                let _ = ended.send(std::mem::take(&mut self.seen));
+            }
+        }
+    }
+    for queued in [false, true] {
+        let (ended, done) = tokio::sync::oneshot::channel();
+        let first = spawn_stage(Drain { seen: Vec::new(), ended: Some(ended) });
+        let second = first.clone();
+        tokio::task::yield_now().await;
+        let barrier = Arc::new(Barrier::new(2));
+        std::thread::scope(|scope| {
+            let barrier = &barrier;
+            scope.spawn(move || {
+                barrier.wait();
+                if queued { assert_eq!(first.push(1), Ok(0)); }
+                drop(first);
+            });
+            scope.spawn(move || {
+                barrier.wait();
+                if queued { assert_eq!(second.push(2), Ok(0)); }
+                drop(second);
+            });
+        });
+        let mut seen = tokio::time::timeout(Duration::from_secs(2), done)
+            .await.expect("test: the closed stage must terminate")
+            .expect("test: stage drop reports drained input");
+        seen.sort_unstable();
+        assert_eq!(seen, if queued { vec![1, 2] } else { vec![] });
+    }
+}
