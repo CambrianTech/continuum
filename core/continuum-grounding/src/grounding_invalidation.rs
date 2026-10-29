@@ -26,9 +26,9 @@
 
 use std::sync::Arc;
 
-use crate::cognition::cached_source::WeakDirtyHandle;
-use crate::runtime::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
-use crate::runtime::message_bus::MessageBus;
+use crate::cached_source::WeakDirtyHandle;
+use continuum_kernel::runtime::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
+use continuum_kernel::runtime::message_bus::MessageBus;
 
 /// Does completing this command potentially change the filesystem a
 /// `[workspace-map]` describes?
@@ -182,8 +182,8 @@ pub fn spawn_publish_invalidator(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::cached_source::{CachedRagSource, DirtyHandle};
-    use crate::cognition::rag_budget::{
+    use crate::cached_source::{CachedRagSource, DirtyHandle};
+    use crate::rag_budget::{
          RagContext, RagDelivery, RagSource, ResolutionPreference,
     };
     use async_trait::async_trait;
@@ -213,7 +213,7 @@ mod tests {
             let n = self.fetches.fetch_add(1, Ordering::SeqCst) + 1;
             RagDelivery {
                 source_id: "counting".to_string(),
-                items: vec![crate::cognition::rag_budget::RagItem {
+                items: vec![crate::rag_budget::RagItem {
                     content: format!("fetch #{n}"),
                     tokens: 4,
                     metadata: serde_json::json!({}),
