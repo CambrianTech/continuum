@@ -217,20 +217,22 @@ impl<T: Block> View<T> {
     /// her items stayed collapsed while the window had room for them (Aiko, the M5, 2026-10-29:
     /// her last fifteen results as handles in a 42k-char prompt on a 55k-token window). This is
     /// the turnover that gives them back.
-    pub fn start_would_restore(&self, sources: &[&dyn Source<T>], allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> bool {
+    /// An allocator that answers for a different number of sources is the same refusal a start
+    /// gives ([`GrantMismatch`]), never a quiet "nothing to restore" (Codex on #5564).
+    pub fn start_would_restore(&self, sources: &[&dyn Source<T>], allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Result<bool, GrantMismatch> {
         let sources = self.motion.order(sources);
         let offered: Vec<Vec<Item<T>>> = sources.iter().map(|source| source.items()).collect();
         let claims: Vec<Claim> = sources.iter().zip(&offered).map(|(source, items)| claim(*source, items)).collect();
         let grants = allocate(&claims);
         if grants.len() != claims.len() {
-            return false;
+            return Err(GrantMismatch { claims: claims.len(), grants: grants.len() });
         }
-        sources.iter().zip(&offered).zip(&grants).any(|((source, items), grant)| {
+        Ok(sources.iter().zip(&offered).zip(&grants).any(|((source, items), grant)| {
             levels(items, *grant).iter().zip(items).any(|(level, item)| {
                 let id = key(source.name(), &item.key);
                 self.epoch.holds(&id) && rank(level) > rank(&self.held_level(&id))
             })
-        })
+        }))
     }
 
     fn held_level(&self, id: &SourceId) -> Level {

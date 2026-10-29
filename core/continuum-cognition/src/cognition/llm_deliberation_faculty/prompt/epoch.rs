@@ -119,8 +119,21 @@ impl LlmDeliberationFaculty {
         let fits = view_tokens <= granted + room;
         // A view that fits still turns over when a start would give her back what a squeezed
         // start collapsed: the epoch only appends, so it never would on its own.
-        if fits && !self.view_would_restore(&prompt.streams, |claims: &[Claim]| start_grants(claims, plan, granted + room, appended_per_act)) {
-            return;
+        if fits {
+            match self.view_would_restore(&prompt.streams, |claims: &[Claim]| start_grants(claims, plan, granted + room, appended_per_act)) {
+                Ok(true) => {}
+                Ok(false) => return,
+                // Said like a turnover's refusal, and her view stays as it is.
+                Err(mismatch) => {
+                    continuum_base::probe!(
+                        class = "delib.view.refused",
+                        persona = %self.persona_name,
+                        mismatch = %mismatch,
+                        "her view could not be checked for what a start would restore"
+                    );
+                    return;
+                }
+            }
         }
         // Admission before a turnover: redo this act's append within what the act granted her
         // view, an arrival too large for it reduced to its outline or pointer
@@ -261,11 +274,11 @@ impl LlmDeliberationFaculty {
     /// Start a new epoch of her view within `budget_chars`, the flexbox granting each
     /// source its share by priority, without the `shed` sources.
     /// Whether her view, started now under `allocate`'s grants, would show her more than it holds.
-    fn view_would_restore(&self, streams: &Streams, allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> bool {
+    fn view_would_restore(&self, streams: &Streams, allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Result<bool, continuum_context::view::GrantMismatch> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(MemoryStreams::of);
         let sources = Self::view_sources(streams, memory_streams.as_ref());
-        self.context_view.lock().as_ref().is_some_and(|view| view.start_would_restore(&sources, allocate))
+        self.context_view.lock().as_ref().map_or(Ok(false), |view| view.start_would_restore(&sources, allocate)) // map_or: no view yet holds nothing to restore
     }
 
     fn turn_over_view_with(

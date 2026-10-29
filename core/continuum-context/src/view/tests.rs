@@ -360,7 +360,10 @@ fn a_start_with_room_restores_what_a_squeezed_start_collapsed() -> Result<(), Gr
     let squeezed = floor + 10;
     let (view, _) = View::start(vec![], &[&actions], |_| vec![squeezed])?;
     assert!(!view.renders("actions", "#1"), "the squeezed start collapsed the big item");
-    assert!(view.start_would_restore(&[&actions], all_full), "room for it: a start gives it back");
-    assert!(!view.start_would_restore(&[&actions], |_| vec![squeezed]), "the same grants: nothing to restore");
+    assert!(view.start_would_restore(&[&actions], all_full)?, "room for it: a start gives it back");
+    assert!(!view.start_would_restore(&[&actions], |_| vec![squeezed])?, "the same grants: nothing to restore");
+    // what this catches: an allocator answering for the wrong number of sources read as "nothing
+    // to restore" (Codex on #5564). It is the start's own typed refusal.
+    assert_eq!(view.start_would_restore(&[&actions], |_| vec![]), Err(GrantMismatch { claims: 1, grants: 0 }));
     Ok(())
 }
