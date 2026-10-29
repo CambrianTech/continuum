@@ -400,7 +400,7 @@ mod tests {
         let transition = endpoint.transition().await;
         let generation = transition.start_generation().expect("the engine's generation");
         process.install_child(child, generation.clone(), None, None);
-        let evidence = process.publish_launched_evidence(&kept.engine_program, pid);
+        let evidence = process.publish_launched_evidence(kept.engine_program(), pid);
         drop(transition);
         let tail = ReadyTail {
             prepared: kept,

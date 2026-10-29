@@ -25,7 +25,8 @@ use std::path::{Path, PathBuf};
 
 mod attempts;
 mod claim;
-pub(crate) use claim::{claim_idle_slot, release_build_claim};
+#[cfg(test)]
+pub(crate) use claim::{claim_idle_slot, release_build_claim}; // the launch tests drive builds; production calls `claim::` here
 pub use claim::SlotClaim;
 
 /// The slots, bounded by construction: the current engine, one a lane may still run, and one to

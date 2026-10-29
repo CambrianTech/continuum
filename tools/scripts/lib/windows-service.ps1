@@ -122,6 +122,17 @@ function Protect-CoreBuildOutput {
     Write-Output 'Preserved the running Cargo image; the build can link its replacement without stopping the core.'
 }
 
+function Assert-CoreEngineClaimCapable {
+    # The one capability check (Codex on #5535): a lifecycle CLI that cannot CLAIM engine slots
+    # (`idle-slot --owner-pid`) is refused before ANY engine write, a promotion included.
+    param([string]$Cli)
+    $ErrorActionPreference = 'Continue'
+    $refusal = "The lifecycle CLI ($Cli) cannot claim engine slots (no 'continuum engine idle-slot --owner-pid'). Update the lifecycle tool first; nothing was built or changed."
+    if (-not $Cli -or -not (Test-Path -LiteralPath $Cli)) { throw $refusal }
+    try { $help = (Invoke-InstallerProcess $Cli @('--help') 2>&1 | Out-String) } catch { throw "$refusal ($_)" }
+    if ($help -notmatch 'continuum engine idle-slot --owner-pid') { throw $refusal }
+}
+
 function Get-CoreEngineIdleSlot {
     # The core's own answer (card 2c5d0ec0, #4491): the engine slot that no live lane RECORD
     # names and `current` does not name. The lane records name the exe each lane launched, so
@@ -133,10 +144,7 @@ function Get-CoreEngineIdleSlot {
     # Native stderr under 'Stop' is a terminating error in Windows PowerShell 5.1; the exit code
     # is the contract here, so read it rather than the error stream.
     $ErrorActionPreference = 'Continue'
-    $refusal = "The lifecycle CLI ($Cli) cannot claim engine slots (no 'continuum engine idle-slot --owner-pid'). Update the lifecycle tool first; nothing was built or changed."
-    if (-not $Cli -or -not (Test-Path -LiteralPath $Cli)) { throw $refusal }
-    try { $help = (Invoke-InstallerProcess $Cli @('--help') 2>&1 | Out-String) } catch { throw "$refusal ($_)" }
-    if ($help -notmatch 'continuum engine idle-slot --owner-pid') { throw $refusal }
+    Assert-CoreEngineClaimCapable -Cli $Cli
     $saved = $env:CONTINUUM_HOME
     try {
         $env:CONTINUUM_HOME = $InstallRoot
@@ -289,6 +297,8 @@ function Prepare-CoreServiceEngine {
     if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed before engine preparation.' }
     $release = $Description | ConvertFrom-Json -ErrorAction Stop
     $requirement = Get-CoreEngineRequirement -RepoRoot $RepoRoot
+    # Before any engine write, promotion included: an old CLI moves nothing (Codex on #5535).
+    Assert-CoreEngineClaimCapable -Cli $release.cli
     if ($PrebuiltOnly) {
         # An explicit published handoff can only promote its registered verified
         # payload. Drift is a preparation failure, never permission to compile.

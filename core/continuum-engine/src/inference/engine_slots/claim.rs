@@ -132,13 +132,9 @@ fn scratch_name() -> Result<String, String> {
     let pid = std::process::id();
     let started_s = process_start_s(pid)
         .ok_or("this process's start time is unreadable: its scratch files could never be swept")?;
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.subsec_nanos()); // uniqueness salt only; the counter alone already separates this process's names
-    Ok(format!(
-        ".claim.{pid}.{started_s}.{}{nanos:09}",
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ))
+    // Unique without a clock: pid + start time name this process, and the counter separates its
+    // names; a later process reusing the pid has another start time.
+    Ok(format!(".claim.{pid}.{started_s}.{}", NEXT.fetch_add(1, Ordering::Relaxed)))
 }
 
 /// Write `owner`'s claim, complete and synced, to a scratch file beside the claims: the claim is
