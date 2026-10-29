@@ -16,6 +16,21 @@ use uuid::Uuid;
 /// handle keeps it live and stays in the log (`receipt_keys`, `prune`).
 const POINTER_INDEX: usize = 12;
 
+/// Why an act number does not reopen a saved output (`tool/output` with `act`): a typed
+/// refusal naming the act, never a fallback to some other output.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ActOutputRefusal {
+    /// No record of hers carries this number.
+    #[error("act #{act} is not on your record; use a #n your view names")]
+    Unknown { act: u64 },
+    /// The act is on record but its save failed: what her view showed of it is all there is.
+    #[error("act #{act} has no saved output: its save failed, so what your view showed of it is all there is")]
+    Unsaved { act: u64 },
+    /// The caller has no resident mind whose record could resolve the number.
+    #[error("act #{act} cannot be resolved: no resident mind runs for this caller")]
+    NoResident { act: u64 },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ActionRecord {
     pub seq: u64,

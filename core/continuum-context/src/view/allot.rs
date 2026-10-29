@@ -36,35 +36,43 @@ pub(super) struct Allotment<T> {
     pub fold: Option<T>,
 }
 
-/// The oldest run `run` at its floor, priced by `cost`, given what its pointers cost: the
-/// source's fold block when it has one cheaper than those pointers, else the pointers (`None`).
-fn run_floor<T: Block>(
+/// The fold block standing for the oldest run `run` when its source folds it and the block
+/// is smaller than the run's pointers (`pointer_chars`), else `None`: the run floors at its
+/// pointers. Decided once, in chars (the view's unit), so the view and every caller pricing
+/// the floor in another unit ([`floor`]) price the same rendering. `Source::fold` reads only
+/// the run's ends, so asking it once per item a start raises is O(1) each.
+fn fold_of<T: Block>(
     source: &(impl Source<T> + ?Sized),
     run: &[Item<T>],
-    pointers: usize,
-    cost: &impl Fn(&T) -> usize,
-) -> (usize, Option<T>) {
+    pointer_chars: usize,
+) -> Option<T> {
     if run.is_empty() {
-        return (0, None);
+        return None;
     }
-    match source.fold(run) {
-        Some(block) if cost(&block) < pointers => (cost(&block), Some(block)),
-        _ => (pointers, None),
-    }
+    source
+        .fold(run)
+        .filter(|block| block.chars() < pointer_chars)
 }
 
 /// What `items` of `source` cost at their floor, in the unit `cost` prices a block in: the one
 /// owner of a source's floor, for the view's own claim and any caller pricing it in tokens.
+/// Whether the floor is the fold block or the pointers is [`fold_of`]'s decision, the view's.
 pub fn floor<T: Block>(
     source: &(impl Source<T> + ?Sized),
     items: &[Item<T>],
     cost: impl Fn(&T) -> usize,
 ) -> usize {
-    let pointers = items
+    let pointer_chars = items
         .iter()
-        .map(|item| item.pointer.as_ref().map_or(0, &cost))
+        .map(|item| item.pointer.as_ref().map_or(0, Block::chars))
         .sum(); // map_or: an item that leaves when collapsed costs nothing
-    run_floor(source, items, pointers, &cost).0
+    match fold_of(source, items, pointer_chars) {
+        Some(block) => cost(&block),
+        None => items
+            .iter()
+            .map(|item| item.pointer.as_ref().map_or(0, &cost))
+            .sum(), // map_or: as above
+    }
 }
 
 /// The level a `grant` of characters gives each item. Every item starts at the floor (folded
@@ -93,14 +101,16 @@ pub(super) fn allot<T: Block>(
     items: &[Item<T>],
     grant: usize,
 ) -> Allotment<T> {
-    let cost = |block: &T| block.chars();
     let mut pointers = Vec::with_capacity(items.len() + 1);
     pointers.push(0);
     for item in items {
         let below = pointers[pointers.len() - 1];
         pointers.push(below + item.pointer.as_ref().map_or(0, Block::chars)); // map_or: an item that leaves when collapsed costs nothing
     }
-    let floor = |count: usize| run_floor(source, &items[..count], pointers[count], &cost);
+    let floor = |count: usize| match fold_of(source, &items[..count], pointers[count]) {
+        Some(block) => (block.chars(), Some(block)),
+        None => (pointers[count], None),
+    };
     let mut levels = vec![Level::Pointer; items.len()];
     let (mut paid, _) = floor(items.len());
     let mut spare = grant.saturating_sub(paid);

@@ -461,7 +461,7 @@ impl Source<String> for Folding {
     fn fold(&self, folded: &[Item<String>]) -> Option<String> {
         let first = folded.first()?;
         let last = folded.last()?;
-        Some(format!("[actions #{}-#{}: {} earlier acts, folded at this start]", first.key, last.key, folded.len()))
+        Some(format!("[actions #{}-#{}: {} earlier acts folded; reopen one by #n]", first.key, last.key, folded.len()))
     }
 }
 

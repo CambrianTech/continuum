@@ -252,7 +252,7 @@ layer is a context `Source`:
   act she takes (Aris, the M5, 2026-10-29: ~95 pointers at ~190 chars before anything whole fit).
   The block is fixed at its start; folded items never arrive mid-epoch; a later start restores
   them only for a rise to summary or whole, never for a pointer the block already covers. Like a
-  pointer, a fold must name how one of its items reopens.
+  pointer, a fold must name how one of its items reopens (her acts: `tool/output` with `act`).
 - **The same items for humans and minds.** A human renderer and a mind's view consume one layer at
   the level each can afford. Screen frames, video and 3D state follow later as items too.
 

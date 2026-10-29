@@ -80,7 +80,7 @@ impl LlmDeliberationFaculty {
         }
         let Some(memory) = self.working_memory.as_ref() else { return false };
         let Some((seq, _)) = memory.active_action_full() else { return false };
-        let Some(handle) = memory.saved_handle(seq) else {
+        let Ok(handle) = memory.saved_handle(seq) else {
             continuum_base::probe!(
                 class = "delib.newest_result.unsaved_over_window",
                 persona = %self.persona_name,

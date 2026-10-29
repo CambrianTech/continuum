@@ -43,6 +43,7 @@ use crate::cognition::rag_budget::RagSource;
 /// owner's schema, native path, and cross-process checkpoint exclusion.
 pub mod checkpoint_adoption;
 
+mod act_output;
 mod rehome;
 pub use rehome::RehomeReason;
 

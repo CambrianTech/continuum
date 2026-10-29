@@ -87,15 +87,20 @@ impl Source<ContextMessage> for Actions<'_> {
         Some(ContextMessage::user(format!("{label}{body}")))
     }
 
-    /// Her oldest acts as one line: the first and last `#n` and how many, so her floor is one
-    /// block however many acts she has taken (Aris, the M5, 2026-10-29: 95 pointers at ~190
-    /// chars before anything whole fit). The banner folds with them; the line says what it is.
-    /// `None` for a run with no act in it (the banner alone): nothing to name.
+    /// Her oldest acts as one line: the first and last `#n`, how many, and how one reopens
+    /// (`tool/output` with `act`), so her floor is one block however many acts she has taken
+    /// (Aris, the M5, 2026-10-29: 95 pointers at ~190 chars before anything whole fit). Reads
+    /// only the run's ends: the banner, when it is in the run, is its first item and folds
+    /// with it. `None` for a run with no act in it (the banner alone): nothing to name.
     fn fold(&self, folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
-        let mut acts = folded.iter().filter_map(|item| item.key.parse::<u64>().ok());
-        let first = acts.next()?;
-        let (last, count) = acts.fold((first, 1_usize), |(_, count), seq| (seq, count + 1));
-        Some(ContextMessage::user(format!("[actions #{first}-#{last}: {count} earlier acts, folded at this start]")))
+        let banner = usize::from(folded.first().is_some_and(|item| item.key.parse::<u64>().is_err()));
+        let acts = &folded[banner..];
+        let first: u64 = acts.first()?.key.parse().ok()?;
+        let last: u64 = acts.last()?.key.parse().ok()?;
+        let count = acts.len();
+        Some(ContextMessage::user(format!(
+            "[actions #{first}-#{last}: {count} earlier acts folded; reopen one with tool/output act=<n>]"
+        )))
     }
 
     /// Once she has acted, the void said earlier in this epoch is superseded, never edited:

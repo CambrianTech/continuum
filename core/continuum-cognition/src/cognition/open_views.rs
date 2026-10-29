@@ -163,7 +163,11 @@ impl OpenViews {
     /// touches that file's view: its line numbers are the saved result's, which open with a
     /// header line, not the file's.
     fn note_output_page(&mut self, act: &Observation, seq: u64) -> bool {
-        let Some(handle) = act.call.input.get("outputId").and_then(|v| v.as_str()) else {
+        let header = crate::cognition::tool_executor::spill::result_scalars(&act.output.result.content);
+        // The output she named, or, for a call by act number, the one the result echoes.
+        let named = act.call.input.get("outputId").and_then(|v| v.as_str());
+        let echoed = header.as_ref().and_then(|h| h.get("outputId")?.as_str());
+        let Some(handle) = named.or(echoed) else {
             return false;
         };
         let Some(index) = self.views.iter().position(|v| {
@@ -175,7 +179,6 @@ impl OpenViews {
         let mut view = self.views.remove(index);
         view.touched_seq = seq;
         if act.completed_successfully() && matches!(view.subject, ViewSubject::Output { .. }) {
-            let header = crate::cognition::tool_executor::spill::result_scalars(&act.output.result.content);
             let total = header.as_ref().and_then(|h| h.get("totalLines")?.as_u64()).and_then(|n| u32::try_from(n).ok());
             let truncated = header.as_ref().and_then(|h| h.get("truncated")?.as_bool()).unwrap_or(true); // unwrap_or: a page that does not say it came back whole is not counted as read
             let line = |key: &str| act.call.input.get(key)?.as_u64().and_then(|n| u32::try_from(n).ok());
