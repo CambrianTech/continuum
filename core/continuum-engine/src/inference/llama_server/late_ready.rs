@@ -108,9 +108,12 @@ impl<'a> Kept<'a> {
         self.tail.as_ref()
     }
 
-    /// Publication committed: the launch is spent and nothing is kept.
+    /// Publication committed: the launch is spent and nothing is kept; the candidate's evidence
+    /// stands for the engine now serving.
     fn disarm(mut self) {
-        self.tail = None;
+        if let Some(evidence) = self.tail.take().and_then(|tail| tail.evidence) {
+            evidence.keep();
+        }
     }
 
     /// After a failed wait: kept when the engine is alive and was only slow, else discarded.
@@ -229,6 +232,7 @@ impl LlamaServerProcess {
 
 #[cfg(test)]
 mod tests {
+    use super::super::engine_features::{evidence_takes_tail_tools, pinned_build};
     use super::*;
 
     fn contract(model: &str, ctx: &str) -> LaunchContract {
@@ -379,18 +383,23 @@ mod tests {
 
     /// The state a readiness timeout leaves: a live engine installed under a started, never
     /// published generation, and its launch kept by the same path a real `NotReady` takes.
+    /// `evidence`, when given, is the lane's evidence cell: the spawned engine's evidence is
+    /// published into it at the point a launch publishes it, right after the child is installed.
     async fn timed_out_launch(
         root: &str,
         kept: Arc<PreparedLocalLaunch>,
         test: &str,
+        evidence: Option<&'static ServedEvidence>,
     ) -> (LlamaServerProcess, crate::inference::slots::EngineGeneration, Option<u32>, tokio::process::ChildStdin) {
-        let process = LlamaServerProcess::with_root(root.to_string());
+        let mut process = LlamaServerProcess::with_root(root.to_string());
+        process.served_evidence = evidence;
         let (child, held) = stand_in_engine(test);
         let pid = child.id();
         let endpoint = crate::inference::slots::directory().endpoint(root);
         let transition = endpoint.transition().await;
         let generation = transition.start_generation().expect("the engine's generation");
         process.install_child(child, generation.clone(), None, None);
+        let evidence = process.publish_launched_evidence(&kept.engine_program, pid);
         drop(transition);
         let tail = ReadyTail {
             prepared: kept,
@@ -399,6 +408,7 @@ mod tests {
             page_dir_ready: false,
             debug_flag: Default::default(),
             restoring: false,
+            evidence,
         };
         Kept::new(&process, tail).settle(&LlamaServerError::NotReady(Duration::from_secs(90), "load progress quiet".into()));
         (process, generation, pid, held)
@@ -438,7 +448,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let root = fake_engine(ready(true), ready(true)).await;
-        let (process, generation, pid, _held) = timed_out_launch(&root, prepared(&root, dir.path(), "16384"), TEST).await;
+        let (process, generation, pid, _held) = timed_out_launch(&root, prepared(&root, dir.path(), "16384"), TEST, None).await;
         assert!(!ledger_published(&root, &generation).await, "before: the generation has no ledger (the Windows refusal)");
 
         let changed = process.launch_prepared(prepared(&root, dir.path(), "32768"), &|| true, None, None).await;
@@ -466,7 +476,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine_ready = ready(false);
         let root = fake_engine(Arc::clone(&engine_ready), ready(true)).await;
-        let (process, generation, pid, _held) = timed_out_launch(&root, prepared(&root, dir.path(), "16384"), TEST).await;
+        let (process, generation, pid, _held) = timed_out_launch(&root, prepared(&root, dir.path(), "16384"), TEST, None).await;
         let process = Arc::new(process);
 
         let waiting = tokio::spawn({
@@ -516,7 +526,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let props_open = ready(false);
         let root = fake_engine(ready(true), Arc::clone(&props_open)).await;
-        let (process, generation, pid, _held) = timed_out_launch(&root, prepared(&root, dir.path(), "16384"), TEST).await;
+        let (process, generation, pid, _held) = timed_out_launch(&root, prepared(&root, dir.path(), "16384"), TEST, None).await;
         let process = Arc::new(process);
 
         let publishing = tokio::spawn({
@@ -537,5 +547,78 @@ mod tests {
         if let Ok(process) = Arc::try_unwrap(process) {
             release(process).await;
         }
+    }
+
+    /// An evidence cell holding the incumbent's own `/props` reading: the pinned build, which
+    /// takes `tail_tools`. Every candidate launched below is unstamped ("llama-server" sits in no
+    /// owned slot), so its evidence takes none: the two capabilities differ.
+    fn incumbent_evidence() -> &'static ServedEvidence {
+        let cell: &'static ServedEvidence = Box::leak(Box::new(ServedEvidence::default()));
+        let incumbent = crate::inference::engine_residency::EngineIncarnation { pid: 100, started_s: 1_700_000_000, port: 1 };
+        cell.lock().observe(Some(incumbent), Ok(Some(&pinned_build())));
+        assert!(evidence_takes_tail_tools(cell), "the incumbent takes tail_tools");
+        cell
+    }
+
+    // what this catches (Codex on 07644dc3f): a launch refused before its transition (here a
+    // superseded admission; a restoration, receipt or inputs refusal returns at the same side of
+    // it) that had already published the unlaunched candidate's `tail_tools` evidence, so the
+    // incumbent still serving was advertised the candidate's capability.
+    #[tokio::test]
+    async fn a_launch_refused_before_its_transition_leaves_the_incumbents_evidence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = "http://127.0.0.1:1/evidence-refused";
+        let cell = incumbent_evidence();
+        let mut process = LlamaServerProcess::with_root(root.to_string());
+        process.served_evidence = Some(cell);
+
+        let refused = process.launch_prepared(prepared(root, dir.path(), "16384"), &|| false, None, None).await;
+        assert!(matches!(refused, Err(LlamaServerError::Superseded)), "the admission refuses: {refused:?}");
+        assert!(evidence_takes_tail_tools(cell), "the incumbent's evidence stands, not the candidate's");
+        assert!(!process.owns_child(), "nothing was spawned");
+    }
+
+    // what this catches: the other side of the same move. The spawned candidate's evidence is
+    // published while it loads, and a launch that publishes the engine keeps it (not the
+    // incumbent's), so her first act after a restart sees what the new engine takes.
+    #[tokio::test]
+    async fn a_published_launch_keeps_the_candidates_evidence() {
+        const TEST: &str = "a_published_launch_keeps_the_candidates_evidence";
+        if serve_as_stand_in() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = fake_engine(ready(true), ready(true)).await;
+        let cell = incumbent_evidence();
+        let (process, generation, pid, _held) = timed_out_launch(&root, prepared(&root, dir.path(), "16384"), TEST, Some(cell)).await;
+        assert!(!evidence_takes_tail_tools(cell), "the spawned candidate's evidence is published while it loads");
+
+        process.launch_prepared(prepared(&root, dir.path(), "16384"), &|| true, None, None).await.expect("the launch publishes the engine");
+        assert!(ledger_published(&root, &generation).await, "published");
+        assert_eq!(owned_pid(&process), pid);
+        assert!(!evidence_takes_tail_tools(cell), "the published candidate's evidence stands");
+        release(process).await;
+    }
+
+    // what this catches (Codex on 07644dc3f): a launch that fails after its candidate's evidence
+    // was published (a wait that did not end slow, so the launch is discarded) leaving that
+    // evidence advertised. Discarding the launch puts the incumbent's evidence back.
+    #[tokio::test]
+    async fn a_discarded_launch_withdraws_the_candidates_evidence() {
+        const TEST: &str = "a_discarded_launch_withdraws_the_candidates_evidence";
+        if serve_as_stand_in() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = fake_engine(ready(false), ready(true)).await;
+        let cell = incumbent_evidence();
+        let (process, _generation, _pid, _held) = timed_out_launch(&root, prepared(&root, dir.path(), "16384"), TEST, Some(cell)).await;
+        assert!(!evidence_takes_tail_tools(cell), "the spawned candidate's evidence is published");
+
+        let tail = process.loading.lock().take().map(|kept| kept.tail).expect("the kept launch");
+        Kept::new(&process, tail).settle(&LlamaServerError::Spawn("the engine exited while loading".into()));
+        assert!(process.loading.lock().is_none(), "a launch that did not end slow is discarded");
+        assert!(evidence_takes_tail_tools(cell), "the incumbent's evidence is back");
+        release(process).await;
     }
 }

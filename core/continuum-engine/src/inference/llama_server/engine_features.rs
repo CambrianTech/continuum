@@ -49,26 +49,71 @@ impl ServedEngine {
     }
 }
 
-/// The serving lane's evidence. Written only by the gateway reconcile (from the same `/props`
-/// read that converges the engine) and cleared by every live-lane launch.
-static SERVED_ENGINE: parking_lot::Mutex<ServedEngine> =
-    parking_lot::Mutex::new(ServedEngine { incarnation: None, build: None });
+/// One lane's evidence cell. The serving lane's is [`SERVED_ENGINE`]; an ephemeral lane has none.
+pub(super) type ServedEvidence = parking_lot::Mutex<ServedEngine>;
+
+/// The serving lane's evidence. Written by the gateway reconcile (from the same `/props` read
+/// that converges the engine) and by a live-lane launch whose candidate spawned
+/// ([`LaunchedEvidence`]).
+static SERVED_ENGINE: ServedEvidence = parking_lot::Mutex::new(ServedEngine { incarnation: None, build: None });
+
+/// The serving lane's evidence cell, handed to the live lane's process at construction.
+pub(super) fn serving_lane_evidence() -> &'static ServedEvidence {
+    &SERVED_ENGINE
+}
 
 /// Record one reconcile reading of the serving lane (see [`ServedEngine::observe`]).
 pub(super) fn observe_served_engine(now: Option<EngineIncarnation>, props: Result<Option<&str>, ()>) {
     SERVED_ENGINE.lock().observe(now, props);
 }
 
-/// A new live engine is being launched from `program`. Its slot's stamp is the evidence until
-/// its own `/props` answers: the core knows which engine it is starting. "Unknown" read as "no
-/// `tail_tools`" sent every resident's first act after a restart the full 38-verb surface, and her
-/// next act the learned head. That was two head changes, two full re-prefills, and a view
-/// turnover per restart (the M5, 2026-10-27 17:53Z: restores matched 32 tokens of ~150k). A
-/// binary outside the owned slots has no stamp and stays unknown.
-pub(super) fn expect_launched_engine(program: &str) {
-    let build = crate::inference::engine_slots::stamp_of_bin(std::path::Path::new(program))
-        .and_then(|stamp| stamp.split(':').next().map(str::to_owned));
-    *SERVED_ENGINE.lock() = ServedEngine { incarnation: None, build };
+/// A launched candidate's evidence, published only once its transition has drained the
+/// incumbent's readers AND its process spawned, and tied to that spawned incarnation. Its slot's
+/// stamp is the evidence until its own `/props` answers: the core knows which engine it started.
+/// "Unknown" read as "no `tail_tools`" sent every resident's first act after a restart the full
+/// 38-verb surface, and her next act the learned head: two head changes, two full re-prefills and
+/// a view turnover per restart (the M5, 2026-10-27 17:53Z: restores matched 32 tokens of ~150k).
+/// A binary outside the owned slots has no stamp and stays unknown.
+///
+/// Published any earlier, a launch refused before its transition (a restoration, receipt or
+/// inputs check, a superseded admission, a refused checkpoint or retirement) advertised the
+/// unlaunched candidate's capability for the incumbent still serving (Codex on 07644dc3f). Dropped
+/// without [`LaunchedEvidence::keep`] (the launch failed, was cancelled, or its kept launch was
+/// discarded), it puts the incumbent's evidence back, unless a newer reading replaced it.
+#[must_use = "dropping the publication withdraws it"]
+pub(super) struct LaunchedEvidence {
+    cell: &'static ServedEvidence,
+    published: ServedEngine,
+    /// What the cell held before; `None` once the candidate's evidence is kept.
+    incumbent: Option<ServedEngine>,
+}
+
+impl LaunchedEvidence {
+    /// Publish `program`'s slot stamp as the evidence for the spawned `incarnation`.
+    pub(super) fn publish(cell: &'static ServedEvidence, program: &str, incarnation: Option<EngineIncarnation>) -> Self {
+        let build = crate::inference::engine_slots::stamp_of_bin(std::path::Path::new(program))
+            .and_then(|stamp| stamp.split(':').next().map(str::to_owned));
+        let published = ServedEngine { incarnation, build };
+        let incumbent = std::mem::replace(&mut *cell.lock(), published.clone());
+        Self { cell, published, incumbent: Some(incumbent) }
+    }
+
+    /// The candidate is published as the serving engine: its evidence stands until the engine's
+    /// own `/props` replaces it.
+    pub(super) fn keep(mut self) {
+        self.incumbent = None;
+    }
+}
+
+impl Drop for LaunchedEvidence {
+    fn drop(&mut self) {
+        if let Some(incumbent) = self.incumbent.take() {
+            let mut cell = self.cell.lock();
+            if *cell == self.published {
+                *cell = incumbent;
+            }
+        }
+    }
 }
 
 /// PURE: whether a lane reporting `build_info` (`b10765-1c6681593`) runs the `pinned` commit,
@@ -81,17 +126,24 @@ pub(crate) fn build_takes_tail_tools(build_info: &str, pinned: &str) -> bool {
 /// Whether the serving lane's own reported build takes `tail_tools`. `false` until the gateway
 /// reconcile has read the current engine's build, and for any build other than the pinned one.
 pub fn serving_engine_takes_tail_tools() -> bool {
-    SERVED_ENGINE.lock().takes_tail_tools(PINNED_ENGINE)
+    evidence_takes_tail_tools(&SERVED_ENGINE)
+}
+
+/// Whether the evidence in `cell` says its engine takes `tail_tools` (the pinned build).
+pub(super) fn evidence_takes_tail_tools(cell: &ServedEvidence) -> bool {
+    cell.lock().takes_tail_tools(PINNED_ENGINE)
+}
+
+/// The `build_info` the pinned fork reports (`b10765-<short commit>`), for fixtures.
+#[cfg(test)]
+pub(super) fn pinned_build() -> String {
+    let short: String = PINNED_ENGINE.trim().chars().take(9).collect(); // the short commit llama.cpp stamps into build_info
+    format!("b10765-{short}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn pinned_build() -> String {
-        let short: String = PINNED_ENGINE.trim().chars().take(9).collect(); // the short commit llama.cpp stamps into build_info
-        format!("b10765-{short}")
-    }
 
     // what this catches: a learned tool head sent to an engine that cannot call a tail verb
     // (an older lane a deploy left up, a stock or operator build, an unreadable build_info),
@@ -131,7 +183,7 @@ mod tests {
         seen.observe(Some(b), Ok(Some("b10765-e7e1077b3")));
         assert!(!seen.takes_tail_tools(PINNED_ENGINE), "B answered with an older build");
 
-        let mut launched = ServedEngine::default(); // what `expect_launched_engine` stores for an unstamped binary
+        let mut launched = ServedEngine::default(); // what `LaunchedEvidence::publish` stores for an unstamped binary
         launched.observe(Some(b), Err(()));
         assert!(!launched.takes_tail_tools(PINNED_ENGINE), "an unstamped launch has no evidence until the new engine answers");
     }

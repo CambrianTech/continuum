@@ -87,7 +87,7 @@ use genome::{engine_help_lists_train_dir, ENGINE_TRAIN_DIR};
 mod engine_install;
 mod engine_features;
 pub use engine_features::serving_engine_takes_tail_tools;
-use engine_features::{expect_launched_engine, observe_served_engine};
+use engine_features::{observe_served_engine, serving_lane_evidence, LaunchedEvidence, ServedEvidence};
 #[cfg(windows)]
 pub(crate) use engine_install::engine_override;
 pub(crate) use engine_install::{installed_engine_commit, lane_runs_installed_engine};

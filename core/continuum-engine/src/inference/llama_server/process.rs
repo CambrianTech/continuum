@@ -55,6 +55,10 @@ pub struct LlamaServerProcess {
     /// it would reap the living persona's own server. This boolean is the seam
     /// that keeps the reclaim machinery bound to exactly one process.
     pub(super) is_live_lane: bool,
+    /// Where a spawned candidate's `tail_tools` evidence is published ([`LaunchedEvidence`]):
+    /// the serving lane's cell for the live lane, none for an ephemeral lane, which serves no
+    /// resident's tool head.
+    pub(super) served_evidence: Option<&'static ServedEvidence>,
     /// Raised by this lane's stderr watcher when a slot reports impossible progress,
     /// polled by the serving daemon. Live lane only — an ephemeral lane has no daemon
     /// watching it and tears down its own process, so its watcher would report into a void.
@@ -146,6 +150,7 @@ impl LlamaServerProcess {
             // THE host's live lane — pins the canonical port, owns the reclaim
             // pidfile. `new()`/`with_client()` are the live constructors.
             is_live_lane: true,
+            served_evidence: Some(serving_lane_evidence()),
             wedge: Some(crate::inference::wedge::WedgeFlag::new()),
             offload: crate::inference::placement_watch::OffloadReport::new(),
             smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
@@ -181,6 +186,7 @@ impl LlamaServerProcess {
             // Ephemeral lane on its OWN scanned port: NOT the canonical live lane.
             // It must never write the canonical pidfile or reclaim the live port.
             is_live_lane: false,
+            served_evidence: None,
             // No serving daemon watches an ephemeral lane, and its owner tears the process
             // down when the eval ends — a wedge report would have no consumer.
             wedge: None,
