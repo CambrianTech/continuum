@@ -568,7 +568,7 @@ pub(crate) async fn close_superseded_reviews(
         let accepted = board
             .review_request(current_review)
             .map(|r| r.submission_id)
-            .unwrap_or(submissions[0].submission_id);
+            .unwrap_or(submissions[0].submission_id); // unwrap_or: an unbound legacy round settles the newest submission; empty was guarded above
         let Some(accepted_idx) = submissions.iter().position(|s| s.submission_id == accepted) else {
             continuum_base::probe!(
                 class = "work.review.superseded_sweep_failed",
@@ -593,7 +593,7 @@ pub(crate) async fn close_superseded_reviews(
             let candidate = board
                 .review_request(card.card_id)
                 .map(|r| r.submission_id)
-                .unwrap_or(submissions[0].submission_id);
+                .unwrap_or(submissions[0].submission_id); // unwrap_or: an unbound legacy round targets the newest submission in transcript order; nonempty guarded above
             let Some(candidate_idx) = submissions.iter().position(|s| s.submission_id == candidate)
             else {
                 continuum_base::probe!(
