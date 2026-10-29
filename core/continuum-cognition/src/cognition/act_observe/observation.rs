@@ -25,7 +25,7 @@ use crate::ai::types::{ToolCall, ToolResult};
 
 use super::recency::{
     humanize_result_content, render_act_for_recall,
-    summarize_args_for_recency,
+    render_call_args,
 };
 
 /// Semantic class of a tool verb. Produced ONCE from `ToolCall.name` at the act
@@ -264,9 +264,9 @@ impl Observation {
     /// call, shared by every act in the batch), so it is passed rather than
     /// stored per-`Observation`.
     pub fn render_recency(&self, intent: &str) -> String {
-        let args = summarize_args_for_recency(&self.call.input);
-        // The intent rides the result as a ONE-LINE reason, clipped to the same
-        // fixed echo bound the args get (ECHOED_ARG_CHARS) — never the whole monologue.
+        let args = render_call_args(&self.call.input);
+        // The intent rides the result as a ONE-LINE reason, its first line: a shape rule,
+        // never a size, and never the whole monologue.
         // Measured 2026-09-04: one result header carried 2,902 chars of intent
         // ("Let me get oriented…") ahead of 790 chars of actual output; across a
         // turn, 6.1k of 20.6k result chars were intent echo. The output is what
@@ -274,7 +274,7 @@ impl Observation {
         let because = if intent.trim().is_empty() {
             String::new()
         } else {
-            format!(" because {}", clip_intent(intent, super::recency::ECHOED_ARG_CHARS))
+            format!(" because {}", intent_label(intent))
         };
         format!(
             "{}({}){}\nResult:\n{}\n\n",
@@ -290,7 +290,7 @@ impl Observation {
     /// summary reads what the receipt shows her, never the executor's serialized JSON, where a
     /// read's numbered lines are escaped and no code level is found (Codex on #5424).
     pub(crate) fn render_summary_part(&self, level: impl Fn(&str) -> Option<String>) -> String {
-        let args = summarize_args_for_recency(&self.call.input);
+        let args = render_call_args(&self.call.input);
         let body = self.body_text();
         let body = body.trim();
         let shown = level(body).unwrap_or_else(|| body.to_owned()); // unwrap_or: a body with no smaller level is its own summary
@@ -353,31 +353,24 @@ pub fn extract_paths(input: &serde_json::Value) -> Vec<PathBuf> {
 
 /// Clip an act's intent to a one-line reason of at most `max_chars` characters
 /// (first line, head-trimmed with an ellipsis). Pure; used by the recency render.
-pub(super) fn clip_intent(intent: &str, max_chars: usize) -> String {
-    let first = intent.trim().lines().next().unwrap_or("").trim(); // unwrap_or: an empty intent clips to nothing
-    let max = max_chars.max(24);
-    if first.chars().count() <= max {
-        first.to_string()
-    } else {
-        let head: String = first.chars().take(max.saturating_sub(1)).collect();
-        format!("{}…", head.trim_end())
-    }
+/// The intent's label on a result: its first line. A shape rule, never a size: the rest of what she
+/// thought is her own message, already in her view.
+pub fn intent_label(intent: &str) -> String {
+    intent.trim().lines().next().map_or_else(String::new, |first| first.trim().to_string()) // an empty intent labels nothing
 }
 
 #[cfg(test)]
 mod tests {
 
-    // what this catches: the intent rides a tool result as a ONE-LINE label clipped to
-    // the echo budget — never the monologue (2,902 chars ahead of 790 chars of output,
-    // measured 2026-09-04). A short intent passes through untouched.
+    // what this catches: the monologue riding every result (2,902 chars of intent ahead of 790
+    // chars of output, measured 2026-09-04). The label is the first line, by shape, never a size.
     #[test]
-    fn intent_on_a_result_is_a_clipped_one_liner() {
+    fn intent_on_a_result_is_its_first_line() {
         let long = "Let me get oriented properly this time. I've been confusing myself with stale context and the board says otherwise.\nSecond line never rides.";
-        let clipped = super::clip_intent(long, 40);
-        assert!(clipped.chars().count() <= 40, "{clipped:?}");
-        assert!(clipped.ends_with('…') && !clipped.contains("Second line"), "{clipped:?}");
-        assert_eq!(super::clip_intent("read the card", 40), "read the card");
-        assert_eq!(super::clip_intent("   ", 40), "");
+        let label = super::intent_label(long);
+        assert!(label.starts_with("Let me get oriented") && !label.contains("Second line"), "{label:?}");
+        assert_eq!(super::intent_label("read the card"), "read the card");
+        assert_eq!(super::intent_label("   "), "");
     }
 
     use super::*;

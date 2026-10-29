@@ -243,14 +243,13 @@ impl WorkingMemory {
     }
 
     /// Attach her stated reasoning for the act just recorded to the open views it touched,
-    /// so each view carries what she understood, not only how far she read. Clipped to the
-    /// window-relative echo budget her other stated reasoning uses.
+    /// so each view carries what she understood, not only how far she read. The note is the
+    /// intent's label, its first line: the same shape rule a result's header uses, never a size.
     pub fn annotate_open_views(&self, intent: &str) {
         let Some(seq) = self.next_action_seq.load(Ordering::Relaxed).checked_sub(1) else {
             return;
         };
-        let max_chars = self.budget().echoed_arg_chars();
-        self.open_views.lock().annotate(seq, intent, max_chars);
+        self.open_views.lock().annotate(seq, &crate::cognition::act_observe::intent_label(intent));
     }
 
     pub(crate) fn record_receipt_measured(

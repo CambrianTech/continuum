@@ -35,12 +35,11 @@
 //! | dispatch result     | 4_000        |  1/12  (4_096)                 |
 //! | rendered tool slice | 12_000       |  1/4   (12_288)                |
 //! | tool catalog summary| 96           |  1/512 (96, exact)             |
-//! | echoed args         | 600 †        | ~1/64  (768)                   |
 //!
-//! † the echoed-args bound is the one value that was NOT battle-tuned — it was invented
-//! (by me) on 2026-08-03, the same day this module was written to delete it. It shares the
-//! trail-head fraction because it plays the same role: a recognizable stub of something she
-//! already has in full elsewhere.
+//! The echoed-args bound (600, invented on 2026-08-03, never tuned) is gone: a result's header
+//! shows her call's single-line arguments whole and names its multi-line bodies by shape, and the
+//! intent rides as its first line (act_observe::recency::render_call_args, intent_label). A shape
+//! rule, never a size, so nothing here sizes it.
 //!
 //! So the fractions below are not a new guess: they are the tuning that was already there,
 //! expressed against the thing it was always implicitly relative to. On a 16k lane every
@@ -409,12 +408,6 @@ fn working_window_when(served: u32, serving: bool) -> u32 {
         self.fraction(4)
     }
 
-    /// Echo of ONE argument value back into the recency channel. The tightest bound, and
-    /// deliberately so: she WROTE these one generation ago, so echoing a whole file's
-    /// `content` back at her buys nothing and costs the window.
-    pub fn echoed_arg_chars(&self) -> usize {
-        self.fraction(64)
-    }
 
     /// Total char share of the PROPRIOCEPTION RECEIPT ARCHIVE — the receipts-ONLY ring in
     /// [`WorkingMemory`](super::working_memory::WorkingMemory) that makes act history
@@ -566,9 +559,6 @@ mod tests {
         assert_eq!(b.latest_action_chars(), 16_384 * GUARD_CHARS_PER_TOKEN);
         near(b.dispatch_result_chars(), 4_000); // DISPATCH_RESULT_MAX_CHARS
         near(b.render_slice_chars(), 12_000); // RENDER_BUDGET_CHARS
-                                             // Echoed args share the trail-head fraction (see the module doc's † note — the old
-                                             // 600 was invented, not tuned, so it is not a calibration target).
-        assert_eq!(b.echoed_arg_chars(), b.trail_head_chars());
     }
 
     /// what this catches: the whole point of the module — a big window must actually GET a
@@ -636,7 +626,6 @@ mod tests {
         let b = ContextBudget::unknown();
         assert_eq!(b.latest_action_chars(), usize::MAX);
         assert_eq!(b.trail_head_chars(), usize::MAX);
-        assert_eq!(b.echoed_arg_chars(), usize::MAX);
     }
 
     // what this catches: a working window that moves with load (f45f090a6 shrank it 48k ->
