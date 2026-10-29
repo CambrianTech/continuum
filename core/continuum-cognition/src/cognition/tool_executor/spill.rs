@@ -328,29 +328,17 @@ pub fn resolve(persona_id: Uuid, handle: &str) -> std::io::Result<PathBuf> {
 
 /// THE read of a saved result as her view loads it back: the saved output, trimmed as the
 /// record keeps its result (`record_receipt_inner`). Her view's `load` and the memory owner's
-/// shed both read through here, so "verified" means "loads back to this text".
+/// proof ([`reproduces`]) both read through here, so "verified" means "loads back to this text".
 pub fn saved_whole(persona_id: Uuid, handle: &str) -> std::io::Result<String> {
     let text = fs::read_to_string(resolve(persona_id, handle)?)?;
     Ok(text.trim().to_owned())
 }
 
-/// A whole's content address for comparing a resident body with its saved copy without
-/// holding both in RAM (SHA-256 of the text).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WholeDigest([u8; 32]);
-
-impl WholeDigest {
-    pub fn of(text: &str) -> Self {
-        let mut digest = [0u8; 32];
-        digest.copy_from_slice(&Sha256::digest(text.as_bytes()));
-        Self(digest)
-    }
-}
-
-/// The digest of what `persona_id`'s saved output for `handle` loads back to
-/// ([`saved_whole`]). A resident body whose digest matches is reproduced by its copy.
-pub fn saved_digest(persona_id: Uuid, handle: &str) -> std::io::Result<WholeDigest> {
-    Ok(WholeDigest::of(&saved_whole(persona_id, handle)?))
+/// Whether `persona_id`'s saved output for `handle` loads back ([`saved_whole`]) to exactly
+/// `body`: the proof that the copy can stand in for a body leaving RAM. `Err` when it cannot be
+/// read back at all.
+pub fn reproduces(persona_id: Uuid, handle: &str, body: &str) -> std::io::Result<bool> {
+    Ok(saved_whole(persona_id, handle)? == body)
 }
 
 // ── root-injected cores (the filesystem seam; unit-tested against a tempdir so

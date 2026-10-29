@@ -42,7 +42,7 @@ impl WorkingMemory {
     pub(crate) fn resident_results(&self) -> ResidentResults {
         let actions = self.actions.lock();
         let candidates = actions
-            .evictable(&|_, _, _| true)
+            .evictable(&|_, _| true)
             .filter_map(|record| {
                 Some(ShedCandidate {
                     received_ms: record.received_ms,
@@ -58,16 +58,27 @@ impl WorkingMemory {
         }
     }
 
+    /// A copy of one resident body, if its record still names `handle`: what the memory owner
+    /// proves its saved copy against, outside the lock (the lock is held only for the copy).
+    pub(crate) fn resident_body(&self, seq: u64, handle: &str) -> Option<String> {
+        let actions = self.actions.lock();
+        let record = actions.get(seq)?;
+        if record.handle.as_deref() != Some(handle) {
+            return None;
+        }
+        record.result.clone()
+    }
+
     /// THE eviction verb: move the oldest saved bodies to their handles until at most `budget`
     /// bytes stay resident. Only the memory owner's shed calls it in production, with
-    /// `saved(seq, handle, body)` answering from what it read outside the lock (each saved copy's
-    /// digest), so a record that changed since, or whose copy does not reproduce its body, is
-    /// not moved. No filesystem access happens under the lock. The newest stays, and
+    /// `saved(seq, handle)` answering from the copies it proved outside the lock, so a record
+    /// that changed since (a different handle, or gone) is not moved. No filesystem access
+    /// happens under the lock. The newest stays, and
     /// past the budget after that the overrun is reported, never forced.
     pub(crate) fn evict_resident_results_over(
         &self,
         budget: u64,
-        saved: &dyn Fn(u64, &str, &str) -> bool,
+        saved: &dyn Fn(u64, &str) -> bool,
     ) {
         let total = self.actions.lock().collapse_over(budget, saved).total;
         self.publish_live_handles();

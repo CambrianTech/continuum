@@ -198,7 +198,7 @@ use super::*;
                 memory.record_receipt_typed(&[], &"s".repeat(cap / 2), None, saved("5000000000000002"));
             }
             memory.record_settlement("done", None);
-            memory.evict_resident_results_over(0, &|_, _, _| true);
+            memory.evict_resident_results_over(0, &|_, _| true);
             let persisted = PersistedVolatile {
                 wm: memory.snapshot(),
                 own_speech: OwnSpeechPersisted::ByRoom(Vec::new()),
