@@ -1,7 +1,9 @@
 //! The one HTTP server: every format's route through the same handler.
 
+use crate::listener::Signal;
 use crate::route::{self, RouteError};
 use crate::wire::{anthropic::Anthropic, chat::Chat, responses::Responses, BadRequest, ErrorKind, Wire};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
@@ -9,14 +11,20 @@ use axum::routing::{get, post};
 use axum::Router;
 use serde_json::{json, Value};
 
-pub(crate) fn router() -> Router {
+/// The routes, serving until the module raises `abandoned` (`crate::listener`): then every
+/// call still in flight is stopped and its agent told why.
+pub(crate) fn router(abandoned: Signal) -> Router {
     Router::new()
         .route("/v1/messages", post(serve::<Anthropic>))
         .route("/v1/chat/completions", post(serve::<Chat>))
         .route("/v1/responses", post(serve::<Responses>))
         .route("/v1/models", get(models))
         .route("/health", get(|| async { Json(json!({"status": "ok", "service": "continuum-gateway"})) }))
+        .with_state(abandoned)
 }
+
+/// What an agent whose call was in flight is told when the node stops.
+pub(crate) const STOPPING: &str = "this node's gateway is stopping; the call was stopped before it finished";
 
 /// `GET /v1/models`: what this node serves, in the shape every format's clients read.
 async fn models() -> Json<Value> {
@@ -29,7 +37,7 @@ async fn models() -> Json<Value> {
 }
 
 /// Decode, select, generate, encode: the same for every format.
-async fn serve<W: Wire>(headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+async fn serve<W: Wire>(State(abandoned): State<Signal>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
     let mut call = match W::decode(body) {
         Ok(call) => call,
         Err(BadRequest(why)) => return refuse::<W>(StatusCode::BAD_REQUEST, ErrorKind::InvalidRequest, &why),
@@ -59,7 +67,12 @@ async fn serve<W: Wire>(headers: axum::http::HeaderMap, Json(body): Json<Value>)
         Err(unavailable) => return capture_refused::<W>(&unavailable),
     };
     if !call.stream {
-        let outcome = route::generate(&adapter, call.request).await;
+        // Abandoned: the generation is dropped (the engine's cancellation path) and so is the
+        // lease, which records the call as cancelled.
+        let outcome = tokio::select! {
+            outcome = route::generate(&adapter, call.request) => outcome,
+            () = abandoned.raised() => return refuse::<W>(StatusCode::SERVICE_UNAVAILABLE, ErrorKind::Engine, STOPPING),
+        };
         crate::session::settle(&mut lease, &outcome);
         return match outcome {
             Ok(response) => Json(W::answer(&response, &id)).into_response(),
@@ -73,7 +86,7 @@ async fn serve<W: Wire>(headers: axum::http::HeaderMap, Json(body): Json<Value>)
         crate::session::settle(&mut lease, &outcome);
         outcome
     };
-    let answer = crate::answer::Answer::new(W::streamer(&model, &id), generation, received);
+    let answer = crate::answer::Answer::new(W::streamer(&model, &id), generation, received, abandoned.raised());
     let events = tokio_stream::StreamExt::map(answer, |frame| Ok::<_, std::convert::Infallible>(frame.into_event()));
     Sse::new(events).keep_alive(KeepAlive::default()).into_response()
 }

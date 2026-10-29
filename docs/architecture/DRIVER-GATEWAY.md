@@ -32,7 +32,7 @@ The port is stable and configured, never dynamic, because an agent needs a URL i
 - `OPENAI_BASE_URL` for Hermes, opencode and Codex;
 - `--xai-api-base-url` for Grok Build.
 
-**Wire formats are adapters holding only the diff.** Each one is a decoder into the one internal request (`TextGenerationRequest`) and an encoder out of its stream, with SSE included.
+**Wire formats are adapters holding only the diff.** Each one is a decoder into the one internal request (`TextGenerationRequest`) and an encoder out of its stream, with SSE included. A field the agent sent is read whole or the call is refused before anything is generated (`continuum-gateway` `wire/decode.rs`): a malformed tool or a provider's built-in one, a token limit outside the engine's range, a stop sequence that is not a string. Nothing an agent declared is dropped.
 
 | Wire format | Path | Agents |
 |---|---|---|

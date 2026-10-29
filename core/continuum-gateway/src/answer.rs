@@ -4,8 +4,8 @@
 //! Codex on #5541 (34672ec73): a generation spawned beside the body outlived a departed agent
 //! (the engine request and its lane kept running) while its capture said cancelled, and two
 //! unbounded queues let a slow agent accumulate a whole answer in memory. Here there is no
-//! task and no gateway queue. The body polls the generation itself, and only when the agent
-//! has taken every frame already encoded:
+//! task. The body polls the generation itself, and only when the agent has taken every frame
+//! already encoded:
 //!
 //! - **The agent leaves:** hyper drops the body, which drops the generation future. That is
 //!   the engine's one cancellation path, the same one a resident's abandoned turn takes
@@ -16,11 +16,17 @@
 //!   capture lease rides inside the generation future, so its `Drop` records the call as
 //!   cancelled at the same moment, never while the engine still runs.
 //! - **The agent is slow:** the generation is not polled until the frames of the last chunk
-//!   are taken, so the engine reads no further from its stream. What waits is bounded by the
-//!   engine's own stream batching unit: the chunks ONE poll of the generation produced (one
-//!   read of the engine's SSE connection; llama-server sends one token per event), plus the
-//!   frames one chunk encodes to. Behind that, the agent's socket and hyper's write buffer
-//!   push back on the body, and the engine's connection's receive window on llama-server.
+//!   are taken, and every producer on the local serving path yields after each chunk it sends
+//!   (`continuum-engine` `ai/stream_sinks.rs`, `deliver`), so one poll sends at most one
+//!   chunk. The gateway holds that chunk and the frames it encodes to, nothing more. What
+//!   else waits is the engine's own and is bytes, not chunks: the unparsed rest of its last
+//!   network read (the adapter's SSE buffer, hyper's read buffer). Behind that the engine
+//!   connection's receive window stops llama-server writing, and the agent's socket and
+//!   hyper's write buffer push back on this body. The engine's sink type is unbounded
+//!   (`AIProviderAdapter::generate_stream`); the bound comes from `deliver`, so a producer
+//!   that sent around it would break it. Pinned against the real producer by
+//!   `continuum-engine` `ai/openai_adapter/tests/a_ready_burst_*` and here by
+//!   `a_stalled_agent_stops_a_ready_burst_at_one_chunk_ahead`.
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -44,19 +50,25 @@ pub(crate) struct Answer<W: Wire> {
     /// `None` once it has returned (its closing frames are queued).
     generation: Option<Generation>,
     /// The engine's sink for this generation (its streaming contract is an unbounded sender);
-    /// emptied before the generation is polled again, so it holds one poll's chunks at most.
+    /// emptied before the generation is polled again, and one poll sends at most one chunk
+    /// (`stream_sinks::deliver`), so it holds one chunk at most.
     received: UnboundedReceiver<GenerationChunk>,
     /// The frames of one chunk (or the opening or closing), until the agent takes them.
     encoded: VecDeque<Frame>,
+    /// Resolves when the module stops the gateway (`crate::listener`); polled only while the
+    /// generation runs.
+    abandoned: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
 
 impl<W: Wire> Answer<W> {
     /// `generation` sends its chunks to the sender `received` drains, and owns everything that
-    /// must end with it (the engine request and its admission, the capture lease).
+    /// must end with it (the engine request and its admission, the capture lease). When
+    /// `abandoned` resolves first, the generation is dropped and the answer closes as failed.
     pub(crate) fn new(
         mut encoder: W,
         generation: impl Future<Output = Result<TextGenerationResponse, RouteError>> + Send + 'static,
         received: UnboundedReceiver<GenerationChunk>,
+        abandoned: impl Future<Output = ()> + Send + 'static,
     ) -> Self {
         let encoded = encoder.opened().into();
         Self {
@@ -64,6 +76,14 @@ impl<W: Wire> Answer<W> {
             generation: Some(Box::pin(generation)),
             received,
             encoded,
+            abandoned: Box::pin(abandoned),
+        }
+    }
+
+    /// Encode every chunk the generation already sent.
+    fn encode_received(&mut self) {
+        while let Ok(chunk) = self.received.try_recv() {
+            self.encoded.extend(self.encoder.chunk(&chunk));
         }
     }
 
@@ -97,6 +117,15 @@ impl<W: Wire> tokio_stream::Stream for Answer<W> {
                 // dropped its sender; every chunk it sent was taken above.
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => {}
             }
+            if this.generation.is_some() && this.abandoned.as_mut().poll(cx).is_ready() {
+                // The node is stopping. Dropping the generation is the engine's one
+                // cancellation path, and its lease records the call as cancelled.
+                this.generation = None;
+                this.encode_received();
+                this.encoded
+                    .extend(this.encoder.failed(crate::server::STOPPING));
+                continue;
+            }
             let Some(generation) = this.generation.as_mut() else {
                 return Poll::Ready(None);
             };
@@ -107,9 +136,7 @@ impl<W: Wire> tokio_stream::Stream for Answer<W> {
                 Poll::Ready(outcome) => {
                     this.generation = None;
                     // Its last chunks precede its closing frames.
-                    while let Ok(chunk) = this.received.try_recv() {
-                        this.encoded.extend(this.encoder.chunk(&chunk));
-                    }
+                    this.encode_received();
                     let closing = this.closing(outcome);
                     this.encoded.extend(closing);
                 }
@@ -122,6 +149,7 @@ impl<W: Wire> tokio_stream::Stream for Answer<W> {
 mod tests {
     use super::*;
     use crate::wire::chat::Chat;
+    use continuum_engine::ai::stream_sinks::deliver;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::sync::mpsc::UnboundedSender;
@@ -134,24 +162,16 @@ mod tests {
         Pin::new(answer).poll_next(&mut cx)
     }
 
-    /// Pending exactly once, then ready: an engine step between two chunks.
-    async fn step() {
-        let mut stepped = false;
-        std::future::poll_fn(|cx| {
-            if stepped {
-                return Poll::Ready(());
-            }
-            stepped = true;
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        })
-        .await
-    }
-
     /// A generation shaped as the engine's: it holds a slot permit for its whole life (the
-    /// adapter's `TurnAdmission`), sends `chunks` tokens counting each, then waits forever (a
-    /// long decode). Returns the answer, the permit's pool and the sent count.
-    fn generation(chunks: usize) -> (Answer<Chat>, Arc<Semaphore>, Arc<AtomicUsize>) {
+    /// adapter's `TurnAdmission`), sends `chunks` tokens through the engine's `deliver` with
+    /// nothing else between them (a READY burst: every token already decoded, as one network
+    /// read of many events is), counting each, then waits forever (a long decode); the node
+    /// stops when `abandoned` resolves. Returns the answer, the permit's pool and the sent
+    /// count.
+    fn stopping_generation(
+        chunks: usize,
+        abandoned: impl Future<Output = ()> + Send + 'static,
+    ) -> (Answer<Chat>, Arc<Semaphore>, Arc<AtomicUsize>) {
         let slots = Arc::new(Semaphore::new(1));
         let permit: OwnedSemaphorePermit = slots
             .clone()
@@ -164,20 +184,27 @@ mod tests {
         let generation = async move {
             let _admission = permit;
             for i in 0..chunks {
-                if sink.send(GenerationChunk::Token(format!("t{i}"))).is_err() {
-                    return Err(RouteError::Engine("test: sink closed".into()));
-                }
                 counted.fetch_add(1, Ordering::SeqCst);
-                step().await;
+                deliver(&sink, GenerationChunk::Token(format!("t{i}"))).await;
             }
             std::future::pending::<()>().await;
             Err(RouteError::Engine("test: unreachable".into()))
         };
         (
-            Answer::new(Chat::streamer("qwen", "chatcmpl_1"), generation, received),
+            Answer::new(
+                Chat::streamer("qwen", "chatcmpl_1"),
+                generation,
+                received,
+                abandoned,
+            ),
             slots,
             sent,
         )
+    }
+
+    /// The same, on a node that keeps serving.
+    fn generation(chunks: usize) -> (Answer<Chat>, Arc<Semaphore>, Arc<AtomicUsize>) {
+        stopping_generation(chunks, std::future::pending())
     }
 
     // what this catches: an agent that leaves during prefill (before any token) leaving its
@@ -227,15 +254,21 @@ mod tests {
     }
 
     // what this catches: a slow agent letting generation run ahead and pile its answer up in
-    // memory (the unbounded chunk and event queues of 34672ec73).
+    // memory (the unbounded chunk and event queues of 34672ec73), including when the engine
+    // has many chunks READY at once (one network read of many events) and nothing yields
+    // between them but the engine's own `deliver`.
     #[tokio::test]
-    async fn a_stalled_agent_stops_generation_at_one_chunk_ahead() {
+    async fn a_stalled_agent_stops_a_ready_burst_at_one_chunk_ahead() {
         let (mut answer, _slots, sent) = generation(10_000);
         for _ in 0..3 {
             assert!(matches!(poll(&mut answer), Poll::Ready(Some(_))));
         }
         let taken = 2; // the opening frame, then two tokens
-                       // The agent stops reading. Nothing else may drive the generation.
+        assert!(
+            answer.received.len() <= 1,
+            "the gateway holds at most one chunk"
+        );
+        // The agent stops reading. Nothing else may drive the generation.
         for _ in 0..1_000 {
             tokio::task::yield_now().await;
         }
@@ -256,7 +289,12 @@ mod tests {
                 .map_err(|_| RouteError::Engine("test: closed".into()))?;
             Err(RouteError::Engine("lane died".into()))
         };
-        let mut answer = Answer::new(Chat::streamer("qwen", "chatcmpl_1"), generation, received);
+        let mut answer = Answer::new(
+            Chat::streamer("qwen", "chatcmpl_1"),
+            generation,
+            received,
+            std::future::pending(),
+        );
         let mut frames = Vec::new();
         while let Poll::Ready(Some(frame)) = poll(&mut answer) {
             frames.push(frame.data);
@@ -270,5 +308,45 @@ mod tests {
             frames[2..].iter().any(|f| f.contains("lane died")),
             "the failure closes it: {frames:?}"
         );
+    }
+
+    // what this catches: a gateway stop that leaves an answer in flight decoding on (its
+    // engine slot held, its agent waiting) after the module let the listener go, or that
+    // cuts the stream without telling the agent why.
+    #[tokio::test]
+    async fn a_stopping_node_ends_an_answer_in_flight_and_frees_its_slot() {
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let abandoned = async move {
+            // Err: the test dropped its sender, which stops the node all the same.
+            match stopped.await {
+                Ok(()) | Err(_) => {}
+            }
+        };
+        let (mut answer, slots, _sent) = stopping_generation(1, abandoned);
+        assert!(
+            matches!(poll(&mut answer), Poll::Ready(Some(_))),
+            "the opening frame"
+        );
+        assert!(
+            matches!(poll(&mut answer), Poll::Ready(Some(_))),
+            "the token"
+        );
+        assert!(poll(&mut answer).is_pending(), "decoding on");
+        assert_eq!(slots.available_permits(), 0);
+        stop.send(()).expect("test: the answer is listening");
+        let mut closing = Vec::new();
+        while let Poll::Ready(Some(frame)) = poll(&mut answer) {
+            closing.push(frame.data);
+        }
+        assert_eq!(
+            slots.available_permits(),
+            1,
+            "stopped: the generation and its slot are gone"
+        );
+        assert!(
+            closing.iter().any(|f| f.contains(crate::server::STOPPING)),
+            "the agent is told why: {closing:?}"
+        );
+        assert!(poll(&mut answer).is_ready(), "the answer ended");
     }
 }

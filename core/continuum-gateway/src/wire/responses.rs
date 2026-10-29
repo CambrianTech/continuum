@@ -4,7 +4,7 @@
 //! mind's memory, which arrives with session identity (DRIVER-GATEWAY.md G2); until then a
 //! call that names one is refused rather than answered without its history.
 
-use super::{chat, event, input_schema, place_system, sampling, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
+use super::{chat, decode, event, place_system, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
 use continuum_engine::ai::adapter::GenerationChunk;
 use continuum_engine::ai::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse};
 use serde_json::{json, Value};
@@ -35,17 +35,17 @@ impl Wire for Responses {
         };
         let mut request = TextGenerationRequest {
             model: Some(model.to_owned()),
-            max_tokens: body.get("max_output_tokens").and_then(Value::as_u64).map(|t| t as u32),
-            system_prompt: body.get("instructions").and_then(Value::as_str).map(str::to_owned),
+            max_tokens: decode::token_limit(&body, &["max_output_tokens"])?,
+            system_prompt: instructions(&body)?,
             messages,
-            tools: body.get("tools").and_then(Value::as_array).map(|tools| tools.iter().filter_map(tool).collect()),
-            tool_choice: body.get("tool_choice").and_then(chat::tool_choice),
+            tools: decode::tools(&body, tool)?,
+            tool_choice: chat::tool_choice(&body)?,
             purpose: Some(continuum_engine::inference::request_body::DRIVER_PURPOSE.into()),
             ..Default::default()
         };
-        sampling(&body, &mut request);
+        decode::sampling(&body, &mut request, chat::OPENAI_TEMPERATURE_MAX)?;
         (request.system_prompt, request.messages) = place_system(request.system_prompt.take(), std::mem::take(&mut request.messages));
-        Ok(Call { request, stream: body.get("stream").and_then(Value::as_bool).unwrap_or(false) }) // unwrap_or: the API's default is not streamed
+        Ok(Call { request, stream: decode::streamed(&body)? })
     }
 
     fn answer(response: &TextGenerationResponse, id: &str) -> Value {
@@ -224,13 +224,22 @@ fn content(value: &Value) -> MessageContent {
     }
 }
 
-fn tool(value: &Value) -> Option<NativeToolSpec> {
-    if value.get("type").and_then(Value::as_str) != Some("function") {
-        return None; // built-in tools (web search, file search) are the provider's, not ours
+/// The `instructions`, a string when sent.
+fn instructions(body: &Value) -> Result<Option<String>, BadRequest> {
+    match decode::present(body, "instructions") {
+        None => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text.clone())),
+        Some(other) => Err(BadRequest(format!("`instructions` must be a string, got {}", decode::kind(other)))),
     }
-    Some(NativeToolSpec {
-        name: value.get("name").and_then(Value::as_str)?.to_owned(),
-        description: value.get("description").and_then(Value::as_str).unwrap_or_default().to_owned(), // unwrap_or_default: a tool may have no description
-        input_schema: input_schema(&value["parameters"]),
-    })
+}
+
+/// A Responses tool: `{type: "function", name, description, parameters}`. A provider's
+/// built-in (web search, file search, a hosted shell) is refused, never dropped: the agent
+/// would expect a tool the model was never shown.
+fn tool(entry: &Value) -> Result<NativeToolSpec, String> {
+    match decode::tool_type(entry)? {
+        Some("function") => decode::tool_spec(entry.get("name"), entry.get("description"), entry.get("parameters")),
+        Some(other) => Err(decode::unserved(other, "`function`")),
+        None => Err("has no `type`".into()),
+    }
 }
