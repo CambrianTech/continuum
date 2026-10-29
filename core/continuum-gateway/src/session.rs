@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use continuum_capture::{CaptureLease, JsonlPromptCaptureSink, PromptCall, PromptCaptureSink};
+use continuum_capture::prompt_capture::{CaptureLease, JsonlPromptCaptureSink, PromptCall, PromptCaptureSink};
 use continuum_engine::ai::TextGenerationRequest;
 use uuid::Uuid;
 
