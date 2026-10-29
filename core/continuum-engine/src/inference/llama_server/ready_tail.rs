@@ -11,6 +11,9 @@ pub(super) struct ReadyTail {
     pub(super) page_dir_ready: bool,
     pub(super) debug_flag: crate::inference::debug_build_watch::DebugBuildFlag,
     pub(super) restoring: bool,
+    /// The candidate's published `tail_tools` evidence: kept when the launch publishes, withdrawn
+    /// when the tail is dropped unpublished. `None` on a lane with no evidence cell.
+    pub(super) evidence: Option<LaunchedEvidence>,
 }
 
 impl LlamaServerProcess {
@@ -24,7 +27,7 @@ impl LlamaServerProcess {
         transition: &crate::inference::slots::EndpointTransition,
         tail: &ReadyTail,
     ) -> Result<(), LlamaServerError> {
-        let ReadyTail { prepared, generation, child_pid, page_dir_ready, debug_flag, restoring } = tail;
+        let ReadyTail { prepared, generation, child_pid, page_dir_ready, debug_flag, restoring, .. } = tail;
         let (child_pid, page_dir_ready, restoring) = (*child_pid, *page_dir_ready, *restoring);
         let target = &prepared.target;
         let gguf = prepared.gguf.clone();

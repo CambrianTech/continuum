@@ -10,11 +10,13 @@
 //! The core knows its pin: `vendor/LLAMA_CPP_PIN` is compiled in. Before every launch, and before
 //! the reconcile compares a running lane with the installed engine, the current slot is held to
 //! it. A slot already holding the pin for this host's verified target (backend and CUDA
-//! architectures, [`EngineStamp`]) is promoted, a verified one first. When none exists, the node
-//! keeps serving on what it has and says so loudly (`serving.engine.unpinned`), because a mute
-//! resident is worse than a slow one. Promoting the pointer is not the running engine: the
-//! reconcile relaunches the lane onto it, and `deploy-verify` passes only when the LIVE engine's
-//! own build is the pin ([`super::engine_report`]).
+//! architectures, [`EngineStamp`]) is promoted, a verified one first. When none exists, or the
+//! promote fails, a NEW launch is refused with a typed [`EngineUnpinned`]: the core never starts
+//! an engine its source does not pin. An incumbent already serving is not killed for it: the
+//! refusal comes before any transition, so its custody and state stand and the reconcile reports
+//! the blocked convergence (`serving.engine.convergence_blocked`). Promoting the pointer is not
+//! the running engine: the reconcile relaunches the lane onto it, and `deploy-verify` passes only
+//! when the LIVE engine's own build is the pin ([`super::engine_report`]).
 
 /// The fork commit this tree pins, compiled in from the one file a PR edits to move it.
 pub(crate) const PINNED_ENGINE: &str = include_str!("../../../../vendor/LLAMA_CPP_PIN");
@@ -101,82 +103,125 @@ pub(crate) fn choose(current: Option<&'static str>, slots: &[SlotReading], pin: 
 }
 
 /// The last verdict probed, so a reconcile that asks every tick speaks only on a change.
-static LAST: parking_lot::Mutex<Option<PinChoice>> = parking_lot::Mutex::new(None);
+static LAST: parking_lot::Mutex<Option<Result<PinHeld, EngineUnpinned>>> = parking_lot::Mutex::new(None);
 
-/// Hold the current engine slot to this core's pin. Never under an operator override (their
-/// engine) and never while a deploy holds the claim (it owns the slot pointers mid-promote).
-pub(super) fn hold_current_engine_to_pin() {
+/// Why no owned engine may launch now: no slot can be shown to hold this core's pin for this
+/// host. Typed so the reconcile keeps an incumbent on it instead of reading a launch failure.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EngineUnpinned {
+    /// The continuum home or its engine payload root could not be read: no owned slot exists.
+    #[error("no engine slots to hold to pin {pin}: {reason}")]
+    NoSlots { pin: String, reason: String },
+    /// No slot holds the pin for the current slot's target.
+    #[error("no engine slot holds pin {pin} for this host's target (current {current}); `continuum install` builds it")]
+    Unpinned { pin: String, current: String },
+    /// The current slot has no readable target, so no slot can be shown to fit this host.
+    #[error("the current engine slot has no readable target (stamp {current:?}), so no slot can be shown to hold pin {pin} for this host")]
+    Untargeted { pin: String, current: Option<String> },
+    /// A slot holds the pin, but promoting it failed: `current` still names another engine.
+    #[error("slot {slot} holds pin {pin} ({stamp}) but promoting it failed: {reason}")]
+    PromoteRefused { pin: String, slot: &'static str, stamp: String, reason: String },
+    /// A deploy holds the claim and owns the slot pointers, and the current slot is not the pin.
+    #[error("a deploy owns the engine slot pointers and the current slot does not hold pin {pin}: no launch until it finishes")]
+    DeployInFlight { pin: String },
+}
+
+/// What holding the node to its pin settled, when a launch may proceed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PinHeld {
+    /// An operator's own engine (`LLAMA_SERVER_BIN`): not ours to hold.
+    Operator,
+    /// The current slot holds the pin.
+    Pinned,
+    /// A slot holding the pin was made current now.
+    Promoted,
+}
+
+/// PURE: settle a [`PinChoice`] into a launch decision. `deploy_owns_pointers` forbids moving
+/// a pointer (a deploy is mid-promote) but still lets an already-pinned slot launch. `promote`
+/// runs only for a `Promote` choice outside a deploy.
+pub(crate) fn settle(
+    choice: &PinChoice,
+    pin: &str,
+    deploy_owns_pointers: bool,
+    promote: impl FnOnce(&'static str, &str) -> Result<(), String>,
+) -> Result<PinHeld, EngineUnpinned> {
+    let pin = pin.to_string();
+    match choice {
+        PinChoice::Pinned => Ok(PinHeld::Pinned),
+        _ if deploy_owns_pointers => Err(EngineUnpinned::DeployInFlight { pin }),
+        PinChoice::Promote { slot, stamp } => promote(slot, stamp)
+            .map(|()| PinHeld::Promoted)
+            .map_err(|reason| EngineUnpinned::PromoteRefused { pin, slot: *slot, stamp: stamp.clone(), reason }),
+        PinChoice::Unpinned { current } => Err(EngineUnpinned::Unpinned { pin, current: current.clone() }),
+        PinChoice::Untargeted { current } => Err(EngineUnpinned::Untargeted { pin, current: current.clone() }),
+    }
+}
+
+/// Hold the current engine slot to this core's pin before a launch (and before the reconcile
+/// compares a running lane with the installed engine). Never moves a pointer under an operator
+/// override (their engine) or while a deploy holds the claim (it owns the pointers mid-promote).
+/// `Err` means no owned engine may launch now; each verdict is probed once per change.
+pub(super) fn hold_current_engine_to_pin() -> Result<PinHeld, EngineUnpinned> {
     use crate::inference::engine_slots::{self as slots, SLOTS};
     if super::engine_install::engine_override().is_some() {
-        return;
+        return Ok(PinHeld::Operator);
     }
-    let Ok(home) = crate::paths::continuum_home() else {
-        return; // no home: no slots
-    };
+    let pin = pinned_engine();
+    let no_slots = |reason: String| EngineUnpinned::NoSlots { pin: pin.to_string(), reason };
+    let home = crate::paths::continuum_home().map_err(|e| no_slots(format!("no continuum home: {e}")))?;
+    let root = slots::root(&home).map_err(|e| no_slots(format!("no engine payload root: {e}")))?;
     let now_ms = continuum_base::time::EpochMs::now().millis(); // pre-1970 reads 0: as in the rollback guard
-    if continuum_cli_lifecycle::deploy_claim::in_flight(&home, now_ms).blocks() {
-        return;
-    }
-    let Ok(root) = slots::root(&home) else {
-        return; // no payload root: the pre-slot install, nothing to hold
-    };
+    let deploy_owns_pointers = continuum_cli_lifecycle::deploy_claim::in_flight(&home, now_ms).blocks();
     let readings: Vec<SlotReading> = SLOTS
         .iter()
         .map(|&name| SlotReading { name, stamp: slots::slot_stamp(&root, name), verified: slots::is_verified(&root, name) })
         .collect();
     let current = slots::current_slot(&root);
-    let choice = choose(current, &readings, pinned_engine());
-    let changed = LAST.lock().as_ref() != Some(&choice);
-    match &choice {
-        PinChoice::Pinned => {
-            if changed {
-                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.pinned",
-                    slot = current.unwrap_or(""), // probe field: Pinned implies a current slot
-                    pin = pinned_engine(),
-                    "the current engine slot runs the engine this core pins"
-                );
-            }
-        }
-        PinChoice::Promote { slot, stamp } => match slots::promote(&root, slot, stamp) {
-            Ok(_) => continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.repinned",
-                from = current.unwrap_or(""), // probe field: no current slot reads empty
-                to = *slot,
-                stamp = stamp.as_str(),
+    let choice = choose(current, &readings, pin);
+    let held = settle(&choice, pin, deploy_owns_pointers, |slot, stamp| slots::promote(&root, slot, stamp).map(|_| ()));
+    let changed = LAST.lock().as_ref() != Some(&held);
+    if changed {
+        report(&held, current);
+    }
+    *LAST.lock() = Some(held.clone());
+    held
+}
+
+/// Say one settled verdict (only on a change, so a reconcile that asks every tick is quiet).
+fn report(held: &Result<PinHeld, EngineUnpinned>, current: Option<&'static str>) {
+    let slot = current.unwrap_or(""); // probe field: no current slot reads empty
+    match held {
+        Ok(PinHeld::Operator) => {}
+        Ok(PinHeld::Pinned) => continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.pinned",
+            slot,
+            pin = pinned_engine(),
+            "the current engine slot runs the engine this core pins"
+        ),
+        Ok(PinHeld::Promoted) => continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.repinned",
+            from = slot,
+            pin = pinned_engine(),
+            "the current engine slot did not run this core's pinned engine: a slot that does is \
+             current now, and the next launch or convergence runs it"
+        ),
+        Err(refusal) => {
+            let class = match refusal {
+                EngineUnpinned::NoSlots { .. } => "serving.engine.no_slots",
+                EngineUnpinned::Unpinned { .. } => "serving.engine.unpinned",
+                EngineUnpinned::Untargeted { .. } => "serving.engine.untargeted",
+                EngineUnpinned::PromoteRefused { .. } => "serving.engine.repin_refused",
+                EngineUnpinned::DeployInFlight { .. } => "serving.engine.pin_deferred_to_deploy",
+            };
+            let why = refusal.to_string();
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = class,
+                slot,
                 pin = pinned_engine(),
-                "the current engine slot did not run this core's pinned engine: a slot that does is \
-                 current now, and the next launch or convergence runs it"
-            ),
-            Err(reason) => continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.repin_refused",
-                to = *slot,
-                stamp = stamp.as_str(),
-                reason = reason.as_str(),
-                "a slot holds this core's pinned engine but could not be promoted: the node serves on \
-                 an engine its source does not pin"
-            ),
-        },
-        PinChoice::Unpinned { current: stamp } => {
-            if changed {
-                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.unpinned",
-                    current = stamp.as_str(),
-                    pin = pinned_engine(),
-                    "no engine slot holds this core's pinned engine for this host's target: the node \
-                     serves on an engine its source does not pin until `continuum install` builds it"
-                );
-            }
-        }
-        PinChoice::Untargeted { current: stamp } => {
-            if changed {
-                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.untargeted",
-                    slot = current.unwrap_or(""), // probe field: no current slot reads empty
-                    current = stamp.as_deref().unwrap_or(""), // probe field: no stamp reads empty
-                    pin = pinned_engine(),
-                    "the current engine slot has no readable stamp, so no slot can be shown to fit this \
-                     host: nothing is promoted until `continuum install` writes a verified one"
-                );
-            }
+                why = why.as_str(),
+                "no owned engine launches until a slot holding this core's pin is current; an \
+                 incumbent already serving keeps serving"
+            );
         }
     }
-    *LAST.lock() = Some(choice);
 }
 
 #[cfg(test)]
@@ -236,5 +281,34 @@ mod tests {
         let no_target = [slot("engine-a", "e7e1077b3", true), pinned_elsewhere.clone()];
         assert_eq!(choose(Some("engine-a"), &no_target, PIN), PinChoice::Untargeted { current: Some("e7e1077b3".into()) });
         assert_eq!(choose(None, &[pinned_elsewhere], PIN), PinChoice::Untargeted { current: None });
+    }
+
+    // what this catches (Codex on #5535): a node with no slot holding its pin, an unreadable
+    // target, or a failed promote returning to `prepare` as if held, which then launched the
+    // stale `current` binary. Each refuses; only a pinned or promoted slot launches.
+    #[test]
+    fn a_launch_proceeds_only_on_a_slot_holding_the_pin() {
+        // A promote that ran would surface as `PromoteRefused`, so each verdict below proves it did not.
+        let never = |_: &'static str, _: &str| -> Result<(), String> { Err("a promote ran".into()) };
+        assert_eq!(settle(&PinChoice::Pinned, PIN, false, never), Ok(PinHeld::Pinned));
+        assert!(matches!(
+            settle(&PinChoice::Unpinned { current: "e7e1077b3:metal".into() }, PIN, false, never),
+            Err(EngineUnpinned::Unpinned { .. })
+        ), "missing pin");
+        assert!(matches!(
+            settle(&PinChoice::Untargeted { current: None }, PIN, false, never),
+            Err(EngineUnpinned::Untargeted { .. })
+        ), "unknown target");
+
+        let promote = PinChoice::Promote { slot: "engine-c", stamp: "741b0175b:metal".into() };
+        assert!(matches!(
+            settle(&promote, PIN, false, |_, _| Err("rename refused".into())),
+            Err(EngineUnpinned::PromoteRefused { slot: "engine-c", .. })
+        ), "promotion failure");
+        assert_eq!(settle(&promote, PIN, false, |_, _| Ok(())), Ok(PinHeld::Promoted));
+
+        // A deploy owns the pointers: nothing is promoted, and only an already-pinned slot launches.
+        assert!(matches!(settle(&promote, PIN, true, never), Err(EngineUnpinned::DeployInFlight { .. })));
+        assert_eq!(settle(&PinChoice::Pinned, PIN, true, never), Ok(PinHeld::Pinned));
     }
 }

@@ -564,3 +564,22 @@ async fn a_refused_replacement_keeps_a_verified_incumbent_and_only_that() {
     );
 }
 
+// what this catches (Codex on #5535): a relaunch on a node with no slot holding its pin either
+// launching the stale `current` binary or condemning the incumbent for a refusal raised before
+// any transition. The incumbent that serves the target and decodes keeps serving; with nothing
+// serving, the lane stays degraded with the named refusal, and no rollback retries a launch.
+#[tokio::test]
+async fn an_unpinned_node_refuses_a_new_launch_and_keeps_its_incumbent() {
+    let incumbent = FakeControl::probe(Ok(Some("coder-14b".into())))
+        .with_served_window(2048)
+        .engine_unpinned();
+    assert_eq!(ensure_model_serving(&incumbent, &target("coder-14b"), false).await, EnsureOutcome::AlreadyServing);
+    assert_eq!(incumbent.serves.load(Ordering::SeqCst), 1, "the relaunch was asked once and refused");
+
+    let nothing_serves = FakeControl::probe(Ok(None)).engine_unpinned();
+    match ensure_model_serving(&nothing_serves, &target("coder-14b"), false).await {
+        EnsureOutcome::Degraded { reason } => assert!(reason.contains("no engine slot holds pin"), "reason: {reason}"),
+        other => panic!("expected Degraded, got {other:?}"),
+    }
+    assert_eq!(nothing_serves.serves.load(Ordering::SeqCst), 1, "no rollback relaunch onto another engine");
+}

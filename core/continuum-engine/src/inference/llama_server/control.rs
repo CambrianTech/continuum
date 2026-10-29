@@ -35,6 +35,10 @@ pub enum LlamaServerError {
     /// Keep admission suspended and resume observation; never blame the candidate binary.
     #[error("incumbent retirement remains unverified; endpoint suspended: {0}")]
     RetirementPending(String),
+    /// No slot holding this core's pinned engine is current, so no owned engine launches. Raised
+    /// in `prepare`, before any transition: an incumbent keeps serving and its custody stands.
+    #[error("no owned engine launches: {0}")]
+    EngineUnpinned(super::engine_pin::EngineUnpinned),
 }
 
 

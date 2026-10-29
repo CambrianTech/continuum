@@ -77,8 +77,9 @@ pub(crate) fn served_report(
     })
 }
 
-/// The live lane's served report: its record, the OS's account of that process, and the
-/// reconcile's `/props` reading must all name one incarnation.
+/// The live lane's served report: its record, the OS's account of that process, and the engine's
+/// OWN `/props` reading must all name one incarnation. A launch's slot stamp, which the same cell
+/// holds until `/props` answers (for `tail_tools`), never counts: the reading is typed `Observed`.
 fn served_now() -> Option<ServedEngineReport> {
     let lane = crate::inference::lane_registry::live_lane()?;
     let live = EngineIncarnation::of(lane.pid, lane.port).filter(|now| *now == lane.incarnation());
@@ -270,5 +271,54 @@ mod tests {
         assert_eq!(served_report(reading.clone(), Some(b), None), None);
         assert_eq!(served_report(reading, None, None), None);
         assert_eq!(served_report(None, Some(a), None), None);
+    }
+
+    // what this catches (Codex on #5535 x #5538): the launch publishes the slot-derived build into
+    // the served-evidence cell before `/props` and keeps it across a transient read failure. Read
+    // as the engine's own answer, deploy-verify passed for a live engine that never reported.
+    #[test]
+    fn a_launch_stamp_is_not_adoption_until_the_live_engine_answers() {
+        use super::super::engine_features::ServedEngine;
+        let a = EngineIncarnation {
+            pid: 100,
+            started_s: 1_700_000_000,
+            port: 8080,
+        };
+        let installed = "741b0175b:metal";
+        let verdict = |evidence: &ServedEngine| {
+            engine_verdict(&EngineReport::Owned {
+                pin: PIN.into(),
+                installed: Some(installed.into()),
+                served: served_report(evidence.observed_reading(), Some(a), Some(installed.into())),
+            })
+        };
+
+        let mut evidence = ServedEngine::Launched {
+            incarnation: a,
+            slot_build: Some("741b0175b".into()),
+        };
+        assert!(
+            evidence.takes_tail_tools(PIN),
+            "the capability consumer takes the launch stamp"
+        );
+        assert!(
+            verdict(&evidence)
+                .unwrap_err()
+                .contains("ENGINE NOT ADOPTED"),
+            "the receipt does not"
+        );
+        evidence.observe(Some(a), Err(()));
+        assert!(
+            verdict(&evidence)
+                .unwrap_err()
+                .contains("ENGINE NOT ADOPTED"),
+            "nor after a failed /props read"
+        );
+
+        evidence.observe(Some(a), Ok(Some("b10765-741b0175b")));
+        assert!(
+            verdict(&evidence).unwrap().contains("engine verified"),
+            "the live engine's own matching answer adopts"
+        );
     }
 }

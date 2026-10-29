@@ -45,6 +45,8 @@ struct FakeControl {
     retirement_refused: bool,
     /// The loaded adapter set cannot be read (an unknown genome).
     adapters_unreadable: bool,
+    /// `serve` refuses in `prepare`: no slot holding the pin is current (`EngineUnpinned`).
+    engine_unpinned: bool,
 }
 
 impl FakeControl {
@@ -65,6 +67,7 @@ impl FakeControl {
             placements_recorded: AtomicUsize::new(0),
             retirement_refused: false,
             adapters_unreadable: false,
+            engine_unpinned: false,
         }
     }
     /// Model an engine whose loaded adapter set cannot be read.
@@ -76,6 +79,12 @@ impl FakeControl {
     /// signalling it, as `retire_adopted` does when checkpoint custody refuses.
     fn retirement_refused(mut self) -> Self {
         self.retirement_refused = true;
+        self
+    }
+    /// Model a node with no slot holding its pin: `serve` refuses before any transition, as
+    /// `prepare` does, so nothing is resolved, launched or signalled.
+    fn engine_unpinned(mut self) -> Self {
+        self.engine_unpinned = true;
         self
     }
     fn with_in_place(mut self, outcome: GenomeInPlace) -> Self {
@@ -170,6 +179,12 @@ impl LlamaServerControl for FakeControl {
         self.serves.fetch_add(1, Ordering::SeqCst);
         if self.retirement_refused {
             return Err(LlamaServerError::RetirementRefused("adopted checkpoint requires a known pool".into()));
+        }
+        if self.engine_unpinned {
+            return Err(LlamaServerError::EngineUnpinned(super::engine_pin::EngineUnpinned::Unpinned {
+                pin: "741b0175b".into(),
+                current: "e7e1077b3:metal".into(),
+            }));
         }
         if self.serve_ok {
             Ok(())

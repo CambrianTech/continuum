@@ -69,10 +69,10 @@ async fn retiring_page_owner_requires_observed_child_exit() {
     let pid = child.id().expect("running child PID");
     let input = child.stdin.take().expect("child input held open");
     assert!(child.try_wait().expect("child status").is_none());
-    let process = LlamaServerProcess::with_root("http://127.0.0.1:1".into());
+    let mut process = LlamaServerProcess::with_root("http://127.0.0.1:1".into());
+    // The fixture's engine program: never this host's slots, which `engine_bin` holds to the pin.
+    process.bin_pin = Some("llama-server".into());
     *process.pending_resource_reservation.lock() = Some(reserve());
-    #[cfg(windows)]
-    let mut process = process;
     let endpoint = crate::inference::slots::directory().endpoint(&process.root);
     let transition = endpoint.transition().await;
     let generation = transition

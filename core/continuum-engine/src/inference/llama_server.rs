@@ -91,7 +91,7 @@ pub use engine_pin::pinned_engine;
 mod engine_report;
 pub use engine_report::{engine_report, engine_verdict, EngineReport, ServedEngineReport};
 pub use engine_features::serving_engine_takes_tail_tools;
-use engine_features::{forget_served_engine, observe_served_engine};
+use engine_features::{observe_served_engine, serving_lane_evidence, LaunchedEvidence, ServedEvidence};
 #[cfg(windows)]
 pub(crate) use engine_install::engine_override;
 pub(crate) use engine_install::{installed_engine_commit, lane_runs_installed_engine};
