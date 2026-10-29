@@ -215,15 +215,3 @@ pub(crate) async fn prepare_cards(
     Ok(prepared)
 }
 
-/// The eval set a gym suite's cards resolve their oracle from, by the suite name a card title
-/// carries: a registered suite's `eval_set`, or a coursework set's content-addressed file
-/// (`cognition::coursework`). The ONE resolver import, preparation and the grader share, so a
-/// coursework card is graded from its title exactly like a registered gym card. `None` = not a
-/// gym suite this node can resolve.
-pub(crate) fn eval_set_reference(suite: &str) -> Option<String> {
-    if let Some(spec) = known_benchmarks().iter().find(|b| b.name == suite) {
-        return spec.eval_set.map(str::to_string);
-    }
-    let home = crate::paths::continuum_home().ok()?;
-    crate::cognition::coursework::set_path(&home, suite).map(|p| p.display().to_string())
-}

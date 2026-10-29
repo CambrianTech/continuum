@@ -184,6 +184,13 @@ fn embedded_for(reference: &str) -> Option<(&'static str, &'static str)> {
         .copied()
 }
 
+/// The reference of the gym committed under `set` (`<set>.jsonl`, baked into the binary), if
+/// one is: a committed set is named by a card title the way a catalog suite is.
+pub fn committed_gym(set: &str) -> Option<String> {
+    let reference = format!("{set}.jsonl");
+    embedded_for(&reference).map(|_| reference)
+}
+
 /// Comma-joined list of every embedded gym basename, for fail-loud diagnostics.
 fn embedded_names() -> String {
     EMBEDDED_GYMS
