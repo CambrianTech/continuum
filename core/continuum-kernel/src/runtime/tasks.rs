@@ -16,7 +16,10 @@ pub use output::TaskOutput;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TaskEnd {
     Done(TaskOutput),
-    Failed(String),
+    Failed {
+        message: String,
+        outcome: super::command_executor::DispatchOutcome,
+    },
     TimedOut,
     Stopped,
     Lost,

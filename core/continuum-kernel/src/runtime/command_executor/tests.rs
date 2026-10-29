@@ -324,6 +324,40 @@
     }
 
     #[tokio::test]
+    async fn background_failure_retains_effect_classification_after_reopen() -> Result<(), String> {
+        use crate::runtime::tasks::{TaskEnd, TaskLedger};
+        let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+        let ledger = Arc::new(TaskLedger::new(adapter.clone()).await?);
+        let registry = Arc::new(ModuleRegistry::new());
+        registry.register(Arc::new(CannedModule::answering(Err("handler failed after possible effect".into()))));
+        let bus = Arc::new(MessageBus::new());
+        let mut rx = bus.receiver();
+        let executor = Arc::new(CommandExecutor::new(registry).with_message_bus(bus));
+        executor.set_task_ledger(ledger)?;
+        let owner = uuid::Uuid::new_v4();
+        for (command, expected) in [
+            ("canned/boom", DispatchOutcome::Uncertain),
+            ("absent/command", DispatchOutcome::NotCommitted),
+        ] {
+            let caller = crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(owner));
+            let handle = executor.dispatch_background(command, serde_json::json!({}), Some(caller))
+                .await.map_err(|error| error.message)?;
+            let event = next_command_completed(&mut rx).await;
+            assert_eq!(event.handle, Some(handle));
+            assert!(!event.success);
+            let reopened = TaskLedger::new(adapter.clone()).await?;
+            match reopened.pending(handle, owner).await? {
+                Some(TaskEnd::Failed { message, outcome }) => {
+                    assert_eq!(outcome, expected);
+                    assert_eq!(Some(message), event.error);
+                }
+                other => return Err(format!("expected durable failure, got {other:?}")),
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn dispatch_emits_completed_event_on_handler_error() {
         let registry = Arc::new(ModuleRegistry::new());
         registry.register(Arc::new(CannedModule::answering(Err("simulated handler failure".to_string()))));

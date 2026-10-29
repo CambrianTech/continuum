@@ -76,7 +76,13 @@ impl CommandExecutor {
             });
             let (end, outcome) = match outcome {
                 Ok((result, output)) => (TaskEnd::Done(output), Ok(result)),
-                Err(error) => (TaskEnd::Failed(error.message.clone()), Err(error)),
+                Err(error) => (
+                    TaskEnd::Failed {
+                        message: error.message.clone(),
+                        outcome: error.outcome,
+                    },
+                    Err(error),
+                ),
             };
             if let Err(error) = ledger.finish(handle, owner, end).await {
                 tracing::error!(%handle, %owner, %error, "task ended but terminal persistence failed; acceptance remains unresolved");
