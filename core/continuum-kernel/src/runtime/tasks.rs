@@ -12,6 +12,8 @@ use uuid::Uuid;
 
 mod output;
 pub use output::TaskOutput;
+#[cfg(test)]
+mod races;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TaskEnd {
