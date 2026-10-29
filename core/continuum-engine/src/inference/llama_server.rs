@@ -89,7 +89,7 @@ mod engine_features;
 mod engine_pin;
 pub use engine_pin::{current_engine_stamp, pinned_engine, stamp_holds_pin};
 pub use engine_features::serving_engine_takes_tail_tools;
-use engine_features::{forget_served_engine, observe_served_engine};
+use engine_features::{expect_launched_engine, observe_served_engine};
 #[cfg(windows)]
 pub(crate) use engine_install::engine_override;
 pub(crate) use engine_install::{installed_engine_commit, lane_runs_installed_engine};

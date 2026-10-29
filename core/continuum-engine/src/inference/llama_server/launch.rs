@@ -16,8 +16,8 @@ impl LlamaServerProcess {
         }
         if self.is_live_lane {
             // A new engine process is coming: what the last one could take is not evidence
-            // for it (`tail_tools`); the reconcile reads the new one's own `/props`.
-            forget_served_engine();
+            // for it (`tail_tools`). Its slot stamp is, until its own `/props` answers.
+            expect_launched_engine(&prepared.engine_program);
         }
         let restore_generation = restore_session.map(|session| session.expected.lock().clone());
         let restoring = restore_generation.is_some();
