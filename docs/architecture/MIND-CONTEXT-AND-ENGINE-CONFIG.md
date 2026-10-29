@@ -436,19 +436,26 @@ A mind's memory is one hierarchy with one owner. The tiers are the engine's KV (
 prompt holds), RAM, and disk. It is not a set of caches each deciding for itself.
 
 - **One record per item.** Every result, file view, message, recall or perception item has one
-  record in her state: its key, its whole size, where its bytes live now (KV, RAM, disk), and
-  the level it is shown at. Moving an item between tiers changes its record; nothing is deleted
-  by a side rule. A body on disk is still hers and comes back when the allocator grants it room.
+  record in her state: one authoritative identity and whole size, the level it is shown at, and
+  its placement as a SET of valid replicas (KV, RAM, disk can hold copies at once), not one
+  exclusive tier. Eviction drops a replica; the last durable copy is never evicted. Nothing is
+  deleted by a side rule; a body on disk is still hers and comes back when the allocator grants
+  it room.
 - **One decision per act.** The allocator places every item against the capacities it was
   granted, and the prompt is a rendering of that placement, never a second decision.
   `continuum-context`'s `View` and levels are that allocator's prompt tier; working memory
   stores records and does not choose what she sees.
 - **Capacity only from grants, never from copies or constants.**
-  - Prompt: the engine's admission grant for this turn carries the slot's measured window
-    (`KvPageContract.context` via `TurnAdmission`). A turn is fitted only after it is admitted;
-    no grant means no dispatch, and the existing admission queue already holds an unready turn.
-  - RAM and disk: a per-mind storage budget from the host's measured resources (the one
-    `PressureBroker` / resource owner), the same for every mind on that host.
+  - Prompt: the engine's admission grant for this turn. The grant OWNS the lane permit and binds
+    the slot and its measured window (`KvPageContract.context` via `TurnAdmission`) to the engine
+    instance and the model/config generation; it is not a copyable window number. One permit
+    spans fitting and dispatch; a cancelled or failed fit releases it; a stale generation
+    refuses and reacquires, never falls back. There is no second admission below the fit. A
+    remote responder supplies the equivalent authoritative grant. No grant means no dispatch,
+    and the existing admission queue already holds an unready turn.
+  - RAM and disk: storage grants from the host's measured physical pools through the one
+    resource owner (`PressureBroker`). Grants across minds sum within each pool, and a shared
+    pool (Apple unified RAM/VRAM) is counted once; no mind is handed the whole host.
   - A planner floor (`MIN_SERVE_CTX`) sizes lanes inside the planner and is never a mind's
     window. The `planner_floor_outside_the_planner` ratchet enforces it.
 - **The instruments read the same state.** The wire capture records whole messages, and the
@@ -457,18 +464,21 @@ prompt holds), RAM, and disk. It is not a set of caches each deciding for itself
 
 ### Cut order (each lands, then the next)
 
-1. **Stop-gap, live now.** The reconciler rebinds every local resident whose binding differs
-   from the served (model, window) (#5590). A stop keeps the engine up for the next core to
-   adopt (#5396), so personas come up against a ready engine.
+1. **Stop-gap.** The reconciler rebinds every local resident whose binding differs from the
+   served (model, window) (#5590, tested, not yet deployed). Separately, and already live: a stop
+   keeps the engine up for the next core to adopt (#5396), so on the 19:40Z restore every
+   resident materialized against a ready engine (`persona.upstart.window served=60672`); #5590
+   covers the restart where the engine is NOT ready.
 2. **Instruments.** The `planner_floor_outside_the_planner` ratchet (fable/no-window-standin)
    and a whole-message wire capture (fable/wire-capture-whole).
 3. **Storage is a tier, not a share.** Results live in a per-mind storage budget, keep their
    whole size and handle when evicted, and load back whole when granted (#5573, Cormac). Then
    delete working memory's window copy: `served_window`, `set_served_window`, the `apply.rs`
    push, and the floor fallbacks in `receipt_archive_chars` / `recent_results_chars`.
-4. **The admission grant carries the window** (engine; Codex with Fable). Lift `admit_turn` and
-   the lane permit above prompt fitting, so admission returns
-   `Grant { slot, per_slot_window }`. Price eviction from her measured working set, not from
+4. **The admission grant carries the window** (engine; Codex audits the admission boundary with
+   Fable). Lift `admit_turn` and the lane permit above prompt fitting, so admission returns a
+   grant that owns the permit and binds slot and window to the engine instance and generation
+   (contract above). Price eviction from her measured working set, not from
    this prompt's size. A remote lane's grant carries the responder's reported slot.
    Validator: no prompt is fitted without a grant.
 5. **Deliberation fits to the grant** (Fable). Delete the deadband and its CAS write-back,
