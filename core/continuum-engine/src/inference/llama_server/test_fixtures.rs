@@ -182,7 +182,7 @@ where
         &prepared.target,
         &prepared.invocation,
         Some(prepared.clone()),
-        &process.engine_bin().unwrap(),
+        process.checked_engine().unwrap().program(),
         11008,
         4,
     );
@@ -316,7 +316,7 @@ where
         &prepared.target,
         &prepared.invocation,
         Some(prepared.clone()),
-        &process.engine_bin().unwrap(),
+        process.checked_engine().unwrap().program(),
         11008,
         4,
     );

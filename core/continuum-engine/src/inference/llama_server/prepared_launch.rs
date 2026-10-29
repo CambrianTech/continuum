@@ -4,7 +4,8 @@ use super::*;
 #[derive(Clone)]
 pub(super) struct PreparedLocalLaunch {
     pub(super) target: ServingTarget,
-    pub(super) engine_program: String,
+    /// The engine checked against the pin when this launch was prepared: the ONLY binary it runs.
+    pub(super) engine: super::checked_engine::CheckedEngine,
     pub(super) endpoint: String,
     pub(super) invocation: crate::inference::lane_args::LaneInvocation,
     pub(super) engine_install: Option<crate::inference::engine_install::EngineInstallReceipt>,
@@ -36,6 +37,16 @@ pub(super) fn unsupported_launch_environment(managed: &[(String, Option<std::ffi
 
 
 impl PreparedLocalLaunch {
+    /// The binary this launch runs.
+    pub(super) fn engine_program(&self) -> &str {
+        self.engine.program()
+    }
+
+    /// The checked engine is still in its slot's custody (see [`super::checked_engine`]).
+    pub(super) fn confirm_engine(&self) -> Result<(), LlamaServerError> {
+        self.engine.confirm().map_err(LlamaServerError::EngineUnpinned)
+    }
+
     pub(super) fn verify_geometry(&self, context: u32, lanes: u32) -> Result<(), LlamaServerError> {
         if self
             .expected_geometry
@@ -51,7 +62,7 @@ impl PreparedLocalLaunch {
     pub(super) fn command(&self) -> Result<tokio::process::Command, LlamaServerError> {
         let mut command = match &self.engine_install {
             Some(receipt) => receipt.command().map_err(LlamaServerError::Spawn)?,
-            None => tokio::process::Command::new(&self.engine_program),
+            None => tokio::process::Command::new(self.engine.program()),
         };
         command.args(&self.invocation.args);
         for (key, value) in &self.managed_environment {
@@ -75,7 +86,7 @@ impl PreparedLocalLaunch {
         endpoint: &str,
         program: &str,
     ) -> Result<(), LlamaServerError> {
-        if self.endpoint != endpoint || self.engine_program != program {
+        if self.endpoint != endpoint || self.engine.program() != program {
             return Err(LlamaServerError::Spawn(
                 "prepared launch belongs to another endpoint".into(),
             ));

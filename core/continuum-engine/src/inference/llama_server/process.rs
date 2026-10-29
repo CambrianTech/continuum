@@ -17,7 +17,7 @@ pub(super) struct OwnedEngine {
 pub struct LlamaServerProcess {
     pub(super) root: String,
     pub(super) v1_url: String,
-    /// A test's fixture engine in place of [`server_bin`]'s per-launch resolution.
+    /// A test's fixture engine in place of the pin hold's checked engine (`checked_engine`).
     #[cfg(any(test, feature = "test-fixtures"))]
     pub(super) bin_pin: Option<String>,
     pub(super) client: reqwest::Client,

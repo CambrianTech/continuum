@@ -79,7 +79,7 @@ fn serving_uses_the_supervisors_engine() {
     const CHILD: &str = "CONTINUUM_ENGINE_CONTRACT_TEST_CHILD";
     const ENGINE: &str = "prepared release/engine-b/llama-server.exe";
     if std::env::var_os(CHILD).is_some() {
-        assert_eq!(super::server_bin().unwrap(), ENGINE);
+        assert_eq!(super::super::engine_install::server_bin().unwrap(), ENGINE);
         return;
     }
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
@@ -126,30 +126,4 @@ fn engine_only_convergence_preserves_incumbent_launch_arguments() {
     let planned = target("convergence-fixture");
     assert!(super::super::reconcile::engine_convergence_target(&planned, 0, 2).is_err());
     assert!(super::super::reconcile::engine_convergence_target(&planned, 76032, 0).is_err());
-}
-
-// what this catches (Codex on #5535): `prepare` resolving and launching the stale `current`
-// binary after the pin hold refused (missing pin, unknown target, failed promote). A refusal
-// returns `EngineUnpinned` before the binary is resolved; only a held pin resolves one.
-#[test]
-fn a_refused_pin_hold_resolves_no_engine() {
-    use super::super::engine_pin::{EngineUnpinned, PinHeld};
-    use super::super::prepare::engine_for_launch;
-    let resolved = std::cell::Cell::new(0);
-    let resolve = || {
-        resolved.set(resolved.get() + 1);
-        Ok("/slots/engine-a/llama-server".to_string())
-    };
-    let refusals = [
-        EngineUnpinned::Unpinned { pin: "741b0175b".into(), current: "e7e1077b3:metal".into() },
-        EngineUnpinned::Untargeted { pin: "741b0175b".into(), current: None },
-        EngineUnpinned::PromoteRefused { pin: "741b0175b".into(), slot: "engine-c", stamp: "741b0175b:metal".into(), reason: "rename refused".into() },
-    ];
-    for refusal in refusals {
-        let launched = engine_for_launch(Err(refusal.clone()), resolve);
-        assert!(matches!(&launched, Err(LlamaServerError::EngineUnpinned(r)) if *r == refusal), "{launched:?}");
-    }
-    assert_eq!(resolved.get(), 0, "no stale binary was resolved for a refused launch");
-    assert!(matches!(engine_for_launch(Ok(PinHeld::Pinned), resolve), Ok(bin) if bin.ends_with("llama-server")));
-    assert_eq!(resolved.get(), 1);
 }

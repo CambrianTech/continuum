@@ -87,6 +87,7 @@ use genome::{engine_help_lists_train_dir, ENGINE_TRAIN_DIR};
 mod engine_install;
 mod engine_features;
 mod engine_pin;
+mod checked_engine;
 pub use engine_pin::pinned_engine;
 mod engine_report;
 pub use engine_report::{engine_report, engine_verdict, EngineReport, ServedEngineReport};
@@ -97,7 +98,7 @@ pub(crate) use engine_install::engine_override;
 pub(crate) use engine_install::{installed_engine_commit, lane_runs_installed_engine};
 pub use engine_install::engine_stale;
 use engine_install::{
-    mark_engine_proven, roll_back_engine_after_failed_launch, server_bin, ENGINE_CONVERGE_TRIED,
+    mark_engine_proven, roll_back_engine_after_failed_launch, ENGINE_CONVERGE_TRIED,
     ENGINE_STALE,
 };
 mod snapshot;

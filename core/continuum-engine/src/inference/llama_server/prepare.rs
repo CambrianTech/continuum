@@ -1,26 +1,16 @@
 //! Prepare responsibility of the llama-server process owner.
 use super::*;
 impl LlamaServerProcess {
-    /// The engine this launch runs: [`server_bin`], resolved now (see `prepare_local_launch`),
-    /// and only once the current slot is held to this core's pin. A refusal returns before any
-    /// binary is resolved, so no stale engine launches and no incumbent is touched.
-    pub(super) fn engine_bin(&self) -> Result<String, LlamaServerError> {
+    /// The engine this launch runs, checked now (see `prepare_local_launch`): the slot holding
+    /// this core's pin, as the artifact the spawn consumes ([`super::checked_engine`]). A refusal
+    /// returns before anything launches, so no stale engine runs and no incumbent is touched.
+    pub(super) fn checked_engine(&self) -> Result<super::checked_engine::CheckedEngine, LlamaServerError> {
         #[cfg(any(test, feature = "test-fixtures"))]
         if let Some(pin) = &self.bin_pin {
-            return Ok(pin.clone());
+            return Ok(super::checked_engine::CheckedEngine::Operator { program: pin.clone() });
         }
-        engine_for_launch(super::engine_pin::hold_current_engine_to_pin(), server_bin)
+        super::engine_pin::hold_current_engine_to_pin().map_err(LlamaServerError::EngineUnpinned)
     }
-}
-
-/// PURE: the binary a launch may run. Resolved only when the pin was held: an unpinned node
-/// never reaches `resolve`, which would name the stale `current` slot.
-pub(super) fn engine_for_launch(
-    held: Result<super::engine_pin::PinHeld, super::engine_pin::EngineUnpinned>,
-    resolve: impl FnOnce() -> Result<String, LlamaServerError>,
-) -> Result<String, LlamaServerError> {
-    held.map_err(LlamaServerError::EngineUnpinned)?;
-    resolve()
 }
 
 impl LlamaServerProcess {
@@ -34,8 +24,8 @@ impl LlamaServerProcess {
         // convergence relaunches onto the binary it is trying to leave.
         // The slot this core's source pins, never whichever one `current` was left naming: an
         // unpinned node refuses here, before the incumbent is touched (`EngineUnpinned`).
-        let bin = self.engine_bin()?;
-        crate::inference::engine_slots::note_unowned_launch(&bin, super::engine_install::engine_override().is_some());
+        let engine = self.checked_engine()?;
+        let bin = engine.program().to_string();
         // Resolve the GGUF from the model struct already in hand — no re-fetch by
         // id. No file → fail loud; we never serve a substitute model
         // ([[fallbacks-are-illegal-fail-loud]]).
@@ -535,7 +525,7 @@ impl LlamaServerProcess {
         };
         Ok(PreparedLocalLaunch {
             target: target.clone(),
-            engine_program: bin.clone(),
+            engine,
             endpoint: self.root.clone(),
             invocation,
             engine_install,
