@@ -17,6 +17,30 @@ fn a_turn_in_her_mind_room_writes_zero_wire_capture_bytes() {
     assert!(std::fs::metadata(&file).expect("row written").len() > 0, "an ordinary room still captures");
 }
 
+// what this catches (the M5, 2026-10-29): the wire capture keeping only Text parts, so a
+// native tool result (her newest result rides as one) was recorded as its label alone and
+// read as a lost body. The capture must carry every part of every message.
+#[test]
+fn the_wire_capture_records_native_tool_results_whole() {
+    let dir = tempfile::tempdir().expect("wire capture dir");
+    let persona = uuid::Uuid::new_v4();
+    let request = crate::ai::types::TextGenerationRequest {
+        messages: vec![crate::ai::types::ChatMessage {
+            role: "tool".into(),
+            content: crate::ai::types::MessageContent::Parts(vec![crate::ai::types::ContentPart::ToolResult {
+                tool_use_id: "call-1".into(),
+                content: "nothing to commit, working tree clean".into(),
+                is_error: None,
+            }]),
+            name: None,
+        }],
+        ..Default::default()
+    };
+    super::append_wire_capture(dir.path(), persona, "Aiko", uuid::Uuid::new_v4(), &request);
+    let row = std::fs::read_to_string(dir.path().join("Aiko.wire.jsonl")).expect("row written");
+    assert!(row.contains("nothing to commit, working tree clean"), "{row}");
+}
+
 // what this catches (Kimi, 2026-09-25): a cut act must leave her a record of what
 // she was composing and that it did not land; a long payload is trimmed to its two
 // edges so the record cannot crowd the retry the way the payload did.

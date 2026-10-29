@@ -718,11 +718,10 @@ fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &s
     let row = serde_json::json!({
         "ts_ms": continuum_base::time::EpochMs::now().millis(),
         "persona": persona_name,
-        "messages": request
-            .messages
-            .iter()
-            .map(|m| serde_json::json!({"role": m.role, "text": m.content_text()}))
-            .collect::<Vec<_>>(),
+        // Whole messages, every part: a text-only projection dropped native tool calls and
+        // results, so her newest result read as a bare label in the one input of record
+        // (Aiko, the M5, 2026-10-29: a result counted as lost was on the wire).
+        "messages": request.messages,
     });
     let _ = std::fs::create_dir_all(dir);
     use std::io::Write as _;
