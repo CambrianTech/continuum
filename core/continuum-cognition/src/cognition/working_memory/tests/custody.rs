@@ -53,11 +53,11 @@ fn a_step_is_scoped_to_its_root_and_every_result_is_perceived_labelled_with_its_
         "{back:?}"
     );
     // Result custody must obey the same scope even after entry-trail eviction,
-    // settlement collapse and checkpoint restoration. Storage remains intact.
+    // a shed's collapse and checkpoint restoration. Storage remains intact.
     let results = WorkingMemory::new(2);
     results.set_served_window(16_384);
     results.set_scope(Some("task-a".into()));
-    let body_a = format!("task-a-only {}", "a".repeat(crate::cognition::working_memory::RESULTS_RESIDENT_CHARS));
+    let body_a = format!("task-a-only {}", "a".repeat(BODY));
     results.record_receipt_typed(&[], &body_a, None, saved("scope-a-output"));
     let original = results.last_action_full();
     results.set_scope(Some("task-b".into()));
@@ -73,6 +73,7 @@ fn a_step_is_scoped_to_its_root_and_every_result_is_perceived_labelled_with_its_
     assert!(results.active_action_full().is_none(), "B stays stored but inactive in A");
     results.set_scope(Some("task-b".into()));
     results.record_settlement("reported", None);
+    shed(&results, 0);
     let snapshot = results.snapshot();
     assert!(!snapshot.evicted_pointers.is_empty(), "fixture exercises the collapsed ring");
     let mut encoded = serde_json::to_value(&snapshot).expect("snapshot serializes");
@@ -118,13 +119,14 @@ fn a_mind_s_saved_handles_are_live_until_it_drops() {
     let live = |p: &std::path::Path| crate::cognition::tool_executor::spill::is_live(p);
     let wm = WorkingMemory::new(8);
     wm.set_served_window(16_384);
-    let cap = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
+    let cap = 2 * BODY;
     wm.record_receipt_typed(&[], &"a".repeat(cap / 2), None, saved(&handle));
     assert!(live(&file), "referenced by the ring");
     for _ in 0..4 {
         record_saved(&wm, &"s".repeat(cap / 2));
     }
     wm.record_settlement("done", None);
+    shed(&wm, cap / 2);
     assert!(
         wm.recent_results_messages().join("\n").contains(&format!("{handle} — collapsed")),
         "it collapsed to a pointer"
@@ -132,6 +134,54 @@ fn a_mind_s_saved_handles_are_live_until_it_drops() {
     assert!(live(&file), "still referenced by its pointer");
     drop(wm);
     assert!(!live(&file), "released when the mind drops");
+}
+
+// what this catches: a body moved to disk losing its last copy. Liveness (and the log itself)
+// once covered only the newest 12 collapsed pointers (`POINTER_INDEX`), so a shed that moved
+// many bodies left the older handles evictable under disk pressure while her view still priced
+// their wholes. Every record that names a handle keeps it live, however many pointers are newer.
+#[test]
+fn a_moved_body_s_handle_stays_live_behind_any_number_of_newer_pointers() {
+    let handle = || format!("{:016x}", Uuid::new_v4().as_u128() as u64);
+    let live = |h: &str| crate::cognition::tool_executor::spill::is_live(&std::path::PathBuf::from(format!("/spill/p/{h}.log")));
+    let wm = WorkingMemory::new(8);
+    wm.set_served_window(16_384);
+    let first = handle();
+    wm.record_receipt_typed(&[], &"f".repeat(BODY), None, saved(&first));
+    for _ in 0..30 {
+        record_receipt_with(&wm, &handle());
+    }
+    shed(&wm, 0);
+    for _ in 0..30 {
+        record_receipt_with(&wm, &handle());
+    }
+    shed(&wm, 0);
+    assert!(live(&first), "the oldest moved body's handle is still protected");
+    let (acts, _) = wm.action_renderings();
+    let oldest = acts.first().expect("test: the first act");
+    assert_eq!(oldest.4.as_ref().map(|(_, h)| h.as_str()), Some(first.as_str()), "its record stays, priced and reloadable");
+    drop(wm);
+    assert!(!live(&first), "released when the mind drops");
+}
+
+fn record_receipt_with(wm: &WorkingMemory, handle: &str) {
+    wm.record_receipt_typed(&[], &format!("{handle} {}", "s".repeat(BODY)), None, saved(handle));
+}
+
+// what this catches: a shed moving a record it never checked. The memory owner vouches for each
+// saved output outside her lock, then evicts by `(seq, handle)`; a record that no longer names
+// the vouched handle stays resident.
+#[test]
+fn a_shed_moves_only_the_records_it_vouched_for() {
+    let wm = WorkingMemory::new(8);
+    wm.record_receipt_typed(&[], &"a".repeat(BODY), None, saved("vouched-a"));
+    wm.record_receipt_typed(&[], &"b".repeat(BODY), None, saved("vouched-b"));
+    wm.record_receipt_typed(&[], "newest", None, saved("vouched-c"));
+    let seq_of = |h: &str| wm.snapshot().actions.iter().find(|r| r.handle.as_deref() == Some(h)).map(|r| r.seq).expect("test: seq");
+    let (a, b) = (seq_of("vouched-a"), seq_of("vouched-b"));
+    wm.evict_resident_results_over(0, &|seq, handle| (seq == a && handle == "a-changed") || (seq == b && handle == "vouched-b"));
+    let resident: Vec<_> = wm.snapshot().actions.into_iter().filter(|r| r.result.is_some()).filter_map(|r| r.handle).collect();
+    assert_eq!(resident, ["vouched-a", "vouched-c"], "a changed since it was vouched for; only b moved");
 }
 
 // what this catches (Codex on #4987): per-call results reachable only while the ENTRY that
@@ -166,7 +216,7 @@ fn a_receipt_s_per_call_results_stay_reachable_as_long_as_the_receipt() {
     let (receipt, children) = (id(), [id(), id()]);
     let wm = WorkingMemory::new(2); // two entries: the third receipt rolls the first out
     wm.set_served_window(16_384);
-    let cap = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
+    let cap = 2 * BODY;
     wm.record_receipt_typed(&[act(&children[0]), act(&children[1])], &"r".repeat(cap / 2), None, saved(&receipt));
     for _ in 0..3 {
         record_saved(&wm, &"s".repeat(cap / 2));
@@ -175,6 +225,7 @@ fn a_receipt_s_per_call_results_stay_reachable_as_long_as_the_receipt() {
     assert!(children.iter().all(|c| live(c)), "the receipt still holds its children");
 
     wm.record_settlement("done", None);
+    shed(&wm, cap / 2);
     assert!(wm.recent_results_messages().join("\n").contains(&format!("{receipt} — collapsed")), "collapsed to a pointer");
     assert!(live(&receipt) && children.iter().all(|c| live(c)), "the pointer holds the receipt and its children");
 
@@ -274,22 +325,16 @@ fn each_call_s_saved_result_is_live_once_its_receipt_is_recorded() {
 }
 
 // what this catches (BigMama's live receipt of #4963 on the 5090, card df0035bf; FLOW §2d):
-// restore folding what she sees by a window. Restore once collapsed against the floor budget
-// before her window was known (a 1,536-char share), and later against the window itself. The
-// ring's bound is now a storage budget (`RESULTS_RESIDENT_CHARS`): the window plays no part, so
-// restoring with no window or a small one keeps exactly what the snapshot held.
+// restore folding what she sees by a window or a size. Restore once collapsed against the floor
+// budget before her window was known (a 1,536-char share), later against the window itself, and
+// then against a size cap of ours (`RESULTS_RESIDENT_CHARS`). Only the memory owner sheds now, so
+// restoring with no window or a small one keeps every body the snapshot held resident.
 #[test]
-fn restore_bounds_results_by_storage_never_by_window() {
-    let budget = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
+fn restore_keeps_every_resident_body_whatever_the_window() {
     let source = WorkingMemory::new(8);
     source.set_served_window(65_536);
     for i in 0..4 {
-        source.record_receipt_typed(
-            &[],
-            &format!("r{i} {}", "w".repeat(budget / 3)),
-            None,
-            saved(&format!("restore-{i}")),
-        );
+        source.record_receipt_typed(&[], &format!("r{i} {}", "w".repeat(64 * BODY)), None, saved(&format!("restore-{i}")));
     }
     let snapshot = source.snapshot();
     let entries = |wm: &WorkingMemory| {
@@ -298,63 +343,53 @@ fn restore_bounds_results_by_storage_never_by_window() {
     let held = entries(&source);
     let unknown = WorkingMemory::new(8);
     unknown.restore(snapshot.clone());
-    assert_eq!(entries(&unknown), held, "no window yet: the storage budget alone bounds it");
+    assert_eq!(entries(&unknown), held, "no window yet: nothing moves at restore");
+    assert_eq!(unknown.resident_result_bytes(), source.resident_result_bytes(), "every body restored resident");
     let small = WorkingMemory::new(8);
     small.set_served_window(16_384);
     small.restore(snapshot);
     assert_eq!(entries(&small), held, "a small window changes nothing her view is offered");
 }
 
-// what this catches: the ring growing without bound between settlements. The share was
-// enforced at settlement only, and a coding turn is 100+ acts between settlements (the M5,
-// 2026-10-16: 1.09M chars of results persisted for one mind). At every receipt the ring is
-// within its share, the newest result is whole, and eviction is a BURST with hysteresis:
-// between bursts the ring only appends, so the prefix ahead of it stays byte-stable.
+// what this catches: a size cap of ours deciding what RAM holds (`RESULTS_RESIDENT_CHARS =
+// 1 << 20` evicted every mind's oldest bodies at receipt, settlement and restore; Joel
+// 2026-10-29: no hand-rigged constants). However large the ring grows, receipts and
+// settlements move nothing to its handle: only the memory owner's shed does.
 #[test]
-fn the_ring_holds_its_share_at_every_receipt_and_evicts_in_bursts() {
+fn results_are_never_evicted_at_receipt_however_large_the_ring() {
     let wm = WorkingMemory::new(8);
     wm.set_served_window(16_384);
-    let share = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
-    let chunk = share / 5;
-    let rendered = |wm: &WorkingMemory| -> Vec<String> {
-        wm.recent_results_messages().into_iter().filter(|m| m.starts_with("[result ")).collect()
-    };
-    let mut bursts = 0;
-    let mut head: Option<String> = None;
+    let chunk = 64 * BODY;
     for i in 0..40 {
-        wm.record_receipt_typed(&[], &format!("r{i} {}", "w".repeat(chunk)), None, saved(&format!("burst-{i}")));
-        let ring = rendered(&wm);
-        let chars: usize = ring.iter().map(|m| m.chars().count()).sum();
-        assert!(chars <= share + 2_048, "receipt {i}: {chars} rendered chars over the {share} share");
-        let now = ring.first().cloned();
-        if head.is_some() && now != head {
-            bursts += 1;
+        wm.record_receipt_typed(&[], &format!("r{i} {}", "w".repeat(chunk)), None, saved(&format!("ring-{i}")));
+        if i % 10 == 9 {
+            wm.record_settlement("a burst done", None);
         }
-        head = now;
     }
-    assert!(bursts >= 1, "the share was exceeded, so at least one burst evicted");
-    assert!(bursts < 20, "a burst with hysteresis, not a rotation on every act: {bursts} bursts in 40 receipts");
-    let newest = wm.snapshot().recent_results.last().map(|r| r.2.clone()).unwrap_or_default();
-    assert!(newest.starts_with("r39 ") && newest.len() > chunk, "the newest result is held whole");
+    assert!(wm.resident_result_bytes() >= 40 * chunk as u64, "all 40 bodies resident: {}", wm.resident_result_bytes());
+    let snapshot = wm.snapshot();
+    assert!(snapshot.evicted_pointers.is_empty(), "nothing collapsed to a pointer");
+    assert!(snapshot.actions.iter().all(|record| record.result.is_some()), "every record holds its body");
 }
 
 // what this catches: an unsaved result dropped at collapse (Astra on #4963 at 4840af859:
 // a pointer saying "never saved" documents the loss instead of preventing it). Its save
-// failed, so nothing else holds its bytes: it stays WHOLE through settlement and restore
-// while the saved results around it collapse to pointers.
+// failed, so nothing else holds its bytes: it stays WHOLE through a shed and restore while
+// the saved results around it collapse to pointers.
 #[test]
-fn an_unsaved_result_keeps_its_bytes_through_settlement_and_restore() {
+fn an_unsaved_result_keeps_its_bytes_through_a_shed_and_restore() {
     let wm = WorkingMemory::new(8);
     wm.set_served_window(16_384);
-    let cap = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
+    let cap = 2 * BODY;
     let unsaved = format!("UNSAVED {}", "u".repeat(cap / 2));
     wm.record_receipt_typed(&[], &unsaved, None, crate::ai::types::ResultCustody::Unsaved);
     for _ in 0..4 {
         record_saved(&wm, &"s".repeat(cap / 2));
     }
     wm.record_settlement("done", None);
+    shed(&wm, cap / 2);
     let whole = |m: &WorkingMemory| m.recent_results_messages().iter().any(|r| r.ends_with(&unsaved));
-    assert!(whole(&wm), "kept whole through settlement");
+    assert!(whole(&wm), "kept whole through the shed");
     assert!(
         wm.recent_results_messages().join("\n").contains("ring-test — collapsed"),
         "the saved ones around it collapsed"
@@ -378,7 +413,7 @@ fn a_restore_prices_a_legacy_evicted_result_from_its_saved_output() {
     wm.record_receipt_typed(&[], &body, None, pin.retain(persona, &body));
     wm.record_receipt_typed(&[], "a result whose output is gone", None, pin.retain(persona, "a result whose output is gone"));
     wm.record_receipt_typed(&[], "the newest stays resident", None, pin.retain(persona, "the newest stays resident"));
-    wm.evict_resident_results_over(1);
+    shed(&wm, 1);
     let mut snapshot = wm.snapshot();
     snapshot.actions = snapshot.action_records();
     // the shape the old share left: body gone, handle kept, no stored size
