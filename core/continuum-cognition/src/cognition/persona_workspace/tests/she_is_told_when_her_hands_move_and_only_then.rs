@@ -191,7 +191,7 @@ use super::*;
         {
             let memory = WorkingMemory::new(8);
             memory.set_served_window(16_384);
-            let cap = memory.budget().recent_results_chars();
+            let cap = crate::cognition::working_memory::RESULTS_RESIDENT_CHARS;
             let saved = |handle: &str| crate::ai::types::ResultCustody::Whole { handle: handle.into() };
             memory.record_receipt_typed(&[], &"c".repeat(cap / 2), None, saved("c011a75ed0000001"));
             for _ in 0..4 {

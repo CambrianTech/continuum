@@ -13,11 +13,10 @@ impl ServingDaemonModule {
     /// to drive the spawner before the tick loop starts — single source of
     /// truth for "what model + how many lanes."
     pub fn compute_plan(&self) -> Option<ServingPlan> {
-        plan_serving(
-            &self.host_budget(),
-            &self.live_candidates(),
-            &self.serving_demand(),
-        )
+        let (budget, leases) = self.host_budget_snapshot();
+        let mut demand = self.serving_demand();
+        account_training_leases(&mut demand, &leases);
+        plan_serving(&budget, &self.live_candidates(), &demand)
     }
 
     /// Recompute the plan from the live host snapshot + on-disk models, publish
@@ -40,12 +39,12 @@ impl ServingDaemonModule {
             self.note_reconcile_busy("recompute");
             return;
         }
-        let budget = self.host_budget();
+        let (budget, leases) = self.host_budget_snapshot();
         let intent = self.intent.snapshot();
         let catalog = self.catalog.snapshot();
         let candidates = servable_candidates(&catalog, &intent.suppressed, &intent.pinned);
         let on_disk = servable_candidates(&catalog, &HashSet::new(), &intent.pinned);
-        self.publish_plan_for_intent(budget, &candidates, &on_disk, intent.revision);
+        self.publish_plan_with_leases(budget, &candidates, &on_disk, intent.revision, &leases);
     }
 
     /// Pure publish step: run the classifier on the given inputs, publish the
@@ -98,12 +97,21 @@ impl ServingDaemonModule {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn publish_plan_for_intent(
         &self,
         budget: HostBudget,
         candidates: &[ModelFootprint],
         on_disk: &[ModelFootprint],
         intent_revision: u64,
+    ) {
+        self.publish_plan_with_leases(budget, candidates, on_disk, intent_revision, &[]);
+    }
+
+    fn publish_plan_with_leases(
+        &self, budget: HostBudget, candidates: &[ModelFootprint],
+        on_disk: &[ModelFootprint], intent_revision: u64,
+        leases: &[crate::resources::lease::ResourceLease],
     ) {
         // Hysteresis: pass the currently-served model as the incumbent so a
         // transient free-memory dip doesn't thrash the served model.
@@ -130,9 +138,10 @@ impl ServingDaemonModule {
         let seat_model = incumbent
             .as_deref()
             .or(remembered.as_ref().map(|g| g.model_id.as_str()));
-        let demand = self
+        let mut demand = self
             .serving_demand()
             .with_sticky_window(seat_model.and_then(crate::inference::served_window_store::load_for));
+        account_training_leases(&mut demand, leases);
         // THE INCUMBENT'S OWN BYTES ARE CREDITED BACK EXACTLY ONCE. `budget` is the
         // ledger's replace-myself budget: serving's own measured footprint added back,
         // capped at the device. Once serving has REPORTED that footprint (steady state,
@@ -146,6 +155,11 @@ impl ServingDaemonModule {
         let ledger_credited = self.resource_daemon.board().attributions.iter().any(|a| {
             a.consumer_id == SERVING_CONSUMER_ID && a.kind == serving_pool_kind() && a.bytes > 0
         });
+        if !ledger_credited {
+            // The boot planner adds incumbent bytes after this snapshot. That
+            // enlarged budget no longer proves these leases were excluded.
+            account_training_leases(&mut demand, &[]);
+        }
         // WHICH BRANCH PLANNED THIS, AND WHAT IT PLANNED FROM (card d0ba2342, 2026-09-21).
         // These two arms differ by exactly ONE engine footprint: `at_rest` trusts that the
         // ledger has already credited serving's own bytes back, `stable` credits them here.
@@ -579,7 +593,7 @@ impl ServingDaemonModule {
                     );
                 }
                 let spike = spike_of_served.unwrap_or(0);
-                crate::inference::prefill_throttle::publish_serving(spike, plan.lanes as usize);
+                crate::inference::prefill_spike::publish(spike);
                 // send_replace keeps the latest even with no live receivers yet.
                 self.publish_plan_snapshot(intent_revision, Some(plan));
             }
@@ -610,5 +624,62 @@ impl ServingDaemonModule {
                 self.publish_plan_snapshot(intent_revision, None);
             }
         }
+    }
+}
+
+/// Match exact job identity; unrelated holders and other jobs earn no credit.
+fn account_training_leases(demand: &mut ServingDemand, leases: &[crate::resources::lease::ResourceLease]) {
+    for requirement in &mut demand.requirements {
+        let Some(reserve) = &mut requirement.training else { continue };
+        let bytes = reserve.job.map_or(0, |job| {
+            let consumer = format!("genome-train:{job}");
+            leases.iter().filter(|lease| lease.consumer_id == consumer)
+                .fold(0u64, |sum, lease| sum.saturating_add(lease.bytes))
+        });
+        reserve.account_charged_bytes(bytes);
+    }
+}
+
+#[cfg(test)]
+mod training_lease_tests {
+    use super::*;
+    use crate::inference::planning::window_allocator::{allocate, LaneRequirement, TrainingGrowth, TrainingPrice, TrainingReserve};
+    use crate::resources::lease::{ReclaimPolicy, ResourceLease};
+
+    // What this catches: unrelated or different-job leases cannot cancel a
+    // training reserve; two charged leases for the exact job count together.
+    #[test]
+    fn only_exact_job_leases_credit_training_and_credit_is_reset() {
+        let job = uuid::Uuid::from_u128(7);
+        let price = TrainingPrice {
+            bytes: 100,
+            source: crate::inference::planning::training_plan::NeedSource::LowerBound,
+            model: "fixture".into(), shape: "fixture".into(),
+        };
+        let requirement = LaneRequirement::declared(uuid::Uuid::from_u128(1), 40_000)
+            .with_training(Some(TrainingReserve::new(64_256, Some(price), Some(job))));
+        let mut demand = ServingDemand::new(1, Some(40_000)).with_requirements(vec![requirement]);
+        let lease = |id: &str, consumer: String, bytes| ResourceLease {
+            lease_id: id.into(), consumer_id: consumer, kind: ResourceKind::Vram,
+            bytes, acquired_at_ms: 0, expires_at_ms: 1000, reclaim_policy: ReclaimPolicy::Pinned,
+        };
+        let leases = [
+            lease("a", format!("genome-train:{job}"), 30),
+            lease("b", format!("genome-train:{job}"), 20),
+            lease("c", format!("genome-train:{}", uuid::Uuid::from_u128(8)), 1000),
+            lease("d", "embedding".into(), 1000),
+        ];
+        let model = ModelFootprint {
+            model_id: "fixture".into(), weights_bytes: 19 * (1 << 30), kv_per_token: 33_000,
+            context_window: 262_144, capability_rank: 1, fixed_per_lane_bytes: 0,
+        };
+        let budget = HostBudget { usable_bytes: 64 * (1 << 30), perf_cores: 1 };
+        account_training_leases(&mut demand, &leases);
+        let allocated = allocate(&demand.requirements, &[model.clone()], &budget, 1)
+            .expect("fixture fits");
+        assert_eq!(allocated.training_growth, TrainingGrowth::Reserved { bytes: 50, target: 64_256, reached: true });
+        account_training_leases(&mut demand, &[]);
+        let allocated = allocate(&demand.requirements, &[model], &budget, 1).expect("fixture fits");
+        assert_eq!(allocated.training_growth, TrainingGrowth::Reserved { bytes: 100, target: 64_256, reached: true });
     }
 }

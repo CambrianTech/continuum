@@ -317,6 +317,10 @@ impl LlamaServerControl for LlamaServerProcess {
         self.stamp_observed_placement().await;
     }
 
+    fn follow_engine_log(&self) {
+        self.follow_served_engine();
+    }
+
     fn served_incarnation(&self) -> Option<crate::inference::engine_residency::EngineIncarnation> {
         let (_host, port) = split_host_port(&self.root);
         crate::inference::lane_registry::live_incarnation().filter(|lane| lane.port == port)

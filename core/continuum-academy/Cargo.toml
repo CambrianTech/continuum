@@ -12,6 +12,7 @@ build = "../continuum-core/build.rs"
 # placed above it; cognition names none of it. The mind re-exports this crate's `cognition`.
 
 [dependencies]
+continuum-process = { path = "../continuum-process" }
 continuum-cognition = { path = "../continuum-cognition" }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }

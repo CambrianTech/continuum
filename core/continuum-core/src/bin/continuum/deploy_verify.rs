@@ -48,12 +48,17 @@ pub(super) async fn running_core_build_sha(what: &str) -> Result<Option<String>,
 }
 
 pub(super) async fn running_core_provenance(command: &str, what: &str) -> Result<Value, String> {
+    running_core_call(command, Value::Object(Default::default()), what).await
+}
+
+/// [`running_core_provenance`] with `params`: the one bounded call to the running core.
+pub(super) async fn running_core_call(command: &str, params: Value, what: &str) -> Result<Value, String> {
     let socket = socket_path();
     let reply = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         connection()
             .commands()
-            .execute_value(command, Value::Object(Default::default())),
+            .execute_value(command, params),
     )
     .await
     .map_err(|_| {

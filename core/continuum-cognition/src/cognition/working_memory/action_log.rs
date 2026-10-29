@@ -41,6 +41,12 @@ pub(crate) struct ActionRecord {
     /// Kept after the result collapses, so what she read stays addressable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// The whole result's length once its body left RAM for its handle: what her view prices the
+    /// whole level at without reading it (`continuum_context::StoredWhole`). Eviction is storage,
+    /// never visibility (FOCUS-CONTRACT rule 7). `None` while resident, and for records evicted
+    /// before this was kept (their whole then has no price: they show at pointer level).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stored_chars: Option<usize>,
 }
 
 impl ActionRecord {
@@ -149,6 +155,7 @@ impl ActionLog {
                 continue;
             }
             total -= record.result_chars();
+            record.stored_chars = record.result.as_ref().map(|result| result.chars().count());
             record.result = None;
         }
         Collapsed { total }

@@ -540,6 +540,7 @@ async fn reconcile_is_noop_when_already_serving() {
         vision_base_url: None,
         vision_model: None,
         loading_model: None,
+        held_for: None,
     });
     let budget = HostBudget {
         usable_bytes: 45 * GB,
@@ -658,6 +659,7 @@ async fn no_plan_publishes_empty_snapshot() {
         vision_base_url: None,
         vision_model: None,
         loading_model: None,
+        held_for: None,
     });
     let budget = HostBudget {
         usable_bytes: 45 * GB,

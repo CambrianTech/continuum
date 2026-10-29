@@ -65,7 +65,7 @@ async fn live_window_reductions_bound_actual_requests_and_persist() {
         let schemas = crate::cognition::tool_surface::tool_surface_tokens_of(
             request.tools.as_ref().expect("native tools retained"),
         );
-        assert_eq!(schemas, faculty.select_tool_surface(&ws).tokens);
+        assert_eq!(schemas, faculty.prompt_view(&ws).tools.tokens);
         assert_eq!(request.max_tokens, Some(expected_view.completion_reserve));
         let cost = LlmDeliberationFaculty::framing_cost(
             request.system_prompt.as_deref().expect("system framing"),
@@ -437,6 +437,17 @@ async fn provider_context_feedback_faults_when_required_input_cannot_fit() {
         outcome.receipts[0].outcome,
         crate::ai::provenance::GenerationOutcome::Faulted { .. }
     ));
+    // ...and it names the allocation its prompt was fitted under (FOCUS-CONTRACT rule 8): a
+    // lived call that can't say which attention decision shaped it gives a learned focus policy
+    // nothing to learn from. Every claim's grant is within what it asked for.
+    let allocation = outcome.receipts[0].allocation.as_ref().expect("the call names its allocation");
+    assert_eq!(allocation.window, window, "the window the one allocation ran over");
+    assert!(!allocation.claims.is_empty());
+    assert!(
+        allocation.claims.iter().all(|c| c.grant <= c.want.max(c.floor)),
+        "no claim granted past its want: {:?}",
+        allocation.claims
+    );
     ws.now_ms = Some(180_000); // Clock and diagnostic churn do not replace the pending work.
     wm.record_fact("The provider refused the previous prompt; the artifact remains pending.");
     ws.turns.push(BurstTurn::perception(

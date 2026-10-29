@@ -525,6 +525,7 @@ pub(super) fn lane_under_plan(
         vision_base_url: None,
         vision_model: None,
         loading_model: None,
+        held_for: None,
     });
     (daemon, plan_window)
 }
@@ -546,6 +547,7 @@ pub(super) fn ready_snapshot() -> ServingSnapshot {
         vision_base_url: None,
         vision_model: None,
         loading_model: None,
+        held_for: None,
     }
 }
 

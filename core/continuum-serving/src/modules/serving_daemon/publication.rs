@@ -77,6 +77,7 @@ pub(super) fn snapshot_from_outcome(
             ServingSnapshot {
                 // A lane with a verified window is serving, not loading.
                 loading_model: None,
+                held_for: None,
                 // The claim carries the age of its evidence. Stamped HERE, at the
                 // moment the reconcile confirmed readiness — not at read time, which
                 // is what let `ready:true` survive a SIGKILLed process for as long as

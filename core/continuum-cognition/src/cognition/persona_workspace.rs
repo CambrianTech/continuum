@@ -44,6 +44,7 @@ use crate::cognition::rag_budget::RagSource;
 pub mod checkpoint_adoption;
 
 mod rehome;
+pub use rehome::RehomeReason;
 
 pub use crate::cognition::handoff::SaveReason;
 

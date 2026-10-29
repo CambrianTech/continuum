@@ -644,3 +644,37 @@ async fn register_as_consumer_wires_serving_into_the_authority() {
         "serving must register itself as a measured consumer with the authority"
     );
 }
+
+// what this catches (card a18452d6): a held engine published as an unexplained empty node
+// (enrico 2026-10-27: Delia's training held the only engine for hours, read as dead), a hold
+// whose start resets when another publisher replaces the snapshot whole, a hold carried over to
+// a relaunched engine, and a hold that outlives its release.
+#[tokio::test]
+async fn a_hold_is_published_keeps_its_start_and_is_cleared_on_release() {
+    use crate::inference::engine_residency::{EngineIncarnation, Occupancy, ResidentWork};
+    let daemon = daemon_with(Arc::new(FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true)));
+    let work = |started_s: u64| ResidentWork {
+        job: uuid::Uuid::from_u128(0xf633bd36),
+        out: "f633bd36.gguf".into(),
+        engine: EngineIncarnation { pid: 33_971, started_s, port: 58_057 },
+        base_model: "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF".into(),
+        created_ms: 1_793_120_435_262,
+        consumer: "genome-train:f633bd36".into(),
+        reserved_bytes: 13_130_575_872,
+        interrupted: None,
+        job_spec: None,
+        memory: None,
+    };
+    let held = Occupancy::Resident(vec![work(1_793_118_524)]);
+    daemon.publish_hold(&held);
+    let first = daemon.serving_tx.borrow().held_for.clone().expect("a held engine says what holds it");
+    let _ = daemon.serving_tx.send_replace(ServingSnapshot::empty()); // another publisher, whole
+    daemon.publish_hold(&held);
+    let again = daemon.serving_tx.borrow().held_for.clone().expect("still held");
+    assert_eq!(again.since_ms, first.since_ms, "the hold's start survives a replaced snapshot");
+    daemon.publish_hold(&Occupancy::Resident(vec![work(1_793_200_000)]));
+    let relaunched = daemon.serving_tx.borrow().held_for.clone().expect("held by the relaunched engine's work");
+    assert_ne!(relaunched.by, first.by, "a changed incarnation is a different hold, never the old one carried over");
+    daemon.publish_hold(&Occupancy::Free);
+    assert_eq!(daemon.serving_tx.borrow().held_for, None, "a released engine is not held");
+}
