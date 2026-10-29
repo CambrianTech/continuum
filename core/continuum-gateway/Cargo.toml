@@ -7,6 +7,7 @@ description = "The driver gateway (docs/architecture/DRIVER-GATEWAY.md): one doo
 [dependencies]
 continuum-engine = { path = "../continuum-engine" }
 continuum-base = { path = "../continuum-base" }
+continuum-capture = { path = "../continuum-capture" }  # the one capture of every mind's calls
 async-trait = "0.1"
 axum = "0.8"
 serde.workspace = true
