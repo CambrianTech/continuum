@@ -71,7 +71,7 @@ pub(crate) async fn migrate_base_change_buckets(state: &Arc<TrainingTriggerState
                 let target_key = BucketKey {
                     persona_id: key.persona_id,
                     base_model: served_base.clone(),
-                    lane: key.lane.clone(),
+                    trait_kind: key.trait_kind.clone(),
                 };
                 
                 // Only migrate if the target bucket already exists on the new base
@@ -88,7 +88,7 @@ pub(crate) async fn migrate_base_change_buckets(state: &Arc<TrainingTriggerState
             let mut merged = (*old_entry.value()).clone();
             
             // Find or create target bucket
-            let new_bucket = state.buckets.entry(new_key.clone()).or_insert_with(|| {
+            let _new_bucket = state.buckets.entry(new_key.clone()).or_insert_with(|| {
                 Arc::new(PendingBatch::default())
             });
 

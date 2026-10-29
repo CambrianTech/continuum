@@ -30,6 +30,7 @@ pub use acceptance_receipt::*;
 mod training_trigger_state;
 mod training_trigger_state_2;
 mod training_trigger_state_3;
+mod migration;
 pub(crate) use training_trigger_state_3::*;
 
 #[cfg(test)]
