@@ -481,6 +481,12 @@ prompt holds), RAM, and disk. It is not a set of caches each deciding for itself
    (contract above). Price eviction from her measured working set, not from
    this prompt's size. A remote lane's grant carries the responder's reported slot.
    Validator: no prompt is fitted without a grant.
+4b. **Grants sized from one pool** (after 4; Joel: "dynamically take more and the slots figure
+   it out"). With the window carried by each turn's grant, a grant is sized per turn from the
+   engine's one shared KV pool (unified KV across sequences) by each mind's measured demand: a
+   mind deep in a coding task takes 100k+ while idle minds hold little, and it shifts as they
+   work, with no relaunch. Today's fixed per-slot split (182,016 / 3 = 60,672 on the M5) becomes
+   the starting partition, not the limit.
 5. **Deliberation fits to the grant** (Fable). Delete the deadband and its CAS write-back,
    `ModelBinding.context_window`, `PersonaBrainConfig.context_window` and the window arm of
    `CapacityReadiness`. The reconciler goes back to rebinding on a model change only.
