@@ -15,21 +15,9 @@ use continuum_airc_protocol::{
 };
 use uuid::Uuid;
 
-use crate::capacity::gossip::{
-    capability_decision, CapabilityDecision, CapabilityId, CapacityOffer,
-};
 use crate::routing::airc_transport::AircTransport;
 
-/// PURE: may a cancel be sent to this seat? Only when its fresh beacon affirmatively
-/// advertises [`CapabilityId::RemoteGenerateCancel`]; no beacon, or one from a core that
-/// predates the command, means it would be ignored, so it is never sent (#3941 doctrine).
-pub(super) fn seat_accepts_cancel(offer: Option<&CapacityOffer>) -> bool {
-    offer.is_some_and(|offer| {
-        capability_decision(offer, CapabilityId::RemoteGenerateCancel) == CapabilityDecision::Allow
-    })
-}
-
-/// Armed BEFORE the request is published (airc publishes before `request_in` returns),
+/// Armed BEFORE the request is published (airc publishes before `request` returns),
 /// keyed by the requester's own generation id. Dropped while armed (a deadline, any error,
 /// or the turn dropping its future, even mid-publication) it fires its action, which sends
 /// the seat a cancel. Only [`AbandonGuard::disarm`] (a reply arrived) stops it: no error
@@ -41,33 +29,28 @@ pub(super) struct AbandonGuard {
 
 struct Cancel {
     airc: Arc<Airc>,
-    room: airc_lib::Room,
     seat: PeerId,
     generation: Uuid,
     valid_until_ms: u64,
 }
 
 impl AbandonGuard {
-    /// Armed only for a seat that accepts the cancel ([`seat_accepts_cancel`]).
+    /// Cancellation is mandatory for every remote generation.
     /// `valid_until_ms` is the request's own stamped validity, carried on the cancel.
     pub(super) fn new(
         airc: Arc<Airc>,
-        room: airc_lib::Room,
         seat: PeerId,
         generation: Uuid,
         valid_until_ms: u64,
-        seat_accepts: bool,
     ) -> Self {
         let cancel = Cancel {
             airc,
-            room,
             seat,
             generation,
             valid_until_ms,
         };
         Self {
-            armed: seat_accepts
-                .then(|| Box::new(move || cancel.dispatch()) as Box<dyn FnOnce() + Send>),
+            armed: Some(Box::new(move || cancel.dispatch())),
         }
     }
 
@@ -136,8 +119,7 @@ impl Cancel {
         let sent = match body {
             Ok(body) => self
                 .airc
-                .request_in(
-                    &self.room,
+                .request(
                     MentionTarget::Peer(self.seat),
                     headers,
                     Body::Json(body),
@@ -172,35 +154,6 @@ impl Cancel {
 mod tests {
     use super::*;
 
-    fn beacon(capabilities: serde_json::Value) -> CapacityOffer {
-        serde_json::from_value(serde_json::json!({
-            "gpuTotalBytes": 1u64, "gpuFreeBytesLive": 0u64, "systemRamFreeBytes": 0u64, "atMs": 0u64,
-            "capabilities": capabilities,
-        }))
-        .expect("the wire shape of a seat's beacon")
-    }
-
-    // what this catches: a cancel goes only to a seat that advertises it. No beacon, an
-    // older core's beacon with no capability, or another capability never earns one; a
-    // seat that never learned ai/generate/cancel must not be sent it.
-    #[test]
-    fn a_cancel_is_sent_only_to_a_seat_that_advertises_it() {
-        assert!(!seat_accepts_cancel(None), "no beacon, no cancel");
-        assert!(
-            !seat_accepts_cancel(Some(&beacon(serde_json::json!([])))),
-            "an older core"
-        );
-        assert!(
-            !seat_accepts_cancel(Some(&beacon(serde_json::json!([
-                "placement_reservation_grant"
-            ])))),
-            "another capability does not stand in"
-        );
-        assert!(seat_accepts_cancel(Some(&beacon(serde_json::json!([
-            "remote_generate_cancel"
-        ])))));
-    }
-
     fn fired() -> (std::sync::Arc<std::sync::atomic::AtomicBool>, AbandonGuard) {
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let set = std::sync::Arc::clone(&flag);
@@ -210,7 +163,7 @@ mod tests {
     }
 
     // what this catches (Codex review of cf08ff017): the window between airc publishing
-    // a request and request_in returning. The guard is armed before publication, so a
+    // a request and request returning. The guard is armed before publication, so a
     // turn dropped while publication is still pending fires the cancel, and a publication
     // that FAILS fires it too (an error does not prove the frame was never accepted).
     // Only a reply (disarm) stops it.
@@ -219,7 +172,7 @@ mod tests {
         let (flag, guard) = fired();
         let accepted = std::sync::Arc::new(tokio::sync::Notify::new());
         let marker = std::sync::Arc::clone(&accepted);
-        // The daemon accepts the frame, but request_in has not returned to us yet.
+        // The daemon accepts the frame, but request has not returned to us yet.
         let mut publishing = Box::pin(publish_armed(guard, async move {
             marker.notify_one();
             std::future::pending::<Result<(), ()>>().await
@@ -238,7 +191,7 @@ mod tests {
         drop(publishing);
         assert!(
             flag.load(std::sync::atomic::Ordering::SeqCst),
-            "dropped after acceptance, before request_in returned: cancel sent"
+            "dropped after acceptance, before request returned: cancel sent"
         );
 
         let (flag, guard) = fired();

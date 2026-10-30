@@ -14,8 +14,7 @@
 use serde_json::Value;
 
 pub use continuum_airc_protocol::command::{
-    AircCommandRequest, AircCommandResponse, COMMAND_REQUEST_BODY_HINT, COMMAND_RESPONSE_BODY_HINT,
-    HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH, HEADER_COMMAND_STATUS,
+    AircCommandRequest, AircCommandResponse, HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH, HEADER_COMMAND_STATUS,
     HEADER_CONTINUUM_BODY_HINT,
 };
 

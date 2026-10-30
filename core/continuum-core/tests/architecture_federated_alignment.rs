@@ -83,21 +83,18 @@ use std::sync::Mutex;
 
 use airc_test_fixtures::TwoAircLoopback;
 use async_trait::async_trait;
-use continuum_airc_protocol::{COMMAND_REQUEST_BODY_HINT, HEADER_CONTINUUM_BODY_HINT};
 use continuum_core::ai::types::{ChatMessage, MessageContent, TextGenerationRequest};
 use continuum_core::inference::airc_remote::{
     AircInferenceTransport, AircLiveTransport, RemoteInferenceRequest,
 };
 use continuum_core::ipc::command_ingress::CommandRequestHandler;
 use continuum_core::routing::{
-    CallerIdentity, CallerSource, ClosurePolicy, ForbiddenReason,
-    RouteDecision, Verdict,
+    CallerIdentity, CallerSource, ClosurePolicy, ForbiddenReason, RouteDecision, Verdict,
 };
 use continuum_core::runtime::command_executor::CommandExecutor;
 use continuum_core::runtime::{
     CommandResult, ModuleConfig, ModuleContext, ModulePriority, ModuleRegistry, ServiceModule,
 };
-use futures::stream::StreamExt;
 use tokio::sync::Notify;
 
 /// A minimal `ai/generate` module that ALWAYS returns a benign canned
@@ -165,47 +162,23 @@ fn build_handler(
     CommandRequestHandler::new(peer, executor)
 }
 
-/// Spawn peer_a's responder loop that uses the production
-/// `process_request` path (so the gate is in the loop).
+/// Spawn peer_a's responder: reads its addressed inbox and hands the first command to
+/// the production receiver (`on_addressed`: ingress contract, then `process_request`,
+/// where the gate runs, then the reply bound to the request).
 async fn spawn_substrate_responder(
     handler: Arc<CommandRequestHandler>,
     peer: Arc<airc_lib::Airc>,
     ready: Arc<Notify>,
 ) -> tokio::task::JoinHandle<()> {
-    let self_id = peer.peer_id();
+    use continuum_core::routing::addressed_inbox::AddressedHandler;
     tokio::spawn(async move {
-        let mut stream = peer.subscribe().await.expect("peer subscribe");
+        let mut inbox = peer
+            .addressed_inbox(tokio::time::Instant::now() + airc_ipc::client::DEFAULT_RPC_TIMEOUT)
+            .await
+            .expect("peer addressed inbox");
         ready.notify_one();
-        while let Some(event) = stream.next().await {
-            let event = match event {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if event.peer_id == self_id {
-                continue;
-            }
-            let hint = match event.headers.get(HEADER_CONTINUUM_BODY_HINT) {
-                Some(h) => h,
-                None => continue,
-            };
-            if hint != COMMAND_REQUEST_BODY_HINT {
-                continue;
-            }
-            let parsed = match CommandRequestHandler::parse_envelope(&event) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            // PRODUCTION path: the gate runs inside process_request →
-            // execute_with_caller. If the verdict is Forbidden, the
-            // response will be an AircCommandResponse::Error variant
-            // carrying the substrate's "forbidden: ..." prose.
-            let response = handler.process_request(&parsed).await;
-            handler
-                .send_reply(&parsed, &response)
-                .await
-                .expect("substrate send_reply");
-            return;
-        }
+        let frame = inbox.next().await.expect("addressed request");
+        handler.on_addressed(frame).await;
     })
 }
 
@@ -284,7 +257,7 @@ async fn hostile_peer_dispatch_is_refused_with_typed_forbidden_verdict() {
     // "forbidden" / "UnknownPeer" prose carried inside.
     let err = result.expect_err(
         "DENY policy must refuse the dispatch; got Ok — gate bypass or \
-         policy not threaded into process_request_via",
+         policy not threaded into process_request",
     );
 
     let message = format!("{err:?}");

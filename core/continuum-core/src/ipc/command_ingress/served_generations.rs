@@ -164,14 +164,14 @@ impl Drop for Admission {
 
 impl ServedGenerations {
     /// Admit `correlation` if it is still valid (`valid_until_ms`, the requester's stated
-    /// validity; `None` from a requester that predates it), not cancelled ahead of time,
+    /// validity), not cancelled ahead of time,
     /// and fewer than `bound` generations are outstanding.
     pub(super) fn admit(
         self: &Arc<Self>,
         correlation: Uuid,
         caller: PeerId,
         bound: usize,
-        valid_until_ms: Option<u64>,
+        valid_until_ms: u64,
         now_ms: u64,
     ) -> Result<Admission, Refusal> {
         let mut outstanding = self.outstanding.lock();
@@ -181,7 +181,7 @@ impl ServedGenerations {
         {
             let mut early = self.early_cancels.lock();
             forget_expired(&mut early, now_ms);
-            if valid_until_ms.is_some_and(|valid| now_ms > valid) {
+            if now_ms > valid_until_ms {
                 return Err(Refusal::Expired { correlation });
             }
             if let Some(cancels) = early.get_mut(&caller) {
@@ -335,14 +335,14 @@ mod tests {
     fn admission_is_bounded_and_a_finished_generation_frees_its_slot() {
         let registry = Arc::new(ServedGenerations::default());
         let first = registry
-            .admit(Uuid::from_u128(1), peer(100), 2, Some(VALID), NOW)
+            .admit(Uuid::from_u128(1), peer(100), 2, VALID, NOW)
             .expect("first admitted");
         let _second = registry
-            .admit(Uuid::from_u128(2), peer(100), 2, Some(VALID), NOW)
+            .admit(Uuid::from_u128(2), peer(100), 2, VALID, NOW)
             .expect("second admitted");
         assert_eq!(
             registry
-                .admit(Uuid::from_u128(3), peer(100), 2, Some(VALID), NOW)
+                .admit(Uuid::from_u128(3), peer(100), 2, VALID, NOW)
                 .err(),
             Some(Refusal::Overloaded {
                 outstanding: 2,
@@ -351,7 +351,7 @@ mod tests {
         );
         assert_eq!(
             registry
-                .admit(Uuid::from_u128(2), peer(100), 3, Some(VALID), NOW)
+                .admit(Uuid::from_u128(2), peer(100), 3, VALID, NOW)
                 .err(),
             Some(Refusal::Duplicate {
                 correlation: Uuid::from_u128(2)
@@ -361,7 +361,7 @@ mod tests {
         assert_eq!(registry.outstanding(), 1);
         assert!(
             registry
-                .admit(Uuid::from_u128(3), peer(100), 2, Some(VALID), NOW)
+                .admit(Uuid::from_u128(3), peer(100), 2, VALID, NOW)
                 .is_ok(),
             "the freed slot is admissible"
         );
@@ -374,7 +374,7 @@ mod tests {
         let registry = Arc::new(ServedGenerations::default());
         let correlation = Uuid::from_u128(7);
         let admission = registry
-            .admit(correlation, peer(100), 1, Some(VALID), NOW)
+            .admit(correlation, peer(100), 1, VALID, NOW)
             .expect("admitted");
         let task = tokio::spawn(async move {
             let _admission = admission;
@@ -401,7 +401,7 @@ mod tests {
         let (asker, stranger) = (peer(1), peer(2));
         let held = Uuid::from_u128(10);
         let admission = registry
-            .admit(held, asker, 2, Some(VALID), NOW)
+            .admit(held, asker, 2, VALID, NOW)
             .expect("admitted");
         let task = tokio::spawn(async move {
             let _admission = admission;
@@ -437,7 +437,7 @@ mod tests {
 
         let early = Uuid::from_u128(11);
         let admission = registry
-            .admit(early, asker, 2, Some(VALID), NOW)
+            .admit(early, asker, 2, VALID, NOW)
             .expect("admitted");
         assert_eq!(
             registry.cancel(early, asker, 4, VALID, NOW),
@@ -468,7 +468,7 @@ mod tests {
             CancelOutcome::Remembered
         );
         assert!(
-            registry.admit(early, stranger, 4, Some(VALID), NOW).is_ok(),
+            registry.admit(early, stranger, 4, VALID, NOW).is_ok(),
             "another caller is not blocked"
         );
         let late = Uuid::from_u128(21);
@@ -477,7 +477,7 @@ mod tests {
             CancelOutcome::Remembered
         );
         assert_eq!(
-            registry.admit(late, asker, 4, Some(VALID), NOW).err(),
+            registry.admit(late, asker, 4, VALID, NOW).err(),
             Some(Refusal::CancelledByRequester { correlation: late }),
             "the overtaken request is refused, never started"
         );
@@ -502,7 +502,7 @@ mod tests {
         let much_later = NOW + 15 * 60_000;
         assert_eq!(
             registry
-                .admit(delayed, asker, 4, Some(valid_until), much_later)
+                .admit(delayed, asker, 4, valid_until, much_later)
                 .err(),
             Some(Refusal::CancelledByRequester {
                 correlation: delayed
@@ -516,7 +516,7 @@ mod tests {
         );
         assert_eq!(
             registry
-                .admit(expired, asker, 4, Some(valid_until), valid_until + 1)
+                .admit(expired, asker, 4, valid_until, valid_until + 1)
                 .err(),
             Some(Refusal::Expired {
                 correlation: expired
@@ -548,12 +548,12 @@ mod tests {
             CancelOutcome::Remembered
         );
         assert_eq!(
-            registry.admit(id, a, 4, Some(VALID), NOW).err(),
+            registry.admit(id, a, 4, VALID, NOW).err(),
             Some(Refusal::CancelledByRequester { correlation: id }),
             "B's cancel did not overwrite A's"
         );
         assert_eq!(
-            registry.admit(id, b, 4, Some(VALID), NOW).err(),
+            registry.admit(id, b, 4, VALID, NOW).err(),
             Some(Refusal::CancelledByRequester { correlation: id }),
             "and B's own cancel still applies to B"
         );
@@ -576,12 +576,12 @@ mod tests {
             CancelOutcome::Fenced
         );
         assert_eq!(
-            registry.admit(r1, b, 4, Some(VALID), NOW).err(),
+            registry.admit(r1, b, 4, VALID, NOW).err(),
             Some(Refusal::Fenced { correlation: r1 }),
             "the delayed r1 is refused: its cancel was never silently dropped"
         );
         assert_eq!(
-            registry.admit(r3, b, 4, Some(VALID), NOW).err(),
+            registry.admit(r3, b, 4, VALID, NOW).err(),
             Some(Refusal::Fenced { correlation: r3 }),
             "every new generation from the fenced requester is refused while fenced"
         );
@@ -591,15 +591,13 @@ mod tests {
             CancelOutcome::Remembered
         );
         assert_eq!(
-            registry.admit(early, a, bound, Some(VALID), NOW).err(),
+            registry.admit(early, a, bound, VALID, NOW).err(),
             Some(Refusal::CancelledByRequester { correlation: early }),
             "B's fence never touched A"
         );
         let after = VALID + 1;
         assert!(
-            registry
-                .admit(r3, b, 4, Some(after + 60_000), after)
-                .is_ok(),
+            registry.admit(r3, b, 4, after + 60_000, after).is_ok(),
             "the fence lifts once every request it covered has expired"
         );
     }

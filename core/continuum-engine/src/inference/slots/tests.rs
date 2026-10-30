@@ -53,21 +53,24 @@ mod adopted_checkpoint;
     // #5060). A dir with no pages is remembered empty; a live sample is never replaced by the disk's.
     #[tokio::test]
     async fn the_first_sizing_after_a_restart_reads_the_pages_on_disk() {
+        let sampler = std::sync::Arc::new(StateSampler::default());
         let root = tempfile::tempdir().expect("test: page store");
         let geometry = |key: usize| root.path().join(format!("test-37eb1925--c{key}"));
-        let reads_of = |dir: &std::path::Path| SEED_READS.lock().iter().filter(|d| d.as_path() == dir).count();
-        // An asker waits at most REPORTER_TIMEOUT and yields to another dir's read in flight (other
-        // tests seed concurrently). Re-ask until the dir is known: a re-ask joins its read or waits
+        let reads_of = |dir: &std::path::Path| sampler.reads.lock().iter().filter(|d| d.as_path() == dir).count();
+        // An asker waits at most REPORTER_TIMEOUT and yields to another dir's read in flight. Re-ask until the dir is known: a re-ask joins its read or waits
         // for the slot, never starting a second read of the same dir.
-        let seeded = |dir: std::path::PathBuf| async move {
+        let seeded = |dir: std::path::PathBuf| {
+            let sampler = sampler.clone();
+            async move {
             tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                while !state_dir_known_in(&RECENT_STATE_BYTES.lock(), &dir) {
-                    seed_state_samples(&dir).await;
+                while !sampler.known(&dir) {
+                    sampler.seed(&dir).await;
                     tokio::task::yield_now().await;
                 }
             })
             .await
             .expect("test: the read lands");
+            }
         };
         for key in 0..(STATE_DIRS + 3) {
             std::fs::create_dir(geometry(key)).expect("test: same-model geometry");
@@ -75,9 +78,9 @@ mod adopted_checkpoint;
         }
         let desired = geometry(0);
         std::fs::write(desired.join("a-p1-r1.bin.ckpt"), vec![0u8; 900]).expect("test: sidecar");
-        assert_eq!(measured_state_bytes(&desired), None, "a fresh core has measured nothing");
+        assert_eq!(sampler.measured(&desired), None, "a fresh core has measured nothing");
         seeded(desired.clone()).await;
-        assert_eq!(measured_state_bytes(&desired), Some(1_900), "the exact dir, no spawn first");
+        assert_eq!(sampler.measured(&desired), Some(1_900), "the exact dir, no spawn first");
         seeded(desired.clone()).await;
         assert_eq!(reads_of(&desired), 1, "a known dir is not read again");
 
@@ -85,14 +88,14 @@ mod adopted_checkpoint;
         std::fs::create_dir(&later).expect("test: a geometry made after the seed");
         std::fs::write(later.join("a-p2-r2.bin"), vec![0u8; 333]).expect("test: page");
         seeded(later.clone()).await;
-        assert_eq!(measured_state_bytes(&later), Some(333), "a new geometry is read for itself");
+        assert_eq!(sampler.measured(&later), Some(333), "a new geometry is read for itself");
 
         for key in 1..(STATE_DIRS + 3) {
             seeded(geometry(key)).await;
         }
-        assert_eq!(measured_state_bytes(&desired), None, "evicted from the bounded cache");
+        assert_eq!(sampler.measured(&desired), None, "evicted from the bounded cache");
         seeded(desired.clone()).await;
-        assert_eq!(measured_state_bytes(&desired), Some(1_900), "an evicted dir is read again");
+        assert_eq!(sampler.measured(&desired), Some(1_900), "an evicted dir is read again");
         assert_eq!(reads_of(&desired), 2, "and read alone, not by a census of its model");
 
         let mut samples = StateSamples::new();
@@ -115,16 +118,17 @@ mod adopted_checkpoint;
     // and releases the slot with nobody waiting on it; and the live sample survives it.
     #[tokio::test]
     async fn one_stuck_read_holds_one_slot_and_releases_it_unwatched() {
+        let sampler = std::sync::Arc::new(StateSampler::default());
         let root = tempfile::tempdir().expect("test: page store");
         let stuck = root.path().join("test-5060-stuck--c1");
         let other = root.path().join("test-5060-other--c2");
-        let reads_of = |dir: &std::path::Path| SEED_READS.lock().iter().filter(|d| d.as_path() == dir).count();
+        let reads_of = |dir: &std::path::Path| sampler.reads.lock().iter().filter(|d| d.as_path() == dir).count();
         let (release, gate) = std::sync::mpsc::channel::<()>();
         let gate = std::sync::Arc::new(parking_lot::Mutex::new(gate));
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
             while reads_of(&stuck) == 0 {
                 let gate = gate.clone();
-                seed_state_samples_with(&stuck, move |_| {
+                sampler.seed_with(&stuck, move |_| {
                     let _ = gate.lock().recv(); // released by the test: a volume that stopped answering
                     Ok(vec![111])
                 })
@@ -133,20 +137,29 @@ mod adopted_checkpoint;
             }
         })
         .await
-        .expect("test: the stuck read starts once another test's read clears the slot");
-        assert_eq!(measured_state_bytes(&stuck), None, "still reading: unmeasured, not guessed");
-        seed_state_samples_with(&other, |_| Ok(vec![222])).await;
+        .expect("test: the stuck read is admitted");
+        assert_eq!(sampler.measured(&stuck), None, "still reading: unmeasured, not guessed");
+        sampler.seed_with(&other, |_| Ok(vec![222])).await;
         assert_eq!(reads_of(&other), 0, "another dir starts no worker while one read is in flight");
-        note_state_bytes(&stuck, 999);
+        sampler.note(&stuck, 999);
+        // A separate owner can churn its entire bounded cache while this read is
+        // blocked. Its eviction must never erase this owner's live sample.
+        let churning = StateSampler::default();
+        churning.note(&stuck, 333);
+        for key in 0..(STATE_DIRS + 3) {
+            churning.note(&root.path().join(format!("other-owner-{key}")), 222);
+        }
+        assert_eq!(churning.measured(&stuck), None, "other owner really evicted its sample");
+        assert_eq!(sampler.measured(&stuck), Some(999), "independent owner retains its live sample");
         release.send(()).expect("test: release the stuck read");
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            while SEEDING.lock().as_ref().is_some_and(|(reading, _)| reading == &stuck) {
+            while sampler.reading(&stuck) {
                 tokio::task::yield_now().await;
             }
         })
         .await
         .expect("test: the read releases its slot with nobody waiting on it");
-        assert_eq!(measured_state_bytes(&stuck), Some(999), "the live sample outranks the disk's");
+        assert_eq!(sampler.measured(&stuck), Some(999), "the live sample outranks the disk's");
         assert_eq!(reads_of(&stuck), 1, "one read, however many asks");
     }
 
