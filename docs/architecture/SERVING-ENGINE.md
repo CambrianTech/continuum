@@ -145,8 +145,9 @@ path calls `destroy()` then `load_model()` (server-context.cpp:978-993), which f
   end would let four busy writers, or one ten-minute generation, hold the person's game hostage (Cormac on
   #5607). Drafting restarts on the rebuilt speculative object. Slot save and restore serialize through the
   same safe point. New work waits in the queue; nothing is
-  cancelled. Slot ids stay stable: a smaller `n_seq` removes the highest ids, and a busy slot among them is
-  refused by name (the core asks again when that turn ends).
+  cancelled. Slot ids stay stable: a smaller `n_seq` removes the highest ids, and a slot among them, busy or
+  not, is paged out now with its unfinished generation (contract 2), named in the outcome; it continues when
+  residency places it again.
 
 **Contract.**
 1. The model and its mmap are never freed; only contexts are (sequence in section 3, "a relaunch is a pause").
