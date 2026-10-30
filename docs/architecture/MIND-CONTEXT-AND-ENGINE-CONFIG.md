@@ -246,6 +246,13 @@ layer is a context `Source`:
 - **Levels of detail on every item:** `full`, `summary` (an outline, a digest, a thumbnail: a
   mipmap level) and `pointer`. A `pointer` is an EXPAND HANDLE that a positron command resolves
   back to `full`. An item whose pointer cannot be expanded is a defect, not a level.
+- **A fold below the pointer** (`Source::fold`, optional): the contiguous OLDEST run of a source's
+  items as ONE block naming its range and count (O(1) in the run, never a list of ids). The
+  source's floor is that block, not the sum of its pointers, so a floor never grows with every
+  act she takes (Aris, the M5, 2026-10-29: ~95 pointers at ~190 chars before anything whole fit).
+  The block is fixed at its start; folded items never arrive mid-epoch; a later start restores
+  them only for a rise to summary or whole, never for a pointer the block already covers. Like a
+  pointer, a fold must name how one of its items reopens (her acts: `tool/output` with `act`).
 - **The same items for humans and minds.** A human renderer and a mind's view consume one layer at
   the level each can afford. Screen frames, video and 3D state follow later as items too.
 
@@ -303,7 +310,8 @@ surface, observed back through her eyes and ears.
    set `required` only for input she must read.
 2. `items()` returns one `Item` per subject, under a key that names that whole subject. Build its
    `summary` with `continuum_context::levels::summarize(full, Shape::…)` (`Code` with the producer's
-   line parser, `Output`, `List`). Its `pointer` names the handle that expands it.
+   line parser, `Output`, `List`). Its `pointer` names the handle that expands it. A source
+   whose items accumulate (her acts) implements `fold` so its floor is one block.
 3. Add the source to the view's source list. Never push a prompt message, never collapse, never
    pick an order: the view appends, levels, admits, orders by measured motion and turns over.
 4. Prove it with a fixture in the source's test mod, then with the replay validator.

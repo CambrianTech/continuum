@@ -74,10 +74,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use airc_lib::AddressedKind;
 use airc_test_fixtures::TwoAircLoopback;
-use continuum_airc_protocol::{
-    AircCommandResponse, COMMAND_REQUEST_BODY_HINT, HEADER_CONTINUUM_BODY_HINT,
-};
+use continuum_airc_protocol::{AircCommandResponse, HEADER_COMMAND_STATUS};
 use continuum_core::ai::types::{
     ChatMessage, FinishReason, MessageContent, TextGenerationRequest, TextGenerationResponse,
     UsageMetrics,
@@ -85,10 +84,6 @@ use continuum_core::ai::types::{
 use continuum_core::inference::airc_remote::{
     AircInferenceTransport, AircLiveTransport, RemoteInferenceError, RemoteInferenceRequest,
 };
-use continuum_core::ipc::command_ingress::CommandRequestHandler;
-use continuum_core::runtime::command_executor::CommandExecutor;
-use continuum_core::runtime::ModuleRegistry;
-use futures::stream::StreamExt;
 use tokio::sync::Notify;
 
 /// Deadline for the chaos requests. Has to be (a) long enough that
@@ -98,91 +93,64 @@ use tokio::sync::Notify;
 /// 300ms threads that needle on the loopback fixture today.
 const CHAOS_DEADLINE: Duration = Duration::from_millis(300);
 
-/// Spawn a "silent" responder on `peer`: it subscribes, sees the
-/// request land, signals the test it received the request (so the
-/// test can be SURE the request was wire-delivered, not lost), then
-/// drops the request on the floor and exits. No `send_reply` is ever
-/// called — the caller will hit its deadline.
+/// Spawn a "silent" responder on `peer`: it opens its addressed inbox, sees the
+/// request land, signals the test it received the request (so the test can be SURE the
+/// request was wire-delivered, not lost), then drops it on the floor and exits. No reply
+/// is ever sent: the caller will hit its deadline.
 async fn spawn_silent_responder(
     peer: Arc<airc_lib::Airc>,
     received: Arc<Notify>,
     subscribed: Arc<Notify>,
 ) -> tokio::task::JoinHandle<()> {
-    let self_id = peer.peer_id();
     tokio::spawn(async move {
-        let mut stream = peer.subscribe().await.expect("peer subscribe");
+        let mut inbox = peer
+            .addressed_inbox(tokio::time::Instant::now() + airc_ipc::client::DEFAULT_RPC_TIMEOUT)
+            .await
+            .expect("peer addressed inbox");
         subscribed.notify_one();
-        while let Some(event) = stream.next().await {
-            let event = match event {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if event.peer_id == self_id {
-                continue;
-            }
-            // Only count actual command-request envelopes — keepalive
-            // and control frames don't count as "request received."
-            let hint = match event.headers.get(HEADER_CONTINUUM_BODY_HINT) {
-                Some(h) => h.clone(),
-                None => continue,
-            };
-            if hint == COMMAND_REQUEST_BODY_HINT {
+        while let Ok(frame) = inbox.next().await {
+            // Only a Command counts as "request received".
+            if frame.kind() == AddressedKind::Command {
                 received.notify_one();
-                // Done. Drop the request on the floor; the caller's
-                // deadline does the proving.
                 return;
             }
         }
     })
 }
 
-/// Spawn a normal responder that DOES send a typed reply. Used by
+/// Spawn a normal responder that DOES send a typed reply, bound to the request. Used by
 /// the "callable after timeout" test to prove the transport recovers.
 async fn spawn_replying_responder(
-    handler: Arc<CommandRequestHandler>,
     peer: Arc<airc_lib::Airc>,
     canned: TextGenerationResponse,
     subscribed: Arc<Notify>,
 ) -> tokio::task::JoinHandle<()> {
-    let self_id = peer.peer_id();
     tokio::spawn(async move {
-        let mut stream = peer.subscribe().await.expect("peer subscribe");
+        let mut inbox = peer
+            .addressed_inbox(tokio::time::Instant::now() + airc_ipc::client::DEFAULT_RPC_TIMEOUT)
+            .await
+            .expect("peer addressed inbox");
         subscribed.notify_one();
-        while let Some(event) = stream.next().await {
-            let event = match event {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if event.peer_id == self_id {
+        while let Ok(frame) = inbox.next().await {
+            if frame.kind() != AddressedKind::Command {
                 continue;
             }
-            let hint = match event.headers.get(HEADER_CONTINUUM_BODY_HINT) {
-                Some(h) => h,
-                None => continue,
-            };
-            if hint != COMMAND_REQUEST_BODY_HINT {
-                continue;
-            }
-            let parsed = match CommandRequestHandler::parse_envelope(&event) {
-                Ok(p) => p,
-                Err(e) => panic!("substrate parse_envelope rejected envelope: {e:?}"),
-            };
             let response_value =
                 serde_json::to_value(&canned).expect("serialize TextGenerationResponse");
             let response = AircCommandResponse::ok(response_value);
-            handler
-                .send_reply(&parsed, &response)
+            let mut headers = airc_core::Headers::new();
+            headers.insert(
+                HEADER_COMMAND_STATUS.to_string(),
+                response.status_header_value().to_string(),
+            );
+            let body =
+                airc_core::Body::Json(serde_json::to_value(&response).expect("serialize response"));
+            peer.reply(&frame, headers, body)
                 .await
-                .expect("substrate send_reply");
+                .expect("reply bound to the request");
             return;
         }
     })
-}
-
-fn build_handler(peer: Arc<airc_lib::Airc>) -> Arc<CommandRequestHandler> {
-    let registry = Arc::new(ModuleRegistry::new());
-    let executor = Arc::new(CommandExecutor::new(registry));
-    CommandRequestHandler::new(peer, executor)
 }
 
 fn build_text_request() -> TextGenerationRequest {
@@ -367,10 +335,8 @@ async fn transport_remains_callable_after_peer_timeout() {
         timing: None,
     };
 
-    let handler = build_handler(Arc::clone(loop_back.peer_a()));
     let subscribed_reply = Arc::new(Notify::new());
     let replier = spawn_replying_responder(
-        Arc::clone(&handler),
         Arc::clone(loop_back.peer_a()),
         canned.clone(),
         Arc::clone(&subscribed_reply),

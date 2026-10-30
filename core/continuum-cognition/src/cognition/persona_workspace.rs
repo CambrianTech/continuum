@@ -43,7 +43,9 @@ use crate::cognition::rag_budget::RagSource;
 /// owner's schema, native path, and cross-process checkpoint exclusion.
 pub mod checkpoint_adoption;
 
+mod act_output;
 mod rehome;
+pub use rehome::RehomeReason;
 
 pub use crate::cognition::handoff::SaveReason;
 
@@ -60,4 +62,6 @@ mod task_consumption;
 pub use task_consumption::{ResidentTaskSink, TaskConsumptionError, TaskSinkError};
 mod own_speech_persisted;
 pub use own_speech_persisted::VolatileReceipt;
+mod mind_results_reporter;
+pub use mind_results_reporter::MindResultsReporter;
 pub(crate) use own_speech_persisted::*;

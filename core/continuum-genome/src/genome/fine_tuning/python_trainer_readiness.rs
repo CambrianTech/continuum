@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use crate::inference::lane_process::{run_owned, Ended};
+use continuum_process::{run_owned, Ended};
 
 /// How long the import probe may run before it is ended and readiness is unavailable.
 /// Measured: the CUDA trainer's imports (torch, transformers, peft, accelerate, bitsandbytes,

@@ -300,7 +300,7 @@ pub(super) async fn run_shell_command(
     let crate::system_resources::process_tree::TreeEnd { reaped, survivors, unwalked } = if exit_status.is_some() {
         crate::system_resources::process_tree::TreeEnd { reaped: Ok(()), survivors: Vec::new(), unwalked: None }
     } else {
-        crate::inference::lane_process::end_tree(&mut child).await
+        continuum_process::end_tree(&mut child).await
     };
     // a tree that couldn't be walked is an unproven end, the same as an unproven reap
     let reaped = match unwalked {
@@ -398,7 +398,7 @@ pub(super) async fn poll_kill_flag(state: Arc<Mutex<ExecutionState>>) {
                 }
             }
         }
-        tokio::time::sleep(crate::inference::lane_process::KILL_POLL).await;
+        tokio::time::sleep(continuum_process::KILL_POLL).await;
     }
 }
 

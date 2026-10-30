@@ -642,6 +642,7 @@
             capture: None,
             genes: Vec::new(),
             gene_scales: Vec::new(),
+            allocation: None,
         };
         let served = || GenerationOutcome::Served { model: "m".into(), provider: "p".into(), provider_request_id: None };
         let faulted = || GenerationOutcome::Faulted { detail: "lane refused".into(), model: None, provider: None };

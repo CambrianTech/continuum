@@ -12,7 +12,7 @@ export type RagInspectParams = {
  * Which persona's RAG pipeline to introspect — her name or id (full or the
  * short form shown in rosters).
  */
-persona: string, contextWindow?: number, aircFloor?: number, aircMax?: number, aircFetchLimit?: number, 
+persona: string, contextWindow?: number, aircFetchLimit?: number, 
 /**
  * Optional absolute path for the JSONL capture trace. When set,
  * the inspection records the full turn there so other AIs /

@@ -98,6 +98,12 @@ pub(super) fn register_persona_registry_modules(
             crate::cognition::channel_substrate::global_channel_digest_buffer(),
         ),
     );
+    // Every mind's resident result bodies answer to the one memory owner: they stay in RAM
+    // until the monitor sheds, never a size cap of ours (Joel, 2026-10-29).
+    pressure_monitor.add_reporter(Arc::new(crate::cognition::persona_workspace::MindResultsReporter::new(
+        crate::cognition::persona_workspace::global(),
+        pressure_monitor.subscribe(),
+    )));
     // The dream/consolidation region goes LIVE (#145 slice B): per live persona,
     // on a material-driven cadence (dreams only when undigested episodic
     // experience accrues, `CadenceHint::Sleep` otherwise), it distills episodic

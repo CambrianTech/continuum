@@ -30,9 +30,9 @@ pub(crate) struct MemoryStreams<'a> {
 }
 
 impl<'a> MemoryStreams<'a> {
-    pub fn of(memory: &'a WorkingMemory) -> Self {
+    pub fn of(memory: &'a WorkingMemory, persona: uuid::Uuid) -> Self {
         Self {
-            actions: actions::Actions { memory },
+            actions: actions::Actions { memory, persona },
             thoughts: thoughts::Thoughts { memory },
             open_views: open_views::OpenViews { memory },
             notices: notices::Notices { memory },

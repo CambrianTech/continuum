@@ -202,12 +202,13 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
         wm.full_result_message(seq, &full)
     );
 
-    // Actual settlement collapses old results; its pointers must still tell
+    // A shed collapses old results; its pointers must still tell
     // the mind which activity and operation the retained handle belongs to.
     for _ in 0..4 {
-        record_saved(&restored, &"x".repeat(restored.budget().recent_results_chars()));
+        record_saved(&restored, &"x".repeat(BODY));
     }
     restored.record_settlement("reported", None);
+    shed(&restored, 0);
     assert!(restored.recent_results_messages().join("\n").contains(
         &format!("[result #1; room {room_a}; operation code/search, code/read; output handle: tool/output search-output — collapsed]")
     ));

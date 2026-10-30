@@ -6,9 +6,9 @@
 //!   `Arc<airc_lib::Airc>` + a target `PeerId` and dispatches via
 //!   `Airc::request` / `await_reply`, framing the inner
 //!   `TextGenerationRequest` as an `AircCommandRequest{path="ai/generate",
-//!   kind=KIND_PEER}` per `continuum-airc-protocol`. The substrate's
-//!   `CommandRequestHandler::parse_envelope` on the peer side accepts
-//!   this wire shape unchanged.
+//!   kind=KIND_PEER}` per `continuum-airc-protocol`, sent as airc's typed
+//!   `Command` frame; the seat's addressed inbox receives it and its
+//!   ingress contract decides it.
 //! - `StubInferenceTransport` — closure-driven stub for unit tests.
 //! - `LocalAdapterTransport` — a "round-trip via local adapter"
 //!   variant that lets a single-process test prove the
@@ -21,13 +21,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use airc_core::{Body, MentionTarget, PeerId, TranscriptEvent};
-use airc_lib::Airc;
-use airc_protocol::HEADER_AIRC_CORRELATION_ID;
-use continuum_airc_protocol::{
-    AircCommandRequest, AircCommandResponse, COMMAND_RESPONSE_BODY_HINT,
-    HEADER_CONTINUUM_BODY_HINT, KIND_PEER,
-};
+use airc_core::{Body, MentionTarget, PeerId};
+use airc_lib::{Airc, CommandEvent};
+
+mod progress;
+use continuum_airc_protocol::{AircCommandRequest, AircCommandResponse, KIND_PEER};
 use uuid::Uuid;
 
 /// FLOOR on how long a remote INFERENCE request may take, end to end. This is
@@ -87,7 +85,12 @@ pub trait AircInferenceTransport: Send + Sync {
     ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
         let response = self.send_request(request).await?;
         if !sink.is_closed() {
-            if let Some(r) = response.text_response.reasoning.as_ref().filter(|r| !r.is_empty()) {
+            if let Some(r) = response
+                .text_response
+                .reasoning
+                .as_ref()
+                .filter(|r| !r.is_empty())
+            {
                 let _ = sink.send(GenerationChunk::Reasoning(r.clone()));
             }
             if !response.text_response.text.is_empty() {
@@ -102,41 +105,6 @@ pub trait AircInferenceTransport: Send + Sync {
 /// a decode does not pause a minute and resume. Before the first chunk the command
 /// deadline governs (a request queued behind a busy slot is silent, legitimately).
 pub const STREAM_IDLE_BOUND: Duration = Duration::from_secs(90);
-
-/// Forward one wire chunk of `stream_id` to the sink. `Some(is_final)` when the
-/// event was a chunk of THIS stream, `None` for anything else on the bus.
-fn forward_stream_chunk(
-    event: &TranscriptEvent,
-    stream_id: &str,
-    sink: &tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
-) -> Option<bool> {
-    if event.headers.get(airc_lib::HEADER_STREAM_ID)? != stream_id {
-        return None;
-    }
-    let kind = event.headers.get(airc_lib::HEADER_STREAM_KIND)?;
-    let is_final = event
-        .headers
-        .get(airc_lib::HEADER_STREAM_FINAL)
-        .is_some_and(|v| v == "true");
-    let text = event.body.as_ref().and_then(|b| b.as_text()).unwrap_or_default(); // unwrap_or_default: a final marker carries no text; an empty fragment forwards nothing below
-    if !text.is_empty() {
-        let chunk = match kind.as_str() {
-            airc_lib::STREAM_KIND_TEXT_REASONING => Some(GenerationChunk::Reasoning(text.to_string())),
-            crate::routing::STREAM_KIND_PREFILL => serde_json::from_str::<serde_json::Value>(text)
-                .ok()
-                .map(|v| GenerationChunk::Prefill {
-                    processed: v["processed"].as_u64().unwrap_or(0), // unwrap_or: a malformed progress frame reads as no progress, never as a token
-                    total: v["total"].as_u64().unwrap_or(0),
-                    cached: v["cached"].as_u64().unwrap_or(0),
-                }),
-            _ => Some(GenerationChunk::Token(text.to_string())),
-        };
-        if let Some(c) = chunk {
-            let _ = sink.send(c);
-        }
-    }
-    Some(is_final)
-}
 
 /// Closure-driven stub for unit tests. Construct with a function
 /// that maps a request to either a response or an error; the stub
@@ -206,7 +174,6 @@ impl LocalAdapterTransport {
             fake_peer_id: "local-adapter-transport".to_string(),
         })
     }
-
 }
 
 #[async_trait]
@@ -268,40 +235,15 @@ pub(super) fn reply_result(
     })
 }
 
-/// A `CommandDeadline` this far before the real deadline is not a deadline:
-/// it is airc reporting that the per-request reply stream closed. Two seconds
-/// of slack covers clock skew between the pending's absolute deadline and ours.
-fn reply_stream_ended_early(elapsed: Duration, deadline: Duration) -> bool {
-    elapsed + Duration::from_secs(2) < deadline
-}
-
-/// How often the store is re-read while a reply is being recovered.
-const REPLY_RECOVERY_POLL: Duration = Duration::from_secs(2);
-/// How far back the store is read for the reply. Replies are recent by
-/// construction: they postdate a request we sent moments ago.
-const REPLY_RECOVERY_PAGE: usize = 300;
-
-/// Validate routing metadata before decoding an inference payload. A correlation
-/// alone is not a receipt: another room member can observe it on the request.
-struct ReplyExpectation {
-    responder: PeerId,
-    requester: PeerId,
-    room: airc_core::RoomId,
-    correlation: String,
-}
-
-impl ReplyExpectation {
-    fn matches(&self, event: &TranscriptEvent) -> bool {
-        event.peer_id == self.responder
-            && event.room_id == self.room
-            && event.target == MentionTarget::Peer(self.requester)
-            && event.headers.get(HEADER_AIRC_CORRELATION_ID) == Some(&self.correlation)
-            && event
-                .headers
-                .get(HEADER_CONTINUUM_BODY_HINT)
-                .map(String::as_str)
-                == Some(COMMAND_RESPONSE_BODY_HINT)
-    }
+// Preserve a typed refusal even if progress ended abruptly; only successful work
+// claims a complete stream and therefore must carry its final marker.
+fn settle_response(
+    response: AircCommandResponse,
+    progress: &progress::Progress,
+) -> Result<serde_json::Value, RemoteInferenceError> {
+    let result = reply_result(response)?;
+    progress.complete()?;
+    Ok(result)
 }
 
 impl AircLiveTransport {
@@ -327,44 +269,6 @@ impl AircLiveTransport {
             default_target_peer: self.default_target_peer,
             deadline,
         })
-    }
-
-    /// Poll the durable store for the reply to `correlation` until the real
-    /// deadline. The reply is a message addressed to us in the room the
-    /// request went to; the store keeps it whether or not our live stream was
-    /// open when it arrived.
-    async fn recover_reply_from_store(
-        &self,
-        room: &airc_lib::Room,
-        expected: &ReplyExpectation,
-        start: std::time::Instant,
-        deadline: Duration,
-    ) -> Option<TranscriptEvent> {
-        let remaining = deadline.checked_sub(start.elapsed())?;
-        let recovery = async {
-            let mut polls: u32 = 0;
-            let mut tick = tokio::time::interval(REPLY_RECOVERY_POLL);
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                tick.tick().await;
-                polls += 1;
-                if let Ok(page) = self.airc.page_recent_in(room, REPLY_RECOVERY_PAGE).await {
-                    if let Some(reply) = page.into_iter().find(|e| expected.matches(e)) {
-                        continuum_base::probe!(
-                            class = "remote_lane.reply_recovered",
-                            correlation = %expected.correlation,
-                            polls = polls,
-                            elapsed_ms = start.elapsed().as_millis() as u64,
-                            "reply recovered from the durable store"
-                        );
-                        return reply;
-                    }
-                }
-            }
-        };
-        // Bound both the cadence and a stalled store call by the original
-        // deadline; recovery must not acquire a second inference-sized wait.
-        tokio::time::timeout(remaining, recovery).await.ok()
     }
 
     /// Resolve the wire-side target peer for a given envelope.
@@ -399,17 +303,23 @@ impl AircInferenceTransport for AircLiveTransport {
         &self,
         request: RemoteInferenceRequest,
     ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
-        // The drain: same wire, the chunks discarded (the sink is dropped, so nothing
-        // is even cloned for it).
-        let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
-        drop(_rx);
-        self.send_request_streaming(request, sink).await
+        self.exchange(request, None).await
     }
 
     async fn send_request_streaming(
         &self,
         request: RemoteInferenceRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
+        self.exchange(request, Some(sink)).await
+    }
+}
+
+impl AircLiveTransport {
+    async fn exchange(
+        &self,
+        request: RemoteInferenceRequest,
+        sink: Option<tokio::sync::mpsc::UnboundedSender<GenerationChunk>>,
     ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
         // Stamp the send-entry instant up-front so the eventual Timeout
         // surfaces TRUE elapsed wall-clock, not a parroted copy of the
@@ -452,7 +362,11 @@ impl AircInferenceTransport for AircLiveTransport {
         }
         let bound_name = format!(
             "{}@{}",
-            request.text_request.model.as_deref().unwrap_or("unspecified-model"), // unwrap_or: a request without a model is routed by the peer; the receipt still names the peer
+            request
+                .text_request
+                .model
+                .as_deref()
+                .unwrap_or("unspecified-model"), // unwrap_or: a request without a model is routed by the peer; the receipt still names the peer
             target.0
         );
 
@@ -480,9 +394,8 @@ impl AircInferenceTransport for AircLiveTransport {
         let body = Body::Json(body_value);
         // Reuse the substrate's canonical command-header stamper per
         // R2-N1 on round 1 review: one logical decision lives in one
-        // place. `AircTransport::build_headers` covers path + kind +
-        // body_hint identically; env is None on our envelopes so the
-        // env-header branch is a no-op.
+        // place. `AircTransport::build_headers` covers path + kind;
+        // env is None on our envelopes so the env-header branch is a no-op.
         let mut headers = AircTransport::build_headers(&envelope);
         // The requester's own id for this generation, on the wire BEFORE publication: the
         // seat keys the served work by it, so a cancel can name it even if this turn is
@@ -501,206 +414,78 @@ impl AircInferenceTransport for AircLiveTransport {
             continuum_airc_protocol::HEADER_GENERATE_VALID_UNTIL_MS.to_string(),
             valid_until_ms.to_string(),
         );
-        let seat_accepts_cancel = super::abandon::seat_accepts_cancel(
-            super::seat_deadline::heard_seat_offer(
-                target.0,
-                None,
-                continuum_base::time::EpochMs::now().millis(),
-            )
-            .as_ref(),
+        // Arm cancellation before the sealed request leaves. Its prearmed inbox owns
+        // progress and completion together; no room subscription can stand in for it.
+        let abandon = super::abandon::AbandonGuard::new(
+            Arc::clone(&self.airc),
+            target,
+            correlation_id,
+            valid_until_ms,
         );
-
-        // Subscribe BEFORE the request leaves, or the first chunks race the
-        // subscription and are lost. No filter: the daemon inverted a header filter
-        // once (2026-09-04) and citizens heard only heartbeats; match on receive.
-        let mut chunks = if sink.is_closed() {
-            None
-        } else {
-            match crate::routing::airc_subscription::subscribe_every_room(&self.airc).await {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    continuum_base::probe!(
-                        class = "remote_lane.stream_unsubscribed",
-                        peer = %target.0,
-                        error = %e,
-                        "could not subscribe for the answer's chunks — the turn still completes, whole, at the end"
-                    );
-                    None
+        let (mut pending, abandon) = super::abandon::publish_armed(
+            abandon,
+            self.airc
+                .request(MentionTarget::Peer(target), headers, body, deadline),
+        )
+        .await
+        .map_err(|error| match error {
+            airc_lib::AircError::CommandDeadline { .. } => RemoteInferenceError::Timeout {
+                elapsed_ms: start.elapsed().as_millis() as u64,
+            },
+            airc_lib::AircError::UnknownPeer(_) | airc_lib::AircError::Route(_) => {
+                RemoteInferenceError::NoPeerReachable {
+                    message: error.to_string(),
                 }
             }
-        };
+            other => RemoteInferenceError::Transport {
+                message: other.to_string(),
+            },
+        })?;
 
-        // Send-side classification: airc-lib's `request()` cannot
-        // surface `CommandDeadline` (the deadline only fires while
-        // waiting in `await_reply`). It CAN surface routing/setup
-        // failures that semantically mean "no peer is reachable" —
-        // `NoCurrentRoom`, `NotSubscribed`, `UnknownPeer` — which
-        // belong in `RemoteInferenceError::NoPeerReachable` so the
-        // coordinator's retry policy backs off the right way.
-        // Anything else lands in `Transport { message }` per
-        // [[strong-typing-across-boundaries]]: match the variant,
-        // not the Display string.
-        // Capture one room for dispatch AND recovery. A default-room change
-        // during a long generation must not strand its durable answer.
-        let dispatch = async {
-            let room = self.airc.current_room().await?;
-            // Armed before publication: every path that stops waiting without a reply,
-            // including this future being dropped mid-publication, tells the seat to stop.
-            let abandon = super::abandon::AbandonGuard::new(
-                Arc::clone(&self.airc),
-                room.clone(),
-                target,
-                correlation_id,
-                valid_until_ms,
-                seat_accepts_cancel,
-            );
-            let (pending, abandon) = super::abandon::publish_armed(
-                abandon,
-                self.airc
-                    .request_in(&room, MentionTarget::Peer(target), headers, body, deadline),
-            )
-            .await?;
-            Ok::<_, airc_lib::AircError>((room, pending, abandon))
-        }
-        .await;
-        let (room, pending, abandon) = match dispatch {
-            Ok(p) => p,
-            Err(airc_lib::AircError::NoCurrentRoom)
-            | Err(airc_lib::AircError::NotSubscribed(_))
-            | Err(airc_lib::AircError::UnknownPeer(_))
-            | Err(airc_lib::AircError::Route(_)) => {
-                // `Route(_)` is airc-lib's "route resolver refused or
-                // selected a route the current sender cannot execute"
-                // — same semantic category as the other three: there
-                // is no actionable path to the target peer right now.
-                // Coordinator backoff handles all four identically.
-                return Err(RemoteInferenceError::NoPeerReachable {
-                    message: format!("airc.request to {target:?}: no reachable peer"),
-                });
-            }
-            Err(other) => {
-                return Err(RemoteInferenceError::Transport {
-                    message: format!("airc.request to {target:?}: {other}"),
-                });
-            }
-        };
-
-        // Reply-side classification: airc-lib's `AircError` is a
-        // typed enum with a dedicated `CommandDeadline` variant for
-        // the deadline-elapsed case. The coordinator's retry policy
-        // distinguishes Timeout from generic Transport errors, so we
-        // classify on the VARIANT — not on the Display string —
-        // per [[strong-typing-across-boundaries]].
-        //
-        // History: an earlier classifier substring-matched
-        // `format!("{e}")` for "timeout" / "timed out" and
-        // mis-classified every real deadline (airc-lib's Display is
-        // "command deadline elapsed (correlation_id=…)") as
-        // `RemoteInferenceError::Transport`, silently breaking the
-        // coordinator's retry path. The `architecture_cross_grid_chaos`
-        // Shape-4 test caught it.
-        //
-        // The reported `elapsed_ms` is the TRUE wall-clock since
-        // `send_request` entry — not a parroted copy of the deadline
-        // constant. Probes downstream (latency histograms, sentinel
-        // verdicts) need the honest value.
-        //
-        // TODO: classify `AircError::Subscription(_)` if/when
-        // await_reply starts surfacing it (today the substrate
-        // pre-arms the reply_stream so this path is unreachable
-        // through `Airc::request`; a future caller that bypasses
-        // the pre-arm would land in the `Err(other)` catch-all and
-        // get classified as Transport when NoPeerReachable would
-        // be more semantically accurate).
         let pending_correlation = pending.correlation_id;
-        let expected = ReplyExpectation {
-            responder: target,
-            requester: self.airc.peer_id(),
-            room: room.channel,
-            correlation: pending_correlation.to_string(),
-        };
-        // THE HANDLE, NOT THE PROMISE: the reply future settles the turn; the chunk
-        // stream is what proves the lane alive meanwhile. A stream that started and
-        // then goes silent past the idle bound is dead — no waiting out ten minutes.
         let stream_id = pending_correlation.to_string();
-        let mut reply_fut = std::pin::pin!(self.airc.await_reply(pending));
-        let mut streamed = 0u64;
+        let mut progress = progress::Progress::default();
         let mut last_chunk_at: Option<std::time::Instant> = None;
-        let awaited = loop {
-            use futures::StreamExt;
+        let reply = loop {
             let idle = async {
                 match last_chunk_at {
                     Some(at) => tokio::time::sleep_until((at + STREAM_IDLE_BOUND).into()).await,
                     None => std::future::pending::<()>().await,
                 }
             };
-            let next_chunk = async {
-                match chunks.as_mut() {
-                    Some(s) => s.next().await,
-                    None => std::future::pending().await,
+            let consumer_closed = async {
+                match sink.as_ref() {
+                    Some(sink) => sink.closed().await,
+                    None => std::future::pending::<()>().await,
                 }
             };
-            tokio::select! {
-                r = &mut reply_fut => break r,
-                ev = next_chunk => match ev {
-                    Some(Ok(event)) => {
-                        if let Some(is_final) = forward_stream_chunk(&event, &stream_id, &sink) {
-                            streamed += 1;
-                            last_chunk_at = Some(std::time::Instant::now());
-                            if streamed == 1 {
-                                continuum_base::probe!(
-                                    class = "remote_lane.stream_started",
-                                    peer = %target.0,
-                                    correlation = %stream_id,
-                                    first_chunk_ms = start.elapsed().as_millis() as u64,
-                                    "the remote answer is arriving live"
-                                );
-                            }
-                            if is_final {
-                                // The wire is done; the settled reply is moments behind.
-                                // Stop the idle clock — silence now is not death.
-                                last_chunk_at = None;
-                                chunks = None;
-                            }
-                        }
-                    }
-                    Some(Err(_lag)) => continue,
-                    None => chunks = None,
-                },
-                _ = idle => {
-                    continuum_base::probe!(
-                        class = "remote_lane.stream_stalled",
-                        peer = %target.0,
-                        correlation = %stream_id,
-                        chunks = streamed,
-                        idle_s = STREAM_IDLE_BOUND.as_secs(),
-                        elapsed_ms = start.elapsed().as_millis() as u64,
-                        "the remote answer started and then stopped arriving — the lane is dead, not slow"
-                    );
-                    return Err(RemoteInferenceError::Timeout {
-                        elapsed_ms: start.elapsed().as_millis() as u64,
-                    });
+            let event = tokio::select! {
+                event = self.airc.next_command_event(&mut pending) => event,
+                _ = consumer_closed => return Err(RemoteInferenceError::Transport {
+                    message: "remote inference progress consumer closed".into(),
+                }),
+                _ = idle => return Err(RemoteInferenceError::Timeout {
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                }),
+            };
+            match event {
+                Ok(CommandEvent::Progress(frame)) => {
+                    let is_final = progress.forward(
+                        frame.headers(),
+                        frame.body(),
+                        &stream_id,
+                        sink.as_ref(),
+                    )?;
+                    last_chunk_at = if is_final {
+                        None
+                    } else {
+                        Some(std::time::Instant::now())
+                    };
                 }
-            }
-        };
-        if streamed > 0 {
-            continuum_base::probe!(
-                class = "remote_lane.streamed",
-                peer = %target.0,
-                correlation = %stream_id,
-                chunks = streamed,
-                elapsed_ms = start.elapsed().as_millis() as u64,
-                "the remote answer arrived as chunks; settling on the reply"
-            );
-        }
-        let reply = match awaited {
-            Ok(reply) if expected.matches(&reply) => reply,
-            // The generic bus can return the first correlated event. Never
-            // accept an unrelated responder; recover the intended answer.
-            Ok(_) => self
-                .recover_reply_from_store(&room, &expected, start, deadline)
-                .await
-                .ok_or_else(|| {
+                Ok(CommandEvent::Completed(frame)) => {
+                    break frame;
+                }
+                Err(airc_lib::AircError::CommandDeadline { .. }) => {
                     crate::inference::turn_bound::probe_tripped(
                         "remote_deadline",
                         &bound_name,
@@ -708,71 +493,22 @@ impl AircInferenceTransport for AircLiveTransport {
                         deadline_source,
                         turn_bound,
                     );
-                    RemoteInferenceError::Timeout {
+                    return Err(RemoteInferenceError::Timeout {
                         elapsed_ms: start.elapsed().as_millis() as u64,
-                    }
-                })?,
-            Err(airc_lib::AircError::CommandDeadline { .. })
-                if reply_stream_ended_early(start.elapsed(), deadline) =>
-            {
-                // airc's `await_reply` reports a closed reply stream as a
-                // deadline (`Ok(None)` → `CommandDeadline`), and the per-request
-                // stream closes whenever the daemon re-subscribes this handle
-                // (a room join, a restart). Measured 2026-09-07 02:0xZ: nine
-                // "timeouts" in 200 s under a 600 s deadline, tripping the
-                // breaker three times while the peer's answers sat in the
-                // store. The reply is a durable event — recover it from there.
-                continuum_base::probe!(
-                    class = "remote_lane.reply_stream_ended",
-                    peer = %target.0,
-                    correlation = %pending_correlation,
-                    elapsed_ms = start.elapsed().as_millis() as u64,
-                    "reply stream closed before the deadline; recovering the reply from the store"
-                );
-                match self
-                    .recover_reply_from_store(&room, &expected, start, deadline)
-                    .await
-                {
-                    Some(reply) => reply,
-                    None => {
-                        crate::inference::turn_bound::probe_tripped(
-                            "remote_deadline",
-                            &bound_name,
-                            deadline,
-                            deadline_source,
-                            turn_bound,
-                        );
-                        return Err(RemoteInferenceError::Timeout {
-                            elapsed_ms: start.elapsed().as_millis() as u64,
-                        });
-                    }
+                    });
                 }
-            }
-            Err(airc_lib::AircError::CommandDeadline { .. }) => {
-                crate::inference::turn_bound::probe_tripped(
-                    "remote_deadline",
-                    &bound_name,
-                    deadline,
-                    deadline_source,
-                    turn_bound,
-                );
-                return Err(RemoteInferenceError::Timeout {
-                    elapsed_ms: start.elapsed().as_millis() as u64,
-                });
-            }
-            Err(other) => {
-                return Err(RemoteInferenceError::Transport {
-                    message: format!("{other}"),
-                });
+                Err(error) => {
+                    return Err(RemoteInferenceError::Transport {
+                        message: error.to_string(),
+                    })
+                }
             }
         };
         // The seat answered: its work is done, there is nothing left to cancel.
         abandon.disarm();
 
-        let responding_peer = reply.peer_id.0.to_string();
-        let reply_body = reply.body.ok_or_else(|| RemoteInferenceError::Transport {
-            message: "remote replied with no body".to_string(),
-        })?;
+        let responding_peer = reply.from().0.to_string();
+        let reply_body = reply.body().clone();
         let reply_value = match reply_body {
             Body::Json(v) => v,
             Body::Binary(_) => {
@@ -787,7 +523,7 @@ impl AircInferenceTransport for AircLiveTransport {
                 message: format!("decode AircCommandResponse: {e}"),
             })?;
 
-        let result_value = reply_result(response)?;
+        let result_value = settle_response(response, &progress)?;
 
         let mut text_response: crate::ai::types::TextGenerationResponse =
             serde_json::from_value(result_value).map_err(|e| RemoteInferenceError::Transport {

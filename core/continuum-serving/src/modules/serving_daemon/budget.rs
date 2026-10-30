@@ -213,10 +213,6 @@ impl ServingDaemonModule {
         // anti-pattern the memory-authority arc exists to kill. Pressure sensing stays live
         // via the drive mode below (which still reads system available for the fraction).
         let available = self.system.snapshot().memory.available_bytes;
-        let unified = matches!(
-            self.system.gpu_memory_mode(),
-            Some(crate::gpu::monitor::MemoryMode::Unified)
-        );
         let (measured, leases) = self.resource_daemon
             .replacement_budget_snapshot(SERVING_CONSUMER_ID, serving_pool_kind());
         let (live, charged) = if measured > 0 {
@@ -280,7 +276,7 @@ impl ServingDaemonModule {
                 );
             }
         }
-        let instant = plan_fill(live, mode.serving_fraction(), unified);
+        let instant = plan_fill(live, mode.serving_fraction());
         // The plan budgets the sustained MINIMUM over one relaunch's duration (READY_TIMEOUT):
         // headroom that has not outlived a relaunch has not earned one; pressure is honoured
         // at once. The M5, 2026-10-18 15:27-15:28Z: the instantaneous budget read 22.9, 29.8,

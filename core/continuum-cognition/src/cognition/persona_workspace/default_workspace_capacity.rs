@@ -110,6 +110,10 @@ pub struct PersonaBrainConfig {
     /// page per room and never queue behind the living mind's act, since it acts beside
     /// her (`slots::PageKey::Fork`). `false` for every resident.
     pub forked: bool,
+    /// Where her sent prompts' read receipts go: her airc source, which advances her room
+    /// cursor through what each sent prompt rendered. `None` (a fork, an eval, a harness)
+    /// marks nothing read.
+    pub read_receipt: Option<Arc<dyn super::super::llm_deliberation_faculty::ReadReceipt>>,
 }
 
 /// Whether a grounding source must run synchronously on the inference loop, or
@@ -311,9 +315,10 @@ pub(super) fn assemble_workspace_cycle(
     // turns record nothing). Built HERE (before recall) so recall can share it in and
     // suppress an engram the recency channel already carries — see below.
     // Depth comes from the BUDGET, never a constant: the count sibling of the per-step size
-    // bound, off the same live window. See `ContextBudget::working_memory_steps`.
+    // bound, a ratio of two window fractions and so the same on every window: no live window is
+    // read to build it. See `ContextBudget::WORKING_MEMORY_STEPS`.
     let working_memory = Arc::new(WorkingMemory::new(
-        crate::cognition::context_budget::ContextBudget::live_or_floor().working_memory_steps(),
+        crate::cognition::context_budget::ContextBudget::WORKING_MEMORY_STEPS,
     ));
     // Persistence belongs to resident registration, independently of whether
     // recall runs inline or deferred. Constructing a fork grants no disk access.
@@ -325,6 +330,13 @@ pub(super) fn assemble_workspace_cycle(
         // only a real failure (BigMama's live receipt on the 5090, card df0035bf). The pin
         // holds them live until `restore` below publishes the memory's own set.
         let restore_pin = persisted.wm.retain_handleless(cfg.persona_id);
+        // Results the old window share evicted carry no stored size: price each from its saved
+        // output, so her view can show it whole again (FOCUS-CONTRACT rule 7).
+        let persona = cfg.persona_id;
+        persisted.wm.price_evicted_wholes(|handle| {
+            let path = crate::cognition::tool_executor::spill::resolve(persona, handle).ok()?;
+            std::fs::read_to_string(path).ok().map(|body| body.trim().chars().count())
+        });
         // The previous life's handoff re-seeds this one: her ledger and card are known at
         // the NEXT seam too, without a wall read (card 49b5e806).
         if let Some(handoff) = persisted.wm.handoff.as_ref() {
@@ -433,15 +445,10 @@ pub(super) fn assemble_workspace_cycle(
     // synchronous so it's never `None` on the first tick. Eval/harness keep
     // everything synchronous (`defer_grounding == false`) — their tight settle-loops
     // never yield to the worker, so deferral there would measure a starved mind.
-    // Per-source grounding ceiling scales with the LIVE served window (task #50's
-    // single-sourced `cfg.context_window`), exactly like recall's budget above —
-    // never a baked constant (task #124). A 128k model lets each source hold its
-    // full board/map/roster; a tight window shrinks them honestly; the packer keeps
-    // the total ≤ window.
-    let grounding_budget = super::super::rag_source_faculty::grounding_budget_for(cfg.context_window);
+    // No per-source ceiling: each source delivers every item at its levels and her prompt
+    // view's one allocation decides what she sees (FLOW-IMPLEMENTATION-PLAN §2d).
     for g in cfg.grounding_sources {
         let faculty = RagSourceFaculty::new(cfg.persona_id, g.source, g.policy)
-            .with_budget(grounding_budget)
             .with_volatile_content(g.volatile_content)
             // Deferrability is also a LOUDNESS contract, not only a scheduling one
             // (#3873). ColdStartCritical means "absent here is a wrong turn", so a
@@ -509,6 +516,10 @@ pub(super) fn assemble_workspace_cycle(
                 ws
             });
     let mut deliberation = if cfg.forked { deliberation.forked() } else { deliberation };
+    // A fork copies the living config but never marks her rooms read: it acts beside her.
+    if let Some(receipt) = cfg.read_receipt.clone().filter(|_| !cfg.forked) {
+        deliberation = deliberation.with_read_receipt(receipt);
+    }
     if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the
@@ -642,8 +653,9 @@ pub struct PersonaWorkspaceRegistry {
     /// crosses between her public and private turns except what she publishes. It is never in
     /// `cycles`, so the volatile checkpoint never writes it to disk in plaintext (until her
     /// sealed store exists, a restart forgets her private scratchpad, which is the honest cost).
-    /// Lock order: `cycles`, then `templates`, then `mind_cycles`.
-    pub(super) mind_cycles: Mutex<HashMap<Uuid, Arc<WorkspaceCycle>>>,
+    /// Lock order: `cycles`, then `templates`, then `mind_cycles`. Its working memory is held
+    /// beside it so the memory owner accounts and sheds her private results too.
+    pub(super) mind_cycles: Mutex<HashMap<Uuid, ResidentWorkspace>>,
 }
 
 pub(super) struct ResidentWorkspace {

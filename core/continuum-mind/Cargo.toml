@@ -10,6 +10,7 @@ repository = "https://github.com/CambrianTech/continuum"
 build = "../continuum-core/build.rs"
 
 [dependencies]
+continuum-process = { path = "../continuum-process" }
 continuum-academy = { path = "../continuum-academy" }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }
@@ -46,6 +47,7 @@ airc-core.workspace = true
 airc-blobs.workspace = true
 airc-protocol.workspace = true
 airc-lib.workspace = true
+airc-ipc.workspace = true
 airc-work.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
@@ -71,6 +73,7 @@ tempfile = "3"
 continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }
 continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
 continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
+continuum-rooms = { path = "../continuum-rooms", features = ["test-fixtures"] }
 continuum-experience = { path = "../continuum-experience", features = ["test-fixtures"] }
 # The real store, so loop tests write obligations through the same data module production uses
 # (stop-drain S2: a turn runs only on a confirmed obligation). The store sits below the mind.

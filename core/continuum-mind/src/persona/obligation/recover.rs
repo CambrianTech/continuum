@@ -171,6 +171,7 @@ mod tests {
             defer_grounding: false,
             suppress_recall: false,
             forked: false,
+            read_receipt: None,
         };
         crate::cognition::persona_workspace::global().register_from_cfg(cfg).unwrap() // unwrap: test fixture
     }

@@ -8,8 +8,9 @@
 //! 1. [`command_request_from_route_decision`] packages the typed
 //!    decision into the wire envelope
 //! 2. The envelope serializes as a [`Body::Json`]
-//! 3. Headers are stamped (path, kind, env, body_hint) so middleware
-//!    can filter without parsing the body
+//! 3. Headers are stamped (path, kind, env) so the receiver's ingress
+//!    contract decides authority without parsing the body; the frame is
+//!    airc's typed `Command` kind, never a body hint
 //! 4. `Airc::request(target, headers, body, deadline)` sends the
 //!    frame; airc-lib auto-stamps correlation_id + reply_to + deadline
 //! 5. `Airc::await_reply(pending)` waits for the matching reply
@@ -35,9 +36,8 @@
 //!
 //! ## What lands in the follow-up commits
 //!
-//! - **Peer-side command handler** — subscribes to events whose
-//!   body_hint matches [`COMMAND_REQUEST_BODY_HINT`], decodes the
-//!   envelope, dispatches via local `CommandExecutor` (threading
+//! - **Peer-side command handler** — reads the identity's addressed
+//!   inbox (`Command` frames verified by airc), decodes the envelope, dispatches via local `CommandExecutor` (threading
 //!   `CallerIdentity::airc(verified_sender)` into the policy gate),
 //!   replies via `Airc::reply()` with [`AircCommandResponse`].
 //!
@@ -75,9 +75,8 @@ use airc_protocol::headers_keys::HEADER_AIRC_CAPABILITY_GRANT;
 use super::airc_command_protocol::command_request_from_route_decision;
 use super::presented_grant_store::PresentedGrantStore;
 use super::{
-    AircCommandRequest, AircCommandResponse, PeerRef, RouteDecision, Transport,
-    COMMAND_REQUEST_BODY_HINT, HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH,
-    HEADER_CONTINUUM_BODY_HINT,
+    AircCommandRequest, AircCommandResponse, PeerRef, RouteDecision, Transport, HEADER_COMMAND_ENV,
+    HEADER_COMMAND_KIND, HEADER_COMMAND_PATH,
 };
 use crate::runtime::CommandResult;
 
@@ -220,10 +219,6 @@ impl AircTransport {
         if let Some(env) = &request.env {
             headers.insert(HEADER_COMMAND_ENV.to_string(), env.clone());
         }
-        headers.insert(
-            HEADER_CONTINUUM_BODY_HINT.to_string(),
-            COMMAND_REQUEST_BODY_HINT.to_string(),
-        );
         headers
     }
 
@@ -420,7 +415,7 @@ impl Transport for AircTransport {
 
         // Decode via the testable free function. Every error path
         // here is covered by unit tests against `decode_reply`.
-        let value = Self::decode_reply(reply.body)?;
+        let value = Self::decode_reply(Some(reply.body().clone()))?;
         Ok(CommandResult::Json(value))
     }
 }
@@ -435,7 +430,7 @@ mod tests {
     /// handler subscribes against. Pin every header that lands so a
     /// silent refactor renaming one breaks the wire-test loudly.
     #[test]
-    fn build_headers_stamps_path_kind_and_body_hint() {
+    fn build_headers_stamps_path_and_kind() {
         let request = AircCommandRequest {
             path: "code/exists".into(),
             kind: "peer".into(),
@@ -452,8 +447,9 @@ mod tests {
             Some("peer")
         );
         assert_eq!(
-            headers.get(HEADER_CONTINUUM_BODY_HINT).map(String::as_str),
-            Some(COMMAND_REQUEST_BODY_HINT)
+            headers.len(),
+            2,
+            "path + kind only: a command needs no body hint"
         );
         // No env on this request → no env header
         assert!(headers.get(HEADER_COMMAND_ENV).is_none());

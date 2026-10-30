@@ -27,7 +27,7 @@ impl Source<String> for Stream {
     fn items(&self) -> Vec<Item<String>> {
         self.items
             .iter()
-            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), summary: None, pointer: Some(format!("[{key} collapsed]")) })
+            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), summary: None, pointer: Some(format!("[{key} collapsed]")), stored: None })
             .collect()
     }
 }
@@ -53,8 +53,8 @@ fn window_plan(claims: &[Claim], window: u32) -> FlexAllocation {
         .map(|claim| RagSourceBudget {
             source_id: format!("view/{}", claim.source),
             priority: claim.priority,
-            floor_tokens: claim.pointer_chars as u32,
-            min_tokens: claim.pointer_chars as u32,
+            floor_tokens: claim.floor_chars as u32,
+            min_tokens: claim.floor_chars as u32,
             max_tokens: claim.full_chars as u32,
             required: false,
         })

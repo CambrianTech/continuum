@@ -32,7 +32,7 @@ mod perception;
 mod recency;
 
 mod observation;
-pub use observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
+pub use observation::{extract_paths, intent_label, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
 
 mod types;
 pub use types::{SettleOutcome, SettleStep};
@@ -142,7 +142,6 @@ pub mod test_support {
             &self,
             calls: &[ToolCall],
             context: &ToolExecutionContext,
-            _max_result_chars: usize,
         ) -> Result<NativeBatchOutcome, ToolError> {
             let act = {
                 let mut rooms = self.rooms.lock().unwrap();
@@ -289,7 +288,6 @@ pub mod test_support {
             &self,
             calls: &[ToolCall],
             context: &ToolExecutionContext,
-            _max_result_chars: usize,
         ) -> Result<NativeBatchOutcome, ToolError> {
             *self.seen_context.lock().unwrap() = Some(context.context_id);
             let results = calls

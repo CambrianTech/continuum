@@ -17,6 +17,41 @@ fn a_turn_in_her_mind_room_writes_zero_wire_capture_bytes() {
     assert!(std::fs::metadata(&file).expect("row written").len() > 0, "an ordinary room still captures");
 }
 
+// what this catches (the M5, 2026-10-29): the wire capture keeping only Text parts, so a
+// native tool call or result (her newest result rides as one) was recorded as its label alone
+// and read as a lost body. Every message must round-trip whole: role, name, and its typed parts
+// in order with their ids and error flag.
+#[test]
+fn the_wire_capture_records_every_message_whole() {
+    use crate::ai::types::{ChatMessage, ContentPart, MessageContent};
+    let dir = tempfile::tempdir().expect("wire capture dir");
+    let persona = uuid::Uuid::new_v4();
+    let messages = vec![
+        ChatMessage {
+            role: "assistant".into(),
+            content: MessageContent::Parts(vec![
+                ContentPart::Text { text: "checking the tree".into() },
+                ContentPart::ToolUse { id: "call-1".into(), name: "code/shell".into(), input: serde_json::json!({"cmd": "git status"}) },
+            ]),
+            name: Some("Aiko".into()),
+        },
+        ChatMessage {
+            role: "tool".into(),
+            content: MessageContent::Parts(vec![ContentPart::ToolResult {
+                tool_use_id: "call-1".into(),
+                content: "nothing to commit, working tree clean".into(),
+                is_error: Some(false),
+            }]),
+            name: None,
+        },
+    ];
+    let request = crate::ai::types::TextGenerationRequest { messages: messages.clone(), ..Default::default() };
+    super::append_wire_capture(dir.path(), persona, "Aiko", uuid::Uuid::new_v4(), &request);
+    let row: serde_json::Value = serde_json::from_str(std::fs::read_to_string(dir.path().join("Aiko.wire.jsonl")).expect("row written").trim()).expect("row is json");
+    let recorded: Vec<ChatMessage> = serde_json::from_value(row["messages"].clone()).expect("messages deserialize");
+    assert_eq!(serde_json::to_value(&recorded).expect("recorded"), serde_json::to_value(&messages).expect("sent"));
+}
+
 // what this catches (Kimi, 2026-09-25): a cut act must leave her a record of what
 // she was composing and that it did not land; a long payload is trimmed to its two
 // edges so the record cannot crowd the retry the way the payload did.
@@ -155,7 +190,7 @@ fn an_initiative_turn_takes_a_work_turns_hands_and_act_kind() {
     initiative.initiative = true;
     assert!(!initiative.workspace_deliverable, "an initiative is not a deliverable turn");
     assert_eq!(faculty.turn_kind(&initiative), faculty.turn_kind(&work), "the act allowance");
-    let (i, w) = (faculty.select_tool_surface(&initiative), faculty.select_tool_surface(&work));
+    let (i, w) = (faculty.prompt_view(&initiative).tools, faculty.prompt_view(&work).tools);
     assert_eq!((i.reason, i.specs), (w.reason, w.specs), "one surface for every kind of turn");
 }
 
@@ -188,51 +223,39 @@ mod verdicts;
 
 mod turn_bound;
 
-// what this catches (6780e79b): remote calls never poll local lane/prefill admission;
-// falling home waits for both resources and cancellation releases a partial lease.
+// what this catches (6780e79b): remote calls never poll local lane admission; falling home
+// waits for the lane, and cancelling a waiting admission leaves the lane reusable.
 #[tokio::test]
 async fn remote_admission_bypasses_busy_local_resources_and_home_reacquires() {
     use super::admission::{admit_target, GenerationAdmission};
     use crate::ai::adapter::GenerationAdmissionOwner;
     use crate::inference::resource_admission::{LaneAdmission, LanePriority};
-    use crate::inference::prefill_throttle::PrefillThrottle;
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
 
     let lanes: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
     lanes.set_served_lane_count(1);
-    let prefill = PrefillThrottle::with_lanes(1);
     let held_lane = lanes.acquire_serving_lane(None, LanePriority::Directed, None).await;
-    let held_prefill = prefill.acquire_prefill_slot().await;
     let polls = std::cell::Cell::new(0);
     let local = || async {
         polls.set(polls.get() + 1);
         let lane = lanes.acquire_serving_lane(None, LanePriority::Directed, None).await;
-        let prefill = prefill.acquire_prefill_slot().await;
-        Some(GenerationAdmission::SharedLocal { _lane: lane, _prefill: prefill })
+        Some(GenerationAdmission::SharedLocal { _lane: lane })
     };
     let mut cx = Context::from_waker(Waker::noop());
     let mut remote = Box::pin(admit_target(GenerationAdmissionOwner::Adapter, local()));
     assert!(matches!(remote.as_mut().poll(&mut cx), Poll::Ready(Some(GenerationAdmission::AdapterOwned))));
-    assert_eq!(polls.get(), 0, "remote dispatch must not enter either local queue");
+    assert_eq!(polls.get(), 0, "remote dispatch must not enter the local queue");
     drop(remote);
 
     let mut home = Box::pin(admit_target(GenerationAdmissionOwner::SharedLocal, local()));
     assert!(home.as_mut().poll(&mut cx).is_pending(), "local lane is occupied");
+    drop(home); // cancelled while waiting for the lane
     drop(held_lane);
-    assert!(home.as_mut().poll(&mut cx).is_pending(), "prefill still occupied");
-    drop(home); // cancelled while holding lane and waiting for prefill
-    let mut next_lane = Box::pin(lanes.acquire_serving_lane(None, LanePriority::Directed, None));
-    let Poll::Ready(released) = next_lane.as_mut().poll(&mut cx) else {
-        panic!("cancelling partial admission must release its lane");
-    };
-    drop(released);
-    drop(next_lane);
-    drop(held_prefill);
     let admission = admit_target(GenerationAdmissionOwner::SharedLocal, local()).await;
     assert!(matches!(admission, Some(GenerationAdmission::SharedLocal { .. })));
     drop(admission);
-    // A completed/cancelled call leaves both resources reusable, not just the lane.
+    // A completed call leaves the lane reusable.
     let next = admit_target(GenerationAdmissionOwner::SharedLocal, local()).await;
     assert!(matches!(next, Some(GenerationAdmission::SharedLocal { .. })));
 }

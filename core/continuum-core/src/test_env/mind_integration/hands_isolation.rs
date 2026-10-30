@@ -85,7 +85,7 @@ async fn listing(hands: &ActingHands) -> String {
     };
     let out = hands
         .executor
-        .execute_native_batch(std::slice::from_ref(&call), &ctx, 8000)
+        .execute_native_batch(std::slice::from_ref(&call), &ctx)
         .await
         .expect("code/list runs");
     out.results[0].content.clone()
@@ -299,7 +299,7 @@ async fn call(hands: &ActingHands, name: &str, input: serde_json::Value) -> (Str
         },
     };
     let call = crate::ai::types::ToolCall { id: name.to_string(), name: name.to_string(), input };
-    let out = hands.executor.execute_native_batch(std::slice::from_ref(&call), &ctx, 8000).await.expect("the call runs");
+    let out = hands.executor.execute_native_batch(std::slice::from_ref(&call), &ctx).await.expect("the call runs");
     (out.results[0].content.clone(), out.results[0].is_error.is_some())
 }
 
@@ -428,7 +428,7 @@ async fn a_cancelled_eval_keeps_its_world_until_its_forks_are_confirmed_ended() 
     // 10 s is this test's bound on a SIGKILLed `sleep` being reaped, not a product timeout.
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while world_dir.exists() || !state.file_engines.is_empty() || acting_root_in(persona, context).is_some() {
-            tokio::time::sleep(crate::inference::lane_process::KILL_POLL).await;
+            tokio::time::sleep(continuum_process::KILL_POLL).await;
         }
     })
     .await

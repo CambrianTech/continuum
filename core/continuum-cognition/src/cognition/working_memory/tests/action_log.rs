@@ -10,13 +10,14 @@ use super::*;
 fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
     let wm = WorkingMemory::new(8);
     wm.set_served_window(16_384);
-    let cap = wm.budget().recent_results_chars();
+    let cap = 2 * BODY;
     // A short first line per result: that line is the ledger's, the body the ring's.
     wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), None, saved("first-handle"));
     for act in 2..=5 {
         record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
     }
     wm.record_settlement("done", None);
+    shed(&wm, cap / 2);
     let ledger: Vec<String> = wm.receipt_archive().into_iter().map(|(_, head)| head).collect();
     assert!(ledger.first().is_some_and(|head| head.starts_with("[action #1]")), "{ledger:?}");
     let ring = wm.recent_results_messages().join("\n");
@@ -58,12 +59,13 @@ fn a_restart_keeps_every_act_as_she_read_it() {
     wm.set_served_window(16_384);
     wm.set_scope(Some("/work/foo".into()));
     let room = Uuid::new_v4();
-    let cap = wm.budget().recent_results_chars();
+    let cap = 2 * BODY;
     wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), Some(room), saved("first-handle"));
     for act in 2..=5 {
         wm.record_receipt_typed(&[], &format!("act {act}\n{}", "s".repeat(cap / 2)), Some(room), saved("ring-test"));
     }
     wm.record_settlement("done", None);
+    shed(&wm, cap / 2);
     // The pointer index and the ledger. (Which act counts as in flight after a restore is
     // the restore's own rule, unchanged here, so the retained results are not compared.)
     let pointers = |memory: &WorkingMemory| -> Vec<String> {
@@ -85,12 +87,13 @@ fn a_restart_keeps_every_act_as_she_read_it() {
 fn a_checkpoint_keeps_the_shape_the_previous_build_reads() {
     let wm = WorkingMemory::new(8);
     wm.set_served_window(16_384);
-    let cap = wm.budget().recent_results_chars();
+    let cap = 2 * BODY;
     wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), None, saved("first-handle"));
     for act in 2..=5 {
         record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
     }
     wm.record_settlement("done", None);
+    shed(&wm, cap / 2);
     let snap = wm.snapshot();
     assert!(snap.receipt_heads.first().is_some_and(|head| head.starts_with("[action #1]")));
     assert_eq!(snap.evicted_pointers.first().map(|(_, handle)| handle.as_str()), Some("first-handle"));

@@ -14,12 +14,14 @@ use crate::cognition::working_memory::WorkingMemory;
 
 pub(crate) struct Actions<'a> {
     pub memory: &'a WorkingMemory,
+    /// Whose spill directory a stored whole is read from (`load`).
+    pub persona: uuid::Uuid,
 }
 
 impl Actions<'_> {
     fn standing(key: &str, text: String) -> Item<ContextMessage> {
         let message = ContextMessage::user(text);
-        Item { key: key.to_owned(), full: message.clone(), summary: None, pointer: Some(message) }
+        Item { key: key.to_owned(), full: message.clone(), summary: None, pointer: Some(message), stored: None }
     }
 }
 
@@ -64,13 +66,41 @@ impl Source<ContextMessage> for Actions<'_> {
             return vec![banner, Self::standing("none", none)];
         }
         let mut items = vec![banner];
-        items.extend(acts.into_iter().map(|(seq, full, summary, pointer)| Item {
+        items.extend(acts.into_iter().map(|(seq, full, summary, pointer, stored)| Item {
+            stored: stored.map(|(chars, handle)| continuum_context::source::StoredWhole { chars, handle }),
             key: seq.to_string(),
             full: ContextMessage::user(full),
             summary: summary.map(ContextMessage::user),
             pointer: Some(ContextMessage::user(pointer)),
         }));
         items
+    }
+
+    /// A whole her working memory evicted from RAM (storage, never visibility: FOCUS-CONTRACT
+    /// rule 7), read back from its spill file when her view grants it whole, labelled as it
+    /// read resident. `None` (the resident pointer renders) when the file is gone or unreadable.
+    fn load(&self, item: &Item<ContextMessage>) -> Option<ContextMessage> {
+        let stored = item.stored.as_ref()?;
+        let seq: u64 = item.key.parse().ok()?;
+        let label = self.memory.action_whole_label(seq)?;
+        let body = crate::cognition::tool_executor::spill::saved_whole(self.persona, &stored.handle).ok()?;
+        Some(ContextMessage::user(format!("{label}{body}")))
+    }
+
+    /// Her oldest acts as one line: the first and last `#n`, how many, and how one reopens
+    /// (`tool/output` with `act`), so her floor is one block however many acts she has taken
+    /// (Aris, the M5, 2026-10-29: 95 pointers at ~190 chars before anything whole fit). Reads
+    /// only the run's ends: the banner, when it is in the run, is its first item and folds
+    /// with it. `None` for a run with no act in it (the banner alone): nothing to name.
+    fn fold(&self, folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
+        // The banner stands as itself ahead of the run (the view never folds a standing head),
+        // so the run is her acts alone, keyed by their #n.
+        let first: u64 = folded.first()?.key.parse().ok()?;
+        let last: u64 = folded.last()?.key.parse().ok()?;
+        let count = folded.len();
+        Some(ContextMessage::user(format!(
+            "[actions #{first}-#{last}: {count} earlier acts folded; reopen one with tool/output act=<n>]"
+        )))
     }
 
     /// Once she has acted, the void said earlier in this epoch is superseded, never edited:

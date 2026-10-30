@@ -1,5 +1,15 @@
 # AGENTS.md — entry point for Codex and other agent runtimes
 
+## Mandatory development doctrine (Joel, 2026-10-30)
+
+Read [Development doctrine](docs/architecture/DEVELOPMENT-DOCTRINE.md) before design,
+implementation or review. It is the canonical cross-project rule: zero backward
+compatibility; no fallback/default substitution/unchecked unwraps; callers comply with
+firm typed contracts. One mechanism has one owner behind a narrow crate API. Shared
+implementations own lifecycle and concurrency; route by headers, never body scanning.
+Completion includes deleting obsolete paths and proving the replacement. Older guidance
+cannot authorize exceptions. Preserve durable identity, data, jobs and owner work.
+
 ## ⛳ THE PLAN — read before every change (Joel, 2026-10-18; the path added 10-19)
 
 **What we are building** (Joel, 10-19): persistent, multi-activity minds with agency,
@@ -313,6 +323,53 @@ approval; **merging to `main` does**. Validate before you commit — deploy and 
 the change through a command, and read the receipt rather than the exit code.
 
 ## Continual refinement of tests and CI (Joel, 2026-10-02)
+
+### Simplify, codify, enforce (Joel, 2026-10-29)
+
+Apply this discipline continuously across every file, including tests, CI workflows,
+ratchets, scripts and dependencies. Track the files actually reviewed; a clean check
+does not establish that the repository has been audited.
+
+- Find the shared pattern, simplify it under one responsible owner, migrate its
+  callers and delete the duplicate implementations. Codify the resulting invariant
+  in types, interfaces or a shared implementation, then enforce it with a focused
+  regression test, compiler rule or existing ratchet.
+- Audit dead code and fallback paths as part of the change. Assume a fallback is
+  invalid until its current product contract justifies it; missing state or failure
+  must not silently select an obsolete path or fabricate success.
+- Backwards compatibility is not a requirement or a reason to retain code. Remove
+  compatibility shims, aliases and legacy branches; update all affected callers in
+  the same change. Preserve durable identity, trust, data and jobs through explicit,
+  verified migrations where needed, not permanent dual implementations.
+- Ratchets and CI are code subject to the same review. Consolidate scattered checks
+  around the shared invariant and its owner. Replace duplicate gates with coherent
+  enforcement that retains their defect coverage, including proof that violations
+  fail. Delete superseded checks; do not weaken assertions or expand exemptions to
+  get green CI. Aggregate checks must point to the originating failure.
+- Review the whole touched file and the affected shared path, not only added lines.
+  Report removed code, the canonical pattern, retained coverage and remaining audit
+  scope. Continue the file-by-file sweep with the current owners as work advances.
+
+**Fast delivery is the purpose of the crate cuts (Joel, 2026-10-29).** Each crate
+must be independently buildable, runnable, testable and reviewable through its
+typed seam. Measure edit-to-proven and edit-to-merged time; moving files without
+reducing that cost is unfinished architecture work.
+
+- Keep build, run, commit, PR review and slim CI moving concurrently wherever their
+  dependencies permit. Start independent checks in parallel; serialize only real
+  dependencies, shared mutable resources and coordinated deployment ownership.
+- Select CI from the affected crates and their contract consumers. Test shared
+  contracts once, with separate coverage for actual platform differences. Avoid
+  repository-wide rebuilds for isolated changes; validate the selector so omitted
+  consumers cannot silently escape checks.
+- Reuse artifacts only for matching source, configuration and environment. Measure
+  queue, setup, build, test and critical-path time, and remove redundant work and
+  unnecessary gate dependencies. Keep required correctness checks effective and fast.
+- Own delivery through merge. Keep branches and PRs small, resolve reviews and red
+  checks promptly, and merge validated work as soon as its real gates pass. Do not
+  leave completed work parked on branches or in PRs. Every unresolved item has an
+  owner, a concrete blocker and a next action; superseded work is reconciled and
+  closed with its changes accounted for. Preserve unfinished work during cleanup.
 
 This is an ongoing engineering obligation for both AIRC and Continuum, not a one-time optimization. Whenever changing tests, CI, or implementation, look for repeated behavior and setup patterns and consolidate them into shared functions, adapters, fixtures, and coherent scenarios.
 

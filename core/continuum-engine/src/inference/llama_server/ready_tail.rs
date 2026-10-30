@@ -11,6 +11,9 @@ pub(super) struct ReadyTail {
     pub(super) page_dir_ready: bool,
     pub(super) debug_flag: crate::inference::debug_build_watch::DebugBuildFlag,
     pub(super) restoring: bool,
+    /// The candidate's published `tail_tools` evidence: kept when the launch publishes, withdrawn
+    /// when the tail is dropped unpublished. `None` on a lane with no evidence cell.
+    pub(super) evidence: Option<LaunchedEvidence>,
 }
 
 impl LlamaServerProcess {
@@ -24,7 +27,7 @@ impl LlamaServerProcess {
         transition: &crate::inference::slots::EndpointTransition,
         tail: &ReadyTail,
     ) -> Result<(), LlamaServerError> {
-        let ReadyTail { prepared, generation, child_pid, page_dir_ready, debug_flag, restoring } = tail;
+        let ReadyTail { prepared, generation, child_pid, page_dir_ready, debug_flag, restoring, .. } = tail;
         let (child_pid, page_dir_ready, restoring) = (*child_pid, *page_dir_ready, *restoring);
         let target = &prepared.target;
         let gguf = prepared.gguf.clone();
@@ -37,7 +40,7 @@ impl LlamaServerProcess {
         // said so on its own stderr while coming up — refuse the lane, loudly.
         if debug_flag.is_set() {
             if let Some(pid) = child_pid {
-                crate::inference::lane_process::kill9(pid);
+                continuum_process::kill9(pid);
             }
             continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.debug_build_refused",
                 bin = %prepared.engine_program,
@@ -116,7 +119,7 @@ impl LlamaServerProcess {
             let zero_offload = matches!(self.offload.get(), Some((0, total)) if total > 0);
             if channel_says_cpu || declined || zero_offload {
                 if let Some(pid) = child_pid {
-                    crate::inference::lane_process::kill9(pid);
+                    continuum_process::kill9(pid);
                 }
                 let residency_line = residency
                     .as_ref()

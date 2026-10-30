@@ -32,7 +32,6 @@ fn a_binding_fill_budget_keeps_her_own_last_move_and_its_result() {
         history: history.clone(),
         stimulus: None,
         latest_result: Vec::new(), action_statement: None,
-        room_updates: Vec::new(),
     };
 
     // The run that must survive: her act, its result, and the ask that opened them.
@@ -107,7 +106,6 @@ fn the_recent_move_protection_states_its_own_limits() {
         history,
         stimulus: None,
         latest_result: Vec::new(), action_statement: None,
-        room_updates: Vec::new(),
     };
 
     // A MULTI-TOOL CHAIN LONGER THAN THE SCAN BOUND. Protected as a suffix, and

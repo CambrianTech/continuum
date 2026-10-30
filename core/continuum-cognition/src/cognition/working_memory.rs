@@ -48,7 +48,7 @@ use parking_lot::Mutex;
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 
 // How many recent steps to carry forward is NOT a constant. It is
-// `ContextBudget::working_memory_steps()` — the COUNT sibling of the per-step SIZE bound
+// `ContextBudget::WORKING_MEMORY_STEPS` — the COUNT sibling of the per-step SIZE bound
 // right below, derived from the same calibrated fractions.
 //
 // It used to be `DEFAULT_WORKING_MEMORY_CAPACITY = 3`, the one bare number left behind when
@@ -526,6 +526,22 @@ impl VolatileSnapshot {
         pin
     }
 
+    /// Price the whole of every result an earlier life evicted before `stored_chars` was kept:
+    /// its body left RAM for its handle by the old window share (Aiko on the M5, 2026-10-29),
+    /// so its whole had no price and showed at pointer level. `whole_of` measures the saved
+    /// output a handle names (`None`: not saved or unreadable, which stays a pointer, honestly).
+    /// Once per restore, before the mind acts, so no read happens under an inference grant.
+    pub fn price_evicted_wholes(&mut self, whole_of: impl Fn(&str) -> Option<usize>) {
+        if self.actions.is_empty() {
+            self.actions = self.action_records();
+        }
+        for record in self.actions.iter_mut().filter(|r| r.result.is_none() && r.stored_chars.is_none()) {
+            if let Some(handle) = record.handle.as_deref() {
+                record.stored_chars = whole_of(handle);
+            }
+        }
+    }
+
     /// Her actions as records: the records it carries, or, for a checkpoint written before
     /// them, the ring, archive and pointer index read back into records. Those older lines
     /// are keyed by the `#n` this owner wrote at their head (one with none is dropped and
@@ -545,6 +561,8 @@ impl VolatileSnapshot {
             handle: None,
             written_pointer: None,
             summary: None,
+            stored_chars: None,
+            received_ms: None,
         };
         let mut records: BTreeMap<u64, action_log::ActionRecord> = BTreeMap::new();
         let mut unkeyed = 0usize;
@@ -702,10 +720,13 @@ pub use task_results::{TaskReceiptConflict, TaskReceiptError};
 mod faculty;
 mod ledger;
 mod perception;
+mod residency;
 
+pub use action_log::ActOutputRefusal;
 pub use faculty::WorkingMemoryFaculty;
 pub(crate) use faculty::render_dispatched;
 pub(crate) use ledger::operation_level;
+pub(crate) use residency::{ResidentResults, ShedCandidate};
 
 impl Drop for WorkingMemory {
     /// A mind that is gone points at nothing: its saved results may be evicted again.

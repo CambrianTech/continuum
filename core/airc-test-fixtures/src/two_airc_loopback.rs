@@ -145,6 +145,19 @@ impl TwoAircLoopback {
             .add_peer(a_spec)
             .await
             .map_err(|e| LoopbackError::AircSpawn(format!("peer_b trust peer_a: {e}")))?;
+        // The two peers model two nodes of ONE account: each holds the other at
+        // `own_account`, the tier the command ingress contract requires of a peer
+        // command (an enrolment alone is `untrusted`, which meets no command).
+        for (holder, peer) in [(&peer_a, peer_b.peer_id()), (&peer_b, peer_a.peer_id())] {
+            airc_trust::set_tier(holder.home(), peer, airc_lib::TrustTier::OwnAccount)
+                .await
+                .map_err(|e| {
+                    LoopbackError::AircSpawn(format!("own_account tier for {peer:?}: {e}"))
+                })?
+                .ok_or_else(|| {
+                    LoopbackError::AircSpawn(format!("{peer:?} has no trust row to raise"))
+                })?;
+        }
 
         // Join the shared fixture room so room-scoped subscribe lands.
         peer_a
@@ -223,11 +236,10 @@ mod tests {
     use std::time::Duration;
 
     use airc_core::{Body, Headers, MentionTarget, PeerId};
-    use futures::stream::StreamExt;
 
-    /// Bare-airc roundtrip smoke: peer_a sends a request to peer_b,
-    /// peer_b's subscribe stream sees it and replies, peer_a's
-    /// await_reply resolves. Proves the fixture's wire is alive
+    /// Bare-airc roundtrip smoke: peer_a sends an addressed command to peer_b,
+    /// peer_b's addressed inbox receives it verified and replies bound to it,
+    /// peer_a's await_reply resolves. Proves the fixture's wire is alive
     /// end-to-end without any continuum-specific protocol on top.
     #[tokio::test]
     async fn bare_request_reply_round_trips_over_loopback() {
@@ -236,53 +248,25 @@ mod tests {
             .expect("fixture setup should succeed");
 
         let peer_b_handle = Arc::clone(loop_back.peer_b());
-        let peer_b_self_id = peer_b_handle.peer_id();
+        let peer_a_id = PeerId::from_uuid(loop_back.peer_a_id());
         let responder = tokio::spawn(async move {
-            let mut stream = peer_b_handle
-                .subscribe()
+            let mut inbox = peer_b_handle
+                .addressed_inbox(tokio::time::Instant::now() + Duration::from_secs(5))
                 .await
-                .expect("peer_b subscribe");
-            while let Some(event) = stream.next().await {
-                let event = match event {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-                // Skip our own emissions.
-                if event.peer_id == peer_b_self_id {
-                    continue;
-                }
-                let Some(correlation) =
-                    event.headers.get(airc_protocol::HEADER_AIRC_CORRELATION_ID)
-                else {
-                    continue;
-                };
-                let Some(reply_to) = event.headers.get(airc_protocol::HEADER_AIRC_REPLY_TO) else {
-                    continue;
-                };
-                let correlation_id =
-                    Uuid::parse_str(correlation).expect("valid correlation uuid");
-                let reply_to_peer = PeerId::from_uuid(
-                    Uuid::parse_str(reply_to).expect("valid reply_to uuid"),
-                );
-                let mut reply_headers = Headers::new();
-                reply_headers.insert("test.body_hint".into(), "loopback.pong".into());
-                peer_b_handle
-                    .reply(
-                        reply_to_peer,
-                        correlation_id,
-                        reply_headers,
-                        Body::text("pong"),
-                    )
-                    .await
-                    .expect("peer_b reply");
-                return;
-            }
+                .expect("peer_b addressed inbox");
+            let request = inbox.next().await.expect("an addressed command arrives");
+            assert_eq!(request.from(), peer_a_id, "verified sender");
+            assert_eq!(request.to(), peer_b_handle.peer_id(), "addressed to peer_b");
+            assert_eq!(request.kind(), airc_lib::AddressedKind::Command);
+            let mut reply_headers = Headers::new();
+            reply_headers.insert("test.reply".into(), "loopback.pong".into());
+            peer_b_handle
+                .reply(&request, reply_headers, Body::text("pong"))
+                .await
+                .expect("peer_b reply");
         });
 
-        // Give peer_b time to install the subscribe filter before peer_a
-        // emits the request. airc_lib's request() arms the reply stream
-        // before sending, but the responder above is in a separate task
-        // that needs to call subscribe first.
+        // Give peer_b time to open its inbox before peer_a emits the request.
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let mut headers = Headers::new();
@@ -305,8 +289,9 @@ mod tests {
 
         // The body should be our pong. `Body::text("pong")` constructs
         // `Body::Json({"text": "pong"})` so we extract the `text` field.
-        match reply.body {
-            Some(Body::Json(v)) => {
+        assert_eq!(reply.kind(), airc_lib::AddressedKind::CommandResult);
+        match reply.body() {
+            Body::Json(v) => {
                 assert_eq!(v["text"], "pong", "got body json {v}");
             }
             other => panic!("expected Json pong body, got {other:?}"),

@@ -163,7 +163,11 @@ impl OpenViews {
     /// touches that file's view: its line numbers are the saved result's, which open with a
     /// header line, not the file's.
     fn note_output_page(&mut self, act: &Observation, seq: u64) -> bool {
-        let Some(handle) = act.call.input.get("outputId").and_then(|v| v.as_str()) else {
+        let header = crate::cognition::tool_executor::spill::result_scalars(&act.output.result.content);
+        // The output she named, or, for a call by act number, the one the result echoes.
+        let named = act.call.input.get("outputId").and_then(|v| v.as_str());
+        let echoed = header.as_ref().and_then(|h| h.get("outputId")?.as_str());
+        let Some(handle) = named.or(echoed) else {
             return false;
         };
         let Some(index) = self.views.iter().position(|v| {
@@ -175,7 +179,6 @@ impl OpenViews {
         let mut view = self.views.remove(index);
         view.touched_seq = seq;
         if act.completed_successfully() && matches!(view.subject, ViewSubject::Output { .. }) {
-            let header = crate::cognition::tool_executor::spill::result_scalars(&act.output.result.content);
             let total = header.as_ref().and_then(|h| h.get("totalLines")?.as_u64()).and_then(|n| u32::try_from(n).ok());
             let truncated = header.as_ref().and_then(|h| h.get("truncated")?.as_bool()).unwrap_or(true); // unwrap_or: a page that does not say it came back whole is not counted as read
             let line = |key: &str| act.call.input.get(key)?.as_u64().and_then(|n| u32::try_from(n).ok());
@@ -230,12 +233,11 @@ impl OpenViews {
     /// view is open here.
     /// Attach her stated reasoning to every view the acts of this receipt touched (the views
     /// whose `touched_seq` is `seq`), clipped to `max_chars` (her window-relative echo budget).
-    pub fn annotate(&mut self, seq: u64, intent: &str, max_chars: usize) -> bool {
-        let note = intent.split_whitespace().collect::<Vec<_>>().join(" ");
+    pub fn annotate(&mut self, seq: u64, label: &str) -> bool {
+        let note = label.split_whitespace().collect::<Vec<_>>().join(" ");
         if note.is_empty() {
             return false;
         }
-        let note: String = note.chars().take(max_chars).collect();
         let mut changed = false;
         for view in self.views.iter_mut().filter(|v| v.touched_seq == seq) {
             if view.note.as_deref() != Some(note.as_str()) {
