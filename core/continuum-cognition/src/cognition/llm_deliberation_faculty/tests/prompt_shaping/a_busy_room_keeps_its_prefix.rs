@@ -30,9 +30,7 @@ impl Source<String> for Stream {
             .map(|(key, text)| {
                 // A fixture turn: its id from its key, its cause unrecorded (this test is about starts).
                 let id = crate::cognition::context_streams::element(uuid::Uuid::nil(), crate::cognition::context_streams::Producer::Turn, key.as_bytes());
-                let mut item = Item::whole(id, continuum_context::cause::Cause::Unrecorded, key.clone(), text.clone());
-                item.pointer = Some(format!("[{key} collapsed]"));
-                item
+                Item::whole(id, continuum_context::cause::Cause::Unrecorded, key.clone(), text.clone()).with_pointer(format!("[{key} collapsed]"))
             })
             .collect()
     }

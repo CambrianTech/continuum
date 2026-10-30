@@ -16,8 +16,9 @@ pub(crate) struct ActRendering {
     pub pointer: String,
     /// `(chars, handle)` of a whole that left RAM for its saved output.
     pub stored: Option<(usize, String)>,
-    /// Whether `full` is the act's whole result (resident), so its content hash is the whole's.
-    pub resident_whole: bool,
+    /// The hash of the act's RAW result bytes, before any label: two identical outcomes hash
+    /// equal whatever their seq or room (`Absent` when the result is not resident).
+    pub content: continuum_context::cause::Content,
 }
 
 impl WorkingMemory {
@@ -276,8 +277,10 @@ impl WorkingMemory {
                 };
                 let full = whole.unwrap_or_else(|| pointer.clone());
                 let summary = record.summary.as_deref().map(|summary| format!("[result {attribution}{workspace} — summary; expand with tool/output] {summary}"));
-                let resident_whole = record.result.is_some();
-                ActRendering { seq: record.seq, room: record.room, full, summary, pointer, stored, resident_whole }
+                let content = record.result.as_deref().map_or(continuum_context::cause::Content::Absent, |result| {
+                    continuum_context::cause::Content::Hashed(continuum_context::cause::ContentHash::of(result))
+                });
+                ActRendering { seq: record.seq, room: record.room, full, summary, pointer, stored, content }
             })
             .collect();
         (renderings, in_flight)

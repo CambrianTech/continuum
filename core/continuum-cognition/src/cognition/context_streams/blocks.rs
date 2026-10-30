@@ -36,10 +36,7 @@ impl Grounding {
     /// The block as a standing item: the root of its activity; a board update is new content, not a
     /// new identity.
     fn block(&self, full: ContextMessage, summary: Option<ContextMessage>, pointer: ContextMessage) -> Item<ContextMessage> {
-        let mut item = super::standing(self.persona, &self.faculty, "block", full);
-        item.summary = summary;
-        item.pointer = Some(pointer);
-        item
+        super::standing(self.persona, &self.faculty, "block", full).with_summary(summary).with_pointer(pointer)
     }
 
     fn render(&self, body: String) -> ContextMessage {

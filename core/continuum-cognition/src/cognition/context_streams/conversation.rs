@@ -43,13 +43,12 @@ impl Source<ContextMessage> for Conversation {
                 let id = element(self.persona, Producer::Turn, turn.key.as_bytes());
                 let cause = previous.replace(id).map_or(Cause::Root(Origin::External), Cause::Of);
                 let full = ContextMessage { role: turn.role, text: turn.line.clone() };
-                let mut item = Item::whole(id, cause, turn.key.clone(), full);
+                let pointer = turn.pointer.clone().map(|text| ContextMessage { role: turn.role, text });
                 // Collapsed, a turn leaves her view: the room's history holds it, and the
                 // `[context]` fact says how many turns the room offered. A one-line pointer would
                 // weigh about what a short turn does, saving nothing. The room-update index keeps
                 // itself, so an update too large to show is never unknown.
-                item.pointer = turn.pointer.clone().map(|text| ContextMessage { role: turn.role, text });
-                item
+                Item::whole(id, cause, turn.key.clone(), full).with_pointer(pointer)
             })
             .collect()
     }

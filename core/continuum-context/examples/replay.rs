@@ -128,9 +128,7 @@ impl Source<String> for Captured {
 fn item(key: String, text: String) -> Item<String> {
     let pointer: String = text.lines().next().unwrap_or_default().chars().take(185).collect();
     let pointer = if pointer.len() < text.len() { pointer } else { text.clone() };
-    let mut item = captured(key, text);
-    item.pointer = Some(pointer);
-    item
+    captured(key, text).with_pointer(pointer)
 }
 
 /// A captured element: a capture records what was sent, never what caused it, so its cause is
@@ -306,7 +304,7 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
             // Its action lines are the action log again; its thoughts are its own items.
             let thoughts = bullets("working-memory", &text)
                 .into_iter()
-                .filter(|item| !item.full.starts_with("- [action #"))
+                .filter(|item| !item.full().starts_with("- [action #"))
                 .collect();
             push("working-memory", thoughts);
         } else if text.starts_with("My own recent thoughts") {
@@ -409,10 +407,10 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
         tails.push(tail_chars as f64);
         for (name, items) in &cut.sources {
             for item in items {
-                let key = (name.clone(), item.key.clone());
-                if held.get(&key) != Some(&item.full) {
-                    *appended.entry(name.clone()).or_default() += item.full.chars().count();
-                    held.insert(key, item.full.clone());
+                let key = (name.clone(), item.key().to_owned());
+                if held.get(&key) != Some(item.full()) {
+                    *appended.entry(name.clone()).or_default() += item.full().chars().count();
+                    held.insert(key, item.full().clone());
                 }
             }
         }

@@ -22,9 +22,7 @@ impl Notices<'_> {
     /// A notice comes from her situation, outside her: an external origin.
     fn notice(&self, key: String, text: String) -> Item<ContextMessage> {
         let message = ContextMessage::user(text);
-        let mut item = Item::whole(element(self.persona, Producer::Notice, key.as_bytes()), Cause::Root(Origin::External), key, message.clone());
-        item.pointer = Some(message);
-        item
+        Item::whole(element(self.persona, Producer::Notice, key.as_bytes()), Cause::Root(Origin::External), key, message.clone()).with_pointer(message)
     }
 }
 
@@ -65,9 +63,7 @@ impl Source<ContextMessage> for Notices<'_> {
                 let message = ContextMessage::user(format!("- [ended] the notice {key} no longer holds"));
                 let id = element(self.persona, Producer::Notice, format!("ended/{key}").as_bytes());
                 let cause = Cause::Of(element(self.persona, Producer::Notice, key.as_bytes()));
-                let mut item = Item::whole(id, cause, key, message.clone());
-                item.pointer = Some(message);
-                item
+                Item::whole(id, cause, key, message.clone()).with_pointer(message)
             })
             .collect()
     }

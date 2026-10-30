@@ -9,7 +9,7 @@ use super::notices::Notices;
 use crate::cognition::working_memory::WorkingMemory;
 
 fn rendered(memory: &WorkingMemory) -> String {
-    Actions { memory, persona: uuid::Uuid::nil() }.items().iter().map(|item| item.full.text.clone()).collect::<Vec<_>>().join("\n")
+    Actions { memory, persona: uuid::Uuid::nil() }.items().iter().map(|item| item.full().text.clone()).collect::<Vec<_>>().join("\n")
 }
 
 // what this catches: her action stream going silent or lying about her acts, the three
@@ -106,7 +106,7 @@ fn an_evicted_result_is_still_seen_whole_through_its_stored_level() {
     let source = super::actions::Actions { memory: &memory, persona };
     let item = continuum_context::source::Source::items(&source)
         .into_iter()
-        .find(|item| item.key == seq.to_string())
+        .find(|item| item.key() == seq.to_string())
         .expect("test: the act's item");
     assert_eq!(continuum_context::source::whole_chars(&item), chars);
     let whole = continuum_context::source::whole(&source, item);
@@ -160,7 +160,7 @@ fn a_thought_renders_the_same_whatever_the_served_window() {
     let memory = WorkingMemory::new(8);
     memory.record(&"a long line of reasoning about the failing test. ".repeat(80));
     let render = |memory: &WorkingMemory| {
-        Thoughts { memory, persona: uuid::Uuid::nil() }.items().into_iter().map(|item| item.full.text).collect::<Vec<_>>()
+        Thoughts { memory, persona: uuid::Uuid::nil() }.items().into_iter().map(|item| item.full().text.clone()).collect::<Vec<_>>()
     };
     memory.set_served_window(32_768);
     let narrow = render(&memory);

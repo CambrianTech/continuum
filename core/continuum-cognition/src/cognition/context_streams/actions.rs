@@ -7,7 +7,7 @@
 //! shelter: Anwen parked fabricated receipts in one within minutes), or acts happened whose
 //! details aged out (denying her own work is the inverse failure, 2026-07-13: Asha).
 
-use continuum_context::cause::{Cause, Content, ContentHash, Origin};
+use continuum_context::cause::{Cause, Content, Origin};
 use continuum_context::source::{Item, Source, StoredWhole};
 
 use super::{element, priority, ContextMessage, Producer};
@@ -75,18 +75,13 @@ impl Source<ContextMessage> for Actions<'_> {
         let mut last_in_room: std::collections::HashMap<Option<uuid::Uuid>, u64> = std::collections::HashMap::new();
         for act in acts {
             let cause = last_in_room.insert(act.room, act.seq).map_or(Cause::Root(Origin::ActivityStart), |prev| Cause::Of(self.act(prev)));
-            let content = if act.resident_whole { Content::Hashed(ContentHash::of(&act.full)) } else { Content::Absent };
             let stored = act.stored.map(|(chars, handle)| StoredWhole { chars, handle, content: Content::Absent });
-            items.push(Item {
-                key: act.seq.to_string(),
-                id: self.act(act.seq),
-                cause,
-                content,
-                full: ContextMessage::user(act.full),
-                summary: act.summary.map(ContextMessage::user),
-                pointer: Some(ContextMessage::user(act.pointer)),
-                stored,
-            });
+            items.push(
+                Item::rendered(self.act(act.seq), cause, act.seq.to_string(), ContextMessage::user(act.full), act.content)
+                    .with_summary(act.summary.map(ContextMessage::user))
+                    .with_pointer(ContextMessage::user(act.pointer))
+                    .with_stored(stored),
+            );
         }
         items
     }
@@ -95,8 +90,8 @@ impl Source<ContextMessage> for Actions<'_> {
     /// rule 7), read back from its spill file when her view grants it whole, labelled as it
     /// read resident. `None` (the resident pointer renders) when the file is gone or unreadable.
     fn load(&self, item: &Item<ContextMessage>) -> Option<ContextMessage> {
-        let stored = item.stored.as_ref()?;
-        let seq: u64 = item.key.parse().ok()?;
+        let stored = item.stored()?;
+        let seq: u64 = item.key().parse().ok()?;
         let label = self.memory.action_whole_label(seq)?;
         let body = crate::cognition::tool_executor::spill::saved_whole(self.persona, &stored.handle).ok()?;
         Some(ContextMessage::user(format!("{label}{body}")))
@@ -110,8 +105,8 @@ impl Source<ContextMessage> for Actions<'_> {
     fn fold(&self, folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
         // The banner stands as itself ahead of the run (the view never folds a standing head),
         // so the run is her acts alone, keyed by their #n.
-        let first: u64 = folded.first()?.key.parse().ok()?;
-        let last: u64 = folded.last()?.key.parse().ok()?;
+        let first: u64 = folded.first()?.key().parse().ok()?;
+        let last: u64 = folded.last()?.key().parse().ok()?;
         let count = folded.len();
         Some(ContextMessage::user(format!(
             "[actions #{first}-#{last}: {count} earlier acts folded; reopen one with tool/output act=<n>]"

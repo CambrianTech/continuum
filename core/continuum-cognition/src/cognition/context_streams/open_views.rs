@@ -46,9 +46,8 @@ impl Source<ContextMessage> for OpenViews<'_> {
         items.extend(lines.into_iter().map(|line| {
             let id = element(self.persona, Producer::OpenView, format!("{}#{}", line.key, line.touched_seq).as_bytes());
             let cause = Cause::Of(element(self.persona, Producer::Act, &line.touched_seq.to_be_bytes()));
-            let mut item = Item::whole(id, cause, line.key, ContextMessage::user(format!("- {}", line.full)));
-            item.pointer = Some(ContextMessage::user(format!("- {}", line.pointer)));
-            item
+            Item::whole(id, cause, line.key, ContextMessage::user(format!("- {}", line.full)))
+                .with_pointer(ContextMessage::user(format!("- {}", line.pointer)))
         }));
         items
     }
@@ -61,9 +60,8 @@ impl Source<ContextMessage> for OpenViews<'_> {
             .into_iter()
             .map(|key| {
                 let id = element(self.persona, Producer::Notice, key.as_bytes());
-                let mut item = Item::whole(id, Cause::Root(Origin::External), key.clone(), ContextMessage::user(format!("- [not visible from here] {key}")));
-                item.pointer = Some(item.full.clone());
-                item
+                let message = ContextMessage::user(format!("- [not visible from here] {key}"));
+                Item::whole(id, Cause::Root(Origin::External), key, message.clone()).with_pointer(message)
             })
             .collect()
     }

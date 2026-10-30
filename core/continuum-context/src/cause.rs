@@ -23,10 +23,13 @@ impl ElementId {
 
     /// The id named by a producer's stable identity, given as its parts (whose, which producer,
     /// the producer's own id for it): the first 128 bits of their SHA-256. One derivation, so two
-    /// producers never disagree about how an identity becomes an id.
+    /// producers never disagree about how an identity becomes an id. Each part is length-prefixed,
+    /// so the boundary between parts is part of the identity: `["ab", "c"]` and `["a", "bc"]` are
+    /// different occurrences (Cormac on #5611).
     pub fn of(identity: &[&[u8]]) -> Self {
         let mut hasher = Sha256::new();
         for part in identity {
+            hasher.update((part.len() as u64).to_le_bytes());
             hasher.update(part);
         }
         let digest: [u8; 32] = hasher.finalize().into();
@@ -94,5 +97,14 @@ mod tests {
         assert_eq!(ContentHash::of("fn a() {}"), ContentHash::of("fn a() {}"));
         assert_ne!(ContentHash::of("fn a() {}"), ContentHash::of("fn b() {}"));
         assert_ne!(ElementId::from_u128(1), ElementId::from_u128(2));
+    }
+
+    // what this catches: two different occurrences sharing an id because their identity parts
+    // concatenate to the same bytes; every chain is keyed by the id (Cormac on #5611).
+    #[test]
+    fn the_boundary_between_identity_parts_is_part_of_the_id() {
+        assert_ne!(ElementId::of(&[b"ab", b"c"]), ElementId::of(&[b"a", b"bc"]));
+        assert_ne!(ElementId::of(&[b"ab"]), ElementId::of(&[b"a", b"b"]));
+        assert_eq!(ElementId::of(&[b"a", b"bc"]), ElementId::of(&[b"a", b"bc"]));
     }
 }

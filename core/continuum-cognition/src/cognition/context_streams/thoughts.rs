@@ -54,9 +54,8 @@ impl Source<ContextMessage> for Thoughts<'_> {
             // head here. Cut to a share of the served window, the same thought rendered 1,284
             // chars on one act and 1,445 on the next, so every act re-appended every thought
             // (Benchy on the M5, 2026-10-24 22:3xZ: ~7k chars of unchanged thoughts per act).
-            let mut item = Item::whole(id, cause, text.clone(), ContextMessage::user(format!("- {text}")));
-            item.pointer = Some(ContextMessage::user(format!("- {}", collapse_thought(&text, POINTER_KEEP))));
-            item
+            Item::whole(id, cause, text.clone(), ContextMessage::user(format!("- {text}")))
+                .with_pointer(ContextMessage::user(format!("- {}", collapse_thought(&text, POINTER_KEEP))))
         }));
         // Fresh each event, newest last; one item, so a status change appends one line set.
         items.extend(dispatched.map(|text| {

@@ -70,8 +70,8 @@ impl LlmDeliberationFaculty {
                 // is priced from its measured size, never as the pointer resident in its place,
                 // or the allocation would never grant room to see it (FOCUS-CONTRACT rule 7).
                 let whole = |item: &continuum_context::source::Item<ContextMessage>| {
-                    let extra = continuum_context::source::whole_chars(item).saturating_sub(item.full.text.chars().count());
-                    cost(&item.full) + extra / continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN
+                    let extra = continuum_context::source::whole_chars(item).saturating_sub(item.full().text.chars().count());
+                    cost(item.full()) + extra / continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN
                 };
                 let want: usize = items.iter().map(whole).sum();
                 crate::cognition::rag_budget::RagSourceBudget {

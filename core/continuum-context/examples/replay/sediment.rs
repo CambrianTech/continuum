@@ -98,10 +98,10 @@ impl Sediment {
             let name = source.name.clone();
             let mut index = 0;
             source.items.retain(|item| {
-                let settle = index < boundary && settles(&name, &item.key);
+                let settle = index < boundary && settles(&name, item.key());
                 index += 1;
                 if settle {
-                    let key = (name.clone(), item.key.clone());
+                    let key = (name.clone(), item.key().to_owned());
                     let pointer = item.pointer.clone().unwrap_or_else(|| item.full.clone()); // unwrap_or_else: an item without a pointer is its own handle
                     self.keys.insert(key.clone());
                     batch.push((key, pointer));
@@ -171,9 +171,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(n, size)| {
-                let mut item = super::captured(n.to_string(), "x".repeat(*size));
-                item.pointer = Some(format!("[result #{n}]"));
-                item
+                crate::captured(n.to_string(), "x".repeat(*size)).with_pointer(format!("[result #{n}]"))
             })
             .collect();
         Captured { name: name.to_owned(), items }

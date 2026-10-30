@@ -45,9 +45,7 @@ pub(crate) fn element(persona: uuid::Uuid, producer: Producer, local: &[u8]) -> 
 pub(crate) fn standing(persona: uuid::Uuid, source: &str, key: &str, message: ContextMessage) -> continuum_context::source::Item<ContextMessage> {
     use continuum_context::cause::{Cause, Origin};
     let id = element(persona, Producer::Standing, format!("{source}/{key}").as_bytes());
-    let mut item = continuum_context::source::Item::whole(id, Cause::Root(Origin::ActivityStart), key, message.clone());
-    item.pointer = Some(message);
-    item
+    continuum_context::source::Item::whole(id, Cause::Root(Origin::ActivityStart), key, message.clone()).with_pointer(message)
 }
 
 pub(crate) struct MemoryStreams<'a> {
