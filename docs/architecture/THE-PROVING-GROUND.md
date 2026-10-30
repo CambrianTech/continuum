@@ -215,6 +215,59 @@ The proving ground is trusted only as far as it is shown to be right.
    (SERVING-ENGINE S1 to S3) and the behaviour model.
 6. **Prediction versus live** wired into every deploy's read.
 
+## 8a. The harness's shape (Fable's part, for review before code)
+
+**Crates.**
+- `continuum-proving-types` (Cormac's proposal): the data only, serde and ts-rs, no logic. Reductions,
+  scenario files, node profiles, receipts, metrics.
+- `continuum-proving` (new): the harness, a library plus a `prove` binary. It depends on the types crate and
+  on the production policy crates it drives, and on nothing in serving or the core binary. It is a dev and CI
+  tool; no production crate depends on it (`layer_discipline` enforces the direction).
+
+**The world is data.** A `NodeProfile` file (in the types crate) holds what is measured on a node, each value
+with its source, date and error: memory by tier, bytes of state per token, prefill and decode rates as
+functions of concurrency, page-in and page-out costs by tier, checkpoint cost. It is produced from a node's
+own `~/.continuum/state/{decode-knee,prefill-rate,serving-rates}.json`, its engine log and a bench run. The
+`continuum-flow::sim` M5 constants (decode `30.5 * n^0.865`, prefill `304 / sqrt(n)`, yield `0.1 s`) become
+the first profile file, with their 2026-10-28 source, and leave the code.
+
+**One engine model, behind one trait:** `EngineModel` answers, for a set of in-flight jobs, the rate each job
+progresses at and the cost of a page move. The calibrated implementation reads a `NodeProfile`; `contend`'s
+replay and the flow sim's engine merge into it and their copies are deleted. A T2 run swaps in a real
+engine behind the same trait.
+
+**Discrete events, not ticks.** The harness keeps a queue of the next completion, arrival or world event and
+jumps the virtual clock to it, so hours of simulated time run in seconds and results do not depend on a tick
+size.
+
+**Production through its seams, nothing copied:**
+
+| Policy | Seam the harness calls | Today |
+|---|---|---|
+| A mind's view and levels | `continuum-context::View` and `levels` | a library already; the dyno's re-modelled fit rules are deleted |
+| One mind's allocation | the allocator's pure plan function | lives in `continuum-cognition`; ONE-BUDGET slice 1 (`continuum-flex`) moves it to a small crate, which also makes T0 fast to build |
+| Emission classification | `EmissionStop::classify_with_budget` | pure; moves with the allocator |
+| Admission and lane price | Codex's L5 owner | to be shaped by Codex; `contention.rs`'s policies until then |
+| Node capacity | `capacity/sim`'s `AllocationPolicy` | production already |
+| Residency | Codex's L4 owner | to be shaped by Codex |
+
+A policy that cannot be called without its crate's whole runtime is a seam defect, fixed in that crate (the
+extraction is the fix), never by copying the policy into the harness.
+
+**Clock and randomness** come from the harness into every policy (P8); the ratchet that counts direct clock
+reads covers the policy crates the harness drives.
+
+**A run** takes a scenario file, its node profile(s), its workload reductions and a policy revision. It emits
+production-shaped receipts, then metrics (section 5), then each pass criterion's verdict. `prove --known-bad`
+runs the known-bad suite and exits non-zero if any known-bad policy passes.
+
+**First slice** (the smallest proof that the harness is real):
+1. the M5 profile file;
+2. the merged engine model;
+3. the view through its seam;
+4. one known-bad: the 2026-10-30 think cuts (963 grant, 1,024 think budget), which must fail;
+5. the same scenario with option C's policy, which must pass.
+
 ## 9. Ownership (proposed)
 
 | Part | Owner |
