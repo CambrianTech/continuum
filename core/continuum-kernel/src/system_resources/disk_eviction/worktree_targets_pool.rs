@@ -12,11 +12,15 @@
 //! 1. cargo's own build locks (`.cargo-lock` at the root and in every profile dir, including
 //!    a target-triple's profile dirs) cannot all be taken exclusively;
 //! 2. a process is executing an image under it (a test binary, a core started from it);
-//! 3. a writer admitted through `admit_cargo_target` still holds its root lease there;
+//! 3. the disk registry (the one root authority over cargo targets) will not grant this
+//!    eviction its claim: a writer admitted through `admit_cargo_target` holds a lease
+//!    overlapping it. Once granted, the claim refuses every overlapping writer admission
+//!    until the target is detached, so admission and eviction cannot interleave;
 //! 4. serving has registered an artifact under it.
 //!
 //! Removal first DETACHES the child (one rename to `.evicting-<name>` under the same root)
-//! while the locks are held, so a cargo that starts afterwards builds a fresh tree at the old
+//! while the claim and the locks are held (the lock scan runs after the claim, so a profile
+//! created since the measurement is locked too), so a cargo that starts afterwards builds a fresh tree at the old
 //! name instead of into one being deleted. The detached tree is then removed with the same
 //! redirect-safe walk the shared owner uses. A detached tree a crash left behind is reclaimed
 //! first on the next eviction: nothing builds into a detached name.
@@ -81,18 +85,37 @@ impl WorktreeTargetsPool {
     }
 
     /// The tick's plan, in memory: keep recent within the budget, and honour the broker's
-    /// ask past it only when the class fit its budget (the volume brought the broker). An
-    /// over-budget call is answered by the trim alone; a volume still hot after it brings
-    /// the broker back on the next tick.
+    /// ask past the trim when the class fit its budget (the volume brought the broker) or
+    /// the volume is hot. Keep-recent yields to real volume pressure: then the ask may take
+    /// the newest unheld target too. Over budget on a calm volume, the trim alone answers.
     fn plan(&self, snapshot: &Snapshot, want_bytes: u64) -> Plan {
         let sizes: Vec<u64> = snapshot.live.iter().map(|(_, size)| *size).collect();
-        let budget =
-            (self.targets.budget_for)((self.targets.volume_sample)(&snapshot.root).as_ref());
+        let volume = (self.targets.volume_sample)(&snapshot.root);
+        let budget = (self.targets.budget_for)(volume.as_ref());
         let within_budget = sizes.iter().sum::<u64>() <= budget;
         Plan {
             beyond: Targets::beyond_budget(&sizes, budget),
-            pressure_ask: if within_budget { want_bytes.max(1) } else { 0 },
+            pressure_ask: if within_budget || Self::volume_hot(volume.as_ref()) {
+                want_bytes.max(1)
+            } else {
+                0
+            },
         }
+    }
+
+    /// Is the volume hot by the disk governor's own classification (High or worse)? An
+    /// unseen volume reads Unknown, which the governor orders as hot: an unseen disk is not
+    /// a disk with room.
+    fn volume_hot(volume: Option<&crate::system_resources::drives::DriveInfo>) -> bool {
+        use crate::system_resources::DiskPressureLevel;
+        let level = match volume {
+            Some(volume) if volume.total_bytes > 0 => DiskPressureLevel::from_pressure(
+                volume.total_bytes.saturating_sub(volume.available_bytes) as f64
+                    / volume.total_bytes as f64,
+            ),
+            _ => DiskPressureLevel::Unknown,
+        };
+        level >= DiskPressureLevel::High
     }
 
     /// Run `job` on the blocking pool, unawaited, holding the one job slot until it ends.

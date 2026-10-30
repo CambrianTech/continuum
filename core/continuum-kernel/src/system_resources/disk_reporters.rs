@@ -203,7 +203,7 @@ pub type Kept = std::sync::Arc<dyn std::any::Any + Send + Sync>;
 
 pub use registry::{admit_cargo_target, bind_cargo_owners, register_cargo_target, restore_cargo_roots};
 pub use registry::resolve_existing_storage_path;
-pub(crate) use registry::{cargo_root_leased, citizen_has_cargo_owner};
+pub(crate) use registry::{citizen_has_cargo_owner, claim_for_eviction};
 #[cfg(any(test, feature = "test-fixtures"))]
 pub use registry::prepare_writer_fixture;
 use registry::TRACKED_DIRS;

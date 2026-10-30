@@ -16,8 +16,11 @@ pub(super) struct Targets {
     pub(super) active_artifacts: Arc<ActiveArtifactSet>,
     /// Read the owning volume's already-published sample; never probe here.
     pub(super) volume_sample: fn(&Path) -> Option<DriveInfo>,
-    /// The writer-lease check (hold 3). A field so a test can stand for a held lease.
-    pub(super) leased: fn(&Path) -> bool,
+    /// The root authority's exclusive eviction claim (hold 3): refused while an admitted
+    /// writer's lease overlaps the target, and, while held, refuses any writer admission
+    /// that overlaps it. Held from before the lock scan until the target is detached. A
+    /// field so a test can stand for a held lease.
+    pub(super) claim: fn(&Path) -> Result<crate::system_resources::disk_reporters::Kept, String>,
     /// The class budget for a volume sample: the cargo-target budget in production. A field
     /// so a test can stand for a volume small enough to put a fixture over it.
     pub(super) budget_for: fn(Option<&DriveInfo>) -> u64,
@@ -70,7 +73,7 @@ impl Targets {
             tracked,
             active_artifacts: serving_active_artifacts(),
             volume_sample: super::super::super::DiskPressureMonitor::volume_for,
-            leased: super::super::super::disk_reporters::cargo_root_leased,
+            claim: super::super::super::disk_reporters::claim_for_eviction,
             budget_for: Self::budget,
             walk: dir_size_bytes,
             all_held_reported: std::sync::atomic::AtomicBool::new(false),
@@ -196,11 +199,9 @@ impl Targets {
         (detached, live)
     }
 
-    /// Every cargo build lock under `dir`: its root `.cargo-lock` (created if missing, so a
-    /// cargo starting mid-eviction blocks on it) and every existing `.cargo-lock` one or two
-    /// levels down (`<profile>/` and `<triple>/<profile>/`). `Err` = some lock is held,
-    /// redirected or cannot be queried, so the dir is held.
-    pub(super) fn take_build_locks(dir: &Path) -> Result<Vec<std::fs::File>, String> {
+    /// Every cargo build lock path under `dir`: its root `.cargo-lock` and every existing
+    /// `.cargo-lock` one or two levels down (`<profile>/` and `<triple>/<profile>/`).
+    fn build_lock_paths(dir: &Path) -> Result<Vec<PathBuf>, String> {
         let mut paths = vec![dir.join(".cargo-lock")];
         let mut level = vec![dir.to_path_buf()];
         for _ in 0..2 {
@@ -215,8 +216,12 @@ impl Targets {
                         continue;
                     };
                     if metadata.is_dir() && !CargoTargetPool::is_redirect(&metadata) {
-                        if std::fs::symlink_metadata(path.join(".cargo-lock")).is_ok() {
-                            paths.push(path.join(".cargo-lock"));
+                        let lock = path.join(".cargo-lock");
+                        if let Ok(metadata) = std::fs::symlink_metadata(&lock) {
+                            if CargoTargetPool::is_redirect(&metadata) {
+                                return Err(format!("redirected build lock: {}", lock.display()));
+                            }
+                            paths.push(lock);
                         }
                         next.push(path);
                     }
@@ -224,31 +229,48 @@ impl Targets {
             }
             level = next;
         }
-        let mut locks = Vec::with_capacity(paths.len());
-        for path in paths {
-            if let Ok(metadata) = std::fs::symlink_metadata(&path) {
-                if CargoTargetPool::is_redirect(&metadata) {
-                    return Err(format!("redirected build lock: {}", path.display()));
-                }
-            }
-            match try_exclusive_flock_detailed(&path) {
-                LockAttempt::Acquired(lock) => locks.push(lock),
-                LockAttempt::HeldByAnother => {
-                    return Err(format!("a live build holds {}", path.display()))
-                }
-                LockAttempt::Unavailable(why) => return Err(format!("{}: {why}", path.display())),
-            }
-        }
-        Ok(locks)
+        Ok(paths)
     }
 
-    /// Why `dir` is held, or `None` when it may be evicted. The caller holds `_locks`.
+    /// Take every cargo build lock under `dir` exclusively: the root `.cargo-lock` (created
+    /// if missing, so a cargo starting mid-eviction blocks on it) and every profile lock.
+    /// The scan repeats after each round of acquisitions until it finds no new lock, so a
+    /// profile a build created during the previous round is covered too; the locks are kept
+    /// by the caller across the detach. `Err` = some lock is held, redirected or cannot be
+    /// queried, so the dir is held. Residual window, stated rather than claimed closed: a
+    /// profile created after the last scan and before the rename is not locked; the rename
+    /// moves it with the tree, so that build writes a fresh tree at the old path.
+    pub(super) fn take_build_locks(dir: &Path) -> Result<Vec<std::fs::File>, String> {
+        let mut taken = std::collections::HashSet::new();
+        let mut locks = Vec::new();
+        loop {
+            let fresh: Vec<PathBuf> = Self::build_lock_paths(dir)?
+                .into_iter()
+                .filter(|path| !taken.contains(path))
+                .collect();
+            if fresh.is_empty() {
+                return Ok(locks);
+            }
+            for path in fresh {
+                match try_exclusive_flock_detailed(&path) {
+                    LockAttempt::Acquired(lock) => locks.push(lock),
+                    LockAttempt::HeldByAnother => {
+                        return Err(format!("a live build holds {}", path.display()))
+                    }
+                    LockAttempt::Unavailable(why) => {
+                        return Err(format!("{}: {why}", path.display()))
+                    }
+                }
+                taken.insert(path);
+            }
+        }
+    }
+
+    /// Why `dir` is held, or `None` when it may be evicted. The caller holds the root
+    /// authority's claim and the build locks.
     fn held(&self, dir: &Path) -> Option<String> {
         if let Some((pid, exe)) = process_executing_under(dir) {
             return Some(format!("pid {pid} is executing {exe}"));
-        }
-        if (self.leased)(dir) {
-            return Some("an admitted cargo writer holds its lease".into());
         }
         // An identity that cannot be resolved cannot be cleared of serving custody.
         let physical = match std::fs::canonicalize(dir) {
@@ -273,6 +295,16 @@ impl Targets {
             crate::clog_warn!("💾 {} skipped {}: {error}", self.tier, dir.display());
             return 0;
         }
+        // The root authority first: from here until the detach, no writer is admitted to
+        // this target, and a writer already admitted refuses the claim.
+        let claim = match (self.claim)(dir) {
+            Ok(claim) => claim,
+            Err(why) => {
+                tracing::debug!(probe_class = "disk.wt_targets.held", dir = %dir.display(), %why, "held: root authority");
+                return 0;
+            }
+        };
+        // Scanned after the claim, so a profile a build created since the snapshot is seen.
         let _locks = match Self::take_build_locks(dir) {
             Ok(locks) => locks,
             Err(why) => {
@@ -298,6 +330,9 @@ impl Targets {
             );
             return 0;
         }
+        // The original path no longer exists: a writer admitted from here builds a fresh
+        // target there. The build locks stay held until the detached tree is gone.
+        drop(claim);
         Self::remove_detached(&detached)
     }
 }

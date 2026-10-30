@@ -322,3 +322,42 @@
             "same-class roots both retain eviction owners"
         );
     }
+
+    // what this catches (Codex on 9a5882d2d): a lease CHECK is not custody. An eviction that
+    // checked for leases, released the lock and then renamed could detach a target a writer
+    // was admitted to in between. One authority decides both, with the guards as explicit
+    // barriers: (a) while an eviction holds its claim, admission to that target is refused;
+    // once the target is detached and the claim dropped, a build is admitted to a fresh dir;
+    // (b) while a writer's lease is held, the eviction claim is refused.
+    // Mutation checks: dropping the `evicting` check in admit_within admits under (a);
+    // dropping the lease check in claim_for_eviction claims under (b).
+    #[tokio::test]
+    async fn eviction_and_writer_admission_exclude_each_other_through_one_authority() {
+        let (adapter, _database) = crate::orm::store::fresh_adapter().await;
+        let registry = Registry::new(Vec::new()).await;
+        registry.open_records(adapter).await.unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let parent = parent.path().canonicalize().unwrap();
+        let target = parent.join("wt");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("old.rlib"), b"stale").unwrap();
+
+        let claim = registry.claim_for_eviction(&target).unwrap();
+        let refused = registry.admit(&target).await.unwrap_err();
+        assert!(refused.contains("being evicted"), "(a) admission waits out the claim: {refused}");
+        assert!(registry.claim_for_eviction(&target).is_err(), "one eviction per target");
+        std::fs::rename(&target, parent.join(".evicting-wt")).unwrap();
+        drop(claim);
+        std::fs::create_dir(&target).unwrap();
+        let lease = registry.admit(&target).await.unwrap();
+        assert!(std::fs::read_dir(&target).unwrap().next().is_none(), "the build gets a fresh target");
+
+        let refused = match registry.claim_for_eviction(&target) {
+            Ok(_) => panic!("(b) a leased target was claimed for eviction"),
+            Err(why) => why,
+        };
+        assert!(refused.contains("lease"), "{refused}");
+        drop(lease);
+        assert!(registry.claim_for_eviction(&target).is_ok(), "the lease's end frees the target");
+    }
+

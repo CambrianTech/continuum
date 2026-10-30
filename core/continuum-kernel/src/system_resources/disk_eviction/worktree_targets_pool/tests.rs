@@ -2,6 +2,7 @@
 use super::*;
 use crate::paging::{BrokerConfig, PressureBroker};
 use crate::system_resources::disk_eviction::tests::serving_tier::set_mtime;
+use crate::system_resources::disk_reporters::Kept;
 use crate::system_resources::drives::{DriveInfo, DriveRole};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -45,7 +46,7 @@ fn fixture_targets(root: &Path) -> Targets {
     tracked.set_bytes(dir_size_bytes(root));
     let mut targets = Targets::new(tracked);
     targets.volume_sample = |_| None;
-    targets.leased = |_| false;
+    targets.claim = |_| Ok(Arc::new(()) as Kept);
     targets.active_artifacts = Arc::new(ActiveArtifactSet::default());
     targets
 }
@@ -59,6 +60,19 @@ fn wait_idle(pool: &WorktreeTargetsPool) {
         );
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+}
+
+/// The blocking half over `root` with one more fixture input set.
+fn pool_over(
+    rt: &tokio::runtime::Runtime,
+    root: &Path,
+    budget: fn(Option<&DriveInfo>) -> u64,
+    volume: fn(&Path) -> Option<DriveInfo>,
+) -> WorktreeTargetsPool {
+    let mut targets = fixture_targets(root);
+    targets.budget_for = budget;
+    targets.volume_sample = volume;
+    WorktreeTargetsPool::from_targets(targets, rt.handle().clone())
 }
 
 /// One direct tick and the job it started, waited out. Returns what that job freed.
@@ -125,7 +139,13 @@ fn evicts_the_least_recently_built_unheld_target_first_and_never_a_held_one() {
         "the fixture build holds its profile lock"
     );
     let mut targets = fixture_targets(&root);
-    targets.leased = |dir| dir.ends_with("leased");
+    targets.claim = |dir| {
+        if dir.ends_with("leased") {
+            Err("an admitted cargo writer holds its lease".into())
+        } else {
+            Ok(Arc::new(()) as Kept)
+        }
+    };
     let pool = WorktreeTargetsPool::from_targets(targets, rt.handle().clone());
 
     assert_eq!(tick(&pool, 1), 0, "the first tick only measures");
@@ -359,4 +379,75 @@ fn a_slow_walk_never_delays_the_brokers_tick_or_the_pressure_reading() {
         !older.exists(),
         "the measured eviction goes through once the walk finishes"
     );
+}
+
+// what this catches (Codex on 9a5882d2d): keep-recent must yield to real volume pressure.
+// One target alone over the budget is the newest, which keep-recent keeps; on a hot volume
+// the broker's ask applies past the trim and takes it, unless it is held. Mutation check:
+// gating the ask on "within budget" alone leaves `only` on a full disk.
+#[test]
+fn a_hot_volume_reclaims_even_the_newest_target_over_budget_but_never_a_held_one() {
+    let rt = runtime();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("wt-targets");
+    let only = target(&root, "only", 1);
+    let pool = pool_over(&rt, &root, |_| 500, critical_volume);
+    assert_eq!(tick(&pool, 1), 0, "the first tick only measures");
+    assert_eq!(
+        tick(&pool, 1),
+        1000,
+        "the hot volume takes the one target over the budget"
+    );
+    assert!(!only.exists());
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("wt-targets");
+    let only = target(&root, "only", 1);
+    let held = try_exclusive_flock_detailed(&only.join("debug/.cargo-lock"));
+    assert!(
+        matches!(held, LockAttempt::Acquired(_)),
+        "the fixture build holds its profile lock"
+    );
+    let pool = pool_over(&rt, &root, |_| 500, critical_volume);
+    tick(&pool, 1);
+    assert_eq!(
+        tick(&pool, 1),
+        0,
+        "a held target is protected even on a full disk"
+    );
+    assert!(only.join("debug/deps/unit.rlib").exists());
+    drop(held);
+}
+
+// what this catches (Codex on 9a5882d2d): a profile a build creates AFTER the snapshot's
+// scan, holding its own `.cargo-lock`, must stop the eviction: the lock scan runs after the
+// root authority's claim, not from the snapshot. Mutation check: taking the lock paths from
+// the measurement evicts `target` while the release build holds its lock.
+#[test]
+fn a_profile_lock_created_after_the_snapshot_is_respected() {
+    let rt = runtime();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("wt-targets");
+    let target = target(&root, "target", 2);
+    let pool = pool_over(&rt, &root, |_| u64::MAX, |_| None);
+    assert_eq!(
+        tick(&pool, 1),
+        0,
+        "the snapshot is taken before the new profile exists"
+    );
+    std::fs::create_dir_all(target.join("release")).expect("a build creates a profile");
+    let held = try_exclusive_flock_detailed(&target.join("release/.cargo-lock"));
+    assert!(
+        matches!(held, LockAttempt::Acquired(_)),
+        "the new build holds its profile lock"
+    );
+    assert_eq!(
+        tick(&pool, 1),
+        0,
+        "the eviction finds the new lock held and stands down"
+    );
+    assert!(
+        target.join("debug/deps/unit.rlib").exists() && target.join("release/.cargo-lock").exists()
+    );
+    drop(held);
 }
