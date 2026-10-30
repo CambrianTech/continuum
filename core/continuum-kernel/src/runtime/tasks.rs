@@ -12,6 +12,8 @@ use uuid::Uuid;
 
 mod output;
 pub use output::TaskOutput;
+mod delivery;
+pub use delivery::{DeliveryError, DeliveryPage, TaskOwnerSink};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TaskEnd {
