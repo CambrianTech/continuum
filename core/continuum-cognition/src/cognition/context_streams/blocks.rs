@@ -99,8 +99,8 @@ mod tests {
         };
         let item = grounding(vec![card("a"), card("b")]).items().remove(0);
         let text = |m: &ContextMessage| m.text.clone();
-        assert_eq!(text(&item.full), "[room-board]\ncard a: a long description of the work\ncard b: a long description of the work");
-        assert_eq!(item.summary.as_ref().map(text).as_deref(), Some("[room-board]\ncard a: short\ncard b: short"));
-        assert_eq!(item.pointer.as_ref().map(text).as_deref(), Some("[room-board]\n[card a]\n[card b]"));
+        assert_eq!(text(item.full()), "[room-board]\ncard a: a long description of the work\ncard b: a long description of the work");
+        assert_eq!(item.summary().map(text).as_deref(), Some("[room-board]\ncard a: short\ncard b: short"));
+        assert_eq!(item.pointer().map(text).as_deref(), Some("[room-board]\n[card a]\n[card b]"));
     }
 }

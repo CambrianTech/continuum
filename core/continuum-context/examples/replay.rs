@@ -330,7 +330,7 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
     }
     // A ledger line stands in for an act only when the log holds no rendering of it.
     if let Some(ledger) = sources.remove("ledger") {
-        let held: Vec<String> = sources.get("actions").into_iter().flatten().map(|item| item.key.clone()).collect();
+        let held: Vec<String> = sources.get("actions").into_iter().flatten().map(|item| item.key().to_owned()).collect();
         let missing = ledger.into_iter().filter(|line| !held.contains(&line.key)).collect::<Vec<_>>();
         sources.entry("actions".into()).or_default().extend(missing);
     }
@@ -384,7 +384,7 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
     let mut tails = Vec::new();
     let mut turnover_prefill = Vec::new();
     for cut in cuts {
-        let action_keys: Vec<String> = cut.sources.get("actions").into_iter().flatten().map(|item| item.key.clone()).collect();
+        let action_keys: Vec<String> = cut.sources.get("actions").into_iter().flatten().map(|item| item.key().to_owned()).collect();
         restored.learn(&action_keys, &cut.act);
         let counted = restored.rereads(&cut.act, &previous_view);
         rereads += counted.total;
