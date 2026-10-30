@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::routing::addressed_inbox::{AddressedFrame, AddressedPort};
 use airc_core::Headers;
