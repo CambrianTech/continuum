@@ -380,11 +380,13 @@ pub enum EmissionStop {
 
 impl EmissionStop {
     /// How the hour line counts this stop (`health_ledger::Stop`). A turn that landed with
-    /// reasoning and no answer or call ended inside her think: its own class, not "landed".
+    /// reasoning and no answer or call ended inside her think, and one that landed with neither
+    /// produced nothing: each its own class, never "landed".
     pub fn counted(self, answer_tokens: u32, reasoning_tokens: u32) -> continuum_vitals::health_ledger::Stop {
         use continuum_vitals::health_ledger::Stop;
         match self {
             EmissionStop::Landed if answer_tokens == 0 && reasoning_tokens > 0 => Stop::ThinkEnded,
+            EmissionStop::Landed if answer_tokens == 0 => Stop::Empty,
             EmissionStop::Landed => Stop::Landed,
             EmissionStop::CutMidAnswer => Stop::CutAnswer,
             EmissionStop::CutMidThought => Stop::CutThink,

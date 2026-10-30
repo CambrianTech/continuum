@@ -224,6 +224,7 @@ impl ServiceModule for CitizenHealthModule {
             writes = h.writes,
             lane_grants = h.lanes_granted,
             stops_landed = h.stops.landed,
+            stops_empty = h.stops.empty,
             stops_think_ended = h.stops.think_ended,
             stops_cut_answer = h.stops.cut_answer,
             stops_cut_think = h.stops.cut_think,
@@ -314,7 +315,7 @@ impl ServiceModule for CitizenHealthModule {
                     "acts": h.acts, "writes": h.writes, "lane_grants": h.lanes_granted, "settles": h.settles,
                     "credits_staged": h.credits_staged, "credits_settled": h.credits_settled,
                     "stops": {
-                        "landed": h.stops.landed, "think_ended": h.stops.think_ended,
+                        "landed": h.stops.landed, "empty": h.stops.empty, "think_ended": h.stops.think_ended,
                         "cut_answer": h.stops.cut_answer, "cut_think": h.stops.cut_think,
                         "think_budget": h.stops.think_budget,
                     },

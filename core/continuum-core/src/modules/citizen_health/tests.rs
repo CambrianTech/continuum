@@ -169,11 +169,11 @@
     // 2026-10-30: three such cuts read "think-only 0").
     #[test]
     fn the_line_says_acts_lane_starved_and_every_stop_as_separate_terms() {
-        let stops = StopCounts { landed: 3, think_ended: 1, cut_answer: 1, cut_think: 3, think_budget: 1 };
+        let stops = StopCounts { landed: 3, empty: 1, think_ended: 1, cut_answer: 1, cut_think: 3, think_budget: 1 };
         let m5 = CitizenHealth { acts: 6, lane_starved: 2, stops, ..h(4, 2, 6, 0) };
         let l = line(&m5, &verdict(&m5));
         for needle in [
-            "acts 6", "lane-starved 2", "landed 3", "think-ended 1", "cut-answer 1", "cut-think 3",
+            "acts 6", "lane-starved 2", "landed 3", "empty 1", "think-ended 1", "cut-answer 1", "cut-think 3",
             "think-budget 1", "writes 0",
         ] {
             assert!(l.contains(needle), "{needle} missing from {l}");

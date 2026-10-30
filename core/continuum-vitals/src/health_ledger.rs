@@ -99,11 +99,15 @@ pub static LEDGER: Ledger = Ledger {
 
 /// How one completed generation stopped: the outcome the hour line counts. Mapped once
 /// from the emission classifier's verdict where it is made, so every generation lands in
-/// exactly one class whatever branch handles it afterwards.
+/// exactly one class whatever branch handles it afterwards. A generation that ERRORED never
+/// completed and is not a stop: it is counted in `generations_dropped`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stop {
     /// The model stopped on its own with an answer or a call.
     Landed,
+    /// The model stopped on its own having produced nothing: no answer, no call, no reasoning.
+    /// It said and did nothing, so it is never read as work.
+    Empty,
     /// The model stopped on its own inside its reasoning: no answer, no call.
     ThinkEnded,
     /// Cut at the output limit inside the answer.
@@ -118,6 +122,7 @@ pub enum Stop {
 #[derive(Default)]
 pub struct StopCounters {
     landed: AtomicU64,
+    empty: AtomicU64,
     think_ended: AtomicU64,
     cut_answer: AtomicU64,
     cut_think: AtomicU64,
@@ -128,6 +133,7 @@ impl StopCounters {
     pub const fn new() -> Self {
         Self {
             landed: AtomicU64::new(0),
+            empty: AtomicU64::new(0),
             think_ended: AtomicU64::new(0),
             cut_answer: AtomicU64::new(0),
             cut_think: AtomicU64::new(0),
@@ -143,6 +149,7 @@ impl StopCounters {
     fn counter(&self, stop: Stop) -> &AtomicU64 {
         match stop {
             Stop::Landed => &self.landed,
+            Stop::Empty => &self.empty,
             Stop::ThinkEnded => &self.think_ended,
             Stop::CutAnswer => &self.cut_answer,
             Stop::CutThink => &self.cut_think,
@@ -153,6 +160,7 @@ impl StopCounters {
     fn read(&self, take: impl Fn(&AtomicU64) -> u64) -> StopCounts {
         StopCounts {
             landed: take(&self.landed),
+            empty: take(&self.empty),
             think_ended: take(&self.think_ended),
             cut_answer: take(&self.cut_answer),
             cut_think: take(&self.cut_think),
@@ -165,6 +173,7 @@ impl StopCounters {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StopCounts {
     pub landed: u64,
+    pub empty: u64,
     pub think_ended: u64,
     pub cut_answer: u64,
     pub cut_think: u64,
@@ -804,7 +813,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         // class apart (a cut inside thinking is not a landed turn); `prefix reuse` is how much of each
         // prompt the engine did not re-read (card c119ace7); `moves` is minds changing
         // seats and `oldest dormant turn` is a mind with no seat at all (card 10bba591).
-        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · lane-starved {} · stops: landed {} / think-ended {} / cut-answer {} / cut-think {} / think-budget {} · dropped {} · writes {} · lane grants {} · settles {} · learning credits {} staged / {} settled{}{} · moves: {} on opportunity / {} on failure{} — {}",
+        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · lane-starved {} · stops: landed {} / empty {} / think-ended {} / cut-answer {} / cut-think {} / think-budget {} · dropped {} · writes {} · lane grants {} · settles {} · learning credits {} staged / {} settled{}{} · moves: {} on opportunity / {} on failure{} — {}",
         h.window_secs / 60,
         h.resident,
         lanes,
@@ -812,6 +821,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         h.acts,
         h.lane_starved,
         h.stops.landed,
+        h.stops.empty,
         h.stops.think_ended,
         h.stops.cut_answer,
         h.stops.cut_think,
@@ -883,12 +893,12 @@ mod tests {
     #[test]
     fn every_stop_class_is_counted_once_in_its_own_counter() {
         let stops = StopCounters::new();
-        for stop in [Stop::CutThink, Stop::CutThink, Stop::CutThink, Stop::Landed, Stop::ThinkEnded, Stop::CutAnswer, Stop::ThinkBudget] {
+        for stop in [Stop::CutThink, Stop::CutThink, Stop::CutThink, Stop::Landed, Stop::Empty, Stop::ThinkEnded, Stop::CutAnswer, Stop::ThinkBudget] {
             stops.note(stop);
         }
         assert_eq!(
             stops.read(|c| c.load(Ordering::Relaxed)),
-            StopCounts { landed: 1, think_ended: 1, cut_answer: 1, cut_think: 3, think_budget: 1 }
+            StopCounts { landed: 1, empty: 1, think_ended: 1, cut_answer: 1, cut_think: 3, think_budget: 1 }
         );
     }
 
