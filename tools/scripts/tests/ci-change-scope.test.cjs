@@ -241,3 +241,18 @@ test('the real workspace derives a lib-test flag for every tested crate', () => 
   assert.deepEqual(Object.keys(LIB_TESTS), TESTED_CRATES);
   for (const own of readPolicy(repo).own_lib_test_step) assert.equal(LIB_TESTS[own], false, own);
 });
+
+
+test('client transport changes execute client lib tests through the CLI job', () => {
+  assert.equal(scope(['client/continuum-client/src/airc_ipc.rs']).cli, true);
+  assert.equal(scope(['client/continuum-client/Cargo.toml']).cli, true);
+});
+
+
+test('CRLF workspace comments do not become phantom crate members', () => {
+  const fs = require('node:fs'); const os = require('node:os');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-crlf-'));
+  fs.writeFileSync(path.join(root, 'Cargo.toml'), '[workspace]\r\nmembers = [\r\n # "core/removed"\r\n]\r\n');
+  assert.deepEqual(readWorkspace(root).crates, []);
+  fs.rmSync(root, { recursive: true });
+});

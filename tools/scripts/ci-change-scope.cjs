@@ -46,7 +46,7 @@ function selectPublication(paths, evidence) {
 // path dependencies (normal, dev, build and target-specific), read from the Cargo.toml files.
 function readWorkspace(root = '.') {
   const read = file => fs.readFileSync(path.join(root, file), 'utf8');
-  const strip = text => text.split('\n').map(line => line.replace(/#.*$/, '')).join('\n');
+  const strip = text => text.split(/\r?\n/).map(line => line.replace(/#.*$/, '')).join('\n');
   const members = strip(read('Cargo.toml')).match(/^\s*members\s*=\s*\[([^\]]*)\]/m);
   if (!members) throw new Error('Cannot read workspace members from Cargo.toml');
   const crates = [...members[1].matchAll(/"([^"]+)"/g)].map(([, dir]) => {
@@ -123,6 +123,7 @@ const global = p => p === 'Cargo.lock' || p === 'Cargo.toml' || p === 'rust-tool
   || /(^|\/)\.cargo\//.test(p) || /(^|\/)build\.rs$/.test(p) || p.startsWith('core/vendor/');
 // The installed-release handoff regressions exercise the CLI binary and its lifecycle crate.
 const cliPath = p => p.startsWith('core/continuum-cli-lifecycle/')
+  || p.startsWith('client/continuum-client/')
   || p === 'core/continuum-core/src/bin/continuum.rs' || p.startsWith('core/continuum-core/src/bin/continuum/');
 
 // Every crate a changed path lies in, plus every crate that depends on one of them.

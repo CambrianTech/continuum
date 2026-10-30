@@ -1,5 +1,15 @@
 # AGENTS.md — entry point for Codex and other agent runtimes
 
+## Mandatory development doctrine (Joel, 2026-10-30)
+
+Read [Development doctrine](docs/architecture/DEVELOPMENT-DOCTRINE.md) before design,
+implementation or review. It is the canonical cross-project rule: zero backward
+compatibility; no fallback/default substitution/unchecked unwraps; callers comply with
+firm typed contracts. One mechanism has one owner behind a narrow crate API. Shared
+implementations own lifecycle and concurrency; route by headers, never body scanning.
+Completion includes deleting obsolete paths and proving the replacement. Older guidance
+cannot authorize exceptions. Preserve durable identity, data, jobs and owner work.
+
 ## ⛳ THE PLAN — read before every change (Joel, 2026-10-18; the path added 10-19)
 
 **What we are building** (Joel, 10-19): persistent, multi-activity minds with agency,

@@ -10,13 +10,8 @@
 //! The core owns these traits so the ingress contract is testable without a daemon: the
 //! production impls below delegate to airc; a test supplies a fake inbox and port.
 //!
-//! ASSUMED airc API (airc#1620 foundation c7083d04 + the addressed module, not yet
-//! exported when this was written): `AddressedInbox::next(&mut self) ->
-//! Option<Arc<VerifiedAddressed>>`; `VerifiedAddressed::{from, to, kind, correlation,
-//! headers, body}`; `AddressedKind::{Command, CommandResult}`;
-//! `Airc::addressed_inbox()`, `Airc::reply_addressed(&VerifiedAddressed, Headers, Body)`
-//! and `Airc::stream_addressed(&VerifiedAddressed, Headers, Body)` (the reply and its
-//! token stream bound to the request they answer).
+//! Progress and the settled result are separate sealed frame kinds. The library
+//! retains the original request deadline for both, and inbox loss/expiry remains typed.
 
 use std::any::Any;
 use std::sync::Arc;
@@ -38,8 +33,9 @@ pub trait AddressedFrame: Any + Send + Sync + std::fmt::Debug {
     /// The request/reply pairing airc stamped.
     fn correlation(&self) -> Uuid;
     fn headers(&self) -> &Headers;
+    fn deadline(&self) -> tokio::time::Instant;
     /// Opaque until the ingress contract has admitted the frame.
-    fn body(&self) -> Option<&Body>;
+    fn body(&self) -> &Body;
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -59,7 +55,10 @@ impl AddressedFrame for VerifiedAddressed {
     fn headers(&self) -> &Headers {
         VerifiedAddressed::headers(self)
     }
-    fn body(&self) -> Option<&Body> {
+    fn deadline(&self) -> tokio::time::Instant {
+        VerifiedAddressed::deadline(self)
+    }
+    fn body(&self) -> &Body {
         VerifiedAddressed::body(self)
     }
     fn as_any(&self) -> &dyn Any {
@@ -67,15 +66,15 @@ impl AddressedFrame for VerifiedAddressed {
     }
 }
 
-/// Where addressed frames arrive, one at a time. `None` = the inbox closed.
+/// Where addressed frames arrive; closure, loss and expiry stay distinguishable.
 #[async_trait]
 pub trait AddressedInbox: Send {
-    async fn next(&mut self) -> Option<Arc<dyn AddressedFrame>>;
+    async fn next(&mut self) -> Result<Arc<dyn AddressedFrame>, airc_lib::InboxError>;
 }
 
 #[async_trait]
 impl AddressedInbox for airc_lib::AddressedInbox {
-    async fn next(&mut self) -> Option<Arc<dyn AddressedFrame>> {
+    async fn next(&mut self) -> Result<Arc<dyn AddressedFrame>, airc_lib::InboxError> {
         airc_lib::AddressedInbox::next(self)
             .await
             .map(|frame| frame as Arc<dyn AddressedFrame>)
@@ -125,7 +124,7 @@ impl AddressedPort for Airc {
         headers: Headers,
         body: Body,
     ) -> Result<(), String> {
-        self.reply_addressed(verified(request)?, headers, body)
+        Airc::reply(self, verified(request)?, headers, body)
             .await
             .map_err(|e| format!("airc reply: {e}"))
     }
@@ -135,7 +134,7 @@ impl AddressedPort for Airc {
         headers: Headers,
         body: Body,
     ) -> Result<(), String> {
-        self.stream_addressed(verified(request)?, headers, body)
+        Airc::reply_progress(self, verified(request)?, headers, body)
             .await
             .map_err(|e| format!("airc stream chunk: {e}"))
     }

@@ -47,6 +47,7 @@ airc-core.workspace = true
 airc-blobs.workspace = true
 airc-protocol.workspace = true
 airc-lib.workspace = true
+airc-ipc.workspace = true
 airc-work.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 mod over_airc;
+mod required_metadata;
 
 /// Tiers as this node's trust store would report them.
 struct Tiers(HashMap<PeerId, TrustTier>);
@@ -30,8 +31,12 @@ struct Echo {
 }
 
 impl Echo {
-    const PREFIXES: &'static [&'static str] =
-        &["persona/placement/reserve", "test/echo", "handle-test/"];
+    const PREFIXES: &'static [&'static str] = &[
+        "persona/placement/reserve",
+        "ai/generate",
+        "test/echo",
+        "handle-test/",
+    ];
 }
 
 #[async_trait]
@@ -112,7 +117,7 @@ async fn deliver(handler: &Arc<CommandRequestHandler>, frames: Vec<FakeFrame>) {
         let _ = tx.send(Arc::new(frame)); // the receiver is held right here
     }
     drop(tx);
-    while let Some(frame) = inbox.next().await {
+    while let Ok(frame) = inbox.next().await {
         handler.on_addressed(frame).await;
     }
 }
@@ -225,7 +230,7 @@ async fn the_payload_must_name_the_command_the_header_was_judged_on() {
     );
     let unnamed = FakeFrame::command(node, rig.me, None, "test/echo", json!({}));
     let mut garbled = FakeFrame::command(node, rig.me, Some("test/echo"), "test/echo", json!({}));
-    garbled.body = Some(Body::Binary(vec![0xde, 0xad]));
+    garbled.body = Body::Binary(vec![0xde, 0xad]);
     deliver(&rig.handler, vec![lies, unnamed, garbled]).await;
     for rule in ["path_mismatch", "missing_command_path", "malformed_request"] {
         let sent = rig
@@ -286,7 +291,7 @@ fn admitted(path: &str, kind: &str, env: Option<&str>) -> AdmittedCommand {
         env.map(str::to_string),
         Value::Null,
     );
-    frame.body = serde_json::to_value(&request).ok().map(Body::Json); // ok(): a request of strings always serializes
+    frame.body = Body::Json(serde_json::json!(request));
     AdmittedCommand {
         frame: Arc::new(frame),
         request,
@@ -394,5 +399,27 @@ async fn a_non_json_result_is_refused_not_coerced() {
     assert!(
         matches!(&response, AircCommandResponse::Error { message, .. } if message.contains("non-Json") && message.contains("Handle")),
         "{response:?}"
+    );
+}
+
+#[tokio::test]
+async fn expired_request_cannot_execute_an_immediately_ready_command() {
+    let rig = rig(&[]);
+    let mut command = admitted("test/echo", "peer", None);
+    let mut frame = FakeFrame::command(
+        PeerId::new(),
+        rig.me,
+        Some("test/echo"),
+        "test/echo",
+        json!({}),
+    );
+    frame.deadline = tokio::time::Instant::now();
+    command.frame = Arc::new(frame);
+    let response = rig.handler.process_request_streaming(&command).await;
+    assert!(response.into_result().is_err());
+    assert_eq!(
+        rig.runs.load(Ordering::SeqCst),
+        0,
+        "expiry must precede executor polling"
     );
 }

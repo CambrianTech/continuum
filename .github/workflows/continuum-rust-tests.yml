@@ -259,6 +259,9 @@ jobs:
         with:
           submodules: recursive
       - uses: ./.github/actions/rust-ci-setup
+      # The CLI links this library, but linking never executes its serve-loop tests.
+      - name: Client transport lifecycle regressions
+        run: cargo test -p continuum-client --lib --profile dev-fast
       - name: CLI installed-release handoff regressions
         run: |
           set -o pipefail

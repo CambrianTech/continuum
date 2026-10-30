@@ -151,8 +151,12 @@ impl TwoAircLoopback {
         for (holder, peer) in [(&peer_a, peer_b.peer_id()), (&peer_b, peer_a.peer_id())] {
             airc_trust::set_tier(holder.home(), peer, airc_lib::TrustTier::OwnAccount)
                 .await
-                .map_err(|e| LoopbackError::AircSpawn(format!("own_account tier for {peer:?}: {e}")))?
-                .ok_or_else(|| LoopbackError::AircSpawn(format!("{peer:?} has no trust row to raise")))?;
+                .map_err(|e| {
+                    LoopbackError::AircSpawn(format!("own_account tier for {peer:?}: {e}"))
+                })?
+                .ok_or_else(|| {
+                    LoopbackError::AircSpawn(format!("{peer:?} has no trust row to raise"))
+                })?;
         }
 
         // Join the shared fixture room so room-scoped subscribe lands.
@@ -247,7 +251,7 @@ mod tests {
         let peer_a_id = PeerId::from_uuid(loop_back.peer_a_id());
         let responder = tokio::spawn(async move {
             let mut inbox = peer_b_handle
-                .addressed_inbox()
+                .addressed_inbox(tokio::time::Instant::now() + Duration::from_secs(5))
                 .await
                 .expect("peer_b addressed inbox");
             let request = inbox.next().await.expect("an addressed command arrives");
@@ -257,7 +261,7 @@ mod tests {
             let mut reply_headers = Headers::new();
             reply_headers.insert("test.reply".into(), "loopback.pong".into());
             peer_b_handle
-                .reply_addressed(&request, reply_headers, Body::text("pong"))
+                .reply(&request, reply_headers, Body::text("pong"))
                 .await
                 .expect("peer_b reply");
         });
@@ -287,7 +291,7 @@ mod tests {
         // `Body::Json({"text": "pong"})` so we extract the `text` field.
         assert_eq!(reply.kind(), airc_lib::AddressedKind::CommandResult);
         match reply.body() {
-            Some(Body::Json(v)) => {
+            Body::Json(v) => {
                 assert_eq!(v["text"], "pong", "got body json {v}");
             }
             other => panic!("expected Json pong body, got {other:?}"),

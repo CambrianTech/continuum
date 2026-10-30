@@ -44,14 +44,18 @@ use uuid::Uuid;
 
 use crate::routing::addressed_inbox::{AddressedFrame, AddressedHandler, AddressedPort};
 use crate::routing::grid_capability::{GrantAuthOutcome, GrantAuthorizer};
-use crate::routing::{AircCommandRequest, AircCommandResponse, CallerIdentity, CommandUri, HEADER_COMMAND_STATUS};
+use crate::routing::{
+    AircCommandRequest, AircCommandResponse, CallerIdentity, CommandUri, HEADER_COMMAND_STATUS,
+};
 use crate::runtime::{CommandExecutor, CommandResult};
 
 mod ingress_contract;
 mod served_generations;
 mod stream_publisher;
 
-pub use ingress_contract::{admit_caller, admit_frame, required_tier, AircTrustStore, IngressRefusal, PeerTierSource};
+pub use ingress_contract::{
+    admit_caller, admit_frame, required_tier, AircTrustStore, IngressRefusal, PeerTierSource,
+};
 use stream_publisher::StreamPublisher;
 
 /// This node's peer-command receiver. The pump hands it each addressed frame.
@@ -103,9 +107,8 @@ impl AdmittedCommand {
 }
 
 /// A requester's stamp on an `ai/generate` request: its own id for the generation, and the
-/// epoch ms past which it no longer waits. Both or neither: an id without a validity could
-/// be delayed past any bound the seat keeps its cancel for, so it is treated as unstamped
-/// (keyed by the airc correlation, which no cancel names).
+/// epoch ms past which it no longer waits. Both are required for generation requests;
+/// invalid metadata is refused before execution, never replaced by a transport ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GenerationStamp {
     pub id: Uuid,
@@ -113,28 +116,33 @@ pub struct GenerationStamp {
 }
 
 impl GenerationStamp {
-    fn from_headers(headers: &airc_core::Headers) -> Option<Self> {
-        Some(Self {
-            id: headers
-                .get(continuum_airc_protocol::HEADER_GENERATE_ID)?
-                .parse()
-                .ok()?,
-            valid_until_ms: headers
-                .get(continuum_airc_protocol::HEADER_GENERATE_VALID_UNTIL_MS)?
-                .parse()
-                .ok()?,
-        })
+    fn from_headers(headers: &airc_core::Headers) -> Result<Self, IngressRefusal> {
+        let id = headers
+            .get(continuum_airc_protocol::HEADER_GENERATE_ID)
+            .ok_or(IngressRefusal::MissingGenerationStamp)?
+            .parse()
+            .map_err(|_| IngressRefusal::MalformedGenerationStamp)?;
+        let valid_until_ms = headers
+            .get(continuum_airc_protocol::HEADER_GENERATE_VALID_UNTIL_MS)
+            .ok_or(IngressRefusal::MissingGenerationStamp)?
+            .parse()
+            .map_err(|_| IngressRefusal::MalformedGenerationStamp)?;
+        Ok(Self { id, valid_until_ms })
     }
 }
 
 /// The capability grant a caller PRESENTED in its headers (base64
 /// [`HEADER_AIRC_CAPABILITY_GRANT`]), decoded. Absent is normal (a tier-gated call);
 /// present-but-undecodable is refused by rule, never silently dropped.
-fn presented_grant(headers: &airc_core::Headers) -> Result<Option<SignedCapabilityGrant>, IngressRefusal> {
+fn presented_grant(
+    headers: &airc_core::Headers,
+) -> Result<Option<SignedCapabilityGrant>, IngressRefusal> {
     let Some(b64) = headers.get(HEADER_AIRC_CAPABILITY_GRANT) else {
         return Ok(None);
     };
-    let bytes = STANDARD.decode(b64).map_err(|_| IngressRefusal::MalformedGrant)?;
+    let bytes = STANDARD
+        .decode(b64)
+        .map_err(|_| IngressRefusal::MalformedGrant)?;
     serde_json::from_slice(&bytes)
         .map(Some)
         .map_err(|_| IngressRefusal::MalformedGrant)
@@ -142,7 +150,7 @@ fn presented_grant(headers: &airc_core::Headers) -> Result<Option<SignedCapabili
 
 /// The payload, decoded only after the contract admitted the frame.
 fn decode_request(frame: &dyn AddressedFrame) -> Result<AircCommandRequest, IngressRefusal> {
-    let Some(Body::Json(value)) = frame.body() else {
+    let Body::Json(value) = frame.body() else {
         return Err(IngressRefusal::MalformedRequest);
     };
     serde::Deserialize::deserialize(value).map_err(|_| IngressRefusal::MalformedRequest)
@@ -186,11 +194,18 @@ impl CommandRequestHandler {
 
     /// The ingress contract, then the decode: an admitted command, or the typed refusal
     /// (with the tier the sender was seen at, for the probe).
-    async fn admit(&self, frame: &Arc<dyn AddressedFrame>) -> Result<(AdmittedCommand, &'static str), (String, &'static str, IngressRefusal)> {
-        let path = admit_frame(frame.as_ref(), self.port.me()).map_err(|r| (String::new(), "unread", r))?;
+    async fn admit(
+        &self,
+        frame: &Arc<dyn AddressedFrame>,
+    ) -> Result<(AdmittedCommand, &'static str), (String, &'static str, IngressRefusal)> {
+        let path = admit_frame(frame.as_ref(), self.port.me())
+            .map_err(|r| (String::new(), "unread", r))?;
         let caller = frame.from();
         let grant = presented_grant(frame.headers()).map_err(|r| (path.clone(), "unread", r))?;
-        let granted = self.verify_presented_grant(caller, grant.as_ref(), &path).await;
+        let granted = self
+            .verify_presented_grant(caller, grant.as_ref(), &path)
+            .await
+            .map_err(|r| (path.clone(), "unread", r))?;
         let tier = self.tiers.tier_of(caller).await;
         let tier_seen = match &tier {
             Ok(Some(tier)) => tier.as_wire_str(),
@@ -204,11 +219,19 @@ impl CommandRequestHandler {
         if request.path != path {
             return Err((path, tier_seen, IngressRefusal::PathMismatch));
         }
+        let generation = if path == STREAMED_GENERATE_PATH {
+            Some(
+                GenerationStamp::from_headers(frame.headers())
+                    .map_err(|r| (path.clone(), tier_seen, r))?,
+            )
+        } else {
+            None
+        };
         let admitted = AdmittedCommand {
             frame: Arc::clone(frame),
             request,
             verified_capabilities: granted,
-            generation: GenerationStamp::from_headers(frame.headers()),
+            generation,
         };
         Ok((admitted, tier_seen))
     }
@@ -228,6 +251,18 @@ impl CommandRequestHandler {
     /// command path (ACL, interceptors, caller identity) — the only addition is the
     /// `streamId` the command resolves to the sink registered here.
     pub async fn process_request_streaming(&self, parsed: &AdmittedCommand) -> AircCommandResponse {
+        if tokio::time::Instant::now() >= parsed.frame.deadline() {
+            return AircCommandResponse::error("addressed request deadline elapsed");
+        }
+        match tokio::time::timeout_at(parsed.frame.deadline(), self.process_with_progress(parsed))
+            .await
+        {
+            Ok(response) => response,
+            Err(_) => AircCommandResponse::error("addressed request deadline elapsed".to_string()),
+        }
+    }
+
+    async fn process_with_progress(&self, parsed: &AdmittedCommand) -> AircCommandResponse {
         if parsed.request.path != STREAMED_GENERATE_PATH {
             return self.process_request(parsed).await;
         }
@@ -249,23 +284,32 @@ impl CommandRequestHandler {
             // requester's node (card c84d885a, S1 — the wait is measured where it forms).
             received_at: std::time::Instant::now(),
         };
-        let drain = tokio::spawn(publisher.drain(rx));
-        let response = self.process_request(&streamed).await;
-        // The sink's sender is dropped by the command (or by the guard, if the
-        // command never took it); the drain sees the close, flushes, marks the
-        // end, and only THEN does the settled reply go out — a requester never
-        // sees the reply before the last chunk.
-        drop(guard);
-        match drain.await {
-            Ok(published) => continuum_base::probe!(
-                class = "airc.command.streamed",
-                path = %parsed.request.path,
-                correlation = %stream_id,
-                chunks = published,
-                "the answer's tokens rode the wire as they were produced; the settled reply follows"
-            ),
-            Err(e) => warn!(correlation = %stream_id, error = %e, "stream drain task failed"),
-        }
+        // Both futures belong to this generation. A failed publish drops the running
+        // command immediately, and cancellation drops the drain instead of detaching it.
+        let mut drain = std::pin::pin!(publisher.drain(rx));
+        let mut command = std::pin::pin!(self.process_request(&streamed));
+        let (response, published) = tokio::select! {
+            drained = &mut drain => match drained {
+                Ok(published) => (command.await, published),
+                Err(error) => return AircCommandResponse::error(error),
+            },
+            response = &mut command => {
+                // Release the registered sender if the command never took it. Flush
+                // the final chunk before permitting the completed response to leave.
+                drop(guard);
+                match drain.await {
+                    Ok(published) => (response, published),
+                    Err(error) => return AircCommandResponse::error(error),
+                }
+            }
+        };
+        continuum_base::probe!(
+            class = "airc.command.streamed",
+            path = %parsed.request.path,
+            correlation = %stream_id,
+            chunks = published,
+            "stream published completely; the settled reply follows"
+        );
         response
     }
 
@@ -284,38 +328,34 @@ impl CommandRequestHandler {
     /// The presenting key is `port.peer_public_key(sender)` — the enrolled key from
     /// the SAME registry that signature-verified the inbound envelope, so it is the
     /// AUTHENTICATED sender's key, never the grant's self-asserted `grantee_pubkey`
-    /// (the hard gate the review flagged). A non-Authorized outcome logs at debug +
-    /// confers nothing; the caller then falls back to tier gating.
+    /// (the hard gate the review flagged). An absent grant uses the tier contract;
+    /// a presented grant must verify or the request is refused.
     async fn verify_presented_grant(
         &self,
         caller: PeerId,
         grant: Option<&SignedCapabilityGrant>,
         path: &str,
-    ) -> Vec<String> {
-        let (Some(authorizer), Some(grant)) = (self.grant_authorizer.as_ref(), grant) else {
-            return Vec::new();
+    ) -> Result<Vec<String>, IngressRefusal> {
+        let Some(grant) = grant else {
+            return Ok(Vec::new());
         };
-        let Some(presenting) = self.port.peer_public_key(caller) else {
-            warn!(
-                caller = %caller.0,
-                "presented a capability grant but the sender is not enrolled — \
-                 cannot establish an authenticated presenting key; ignoring the grant"
-            );
-            return Vec::new();
-        };
+        let authorizer = self
+            .grant_authorizer
+            .as_ref()
+            .ok_or(IngressRefusal::GrantAuthorizerUnavailable)?;
+        let presenting = self
+            .port
+            .peer_public_key(caller)
+            .ok_or(IngressRefusal::PresentingKeyUnavailable)?;
         match authorizer
             .authorize_command(grant, &presenting, path, EpochMs::now().millis())
             .await
         {
-            GrantAuthOutcome::Authorized => grant.grant.capabilities.clone(),
+            GrantAuthOutcome::Authorized => Ok(grant.grant.capabilities.clone()),
             other => {
-                debug!(
-                    caller = %caller.0,
-                    path = %path,
-                    outcome = ?other,
-                    "presented capability grant did not authorize; falling back to tier gate"
-                );
-                Vec::new()
+                debug!(caller = %caller.0, path = %path, outcome = ?other,
+                    "presented capability grant refused");
+                Err(IngressRefusal::GrantRejected)
             }
         }
     }
@@ -433,7 +473,10 @@ impl CommandRequestHandler {
             }
         };
         let mut headers = airc_core::Headers::new();
-        headers.insert(HEADER_COMMAND_STATUS.to_string(), response.status_header_value().to_string());
+        headers.insert(
+            HEADER_COMMAND_STATUS.to_string(),
+            response.status_header_value().to_string(),
+        );
         if let Err(e) = self.port.reply(request, headers, body).await {
             continuum_base::probe!(
                 class = "airc.command.reply_failed",
@@ -448,7 +491,13 @@ impl CommandRequestHandler {
     /// A frame the ingress contract refused: probed with the rule, the sender, the
     /// command and the tier; a command to this node is answered with the rule (never its
     /// params); a frame that was not a command to this node draws no reply.
-    async fn refuse(&self, frame: &dyn AddressedFrame, path: &str, tier: &str, refusal: IngressRefusal) {
+    async fn refuse(
+        &self,
+        frame: &dyn AddressedFrame,
+        path: &str,
+        tier: &str,
+        refusal: IngressRefusal,
+    ) {
         continuum_base::probe!(
             class = "airc.command.ingress_refused",
             rule = refusal.rule(),
@@ -461,7 +510,11 @@ impl CommandRequestHandler {
             "addressed frame refused by the ingress contract"
         );
         if refusal.answered() {
-            self.reply_to(frame, &AircCommandResponse::error(refusal.reply_message(path))).await;
+            self.reply_to(
+                frame,
+                &AircCommandResponse::error(refusal.reply_message(path)),
+            )
+            .await;
         }
     }
 }
@@ -471,7 +524,9 @@ impl AddressedHandler for CommandRequestHandler {
     async fn on_addressed(&self, frame: Arc<dyn AddressedFrame>) {
         let (parsed, tier_seen) = match self.admit(&frame).await {
             Ok(admitted) => admitted,
-            Err((path, tier, refusal)) => return self.refuse(frame.as_ref(), &path, tier, refusal).await,
+            Err((path, tier, refusal)) => {
+                return self.refuse(frame.as_ref(), &path, tier, refusal).await
+            }
         };
         // THE ACCEPT PATH NAMES ITSELF: `correlation` is the join key, the same uuid the
         // CALLER awaits on, so both sides of a grid turn can be matched (2026-09-06: a
@@ -530,15 +585,13 @@ impl AddressedHandler for CommandRequestHandler {
         // pump keeps reading (card b3e5b582). Classified from the decoded request, whose
         // path the contract has already matched to its header. Over the bound it is refused
         // at once with a typed overload reply instead of queueing an unbounded population.
-        if parsed.request.path == STREAMED_GENERATE_PATH {
+        if let Some(stamp) = parsed.generation {
             if let Some(generations) = &self.generations {
                 let bound = (self.generation_bound)();
                 // Keyed by the requester's generation id, so its cancel can name the work
                 // even if it abandoned the request before airc returned the correlation.
-                let key = parsed
-                    .generation
-                    .map_or(parsed.correlation(), |stamp| stamp.id);
-                let valid_until_ms = parsed.generation.map(|stamp| stamp.valid_until_ms);
+                let key = stamp.id;
+                let valid_until_ms = stamp.valid_until_ms;
                 match generations.admit(
                     key,
                     parsed.caller(),
@@ -646,16 +699,16 @@ impl CommandRequestHandler {
         // the AuthPolicy verdict vs an unknown path). Truncated: a gate string is
         // a sentence, and an unbounded field in a hot probe is a log-flood risk.
         let (outcome, detail, result_bytes) = match &response {
-            AircCommandResponse::Error { message, .. } => (
-                "error",
-                message.chars().take(400).collect::<String>(),
-                0u64,
-            ),
+            AircCommandResponse::Error { message, .. } => {
+                ("error", message.chars().take(400).collect::<String>(), 0u64)
+            }
             AircCommandResponse::Ok { result } => (
                 "ok",
                 String::new(),
                 if measure {
-                    serde_json::to_vec(result).map(|v| v.len() as u64).unwrap_or(0) // unwrap_or: the value came FROM serde and is about to be sent; 0 means unmeasured
+                    serde_json::to_vec(result) // airc wire: measure the serialized reply payload.
+                        .map(|v| v.len() as u64)
+                        .unwrap_or(0) // unwrap_or: the value came FROM serde and is about to be sent; 0 means unmeasured
                 } else {
                     0
                 },

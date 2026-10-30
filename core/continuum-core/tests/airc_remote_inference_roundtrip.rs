@@ -41,7 +41,9 @@ use continuum_core::inference::airc_remote::{AircLiveTransport, AircRemoteInfere
 use continuum_core::ipc::command_ingress::CommandRequestHandler;
 use continuum_core::routing::addressed_inbox::{AddressedHandler, AddressedKind};
 use continuum_core::runtime::command_executor::CommandExecutor;
-use continuum_core::runtime::{CommandResult, ModuleConfig, ModulePriority, ModuleRegistry, ServiceModule};
+use continuum_core::runtime::{
+    CommandResult, ModuleConfig, ModulePriority, ModuleRegistry, ServiceModule,
+};
 
 /// `ai/generate` answered with a canned response: the test pins the wire, not inference.
 struct CannedGenerate(TextGenerationResponse);
@@ -63,10 +65,17 @@ impl ServiceModule for CannedGenerate {
             tick_interval: None,
         }
     }
-    async fn initialize(&self, _ctx: &continuum_core::runtime::ModuleContext) -> Result<(), String> {
+    async fn initialize(
+        &self,
+        _ctx: &continuum_core::runtime::ModuleContext,
+    ) -> Result<(), String> {
         Ok(())
     }
-    async fn handle_command(&self, _command: &str, _params: serde_json::Value) -> Result<CommandResult, String> {
+    async fn handle_command(
+        &self,
+        _command: &str,
+        _params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
         serde_json::to_value(&self.0)
             .map(CommandResult::Json)
             .map_err(|e| format!("serialize canned response: {e}"))
@@ -76,7 +85,10 @@ impl ServiceModule for CannedGenerate {
     }
 }
 
-fn build_handler(peer_a: Arc<airc_lib::Airc>, canned: TextGenerationResponse) -> Arc<CommandRequestHandler> {
+fn build_handler(
+    peer_a: Arc<airc_lib::Airc>,
+    canned: TextGenerationResponse,
+) -> Arc<CommandRequestHandler> {
     let registry = Arc::new(ModuleRegistry::new());
     registry.register(Arc::new(CannedGenerate(canned)));
     let executor = Arc::new(CommandExecutor::new(registry));
@@ -92,10 +104,17 @@ async fn spawn_ai_generate_responder(
     ready: Arc<tokio::sync::Notify>,
 ) -> tokio::task::JoinHandle<uuid::Uuid> {
     tokio::spawn(async move {
-        let mut inbox = peer_a.addressed_inbox().await.expect("peer_a addressed inbox");
+        let mut inbox = peer_a
+            .addressed_inbox(tokio::time::Instant::now() + airc_ipc::client::DEFAULT_RPC_TIMEOUT)
+            .await
+            .expect("peer_a addressed inbox");
         ready.notify_one();
         let frame = inbox.next().await.expect("the request arrives");
-        assert_eq!(frame.kind(), AddressedKind::Command, "a request is airc's typed Command");
+        assert_eq!(
+            frame.kind(),
+            AddressedKind::Command,
+            "a request is airc's typed Command"
+        );
         assert_eq!(frame.from(), peer_b, "verified sender");
         assert_eq!(frame.to(), peer_a.peer_id(), "addressed to the seat");
         assert_eq!(

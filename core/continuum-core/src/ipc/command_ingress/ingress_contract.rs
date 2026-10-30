@@ -47,6 +47,11 @@ pub enum IngressRefusal {
     MissingCommandPath,
     /// The presented capability grant header does not decode.
     MalformedGrant,
+    GrantAuthorizerUnavailable,
+    PresentingKeyUnavailable,
+    GrantRejected,
+    MissingGenerationStamp,
+    MalformedGenerationStamp,
     /// The payload is not an `AircCommandRequest`.
     MalformedRequest,
     /// The decoded request names a different command than its header.
@@ -72,6 +77,11 @@ impl IngressRefusal {
             Self::AddressedElsewhere => "addressed_elsewhere",
             Self::MissingCommandPath => "missing_command_path",
             Self::MalformedGrant => "malformed_grant",
+            Self::GrantAuthorizerUnavailable => "grant_authorizer_unavailable",
+            Self::PresentingKeyUnavailable => "presenting_key_unavailable",
+            Self::GrantRejected => "grant_rejected",
+            Self::MissingGenerationStamp => "missing_generation_stamp",
+            Self::MalformedGenerationStamp => "malformed_generation_stamp",
             Self::MalformedRequest => "malformed_request",
             Self::PathMismatch => "path_mismatch",
             Self::LocalOnlyCommand => "local_only_command",
@@ -223,11 +233,13 @@ mod tests {
             "persona/placement/reserve",
             params.clone(),
         );
-        result.kind = AddressedKind::CommandResult;
-        assert_eq!(
-            admit_frame(&result, me).expect_err("refused"),
-            IngressRefusal::NotACommand
-        );
+        for kind in [AddressedKind::CommandResult, AddressedKind::CommandProgress] {
+            result.kind = kind;
+            assert_eq!(
+                admit_frame(&result, me).expect_err("only a request may execute"),
+                IngressRefusal::NotACommand
+            );
+        }
         let unnamed =
             FakeFrame::command(them, me, None, "persona/placement/reserve", params.clone());
         assert_eq!(

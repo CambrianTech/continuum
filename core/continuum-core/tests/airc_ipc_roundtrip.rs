@@ -21,7 +21,9 @@ use continuum_client::Connection;
 use continuum_core::ipc::command_ingress::CommandRequestHandler;
 use continuum_core::routing::addressed_inbox::{AddressedHandler, AddressedKind};
 use continuum_core::runtime::command_executor::CommandExecutor;
-use continuum_core::runtime::{CommandResult, ModuleConfig, ModulePriority, ModuleRegistry, ServiceModule};
+use continuum_core::runtime::{
+    CommandResult, ModuleConfig, ModulePriority, ModuleRegistry, ServiceModule,
+};
 
 /// Echoes the command path and params it ran, so the test asserts the wire round trip.
 struct DebugPing;
@@ -43,10 +45,17 @@ impl ServiceModule for DebugPing {
             tick_interval: None,
         }
     }
-    async fn initialize(&self, _ctx: &continuum_core::runtime::ModuleContext) -> Result<(), String> {
+    async fn initialize(
+        &self,
+        _ctx: &continuum_core::runtime::ModuleContext,
+    ) -> Result<(), String> {
         Ok(())
     }
-    async fn handle_command(&self, command: &str, params: serde_json::Value) -> Result<CommandResult, String> {
+    async fn handle_command(
+        &self,
+        command: &str,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
         Ok(CommandResult::Json(serde_json::json!({
             "ok": true,
             "echoed_path": command,
@@ -73,9 +82,16 @@ async fn spawn_real_substrate_responder(
     peer_a: Arc<airc_lib::Airc>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut inbox = peer_a.addressed_inbox().await.expect("peer_a addressed inbox");
+        let mut inbox = peer_a
+            .addressed_inbox(tokio::time::Instant::now() + airc_ipc::client::DEFAULT_RPC_TIMEOUT)
+            .await
+            .expect("peer_a addressed inbox");
         let frame = inbox.next().await.expect("the client's command arrives");
-        assert_eq!(frame.kind(), AddressedKind::Command, "the client sends airc's typed Command");
+        assert_eq!(
+            frame.kind(),
+            AddressedKind::Command,
+            "the client sends airc's typed Command"
+        );
         handler.on_addressed(frame).await;
     })
 }

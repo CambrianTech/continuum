@@ -75,8 +75,8 @@ use airc_protocol::headers_keys::HEADER_AIRC_CAPABILITY_GRANT;
 use super::airc_command_protocol::command_request_from_route_decision;
 use super::presented_grant_store::PresentedGrantStore;
 use super::{
-    AircCommandRequest, AircCommandResponse, PeerRef, RouteDecision, Transport,
-    HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH,
+    AircCommandRequest, AircCommandResponse, PeerRef, RouteDecision, Transport, HEADER_COMMAND_ENV,
+    HEADER_COMMAND_KIND, HEADER_COMMAND_PATH,
 };
 use crate::runtime::CommandResult;
 
@@ -415,7 +415,7 @@ impl Transport for AircTransport {
 
         // Decode via the testable free function. Every error path
         // here is covered by unit tests against `decode_reply`.
-        let value = Self::decode_reply(reply.body().cloned())?;
+        let value = Self::decode_reply(Some(reply.body().clone()))?;
         Ok(CommandResult::Json(value))
     }
 }
@@ -446,7 +446,11 @@ mod tests {
             headers.get(HEADER_COMMAND_KIND).map(String::as_str),
             Some("peer")
         );
-        assert_eq!(headers.len(), 2, "path + kind only: a command needs no body hint");
+        assert_eq!(
+            headers.len(),
+            2,
+            "path + kind only: a command needs no body hint"
+        );
         // No env on this request → no env header
         assert!(headers.get(HEADER_COMMAND_ENV).is_none());
     }

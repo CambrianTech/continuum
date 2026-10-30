@@ -20,7 +20,8 @@ pub struct FakeFrame {
     pub kind: AddressedKind,
     pub correlation: Uuid,
     pub headers: Headers,
-    pub body: Option<Body>,
+    pub body: Body,
+    pub deadline: tokio::time::Instant,
 }
 
 impl FakeFrame {
@@ -44,7 +45,9 @@ impl FakeFrame {
             kind: AddressedKind::Command,
             correlation: Uuid::new_v4(),
             headers,
-            body: serde_json::to_value(&request).ok().map(Body::Json), // ok(): a request of strings and a JSON value always serializes; None would surface as a malformed-request refusal
+            body: Body::Json(serde_json::json!(request)),
+            deadline: tokio::time::Instant::now()
+                + continuum_airc_protocol::DEFAULT_COMMAND_DEADLINE,
         }
     }
 }
@@ -65,8 +68,11 @@ impl AddressedFrame for FakeFrame {
     fn headers(&self) -> &Headers {
         &self.headers
     }
-    fn body(&self) -> Option<&Body> {
-        self.body.as_ref()
+    fn deadline(&self) -> tokio::time::Instant {
+        self.deadline
+    }
+    fn body(&self) -> &Body {
+        &self.body
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -85,8 +91,8 @@ impl FakeInbox {
 
 #[async_trait]
 impl AddressedInbox for FakeInbox {
-    async fn next(&mut self) -> Option<Arc<dyn AddressedFrame>> {
-        self.0.recv().await
+    async fn next(&mut self) -> Result<Arc<dyn AddressedFrame>, airc_lib::InboxError> {
+        self.0.recv().await.ok_or(airc_lib::InboxError::Closed)
     }
 }
 

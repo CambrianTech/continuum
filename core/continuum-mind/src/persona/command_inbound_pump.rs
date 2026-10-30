@@ -132,9 +132,10 @@ pub async fn spawn_node_pump(
     // The node never changes rooms on its own; the sender lives with the pump
     // for the life of the process so the loop never reads "runtime dropped".
     let (membership_tx, membership_rx) = watch::channel(0u64);
-    let pump = PersonaCommandInboundPump::spawn(peer, airc, executor, grant_authorizer, membership_rx)
-        .await
-        .map_err(NodePumpError::Pump)?;
+    let pump =
+        PersonaCommandInboundPump::spawn(peer, airc, executor, grant_authorizer, membership_rx)
+            .await
+            .map_err(NodePumpError::Pump)?;
     NODE_PUMP
         .set((pump, membership_tx))
         .map_err(|_| NodePumpError::AlreadyInstalled)?;
@@ -173,7 +174,8 @@ pub enum NodePumpError {
 pub type CommandHandlerFactory =
     fn(Arc<Airc>, Arc<CommandExecutor>, Arc<GrantAuthorizer>) -> Arc<dyn AddressedHandler>;
 
-static HANDLER_FACTORY: parking_lot::RwLock<Option<CommandHandlerFactory>> = parking_lot::RwLock::new(None);
+static HANDLER_FACTORY: parking_lot::RwLock<Option<CommandHandlerFactory>> =
+    parking_lot::RwLock::new(None);
 
 /// Install the one command-handler factory. A second install replaces the first.
 pub fn install_command_handler(factory: CommandHandlerFactory) {
@@ -184,7 +186,7 @@ pub fn install_command_handler(factory: CommandHandlerFactory) {
 #[derive(Debug, thiserror::Error)]
 pub enum PumpSpawnError {
     #[error("open the identity's addressed inbox: {0}")]
-    Inbox(#[source] AircError),
+    Inbox(#[source] airc_lib::AddressedError),
     /// Boot never installed the command handler, so a pump would hear commands and answer
     /// none; refused rather than pretend the persona is addressable.
     #[error("no command handler installed (boot installs it before any pump starts)")]
@@ -200,8 +202,9 @@ pub struct PersonaCommandInboundPump {
 
 /// Open `airc`'s addressed inbox behind the core's seam: the ONLY way a command reaches
 /// this identity. Room subscriptions are perception's and carry no command handling.
-async fn open_inbox(airc: &Airc) -> Result<Box<dyn AddressedInbox>, AircError> {
-    Ok(Box::new(airc.addressed_inbox().await?))
+async fn open_inbox(airc: &Airc) -> Result<Box<dyn AddressedInbox>, airc_lib::AddressedError> {
+    let deadline = tokio::time::Instant::now() + airc_ipc::client::DEFAULT_RPC_TIMEOUT;
+    Ok(Box::new(airc.addressed_inbox(deadline).await?))
 }
 
 impl PersonaCommandInboundPump {
@@ -275,14 +278,17 @@ async fn supervise(
     airc: Arc<Airc>,
     handler: Arc<dyn AddressedHandler>,
     first_inbox: Box<dyn AddressedInbox>,
-    membership: watch::Receiver<u64>,
+    mut membership: watch::Receiver<u64>,
 ) {
     let mut inbox = Some(first_inbox);
     let mut respawns: u32 = 0;
     loop {
         let this_inbox = match inbox.take() {
             Some(i) => i,
-            None => match open_inbox(&airc).await {
+            None => match tokio::select! {
+                result = open_inbox(&airc) => result,
+                _ = runtime_ended(&mut membership) => return,
+            } {
                 Ok(i) => i,
                 Err(e) => {
                     continuum_base::probe!(
@@ -292,7 +298,10 @@ async fn supervise(
                         error = %e,
                         "command pump could not re-open its addressed inbox after a panic; retrying"
                     );
-                    tokio::time::sleep(reopen_delay(respawns.min(5))).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(reopen_delay(respawns.min(5))) => {},
+                        _ = runtime_ended(&mut membership) => return,
+                    }
                     continue;
                 }
             },
@@ -315,12 +324,29 @@ async fn supervise(
                     respawns = respawns,
                     "command pump task panicked; respawning with a fresh inbox"
                 );
-                tokio::time::sleep(reopen_delay(respawns.min(5))).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(reopen_delay(respawns.min(5))) => {},
+                    _ = runtime_ended(&mut membership) => return,
+                }
             }
             // Cancelled: the supervisor itself was aborted (shutdown).
             Err(_) => return,
         }
     }
+}
+
+async fn while_runtime_alive(
+    work: impl std::future::Future<Output = ()>,
+    membership: &mut watch::Receiver<u64>,
+) -> bool {
+    tokio::select! {
+        _ = work => true,
+        _ = runtime_ended(membership) => false,
+    }
+}
+
+async fn runtime_ended(membership: &mut watch::Receiver<u64>) {
+    while membership.changed().await.is_ok() {}
 }
 
 async fn run(
@@ -341,8 +367,20 @@ async fn run(
         loop {
             tokio::select! {
                 next = inbox.next() => match next {
-                    Some(frame) => handler.on_addressed(frame).await,
-                    None => break,
+                    Ok(frame) => {
+                        if !while_runtime_alive(handler.on_addressed(frame), &mut membership).await {
+                            return;
+                        }
+                    },
+                    Err(airc_lib::InboxError::Closed) => break,
+                    Err(error) => {
+                        continuum_base::probe!(
+                            class = "persona.command_pump.inbox_loss",
+                            persona_id = %persona_id,
+                            error = %error,
+                            "addressed command refused or lost; its exchange cannot be completed"
+                        );
+                    }
                 },
                 changed = membership.changed() => {
                     if changed.is_err() {
@@ -365,11 +403,16 @@ async fn run(
             reason = "inbox_closed",
             "addressed inbox closed; re-opening"
         );
+        // A closed owner must be released before acquiring its replacement.
+        drop(inbox);
         let mut attempt: u32 = 0;
         inbox = loop {
             let delay = reopen_delay(attempt);
-            tokio::time::sleep(delay).await;
-            match open_inbox(&airc).await {
+            let reopened = tokio::select! {
+                result = async { tokio::time::sleep(delay).await; open_inbox(&airc).await } => result,
+                _ = runtime_ended(&mut membership) => return,
+            };
+            match reopened {
                 Ok(next) => {
                     continuum_base::probe!(
                         class = "persona.command_pump.reopened",
@@ -411,5 +454,38 @@ mod tests {
         assert_eq!(reopen_delay(4), Duration::from_secs(16));
         assert_eq!(reopen_delay(5), Duration::from_secs(30));
         assert_eq!(reopen_delay(40), Duration::from_secs(30));
+    }
+    // Membership changes only affect perception. The command owner must survive them,
+    // while runtime teardown must interrupt even a pending retry or attach.
+    #[tokio::test]
+    async fn runtime_end_ignores_room_changes_but_observes_sender_drop() {
+        let (tx, mut rx) = watch::channel(0u64);
+        let mut ended = Box::pin(runtime_ended(&mut rx));
+        assert!(futures::poll!(&mut ended).is_pending());
+        tx.send(1).expect("runtime receiver exists");
+        assert!(futures::poll!(&mut ended).is_pending());
+        drop(tx);
+        assert!(futures::poll!(&mut ended).is_ready());
+    }
+    #[tokio::test]
+    async fn runtime_drop_cancels_a_blocked_handler_future() {
+        let (tx, mut rx) = watch::channel(0u64);
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        struct DropFlag(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let flag = DropFlag(dropped.clone());
+        let work = async move {
+            let _flag = flag;
+            std::future::pending::<()>().await;
+        };
+        let mut running = Box::pin(while_runtime_alive(work, &mut rx));
+        assert!(futures::poll!(&mut running).is_pending());
+        drop(tx);
+        assert!(!running.await);
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
     }
 }
