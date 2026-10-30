@@ -150,18 +150,25 @@ pub trait SourceRule {
 }
 
 /// The production lines of `file` whose code (comments removed) `hit` names a finding for, as
-/// violations of `rule`, located by repository path. A line that declares a function is a
-/// definition, not a use, so it is never a site.
+/// violations of `rule`, located by repository path. A function's SIGNATURE is a definition,
+/// not a use, so it is never a site; its body is code like any other, including a body on
+/// the signature's own line (`fn cap(&self) -> usize { self.grant.take(8) }`, Codex on #5609).
 pub fn sites(file: &SourceFile, rule: &'static str, hit: impl Fn(&str) -> Option<String>) -> Vec<Violation> {
     file.production_lines()
         .filter_map(|(line, text)| {
-            let code = split_code_and_comment(text).0;
-            if code.contains("fn ") {
-                return None;
-            }
+            let code = without_signature(split_code_and_comment(text).0);
             hit(code).map(|what| Violation { rule, file: file.repo.clone(), line, source: format!("{what}: {}", text.trim()) })
         })
         .collect()
+}
+
+/// `code` without a function signature it declares: what follows the body's opening brace,
+/// or nothing when the line is only a signature.
+fn without_signature(code: &str) -> &str {
+    let Some(at) = code.find("fn ") else {
+        return code;
+    };
+    code[at..].find('{').map_or("", |open| &code[at + open + 1..])
 }
 
 /// `src/` of this crate, resolved from the manifest so the scan is independent of
