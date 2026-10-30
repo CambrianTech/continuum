@@ -305,7 +305,9 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                 let ask = pair[1].messages.iter().position(|m| m.content_text().contains(stimulus)).unwrap();
                 assert!(ground[0] < ask);
                 assert_eq!(pair[0].system_prompt, pair[1].system_prompt);
-                assert_eq!(pair[0].max_tokens, pair[1].max_tokens);
+                // The retry's bound is the window its reduced prompt leaves at the measured
+                // density: recomputed, inside the served window.
+                assert!(pair[1].max_tokens.is_some_and(|bound| bound < window), "{:?}", pair[1].max_tokens);
                 assert_eq!(serde_json::to_value(&pair[0].tools).unwrap(), serde_json::to_value(&pair[1].tools).unwrap());
                 assert!(LlmDeliberationFaculty::messages_cost(&pair[1].messages)
                     < LlmDeliberationFaculty::messages_cost(&pair[0].messages));

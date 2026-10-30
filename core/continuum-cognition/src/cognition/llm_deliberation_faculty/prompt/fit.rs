@@ -346,6 +346,15 @@ impl LlmDeliberationFaculty {
         view.messages = fitted.messages;
         view.refit = fitted.refit;
         view.estimated_prompt_tokens = estimate;
+        // The retry's bound is the window the REDUCED prompt leaves at the density the provider
+        // just measured (`measured` tokens for `old_estimate`), under the strict
+        // `prompt + reply < window` admission, never below the reserve the reduction kept room for.
+        let measured_prompt = (estimate as u128 * measured as u128).div_ceil(old_estimate as u128).min(usize::MAX as u128) as usize;
+        view.output_window = (available as usize)
+            .saturating_sub(1)
+            .saturating_sub(measured_prompt)
+            .max(view.completion_reserve as usize)
+            .min(u32::MAX as usize) as u32;
         view.segments = segment_map(&view.system, &view.messages);
         view.capacity_error = None;
         Ok(view)

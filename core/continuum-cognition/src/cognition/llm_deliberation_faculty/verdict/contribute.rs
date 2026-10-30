@@ -368,9 +368,11 @@ impl LlmDeliberationFaculty {
                     }
                     rejected_prompt_tokens = Some(estimated_prompt_tokens);
                     rejected_measured_tokens = Some(requested);
-                    view = match self.refit_rejected_prompt(
-                        view, requested, available, sent_allowance.unwrap_or(0),
-                    ) {
+                    // The refit protects the reply's RESERVATION (her measured need), never the
+                    // opportunistic bound the request carried: reducing the prompt to keep a
+                    // whole-window bound would trade her context for output she does not need.
+                    let reserve = view.completion_reserve;
+                    view = match self.refit_rejected_prompt(view, requested, available, reserve) {
                         Ok(view) => view,
                         Err(error) => {
                             return Some(
