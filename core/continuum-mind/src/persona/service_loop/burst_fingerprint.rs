@@ -276,7 +276,10 @@ pub(super) async fn run_self_cycle(
     // own. Not on a wake her own mind raised (a continuation, a perceive): that wake is
     // already her choice of what to attend to, and the turn below serves it.
     let initiative = if wake_room.is_none() {
-        crate::persona::initiative_turn::Initiative::Offered
+        crate::persona::initiative_turn::Initiative::on_beat(
+            pending.initiative_passed_at_ms(),
+            crate::persona::perception_feed::moved_at_ms(ctx.identity.peer_id.as_uuid()),
+        )
     } else {
         crate::persona::initiative_turn::Initiative::NotOffered
     };
@@ -290,6 +293,7 @@ pub(super) async fn run_self_cycle(
     )
     .await;
     pending.settle_work(&work);
+    pending.note_initiative(&work, now_ms);
     if work.drove {
         // She WORKED this tick (her claim, or her own initiative) — that is engagement, so
         // the caller must keep her at the fast beat, not rest her. The caller reads
