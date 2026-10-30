@@ -1,0 +1,91 @@
+# The multi-persona tuning campaign
+
+Status: the program of work, 2026-10-30. Joel: "We are just gonna spend some time improving this dynamic
+system to get it just right. Make sure it's well simulated, see how the context adapts to many personas in
+the real system on all your machines independently, both in terms of its RAG and eliminating looping and
+thrashing, without grid, just to optimize it for these radically different three use cases. Make sure we
+have all the llama.cpp lane stuff, budgeting and airc fixes, all the latest. Simulations again and glass
+box. Then go back and try again in the real systems. See how it acts and adapts, with the causal system not
+screwing up, and keep going till we feel like it has good multi-persona throughput."
+
+The design it executes: [HOW-A-MIND-GETS-WHAT-SHE-NEEDS](../architecture/HOW-A-MIND-GETS-WHAT-SHE-NEEDS.md)
+(requirements, loops, scenarios), [THE-PROVING-GROUND](../architecture/THE-PROVING-GROUND.md) (simulation and
+proof), [ONE-BUDGET](../architecture/ONE-BUDGET.md), MIND-CONTEXT's causality section and render receipt,
+[SERVING-ENGINE](../architecture/SERVING-ENGINE.md) S2.
+
+## The three use cases (no grid yet)
+
+Each machine runs on its own, so each is a different world for the same algorithm:
+
+| Node | World | Residents | Owner of its rounds |
+|---|---|---|---|
+| M5 | unified memory (64 GB), Metal, Qwen3.6-35B-A3B, four fixed slots today | Aiko, Aris, Atlas, Benchy | Fable |
+| 5090 | discrete CUDA, Windows | Kimi and the 5090's residents | Codex (with BigMama's measurements) |
+| IntelMac | CPU-only, the low-end floor ("client first, never crash") | its residents | Codex |
+
+The machine assignment is an assumption to confirm with Joel. Placement across nodes waits until all three
+pass on their own.
+
+## Phases
+
+**P0. One "latest" on every node.**
+- Triage the open PRs in this system's path (each merged, reworked to the design, or closed with a reason;
+  none left hanging): #5602, #5591, #5576, #5558, #5527, #5518, #5485, #5529, #5604, #5609, #5611, #5612,
+  #5613, and whichever others the triage finds.
+- Every node on the same canary, the same fork pin with the current lane work, and the same airc release.
+  Each node's running revisions are recorded as a receipt (core, engine, airc, model, slot geometry,
+  residents), not assumed.
+
+**P1. The proving ground, T0** (THE-PROVING-GROUND section 8, steps 1 to 3):
+- one node world model, calibrated per node from its own measurements;
+- production policy driven through its seams;
+- the known-bad suite, which must fail before anything else is trusted.
+
+**P2. Each fix through the prover, then live.** In order:
+1. the think-cut interim (Cormac's option C: a cut inside thinking grows her grant; the fixed 1,024 think
+   budget deleted);
+2. causal items (#5611), the render receipt, and the stops counter;
+3. the window (#5612);
+4. the open-loop rules replaced one at a time by L1 to L3 (HOW-A-MIND section 5).
+
+Every change carries a written T0 prediction for each node before it deploys.
+
+**P3. Rounds on each node, in parallel.** A round:
+1. predict (T0/T1, that node's profile);
+2. deploy (a coordinated serving-down window on that node);
+3. glass-box the residents for 15 minutes and an hour (the acts inspector, the health line, the receipts);
+4. compare with the prediction;
+5. fix the largest gap, as a change to the design or the world model, never a one-off patch;
+6. repeat.
+
+A round's finding that applies to all nodes is proven on one and carried to the others.
+
+**P4. The engine side,** once the mind side holds: SERVING-ENGINE S1 to S3 (unified state, live
+reconfigure, paging) and L5's lane price, through T2 first, then the same rounds.
+
+## Gates
+
+Product goals, not machine constants (CLAUDE.md plan, goal 2), plus the design's invariants:
+
+| Gate | Per | Done when |
+|---|---|---|
+| Tool calls | resident-hour | 40 or more |
+| Median act | resident | under 60 s |
+| Prefix reuse | resident | 80% or more |
+| Merged PRs | node-day | at least one resident PR |
+| Repeats (unchanged re-read of a whole item) | resident-hour | none twice in an epoch (S7) |
+| Cuts | resident | no identical cut twice |
+| Reversals | loop | counted, and no scenario fails on it |
+| Relaunches while serving | node | zero |
+| Known-bad suite | every change | all known-bads still fail in the prover |
+
+The campaign ends when each of the three nodes holds these over a full day of the residents' own work, and
+the prover predicted that day within its published error.
+
+## Coordination
+
+- Ownership follows the designs: Fable has the mind side (L1 to L3, the receipt, the engine verbs) and the
+  M5's rounds; Codex has admission, residency, the node loop and the 5090 and IntelMac rounds; Cormac has the
+  outcome signals, the behaviour model, the scenario and known-bad suites, and the reductions.
+- Each round's prediction, receipts and finding go on the round's card, not into this document.
+- No round deploys a change that did not pass T0 against the known-bad suite.
