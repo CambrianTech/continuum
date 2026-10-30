@@ -160,7 +160,16 @@ schema 4; the field list is in `~/.continuum/evidence/2026-10-30-read-loops/READ
 | Allocation | the act's allocation receipt: `claims [{source, floor, want, granted}]`, `unallocated`, `turnover`, joined from `delib.window.flex` and `delib.view.sized`; and `view messages` from the capture (count and tokens per item, no words). This is the mechanism a known-bad fails on, not only its symptom |
 | Delivery | elapsed ms, wire attempts, error kind (enum) |
 
-- Token counts use the serving model's own tokenizer, recorded by model id, so T1's exact counts are real.
+- Token counts use the serving model's own tokenizer, recorded by model id **and** tokenizer artifact identity
+  (revision and hash), so a reduction reproduces exactly (Codex).
+- **Unknown is explicit.** A timing, usage or budget the capture did not record is `Unavailable`, never zero:
+  a zero is a measurement.
+- **Every joined field carries its provenance.** A field joined from probes by persona and time (the sent
+  reasoning budget, the allocation receipt) is `Exact` (one request matched), `Ambiguous` (several concurrent
+  requests could match) or `Unresolved` (none matched). An ambiguous join is never resolved by guessing:
+  concurrent requests get no attributed budget or allocation, and a known-bad that needs it on those acts
+  says so. New captures bind their receipts by request id plus epoch and allocation, so going forward every
+  join is `Exact` (Codex).
 - `args fingerprint` is the hash of the tool codec's canonical arguments: MIND-CONTEXT invariant 4's
   fingerprint. Repeats are visible in a reduction without any of the words.
 - A reduction carries outcome kinds (section 7 of HOW-A-MIND: edit applied, message sent, PR opened, move made,
@@ -177,7 +186,7 @@ and asserts that none survive. A stray string fails the build, so no reviewer ha
 |---|---|
 | name | |
 | kind | `Scenario`, or `KnownBad { incident, policy revision }` |
-| world | node profile references (measured, or marked unmeasured), including the engine's slot geometry (`n_slots`, `n_ctx_slot`, `kv_unified`), so a slot layout is data; the person's timeline (apps, messages, patience) |
+| world | node profile references: the existing measured profile type, carrying its measured memory and capability domains (device, unified, RAM, disk, CPU; prefill and decode rates; the decode knee), each with the timestamp it was measured, and the engine's slot geometry (`n_slots`, `n_ctx_slot`, `kv_unified`) so a slot layout is data. A domain never measured is marked unmeasured. The person's timeline (apps, messages, patience) |
 | workload | reduction-set references, and which minds and acts each one replays |
 | events | typed events with their times |
 | policy | a revision, or overrides to it |
