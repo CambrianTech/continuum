@@ -118,16 +118,14 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         );
         let view = faculty.prompt_view(&ws);
         assert!(view.capacity_error.is_none(), "{view:?}");
-        // The reply and the prompt negotiate in ONE allocation now: the required
-        // stimulus and result are never traded, the reply always keeps its floor,
-        // and above it the reply grows by priority against optional history —
-        // under the act's runaway bound. What the fixture must still prove is that
+        // The reply and the prompt negotiate in ONE allocation: the required stimulus and
+        // result are never traded, the reply always keeps its floor and claims no more than
+        // its measured need (the cold prior here). What the fixture must still prove is that
         // the oversized result rides the wire inside the window (asserted below).
         assert!(
-            (LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS
-                ..=LlmDeliberationFaculty::ACT_OUTPUT_CAP)
+            (LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS..=LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS)
                 .contains(&view.completion_reserve),
-            "the reply keeps its floor and stays under the act's bound: {}",
+            "the reply keeps its floor and claims no more than its need: {}",
             view.completion_reserve
         );
         let contribution = faculty

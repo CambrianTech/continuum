@@ -495,6 +495,16 @@ impl LlmDeliberationFaculty {
                 ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
             );
             if stop == super::super::super::working_set::EmissionStop::CutMidAnswer {
+                // The cost of claiming her measured need (ONE-BUDGET slice 6): a write larger than any
+                // she has measured is cut once, then grows the next claim. Counted, so a live read sees it.
+                continuum_base::probe!(
+                    class = "delib.emission.cut_mid_answer",
+                    persona = %self.persona_name,
+                    allowance,
+                    output_tokens = resp.usage.output_tokens,
+                    peak = measured.as_ref().map_or(0, |m| m.peak_tokens), // map_or: an unrecorded emission has no peak to report
+                    "an answer cut at its measured grant: recorded at double, the next claim grows"
+                );
                 if let (Some(wm), Some(measured)) = (&self.working_memory, measured) {
                     wm.retain_truncated_emission(ws.activity_room_id, measured.peak_tokens);
                 }
