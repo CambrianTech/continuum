@@ -493,7 +493,7 @@ by_nature = ["continuum-cli-lifecycle", "jtag-mcp", "livekit-bridge", "llama", "
 # pending: tests exist but no job selects them yet (card 996e3537). Debt that only shrinks: an
 # entry leaves by being deleted, and crate_wiring fails if this list grows past its ceiling.
 pending = [
-    "airc-test-fixtures", "continuum-airc-protocol", "continuum-bridge-protocol", "continuum-context",
+    "airc-test-fixtures", "continuum-airc-protocol", "continuum-bridge-protocol",
     "continuum-orm-derive", "continuum-positron", "continuum-text-analysis", "continuum-tool-protocol",
     "expert-pager-policy", "inference-grpc", "serving-replay", "tool-working-set",
 ]

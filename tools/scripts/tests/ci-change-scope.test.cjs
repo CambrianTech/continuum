@@ -13,7 +13,9 @@ const select = (...paths) => {
 // with no workspace dependency at all (continuum-service). A kernel or lifecycle change cannot
 // reach them. Kept explicit, so a crate moving in the graph fails here instead of silently
 // changing what CI runs.
-const BELOW_KERNEL = ['continuum-base', 'continuum-host', 'continuum-git', 'continuum-service'];
+// Tested crates a kernel change does not reach: the floor (base, host, git, service) and the leaf
+// codec continuum-context, which depends on nothing in the workspace.
+const BELOW_KERNEL = ['continuum-base', 'continuum-host', 'continuum-git', 'continuum-service', 'continuum-context'];
 
 test('installer repairs run installer checks without unrelated Rust builds', () => {
   for (const file of ['install.ps1', 'tools/scripts/lib/install-common.ps1', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/win-engine.ps1', 'tools/scripts/lib/windows-engine-receipt.ps1', 'tools/scripts/lib/windows-service.ps1', 'tools/scripts/lib/windows-media-reconciliation.ps1', 'tools/scripts/lib/windows-elevation.ps1', 'tools/scripts/tests/windows-process.test.ps1', 'tools/scripts/tests/windows-airc-download.test.ps1', 'tools/scripts/tests/windows-xz.test.ps1', 'tools/scripts/sync-windows-bootstrap.ps1'])
@@ -24,10 +26,10 @@ test('unknown, Rust, dependency, workflow and genome inputs retain full gates', 
     assert.deepEqual(select(file), { rust: true, installer: true, publication: true });
 });
 test('rename sources cannot hide a Rust deletion in docs', () => {
-  assert.deepEqual(selectChecks([{ filename: 'docs/old.md', previous_filename: 'core/old.rs' }]), { rust: true, installer: true, publication: true, ...ALL, bins: {} });
+  assert.deepEqual(selectChecks([{ filename: 'docs/old.md', previous_filename: 'core/old.rs' }]), { rust: true, installer: true, publication: true, ...ALL, bins: {}, examples: {} });
 });
 test('missing or malformed change evidence runs full gates', () => {
-  for (const files of [null, undefined, [], [{}]]) assert.deepEqual(selectChecks(files), { rust: true, installer: true, publication: true, ...ALL, bins: {} });
+  for (const files of [null, undefined, [], [{}]]) assert.deepEqual(selectChecks(files), { rust: true, installer: true, publication: true, ...ALL, bins: {}, examples: {} });
 });
 test('mixed changes retain all affected checks', () => {
   assert.deepEqual(select('docs/setup.md', 'install.ps1'), { rust: false, installer: true, publication: true });
@@ -116,7 +118,7 @@ test('a crate-local change runs that crate and every crate that depends on it', 
   const aboveFloor = TESTED_CRATES.filter(n => !BELOW_KERNEL.includes(n));
   assert.deepEqual(scope(['core/continuum-kernel/src/lib.rs']), { crates: aboveFloor, cli: false });
   // A floor change runs the floor crate and every crate built on it.
-  assert.deepEqual(scope(['core/continuum-host/src/durable/mod.rs']), { crates: TESTED_CRATES.filter(n => n !== 'continuum-base' && n !== 'continuum-service'), cli: true });
+  assert.deepEqual(scope(['core/continuum-host/src/durable/mod.rs']), { crates: TESTED_CRATES.filter(n => !['continuum-base', 'continuum-service', 'continuum-context'].includes(n)), cli: true });
   // continuum-git is used by hands (a citizen's git) and core (the deploy tree): both run, and every crate above hands.
   assert.deepEqual(scope(['core/continuum-git/src/index_lock.rs']), crates('continuum-git', 'continuum-hands', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core'));
   // Untested crates reach the tested ones through the graph: llama -> engine -> ...
@@ -152,6 +154,27 @@ test('CLI handoff regressions run for the CLI and lifecycle paths, or with every
   assert.deepEqual(scope(['core/continuum-cli-lifecycle/src/lib.rs']), { crates: TESTED_CRATES.filter(n => !BELOW_KERNEL.includes(n)), cli: true });
   assert.equal(scope(['core/continuum-core/src/bin/continuum_other.rs']).cli, false);
   assert.equal(scope(['core/continuum-mind/src/a.rs']).cli, false);
+});
+
+test('a PR that touches an example builds it, and runs the tests of one declaring them', () => {
+  // what this catches: a PR breaking examples/replay reaching canary uncompiled, because every
+  // crate job builds only the lib (#5511, Cormac on #5611: E0425 in examples/replay/sediment.rs).
+  const examples = (paths, eventName = 'pull_request') =>
+    selectChecks(paths.map(filename => ({ filename })), { eventName, workspace }).examples;
+  const context = workspace.crates.find(c => c.name === 'continuum-context');
+  assert.ok(context.examples.some(e => e.name === 'replay' && e.test), 'replay declares test = true');
+  // A module file under examples/<name>/ names the example; the implicit summarize is built, not tested.
+  assert.deepEqual(examples(['core/continuum-context/examples/replay/sediment.rs', 'core/continuum-context/examples/summarize.rs']),
+    { 'continuum-context': { all: ['replay', 'summarize'], tested: ['replay'] } });
+  // An example whose required features the crate's test build does not enable is not selected.
+  const core = workspace.crates.find(c => c.name === 'continuum-core');
+  assert.ok(core.examples.some(e => e.name === 'avatar_breathe' && e.requiredFeatures.includes('avatar-3d')));
+  assert.deepEqual(examples(['core/continuum-core/examples/avatar_breathe.rs'])['continuum-core'],
+    TEST_FEATURES['continuum-core'].includes('avatar-3d') ? { all: ['avatar_breathe'], tested: [] } : undefined);
+  // A lib change, docs and pushes build no example.
+  assert.deepEqual(examples(['core/continuum-context/src/source.rs']), {});
+  assert.deepEqual(examples(['docs/a.md']), {});
+  assert.deepEqual(examples(['core/continuum-context/examples/replay.rs'], 'push'), {});
 });
 
 test('a PR that touches a declared binary\'s own source compiles that binary', () => {
