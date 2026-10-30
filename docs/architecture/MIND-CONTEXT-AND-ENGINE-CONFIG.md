@@ -415,6 +415,30 @@ reply edges. The view's `Item` gains the same link.
 
 Each step lands with its validator and a 15-minute live read.
 
+**The render receipt: what was actually sent** (Codex on #5585 and #5611, 2026-10-30). An item's id, cause
+and content hash say what it IS. Nothing yet says what the render SENT, so no consumer can know whether she
+perceived a result or only that it was delivered. Codex's task wakes need exactly that: a wake may
+discharge only when the whole result was actually in a prompt she was sent.
+
+- **One receipt per render,** produced by the view (`continuum-context`), the only place that decides levels,
+  bound to its epoch and allocation (FOCUS-CONTRACT rule 8). It is not assembled by sources or consumers.
+- **Per item:** its `ElementId`; the level actually sent (`Whole`, `Summary`, `Pointer`, or folded into a named
+  run); the content hash of the body actually sent; and its load outcome:
+  - `Resident`: the whole was in memory;
+  - `Loaded`: a stored whole was read back for this render;
+  - `LoadFailed { handle, kind }`: a stored whole could not be read, so its resident pointer was sent and the
+    failure is explicit, never rendered as if whole.
+- **Consumers read the receipt, never the prompt text.** A task wake discharges only on its result's item
+  with level `Whole` and load `Resident` or `Loaded`. Delivery, durable checkpoints and ACKs are separate
+  facts and never imply she saw it (Codex).
+- **The receipt is the source of the signals** in HOW-A-MIND-GETS-WHAT-SHE-NEEDS section 7: faults (a
+  re-read of an item whose last receipt said folded), repeats (whole, unchanged), and the allocation
+  receipt the proving ground reduces.
+- **No per-source clipping and no second allocator:** the receipt reports the one allocation's outcome;
+  nothing downstream re-decides levels.
+- Owner: Fable (the receipt, in the view), after #5611 lands. Codex consumes it for task wakes and owns the
+  task source on top of it.
+
 ## Fault 2: engine configuration is decided in five places
 
 `lane_args`, `llama_server`, `backend_receipt`, `serving_plan` and `kv_cache_plan` each
