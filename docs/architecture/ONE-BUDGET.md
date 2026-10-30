@@ -64,6 +64,21 @@ alert path, threshold table or `evict_at_least` heuristic.
 generation }` are the only types that cross the seam. A consumer that holds no grant cannot allocate (state made
 unrepresentable: the cache constructor takes a `GrantRx`, not a capacity).
 
+**Safety contracts** (Codex's review of this doc, 2026-10-30; they bind every slice):
+- **A shrinking grant is a request, not a reclamation.** Capacity a consumer occupies is not reusable
+  until that consumer releases it and acknowledges the actual reclamation. Grants carry a generation;
+  a lease bound to an old generation cannot be spent.
+- **Multi-resource admission is atomic.** A claim needing RAM, VRAM and KV together (a lane, a training
+  job) is granted all of them or refused as one; no partial acquisition, so no acquisition deadlock.
+- **Missing or stale is a state, never a number.** A stale or missing measurement and a failed backend
+  resize are typed states the authority publishes; it never invents capacity to fill the gap.
+- **Durable is not cache.** A disk class says whether its bytes are an evictable cache or a durable
+  record (identity, training, task records, unfinished work). Pressure on a durable class is a refusal
+  or an escalation, never oldest-first deletion.
+- **Demand, feasibility and allocation are three things.** A claim's minimum is a feasibility constraint
+  (below it the consumer cannot run), its want is a demand estimate (measured), and its grant is the
+  authority's allocation; none is derived from another.
+
 **6. Disk writes through its class.** Every directory the substrate writes is a class with a claim; writers get a handle
 from the class owner (which resolves the continuum home) and never pick a path, a rotation count or an age. The class
 owner turns its grant into retention. Stores are ORM entities; nothing opens a file database or runs SQL outside the ORM.
