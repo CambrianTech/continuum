@@ -5,11 +5,12 @@ use super::*;
 /// grounding and her view. Pure.
 ///
 /// A claim is what she is expected to write, measured; it is not a reservation for the worst
-/// case. The request's `max_tokens` is the window her fitted prompt leaves (`prompt/view.rs`),
-/// so a turn that writes past its claim is bounded by the window itself, and a runaway is a
-/// time fault for the scheduler's decode deadline, never a token cap here. A cap here reserved
-/// 12,288 tokens for acts that measured 809-1,641 and starved her view of the reads she had
-/// just made, so every act re-read them (the M5, 2026-10-30, ONE-BUDGET.md slice 6).
+/// case. Its grant is carried as the request's `max_tokens`, so her own evidence bounds her output
+/// and her latency. The cost accepted: a write larger than any she has measured is cut once (a
+/// turn lost; `delib.emission.cut_mid_answer` counts it), recorded at double, and the next claim
+/// grows. A cap here instead reserved 12,288 tokens for acts that measured 809-1,641 and starved
+/// her view of the reads she had just made, so every act re-read them (the M5, 2026-10-30,
+/// ONE-BUDGET.md slice 6).
 ///
 /// - floor = min: an act's measured answer channel (the tool call itself), else the smallest
 ///   usable reply ([`LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS`]). The caller caps it so
