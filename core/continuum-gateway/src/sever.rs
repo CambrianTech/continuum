@@ -20,7 +20,7 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::listener::Signal;
+use crate::stop::Signal;
 
 /// The gateway's socket, whose every connection is cut when `cut` is raised.
 pub(crate) struct Severing {
@@ -69,7 +69,7 @@ impl Severable {
     }
 
     fn cut_error() -> io::Error {
-        io::Error::new(io::ErrorKind::ConnectionAborted, crate::server::STOPPING)
+        io::Error::new(io::ErrorKind::ConnectionAborted, crate::stop::STOPPING)
     }
 }
 

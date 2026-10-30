@@ -15,9 +15,9 @@ use super::*;
 async fn a_ready_burst_reaches_the_consumer_one_chunk_per_poll() {
     use std::future::Future;
     use std::task::{Context, Poll};
-    const TOKENS: usize = 64;
+    const BURST_EVENTS: usize = 64;
     let mut body = String::new();
-    for i in 0..TOKENS {
+    for i in 0..BURST_EVENTS {
         body.push_str(&format!(
             "data: {}\n\n",
             serde_json::json!({"choices": [{"delta": {"content": format!("t{i}")}}]})
@@ -43,7 +43,7 @@ async fn a_ready_burst_reaches_the_consumer_one_chunk_per_poll() {
     let outcome = loop {
         polls += 1;
         assert!(
-            polls <= 10 * TOKENS,
+            polls <= 10 * BURST_EVENTS,
             "test: the in-memory stream must finish"
         );
         let polled = generation.as_mut().poll(&mut cx);
@@ -62,7 +62,7 @@ async fn a_ready_burst_reaches_the_consumer_one_chunk_per_poll() {
         }
     };
     let outcome = outcome.expect("test: the stream completes"); // JUSTIFIED: the invariant under test
-    assert_eq!(tokens, TOKENS, "every token reached the consumer");
+    assert_eq!(tokens, BURST_EVENTS, "every token reached the consumer");
     assert!(
         outcome.acc_content.starts_with("t0t1") && outcome.acc_content.ends_with("t63"),
         "the answer is whole"

@@ -1,6 +1,6 @@
 //! The one HTTP server: every format's route through the same handler.
 
-use crate::listener::Signal;
+use crate::stop::{Signal, STOPPING};
 use crate::route::{self, RouteError};
 use crate::wire::{anthropic::Anthropic, chat::Chat, responses::Responses, BadRequest, ErrorKind, Wire};
 use axum::extract::State;
@@ -22,9 +22,6 @@ pub(crate) fn router(abandoned: Signal) -> Router {
         .route("/health", get(|| async { Json(json!({"status": "ok", "service": "continuum-gateway"})) }))
         .with_state(abandoned)
 }
-
-/// What an agent whose call was in flight is told when the node stops.
-pub(crate) const STOPPING: &str = "this node's gateway is stopping; the call was stopped before it finished";
 
 /// `GET /v1/models`: what this node serves, in the shape every format's clients read.
 async fn models() -> Json<Value> {
