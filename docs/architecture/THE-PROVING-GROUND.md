@@ -155,7 +155,9 @@ schema 4; the field list is in `~/.continuum/evidence/2026-10-30-read-loops/READ
 |---|---|
 | Identity | persona, room, request, session, cycle, build sha, captured-at, cause and cause root (ids, not content) |
 | Request | context window, max tokens, purpose (enum); system prompt `{tokens, hash}`; each message `{role, tokens, hash}`; each tool `{name, schema hash, tokens}` |
-| Response | finish (enum); usage `{input, output}`; timing `{cached, prefill tokens, prefill ms, decode tokens, decode ms}`; each tool call `{name, args fingerprint}`; text `{tokens, hash}` |
+| Response | finish (enum); usage `{input, output}`; timing `{cached, prefill tokens, prefill ms, decode tokens, decode ms}`; each tool call `{name, args fingerprint}`; reasoning `{tokens, hash}` and text `{tokens, hash}` kept apart (a cut inside thinking is not an answer) |
+| Request budget | the reasoning budget actually sent. The engine adds it after capture, so for evidence before it was captured the reducer joins `delib.act.reasoning_budgeted` by persona and time; going forward the capture records it (Fable) |
+| Allocation | the act's allocation receipt: `claims [{source, floor, want, granted}]`, `unallocated`, `turnover`, joined from `delib.window.flex` and `delib.view.sized`; and `view messages` from the capture (count and tokens per item, no words). This is the mechanism a known-bad fails on, not only its symptom |
 | Delivery | elapsed ms, wire attempts, error kind (enum) |
 
 - Token counts use the serving model's own tokenizer, recorded by model id, so T1's exact counts are real.
@@ -175,7 +177,7 @@ and asserts that none survive. A stray string fails the build, so no reviewer ha
 |---|---|
 | name | |
 | kind | `Scenario`, or `KnownBad { incident, policy revision }` |
-| world | node profile references (measured, or marked unmeasured), the person's timeline (apps, messages, patience) |
+| world | node profile references (measured, or marked unmeasured), including the engine's slot geometry (`n_slots`, `n_ctx_slot`, `kv_unified`), so a slot layout is data; the person's timeline (apps, messages, patience) |
 | workload | reduction-set references, and which minds and acts each one replays |
 | events | typed events with their times |
 | policy | a revision, or overrides to it |
@@ -193,8 +195,8 @@ defined twice.
 
 | Known-bad | Evidence | Fails on |
 |---|---|---|
-| The 12,288 reply cap | `2026-10-30-read-loops/` (M5, ab0466601) | repeats per resident-hour; turnovers per act |
-| The 963 grant with the 1,024 think budget | `2026-10-30-think-cuts/` (M5, b7879d85c) | identical cuts; writes per hour |
+| The 12,288 reply cap | `2026-10-30-read-loops/` (M5, ab0466601) | the view's `unallocated` = 0 with a turnover every act (the mechanism); repeats per resident-hour (the symptom) |
+| The 963 grant with the 1,024 think budget | `2026-10-30-think-cuts/` (M5, b7879d85c), with `core-probes-since-2130Z.log` for the sent budget | a sent reasoning budget above the grant; identical cut-think stops; writes per hour |
 | Four fixed slots | the same directory, `engine-58057.log` and `engine-args.txt` | a hot writer cut while other slots idle |
 | 49,152 on another machine | `2026-10-28-working-window/` (the M5 basis), run on a smaller swept profile | turnovers per act on that profile |
 | The 48k to 32k live-rate window | the residents' `.prev` capture segments, 2026-10-28 (no frozen directory) | turnovers per act |
