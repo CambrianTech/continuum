@@ -26,6 +26,7 @@ jobs:
       lib_tests: ${{ steps.select.outputs.lib_tests }}
       cli: ${{ steps.select.outputs.cli }}
       bins: ${{ steps.select.outputs.bins }}
+      examples: ${{ steps.select.outputs.examples }}
     steps:
       - uses: actions/checkout@v4
       - run: node --test tools/scripts/tests/ci-change-scope.test.cjs tools/scripts/tests/ci-cargo-freshness.test.cjs
@@ -56,7 +57,7 @@ jobs:
             } catch (error) {
               core.warning(`Cannot classify changes; running all checks: ${error.message}`);
             }
-            core.info(`Selected crates: ${selection.crates.join(', ') || '(none)'}; CLI handoff: ${selection.cli}; binaries: ${JSON.stringify(selection.bins)}`);
+            core.info(`Selected crates: ${selection.crates.join(', ') || '(none)'}; CLI handoff: ${selection.cli}; binaries: ${JSON.stringify(selection.bins)}; examples: ${JSON.stringify(selection.examples)}`);
             core.setOutput('rust', String(selection.rust));
             core.setOutput('installer', String(selection.installer));
             core.setOutput('crates', JSON.stringify(selection.crates));
@@ -64,6 +65,7 @@ jobs:
             core.setOutput('lib_tests', JSON.stringify(LIB_TESTS));
             core.setOutput('cli', String(selection.cli));
             core.setOutput('bins', JSON.stringify(selection.bins));
+            core.setOutput('examples', JSON.stringify(selection.examples));
 
   # One job per affected crate, in parallel (card 44a3c460). The selector derives the set:
   # every crate a changed path lies in plus all of its dependents, from the Cargo.toml graph.
@@ -161,6 +163,19 @@ jobs:
           args=()
           for bin in $BINS; do args+=(--bin "$bin"); done
           cargo check --locked -p "$CRATE" --profile dev-fast --features "$FEATURES" "${args[@]}"
+
+      # ---- the examples this change touches (#5511, #5611): built, and those declaring `test = true`
+      # run their own tests; the lib build compiles neither ----
+      - name: cargo check and test the examples this change touches
+        if: ${{ fromJSON(needs.changes.outputs.examples || '{}')[matrix.crate] != null }}
+        env:
+          EXAMPLES: ${{ join(fromJSON(needs.changes.outputs.examples || '{}')[matrix.crate].all, ' ') }}
+          TESTED: ${{ join(fromJSON(needs.changes.outputs.examples || '{}')[matrix.crate].tested, ' ') }}
+        run: |
+          args=(); for example in $EXAMPLES; do args+=(--example "$example"); done
+          cargo check --locked -p "$CRATE" --profile dev-fast --features "$FEATURES" "${args[@]}"
+          tested=(); for example in $TESTED; do tested+=(--example "$example"); done
+          if [ ${#tested[@]} -gt 0 ]; then cargo test --locked -p "$CRATE" --profile dev-fast --features "$FEATURES" "${tested[@]}"; fi
 
       # ---- continuum-kernel: lib tests ----
       - name: cargo test -p continuum-kernel --lib

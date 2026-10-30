@@ -50,21 +50,34 @@ function readWorkspace(root = '.') {
   const members = strip(read('Cargo.toml')).match(/^\s*members\s*=\s*\[([^\]]*)\]/m);
   if (!members) throw new Error('Cannot read workspace members from Cargo.toml');
   const crates = [...members[1].matchAll(/"([^"]+)"/g)].map(([, dir]) => {
-    let section = ''; let name = null; const deps = new Set(); const bins = []; const features = [];
+    let section = ''; let name = null; const deps = new Set(); const bins = []; const examples = []; const features = [];
     for (const line of strip(read(`${dir}/Cargo.toml`)).split('\n')) {
       const header = line.match(/^\s*\[+([^\]]+)\]+/);
-      if (header) { section = header[1].trim(); if (section === 'bin') bins.push({}); continue; }
+      if (header) {
+        section = header[1].trim();
+        if (section === 'bin') bins.push({});
+        if (section === 'example') examples.push({ requiredFeatures: [], test: false });
+        continue;
+      }
       if (section === 'package' && !name) name = line.match(/^\s*name\s*=\s*"([^"]+)"/)?.[1] ?? null;
       if (section === 'features') { const f = line.match(/^\s*([A-Za-z0-9_-]+)\s*=/); if (f) features.push(f[1]); }
       const field = section === 'bin' && line.match(/^\s*(name|path)\s*=\s*"([^"]+)"/);
       if (field) bins[bins.length - 1][field[1]] = field[2];
+      if (section === 'example') {
+        const example = examples[examples.length - 1];
+        const named = line.match(/^\s*name\s*=\s*"([^"]+)"/);
+        if (named) example.name = named[1];
+        const required = line.match(/^\s*required-features\s*=\s*\[([^\]]*)\]/);
+        if (required) example.requiredFeatures = [...required[1].matchAll(/"([^"]+)"/g)].map(([, f]) => f);
+        if (/^\s*test\s*=\s*true\b/.test(line)) example.test = true;
+      }
       const dependency = /(^|\.)(dev-|build-)?dependencies(\.|$)/.test(section);
       for (const [, dep] of dependency ? line.matchAll(/\bpath\s*=\s*"([^"]+)"/g) : []) {
         deps.add(path.posix.normalize(path.posix.join(dir, dep)));
       }
     }
     if (!name) throw new Error(`Cannot read the package name of ${dir}`);
-    return { name, dir, deps: [...deps], features, bins: bins.filter(b => b.name && b.path) };
+    return { name, dir, deps: [...deps], features, bins: bins.filter(b => b.name && b.path), examples: examples.filter(e => e.name) };
   });
   return { crates };
 }
@@ -153,25 +166,38 @@ function selectCrates(paths, workspace) {
   return { crates: TESTED_CRATES.filter(name => names.has(name)), cli: paths.some(cliPath) || names.has('continuum-cli-lifecycle') };
 }
 
-// The declared binaries (`[[bin]]`) of tested crates whose own source a change touches: the bin's
-// file, and for `src/bin/<x>.rs` its module directory `src/bin/<x>/`; a change to the crate's
-// Cargo.toml, where the declarations live, selects all of them. Implicit (undeclared) bins are not
-// read. Lib and lib-test builds never
-// compile a bin, so without this a PR editing `src/main.rs` reached canary uncompiled (card
-// 67bf5d81). The CLI binary is left to the handoff job, which already compiles it. A change to the
-// lib a bin uses is not covered here; the hourly core-binaries publication compiles every bin.
-function selectBins(paths, workspace, crates) {
-  const bins = {};
+// The non-lib targets of tested crates whose own source a change touches. Lib and lib-test builds
+// compile neither, so without this a PR editing `src/main.rs` (card 67bf5d81) or an example
+// (#5511, #5611) reached canary uncompiled. A change to the lib a target uses is not covered here;
+// the hourly core-binaries publication compiles every bin.
+//
+// `bins`: the declared binaries (`[[bin]]`) whose file is touched, and for `src/bin/<x>.rs` its
+// module directory `src/bin/<x>/`; a change to the crate's Cargo.toml, where the declarations live,
+// selects all of them. Implicit (undeclared) bins are not read. The CLI binary is left to the
+// handoff job, which already compiles it.
+//
+// `examples`: `examples/<name>.rs` or anything under `examples/<name>/` names the example `<name>`,
+// declared or implicit. One whose `required-features` the crate's test build does not enable is
+// not selected (cargo refuses to build it). `tested` lists those declaring `test = true`, whose own
+// tests run as well.
+function selectTargets(paths, workspace, crates) {
+  const bins = {}; const examples = {};
   for (const c of workspace?.crates ?? []) {
     if (!crates.includes(c.name)) continue;
-    const touched = (c.bins ?? []).filter(b => {
+    const touchedBins = (c.bins ?? []).filter(b => {
       const file = path.posix.join(c.dir, b.path);
       const moduleDir = file.endsWith('.rs') && path.posix.basename(path.posix.dirname(file)) === 'bin' ? `${file.slice(0, -3)}/` : null;
       return paths.some(p => p === file || p === `${c.dir}/Cargo.toml` || (moduleDir && p.startsWith(moduleDir)));
     }).map(b => b.name).filter(name => !(c.name === 'continuum-core' && name === 'continuum'));
-    if (touched.length) bins[c.name] = touched;
+    if (touchedBins.length) bins[c.name] = touchedBins;
+    const enabled = (TEST_FEATURES[c.name] ?? '').split(/[\s,]+/).filter(Boolean);
+    const names = new Set(paths.filter(p => p.startsWith(`${c.dir}/examples/`))
+      .map(p => p.slice(`${c.dir}/examples/`.length).split('/')[0].replace(/\.rs$/, '')));
+    const declared = name => (c.examples ?? []).find(e => e.name === name);
+    const buildable = [...names].sort().filter(name => (declared(name)?.requiredFeatures ?? []).every(f => enabled.includes(f)));
+    if (buildable.length) examples[c.name] = { all: buildable, tested: buildable.filter(name => declared(name)?.test) };
   }
-  return bins;
+  return { bins, examples };
 }
 
 // Only explicitly covered non-Rust surfaces may skip Rust compilation.
@@ -179,7 +205,7 @@ function selectBins(paths, workspace, crates) {
 // `evidence.workspace` (readWorkspace) narrows Rust to the affected crates on pull requests;
 // without it, and on pushes to canary/main (the post-merge net), every crate runs.
 function selectChecks(files, evidence = {}) {
-  const full = { rust: true, installer: true, publication: true, crates: [...TESTED_CRATES], cli: true, bins: {} };
+  const full = { rust: true, installer: true, publication: true, crates: [...TESTED_CRATES], cli: true, bins: {}, examples: {} };
   if (!Array.isArray(files) || !files.length) return full;
   if (files.some(f => !f || typeof f.filename !== 'string' || !f.filename
       || (f.previous_filename !== undefined && (typeof f.previous_filename !== 'string' || !f.previous_filename)))) return full;
@@ -189,8 +215,8 @@ function selectChecks(files, evidence = {}) {
   const rust = rustPaths.length > 0;
   const workspace = evidence.eventName === 'push' ? null : evidence.workspace;
   const scope = !rust ? { crates: [], cli: false } : selectCrates(rustPaths, workspace);
-  const bins = selectBins(rustPaths, workspace, scope.crates);
-  return { rust, installer: rust || paths.some(windows), publication: selectPublication(paths, evidence), ...scope, bins };
+  const targets = selectTargets(rustPaths, workspace, scope.crates);
+  return { rust, installer: rust || paths.some(windows), publication: selectPublication(paths, evidence), ...scope, ...targets };
 }
 module.exports = { selectChecks, readWorkspace, readPolicy, deriveCrates, TESTED_CRATES, TEST_FEATURES, LIB_TESTS };
 
