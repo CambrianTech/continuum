@@ -89,8 +89,7 @@ use continuum_core::inference::airc_remote::{
 };
 use continuum_core::ipc::command_ingress::CommandRequestHandler;
 use continuum_core::routing::{
-    CallerIdentity, CallerSource, ClosurePolicy, ForbiddenReason,
-    RouteDecision, Verdict,
+    CallerIdentity, CallerSource, ClosurePolicy, ForbiddenReason, RouteDecision, Verdict,
 };
 use continuum_core::runtime::command_executor::CommandExecutor;
 use continuum_core::runtime::{
@@ -173,11 +172,13 @@ async fn spawn_substrate_responder(
 ) -> tokio::task::JoinHandle<()> {
     use continuum_core::routing::addressed_inbox::AddressedHandler;
     tokio::spawn(async move {
-        let mut inbox = peer.addressed_inbox().await.expect("peer addressed inbox");
+        let mut inbox = peer
+            .addressed_inbox(tokio::time::Instant::now() + airc_ipc::client::DEFAULT_RPC_TIMEOUT)
+            .await
+            .expect("peer addressed inbox");
         ready.notify_one();
-        if let Some(frame) = inbox.next().await {
-            handler.on_addressed(frame).await;
-        }
+        let frame = inbox.next().await.expect("addressed request");
+        handler.on_addressed(frame).await;
     })
 }
 

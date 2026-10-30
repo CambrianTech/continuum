@@ -223,11 +223,13 @@ mod tests {
             "persona/placement/reserve",
             params.clone(),
         );
-        result.kind = AddressedKind::CommandResult;
-        assert_eq!(
-            admit_frame(&result, me).expect_err("refused"),
-            IngressRefusal::NotACommand
-        );
+        for kind in [AddressedKind::CommandResult, AddressedKind::CommandProgress] {
+            result.kind = kind;
+            assert_eq!(
+                admit_frame(&result, me).expect_err("only a request may execute"),
+                IngressRefusal::NotACommand
+            );
+        }
         let unnamed =
             FakeFrame::command(them, me, None, "persona/placement/reserve", params.clone());
         assert_eq!(

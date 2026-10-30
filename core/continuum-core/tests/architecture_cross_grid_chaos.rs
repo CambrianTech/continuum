@@ -74,8 +74,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use airc_test_fixtures::TwoAircLoopback;
 use airc_lib::AddressedKind;
+use airc_test_fixtures::TwoAircLoopback;
 use continuum_airc_protocol::{AircCommandResponse, HEADER_COMMAND_STATUS};
 use continuum_core::ai::types::{
     ChatMessage, FinishReason, MessageContent, TextGenerationRequest, TextGenerationResponse,
@@ -103,9 +103,12 @@ async fn spawn_silent_responder(
     subscribed: Arc<Notify>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut inbox = peer.addressed_inbox().await.expect("peer addressed inbox");
+        let mut inbox = peer
+            .addressed_inbox(tokio::time::Instant::now() + airc_ipc::client::DEFAULT_RPC_TIMEOUT)
+            .await
+            .expect("peer addressed inbox");
         subscribed.notify_one();
-        while let Some(frame) = inbox.next().await {
+        while let Ok(frame) = inbox.next().await {
             // Only a Command counts as "request received".
             if frame.kind() == AddressedKind::Command {
                 received.notify_one();
@@ -123,9 +126,12 @@ async fn spawn_replying_responder(
     subscribed: Arc<Notify>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut inbox = peer.addressed_inbox().await.expect("peer addressed inbox");
+        let mut inbox = peer
+            .addressed_inbox(tokio::time::Instant::now() + airc_ipc::client::DEFAULT_RPC_TIMEOUT)
+            .await
+            .expect("peer addressed inbox");
         subscribed.notify_one();
-        while let Some(frame) = inbox.next().await {
+        while let Ok(frame) = inbox.next().await {
             if frame.kind() != AddressedKind::Command {
                 continue;
             }
@@ -133,9 +139,13 @@ async fn spawn_replying_responder(
                 serde_json::to_value(&canned).expect("serialize TextGenerationResponse");
             let response = AircCommandResponse::ok(response_value);
             let mut headers = airc_core::Headers::new();
-            headers.insert(HEADER_COMMAND_STATUS.to_string(), response.status_header_value().to_string());
-            let body = airc_core::Body::Json(serde_json::to_value(&response).expect("serialize response"));
-            peer.reply_addressed(&frame, headers, body)
+            headers.insert(
+                HEADER_COMMAND_STATUS.to_string(),
+                response.status_header_value().to_string(),
+            );
+            let body =
+                airc_core::Body::Json(serde_json::to_value(&response).expect("serialize response"));
+            peer.reply(&frame, headers, body)
                 .await
                 .expect("reply bound to the request");
             return;
