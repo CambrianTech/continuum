@@ -139,25 +139,34 @@ path calls `destroy()` then `load_model()` (server-context.cpp:978-993), which f
   already, so they survive a rebuild untouched.
 - The hook: a `SERVER_TASK_TYPE_RECONFIGURE` handled in the task phase, the safe point the fork already argues for
   `SLOT_SAVE` (server-context.cpp:2685): no `llama_decode` in flight, every sequence's KV at a consistent
-  inter-batch boundary. Mid-turn slots are paged out and in with their host-side sampling state, so the turn
-  continues; drafting restarts on the rebuilt speculative object. New work waits in the queue; nothing is
+  inter-batch boundary. The safe point is between BATCHED decode steps, never "between generations": every
+  slot is paged out including unfinished generations, the contexts are rebuilt, everything is paged in, and
+  each generation continues from its next token with its host-side sampling state. Waiting for generations to
+  end would let four busy writers, or one ten-minute generation, hold the person's game hostage (Cormac on
+  #5607). Drafting restarts on the rebuilt speculative object. Slot save and restore serialize through the
+  same safe point. New work waits in the queue; nothing is
   cancelled. Slot ids stay stable: a smaller `n_seq` removes the highest ids, and a busy slot among them is
   refused by name (the core asks again when that turn ends).
 
 **Contract.**
 1. The model and its mmap are never freed; only contexts are (sequence in section 3, "a relaunch is a pause").
-2. Shrink never truncates. If a slot's state does not fit the target, nothing is applied and the outcome names
-   the slot; the core shrinks that mind's view at her next epoch start and asks again. Slots past a smaller
-   `n_seq` are paged out (RAM, then disk by temperature) and their minds re-admitted later, never dropped.
+2. Shrink never truncates. A slot whose state does not fit the target (a smaller `n_ctx`, or an id past a
+   smaller `n_seq`) is paged out now, through the same mover (RAM, then disk by temperature), never cut. The
+   outcome's `SlotRefusal` names it so the core knows; residency (L4) then chooses by temperature between
+   keeping it paged until room returns and shrinking that mind's view at her next epoch start (Cormac on
+   #5607). Nothing waits for an epoch to free the person's memory.
 3. Grow and shrink are the same path.
-4. The applied geometry is reported (`/props`, the `CapacityReport` of S3), so serving and every mind's
+4. Each reconfigure reports its cost: pause seconds against tokens held, per backend, which L4 and L6 price.
+   Footprint is measured as `phys_footprint` on Metal and device memory on CUDA.
+5. The applied geometry is reported (`/props`, the `CapacityReport` of S3), so serving and every mind's
    binding read the live window; the core never infers it.
-5. A KV type change is not a reconfigure; it is the intentional cold start (#5188).
+6. A KV type change is not a reconfigure; it is the intentional cold start (#5188).
 
-**Validator (seconds, small hybrid GGUF, no residents):** 100 cycles alternating grow and shrink with four
+**Validator (seconds, small hybrid GGUF, no residents):** four generations in progress across a reconfigure
+finish token-identical to an unreconfigured control; and 100 cycles alternating grow and shrink with four
 sequences holding state: footprint flat (phys_footprint before and after within the measured noise), weights
 never reloaded (load counter), every sequence's state byte-identical across the round trip (its next token
-matches an unreconfigured control), a shrink below a held state refused with that slot named, and no request
+matches an unreconfigured control), a shrink below a held state pages that slot out and names it, and no request
 lost (queued requests all complete). **Core (S4, Codex):** the relaunch call sites (`reconcile.rs` re-home,
 `launch.rs:221`) call `reconfigure`; a plan below the live geometry now reconfigures too, which is what
 gives memory back to the user's app.
