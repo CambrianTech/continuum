@@ -26,7 +26,7 @@ impl GatewayModule {
 
     /// Bind `port` and serve `routes` on it. Refused while a listener still serves; one that
     /// exited is joined first, so a reinitialize after a stop or a failure binds cleanly.
-    async fn listen_with(&self, port: u16, routes: impl FnOnce(crate::listener::Signal) -> axum::Router) -> Result<u16, String> {
+    async fn listen_with(&self, port: u16, routes: impl FnOnce(crate::stop::Signal) -> axum::Router) -> Result<u16, String> {
         let mut slot = self.listener.lock().await;
         if let Some(live) = slot.as_ref().filter(|listener| listener.is_live()) {
             return Err(format!("the gateway is already listening on port {}", live.port()));
@@ -220,7 +220,7 @@ mod tests {
         let settled = Arc::new(AtomicBool::new(false));
         let sent = Arc::new(AtomicUsize::new(0));
         let (held, recorded, counted) = (slots.clone(), settled.clone(), sent.clone());
-        let routes = move |abandoned: crate::listener::Signal| {
+        let routes = move |abandoned: crate::stop::Signal| {
             axum::Router::new().route(
                 "/v1/long",
                 axum::routing::get(move || {
