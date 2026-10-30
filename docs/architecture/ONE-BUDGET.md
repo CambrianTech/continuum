@@ -191,6 +191,29 @@ with fast decode), replaying captured traces under each: a read stays whole acro
 has room; no turnover while unclaimed window remains; prefix reuse per act reported. A new machine is
 covered by its own measured profile, never by a list of boxes. Then one deploy per node and a 15-minute read: reads per edit, writes per hour, act time.
 
+### Acceptance: the user's own load (Joel, 2026-10-30: "What if we start this and someone is playing a video game or starts one later? Or Photoshop")
+
+The product runs on someone's computer while they use it. Today (canary, `serving_daemon/reconcile.rs`):
+- a plan that grows **relaunches** the engine after a sustained gain, killing every in-flight turn;
+- a plan that shrinks does **nothing** ("over-served vs a dipped plan is the pressure broker's reclaim
+  problem (#79), not a relaunch"), so a game or Photoshop starting later takes swap (unified memory) or is
+  starved of VRAM (discrete).
+
+Both are defects. The contract's answer, as one acceptance test:
+1. The authority's probes see the external app's use on the next tick: free VRAM/RAM fall.
+2. Serving's grant shrinks, as a request (safety contract 1). The engine stays up and gives memory back live:
+   cold minds' KV pages GPU -> RAM -> disk (`llama_state_seq_*`), and the active window shrinks through the
+   engine's endpoint (SERVING-ENGINE.md S1-S3). No relaunch, no in-flight turn lost.
+3. Each mind's window follows her grant at her next epoch start, never mid-epoch, folding whole chains
+   (MIND-CONTEXT causality).
+4. The app quits: the grant grows, KV pages back, and windows grow at the next epoch starts. Still no
+   relaunch.
+
+**Validator:** a replay with a node profile whose free memory drops mid-run and recovers. Pass when there are
+zero relaunches, zero dropped turns, windows that shrink and regrow only at epoch starts, and a released
+amount equal to the external app's measured use. **Live:** on a real machine, start and quit a GPU-heavy
+app while residents work. Owners: Codex (authority, serving, engine verbs), Fable (the mind's side).
+
 Gates: each PR runs the affected crates' tests locally (serving down or a non-serving executor), CI confirms, then a
 15-minute live read on the residents. The receipts: ratchet counts before/after, lines added/removed, and the residents'
 median act and prefix reuse.
