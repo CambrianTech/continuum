@@ -36,6 +36,11 @@ const MIND_TEXT: &[&str] = &[
     "core/continuum-core/src/commands/tool/",
 ];
 
+/// Module directories whose text reaches a mind wherever their crate is (`head_cuts`' coverage,
+/// kept whole: modules/voice_reply_speaker.rs cut spoken text by its head, Codex on #5609).
+const MIND_TEXT_MODULES: &[&str] =
+    &["cognition/", "persona/", "genome/", "rag/", "modules/", "airc/", "positron/", "experience/", "recipe/"];
+
 /// Name fragments that say a constant sizes something.
 const SIZE_WORDS: &[&str] = &[
     "CAP", "MAX", "MIN_", "FLOOR", "CEILING", "LIMIT", "BOUND", "BUDGET", "QUOTA", "RESERVE", "ALLOWANCE",
@@ -88,7 +93,7 @@ impl SourceRule for SelfSized {
             return Vec::new();
         }
         let turn_allocation = owned_by(file, TURN_ALLOCATION);
-        let mind_text = owned_by(file, MIND_TEXT);
+        let mind_text = owned_by(file, MIND_TEXT) || MIND_TEXT_MODULES.iter().any(|module| file.rel.starts_with(module));
         sites(file, self.name(), |code| shape(code, turn_allocation, mind_text))
     }
 }

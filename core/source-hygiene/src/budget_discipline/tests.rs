@@ -1,8 +1,11 @@
 use super::*;
 use crate::{scan, SourceRule};
 
+/// A fixture at repository path `repo`, its `rel` the path under its crate's `src/` as the scan
+/// would give it.
 fn file(repo: &str, code: &str) -> SourceFile {
-    SourceFile { repo: repo.to_owned(), ..SourceFile::for_test("x.rs", code) }
+    let rel = repo.split_once("/src/").map_or(repo, |(_, under)| under);
+    SourceFile { repo: repo.to_owned(), ..SourceFile::for_test(rel, code) }
 }
 
 fn found(rule: &dyn SourceRule, repo: &str, code: &str) -> usize {
@@ -99,4 +102,25 @@ fn a_write_outside_a_class_is_found_and_the_owners_are_not() {
     assert_eq!(found(&WritesOutsideAClass, CONSUMER, "let f = OpenOptions::new().append(true).open(p)?;"), 1);
     assert_eq!(found(&WritesOutsideAClass, "core/continuum-kernel/src/orm/sqlite/file.rs", "std::fs::write(&path, bytes)?;"), 0);
     assert_eq!(found(&WritesOutsideAClass, CONSUMER, "let text = std::fs::read_to_string(p)?;"), 0, "a read is not a write");
+}
+
+// what this catches: the head-cut coverage `head_cuts` had and a crate list alone would lose
+// (Codex on #5609): text a mind reads lives in these module directories in any crate.
+#[test]
+fn a_head_cut_is_found_in_every_directory_head_cuts_covered() {
+    let cut = "let spoken: String = text.chars().take(MAX_SPOKEN_CHARS).collect();";
+    for repo in [
+        "core/continuum-core/src/modules/voice_reply_speaker.rs",
+        "core/continuum-core/src/airc/relay.rs",
+        "core/continuum-genome/src/genome/teach/progress.rs",
+        "core/continuum-core/src/experience/lived.rs",
+        "core/continuum-core/src/recipe/loader.rs",
+        "core/continuum-core/src/positron/chat.rs",
+        "core/continuum-core/src/rag/engine.rs",
+        "core/continuum-core/src/persona/unified.rs",
+        "core/continuum-core/src/cognition/recall.rs",
+    ] {
+        assert_eq!(found(&SelfSized, repo, cut), 1, "{repo}");
+    }
+    assert_eq!(found(&SelfSized, "core/continuum-engine/src/inference/lane_args.rs", cut), 0, "engine argv is not her text");
 }
