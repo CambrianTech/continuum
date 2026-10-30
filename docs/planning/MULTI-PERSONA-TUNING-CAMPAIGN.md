@@ -55,8 +55,16 @@ Every change carries a written T0 prediction for each node before it deploys.
 2. deploy (a coordinated serving-down window on that node);
 3. glass-box the residents for 15 minutes and an hour (the acts inspector, the health line, the receipts);
 4. compare with the prediction;
-5. fix the largest gap, as a change to the design or the world model, never a one-off patch;
-6. repeat.
+5. build what live taught into the simulation first (Joel: "Whatever we learn from real life we try to then
+   build into simulations to try to correct"): a new scenario file, a known-bad, or a world-model correction,
+   until the simulation reproduces what live did;
+6. fix the largest gap, as a change to the design, proven in the corrected simulation, never a one-off
+   patch;
+7. repeat.
+
+**Design in place for everyone, then fix for one another, merging as we go** (Joel). The designs merge to
+canary first so every agent works from the same text; after that, each agent fixes what blocks another,
+and work merges as it is proven, never parked.
 
 A round's finding that applies to all nodes is proven on one and carried to the others.
 
