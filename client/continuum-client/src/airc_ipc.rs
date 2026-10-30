@@ -172,8 +172,10 @@ impl Transport for AircIpcTransport {
             .await
             .map_err(|e| ClientError::Transport(format!("await_reply failed: {e}")))?;
 
-        Self::decode_reply(reply.body().cloned()).map_err(|e| match e {
-            ClientError::Refused { reason, outcome, .. } => ClientError::Refused {
+        Self::decode_reply(Some(reply.body().clone())).map_err(|e| match e {
+            ClientError::Refused {
+                reason, outcome, ..
+            } => ClientError::Refused {
                 command: command.to_string(),
                 reason,
                 outcome,
@@ -219,7 +221,8 @@ impl Transport for AircIpcTransport {
             .await
             .map_err(|e| ClientError::Transport(format!("airc subscribe await_reply: {e}")))?;
 
-        let ack = event_proto::decode_subscribe_ack(reply.body().cloned()).map_err(ClientError::Transport)?;
+        let ack = event_proto::decode_subscribe_ack(Some(reply.body().clone()))
+            .map_err(ClientError::Transport)?;
         let subscription_id = ack.subscription_id;
         let publisher = self.target;
 
@@ -329,7 +332,8 @@ impl Transport for AircIpcTransport {
         // Decode the ack to surface a malformed reply; the fan-out count is
         // informational (emit fires into the fan-out — the caller doesn't branch
         // on how many subscribers received it).
-        let _ack = event_proto::decode_publish_ack(reply.body().cloned()).map_err(ClientError::Transport)?;
+        let _ack = event_proto::decode_publish_ack(Some(reply.body().clone()))
+            .map_err(ClientError::Transport)?;
         Ok(())
     }
 
@@ -398,7 +402,7 @@ fn parse_inbound_command(frame: &VerifiedAddressed) -> Option<InboundCommand> {
     if frame.kind() != AddressedKind::Command {
         return None;
     }
-    let Body::Json(value) = frame.body()? else {
+    let Body::Json(value) = frame.body() else {
         return None;
     };
     let request: AircCommandRequest = serde_json::from_value(value.clone()).ok()?;
@@ -409,7 +413,11 @@ fn parse_inbound_command(frame: &VerifiedAddressed) -> Option<InboundCommand> {
 }
 
 /// Ship an `AircCommandResponse` back, bound to the request it answers.
-async fn send_serve_reply(airc: &Airc, request: &VerifiedAddressed, response: &AircCommandResponse) {
+async fn send_serve_reply(
+    airc: &Airc,
+    request: &VerifiedAddressed,
+    response: &AircCommandResponse,
+) {
     let body = match serde_json::to_value(response) {
         Ok(v) => Body::Json(v),
         Err(e) => {
@@ -422,7 +430,7 @@ async fn send_serve_reply(airc: &Airc, request: &VerifiedAddressed, response: &A
         HEADER_COMMAND_STATUS.to_string(),
         response.status_header_value().to_string(),
     );
-    if let Err(e) = airc.reply_addressed(request, headers, body).await {
+    if let Err(e) = airc.reply(request, headers, body).await {
         eprintln!("continuum-client serve reply: airc reply failed: {e}");
     }
 }
@@ -434,14 +442,24 @@ async fn send_serve_reply(airc: &Airc, request: &VerifiedAddressed, response: &A
 /// doesn't stall the loop. Exits when the inbox closes (daemon disconnect): per
 /// no-fallbacks, a lost inbox ends the loop loudly rather than silently degrading.
 async fn serve_loop(airc: Arc<Airc>, serve: Arc<ServeState>) {
-    let mut inbox = match airc.addressed_inbox().await {
+    let mut inbox = match airc
+        .addressed_inbox(tokio::time::Instant::now() + airc_ipc::client::DEFAULT_RPC_TIMEOUT)
+        .await
+    {
         Ok(inbox) => inbox,
         Err(e) => {
             eprintln!("continuum-client serve loop: airc addressed inbox failed: {e}");
             return;
         }
     };
-    while let Some(request) = inbox.next().await {
+    loop {
+        let request = match inbox.next().await {
+            Ok(request) => request,
+            Err(error) => {
+                eprintln!("continuum-client serve loop: addressed inbox failed: {error}");
+                break;
+            }
+        };
         let Some(parsed) = parse_inbound_command(&request) else {
             continue;
         };
@@ -457,10 +475,17 @@ async fn serve_loop(airc: Arc<Airc>, serve: Arc<ServeState>) {
         };
         let airc = Arc::clone(&airc);
         tokio::spawn(async move {
-            let response = match handler.handle(parsed.params).await {
-                Ok(value) => AircCommandResponse::ok(value),
-                Err(e) => AircCommandResponse::error(e.to_string()),
-            };
+            if tokio::time::Instant::now() >= request.deadline() {
+                return;
+            }
+            let response =
+                match tokio::time::timeout_at(request.deadline(), handler.handle(parsed.params))
+                    .await
+                {
+                    Ok(Ok(value)) => AircCommandResponse::ok(value),
+                    Ok(Err(e)) => AircCommandResponse::error(e.to_string()),
+                    Err(_) => AircCommandResponse::error("addressed request deadline elapsed"),
+                };
             send_serve_reply(&airc, &request, &response).await;
         });
     }

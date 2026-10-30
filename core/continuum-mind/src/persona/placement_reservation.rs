@@ -374,7 +374,7 @@ async fn send_reservation_ask(
         params,
     );
     let body = Body::Json(
-        serde_json::to_value(&envelope).map_err(|e| format!("serialize reserve envelope: {e}"))?,
+        serde_json::to_value(&envelope).map_err(|e| format!("serialize reserve envelope: {e}"))?, // airc wire: encode/decode the remote reservation envelope.
     ); // airc wire: the ask leaves this process for the seat's core over the mesh
     let headers = crate::routing::airc_transport::AircTransport::build_headers(&envelope);
     let room = airc
@@ -407,6 +407,7 @@ async fn send_reservation_ask(
         .into_result()
         .map_err(|e| format!("seat refused the ask: {e}"))?;
     serde_json::from_value(result).map_err(|e| format!("decode reservation report: {e}"))
+    // airc wire: encode/decode the remote reservation envelope.
     // airc wire: the report inside the seat's command reply
 }
 
