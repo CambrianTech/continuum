@@ -90,6 +90,7 @@ the area:
 
 | # | Change | Owner |
 |---|---|---|
+| 0 | Enforcement first (below) | Fable |
 | 1 | `continuum-flex`: move `flex_allocate` down, generic unit; grounding and the authority both call it; ratchet skeleton | Fable |
 | 2 | Authority: `Claim`/`Grant` API on `ResourceDaemon`, one probe trait + adapters; delete GpuMemoryManager's ledger, SystemResourceMonitor, hw_probe free math, the unwired governor, the second PressureLevel and threshold tables; PressureBroker becomes grant publication | Codex (kernel/serving), Fable reviews |
 | 3 | VRAM: serving plan, side lanes, embed, vision sidecar, in-process backend, training (incl. `cuda_train.py` taking its grant as input) become claims; one footprint model incl. LoRA and draft; slots from the KV contract, not cores | Codex (serving/inference), Cormac (training) |
@@ -97,6 +98,33 @@ the area:
 | 5 | Disk: class handles, writers migrated, KEEP/age constants deleted, unbounded writers claimed, resolved home everywhere | BigMama (live/media), Cormac (genome/dreaming), Codex (engine), Fable (cognition/mind/capture) |
 | 6 | A mind's context: window from her KV grant; every prompt reader from the turn grant; the 12 out-of-View pushes become Sources; `ContextBudget` reduced to the grant's view or deleted | Fable |
 | 7 | Superseded docs folded here and deleted (RESOURCE-ARCHITECTURE, CAPACITY-FABRIC-AND-GOVERNOR, MOE-SERVING-GOVERNED-BUDGET, EVERY-MODEL-INCLUDED-VIA-L1-BUDGET, STORAGE-SERVING-TIER-GOVERNOR, LIVE-AVATAR-BUDGET where they define a second rule) | Fable |
+
+### Slice 0: enforcement before any migration
+
+Doctrine account (DEVELOPMENT-DOCTRINE.md, "Completion includes deletion and proof"):
+- **Invariant.** No budget decision exists outside the authority and `continuum-flex`, and no file a PR
+  touches keeps one.
+- **Owning crate.** `source-hygiene`, as one module (`budget_discipline`). It replaces four scanners that
+  hunt the same class with different vocabularies and two comment exemptions:
+  - `derived_bounds` (exemption `derived-or-floor:`, 73 markers on canary 365f70fe4);
+  - the de-hardcode guard inside `context_budget` (exemption `context-budget-exempt:`, 71 markers);
+  - `head_cuts`;
+  - the budget half of `context_codec`.
+- **Contract.** One pattern set per rule (`self_sized`, `private_probes`, `writes_outside_a_class`,
+  `prompt_outside_view`). One allow-list, of OWNERS by path: the authority's probe adapters,
+  `continuum-flex`, and the class handles. There are no markers. Two judgements:
+  - the existing base comparison: a count never rises;
+  - new: **a touched file is clean**. Every file the PR modifies has zero instances at head, the same rule
+    as the 1,000-line gate. This is what moves the counts to zero instead of holding them.
+- **Callers.** CI's ratchet job and `cargo test -p source-hygiene` already run it.
+- **Deleted.** Both exemption markers and their parsers; the guard inside `context_budget`; the separate
+  scanners above (merged, not wrapped).
+- **Validator.** A fixture for each banned shape proves the rule fires on it, including a product of two
+  constants, a fraction of a window, a private `sysinfo` read and a `File::create` outside a class. A
+  fixture for each owner path proves the rule stays quiet there. The PR reports per-rule counts before and
+  after.
+- **Limit, stated.** Lexical rules are a backstop. The lasting enforcement is the type: once slice 2 lands,
+  a cache, ring or class can only be constructed from a `GrantRx`, so an unbudgeted one does not compile.
 
 Gates: each PR runs the affected crates' tests locally (serving down or a non-serving executor), CI confirms, then a
 15-minute live read on the residents. The receipts: ratchet counts before/after, lines added/removed, and the residents'
