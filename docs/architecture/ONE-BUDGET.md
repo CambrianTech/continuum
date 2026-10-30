@@ -162,11 +162,13 @@ measurement already records a cut channel at double), the `view_room` arithmetic
 `WORKING_WINDOW_TOKENS`, and the side budgets computed before the allocation (`after_reserves`,
 `irreducible_room`, `fit_newest_result`) once each is a claim.
 
-**Validation (before any live deploy), on the node classes Joel named (2026-10-30): the RTX 3090 (24 GB
-VRAM) and the M4 with 32 GB unified memory**, each with its own engine's measured KV capacity, decode and
-prefill rates, plus the M5 where the defect was seen. Replay captured traces on the dyno for each: a read stays whole
-across acts while the window has room; no turnover while unclaimed window remains; prefix reuse per act
-reported. Then one deploy per node and a 15-minute read: reads per edit, writes per hour, act time.
+**Validation (before any live deploy): any machine, including one never seen** (Joel, 2026-10-30: the
+3090, the M4 32 GB, "some new or unknown machine"). The code holds no machine; a node is described only by
+what its engine and probes report: KV capacity, decode rate, prefill rate. So the dyno takes a NODE PROFILE
+as input and the validator sweeps the profile space (small window with slow decode through large window
+with fast decode), replaying captured traces under each: a read stays whole across acts while the window
+has room; no turnover while unclaimed window remains; prefix reuse per act reported. A new machine is
+covered by its own measured profile, never by a list of boxes. Then one deploy per node and a 15-minute read: reads per edit, writes per hour, act time.
 
 Gates: each PR runs the affected crates' tests locally (serving down or a non-serving executor), CI confirms, then a
 15-minute live read on the residents. The receipts: ratchet counts before/after, lines added/removed, and the residents'
