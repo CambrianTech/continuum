@@ -33,5 +33,7 @@ mod training_trigger_state_2;
 mod training_trigger_state_3;
 pub(crate) use training_trigger_state_3::*;
 
+mod migration;
+
 #[cfg(test)]
 mod tests;

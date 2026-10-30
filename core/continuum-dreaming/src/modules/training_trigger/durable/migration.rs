@@ -64,7 +64,7 @@ pub(crate) async fn migrate_base_change_buckets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::training_trigger::test_support::{build_runtime, ex, submit_params};
+    use crate::commands::training_trigger::test_support::{build_runtime, ex, submit_params};
     use uuid::Uuid as UuidType;
 
     /// What this catches: when a persona's base_model changes (via model override),
@@ -74,7 +74,7 @@ mod tests {
     #[tokio::test]
     async fn migrate_base_change_creates_new_bucket_when_override_differs_and_old_is_clean() {
         let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
-        let (trigger, _executor) = build_runtime(adapter.clone(), false).await;
+        let (trigger, executor) = build_runtime(adapter.clone(), false).await;
 
         let persona_id = UuidType::new_v4();
         let trait_kind = "code".to_string();
@@ -84,7 +84,7 @@ mod tests {
         // Submit examples that create a bucket under the OLD base
         let mut params = submit_params(persona_id, &trait_kind, vec![ex("prompt-1", "answer-1")], Some(16));
         params["submissionId"] = serde_json::json!(UuidType::new_v4());
-        let result = trigger.executor.execute_json("genome/training-trigger/submit", params).await.unwrap();
+        let result = executor.execute_json("genome/training-trigger/submit", params).await.unwrap();
         assert_eq!(result["success"], true, "initial submit succeeded: {result}");
 
         // Verify the bucket exists under old_base
@@ -121,8 +121,8 @@ mod tests {
         assert_eq!(new_bucket.examples.len(), 1, "new bucket has the migrated example");
         assert_eq!(new_bucket.examples[0].prompt, "prompt-1", "example content is preserved");
 
-        // Verify via public API that old base shows 0 and new base shows 1
-        assert_eq!(trigger.state.bucket_example_count(persona_id, &trait_kind, old_base), Some(0));
+        // Verify via public API that old base is gone (None) and new base shows 1
+        assert_eq!(trigger.state.bucket_example_count(persona_id, &trait_kind, old_base), None);
         assert_eq!(trigger.state.bucket_example_count(persona_id, &trait_kind, new_base), Some(1));
 
         println!("PASS: migrate_base_change_creates_new_bucket_when_override_differs_and_old_is_clean");
