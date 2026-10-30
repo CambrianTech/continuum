@@ -20,7 +20,8 @@
 //!
 //! The activity declares the desired verbs or subtrees (code/**), else her hands.
 //! The shared prompt allocation grants a token budget; this owner selects a whole level.
-//! The faculty retains that level for the epoch so subsequent acts keep stable schemas.
+//! The faculty retains that selection (its verbs, not only its level) for the epoch, so every
+//! later act of the epoch sends the same schemas whatever its affordances became.
 //!
 //! The order is canonical (by command name), fixed at [`ToolSurface::build`]. Nothing here
 //! takes fewer abilities: the system prompt's menu lists every category, `commands/help`
@@ -186,6 +187,36 @@ impl ToolSurface {
             })
             .collect::<Result<Vec<_>, String>>()?;
         tool_working_set::Vocabulary::new(schemas)
+    }
+
+    /// The canonical names of what `selected` sends in its head, in the order it sends them:
+    /// what an epoch retains so its later acts send the same schemas ([`Self::retained`]).
+    pub fn names_of(&self, selected: &SelectedSurface<'_>) -> Vec<String> {
+        let Some(sent) = selected.specs.as_deref() else {
+            return Vec::new();
+        };
+        sent.iter()
+            .filter_map(|spec| self.names.iter().zip(&self.registry.specs).find(|(_, wire)| wire.name == spec.name))
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// An epoch's retained selection rebuilt from [`Self::names_of`]: the same schemas, in the
+    /// same order, charged the level the epoch's start chose. A name this surface no longer
+    /// offers (the registry was rebuilt) has no schema to send and is not sent.
+    pub fn retained(&self, names: &[String], reason: SurfaceReason, tokens: usize) -> SelectedSurface<'_> {
+        let specs: Vec<NativeToolSpec> = names
+            .iter()
+            .filter_map(|name| self.names.iter().zip(&self.registry.specs).find(|(canonical, _)| *canonical == name))
+            .map(|(_, spec)| spec.clone())
+            .collect();
+        SelectedSurface {
+            specs: (reason != SurfaceReason::NoTools).then_some(Cow::Owned(specs)),
+            tokens,
+            reason,
+            demand: tokens,
+            tail: Vec::new(),
+        }
     }
 
     /// Her learned head: the `held` verbs in canonical order, the `loaded` ones riding the

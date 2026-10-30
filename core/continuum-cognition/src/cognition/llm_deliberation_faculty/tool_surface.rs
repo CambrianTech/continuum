@@ -9,6 +9,7 @@ impl LlmDeliberationFaculty {
     /// commands on return. [[joel-boundary-design-values]]
     pub(super) fn rebuild_tool_surface(&mut self) {
         self.prompt_feedback.store(None); // New schema bytes invalidate prior prompt observations.
+        *self.tools_epoch.get_mut() = None; // a new surface is selected afresh, never rebuilt from the old one's names
         if self.tools.is_empty() {
             self.surface = ToolSurface::default();
             return;
