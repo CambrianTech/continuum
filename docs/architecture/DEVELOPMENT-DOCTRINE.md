@@ -50,13 +50,22 @@ stronger guarantees require less code and fewer independent decisions. Do not ac
 known structural defects for a future rewrite: reduce them in small validated steps while
 building capabilities. An untouched defect remains tracked, not silently called acceptable.
 
-Apply the same continuous discipline to resident learning. Experience capture, correction,
-training, held-out evaluation and adoption form an ongoing pipeline with owned queues,
-backpressure and explicit resource accounting. Use bounded background or in-place work
-where the implementation supports it; do not make an overnight batch a prerequisite for
-progress. Continuous does not mean unvalidated mutation of a serving model: every adoption
-still needs its evidence, identity, artifact and restart-retention guarantees. Share
-resources through the scheduler so maintenance and learning do not starve useful work.
+Apply the same continuous discipline to resident learning through the existing learning
+modes, not a replacement generic batch loop: low-duty-cycle conscious learning during
+activity, daydreaming between demands, and deeper dojo/coursework and dreaming work.
+The [one-resident patient/doctor/dream design](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md)
+owns stable/shadow adapters, shared-base coursework, adoption and the governor's stage
+mix (serve-only, serve+dream, dream-heavy). [Event mind](EVENT-MIND.md) owns the surprise
+and settled-experience signals; [dream consolidation](../cognition/DREAM-CONSOLIDATION.md)
+connects memory consolidation with teaching. These are existing contracts to implement
+and verify, not new names for independent schedulers.
+
+Capture, training and evaluation use owned queues, backpressure and resource accounting
+within that design. Do not make an overnight batch a prerequisite. Serving reads the
+stable adapter; optimizer work updates the shadow. Adoption requires its evidence and
+atomic transition, and subsequent useful work must retain the improvement after restart.
+In-place learning and warm state reuse are capabilities to prove, not assumptions. The
+shared governor allocates headroom without starving useful work.
 
 ## Zero backward compatibility
 
