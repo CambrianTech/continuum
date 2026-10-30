@@ -339,10 +339,19 @@ chain: an act, its result, a message and its reply, a game move, a perception fa
 activity. Engrams already link provenance (`EngramOrigin::ToolInvocation`, the parent of a reflection) and
 reply edges. The view's `Item` gains the same link.
 
-- **`Item { key, cause, content, ... }`.** `cause` is the element it follows from, or an explicit `Root`.
-  `content` is the hash of its whole. The constructor requires both, so a source cannot build an item
-  without causality. Engram provenance and the view's link become one type: the view holds a chain within
-  an epoch, and engrams persist it.
+- **`Item { key, cause, content, ... }`.**
+  - `cause` is a typed, stable id assigned by the producer that persists the element (the engram id), never
+    an in-view position. That lets edges cross sources, epochs and restarts. The view resolves a cause to
+    whatever level it holds. A cause it cannot resolve (outside the epoch, evicted) is the typed
+    `CauseNotHeld` and renders as its handle, so "nothing appears without its cause" stays true across an
+    epoch.
+  - `Root` exists only for a genuine origin (an external message, the start of an activity), and the ratchet
+    counts `Root` constructions per source.
+  - `content` is the hash of the whole, computed once where the whole is stored (`StoredWhole` gains it at
+    spill time), so a deferred whole is never re-read to compare.
+  - The constructor requires `cause` and `content`, so a source cannot build an item without causality.
+    Engram provenance and the view's link become one type: the view holds a chain within an epoch, and
+    engrams persist it.
 - **The view enforces it, centrally, for every source.** No source can opt out:
   1. **Causal closure.** An element renders only if its cause is represented: whole, summarized, or folded
      with its outcome. Nothing appears as an effect without its cause, and "read X" never appears without
@@ -351,13 +360,24 @@ reply edges. The view's `Item` gains the same link.
      message to the newest element of each causal thread.
   3. **Collapse folds a chain segment; it never breaks a chain.** A contiguous run becomes one node that
      keeps its outcome and a pointer back. The chain shortens and stays linked.
-  4. **A cycle cannot be presented as progress.** A new element whose key and cause match an ancestor's in
-     its own chain, with unchanged `content`, is recorded as an edge back to that ancestor. It renders as
-     "repeat of #n, outcome unchanged", never as a fresh element. This is perception, not a gate: she still
-     decides, but her input now differs from her last, so the recursion ends.
-  5. **Asking again for a folded ancestor is a measured miss.** It raises that chain's claim in the one
-     allocation (ONE-BUDGET), so what she keeps needing stays whole, decided by her own misses rather than
-     a constant.
+  4. **A cycle cannot be presented as progress.** Repeat identity is (action fingerprint, outcome content).
+     The fingerprint is the normalized request: the verb and its arguments as the tool saw them. No
+     argument is excluded by default; an exclusion is named only by the tool's own schema, never by the
+     view. (Key plus cause cannot catch the loop: each re-read's result is caused by a new act. Cormac's
+     review.) A new act whose fingerprint matches a prior act in its chain, and whose outcome content is
+     unchanged, is recorded as an edge back to that ancestor and renders as "repeat of #n, outcome
+     unchanged", never as a fresh element. This is perception, not a gate: she still decides, but her input
+     now differs from her last, so the recursion ends.
+  5. **Asking again for a folded ancestor is a measured miss.** The measurement is the existing
+     handle-expand request on a folded node, counted in that one place. It raises that chain's claim in
+     the one allocation (ONE-BUDGET), so what she keeps needing stays whole, decided by her own misses
+     rather than a constant.
+- **Overflow, in ONE-BUDGET terms.**
+  - A finished chain (its outcome settled) folds whole into one node holding its outcome; only live chains
+    hold a skeleton.
+  - If the live chains' skeletons still exceed the grant (a small window, the 8 GB case), the allocation
+    returns the typed refusal or abstention of contract 5 ("demand, feasibility and allocation are three
+    things"). It never breaks a chain to fit.
 - **The flexbox allocates chains.** A chain is the claim unit:
   - floor: its causal skeleton (head plus fold nodes);
   - want: the whole chain;
@@ -374,9 +394,14 @@ reply edges. The view's `Item` gains the same link.
     represented.
   - Live, on the health line: repeats per resident-hour.
 
-**Build order:** the item type and invariants 1-3 in `continuum-context`, with every source supplying
-causes; then invariant 4; then 5 together with ONE-BUDGET slice 6's measured claims. Each step lands with
-its validator and a 15-minute live read.
+**Build order and owners:**
+1. The item type, typed causes, `CauseNotHeld`, the `Root` ratchet and invariants 1-3, in
+   `continuum-context`, with every source supplying causes. Owner: Fable.
+2. Invariant 4's fingerprint and its replay validator, which builds on the deferred-whole and fold code.
+   Owner: Cormac. The validator replays the M5 2026-10-30 captures and must fire on the 8-reads-an-hour case.
+3. Invariant 5 and the overflow rule, together with ONE-BUDGET slice 6's measured claims. Owner: Fable.
+
+Each step lands with its validator and a 15-minute live read.
 
 ## Fault 2: engine configuration is decided in five places
 
