@@ -10,6 +10,7 @@ Card: bf7aa2f6 "Worktree-forest sweep: prune checkouts whose card is terminal (c
   - Named working dirs + dot-dirs are **structurally excluded** — not derivable from card state.
 - Authoritative dry-run: `airc work cleanup --dry-run` → scanned all 315 registered worktrees; coverage cross-checked against on-disk census: **every card-named dir appears in the report (notScanned=0)**.
 - Independent board-state map built from board dumps (`continuum`, `general`) and joined with the tool's classification. Agreement is exact where both sides can see: **TERMINAL(board) ∩ Removable(tool) = 14, zero disagreements**.
+- Re-verified 2026-10-30 by an independent re-run (`airc work cleanup --dry-run`, AIRC_HOME pinned to the machine home; identity.key SHA-256 `cd320fd9…` unchanged before and after): same **315** registered worktrees scanned — Removable set **identical 23/23** vs Category A, orphan (SkipUnknownCard) set identical 19/19 vs Category C, SkipDetached still `cbaf84de`.
 
 ## Category A — clean deletion candidates (23 dirs; tool says "would remove on --force")
 
@@ -112,7 +113,7 @@ Per-dir sizes measured 2026-10-29 (`du -s -B1`). **Total: 13,832,186,880 bytes �
 ## Also noted (not in scope)
 
 - `SkipDetached`: `cbaf84de` — PR #5137 Merged but detached HEAD; tool retains checkout.
-- ~272 KeepActive dirs with active card state — untouched.
+- The other **272** scanned dirs are: 98 `KeepActive` (active card, clean), 154 `SkipDirty` (uncommitted/unpushed work), 19 `SkipUnknownCard` (= Category C orphans above), 1 `SkipDetached` — all untouched by this sweep.
 - 524 stray files (~82 MB) at forest root — report-only.
 
 ## Ask of operator
