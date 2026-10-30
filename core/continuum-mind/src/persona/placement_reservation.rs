@@ -377,13 +377,8 @@ async fn send_reservation_ask(
         serde_json::to_value(&envelope).map_err(|e| format!("serialize reserve envelope: {e}"))?, // airc wire: encode/decode the remote reservation envelope.
     ); // airc wire: the ask leaves this process for the seat's core over the mesh
     let headers = crate::routing::airc_transport::AircTransport::build_headers(&envelope);
-    let room = airc
-        .current_room()
-        .await
-        .map_err(|e| format!("no room to ask in: {e}"))?;
     let pending = airc
-        .request_in(
-            &room,
+        .request(
             MentionTarget::Peer(PeerId(peer)),
             headers,
             body,
