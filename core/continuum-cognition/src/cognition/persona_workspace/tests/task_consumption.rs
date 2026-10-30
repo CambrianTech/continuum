@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::*;
 use continuum_kernel::runtime::tasks::TaskEnd;
 
