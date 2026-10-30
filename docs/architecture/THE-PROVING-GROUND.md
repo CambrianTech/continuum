@@ -59,7 +59,15 @@ predicts reality.
   (HOW-A-MIND R11), so the same analysis reads both, and sim-versus-live is a diff of like with like.
 - **P7. Fast by default, faithful when needed:** fidelity tiers (section 3), with the fast tier running in
   seconds on any machine and in CI.
-- **P8. Deterministic.** A seed, a world, a workload and a policy revision give byte-identical receipts.
+- **P8. Deterministic.** A seed, a world, a workload and a policy revision give byte-identical receipts. This
+  needs seams in production policy: policy reads time only through an injected clock and randomness only
+  through a seeded source passed in (the CBAR substrate has the shape), and a ratchet counts direct clock and
+  random reads in the policy crates the prover drives (Cormac on #5607).
+- **P9. Captures never leave their node in raw form.** Prompt captures and evidence hold residents' and
+  people's words, and CI logs and artifacts are not private. T0 and T1 run on content-free reductions made on
+  the node that holds the captures: sizes, exact token counts (taken locally with the real tokenizer),
+  timings, causal ids, content hashes and outcome kinds. T2's model in the loop needs the words and runs only
+  on that node. A reduction is checked to carry no text before it is committed (Cormac on #5607).
 
 ## 2. What is simulated
 
@@ -116,6 +124,15 @@ she might act differently. Three tools address this, each labelled in its result
    The model replays her choices under the new view. Its error is checked against T3 (section 6).
 3. **Model in the loop (faithful, slow):** at T2, a real model answers the new prompts, so her choices are
    generated, not assumed. Used to validate the behaviour model, not for every run.
+
+**The behaviour model declares its support** (Cormac on #5607). Its rates were measured under the policies
+that were live, and they are confounded: the old policy chose what to fold, so captured relevance and
+folding are correlated. So:
+- a policy whose views fall outside what the captures covered (folding items the captures never folded,
+  windows far outside their range) is out of support, and its predictions are labelled "out of support", not
+  reported as estimates;
+- out of support is exactly what requires T2;
+- the fault model is checked against T3 per activity, never trusted globally.
 
 Workload sources:
 - prompt captures, per mind;
@@ -206,11 +223,25 @@ The proving ground is trusted only as far as it is shown to be right.
 | Grid world model, admission, residency, placement and market seams | Codex |
 | Workloads, behaviour model, scenario suite, known-bad suite, outcome metrics | Cormac |
 
-## 10. Questions for review
+## 10. Decisions from review
 
-1. Is the counterfactual handling (demand replay exact; behaviour model estimated and checked against live;
-   model in the loop for validation) sufficient, or does any scenario need T2 by default?
-2. What error bound must the prover hold against live before a deploy decision may rest on it alone?
-3. Which unknown-machine ranges should the hardware sweep draw from?
-4. Should the known-bad suite block merge (a PR may not make any known-bad policy pass), in addition to the
-   scenario suite?
+Answers from Cormac's review of #5607 at `562e5a587`. Joel's word overrides any of them.
+
+1. **Counterfactuals:** sufficient with the support rule in section 4. T2 is required exactly when a
+   scenario's views fall outside the behaviour model's measured support, not by default and not by a list.
+2. **Error bound:** no fixed bound, which would be one more open-loop number. A prediction may decide alone
+   when its predicted before/after difference exceeds the published error on that metric for that node, so
+   the error interval does not cross the decision. Otherwise the decision needs T2 or T3.
+3. **Hardware sweep:** the declared target classes plus the nodes we run:
+   - 8 to 16 GB discrete GPUs (gamer and dev);
+   - 16 to 36 GB unified-memory Macs;
+   - a CPU-only low-end tier (client first, never crash);
+   - our M5, 5090 and 3090;
+   - a 128 GB workstation as the top end.
+
+   It draws memory, bandwidth and core counts within those classes' measured ranges, marked unmeasured until
+   a real machine of the class supplies a profile.
+4. **The known-bad suite blocks merge.** A PR that makes a known-bad policy pass has either broken the prover
+   or shown the old incident is no longer bad. Either needs a visible decision, recorded by a reviewer.
+5. **Ordering:** the known-bad suite's faults and repeats depend on causal identity (#5611). Cormac starts the
+   reductions and the known-bad scenario files from the 2026-10-30 evidence while #5611 lands.
