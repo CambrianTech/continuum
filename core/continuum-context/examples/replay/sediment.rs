@@ -165,13 +165,16 @@ pub fn grants_by_source(sources: &[Captured], claims: &[Claim], grants: &[usize]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use continuum_context::source::Item;
 
     fn source(name: &str, sizes: &[usize]) -> Captured {
         let items = sizes
             .iter()
             .enumerate()
-            .map(|(n, size)| Item { key: n.to_string(), full: "x".repeat(*size), summary: None, pointer: Some(format!("[result #{n}]")), stored: None })
+            .map(|(n, size)| {
+                let mut item = super::captured(n.to_string(), "x".repeat(*size));
+                item.pointer = Some(format!("[result #{n}]"));
+                item
+            })
             .collect();
         Captured { name: name.to_owned(), items }
     }

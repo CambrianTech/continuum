@@ -247,7 +247,7 @@ impl OpenViews {
 
     /// Each visible view's stable key, whole representation and resolvable cursor. Planning
     /// prose is detail, never part of the mandatory cursor floor (FOCUS-CONTRACT rules 1–3).
-    pub fn lines(&self, scope: Option<&str>) -> Vec<(String, String, String)> {
+    pub fn lines(&self, scope: Option<&str>) -> Vec<ViewLine> {
         let mut visible: Vec<&OpenView> = self.views.iter().filter(|v| visible_from(v, scope)).collect();
         visible.sort_by(|a, b| a.subject.cmp(&b.subject));
         visible.into_iter().map(|view| {
@@ -256,7 +256,7 @@ impl OpenViews {
                 Some(note) => format!("{pointer}; intent before this read: \"{note}\""),
                 None => pointer.clone(),
             };
-            (view_key(view), full, pointer)
+            ViewLine { key: view_key(view), full, pointer, touched_seq: view.touched_seq }
         }).collect()
     }
 
@@ -273,12 +273,21 @@ impl OpenViews {
             return None;
         }
         let mut out = String::from(Self::BANNER);
-        for (_, line, _) in lines {
+        for line in lines {
             out.push_str("\n- ");
-            out.push_str(&line);
+            out.push_str(&line.full);
         }
         Some(out)
     }
+}
+
+/// One open view as her view renders it: its key, its whole and pointer lines, and the act that
+/// last read it (its cause).
+pub struct ViewLine {
+    pub key: String,
+    pub full: String,
+    pub pointer: String,
+    pub touched_seq: u64,
 }
 
 fn visible_from(view: &OpenView, scope: Option<&str>) -> bool {

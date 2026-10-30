@@ -1,5 +1,19 @@
 use super::*;
+use crate::cause::{Cause, Content, ElementId};
 use crate::source::Item;
+
+/// A fixture occurrence at `key`: its id from the key, its cause unrecorded (these tests are about
+/// levels and starts, not chains).
+fn item(key: impl Into<String>, full: String, summary: Option<String>, pointer: Option<String>) -> Item<String> {
+    use sha2::{Digest, Sha256};
+    let key = key.into();
+    let mut head = [0u8; 16];
+    head.copy_from_slice(&Sha256::digest(key.as_bytes())[..16]);
+    let mut item = Item::whole(ElementId::from_u128(u128::from_be_bytes(head)), Cause::Unrecorded, key, full);
+    item.summary = summary;
+    item.pointer = pointer;
+    item
+}
 
 /// A source shaped like the M5's: items keyed, each renderable in full or as a pointer.
 struct Fake {
@@ -31,19 +45,13 @@ impl Source<String> for Fake {
     fn items(&self) -> Vec<Item<String>> {
         self.items
             .iter()
-            .map(|(key, text)| Item {
-                key: key.clone(),
-                full: text.clone(),
-                summary: None,
-                pointer: Some(format!("[{key}: {} chars, reopen by key]", text.len())),
-                stored: None,
-            })
+            .map(|(key, text)| item(key.clone(), text.clone(), None, Some(format!("[{key}: {} chars, reopen by key]", text.len()))))
             .collect()
     }
     fn retired(&self) -> Vec<Item<String>> {
         self.retired
             .iter()
-            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), summary: None, pointer: Some(text.clone()), stored: None })
+            .map(|(key, text)| item(key.clone(), text.clone(), None, Some(text.clone())))
             .collect()
     }
 }
@@ -180,7 +188,7 @@ fn an_item_without_a_pointer_leaves_the_view_when_collapsed() {
             1
         }
         fn items(&self) -> Vec<Item<String>> {
-            self.0.iter().map(|t| Item { key: (*t).to_owned(), full: (*t).to_owned(), summary: None, pointer: None, stored: None }).collect()
+            self.0.iter().map(|t| item(*t, (*t).to_owned(), None, None)).collect()
         }
     }
     let mut turns = Turns(vec!["one", "two", "three"]);
@@ -244,13 +252,7 @@ impl Source<String> for Leveled {
     fn items(&self) -> Vec<Item<String>> {
         self.0
             .iter()
-            .map(|(key, full, summary)| Item {
-                key: (*key).to_owned(),
-                full: full.clone(),
-                summary: summary.clone(),
-                pointer: Some(format!("[{key}]")),
-                stored: None,
-            })
+            .map(|(key, full, summary)| item(*key, full.clone(), summary.clone(), Some(format!("[{key}]"))))
             .collect()
     }
 }
@@ -386,13 +388,12 @@ impl Source<String> for Spilled {
     fn items(&self) -> Vec<Item<String>> {
         let pointer = "[result #3341: saved, reopen by its handle]".to_owned();
         vec![
-            Item { key: "3340".to_owned(), full: "an older result".to_owned(), summary: None, pointer: Some("[result #3340]".to_owned()), stored: None },
-            Item {
-                key: "3341".to_owned(),
-                full: pointer.clone(),
-                summary: None,
-                pointer: Some(pointer),
-                stored: Some(crate::source::StoredWhole { chars: self.body.chars(), handle: "spill/3341".to_owned() }),
+            item("3340", "an older result".to_owned(), None, Some("[result #3340]".to_owned())),
+            {
+                let mut stored = item("3341", pointer.clone(), None, Some(pointer));
+                stored.stored = Some(crate::source::StoredWhole { chars: self.body.chars(), handle: "spill/3341".to_owned(), content: Content::Absent });
+                stored.content = Content::Absent;
+                stored
             },
         ]
     }
@@ -449,13 +450,7 @@ impl Source<String> for Folding {
     fn items(&self) -> Vec<Item<String>> {
         self.items
             .iter()
-            .map(|(seq, full, summary)| Item {
-                key: seq.to_string(),
-                full: full.clone(),
-                summary: summary.clone(),
-                pointer: Some(format!("[result #{seq}; room r; operation code/read; output handle: tool/output {seq:0>16} — collapsed; {}]", "p".repeat(80))),
-                stored: None,
-            })
+            .map(|(seq, full, summary)| item(seq.to_string(), full.clone(), summary.clone(), Some(format!("[result #{seq}; room r; operation code/read; output handle: tool/output {seq:0>16} — collapsed; {}]", "p".repeat(80)))))
             .collect()
     }
     fn fold(&self, folded: &[Item<String>]) -> Option<String> {

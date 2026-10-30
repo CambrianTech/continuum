@@ -3,20 +3,24 @@
 //! every act (~1.5k chars on the M5, 2026-10-24) though a view's line changes only when she
 //! pages it. Keyed by subject, paging one file appends that file's line alone.
 
+use continuum_context::cause::{Cause, Origin};
 use continuum_context::source::{Item, Source};
 
-use super::{priority, ContextMessage};
+use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::open_views::OpenViews as Views;
 use crate::cognition::working_memory::WorkingMemory;
 
 pub(crate) struct OpenViews<'a> {
     pub memory: &'a WorkingMemory,
+    /// Whose occurrences these are (`super::element`).
+    pub persona: uuid::Uuid,
 }
 
 /// Standing notices contain no allocatable detail.
-fn required(key: String, text: String) -> Item<ContextMessage> {
-    let message = ContextMessage::user(text);
-    Item { key, full: message.clone(), summary: None, pointer: Some(message), stored: None }
+impl OpenViews<'_> {
+    fn standing(&self, key: &str, text: String) -> Item<ContextMessage> {
+        super::standing(self.persona, "open-views", key, ContextMessage::user(text))
+    }
 }
 
 impl Source<ContextMessage> for OpenViews<'_> {
@@ -37,13 +41,14 @@ impl Source<ContextMessage> for OpenViews<'_> {
         if lines.is_empty() {
             return Vec::new();
         }
-        let mut items = vec![required("banner".to_owned(), Views::BANNER.to_owned())];
-        items.extend(lines.into_iter().map(|(key, full, pointer)| Item {
-            key,
-            full: ContextMessage::user(format!("- {full}")),
-            summary: None,
-            pointer: Some(ContextMessage::user(format!("- {pointer}"))),
-            stored: None,
+        let mut items = vec![self.standing("banner", Views::BANNER.to_owned())];
+        // A view follows from the act that last read it.
+        items.extend(lines.into_iter().map(|line| {
+            let id = element(self.persona, Producer::OpenView, format!("{}#{}", line.key, line.touched_seq).as_bytes());
+            let cause = Cause::Of(element(self.persona, Producer::Act, &line.touched_seq.to_be_bytes()));
+            let mut item = Item::whole(id, cause, line.key, ContextMessage::user(format!("- {}", line.full)));
+            item.pointer = Some(ContextMessage::user(format!("- {}", line.pointer)));
+            item
         }));
         items
     }
@@ -55,8 +60,10 @@ impl Source<ContextMessage> for OpenViews<'_> {
             .open_views_out_of_scope()
             .into_iter()
             .map(|key| {
-                let notice = format!("- [not visible from here] {key}");
-                required(key, notice)
+                let id = element(self.persona, Producer::Notice, key.as_bytes());
+                let mut item = Item::whole(id, Cause::Root(Origin::External), key.clone(), ContextMessage::user(format!("- [not visible from here] {key}")));
+                item.pointer = Some(item.full.clone());
+                item
             })
             .collect()
     }

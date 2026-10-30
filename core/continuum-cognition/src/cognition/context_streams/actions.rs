@@ -7,9 +7,10 @@
 //! shelter: Anwen parked fabricated receipts in one within minutes), or acts happened whose
 //! details aged out (denying her own work is the inverse failure, 2026-07-13: Asha).
 
-use continuum_context::source::{Item, Source};
+use continuum_context::cause::{Cause, Content, ContentHash, Origin};
+use continuum_context::source::{Item, Source, StoredWhole};
 
-use super::{priority, ContextMessage};
+use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::working_memory::WorkingMemory;
 
 pub(crate) struct Actions<'a> {
@@ -19,9 +20,12 @@ pub(crate) struct Actions<'a> {
 }
 
 impl Actions<'_> {
-    fn standing(key: &str, text: String) -> Item<ContextMessage> {
-        let message = ContextMessage::user(text);
-        Item { key: key.to_owned(), full: message.clone(), summary: None, pointer: Some(message), stored: None }
+    fn standing(&self, key: &str, text: String) -> Item<ContextMessage> {
+        super::standing(self.persona, "actions", key, ContextMessage::user(text))
+    }
+
+    fn act(&self, seq: u64) -> continuum_context::cause::ElementId {
+        element(self.persona, Producer::Act, &seq.to_be_bytes())
     }
 }
 
@@ -35,7 +39,7 @@ impl Source<ContextMessage> for Actions<'_> {
     }
 
     fn items(&self) -> Vec<Item<ContextMessage>> {
-        let banner = Self::standing(
+        let banner = self.standing(
             "banner",
             "[actions] What I have done this session, oldest first: each #n is one act; a \
              collapsed one names the handle that reopens it."
@@ -63,16 +67,27 @@ impl Source<ContextMessage> for Actions<'_> {
                     if taken == 1 { "" } else { "s" }
                 )
             };
-            return vec![banner, Self::standing("none", none)];
+            return vec![banner, self.standing("none", none)];
         }
         let mut items = vec![banner];
-        items.extend(acts.into_iter().map(|(seq, full, summary, pointer, stored)| Item {
-            stored: stored.map(|(chars, handle)| continuum_context::source::StoredWhole { chars, handle }),
-            key: seq.to_string(),
-            full: ContextMessage::user(full),
-            summary: summary.map(ContextMessage::user),
-            pointer: Some(ContextMessage::user(pointer)),
-        }));
+        // Her acts in one room are one chain: each follows the act before it there; the first is
+        // where that activity's chain starts.
+        let mut last_in_room: std::collections::HashMap<Option<uuid::Uuid>, u64> = std::collections::HashMap::new();
+        for act in acts {
+            let cause = last_in_room.insert(act.room, act.seq).map_or(Cause::Root(Origin::ActivityStart), |prev| Cause::Of(self.act(prev)));
+            let content = if act.resident_whole { Content::Hashed(ContentHash::of(&act.full)) } else { Content::Absent };
+            let stored = act.stored.map(|(chars, handle)| StoredWhole { chars, handle, content: Content::Absent });
+            items.push(Item {
+                key: act.seq.to_string(),
+                id: self.act(act.seq),
+                cause,
+                content,
+                full: ContextMessage::user(act.full),
+                summary: act.summary.map(ContextMessage::user),
+                pointer: Some(ContextMessage::user(act.pointer)),
+                stored,
+            });
+        }
         items
     }
 
@@ -110,6 +125,6 @@ impl Source<ContextMessage> for Actions<'_> {
         if acts.is_empty() && !in_flight {
             return Vec::new();
         }
-        vec![Self::standing("none", "(that was before my first act; my acts follow)".to_owned())]
+        vec![self.standing("none", "(that was before my first act; my acts follow)".to_owned())]
     }
 }

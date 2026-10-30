@@ -4,7 +4,21 @@ use super::*;
 
 /// One act as her view renders it: seq, full, summary, pointer, and its stored whole (rendered
 /// chars, handle) when its body is not resident.
-pub(crate) type ActRendering = (u64, String, Option<String>, String, Option<(usize, String)>);
+/// One act as her view renders it: who it is (its `seq` in her ledger, the room it was for), its
+/// levels, and where its whole is stored when it left RAM.
+#[derive(Clone, Debug)]
+pub(crate) struct ActRendering {
+    pub seq: u64,
+    /// The room the act was for; acts in one room are one chain.
+    pub room: Option<uuid::Uuid>,
+    pub full: String,
+    pub summary: Option<String>,
+    pub pointer: String,
+    /// `(chars, handle)` of a whole that left RAM for its saved output.
+    pub stored: Option<(usize, String)>,
+    /// Whether `full` is the act's whole result (resident), so its content hash is the whole's.
+    pub resident_whole: bool,
+}
 
 impl WorkingMemory {
     /// Typed snapshot of the window, oldest → newest — the kind-aware sibling
@@ -211,7 +225,7 @@ impl WorkingMemory {
 
     /// Her open views visible from where her hands stand, one `(key, full, pointer)` each: the items of
     /// her view's open-views stream (`context_streams::open_views`).
-    pub(crate) fn open_view_lines(&self) -> Vec<(String, String, String)> {
+    pub(crate) fn open_view_lines(&self) -> Vec<crate::cognition::open_views::ViewLine> {
         let scope = self.scope.lock().clone();
         self.open_views.lock().lines(scope.as_deref())
     }
@@ -262,7 +276,8 @@ impl WorkingMemory {
                 };
                 let full = whole.unwrap_or_else(|| pointer.clone());
                 let summary = record.summary.as_deref().map(|summary| format!("[result {attribution}{workspace} — summary; expand with tool/output] {summary}"));
-                (record.seq, full, summary, pointer, stored)
+                let resident_whole = record.result.is_some();
+                ActRendering { seq: record.seq, room: record.room, full, summary, pointer, stored, resident_whole }
             })
             .collect();
         (renderings, in_flight)

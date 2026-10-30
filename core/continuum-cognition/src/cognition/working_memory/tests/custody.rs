@@ -159,7 +159,7 @@ fn a_moved_body_s_handle_stays_live_behind_any_number_of_newer_pointers() {
     assert!(live(&first), "the oldest moved body's handle is still protected");
     let (acts, _) = wm.action_renderings();
     let oldest = acts.first().expect("test: the first act");
-    assert_eq!(oldest.4.as_ref().map(|(_, h)| h.as_str()), Some(first.as_str()), "its record stays, priced and reloadable");
+    assert_eq!(oldest.stored.as_ref().map(|(_, h)| h.as_str()), Some(first.as_str()), "its record stays, priced and reloadable");
     drop(wm);
     assert!(!live(&first), "released when the mind drops");
 }
@@ -427,7 +427,7 @@ fn a_restore_prices_a_legacy_evicted_result_from_its_saved_output() {
     let restored = WorkingMemory::new(8);
     restored.restore(snapshot);
     let (acts, _) = restored.action_renderings();
-    let label = restored.action_whole_label(acts[0].0).expect("test: a label").chars().count();
-    assert_eq!(acts[0].4.as_ref().map(|(chars, _)| *chars), Some(label + measured), "priced from its saved output, label included");
-    assert_eq!(acts[1].4, None, "an output that can't be read stays a pointer");
+    let label = restored.action_whole_label(acts[0].seq).expect("test: a label").chars().count();
+    assert_eq!(acts[0].stored.as_ref().map(|(chars, _)| *chars), Some(label + measured), "priced from its saved output, label included");
+    assert_eq!(acts[1].stored, None, "an output that can't be read stays a pointer");
 }

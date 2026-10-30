@@ -128,7 +128,19 @@ impl Source<String> for Captured {
 fn item(key: String, text: String) -> Item<String> {
     let pointer: String = text.lines().next().unwrap_or_default().chars().take(185).collect();
     let pointer = if pointer.len() < text.len() { pointer } else { text.clone() };
-    Item { key, pointer: Some(pointer), summary: None, full: text, stored: None }
+    let mut item = captured(key, text);
+    item.pointer = Some(pointer);
+    item
+}
+
+/// A captured element: a capture records what was sent, never what caused it, so its cause is
+/// `Unrecorded` (counted, never toward closure) and its id comes from its key.
+fn captured(key: String, full: String) -> Item<String> {
+    use sha2::{Digest, Sha256};
+    let mut head = [0u8; 16];
+    head.copy_from_slice(&Sha256::digest(key.as_bytes())[..16]);
+    let id = continuum_context::cause::ElementId::from_u128(u128::from_be_bytes(head));
+    Item::whole(id, continuum_context::cause::Cause::Unrecorded, key, full)
 }
 
 /// The one allocation, modelled: every source gets its floor, then the rest of `budget`

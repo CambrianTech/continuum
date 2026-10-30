@@ -189,7 +189,7 @@ impl LlmDeliberationFaculty {
             visual,
         );
         all_messages.streams.blocks.extend(contracts.into_iter().map(|contract| {
-            crate::cognition::context_streams::blocks::Grounding::atomic(contract.name, contract.body)
+            crate::cognition::context_streams::blocks::Grounding::atomic(self.persona_id, contract.name, contract.body)
         }));
         // Her view leads the history: this act appends to it, and everything after it (the
         // standing grounding, facts, the clock) is this act's fresh tail.

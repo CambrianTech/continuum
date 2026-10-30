@@ -47,8 +47,9 @@ pub struct StoredWhole {
     pub chars: usize,
     /// The handle the render's loader opens (a spill path, a result id).
     pub handle: String,
-    /// The whole's hash, taken at spill time with its size: compared without reading it back.
-    pub content: ContentHash,
+    /// The whole's hash, taken at spill time with its size so it is compared without reading the
+    /// body back; `Absent` for a whole spilled before hashes were kept (never a minted hash).
+    pub content: Content,
 }
 
 impl<T: Block> Item<T> {
