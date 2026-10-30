@@ -39,6 +39,9 @@
 //! charging each later page her acts show she needed as an extra request (`replay/paged.rs`).
 //! Each run prints one `TABLE` line.
 //!
+//! `--window <tokens>` replays at another fitted window than the one recorded (e.g. the whole
+//! served slot against the working window), on the same requests.
+//!
 //! `--chars-per-token <r>` prices the window at the core's own estimate instead of the
 //! engine's bill; `--keyed-turn` keys the standing turn text into the epoch; `--trace`
 //! prints each act's view against what it may hold.
@@ -505,6 +508,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut validate_tps: Option<f64> = None;
     let mut append_tps: Option<f64> = None;
     let mut reply_override: Option<u64> = None;
+    let mut window_override: Option<u64> = None;
     let mut fixed_tools: Option<String> = None;
     let (mut outline_results, mut generational, mut paged_reads) = (false, false, false);
     let mut args = args.into_iter();
@@ -518,6 +522,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--paged-reads" => paged_reads = true,
             "--trace" => trace = true,
             "--reply" => reply_override = Some(args.next().ok_or("--reply needs a token count")?.parse()?),
+            "--window" => window_override = Some(args.next().ok_or("--window needs a token count")?.parse()?),
             "--validate" => {
                 let tps: f64 = args.next().ok_or("--validate needs the prefill rate in tokens/s")?.parse()?;
                 if !(tps.is_finite() && tps > 0.0) {
@@ -570,7 +575,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             && row["request"]["purpose"].as_str().is_some_and(|p| p.ends_with(&purpose))
     });
     rows.sort_by_key(|row| row["captured_at_ms"].as_u64());
-    let context_window = rows.iter().filter_map(|row| row["context_window"].as_u64()).max().unwrap_or(0); // unwrap_or: no rows in the room, nothing replays
+    // `--window <tokens>` replays at another fitted window: what a resident fitted to her whole
+    // served slot (60,672 on the M5) would turn over versus the working window she was captured
+    // at (49,152), on the same requests.
+    let recorded_window = rows.iter().filter_map(|row| row["context_window"].as_u64()).max().unwrap_or(0); // unwrap_or: no rows in the room, nothing replays
+    let context_window = window_override.unwrap_or(recorded_window);
     let captured_reply = rows.iter().filter_map(|row| row["request"]["maxTokens"].as_u64()).max().unwrap_or(0); // unwrap_or: no rows in the room, nothing replays
     // `--reply <tokens>` replays with another reply reserve: what a reserve sized from her
     // measured output would give her view (the captured one held 12,288 on the M5, 2026-10-25,
