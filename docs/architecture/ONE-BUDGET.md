@@ -162,8 +162,9 @@ measurement already records a cut channel at double), the `view_room` arithmetic
 `WORKING_WINDOW_TOKENS`, and the side budgets computed before the allocation (`after_reserves`,
 `irreducible_room`, `fit_newest_result`) once each is a claim.
 
-**Validation (outlier A and B, before any live deploy):** replay captured traces on the dyno for two node
-classes at least (the M5, and the smallest supported machine's window), plus the 5090's: a read stays whole
+**Validation (before any live deploy), on the node classes Joel named (2026-10-30): the RTX 3090 (24 GB
+VRAM) and the M4 with 32 GB unified memory**, each with its own engine's measured KV capacity, decode and
+prefill rates, plus the M5 where the defect was seen. Replay captured traces on the dyno for each: a read stays whole
 across acts while the window has room; no turnover while unclaimed window remains; prefix reuse per act
 reported. Then one deploy per node and a 15-minute read: reads per edit, writes per hour, act time.
 
