@@ -22,7 +22,7 @@ pub struct Ledger {
     /// How every completed generation stopped, counted once at the one place it is
     /// classified (see [`Stop`]). Counting at a branch instead missed every cut: Aris's
     /// three 963-token cuts inside thinking (the M5, 2026-10-30) read "think-only 0".
-    pub stops: StopCounters,
+    pub(crate) stops: StopCounters,
     /// Turn iterations that NEVER REACHED THE MODEL — she waited at the serving gate and
     /// produced nothing (the `persona.act.lane_starved` seam, card cff534ba). The sibling
     /// of the stops and NOT the same failure: a generation that stopped (landed, cut, or
@@ -120,7 +120,7 @@ pub enum Stop {
 
 /// One counter per [`Stop`], fed only by [`note_stop`].
 #[derive(Default)]
-pub struct StopCounters {
+pub(crate) struct StopCounters {
     landed: AtomicU64,
     empty: AtomicU64,
     think_ended: AtomicU64,
@@ -130,7 +130,7 @@ pub struct StopCounters {
 }
 
 impl StopCounters {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             landed: AtomicU64::new(0),
             empty: AtomicU64::new(0),
@@ -142,7 +142,7 @@ impl StopCounters {
     }
 
     /// Count one generation that stopped as `stop`.
-    pub fn note(&self, stop: Stop) {
+    pub(crate) fn note(&self, stop: Stop) {
         self.counter(stop).fetch_add(1, Ordering::Relaxed);
     }
 
