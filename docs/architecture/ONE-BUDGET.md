@@ -157,10 +157,14 @@ itself reports (the engine's KV capacity, #5188), never from another machine's c
 5. The epoch turns over only when the view cannot append into the unclaimed window. Its start follows the
    derived bound (reserve >= growing, from her measured append rate); no share constant.
 
-**Deleted:** `ACT_OUTPUT_CAP`, `reply_runaway`, `PASS_RUNAWAY_MULTIPLE`, the pending-peak doubling (the need
-measurement already records a cut channel at double), the `view_room` arithmetic, `EPOCH_START_SHARE`,
-`WORKING_WINDOW_TOKENS`, and the side budgets computed before the allocation (`after_reserves`,
-`irreducible_room`, `fit_newest_result`) once each is a claim.
+**Deleted (first PR):** `ACT_OUTPUT_CAP`, `reply_runaway`, `PASS_RUNAWAY_MULTIPLE`, the act's runaway claim
+above her context, the `view_room` arithmetic that handed unclaimed window to the reply, and `EPOCH_START_SHARE`
+(the start takes the derivation's half bound). **Kept, because it is a measurement:** a pending cut's peak,
+retained until its concern settles (the ordinary need decays through short reads and a retried write would be
+claimed small and cut again). **Next, owned:** `WORKING_WINDOW_TOKENS` stands in for a real cost (each turnover
+re-prefills the whole view, so a bigger window makes each turnover slower); it is replaced by a measured
+prefill-cost term in the epoch start, not deleted bare. Then the side budgets computed before the allocation
+(`after_reserves`, `irreducible_room`, `fit_newest_result`) become claims.
 
 **Validation (before any live deploy): any machine, including one never seen** (Joel, 2026-10-30: the
 3090, the M4 32 GB, "some new or unknown machine"). The code holds no machine; a node is described only by
