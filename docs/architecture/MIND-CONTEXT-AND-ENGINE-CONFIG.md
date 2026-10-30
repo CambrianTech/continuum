@@ -324,6 +324,60 @@ collapse the newest, admission instead of turnovers, a restart order measured pe
 slot/seed), Cormac (checkpoints at the head boundary and on turnover). The replay validator
 (`continuum-context` `examples/replay.rs`) and the live 15-minute read are the receipts for each slice.
 
+### Revision, 2026-10-30: causality is in the type, so nothing can loop as if it were progress
+
+**The failure.** On the M5 (build ab0466601, 2026-10-30) residents read the same file up to 8 times an hour
+and made 2 edits in 75 reads. Every act's turnover collapsed her earlier results to one-line notes, so her
+next input looked like her last and she repeated the act. Every loop we have recorded has this one shape:
+the next input equals the last, because a cause lost its effect or an effect lost its cause. Patching the
+budget that caused today's instance (ONE-BUDGET slice 6) does not make the next instance impossible. The
+data type has to.
+
+**The design** (Joel: "pointers into a linked list ... we already built into engrams ... handle it
+generically ... at a fundamental and centralized level"). Every element she perceives is a node in a causal
+chain: an act, its result, a message and its reply, a game move, a perception fact, an event from any
+activity. Engrams already link provenance (`EngramOrigin::ToolInvocation`, the parent of a reflection) and
+reply edges. The view's `Item` gains the same link.
+
+- **`Item { key, cause, content, ... }`.** `cause` is the element it follows from, or an explicit `Root`.
+  `content` is the hash of its whole. The constructor requires both, so a source cannot build an item
+  without causality. Engram provenance and the view's link become one type: the view holds a chain within
+  an epoch, and engrams persist it.
+- **The view enforces it, centrally, for every source.** No source can opt out:
+  1. **Causal closure.** An element renders only if its cause is represented: whole, summarized, or folded
+     with its outcome. Nothing appears as an effect without its cause, and "read X" never appears without
+     what X said or how it ended.
+  2. **Every chain's head is whole.** This generalizes "never clip the newest end" (goal 7) from the newest
+     message to the newest element of each causal thread.
+  3. **Collapse folds a chain segment; it never breaks a chain.** A contiguous run becomes one node that
+     keeps its outcome and a pointer back. The chain shortens and stays linked.
+  4. **A cycle cannot be presented as progress.** A new element whose key and cause match an ancestor's in
+     its own chain, with unchanged `content`, is recorded as an edge back to that ancestor. It renders as
+     "repeat of #n, outcome unchanged", never as a fresh element. This is perception, not a gate: she still
+     decides, but her input now differs from her last, so the recursion ends.
+  5. **Asking again for a folded ancestor is a measured miss.** It raises that chain's claim in the one
+     allocation (ONE-BUDGET), so what she keeps needing stays whole, decided by her own misses rather than
+     a constant.
+- **The flexbox allocates chains.** A chain is the claim unit:
+  - floor: its causal skeleton (head plus fold nodes);
+  - want: the whole chain;
+  - grow pass: most-missed and most-recent segments first.
+
+  The allocator is unchanged; its claims are now causally whole.
+- **One owner.** `continuum-context` owns the item type and the five invariants. Sources supply cause
+  links. Engrams reuse the link type. #5604's proprioception for unfulfilled acts becomes one consumer of
+  invariant 4, not a separate mechanism.
+- **Enforcement.**
+  - A ratchet: no item is constructed without a cause.
+  - A replay validator, in seconds and with no live peers: across captured traces, no identical (input
+    fingerprint, action) pair recurs without a perceivable delta, and every rendered effect has its cause
+    represented.
+  - Live, on the health line: repeats per resident-hour.
+
+**Build order:** the item type and invariants 1-3 in `continuum-context`, with every source supplying
+causes; then invariant 4; then 5 together with ONE-BUDGET slice 6's measured claims. Each step lands with
+its validator and a 15-minute live read.
+
 ## Fault 2: engine configuration is decided in five places
 
 `lane_args`, `llama_server`, `backend_receipt`, `serving_plan` and `kv_cache_plan` each
