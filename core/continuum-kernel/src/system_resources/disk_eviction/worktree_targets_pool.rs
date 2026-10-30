@@ -20,388 +20,153 @@
 //! name instead of into one being deleted. The detached tree is then removed with the same
 //! redirect-safe walk the shared owner uses. A detached tree a crash left behind is reclaimed
 //! first on the next eviction: nothing builds into a detached name.
+//!
+//! NO FILESYSTEM WORK ON THE TICK (CONCURRENCY-STYLE-GUIDE). The first measurement of the
+//! class on the M5 walks ~448 GB, and the broker's relief pass runs every pool in turn, so
+//! a walk inside `evict_at_least` would stall relief for every other pool. The tick reads
+//! the last published [`targets::Snapshot`], plans from it in memory, and hands the work to
+//! the blocking pool without awaiting it: one background job at a time, either a
+//! measurement (no snapshot yet, or the scanner has observed the class since) or an
+//! eviction (which re-measures and republishes when it ends). Bytes a job frees are
+//! recorded on the class at once and reported to the broker on the next tick.
 
 use super::*;
-use crate::system_resources::drives::DriveInfo;
+
+mod targets;
+use targets::{Plan, Snapshot, Targets};
 
 /// The prefix a detached child carries until its removal completes.
 const DETACHED_PREFIX: &str = ".evicting-";
 
 pub struct WorktreeTargetsPool {
-    /// Class plus physical root, the same identity rule as [`CargoTargetPool`]: the broker
-    /// dedups by name, so a hardcoded name would let one registration replace another.
-    tier: String,
-    pub(super) tracked: Arc<TrackedDir>,
-    pub(super) active_artifacts: Arc<ActiveArtifactSet>,
-    /// Read the owning volume's already-published sample; never probe here.
-    pub(super) volume_sample: fn(&Path) -> Option<DriveInfo>,
-    /// The writer-lease check (hold 3). A field so a test can stand for a held lease.
-    pub(super) leased: fn(&Path) -> bool,
-    /// Whether "every target is held" was already said for the current run of such
-    /// evictions, so a standing condition speaks once instead of once per broker tick.
-    all_held_reported: std::sync::atomic::AtomicBool,
-    /// The class budget for a volume sample: the cargo-target budget in production. A field
-    /// so a test can stand for a volume small enough to put a fixture over it.
-    pub(super) budget_for: fn(Option<&DriveInfo>) -> u64,
-    /// Each child's measured size, keyed by the `last_built` it was measured at: a build
-    /// that changes the size moves that mark, so an unchanged mark needs no second walk.
-    /// Every relief tick ranks the whole class; this keeps that from re-walking it.
-    sizes: parking_lot::Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, u64)>>,
+    targets: Arc<Targets>,
+    /// The runtime whose blocking pool runs measurements and evictions.
+    runtime: tokio::runtime::Handle,
+    /// The last measurement, published by the background job and read by the tick.
+    snapshot: Arc<tokio::sync::watch::Sender<Option<Arc<Snapshot>>>>,
+    /// A background job is in flight; the tick starts no second one.
+    busy: Arc<std::sync::atomic::AtomicBool>,
+    /// Bytes finished jobs freed that no tick has reported to the broker yet.
+    freed: Arc<std::sync::atomic::AtomicU64>,
 }
 
-/// One child target dir, with when a build last wrote into it.
-#[derive(Debug)]
-pub(super) struct Candidate {
-    pub(super) path: PathBuf,
-    pub(super) last_built: std::time::SystemTime,
+/// Clears `busy` when a job ends, including by a panic, so one failed job never parks the
+/// pool for good.
+struct JobSlot(Arc<std::sync::atomic::AtomicBool>);
+impl Drop for JobSlot {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl WorktreeTargetsPool {
-    pub fn new(tracked: Arc<TrackedDir>) -> Self {
-        use sha2::{Digest, Sha256};
-        let root_id = Sha256::digest(tracked.path().as_os_str().as_encoded_bytes());
+    pub fn new(tracked: Arc<TrackedDir>, runtime: tokio::runtime::Handle) -> Self {
+        Self::from_targets(Targets::new(tracked), runtime)
+    }
+
+    fn from_targets(targets: Targets, runtime: tokio::runtime::Handle) -> Self {
         Self {
-            tier: format!("disk-{}:{root_id:x}", tracked.class()),
-            tracked,
-            active_artifacts: serving_active_artifacts(),
-            volume_sample: super::super::DiskPressureMonitor::volume_for,
-            leased: super::super::disk_reporters::cargo_root_leased,
-            all_held_reported: std::sync::atomic::AtomicBool::new(false),
-            budget_for: Self::budget,
-            sizes: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            targets: Arc::new(targets),
+            runtime,
+            snapshot: Arc::new(tokio::sync::watch::Sender::new(None)),
+            busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            freed: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
-    /// The same volume-derived budget every build cache takes; an unmeasured volume reads
-    /// the budget's documented floor, which is also what the derived budget is on a small one.
-    fn budget(volume: Option<&DriveInfo>) -> u64 {
-        volume.map_or(DEFAULT_CARGO_TARGET_BUDGET_BYTES, |volume| {
-            cargo_target_budget_bytes(volume.total_bytes)
-        })
+    /// Whether a background job is in flight (test seam for waiting one out).
+    #[cfg(test)]
+    fn busy(&self) -> bool {
+        self.busy.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// KEEP RECENT (Joel, 2026-10-29: build caches rebuild, so old ones are disposable at
-    /// any time, not only under disk pressure). Given sizes ordered least recently built
-    /// first, how many of the oldest fall outside the budget: newest first, a target is kept
-    /// while the running total fits. The newest is always kept, even alone over the budget:
-    /// it is the one a build is most likely about to reuse, and evicting it every tick
-    /// between two builds would make every build cold.
-    pub(super) fn beyond_budget(sizes_oldest_first: &[u64], budget: u64) -> usize {
-        let mut kept = 0u64;
-        for (from_newest, size) in sizes_oldest_first.iter().rev().enumerate() {
-            kept = kept.saturating_add(*size);
-            if from_newest > 0 && kept > budget {
-                return sizes_oldest_first.len() - from_newest;
-            }
-        }
-        0
-    }
-
-    /// A child's size, walked only when a build has written into it since the last walk.
-    fn measured_size(&self, candidate: &Candidate) -> u64 {
-        if let Some((at, size)) = self.sizes.lock().get(&candidate.path) {
-            if *at == candidate.last_built {
-                return *size;
-            }
-        }
-        let size = dir_size_bytes(&candidate.path);
-        self.sizes
-            .lock()
-            .insert(candidate.path.clone(), (candidate.last_built, size));
-        size
-    }
-
-    /// When a build last wrote into `dir`: the newest mtime among its entries and its
-    /// entries' entries. A build that compiles anything adds files to `<profile>/deps`,
-    /// `<profile>/.fingerprint` and `<profile>/incremental` (each a depth-2 directory whose
-    /// mtime moves when an entry is added or replaced) and relinks `<profile>/<bin>`; under
-    /// `--target <triple>` the profile dir is itself at depth 2 and moves when its outputs
-    /// are relinked. A no-op build writes nothing and so does not refresh the rank.
-    ///
-    /// The dir's OWN mtime and every `.cargo-lock` are not read: this pool creates the root
-    /// lock when it checks a target, and that would rank the target it just declined as the
-    /// newest (only an empty target, with nothing else to read, is ranked by its own mtime).
-    /// Access times are not used: `noatime`/`relatime` mounts make them unreliable. `None`
-    /// when no mtime can be read: its recency is unknown, so it is not ranked at all rather
-    /// than guessed old or new.
-    pub(super) fn last_built(dir: &Path) -> Option<std::time::SystemTime> {
-        fn visit(
-            path: &Path,
-            descend: bool,
-            newest: &mut Option<std::time::SystemTime>,
-        ) -> Vec<PathBuf> {
-            let Ok(entries) = std::fs::read_dir(path) else {
-                return Vec::new();
-            };
-            let mut dirs = Vec::new();
-            for entry in entries.flatten() {
-                if entry.file_name() == ".cargo-lock" {
-                    continue;
-                }
-                let Ok(metadata) = entry.metadata() else {
-                    continue;
-                };
-                if let Ok(modified) = metadata.modified() {
-                    *newest = Some(newest.map_or(modified, |seen| seen.max(modified)));
-                }
-                if descend && metadata.is_dir() && !metadata.is_symlink() {
-                    dirs.push(entry.path());
-                }
-            }
-            dirs
-        }
-        let mut newest = None;
-        for child in visit(dir, true, &mut newest) {
-            visit(&child, false, &mut newest);
-        }
-        match newest {
-            Some(newest) => Some(newest),
-            None => std::fs::symlink_metadata(dir).ok()?.modified().ok(),
+    /// The tick's plan, in memory: keep recent within the budget, and honour the broker's
+    /// ask past it only when the class fit its budget (the volume brought the broker). An
+    /// over-budget call is answered by the trim alone; a volume still hot after it brings
+    /// the broker back on the next tick.
+    fn plan(&self, snapshot: &Snapshot, want_bytes: u64) -> Plan {
+        let sizes: Vec<u64> = snapshot.live.iter().map(|(_, size)| *size).collect();
+        let budget =
+            (self.targets.budget_for)((self.targets.volume_sample)(&snapshot.root).as_ref());
+        let within_budget = sizes.iter().sum::<u64>() <= budget;
+        Plan {
+            beyond: Targets::beyond_budget(&sizes, budget),
+            pressure_ask: if within_budget { want_bytes.max(1) } else { 0 },
         }
     }
 
-    /// The children to consider, least recently built first, plus any detached trees a
-    /// crashed eviction left behind. Files and links at the root are never candidates.
-    pub(super) fn candidates(root: &Path) -> (Vec<PathBuf>, Vec<Candidate>) {
-        let Ok(entries) = std::fs::read_dir(root) else {
-            return (Vec::new(), Vec::new());
-        };
-        let mut detached = Vec::new();
-        let mut live = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-                continue;
-            };
-            if !metadata.is_dir() || CargoTargetPool::is_redirect(&metadata) {
-                continue;
+    /// Run `job` on the blocking pool, unawaited, holding the one job slot until it ends.
+    fn start(&self, job: impl FnOnce(&Targets) -> Option<Snapshot> + Send + 'static) {
+        let slot = JobSlot(self.busy.clone());
+        let targets = self.targets.clone();
+        let publish = self.snapshot.clone();
+        self.runtime.spawn_blocking(move || {
+            let _slot = slot;
+            if let Some(snapshot) = job(&targets) {
+                publish.send_replace(Some(Arc::new(snapshot)));
             }
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(DETACHED_PREFIX)
-            {
-                detached.push(path);
-            } else if let Some(last_built) = Self::last_built(&path) {
-                live.push(Candidate { path, last_built });
-            }
-        }
-        live.sort_by_key(|candidate| candidate.last_built);
-        (detached, live)
-    }
-
-    /// Every cargo build lock under `dir`: its root `.cargo-lock` (created if missing, so a
-    /// cargo starting mid-eviction blocks on it) and every existing `.cargo-lock` one or two
-    /// levels down (`<profile>/` and `<triple>/<profile>/`). `Err` = some lock is held,
-    /// redirected or cannot be queried, so the dir is held.
-    pub(super) fn take_build_locks(dir: &Path) -> Result<Vec<std::fs::File>, String> {
-        let mut paths = vec![dir.join(".cargo-lock")];
-        let mut level = vec![dir.to_path_buf()];
-        for _ in 0..2 {
-            let mut next = Vec::new();
-            for parent in &level {
-                let Ok(entries) = std::fs::read_dir(parent) else {
-                    continue;
-                };
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-                        continue;
-                    };
-                    if metadata.is_dir() && !CargoTargetPool::is_redirect(&metadata) {
-                        if std::fs::symlink_metadata(path.join(".cargo-lock")).is_ok() {
-                            paths.push(path.join(".cargo-lock"));
-                        }
-                        next.push(path);
-                    }
-                }
-            }
-            level = next;
-        }
-        let mut locks = Vec::with_capacity(paths.len());
-        for path in paths {
-            if let Ok(metadata) = std::fs::symlink_metadata(&path) {
-                if CargoTargetPool::is_redirect(&metadata) {
-                    return Err(format!("redirected build lock: {}", path.display()));
-                }
-            }
-            match try_exclusive_flock_detailed(&path) {
-                LockAttempt::Acquired(lock) => locks.push(lock),
-                LockAttempt::HeldByAnother => {
-                    return Err(format!("a live build holds {}", path.display()))
-                }
-                LockAttempt::Unavailable(why) => return Err(format!("{}: {why}", path.display())),
-            }
-        }
-        Ok(locks)
-    }
-
-    /// Why `dir` is held, or `None` when it may be evicted. The caller holds `_locks`.
-    fn held(&self, dir: &Path) -> Option<String> {
-        if let Some((pid, exe)) = process_executing_under(dir) {
-            return Some(format!("pid {pid} is executing {exe}"));
-        }
-        if (self.leased)(dir) {
-            return Some("an admitted cargo writer holds its lease".into());
-        }
-        // An identity that cannot be resolved cannot be cleared of serving custody.
-        let physical = match std::fs::canonicalize(dir) {
-            Ok(physical) => physical,
-            Err(error) => return Some(format!("serving custody unverifiable: {error}")),
-        };
-        self.active_artifacts
-            .protects(&physical)
-            .then(|| "serving holds an artifact under it".into())
-    }
-
-    /// Remove a detached tree with the shared owner's redirect-safe walk; bytes are the
-    /// removed files' apparent lengths, the measure the scanner reports for this class.
-    fn remove_detached(detached: &Path) -> u64 {
-        CargoTargetPool::free_owned_tree(detached, detached, None)
-    }
-
-    /// Detach and remove one unheld child; 0 when it is held or cannot be detached.
-    fn evict_one(&self, root: &Path, candidate: &Candidate) -> u64 {
-        let dir = &candidate.path;
-        if let Err(error) = CargoTargetPool::owned_metadata(dir, root) {
-            crate::clog_warn!("💾 {} skipped {}: {error}", self.tier, dir.display());
-            return 0;
-        }
-        let _locks = match Self::take_build_locks(dir) {
-            Ok(locks) => locks,
-            Err(why) => {
-                tracing::debug!(probe_class = "disk.wt_targets.held", dir = %dir.display(), %why, "held: build lock");
-                return 0;
-            }
-        };
-        if let Some(why) = self.held(dir) {
-            tracing::debug!(probe_class = "disk.wt_targets.held", dir = %dir.display(), %why, "held");
-            return 0;
-        }
-        let Some(name) = dir.file_name() else {
-            return 0;
-        };
-        let mut detached_name = std::ffi::OsString::from(DETACHED_PREFIX);
-        detached_name.push(name);
-        let detached = root.join(detached_name);
-        if let Err(error) = std::fs::rename(dir, &detached) {
-            crate::clog_warn!(
-                "💾 {} could not detach {}: {error}",
-                self.tier,
-                dir.display()
-            );
-            return 0;
-        }
-        Self::remove_detached(&detached)
+        });
     }
 }
 
 impl ResourcePool for WorktreeTargetsPool {
     fn tier_name(&self) -> &str {
-        &self.tier
+        &self.targets.tier
     }
 
     fn capacity_bytes(&self) -> u64 {
-        (self.budget_for)((self.volume_sample)(self.tracked.path()).as_ref())
+        (self.targets.budget_for)(
+            (self.targets.volume_sample)(self.targets.tracked.path()).as_ref(),
+        )
     }
 
     fn usage_bytes(&self) -> u64 {
-        self.tracked.bytes()
+        self.targets.tracked.bytes()
     }
 
     /// Over its budget (the keep-recent line: the broker then trims it on its next tick,
     /// whatever the volume) OR on a hot volume. Within budget the class reads only the
     /// volume: a cache that fits its budget is the policy met, not pressure building, so
-    /// the broker is not called to free nothing at 80-100% of it.
+    /// the broker is not called to free nothing at 80-100% of it. Reads the scanner's
+    /// cached size and the volume's published sample: no IO.
     fn pressure(&self) -> f64 {
-        let volume = (self.volume_sample)(self.tracked.path());
-        let budget = (self.budget_for)(volume.as_ref());
-        let bytes = self.tracked.bytes();
+        let volume = (self.targets.volume_sample)(self.targets.tracked.path());
+        let budget = (self.targets.budget_for)(volume.as_ref());
+        let bytes = self.targets.tracked.bytes();
         let over = if bytes > budget { bytes } else { 0 };
         cache_pressure_on_volume(over, budget, volume.as_ref())
     }
 
+    /// Never touches the disk: reports what finished jobs freed, then starts at most one
+    /// background job (a measurement when the snapshot is missing or stale, else an
+    /// eviction planned from it) and returns without waiting for it.
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
-        // The class row names the configured spelling; custody checks run on the physical
-        // root, so an aliased ancestor (a linked home) is resolved once here, not refused.
-        let root = match std::fs::canonicalize(self.tracked.path()) {
-            Ok(root) => root,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return 0,
-            Err(error) => {
-                crate::clog_warn!(
-                    "💾 {} eviction refused: root unresolved: {error}",
-                    self.tier
-                );
-                return 0;
-            }
-        };
-        if let Err(error) = CargoTargetPool::owned_metadata(&root, &root) {
-            crate::clog_warn!("💾 {} eviction refused: {error}", self.tier);
-            return 0;
+        use std::sync::atomic::Ordering;
+        let reported = self.freed.swap(0, Ordering::AcqRel);
+        if self.busy.swap(true, Ordering::AcqRel) {
+            return reported;
         }
-        // What the filesystem actually frees, beside the apparent bytes: per-worktree targets
-        // can be APFS clones sharing blocks, so the two differ and both are reported.
-        let available_before = fs2::available_space(&root).ok();
-        let (detached, live) = Self::candidates(&root);
-        let mut freed = 0u64;
-        let mut evicted = 0usize;
-        for tree in detached {
-            freed = freed.saturating_add(Self::remove_detached(&tree));
-        }
-        // Keep recent: everything outside the budget goes, oldest first, held ones excepted.
-        let sizes: Vec<u64> = live.iter().map(|c| self.measured_size(c)).collect();
-        self.sizes
-            .lock()
-            .retain(|path, _| live.iter().any(|c| &c.path == path));
-        let budget = (self.budget_for)((self.volume_sample)(&root).as_ref());
-        let beyond = Self::beyond_budget(&sizes, budget);
-        // Past the budget trim, the broker's ask applies only when the class was within
-        // budget, i.e. the VOLUME brought the broker: then the oldest kept targets go too,
-        // until the ask is met. An over-budget call is answered by the trim alone, and a
-        // volume still hot after it brings the broker back on the next tick.
-        let within_budget = sizes.iter().sum::<u64>() <= budget;
-        for (index, candidate) in live.iter().enumerate() {
-            let pressure_ask = within_budget && freed < want_bytes.max(1);
-            if index >= beyond && !pressure_ask {
-                break;
-            }
-            let bytes = self.evict_one(&root, candidate);
-            if bytes > 0 {
-                evicted += 1;
-                self.sizes.lock().remove(&candidate.path);
-            }
-            freed = freed.saturating_add(bytes);
-        }
-        if freed > 0 {
-            self.tracked.record_freed(freed);
-            self.all_held_reported
-                .store(false, std::sync::atomic::Ordering::Relaxed);
-            let volume_freed = match (available_before, fs2::available_space(&root).ok()) {
-                (Some(before), Some(after)) => {
-                    format!("{} GB", after.saturating_sub(before) / (1024 * 1024 * 1024))
+        let current = self.snapshot.borrow().clone();
+        let fresh =
+            current.filter(|snapshot| snapshot.observation == self.targets.tracked.observation());
+        match fresh {
+            None => self.start(|targets| targets.measure()),
+            Some(snapshot) => {
+                let plan = self.plan(&snapshot, want_bytes);
+                if snapshot.detached.is_empty() && plan.beyond == 0 && plan.pressure_ask == 0
+                    || snapshot.live.is_empty() && snapshot.detached.is_empty()
+                {
+                    self.busy.store(false, Ordering::Release);
+                    return reported;
                 }
-                _ => "an unmeasured amount (statfs failed)".to_string(),
-            };
-            crate::clog_warn!(
-                "💾 {} evicted {evicted} worktree target(s), least recently built first: {} GB apparent, \
-                 volume free space grew by {volume_freed} (clones share blocks; the volume number is what \
-                 the disk got back); the next build in each worktree recreates its target",
-                self.tier,
-                freed / (1024 * 1024 * 1024)
-            );
-        } else if !live.is_empty()
-            && !self
-                .all_held_reported
-                .swap(true, std::sync::atomic::Ordering::Relaxed)
-        {
-            crate::clog_warn!(
-                "💾 {} freed nothing: all {} worktree targets are held (a build lock, a running image, \
-                 a writer lease or serving custody)",
-                self.tier,
-                live.len()
-            );
+                let freed = self.freed.clone();
+                self.start(move |targets| {
+                    freed.fetch_add(targets.evict(&snapshot, plan), Ordering::AcqRel);
+                    targets.measure()
+                });
+            }
         }
-        freed
+        reported
     }
 
     fn snapshot(&self) -> Vec<ResourcePoolEntry> {

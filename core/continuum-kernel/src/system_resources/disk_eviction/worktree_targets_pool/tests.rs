@@ -1,9 +1,15 @@
 #![cfg(test)]
 use super::*;
+use crate::paging::{BrokerConfig, PressureBroker};
 use crate::system_resources::disk_eviction::tests::serving_tier::set_mtime;
-use crate::system_resources::drives::DriveRole;
+use crate::system_resources::drives::{DriveInfo, DriveRole};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const DAY: std::time::Duration = std::time::Duration::from_secs(86_400);
+
+/// derived-or-floor: a liveness bound for waiting out a background job on a tempdir of a
+/// few KB, never an assertion about speed; a job that outlives it fails the test loudly.
+const LIVENESS: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// One worktree target under `root`: a debug profile with its build lock and one 1,000-byte
 /// unit in `deps`, every entry stamped `days_ago` so the dir reads as last built then.
@@ -25,16 +31,69 @@ fn target(root: &Path, name: &str, days_ago: u32) -> PathBuf {
     dir
 }
 
-/// A pool whose every host input is the fixture's: no measured volume, no writer lease,
-/// an empty serving custody set. A test about one of those sets it after this.
-fn fixture_pool(root: &Path) -> WorktreeTargetsPool {
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .build()
+        .expect("runtime")
+}
+
+/// The blocking half with every host input the fixture's: no measured volume, no writer
+/// lease, an empty serving custody set. A test about one of those sets it after this.
+fn fixture_targets(root: &Path) -> Targets {
     let tracked = TrackedDir::new("wt-targets", root.canonicalize().expect("root"));
     tracked.set_bytes(dir_size_bytes(root));
-    let mut pool = WorktreeTargetsPool::new(tracked);
-    pool.volume_sample = |_| None;
-    pool.leased = |_| false;
-    pool.active_artifacts = Arc::new(ActiveArtifactSet::default());
-    pool
+    let mut targets = Targets::new(tracked);
+    targets.volume_sample = |_| None;
+    targets.leased = |_| false;
+    targets.active_artifacts = Arc::new(ActiveArtifactSet::default());
+    targets
+}
+
+fn wait_idle(pool: &WorktreeTargetsPool) {
+    let start = std::time::Instant::now();
+    while pool.busy() {
+        assert!(
+            start.elapsed() < LIVENESS,
+            "a background job outlived the liveness bound"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// One direct tick and the job it started, waited out. Returns what that job freed.
+fn tick(pool: &WorktreeTargetsPool, want: u64) -> u64 {
+    pool.evict_at_least(want);
+    wait_idle(pool);
+    pool.freed.swap(0, Ordering::AcqRel)
+}
+
+/// `n` broker passes, each job waited out; returns the bytes the broker was told of.
+fn broker_ticks(broker: &PressureBroker, pool: &WorktreeTargetsPool, n: usize) -> u64 {
+    let mut reported = 0;
+    for _ in 0..n {
+        reported += broker.relieve().bytes_freed;
+        wait_idle(pool);
+    }
+    reported
+}
+
+fn calm_volume(path: &Path) -> Option<DriveInfo> {
+    Some(DriveInfo {
+        mount: path.into(),
+        total_bytes: 100_000,
+        available_bytes: 90_000,
+        role: DriveRole::System,
+    })
+}
+
+fn critical_volume(path: &Path) -> Option<DriveInfo> {
+    Some(DriveInfo {
+        mount: path.into(),
+        total_bytes: 100_000,
+        available_bytes: 0,
+        role: DriveRole::System,
+    })
 }
 
 fn detached_remnants(root: &Path) -> Vec<String> {
@@ -46,13 +105,14 @@ fn detached_remnants(root: &Path) -> Vec<String> {
         .collect()
 }
 
-// what this catches (the M5, 2026-10-29: 448 GB of per-worktree targets, ENOSPC): an
-// over-budget wt-targets pool evicts the least recently built UNHELD target first, whole,
-// and stops once the ask is met; a target a live build locks or an admitted writer leases is
-// never touched even when it is the oldest. Mutation checks: dropping the lease check evicts
-// `leased` first; sorting newest-first evicts `new`; ignoring profile locks evicts `building`.
+// what this catches (the M5, 2026-10-29: 448 GB of per-worktree targets, ENOSPC): the
+// least recently built UNHELD target goes first, whole, and the eviction stops once the ask
+// is met; a target a live build locks or an admitted writer leases is never touched even
+// when it is the oldest. Mutation checks: dropping the lease check evicts `leased` first;
+// sorting newest-first evicts `new`; ignoring profile locks evicts `building`.
 #[test]
 fn evicts_the_least_recently_built_unheld_target_first_and_never_a_held_one() {
+    let rt = runtime();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().join("wt-targets");
     let building = target(&root, "building", 4);
@@ -64,11 +124,13 @@ fn evicts_the_least_recently_built_unheld_target_first_and_never_a_held_one() {
         matches!(held, LockAttempt::Acquired(_)),
         "the fixture build holds its profile lock"
     );
-    let mut pool = fixture_pool(&root);
-    pool.leased = |dir| dir.ends_with("leased");
+    let mut targets = fixture_targets(&root);
+    targets.leased = |dir| dir.ends_with("leased");
+    let pool = WorktreeTargetsPool::from_targets(targets, rt.handle().clone());
 
+    assert_eq!(tick(&pool, 1), 0, "the first tick only measures");
     assert_eq!(
-        pool.evict_at_least(1),
+        tick(&pool, 1),
         1000,
         "one whole target, the least recently built unheld one"
     );
@@ -78,11 +140,7 @@ fn evicts_the_least_recently_built_unheld_target_first_and_never_a_held_one() {
     );
     assert!(building.exists() && leased.exists() && new.exists());
 
-    assert_eq!(
-        pool.evict_at_least(u64::MAX),
-        1000,
-        "only `new` is left unheld"
-    );
+    assert_eq!(tick(&pool, u64::MAX), 1000, "only `new` is left unheld");
     assert!(!new.exists());
     assert!(
         building.join("debug/deps/unit.rlib").exists(),
@@ -110,7 +168,7 @@ fn a_build_writing_into_deps_makes_its_target_recent() {
     let rebuilt = target(&root, "rebuilt", 5);
     target(&root, "idle", 2);
     std::fs::write(rebuilt.join("debug/deps/fresh.rlib"), b"unit").expect("a build lands a unit");
-    let (_, live) = WorktreeTargetsPool::candidates(&root);
+    let (_, live) = Targets::candidates(&root);
     let order: Vec<String> = live
         .iter()
         .map(|c| {
@@ -129,42 +187,34 @@ fn a_build_writing_into_deps_makes_its_target_recent() {
 }
 
 // what this catches: the chain, end to end, on a real tree. A wt-targets pool on a critical
-// volume brings the broker, relieve() actually removes bytes from disk, and a detached tree
-// a crashed eviction left behind is reclaimed with it. Before 2026-10-29 no pool existed for
-// this class, so relieve() reached nothing while the volume filled.
+// volume brings the broker, relief actually removes bytes from disk, the broker is told of
+// them, and a detached tree a crashed eviction left behind is reclaimed with it. Before
+// 2026-10-29 no pool existed for this class, so relief reached nothing while the volume filled.
 #[test]
 fn broker_relieve_actually_deletes_from_an_over_budget_wt_targets_pool() {
-    use crate::paging::{BrokerConfig, PressureBroker};
+    let rt = runtime();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().join("wt-targets");
     let old = target(&root, "old", 2);
     let remnant = root.join(format!("{DETACHED_PREFIX}crashed"));
     std::fs::create_dir_all(remnant.join("debug")).expect("remnant");
     std::fs::write(remnant.join("debug/left.rlib"), vec![0u8; 500]).expect("remnant bytes");
-    let mut pool = fixture_pool(&root);
-    pool.volume_sample = |path| {
-        Some(DriveInfo {
-            mount: path.into(),
-            total_bytes: 100_000,
-            available_bytes: 0,
-            role: DriveRole::System,
-        })
-    };
-    let pool = Arc::new(pool);
+    let mut targets = fixture_targets(&root);
+    targets.volume_sample = critical_volume;
+    let pool = Arc::new(WorktreeTargetsPool::from_targets(
+        targets,
+        rt.handle().clone(),
+    ));
     let broker = PressureBroker::new(BrokerConfig::default());
     broker.register(pool.clone() as Arc<dyn ResourcePool>);
 
     let before = dir_size_bytes(&root);
-    let report = broker.relieve();
+    // Measure, evict, then the tick that reports what the eviction freed.
+    let reported = broker_ticks(&broker, &pool, 3);
 
     assert!(
-        report.triggered,
-        "a wt-targets pool on a critical volume must bring the broker"
-    );
-    assert!(
-        report.bytes_freed >= 1500,
-        "relief frees the target and the remnant: {}",
-        report.bytes_freed
+        reported >= 1500,
+        "the broker is told of the target and the remnant: {reported}"
     );
     assert!(
         dir_size_bytes(&root) < before,
@@ -176,27 +226,24 @@ fn broker_relieve_actually_deletes_from_an_over_budget_wt_targets_pool() {
 // what this catches: KEEP RECENT, with no disk pressure (Joel, 2026-10-29: build caches
 // rebuild, so old ones are disposable at any time). On a calm volume an over-budget class
 // keeps its newest targets that fit the budget and evicts the older ones through the broker's
-// ordinary tick, a held one never; repeated ticks do not eat into what fits. Mutation checks:
+// ordinary tick, a held one never; later ticks do not eat into what fits. Mutation checks:
 // dropping the trim leaves `older` (the calm volume never asks for it); ranking oldest first
 // keeps `older` and evicts `newest`; letting the broker's 60% ask apply over budget evicts `newer`.
 #[test]
 fn a_calm_volume_keeps_the_newest_targets_within_budget_and_evicts_the_older_ones() {
-    use crate::paging::{BrokerConfig, PressureBroker};
+    assert_eq!(Targets::beyond_budget(&[1000, 1000, 1000, 1000], 2500), 2);
     assert_eq!(
-        WorktreeTargetsPool::beyond_budget(&[1000, 1000, 1000, 1000], 2500),
-        2
-    );
-    assert_eq!(
-        WorktreeTargetsPool::beyond_budget(&[1000, 1000], 2500),
+        Targets::beyond_budget(&[1000, 1000], 2500),
         0,
         "within budget, nothing goes"
     );
     assert_eq!(
-        WorktreeTargetsPool::beyond_budget(&[10, 5000], 100),
+        Targets::beyond_budget(&[10, 5000], 100),
         1,
         "the newest is kept even alone over budget"
     );
 
+    let rt = runtime();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().join("wt-targets");
     let oldest_held = target(&root, "oldest-held", 4);
@@ -208,27 +255,19 @@ fn a_calm_volume_keeps_the_newest_targets_within_budget_and_evicts_the_older_one
         matches!(held, LockAttempt::Acquired(_)),
         "the fixture build holds its profile lock"
     );
-    let mut pool = fixture_pool(&root);
-    pool.budget_for = |_| 2500;
-    pool.volume_sample = |path| {
-        Some(DriveInfo {
-            mount: path.into(),
-            total_bytes: 100_000,
-            available_bytes: 90_000,
-            role: DriveRole::System,
-        })
-    };
-    let pool = Arc::new(pool);
+    let mut targets = fixture_targets(&root);
+    targets.budget_for = |_| 2500;
+    targets.volume_sample = calm_volume;
+    let pool = Arc::new(WorktreeTargetsPool::from_targets(
+        targets,
+        rt.handle().clone(),
+    ));
     let broker = PressureBroker::new(BrokerConfig::default());
     broker.register(pool.clone() as Arc<dyn ResourcePool>);
 
-    let report = broker.relieve();
-    assert!(
-        report.triggered,
-        "an over-budget class is trimmed with the volume at 10%"
-    );
     assert_eq!(
-        report.bytes_freed, 1000,
+        broker_ticks(&broker, &pool, 3),
+        1000,
         "exactly the unheld target outside the budget"
     );
     assert!(
@@ -244,11 +283,80 @@ fn a_calm_volume_keeps_the_newest_targets_within_budget_and_evicts_the_older_one
         "a held target is never evicted"
     );
 
-    broker.relieve();
+    broker_ticks(&broker, &pool, 2);
     assert!(
         newest.exists() && newer.exists(),
-        "a second tick keeps what fits the budget"
+        "later ticks keep what fits the budget"
     );
     assert!(oldest_held.join("debug/deps/unit.rlib").exists());
     drop(held);
+}
+
+static WALK_ENTERED: AtomicBool = AtomicBool::new(false);
+static WALK_RELEASED: AtomicBool = AtomicBool::new(false);
+
+/// A walk that blocks until the test releases it: the stand-in for 448 GB.
+fn blocking_walk(path: &Path) -> u64 {
+    WALK_ENTERED.store(true, Ordering::Release);
+    while !WALK_RELEASED.load(Ordering::Acquire) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    dir_size_bytes(path)
+}
+
+// what this catches (CONCURRENCY-STYLE-GUIDE: a tick never waits on a filesystem walk):
+// with the class's measurement blocked mid-walk, the broker's relief pass and the pool's
+// pressure reading both return, and the walk is still blocked when they do; once the walk
+// finishes, the eviction it measured for goes through. Mutation check: measuring inside
+// `evict_at_least` hangs the first relief pass until the liveness bound fails it.
+#[test]
+fn a_slow_walk_never_delays_the_brokers_tick_or_the_pressure_reading() {
+    let rt = runtime();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("wt-targets");
+    let older = target(&root, "older", 2);
+    target(&root, "newest", 1);
+    let mut targets = fixture_targets(&root);
+    targets.budget_for = |_| 1500;
+    targets.volume_sample = calm_volume;
+    targets.walk = blocking_walk;
+    let pool = Arc::new(WorktreeTargetsPool::from_targets(
+        targets,
+        rt.handle().clone(),
+    ));
+    let broker = Arc::new(PressureBroker::new(BrokerConfig::default()));
+    broker.register(pool.clone() as Arc<dyn ResourcePool>);
+
+    let (done, returned) = std::sync::mpsc::channel();
+    let (tick_broker, tick_pool) = (broker.clone(), pool.clone());
+    std::thread::spawn(move || {
+        tick_broker.relieve();
+        let start = std::time::Instant::now();
+        while !WALK_ENTERED.load(Ordering::Acquire) {
+            assert!(start.elapsed() < LIVENESS, "the measurement never started");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        tick_broker.relieve();
+        let pressure = tick_pool.pressure();
+        done.send(pressure).expect("report");
+    });
+    let pressure = returned
+        .recv_timeout(LIVENESS)
+        .expect("relief and pressure returned while the walk was blocked");
+    assert!(
+        !WALK_RELEASED.load(Ordering::Acquire),
+        "they returned before the walk did"
+    );
+    assert!(
+        pressure > 1.0,
+        "the over-budget reading is the scanner's, available mid-walk"
+    );
+
+    WALK_RELEASED.store(true, Ordering::Release);
+    wait_idle(&pool);
+    broker_ticks(&broker, &pool, 2);
+    assert!(
+        !older.exists(),
+        "the measured eviction goes through once the walk finishes"
+    );
 }

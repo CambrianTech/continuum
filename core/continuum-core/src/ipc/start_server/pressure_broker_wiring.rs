@@ -8,6 +8,7 @@ pub(super) fn register_pressure_broker(
     resource_daemon: &Arc<crate::resources::ResourceDaemon>,
     disk_pressure_monitor: &Arc<crate::system_resources::DiskPressureMonitor>,
     pressure_monitor: &Arc<crate::system_resources::MemoryPressureMonitor>,
+    rt_handle: &tokio::runtime::Handle,
 ) {
     // Phase 2 of #1239 (continuum#1299 PR-1): PressureBrokerModule.
     // Brings the cross-pool PressureBroker online — instantiates the
@@ -92,7 +93,12 @@ pub(super) fn register_pressure_broker(
         // running image, a writer lease or serving custody holds. Unowned until the M5 hit
         // ENOSPC with 448 GB there on 2026-10-29.
         if let Some(dir) = crate::system_resources::tracked_dir("wt-targets") {
-            broker.register(Arc::new(crate::system_resources::WorktreeTargetsPool::new(dir))
+            // Its measurements and evictions run on this runtime's blocking pool, never
+            // on the broker's tick (the first walk is the whole class, 448 GB on the M5).
+            broker.register(Arc::new(crate::system_resources::WorktreeTargetsPool::new(
+                dir,
+                rt_handle.clone(),
+            ))
                 as Arc<dyn crate::paging::pool::ResourcePool>);
         }
 
