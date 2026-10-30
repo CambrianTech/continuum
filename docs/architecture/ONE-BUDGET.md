@@ -126,6 +126,47 @@ Doctrine account (DEVELOPMENT-DOCTRINE.md, "Completion includes deletion and pro
 - **Limit, stated.** Lexical rules are a backstop. The lasting enforcement is the type: once slice 2 lands,
   a cache, ring or class can only be constructed from a `GrantRx`, so an unbudgeted one does not compile.
 
+### Slice 6 in detail: a mind's context (the defect live on 2026-10-30)
+
+**Every machine, no machine's numbers** (Joel, 2026-10-30: "You are not coding for a 64gb MacBook m5. You
+are coding for all machines."). Every quantity below is measured on the node serving her, at run time. A
+number learned on one box (the M5's 49,152-token knee, a 27B's 12,288-token act, a quarter share replayed
+on M5 captures) never enters code. A machine with no measurement yet refuses or starts from what the node
+itself reports (the engine's KV capacity, #5188), never from another machine's constant.
+
+**What failed live** (the M5, build ab0466601, 2026-10-30 18-19Z; receipts in the PR):
+- the act reply claims its runaway cap (`ACT_OUTPUT_CAP = 12,288`) at a priority above her context
+  (`view.rs`: `reply.max_tokens = reply.max_tokens.max(reply_runaway)`). Measured need is 809-1,641 tokens;
+  the allowance was 4,486-12,288;
+- room left unclaimed is first handed to that reply (`view_room = unallocated - (runaway - reply_grant)`),
+  so her view gets what the reply leaves;
+- the epoch start gives her growing sources a fixed quarter (`EPOCH_START_SHARE = 4`) although the derivation
+  beside it bounds them at half. Benchy: `granted=21346`, `appended_per_act=16565`, `room=0`: one file read
+  fills the grant, every act turns over, every earlier read collapses to a note;
+- she re-reads what collapsed: 75 reads and greps, 2 edits in an hour; one file read 8 times.
+
+**The contract:**
+1. Her window is her KV grant from the one scheduler on her node (goal 9), not `WORKING_WINDOW_TOKENS`.
+2. One allocation over typed claims: framing and tools (required); the reply at her MEASURED need (floor:
+   her measured answer channel); each view source (floor: folded, want: whole); grounding. What no claim
+   takes stays unclaimed: it is the room her view grows into by appends.
+3. Output is not context and is not reserved beyond its measured need. The request's `max_tokens` is
+   `window - prompt`, the physical bound known at send time.
+4. A runaway generation is a time fault: a decode deadline from her node's measured decode rate, owned by
+   the scheduler with every other time bound. No token cap constant.
+5. The epoch turns over only when the view cannot append into the unclaimed window. Its start follows the
+   derived bound (reserve >= growing, from her measured append rate); no share constant.
+
+**Deleted:** `ACT_OUTPUT_CAP`, `reply_runaway`, `PASS_RUNAWAY_MULTIPLE`, the pending-peak doubling (the need
+measurement already records a cut channel at double), the `view_room` arithmetic, `EPOCH_START_SHARE`,
+`WORKING_WINDOW_TOKENS`, and the side budgets computed before the allocation (`after_reserves`,
+`irreducible_room`, `fit_newest_result`) once each is a claim.
+
+**Validation (outlier A and B, before any live deploy):** replay captured traces on the dyno for two node
+classes at least (the M5, and the smallest supported machine's window), plus the 5090's: a read stays whole
+across acts while the window has room; no turnover while unclaimed window remains; prefix reuse per act
+reported. Then one deploy per node and a 15-minute read: reads per edit, writes per hour, act time.
+
 Gates: each PR runs the affected crates' tests locally (serving down or a non-serving executor), CI confirms, then a
 15-minute live read on the residents. The receipts: ratchet counts before/after, lines added/removed, and the residents'
 median act and prefix reuse.
