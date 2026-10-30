@@ -107,9 +107,8 @@ impl AdmittedCommand {
 }
 
 /// A requester's stamp on an `ai/generate` request: its own id for the generation, and the
-/// epoch ms past which it no longer waits. Both or neither: an id without a validity could
-/// be delayed past any bound the seat keeps its cancel for, so it is treated as unstamped
-/// (keyed by the airc correlation, which no cancel names).
+/// epoch ms past which it no longer waits. Both are required for generation requests;
+/// invalid metadata is refused before execution, never replaced by a transport ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GenerationStamp {
     pub id: Uuid,
@@ -117,17 +116,18 @@ pub struct GenerationStamp {
 }
 
 impl GenerationStamp {
-    fn from_headers(headers: &airc_core::Headers) -> Option<Self> {
-        Some(Self {
-            id: headers
-                .get(continuum_airc_protocol::HEADER_GENERATE_ID)?
-                .parse()
-                .ok()?,
-            valid_until_ms: headers
-                .get(continuum_airc_protocol::HEADER_GENERATE_VALID_UNTIL_MS)?
-                .parse()
-                .ok()?,
-        })
+    fn from_headers(headers: &airc_core::Headers) -> Result<Self, IngressRefusal> {
+        let id = headers
+            .get(continuum_airc_protocol::HEADER_GENERATE_ID)
+            .ok_or(IngressRefusal::MissingGenerationStamp)?
+            .parse()
+            .map_err(|_| IngressRefusal::MalformedGenerationStamp)?;
+        let valid_until_ms = headers
+            .get(continuum_airc_protocol::HEADER_GENERATE_VALID_UNTIL_MS)
+            .ok_or(IngressRefusal::MissingGenerationStamp)?
+            .parse()
+            .map_err(|_| IngressRefusal::MalformedGenerationStamp)?;
+        Ok(Self { id, valid_until_ms })
     }
 }
 
@@ -204,7 +204,8 @@ impl CommandRequestHandler {
         let grant = presented_grant(frame.headers()).map_err(|r| (path.clone(), "unread", r))?;
         let granted = self
             .verify_presented_grant(caller, grant.as_ref(), &path)
-            .await;
+            .await
+            .map_err(|r| (path.clone(), "unread", r))?;
         let tier = self.tiers.tier_of(caller).await;
         let tier_seen = match &tier {
             Ok(Some(tier)) => tier.as_wire_str(),
@@ -218,11 +219,19 @@ impl CommandRequestHandler {
         if request.path != path {
             return Err((path, tier_seen, IngressRefusal::PathMismatch));
         }
+        let generation = if path == STREAMED_GENERATE_PATH {
+            Some(
+                GenerationStamp::from_headers(frame.headers())
+                    .map_err(|r| (path.clone(), tier_seen, r))?,
+            )
+        } else {
+            None
+        };
         let admitted = AdmittedCommand {
             frame: Arc::clone(frame),
             request,
             verified_capabilities: granted,
-            generation: GenerationStamp::from_headers(frame.headers()),
+            generation,
         };
         Ok((admitted, tier_seen))
     }
@@ -319,38 +328,34 @@ impl CommandRequestHandler {
     /// The presenting key is `port.peer_public_key(sender)` — the enrolled key from
     /// the SAME registry that signature-verified the inbound envelope, so it is the
     /// AUTHENTICATED sender's key, never the grant's self-asserted `grantee_pubkey`
-    /// (the hard gate the review flagged). A non-Authorized outcome logs at debug +
-    /// confers nothing; the caller then falls back to tier gating.
+    /// (the hard gate the review flagged). An absent grant uses the tier contract;
+    /// a presented grant must verify or the request is refused.
     async fn verify_presented_grant(
         &self,
         caller: PeerId,
         grant: Option<&SignedCapabilityGrant>,
         path: &str,
-    ) -> Vec<String> {
-        let (Some(authorizer), Some(grant)) = (self.grant_authorizer.as_ref(), grant) else {
-            return Vec::new();
+    ) -> Result<Vec<String>, IngressRefusal> {
+        let Some(grant) = grant else {
+            return Ok(Vec::new());
         };
-        let Some(presenting) = self.port.peer_public_key(caller) else {
-            warn!(
-                caller = %caller.0,
-                "presented a capability grant but the sender is not enrolled — \
-                 cannot establish an authenticated presenting key; ignoring the grant"
-            );
-            return Vec::new();
-        };
+        let authorizer = self
+            .grant_authorizer
+            .as_ref()
+            .ok_or(IngressRefusal::GrantAuthorizerUnavailable)?;
+        let presenting = self
+            .port
+            .peer_public_key(caller)
+            .ok_or(IngressRefusal::PresentingKeyUnavailable)?;
         match authorizer
             .authorize_command(grant, &presenting, path, EpochMs::now().millis())
             .await
         {
-            GrantAuthOutcome::Authorized => grant.grant.capabilities.clone(),
+            GrantAuthOutcome::Authorized => Ok(grant.grant.capabilities.clone()),
             other => {
-                debug!(
-                    caller = %caller.0,
-                    path = %path,
-                    outcome = ?other,
-                    "presented capability grant did not authorize; falling back to tier gate"
-                );
-                Vec::new()
+                debug!(caller = %caller.0, path = %path, outcome = ?other,
+                    "presented capability grant refused");
+                Err(IngressRefusal::GrantRejected)
             }
         }
     }
@@ -580,15 +585,13 @@ impl AddressedHandler for CommandRequestHandler {
         // pump keeps reading (card b3e5b582). Classified from the decoded request, whose
         // path the contract has already matched to its header. Over the bound it is refused
         // at once with a typed overload reply instead of queueing an unbounded population.
-        if parsed.request.path == STREAMED_GENERATE_PATH {
+        if let Some(stamp) = parsed.generation {
             if let Some(generations) = &self.generations {
                 let bound = (self.generation_bound)();
                 // Keyed by the requester's generation id, so its cancel can name the work
                 // even if it abandoned the request before airc returned the correlation.
-                let key = parsed
-                    .generation
-                    .map_or(parsed.correlation(), |stamp| stamp.id);
-                let valid_until_ms = parsed.generation.map(|stamp| stamp.valid_until_ms);
+                let key = stamp.id;
+                let valid_until_ms = stamp.valid_until_ms;
                 match generations.admit(
                     key,
                     parsed.caller(),

@@ -13,6 +13,17 @@ use std::time::Duration;
 const HOLD: &str = "hold the lane";
 const WAIT: Duration = Duration::from_secs(60);
 
+fn stamp_generation(headers: &mut airc_core::Headers) {
+    headers.insert(
+        continuum_airc_protocol::HEADER_GENERATE_ID.into(),
+        Uuid::new_v4().to_string(),
+    );
+    headers.insert(
+        continuum_airc_protocol::HEADER_GENERATE_VALID_UNTIL_MS.into(),
+        (EpochMs::now().millis() + 60_000).to_string(),
+    );
+}
+
 /// `ai/generate` whose params name [`HOLD`] signals `entered`, then waits for
 /// `release` (a lane held); if its future is dropped first, `dropped` fires. Any
 /// other request echoes its command and params at once.
@@ -162,6 +173,9 @@ async fn ask(
         "peer".to_string(),
     );
     let body = Body::Json(serde_json::to_value(&request).expect("serialize request"));
+    if header_path == Some("ai/generate") {
+        stamp_generation(&mut headers);
+    }
     let pending = asker
         .request(
             MentionTarget::Peer(PeerId(loop_back.peer_a_id())),
@@ -390,9 +404,20 @@ fn hear_seat(rig: &Rig, capabilities: Value) {
 // finishing it for no one. Real requester transport, real seat handler.
 #[tokio::test]
 async fn an_abandoned_generation_is_cancelled_at_a_capable_seat() {
-    let rig = rig().await;
+    let rig = StdArc::new(rig().await);
     hear_seat(&rig, serde_json::json!(["remote_generate_cancel"]));
-    let outcome = abandon_a_held_generation(&rig, Duration::from_secs(2)).await;
+    // Establish the addressed session before measuring the generation deadline.
+    let ready = ask(&rig.loop_back, Some("test/echo"), "test/echo", json!({})).await;
+    assert!(matches!(ready, AircCommandResponse::Ok { .. }));
+    let task_rig = StdArc::clone(&rig);
+    let requester =
+        tokio::spawn(
+            async move { abandon_a_held_generation(&task_rig, Duration::from_secs(10)).await },
+        );
+    tokio::time::timeout(WAIT, rig.entered.notified())
+        .await
+        .expect("deadline test must first observe a running generation");
+    let outcome = requester.await.expect("deadline requester joins");
     assert!(
         outcome.is_err(),
         "the requester gave up at its deadline: {outcome:?}"
@@ -491,6 +516,7 @@ async fn silent_generation_expires_and_releases_admission_without_cancel_traffic
         json!({"prompt": HOLD}),
     );
     frame.deadline = tokio::time::Instant::now() + Duration::from_millis(250);
+    stamp_generation(&mut frame.headers);
     handler.on_addressed(Arc::new(frame)).await;
     tokio::time::timeout(WAIT, entered.notified())
         .await

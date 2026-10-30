@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 mod over_airc;
+mod required_metadata;
 
 /// Tiers as this node's trust store would report them.
 struct Tiers(HashMap<PeerId, TrustTier>);
@@ -30,8 +31,12 @@ struct Echo {
 }
 
 impl Echo {
-    const PREFIXES: &'static [&'static str] =
-        &["persona/placement/reserve", "test/echo", "handle-test/"];
+    const PREFIXES: &'static [&'static str] = &[
+        "persona/placement/reserve",
+        "ai/generate",
+        "test/echo",
+        "handle-test/",
+    ];
 }
 
 #[async_trait]
