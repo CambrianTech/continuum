@@ -51,7 +51,7 @@ pub mod wall_clock;
 
 use std::path::{Path, PathBuf};
 
-use lexer::{production_half, split_code_and_comment};
+use lexer::{production_half, split_code_and_comment, without_signature};
 
 /// One source file, pre-split so a rule never has to re-derive the split.
 pub struct SourceFile {
@@ -162,14 +162,6 @@ pub fn sites(file: &SourceFile, rule: &'static str, hit: impl Fn(&str) -> Option
         .collect()
 }
 
-/// `code` without a function signature it declares: what follows the body's opening brace,
-/// or nothing when the line is only a signature.
-fn without_signature(code: &str) -> &str {
-    let Some(at) = code.find("fn ") else {
-        return code;
-    };
-    code[at..].find('{').map_or("", |open| &code[at + open + 1..])
-}
 
 /// `src/` of this crate, resolved from the manifest so the scan is independent of
 /// the process's working directory (a test's cwd is not the crate root under every

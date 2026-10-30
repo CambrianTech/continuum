@@ -292,34 +292,73 @@ fn char_literal_len(bytes: &[u8], i: usize) -> Option<usize> {
 /// a block (Astra, review of #4678). Line-based like its sibling, so a string literal
 /// spanning lines or a raw string with an unbalanced brace is outside its reach.
 pub fn brace_delta(code: &str) -> i64 {
+    outside_literals(code)
+        .map(|(_, c)| match c {
+            b'{' => 1,
+            b'}' => -1,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// The bytes of a line of CODE that lie outside string and char literals, with their offsets:
+/// the one literal-aware walk this lexer's line readers share ([`brace_delta`],
+/// [`without_signature`]), so a literal is skipped the same way by every rule.
+fn outside_literals(code: &str) -> impl Iterator<Item = (usize, u8)> + '_ {
     let bytes = code.as_bytes();
     let mut in_str = false;
     let mut escaped = false;
-    let mut delta = 0i64;
     let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if in_str {
-            if escaped {
-                escaped = false;
-            } else if c == b'\\' {
-                escaped = true;
-            } else if c == b'"' {
-                in_str = false;
+    std::iter::from_fn(move || {
+        while i < bytes.len() {
+            let (at, c) = (i, bytes[i]);
+            if in_str {
+                if escaped {
+                    escaped = false;
+                } else if c == b'\\' {
+                    escaped = true;
+                } else if c == b'"' {
+                    in_str = false;
+                }
+                i += 1;
+                continue;
             }
-        } else if c == b'"' {
-            in_str = true;
-        } else if let Some(len) = char_literal_len(bytes, i) {
-            i += len;
-            continue;
-        } else if c == b'{' {
-            delta += 1;
-        } else if c == b'}' {
-            delta -= 1;
+            if c == b'"' {
+                in_str = true;
+                i += 1;
+                continue;
+            }
+            if let Some(len) = char_literal_len(bytes, i) {
+                i += len;
+                continue;
+            }
+            i += 1;
+            return Some((at, c));
         }
-        i += 1;
+        None
+    })
+}
+
+/// `code` without a function signature it declares: what follows the body's opening brace, or
+/// nothing when the line is only a signature. A declaration is `fn` at a word boundary followed by
+/// whitespace, outside every literal: a `fn ` inside a string is text, so
+/// `std::fs::write(path, "fn main() {}")` keeps its write visible (Codex on #5609).
+pub fn without_signature(code: &str) -> &str {
+    let bytes = code.as_bytes();
+    let starts_fn = |at: usize| {
+        bytes.get(at + 1) == Some(&b'n')
+            && bytes.get(at + 2).is_some_and(u8::is_ascii_whitespace)
+            && (at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_'))
+    };
+    let mut declared = false;
+    for (at, c) in outside_literals(code) {
+        if !declared {
+            declared = c == b'f' && starts_fn(at);
+        } else if c == b'{' {
+            return &code[at + 1..];
+        }
     }
-    delta
+    if declared { "" } else { code }
 }
 
 /// The numeric types a bound can wear. A `&str`, a `bool` or a `Duration` named `..._MAX`
@@ -426,6 +465,18 @@ pub fn is_bare_literal(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a `fn ` inside a string literal read as a signature, so the code before
+    // the literal's brace was dropped and a real write escaped the writes ratchet (Codex on #5609).
+    #[test]
+    fn a_signature_is_declared_only_outside_literals() {
+        let write = r#"std::fs::write(path, "fn main() {}")?;"#;
+        assert_eq!(without_signature(write), write, "a fn inside a string is text");
+        assert_eq!(without_signature("fn cap(&self) -> usize { self.grant.take(8) }"), " self.grant.take(8) }");
+        assert_eq!(without_signature("pub fn recall_tokens(&self) -> usize {"), "");
+        assert_eq!(without_signature("let defn = x { y };"), "let defn = x { y };", "fn inside a word is no declaration");
+        assert_eq!(without_signature(r#"fn label() -> &'static str { "{" }"#), r#" "{" }"#);
+    }
 
     // what this catches (Astra, review of #4678): a brace inside a string or char
     // literal counted as a block, so `{ "}" }` read as closing the enclosing impl.

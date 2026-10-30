@@ -79,6 +79,7 @@ fn each_self_sizing_shape_is_found_and_owners_are_not() {
     assert_eq!(found(&SelfSized, CONSUMER, "fn cap(&self) -> usize { self.grant.take(8) }"), 1, "a body on the signature's line is code (Codex on #5609)");
     assert_eq!(found(&SelfSized, CONSUMER, "pub fn recall_tokens(&self) -> usize {"), 0, "a signature alone is a definition, not a use");
     assert_eq!(found(&WritesOutsideAClass, CONSUMER, "fn save(p: &Path) -> io::Result<()> { std::fs::write(p, b\"x\") }"), 1, "every rule sees a one-line body");
+    assert_eq!(found(&WritesOutsideAClass, CONSUMER, "std::fs::write(path, \"fn main() {}\")?;"), 1, "a fn inside a literal is not a signature (Codex on #5609)");
     assert_eq!(found(&SelfSized, "core/vendored/llama/x.rs", "const N_CTX_MAX: usize = 4096;"), 0, "vendored upstream");
 }
 
