@@ -263,7 +263,7 @@ The owner of this contract is [FOCUS-CONTRACT.md](FOCUS-CONTRACT.md); this secti
   the sources sized for 159k, and Aiko turned over every act.
 
 **The change, shipped as one:**
-1. The `prompt_self_sizing` ratchet first (~40). It counts `ContextBudget::live|live_or_floor|from_window*`,
+1. The `self_sized` ratchet first (`budget_discipline`, ONE-BUDGET.md slice 0; it absorbed `prompt_self_sizing`). It counts `ContextBudget::live|live_or_floor|from_window*`,
    the fraction methods, `_SHARE_DENOM`, and any `flex_allocate`/`FlexboxRagBudgetAdapter` outside the
    one allocation.
 2. Migrate by prompt mass: conversation (one allocation, `compose_for_turn` delivers items), results,

@@ -16,11 +16,14 @@
 //! - `SOURCE_HYGIENE_RECORD=<file>`: record every count as `name count` (both runs).
 //! - `SOURCE_HYGIENE_BASE=<file>`: judge every count against the recorded base (the head run).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
+
+use crate::Violation;
 
 const RECORD: &str = "SOURCE_HYGIENE_RECORD";
 const BASE: &str = "SOURCE_HYGIENE_BASE";
+const TOUCHED: &str = "SOURCE_HYGIENE_TOUCHED";
 
 /// Hold the ratchet `name` at `count`. Record it, judge it against the base, or report it,
 /// by the environment the script sets. `advice` is rendered only on a failure: what to do
@@ -44,6 +47,33 @@ pub fn hold(name: &str, count: usize, advice: impl FnOnce() -> String) {
     };
     assert!(count <= before, "{name} rose from {before} to {count}. {}", advice());
     eprintln!("{name}: {before} -> {count}");
+}
+
+/// Judge that a change leaves none of `name`'s violations in a file it touched. The driver
+/// lists the change's files (repository paths, one per line) in `SOURCE_HYGIENE_TOUCHED` for
+/// the head run; unset, as in the base run or a plain `cargo test`, there is nothing to judge.
+/// This is what moves a count to zero: a file is cleaned by whoever next changes it.
+pub fn touched_clean(name: &str, violations: &[Violation], advice: impl FnOnce() -> String) {
+    let Ok(path) = std::env::var(TOUCHED) else {
+        return;
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) => panic!("cannot read the touched-file list {path}: {e}"),
+    };
+    let touched: BTreeSet<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let dirty: Vec<String> = violations
+        .iter()
+        .filter(|v| touched.contains(v.file.as_str()))
+        .map(|v| format!("  {}:{}  {}", v.file, v.line, v.source))
+        .collect();
+    assert!(
+        dirty.is_empty(),
+        "{name}: {} site(s) remain in files this change touches; a touched file leaves with none. {}\n{}",
+        dirty.len(),
+        advice(),
+        dirty.join("\n")
+    );
 }
 
 /// One line per count. A ratchet runs in its own test thread, and a single short append is

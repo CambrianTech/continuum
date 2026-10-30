@@ -30,9 +30,9 @@
 //!
 //! A same-line `//` comment with real content (see [`MIN_JUSTIFICATION_CHARS`]) —
 //! not `// ok`, not `// fixme`. String-literal-aware, so a `//` inside a URL is not
-//! mistaken for a comment (see [`super::split_code_and_comment`]).
+//! mistaken for a comment (see [`super::lexer::split_code_and_comment`]).
 
-use super::{split_code_and_comment, SourceRule, SourceFile, Violation};
+use super::{lexer::split_code_and_comment, SourceRule, SourceFile, Violation};
 
 /// A justification has to say something. `// ok` and `// safe` are not reasons; they
 /// are the shape of a reason, which is worse than nothing because it silences the
@@ -133,11 +133,7 @@ mod tests {
     #[test]
     fn a_token_comment_does_not_count_as_a_justification() {
         let rule = UnwrapJustification;
-        let mk = |src: &str| SourceFile {
-            rel: "fake.rs".into(),
-            production: src.into(),
-            raw: src.into(),
-        };
+        let mk = |src: &str| SourceFile::fixture("fake.rs", src, src);
 
         assert_eq!(rule.check(&mk("let x = o.unwrap(); // ok")).len(), 1, "`// ok` is not a reason");
         assert_eq!(rule.check(&mk("let x = o.unwrap();")).len(), 1, "no comment at all");

@@ -185,7 +185,7 @@ still exists and still has files in it, which reads as "working".
   `expand_command`, or `tool_executor::spill`), keeping the newest interaction whole and the full
   result reachable through its handle. One source that
   shrinks itself by its own number breaks the budget for every other source. Guarded by
-  `source-hygiene::head_cuts`; a cut that never reaches a prompt says `head-cut-ok: <why>`.
+  `source-hygiene` `self_sized` (ONE-BUDGET.md); there is no exemption comment.
 - **DO NOT** silently substitute defaults when something fails. Surface typed errors. The operator decides policy. ([[no-fallbacks-ever]])
 
 ---
