@@ -1,5 +1,23 @@
 # CLAUDE - ESSENTIAL DEVELOPMENT GUIDE
 
+## Hard architectural contracts (Joel, 2026-10-30)
+
+Zero backward compatibility. This is the first beta design: replace a contract, update
+all callers, and delete the obsolete implementation in the same change. No compatibility
+shims, dual APIs, legacy paths, silent fallbacks, default substitution, swallowed errors,
+or unchecked unwraps. Callers must satisfy the contract; violations return explicit typed
+failures. Preserve durable identity, trust, data, jobs and owner work, not obsolete code.
+
+Apply this across projects continuously: separate concerns into crates with narrow public
+APIs and enforced dependency direction. Give each mechanism one owner; reusable traits,
+composition and shared implementations supply lifecycle behavior so handlers implement
+only their differences. Route messages by authenticated headers and typed envelopes;
+only the selected consumer decodes the typed body. Never scan bodies to discover routes.
+Reviewers must reject duplicate mechanisms and retained obsolete paths; enforce the
+contracts through types, focused tests and ratchets rather than relying on reminders.
+
+
+
 ## ⛳ THE PLAN — read before every change (Joel, 2026-10-18; the path added 10-19)
 
 **What we are building** (Joel, 10-19): persistent, multi-activity minds with agency,

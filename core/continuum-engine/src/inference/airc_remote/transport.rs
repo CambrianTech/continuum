@@ -414,15 +414,6 @@ impl AircLiveTransport {
             continuum_airc_protocol::HEADER_GENERATE_VALID_UNTIL_MS.to_string(),
             valid_until_ms.to_string(),
         );
-        let seat_accepts_cancel = super::abandon::seat_accepts_cancel(
-            super::seat_deadline::heard_seat_offer(
-                target.0,
-                None,
-                continuum_base::time::EpochMs::now().millis(),
-            )
-            .as_ref(),
-        );
-
         // Arm cancellation before the sealed request leaves. Its prearmed inbox owns
         // progress and completion together; no room subscription can stand in for it.
         let abandon = super::abandon::AbandonGuard::new(
@@ -430,7 +421,6 @@ impl AircLiveTransport {
             target,
             correlation_id,
             valid_until_ms,
-            seat_accepts_cancel,
         );
         let (mut pending, abandon) = super::abandon::publish_armed(
             abandon,

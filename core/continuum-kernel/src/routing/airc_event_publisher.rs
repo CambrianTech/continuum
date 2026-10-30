@@ -7,16 +7,14 @@
 //! Deliver frames currently use room broadcasts with subscription-id demux.
 //! Those identifiers provide routing, not confidentiality: room peers can see
 //! published event payloads. Private event delivery requires a separate migration.
-//! Legacy envelope parsers remain pure compatibility helpers, not admission paths.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use airc_core::{Body, Headers, PeerId, TranscriptEvent};
-use airc_lib::adapter::AdapterError;
+use airc_core::{Body, Headers, PeerId};
 use airc_lib::Airc;
-use airc_protocol::{FrameKind, HEADER_AIRC_CORRELATION_ID, HEADER_AIRC_REPLY_TO};
+use airc_protocol::FrameKind;
 use parking_lot::RwLock;
 use serde_json::Value;
 use uuid::Uuid;
@@ -362,197 +360,6 @@ pub struct ParsedPublish {
     pub reply_to: PeerId,
     pub correlation_id: Uuid,
     pub request: AircEventPublish,
-}
-
-/// Parse an inbound subscribe `TranscriptEvent` into
-/// [`ParsedSubscribe`]. Pure function — every refusal branch is
-/// testable without airc.
-///
-/// Mirrors `CommandRequestHandler::parse_envelope` exactly so the
-/// two pre-adapter parsers stay symmetric. A reader sees one and
-/// understands the other immediately.
-pub fn parse_subscribe_envelope(
-    envelope: &TranscriptEvent,
-) -> Result<ParsedSubscribe, AdapterError> {
-    let caller_peer_id = envelope.peer_id;
-
-    let reply_to_raw = envelope.headers.get(HEADER_AIRC_REPLY_TO).ok_or_else(|| {
-        AdapterError::Consumer(format!(
-            "missing required header {HEADER_AIRC_REPLY_TO} on inbound event subscribe envelope"
-        ))
-    })?;
-    let reply_to_uuid: Uuid = reply_to_raw.parse().map_err(|e| {
-        AdapterError::Consumer(format!(
-            "header {HEADER_AIRC_REPLY_TO}={reply_to_raw:?} is not a valid UUID: {e}"
-        ))
-    })?;
-    let reply_to = PeerId(reply_to_uuid);
-
-    let correlation_raw = envelope
-        .headers
-        .get(HEADER_AIRC_CORRELATION_ID)
-        .ok_or_else(|| {
-            AdapterError::Consumer(format!(
-                "missing required header {HEADER_AIRC_CORRELATION_ID} on inbound event subscribe envelope"
-            ))
-        })?;
-    let correlation_id: Uuid = correlation_raw.parse().map_err(|e| {
-        AdapterError::Consumer(format!(
-            "header {HEADER_AIRC_CORRELATION_ID}={correlation_raw:?} is not a valid UUID: {e}"
-        ))
-    })?;
-
-    let body = envelope.body.as_ref().ok_or_else(|| {
-        AdapterError::Consumer(
-            "inbound event subscribe envelope has no body (expected Body::Json(AircEventSubscribe))"
-                .to_string(),
-        )
-    })?;
-
-    let body_value = match body {
-        Body::Json(v) => v.clone(),
-        Body::Binary(_) => {
-            return Err(AdapterError::Consumer(
-                "inbound event subscribe body was Binary; expected Json(AircEventSubscribe)"
-                    .to_string(),
-            ));
-        }
-    };
-
-    let request: AircEventSubscribe = serde_json::from_value(body_value).map_err(|e| {
-        AdapterError::Consumer(format!("decode AircEventSubscribe from body JSON: {e}"))
-    })?;
-
-    Ok(ParsedSubscribe {
-        caller_peer_id,
-        reply_to,
-        correlation_id,
-        request,
-    })
-}
-
-/// Parse an inbound unsubscribe `TranscriptEvent`. Pure function.
-/// Same shape as [`parse_subscribe_envelope`] for the unsubscribe
-/// body.
-pub fn parse_unsubscribe_envelope(
-    envelope: &TranscriptEvent,
-) -> Result<ParsedUnsubscribe, AdapterError> {
-    let caller_peer_id = envelope.peer_id;
-
-    let reply_to_raw = envelope.headers.get(HEADER_AIRC_REPLY_TO).ok_or_else(|| {
-        AdapterError::Consumer(format!(
-            "missing required header {HEADER_AIRC_REPLY_TO} on inbound event unsubscribe envelope"
-        ))
-    })?;
-    let reply_to_uuid: Uuid = reply_to_raw.parse().map_err(|e| {
-        AdapterError::Consumer(format!(
-            "header {HEADER_AIRC_REPLY_TO}={reply_to_raw:?} is not a valid UUID: {e}"
-        ))
-    })?;
-    let reply_to = PeerId(reply_to_uuid);
-
-    let correlation_raw = envelope
-        .headers
-        .get(HEADER_AIRC_CORRELATION_ID)
-        .ok_or_else(|| {
-            AdapterError::Consumer(format!(
-                "missing required header {HEADER_AIRC_CORRELATION_ID} on inbound event unsubscribe envelope"
-            ))
-        })?;
-    let correlation_id: Uuid = correlation_raw.parse().map_err(|e| {
-        AdapterError::Consumer(format!(
-            "header {HEADER_AIRC_CORRELATION_ID}={correlation_raw:?} is not a valid UUID: {e}"
-        ))
-    })?;
-
-    let body = envelope.body.as_ref().ok_or_else(|| {
-        AdapterError::Consumer(
-            "inbound event unsubscribe envelope has no body (expected Body::Json(AircEventUnsubscribe))"
-                .to_string(),
-        )
-    })?;
-
-    let body_value = match body {
-        Body::Json(v) => v.clone(),
-        Body::Binary(_) => {
-            return Err(AdapterError::Consumer(
-                "inbound event unsubscribe body was Binary; expected Json(AircEventUnsubscribe)"
-                    .to_string(),
-            ));
-        }
-    };
-
-    let request: AircEventUnsubscribe = serde_json::from_value(body_value).map_err(|e| {
-        AdapterError::Consumer(format!("decode AircEventUnsubscribe from body JSON: {e}"))
-    })?;
-
-    Ok(ParsedUnsubscribe {
-        caller_peer_id,
-        reply_to,
-        correlation_id,
-        request,
-    })
-}
-
-/// Parse an inbound publish `TranscriptEvent` into [`ParsedPublish`].
-/// Pure function — the `emit` twin of [`parse_subscribe_envelope`],
-/// same header/body refusal branches for the publish body.
-pub fn parse_publish_envelope(envelope: &TranscriptEvent) -> Result<ParsedPublish, AdapterError> {
-    let caller_peer_id = envelope.peer_id;
-
-    let reply_to_raw = envelope.headers.get(HEADER_AIRC_REPLY_TO).ok_or_else(|| {
-        AdapterError::Consumer(format!(
-            "missing required header {HEADER_AIRC_REPLY_TO} on inbound event publish envelope"
-        ))
-    })?;
-    let reply_to_uuid: Uuid = reply_to_raw.parse().map_err(|e| {
-        AdapterError::Consumer(format!(
-            "header {HEADER_AIRC_REPLY_TO}={reply_to_raw:?} is not a valid UUID: {e}"
-        ))
-    })?;
-    let reply_to = PeerId(reply_to_uuid);
-
-    let correlation_raw = envelope
-        .headers
-        .get(HEADER_AIRC_CORRELATION_ID)
-        .ok_or_else(|| {
-            AdapterError::Consumer(format!(
-                "missing required header {HEADER_AIRC_CORRELATION_ID} on inbound event publish envelope"
-            ))
-        })?;
-    let correlation_id: Uuid = correlation_raw.parse().map_err(|e| {
-        AdapterError::Consumer(format!(
-            "header {HEADER_AIRC_CORRELATION_ID}={correlation_raw:?} is not a valid UUID: {e}"
-        ))
-    })?;
-
-    let body = envelope.body.as_ref().ok_or_else(|| {
-        AdapterError::Consumer(
-            "inbound event publish envelope has no body (expected Body::Json(AircEventPublish))"
-                .to_string(),
-        )
-    })?;
-
-    let body_value = match body {
-        Body::Json(v) => v.clone(),
-        Body::Binary(_) => {
-            return Err(AdapterError::Consumer(
-                "inbound event publish body was Binary; expected Json(AircEventPublish)"
-                    .to_string(),
-            ));
-        }
-    };
-
-    let request: AircEventPublish = serde_json::from_value(body_value).map_err(|e| {
-        AdapterError::Consumer(format!("decode AircEventPublish from body JSON: {e}"))
-    })?;
-
-    Ok(ParsedPublish {
-        caller_peer_id,
-        reply_to,
-        correlation_id,
-        request,
-    })
 }
 
 /// Build the `(Headers, Body)` for a subscribe ack reply. Pure

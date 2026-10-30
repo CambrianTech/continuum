@@ -403,24 +403,23 @@ async fn an_abandoned_generation_is_cancelled_at_a_capable_seat() {
     rig.pump.abort();
 }
 
-// what this catches: a seat whose beacon does not advertise the cancel is never sent
-// one (it would not understand it); its generation runs to completion as before.
+// Cancellation is a mandatory command contract, independent of beacon advertisement.
+// A long retained deadline cannot hide a missing cancellation when its caller drops.
 #[tokio::test]
-async fn an_uncapable_seat_is_never_sent_a_cancel() {
-    let rig = rig().await;
-    hear_seat(&rig, serde_json::json!([]));
-    let outcome = abandon_a_held_generation(&rig, Duration::from_secs(2)).await;
-    assert!(
-        outcome.is_err(),
-        "the requester gave up at its deadline: {outcome:?}"
-    );
-    assert!(
-        tokio::time::timeout(Duration::from_secs(5), rig.dropped.notified())
-            .await
-            .is_err(),
-        "no cancel reached a seat that does not advertise it; the generation still runs"
-    );
-    rig.release.notify_one();
+async fn dropping_a_request_cancels_even_without_a_capability_beacon() {
+    let rig = StdArc::new(rig().await);
+    let task_rig = StdArc::clone(&rig);
+    let requester = tokio::spawn(async move {
+        abandon_a_held_generation(&task_rig, Duration::from_secs(600)).await
+    });
+    tokio::time::timeout(WAIT, rig.entered.notified())
+        .await
+        .expect("the seat is serving the request");
+    requester.abort();
+    let _ = requester.await;
+    tokio::time::timeout(Duration::from_secs(15), rig.dropped.notified())
+        .await
+        .expect("mandatory cancellation drops work without a capability beacon");
     rig.pump.abort();
 }
 

@@ -15,19 +15,7 @@ use continuum_airc_protocol::{
 };
 use uuid::Uuid;
 
-use crate::capacity::gossip::{
-    capability_decision, CapabilityDecision, CapabilityId, CapacityOffer,
-};
 use crate::routing::airc_transport::AircTransport;
-
-/// PURE: may a cancel be sent to this seat? Only when its fresh beacon affirmatively
-/// advertises [`CapabilityId::RemoteGenerateCancel`]; no beacon, or one from a core that
-/// predates the command, means it would be ignored, so it is never sent (#3941 doctrine).
-pub(super) fn seat_accepts_cancel(offer: Option<&CapacityOffer>) -> bool {
-    offer.is_some_and(|offer| {
-        capability_decision(offer, CapabilityId::RemoteGenerateCancel) == CapabilityDecision::Allow
-    })
-}
 
 /// Armed BEFORE the request is published (airc publishes before `request` returns),
 /// keyed by the requester's own generation id. Dropped while armed (a deadline, any error,
@@ -47,14 +35,13 @@ struct Cancel {
 }
 
 impl AbandonGuard {
-    /// Armed only for a seat that accepts the cancel ([`seat_accepts_cancel`]).
+    /// Cancellation is mandatory for every remote generation.
     /// `valid_until_ms` is the request's own stamped validity, carried on the cancel.
     pub(super) fn new(
         airc: Arc<Airc>,
         seat: PeerId,
         generation: Uuid,
         valid_until_ms: u64,
-        seat_accepts: bool,
     ) -> Self {
         let cancel = Cancel {
             airc,
@@ -63,8 +50,7 @@ impl AbandonGuard {
             valid_until_ms,
         };
         Self {
-            armed: seat_accepts
-                .then(|| Box::new(move || cancel.dispatch()) as Box<dyn FnOnce() + Send>),
+            armed: Some(Box::new(move || cancel.dispatch())),
         }
     }
 
@@ -167,35 +153,6 @@ impl Cancel {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn beacon(capabilities: serde_json::Value) -> CapacityOffer {
-        serde_json::from_value(serde_json::json!({
-            "gpuTotalBytes": 1u64, "gpuFreeBytesLive": 0u64, "systemRamFreeBytes": 0u64, "atMs": 0u64,
-            "capabilities": capabilities,
-        }))
-        .expect("the wire shape of a seat's beacon")
-    }
-
-    // what this catches: a cancel goes only to a seat that advertises it. No beacon, an
-    // older core's beacon with no capability, or another capability never earns one; a
-    // seat that never learned ai/generate/cancel must not be sent it.
-    #[test]
-    fn a_cancel_is_sent_only_to_a_seat_that_advertises_it() {
-        assert!(!seat_accepts_cancel(None), "no beacon, no cancel");
-        assert!(
-            !seat_accepts_cancel(Some(&beacon(serde_json::json!([])))),
-            "an older core"
-        );
-        assert!(
-            !seat_accepts_cancel(Some(&beacon(serde_json::json!([
-                "placement_reservation_grant"
-            ])))),
-            "another capability does not stand in"
-        );
-        assert!(seat_accepts_cancel(Some(&beacon(serde_json::json!([
-            "remote_generate_cancel"
-        ])))));
-    }
 
     fn fired() -> (std::sync::Arc<std::sync::atomic::AtomicBool>, AbandonGuard) {
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
