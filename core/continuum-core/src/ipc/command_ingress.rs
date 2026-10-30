@@ -1,100 +1,69 @@
-//! `CommandRequestHandler` — the inbound symmetric of [`AircTransport`].
+//! `CommandRequestHandler`: this node's receiver for peer commands.
 //!
-//! When a remote substrate dispatches `airc://<this-peer>/<path>`, its
-//! AircTransport packages an [`AircCommandRequest`] + protocol headers
-//! and sends via `Airc::request()`. The airc daemon on this side
-//! routes the envelope by body_hint to whichever `ConsumerAdapter`
-//! claims [`COMMAND_REQUEST_BODY_HINT`]. That adapter is this handler.
+//! A peer command reaches this node ONLY through its identity's addressed inbox
+//! (`routing::addressed_inbox`): a frame airc has verified (signature, sender,
+//! addressee) and typed (`AddressedKind::Command`). Room subscriptions feed perception
+//! and carry no command handling at all. Incident 2026-10-30 00:28-00:38Z: an untrusted
+//! peer's `persona/placement/reserve` / `ai/generate` requests published into #general
+//! were executed here and fed to residents as speech, because commands were recognized
+//! by a header string on room events.
 //!
-//! The handler:
+//! For each addressed frame the handler:
 //!
-//! 1. Parses the [`TranscriptEvent`] to extract:
-//!    - **Verified sender** (the `peer_id` field, signed by airc)
-//!    - **Reply addressing** (`airc.reply_to` + `airc.correlation_id`
-//!      headers, auto-stamped by `Airc::request()`)
-//!    - **Typed request body** ([`AircCommandRequest`])
-//!
-//! 2. Constructs a local [`CommandUri`] from the request's path. The
-//!    path the remote substrate dispatched maps 1:1 to a local URI;
-//!    auth + routing decisions happen locally based on the local
-//!    substrate's policy.
-//!
-//! 3. Builds a [`CallerIdentity::airc(verified_sender)`] and threads
-//!    it through [`CommandExecutor::execute_with_caller`]. The local
-//!    [`AuthPolicy`](crate::routing::AuthPolicy) gate sees the real
-//!    remote caller and applies the right verdict — Allowed,
-//!    Forbidden (with typed reason), or Deferred.
-//!
-//! 4. Packages the result as [`AircCommandResponse`] — Ok with the
-//!    JSON result OR Error with the typed message. Errors here might
-//!    come from the gate (Forbidden / Deferred), from the module
-//!    handler, or from the substrate itself; the caller-side
-//!    AircTransport propagates the message into the local
-//!    `Result<CommandResult, String>` shape exactly.
-//!
-//! 5. Replies via `Airc::reply()` with [`HEADER_COMMAND_STATUS`] +
-//!    [`HEADER_CONTINUUM_BODY_HINT`] stamped on the headers (so
-//!    middleware can filter responses without parsing bodies, same
-//!    property as the request path).
+//! 1. Applies the ingress contract ([`ingress_contract`]) to the verified fields and
+//!    typed headers, before the payload is decoded: a `Command`, to this node, naming
+//!    its command; the sender's airc trust tier meets the command's declared tier (or a
+//!    presented owner-signed grant, verified against the sender's enrolled key, confers
+//!    it). Each refusal is a typed [`IngressRefusal`], probed, and answered with its rule
+//!    (never the params) when the frame was a command to this node.
+//! 2. Decodes the [`AircCommandRequest`], which must name the header's command.
+//! 3. Dispatches through the local [`CommandExecutor`] as
+//!    [`CallerIdentity::airc`]`(sender)` with the verified grant capabilities; the
+//!    executor's own `AuthPolicy` gate still runs.
+//! 4. Replies with an [`AircCommandResponse`] bound to the request
+//!    ([`AddressedPort::reply`]); an `ai/generate` streams its tokens first.
 //!
 //! ## Why typed errors flow through the wire
 //!
-//! Per [[no-fallbacks-ever]]: a Forbidden verdict on the remote
-//! substrate becomes an `Error { message: "forbidden: NoPermissionForUri(...)" }`
-//! on the wire, becomes `Err("forbidden: ...")` on the caller side,
-//! becomes the substrate's typed `SubstrateError::Forbidden(...)` at
-//! the typed-consumer layer. The caller can match on the variant and
-//! decide how to recover — locally or by surfacing to the user.
-//!
-//! ## Composition at boot
-//!
-//! ```ignore
-//! use std::sync::Arc;
-//! use continuum_core::routing::CommandRequestHandler;
-//!
-//! let handler = CommandRequestHandler::new(airc.clone(), executor.clone());
-//! airc.register_consumer_adapter(handler).await?;
-//! ```
-//!
-//! After registration, every inbound `airc://<this-peer>/<path>`
-//! dispatch flows through this handler → local CommandExecutor →
-//! local AuthPolicy → local module → reply. Symmetric with the
-//! AircTransport's outbound path.
+//! Per [[no-fallbacks-ever]]: a Forbidden verdict on the remote substrate becomes an
+//! `Error { message: "forbidden: NoPermissionForUri(...)" }` on the wire, becomes
+//! `Err("forbidden: ...")` on the caller side, becomes the substrate's typed
+//! `SubstrateError::Forbidden(...)` at the typed-consumer layer.
 
 use continuum_base::time::EpochMs;
 use std::sync::Arc;
 
-use airc_core::{Body, PeerId, TranscriptEvent};
-use airc_lib::adapter::{AdapterError, ConsumerAdapter};
+use airc_core::{Body, PeerId};
 use airc_lib::grid_auth::SignedCapabilityGrant;
 use airc_lib::Airc;
-use airc_protocol::headers_keys::{HEADER_AIRC_CAPABILITY_GRANT, HEADER_AIRC_CHANNEL_NAME};
-use airc_protocol::{HEADER_AIRC_CORRELATION_ID, HEADER_AIRC_REPLY_TO};
+use airc_protocol::headers_keys::HEADER_AIRC_CAPABILITY_GRANT;
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+use crate::routing::addressed_inbox::{AddressedFrame, AddressedHandler, AddressedPort};
 use crate::routing::grid_capability::{GrantAuthOutcome, GrantAuthorizer};
-use crate::routing::{AircCommandRequest, AircCommandResponse, CallerIdentity, CommandUri, COMMAND_REQUEST_BODY_HINT, COMMAND_RESPONSE_BODY_HINT, HEADER_COMMAND_STATUS, HEADER_CONTINUUM_BODY_HINT};
+use crate::routing::{AircCommandRequest, AircCommandResponse, CallerIdentity, CommandUri, HEADER_COMMAND_STATUS};
 use crate::runtime::{CommandExecutor, CommandResult};
 
-/// Stable adapter name. Registered in the airc adapter registry so
-/// operators can introspect what's consuming command envelopes.
-pub const HANDLER_NAME: &str = "continuum.command.handler";
+mod ingress_contract;
+mod served_generations;
+mod stream_publisher;
 
-/// The peer-side command handler. Registered with the airc adapter
-/// registry as a `ConsumerAdapter` claiming
-/// [`COMMAND_REQUEST_BODY_HINT`].
+pub use ingress_contract::{admit_caller, admit_frame, required_tier, AircTrustStore, IngressRefusal, PeerTierSource};
+use stream_publisher::StreamPublisher;
+
+/// This node's peer-command receiver. The pump hands it each addressed frame.
 pub struct CommandRequestHandler {
-    airc: Arc<Airc>,
+    /// This node's airc identity as the ingress needs it: who it is, a peer's enrolled
+    /// key, and the reply and token stream bound to a request.
+    port: Arc<dyn AddressedPort>,
     executor: Arc<CommandExecutor>,
     /// Verifies a capability grant the caller presents (the contracted-grid path).
-    /// `None` → grants are ignored; a caller is gated purely by tier (the current
-    /// default). `Some` → a presented [`SignedCapabilityGrant`] is verified against
-    /// the owner key + this node's mesh + the AUTHENTICATED sender key, and its
-    /// conferred capabilities ride into the gate via
-    /// [`CallerIdentity::with_granted_capabilities`].
+    /// `None` → grants are ignored; a caller is gated purely by tier. `Some` → a
+    /// presented [`SignedCapabilityGrant`] is verified against the owner key + this
+    /// node's mesh + the AUTHENTICATED sender key.
     grant_authorizer: Option<Arc<GrantAuthorizer>>,
     /// Generations this seat is serving concurrently ([`served_generations`]). `None` on
     /// a task's detached copy: only the pump's handler owns the registry, so a stopped
@@ -103,61 +72,34 @@ pub struct CommandRequestHandler {
     /// The admission bound for served generations, read per request
     /// ([`served_generations::admission_bound`]; a test pins it).
     generation_bound: fn() -> usize,
-    /// Where a caller's airc trust tier is read for the ingress contract
-    /// ([`ingress_contract`]): this node's airc trust store.
+    /// Where a caller's airc trust tier is read for the ingress contract.
     tiers: Arc<dyn PeerTierSource>,
 }
 
-mod ingress_contract;
-mod served_generations;
-mod stream_publisher;
-
-pub use ingress_contract::{
-    admit_caller, admit_frame, required_tier, AddressedCommand, AircTrustStore, IngressRefusal, PeerTierSource,
-};
-use stream_publisher::StreamPublisher;
-
-/// Parsed pieces of an incoming envelope. Pure data; the rest of
-/// the handler operates on this struct so the parse step is testable
-/// in isolation from airc.
+/// A command the ingress contract admitted: the verified frame and its decoded request.
 #[derive(Debug, Clone)]
-pub struct ParsedEnvelope {
-    /// Verified sender peer_id from the envelope's `peer_id` field.
-    /// airc has already validated the signature; we trust this as
-    /// the authentic caller.
-    pub caller_peer_id: PeerId,
-    /// Where to send the reply. From the `airc.reply_to` header
-    /// auto-stamped by `Airc::request()`.
-    pub reply_to: PeerId,
-    /// Correlation id matching the caller's pending request.
-    pub correlation_id: Uuid,
-    /// The typed request body.
+pub struct AdmittedCommand {
+    pub frame: Arc<dyn AddressedFrame>,
     pub request: AircCommandRequest,
-    /// The channel the request ARRIVED on (the envelope's `room_id`).
-    /// The reply must ride this exact channel: the requester awaits on the
-    /// room it asked in, and the responder's own current room may be a
-    /// different room entirely (operator CLI in #general vs citizens landed
-    /// in #academy — the 2026-08-27 grid-smoke 0/3 deadline class).
-    pub request_channel: airc_core::RoomId,
-    /// The request's stamped human channel name
-    /// ([`airc_protocol::HEADER_AIRC_CHANNEL_NAME`]), if present — carried
-    /// onto the reply for the blind-room heal.
-    pub request_channel_name: Option<String>,
+    /// The capability tags a presented grant was VERIFIED to confer (against the
+    /// authenticated sender key), threaded into the gate.
+    pub verified_capabilities: Vec<String>,
     /// The requester's own id for this generation and how long it is wanted
     /// ([`continuum_airc_protocol::HEADER_GENERATE_ID`] and
-    /// [`continuum_airc_protocol::HEADER_GENERATE_VALID_UNTIL_MS`]); `None` from a requester
-    /// that predates them, or one that sent an id without its validity.
+    /// [`continuum_airc_protocol::HEADER_GENERATE_VALID_UNTIL_MS`]).
     pub generation: Option<GenerationStamp>,
-    /// A capability grant the caller PRESENTED on the envelope (base64
-    /// [`HEADER_AIRC_CAPABILITY_GRANT`], decoded). `None` if absent. Decoded in
-    /// [`parse_envelope`](CommandRequestHandler::parse_envelope) so the parse step
-    /// stays the one place the wire shape is read; verified later against the
-    /// authenticated sender key.
-    pub presented_grant: Option<SignedCapabilityGrant>,
-    /// The capability tags [`presented_grant`](Self::presented_grant) was VERIFIED to
-    /// confer (against the authenticated sender key), set once by the ingress contract
-    /// and threaded into the gate. Empty from [`parse_envelope`](CommandRequestHandler::parse_envelope).
-    pub verified_capabilities: Vec<String>,
+}
+
+impl AdmittedCommand {
+    /// The transport-verified sender.
+    pub fn caller(&self) -> PeerId {
+        self.frame.from()
+    }
+
+    /// The request/reply pairing airc stamped; the join key on both sides of a grid turn.
+    pub fn correlation(&self) -> Uuid {
+        self.frame.correlation()
+    }
 }
 
 /// A requester's stamp on an `ai/generate` request: its own id for the generation, and the
@@ -185,151 +127,96 @@ impl GenerationStamp {
     }
 }
 
+/// The capability grant a caller PRESENTED in its headers (base64
+/// [`HEADER_AIRC_CAPABILITY_GRANT`]), decoded. Absent is normal (a tier-gated call);
+/// present-but-undecodable is refused by rule, never silently dropped.
+fn presented_grant(headers: &airc_core::Headers) -> Result<Option<SignedCapabilityGrant>, IngressRefusal> {
+    let Some(b64) = headers.get(HEADER_AIRC_CAPABILITY_GRANT) else {
+        return Ok(None);
+    };
+    let bytes = STANDARD.decode(b64).map_err(|_| IngressRefusal::MalformedGrant)?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|_| IngressRefusal::MalformedGrant)
+}
+
+/// The payload, decoded only after the contract admitted the frame.
+fn decode_request(frame: &dyn AddressedFrame) -> Result<AircCommandRequest, IngressRefusal> {
+    let Some(Body::Json(value)) = frame.body() else {
+        return Err(IngressRefusal::MalformedRequest);
+    };
+    serde::Deserialize::deserialize(value).map_err(|_| IngressRefusal::MalformedRequest)
+}
+
 impl CommandRequestHandler {
-    /// Build a handler against an existing airc handle and the
-    /// substrate's CommandExecutor, with NO grant authorizer — a caller is gated
-    /// purely by tier (presented grants are ignored). Returns `Arc<Self>` because
-    /// the airc adapter registry stores adapters as `Arc<dyn ConsumerAdapter>`.
+    /// The receiver on this node's airc identity, with NO grant authorizer: a caller is
+    /// gated purely by tier. Its trust tiers are read from this identity's airc trust store.
     pub fn new(airc: Arc<Airc>, executor: Arc<CommandExecutor>) -> Arc<Self> {
         let tiers = AircTrustStore::new(airc.home().to_path_buf());
-        Arc::new(Self {
-            airc,
-            executor,
-            grant_authorizer: None,
-            generations: Some(Arc::default()),
-            generation_bound: served_generations::admission_bound,
-            tiers,
-        })
+        Self::with_seams(airc, tiers, executor, None)
     }
 
-    /// Build a handler that VERIFIES presented capability grants (the
-    /// contracted-grid path). A caller presenting an owner-signed grant that
-    /// confers the command is authorized regardless of its tier ceiling; absent or
-    /// invalid grants fall back to tier gating.
+    /// The receiver that VERIFIES presented capability grants (the contracted-grid path).
     pub fn with_grant_authorizer(
         airc: Arc<Airc>,
         executor: Arc<CommandExecutor>,
         grant_authorizer: Arc<GrantAuthorizer>,
     ) -> Arc<Self> {
         let tiers = AircTrustStore::new(airc.home().to_path_buf());
+        Self::with_seams(airc, tiers, executor, Some(grant_authorizer))
+    }
+
+    /// The receiver over explicit seams: the port it answers through and the tier source
+    /// it reads (a test supplies fakes; no daemon needed).
+    pub fn with_seams(
+        port: Arc<dyn AddressedPort>,
+        tiers: Arc<dyn PeerTierSource>,
+        executor: Arc<CommandExecutor>,
+        grant_authorizer: Option<Arc<GrantAuthorizer>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            airc,
+            port,
             executor,
-            grant_authorizer: Some(grant_authorizer),
+            grant_authorizer,
             generations: Some(Arc::default()),
             generation_bound: served_generations::admission_bound,
             tiers,
         })
     }
 
-    /// The reply addressing a request carries in its headers (`airc.reply_to` +
-    /// `airc.correlation_id`, auto-stamped by `Airc::request()`). Header-only, so a
-    /// refusal can be answered without decoding the payload.
-    fn reply_route(envelope: &TranscriptEvent) -> Result<(PeerId, Uuid), AdapterError> {
-        let reply_to_raw = envelope.headers.get(HEADER_AIRC_REPLY_TO).ok_or_else(|| {
-            AdapterError::Consumer(format!(
-                "missing required header {HEADER_AIRC_REPLY_TO} on inbound command envelope"
-            ))
-        })?;
-        let reply_to_uuid: Uuid = reply_to_raw.parse().map_err(|e| {
-            AdapterError::Consumer(format!(
-                "header {HEADER_AIRC_REPLY_TO}={reply_to_raw:?} is not a valid UUID: {e}"
-            ))
-        })?;
-        let reply_to = PeerId(reply_to_uuid);
-
-        let correlation_raw =
-            envelope.headers.get(HEADER_AIRC_CORRELATION_ID).ok_or_else(|| {
-                AdapterError::Consumer(format!(
-                    "missing required header {HEADER_AIRC_CORRELATION_ID} on inbound command envelope"
-                ))
-            })?;
-        let correlation_id: Uuid = correlation_raw.parse().map_err(|e| {
-            AdapterError::Consumer(format!(
-                "header {HEADER_AIRC_CORRELATION_ID}={correlation_raw:?} is not a valid UUID: {e}"
-            ))
-        })?;
-        Ok((reply_to, correlation_id))
-    }
-
-    /// The capability grant a caller PRESENTED in its headers (base64
-    /// [`HEADER_AIRC_CAPABILITY_GRANT`]), decoded. Absent is normal (a tier-gated call).
-    /// PRESENT-but-undecodable is a client error surfaced LOUDLY (per
-    /// [[no-fallbacks-ever]]) rather than silently dropped.
-    fn presented_grant(headers: &airc_core::Headers) -> Result<Option<SignedCapabilityGrant>, AdapterError> {
-        let Some(b64) = headers.get(HEADER_AIRC_CAPABILITY_GRANT) else {
-            return Ok(None);
+    /// The ingress contract, then the decode: an admitted command, or the typed refusal
+    /// (with the tier the sender was seen at, for the probe).
+    async fn admit(&self, frame: &Arc<dyn AddressedFrame>) -> Result<(AdmittedCommand, &'static str), (String, &'static str, IngressRefusal)> {
+        let path = admit_frame(frame.as_ref(), self.port.me()).map_err(|r| (String::new(), "unread", r))?;
+        let caller = frame.from();
+        let grant = presented_grant(frame.headers()).map_err(|r| (path.clone(), "unread", r))?;
+        let granted = self.verify_presented_grant(caller, grant.as_ref(), &path).await;
+        let tier = self.tiers.tier_of(caller).await;
+        let tier_seen = match &tier {
+            Ok(Some(tier)) => tier.as_wire_str(),
+            Ok(None) => "unenrolled",
+            Err(_) => "unreadable",
         };
-        let bytes = STANDARD.decode(b64).map_err(|e| {
-            AdapterError::Consumer(format!("header {HEADER_AIRC_CAPABILITY_GRANT} is not valid base64: {e}"))
-        })?;
-        let grant: SignedCapabilityGrant = serde_json::from_slice(&bytes).map_err(|e| {
-            AdapterError::Consumer(format!(
-                "header {HEADER_AIRC_CAPABILITY_GRANT} did not decode as a SignedCapabilityGrant: {e}"
-            ))
-        })?;
-        Ok(Some(grant))
-    }
-
-    /// Parse a `TranscriptEvent` into the typed pieces the handler
-    /// needs. Pure function — tests don't need airc to exercise it.
-    ///
-    /// Returns an error if any required header is missing, the body
-    /// is absent or non-JSON, or the body doesn't deserialize as
-    /// [`AircCommandRequest`].
-    pub fn parse_envelope(envelope: &TranscriptEvent) -> Result<ParsedEnvelope, AdapterError> {
-        let caller_peer_id = envelope.peer_id;
-        let (reply_to, correlation_id) = Self::reply_route(envelope)?;
-
-        let body = envelope.body.as_ref().ok_or_else(|| {
-            AdapterError::Consumer(
-                "inbound command envelope has no body (expected Body::Json(AircCommandRequest))"
-                    .to_string(),
-            )
-        })?;
-
-        let body_value = match body {
-            Body::Json(v) => v.clone(),
-            Body::Binary(_) => {
-                return Err(AdapterError::Consumer(
-                    "inbound command body was Binary; expected Json(AircCommandRequest)"
-                        .to_string(),
-                ));
-            }
-        };
-
-        let request: AircCommandRequest = serde_json::from_value(body_value).map_err(|e| {
-            AdapterError::Consumer(format!("decode AircCommandRequest from body JSON: {e}"))
-        })?;
-
-        let presented_grant = Self::presented_grant(&envelope.headers)?;
-
-        Ok(ParsedEnvelope {
-            caller_peer_id,
-            reply_to,
-            correlation_id,
+        admit_caller(tier, &path, !granted.is_empty()).map_err(|r| (path.clone(), tier_seen, r))?;
+        // Only now is the payload decoded, by its one consumer; it must name the command
+        // the decision was made on.
+        let request = decode_request(frame.as_ref()).map_err(|r| (path.clone(), tier_seen, r))?;
+        if request.path != path {
+            return Err((path, tier_seen, IngressRefusal::PathMismatch));
+        }
+        let admitted = AdmittedCommand {
+            frame: Arc::clone(frame),
             request,
-            request_channel: envelope.room_id,
-            request_channel_name: envelope.headers.get(HEADER_AIRC_CHANNEL_NAME).cloned(),
-            presented_grant,
-            verified_capabilities: Vec::new(),
-            generation: GenerationStamp::from_headers(&envelope.headers),
-        })
+            verified_capabilities: granted,
+            generation: GenerationStamp::from_headers(frame.headers()),
+        };
+        Ok((admitted, tier_seen))
     }
 
-    /// Dispatch a parsed request through the local CommandExecutor
-    /// with the caller identity threaded into the policy gate.
-    /// Returns the typed response shape the wire carries back.
-    ///
-    /// Tests can invoke this via [`Self::process_request_via`] with
-    /// just a `&CommandExecutor` — no Airc handle required — so the
-    /// executor-side of the handler is exercisable without standing
-    /// up real airc plumbing.
     /// [`process_request`](Self::process_request), with the tokens of an `ai/generate`
     /// on the wire AS THEY ARE PRODUCED — airc stream chunks (`airc.stream.*` headers,
-    /// `DeliveryClass::StreamChunk`, never a durable row) in the room the request
-    /// arrived in, `stream_id` = the request's correlation id, then the settled
-    /// response as the reply exactly as before.
+    /// never a durable row) bound to the request ([`AddressedPort::stream`]),
+    /// `stream_id` = the request's correlation id, then the settled response as the reply.
     ///
     /// INFERENCE IS A STREAM, NOT A PROMISE. Awaiting the whole answer under one
     /// deadline is how a working lane and a dead one looked identical for ten
@@ -340,12 +227,12 @@ impl CommandRequestHandler {
     /// (`service_loop`: `publish_stream_chunk`, coalesced every 250 ms), same
     /// command path (ACL, interceptors, caller identity) — the only addition is the
     /// `streamId` the command resolves to the sink registered here.
-    pub async fn process_request_streaming(&self, parsed: &ParsedEnvelope) -> AircCommandResponse {
+    pub async fn process_request_streaming(&self, parsed: &AdmittedCommand) -> AircCommandResponse {
         if parsed.request.path != STREAMED_GENERATE_PATH {
             return self.process_request(parsed).await;
         }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let stream_id = parsed.correlation_id;
+        let stream_id = parsed.correlation();
         let guard = crate::ai::stream_sinks::register(stream_id, tx);
         let mut streamed = parsed.clone();
         if let Some(obj) = streamed.request.params.as_object_mut() {
@@ -355,8 +242,8 @@ impl CommandRequestHandler {
             );
         }
         let publisher = StreamPublisher {
-            airc: Arc::clone(&self.airc),
-            room: parsed.request_channel,
+            port: Arc::clone(&self.port),
+            request: Arc::clone(&parsed.frame),
             stream_id,
             // The seat's receipt instant: its own queue clock starts here, not on the
             // requester's node (card c84d885a, S1 — the wait is measured where it forms).
@@ -382,11 +269,10 @@ impl CommandRequestHandler {
         response
     }
 
-    pub async fn process_request(&self, parsed: &ParsedEnvelope) -> AircCommandResponse {
+    pub async fn process_request(&self, parsed: &AdmittedCommand) -> AircCommandResponse {
         // The capabilities the ingress contract VERIFIED the presented grant to confer
-        // (once, against the AUTHENTICATED sender key) ride into the gate. None
-        // presented / invalid → empty caps → pure tier gating.
-        let caller = CallerIdentity::airc(parsed.caller_peer_id)
+        // ride into the gate. None presented / invalid → empty caps → pure tier gating.
+        let caller = CallerIdentity::airc(parsed.caller())
             .with_granted_capabilities(parsed.verified_capabilities.clone());
         Self::dispatch_request(&self.executor, parsed, caller).await
     }
@@ -395,7 +281,7 @@ impl CommandRequestHandler {
     /// tags it confers — empty when there is no authorizer, no presented grant, or
     /// the grant fails to authorize.
     ///
-    /// The presenting key is `airc.peer_public_key(sender)` — the enrolled key from
+    /// The presenting key is `port.peer_public_key(sender)` — the enrolled key from
     /// the SAME registry that signature-verified the inbound envelope, so it is the
     /// AUTHENTICATED sender's key, never the grant's self-asserted `grantee_pubkey`
     /// (the hard gate the review flagged). A non-Authorized outcome logs at debug +
@@ -409,7 +295,7 @@ impl CommandRequestHandler {
         let (Some(authorizer), Some(grant)) = (self.grant_authorizer.as_ref(), grant) else {
             return Vec::new();
         };
-        let Some(presenting) = self.airc.peer_public_key(caller) else {
+        let Some(presenting) = self.port.peer_public_key(caller) else {
             warn!(
                 caller = %caller.0,
                 "presented a capability grant but the sender is not enrolled — \
@@ -434,26 +320,11 @@ impl CommandRequestHandler {
         }
     }
 
-    /// Process a request against a borrowed `CommandExecutor` directly, with NO
-    /// grant verification (the caller is the plain authenticated sender). Same
-    /// behavior as the pre-grant path — tests + the `LocalGridTransport` fixture
-    /// lease this without an `Arc<Airc>`. The grant-aware path is
-    /// [`process_request`](Self::process_request).
-    pub async fn process_request_via(
-        executor: &CommandExecutor,
-        parsed: &ParsedEnvelope,
-    ) -> AircCommandResponse {
-        let caller = CallerIdentity::airc(parsed.caller_peer_id);
-        Self::dispatch_request(executor, parsed, caller).await
-    }
-
-    /// Dispatch the parsed request through the executor as `caller` (whose
-    /// `granted_capabilities` the gate honors). Shared by the grant-aware
-    /// [`process_request`](Self::process_request) and the plain
-    /// [`process_request_via`](Self::process_request_via).
+    /// Dispatch the admitted request through the executor as `caller` (whose
+    /// `granted_capabilities` the gate honors).
     async fn dispatch_request(
         executor: &CommandExecutor,
-        parsed: &ParsedEnvelope,
+        parsed: &AdmittedCommand,
         caller: CallerIdentity,
     ) -> AircCommandResponse {
         // A generate that arrives over the wire is inference THIS seat performs for a
@@ -547,127 +418,73 @@ impl CommandRequestHandler {
         }
     }
 
-    /// Send the typed response back to the caller. Stamps
-    /// [`HEADER_COMMAND_STATUS`] + [`HEADER_CONTINUUM_BODY_HINT`] so
-    /// reply-routing middleware can filter without parsing the body.
-    ///
-    /// Exposed (`pub`) so a test fixture or `LocalGridTransport` can
-    /// reuse the same reply shape without going through real airc.
-    pub async fn send_reply(
-        &self,
-        parsed: &ParsedEnvelope,
-        response: &AircCommandResponse,
-    ) -> Result<(), AdapterError> {
-        self.reply(
-            parsed.request_channel,
-            parsed.request_channel_name.as_deref(),
-            parsed.reply_to,
-            parsed.correlation_id,
-            response,
-        )
-        .await
+    /// Send the typed response back, bound to the request it answers. Stamps
+    /// [`HEADER_COMMAND_STATUS`] so a reader can filter without parsing the body.
+    pub async fn send_reply(&self, parsed: &AdmittedCommand, response: &AircCommandResponse) {
+        self.reply_to(parsed.frame.as_ref(), response).await;
     }
 
-    /// [`send_reply`](Self::send_reply) from the reply addressing alone: the refusal path
-    /// answers from headers without decoding the payload.
-    async fn reply(
-        &self,
-        channel: airc_core::RoomId,
-        channel_name: Option<&str>,
-        reply_to: PeerId,
-        correlation_id: Uuid,
-        response: &AircCommandResponse,
-    ) -> Result<(), AdapterError> {
-        let body_value = serde_json::to_value(response)
-            .map_err(|e| AdapterError::Consumer(format!("serialize AircCommandResponse: {e}")))?;
-        let body = Body::Json(body_value);
-
+    async fn reply_to(&self, request: &dyn AddressedFrame, response: &AircCommandResponse) {
+        let body = match serde_json::to_value(response) {
+            Ok(value) => Body::Json(value),
+            Err(e) => {
+                warn!(correlation = %request.correlation(), error = %e, "serialize AircCommandResponse");
+                return;
+            }
+        };
         let mut headers = airc_core::Headers::new();
-        headers.insert(
-            HEADER_COMMAND_STATUS.to_string(),
-            response.status_header_value().to_string(),
-        );
-        headers.insert(
-            HEADER_CONTINUUM_BODY_HINT.to_string(),
-            COMMAND_RESPONSE_BODY_HINT.to_string(),
-        );
+        headers.insert(HEADER_COMMAND_STATUS.to_string(), response.status_header_value().to_string());
+        if let Err(e) = self.port.reply(request, headers, body).await {
+            continuum_base::probe!(
+                class = "airc.command.reply_failed",
+                correlation = %request.correlation(),
+                to = %request.from().0,
+                error = %e,
+                "the reply to an addressed command could not be sent"
+            );
+        }
+    }
 
-        // reply_in, NOT reply: the answer must ride the channel the request
-        // arrived on. The requester awaits on the room it asked in; this
-        // responder's current room can be a different room entirely (citizens
-        // land in #academy, an operator CLI asks in #general) — reply() sent
-        // the answer somewhere the requester never subscribed and every
-        // dispatch died at the command deadline (grid-smoke 0/3, 2026-08-27).
-        self.airc
-            .reply_in(channel, channel_name, reply_to, correlation_id, headers, body)
-            .await
-            .map_err(|e| AdapterError::Io(format!("airc reply: {e}")))?;
-        Ok(())
+    /// A frame the ingress contract refused: probed with the rule, the sender, the
+    /// command and the tier; a command to this node is answered with the rule (never its
+    /// params); a frame that was not a command to this node draws no reply.
+    async fn refuse(&self, frame: &dyn AddressedFrame, path: &str, tier: &str, refusal: IngressRefusal) {
+        continuum_base::probe!(
+            class = "airc.command.ingress_refused",
+            rule = refusal.rule(),
+            caller = %frame.from().0,
+            to = %frame.to().0,
+            kind = ?frame.kind(),
+            path = %path,
+            tier = %tier,
+            me = %self.port.me().0,
+            "addressed frame refused by the ingress contract"
+        );
+        if refusal.answered() {
+            self.reply_to(frame, &AircCommandResponse::error(refusal.reply_message(path))).await;
+        }
     }
 }
 
 #[async_trait]
-impl ConsumerAdapter for CommandRequestHandler {
-    fn name(&self) -> &'static str {
-        HANDLER_NAME
-    }
-
-    fn body_hint(&self) -> &'static str {
-        COMMAND_REQUEST_BODY_HINT
-    }
-
-    async fn on_envelope(&self, envelope: TranscriptEvent) -> Result<(), AdapterError> {
-        let me = self.airc.peer_id();
-        let event = Arc::new(envelope);
-        // THE INGRESS CONTRACT (`ingress_contract`), header facts first. Every node in
-        // the room hears every command request; only a DIRECT request ADDRESSED to this
-        // node is ours (a peer-addressed `ai/generate` used to be answered by whoever
-        // heard it first, the sender included: 2026-09-06 on the M5). A room broadcast
-        // is never executed, whatever its payload says (2026-10-30: an untrusted peer's
-        // `persona/placement/reserve` requests in #general ran here).
-        let command = match admit_frame(Arc::clone(&event), me) {
-            Ok(command) => command,
-            Err(refusal) => return self.refuse(&event, "", "unread", refusal).await,
+impl AddressedHandler for CommandRequestHandler {
+    async fn on_addressed(&self, frame: Arc<dyn AddressedFrame>) {
+        let (parsed, tier_seen) = match self.admit(&frame).await {
+            Ok(admitted) => admitted,
+            Err((path, tier, refusal)) => return self.refuse(frame.as_ref(), &path, tier, refusal).await,
         };
-        let caller = command.envelope.sender();
-        // The caller's trust tier, and a grant it presented (a HEADER, verified once
-        // against the authenticated sender key), decide before the payload is decoded.
-        let grant = Self::presented_grant(&event.headers)?;
-        let granted = self.verify_presented_grant(caller, grant.as_ref(), &command.path).await;
-        let tier = self.tiers.tier_of(caller).await;
-        let tier_seen = match &tier {
-            Ok(Some(tier)) => tier.as_wire_str(),
-            Ok(None) => "unenrolled",
-            Err(_) => "unreadable",
-        };
-        if let Err(refusal) = admit_caller(tier, &command.path, !granted.is_empty()) {
-            return self.refuse(&event, &command.path, tier_seen, refusal).await;
-        }
-        // Only now is the payload decoded, by its one consumer; it must name the command
-        // the header decision was made on.
-        let mut parsed = Self::parse_envelope(&event)?;
-        if parsed.request.path != command.path {
-            return self.refuse(&event, &command.path, tier_seen, IngressRefusal::PathMismatch).await;
-        }
-        parsed.verified_capabilities = granted;
-        // THE ACCEPT PATH HAD NO PROBE. Only the refusal emitted one, so a
-        // request that ARRIVED AND RAN was indistinguishable from one that was never
-        // sent — and on a node whose citizens generate continuously, a downstream
-        // inference row cannot be attributed to a peer without a join key. Measured
-        // 2026-09-06 22:04:21Z: a real cross-grid `ai/generate` reached this node
-        // addressed to a seat no citizen owned, bounced off the refusal probe, and
-        // the question "did anything ever land?" stayed unanswerable for a day
-        // because landing is silent. `correlation` is the join key: it is the same
-        // uuid the CALLER awaits on, so both sides of a grid turn can be matched.
+        // THE ACCEPT PATH NAMES ITSELF: `correlation` is the join key, the same uuid the
+        // CALLER awaits on, so both sides of a grid turn can be matched (2026-09-06: a
+        // landed cross-grid `ai/generate` was unattributable for a day without it).
         continuum_base::probe!(
             class = "airc.command.accepted",
             path = %parsed.request.path,
             kind = %parsed.request.kind,
-            caller = %parsed.caller_peer_id.0,
+            caller = %parsed.caller().0,
             tier = %tier_seen,
-            me = %me.0,
-            correlation = %parsed.correlation_id,
-            "peer command request ACCEPTED by the ingress contract — this node answers it"
+            me = %self.port.me().0,
+            correlation = %parsed.correlation(),
+            "peer command ACCEPTED by the ingress contract — this node answers it"
         );
         // The requester abandoned a generation it asked for (card 83f774fb): abort it here
         // instead of finishing it for no one. A control command, answered inline before
@@ -681,7 +498,7 @@ impl ConsumerAdapter for CommandRequestHandler {
                     let outcome = match &self.generations {
                         Some(generations) => generations.cancel(
                             cancel.generation,
-                            parsed.caller_peer_id,
+                            parsed.caller(),
                             (self.generation_bound)(),
                             cancel.valid_until_ms,
                             EpochMs::now().millis(),
@@ -691,7 +508,7 @@ impl ConsumerAdapter for CommandRequestHandler {
                     continuum_base::probe!(
                         class = "airc.command.generation_cancel",
                         generation = %cancel.generation,
-                        requester = %parsed.caller_peer_id.0,
+                        requester = %parsed.caller().0,
                         outcome = outcome.as_str(),
                         "a requester abandoned a served generation"
                     );
@@ -706,13 +523,13 @@ impl ConsumerAdapter for CommandRequestHandler {
                     "ai/generate/cancel needs params {{generation: uuid, valid_until_ms: u64}}: {e}"
                 )),
             };
-            self.send_reply(&parsed, &response).await?;
-            return Ok(());
+            self.send_reply(&parsed, &response).await;
+            return;
         }
         // A served generation holds a lane for minutes: it runs as its own task so the
-        // pump keeps reading (card b3e5b582). Classified from the parsed body, the path
-        // that executes, never from a header. Over the bound it is refused at once with a
-        // typed overload reply instead of queueing an unbounded population of handlers.
+        // pump keeps reading (card b3e5b582). Classified from the decoded request, whose
+        // path the contract has already matched to its header. Over the bound it is refused
+        // at once with a typed overload reply instead of queueing an unbounded population.
         if parsed.request.path == STREAMED_GENERATE_PATH {
             if let Some(generations) = &self.generations {
                 let bound = (self.generation_bound)();
@@ -720,11 +537,11 @@ impl ConsumerAdapter for CommandRequestHandler {
                 // even if it abandoned the request before airc returned the correlation.
                 let key = parsed
                     .generation
-                    .map_or(parsed.correlation_id, |stamp| stamp.id);
+                    .map_or(parsed.correlation(), |stamp| stamp.id);
                 let valid_until_ms = parsed.generation.map(|stamp| stamp.valid_until_ms);
                 match generations.admit(
                     key,
-                    parsed.caller_peer_id,
+                    parsed.caller(),
                     bound,
                     valid_until_ms,
                     EpochMs::now().millis(),
@@ -734,9 +551,7 @@ impl ConsumerAdapter for CommandRequestHandler {
                         let answerer = self.detached();
                         let task = tokio::spawn(async move {
                             let _admission = admission;
-                            if let Err(e) = answerer.answer(parsed).await {
-                                warn!(error = %e, "served generation could not send its reply");
-                            }
+                            answerer.answer(parsed).await;
                         });
                         generations.attach(correlation, task.abort_handle());
                         continuum_base::probe!(
@@ -746,76 +561,40 @@ impl ConsumerAdapter for CommandRequestHandler {
                             bound = bound as u64,
                             "a served generation runs as its own task; the pump keeps reading"
                         );
-                        return Ok(());
+                        return;
                     }
                     Err(refusal) => {
                         continuum_base::probe!(
                             class = "airc.command.generation_refused",
-                            correlation = %parsed.correlation_id,
-                            caller = %parsed.caller_peer_id.0,
+                            correlation = %parsed.correlation(),
+                            caller = %parsed.caller().0,
                             reason = %refusal,
                             "a served generation was refused at admission and answered at once"
                         );
                         let response =
                             AircCommandResponse::refused(refusal.to_string(), refusal.wire());
-                        self.send_reply(&parsed, &response).await?;
-                        return Ok(());
+                        self.send_reply(&parsed, &response).await;
+                        return;
                     }
                 }
             }
         }
-        self.answer(parsed).await
+        self.answer(parsed).await;
     }
 }
 
 impl CommandRequestHandler {
-    /// A copy for one served generation's task: the same peer, executor and grants, and
-    /// no registry (only the pump's handler owns it).
+    /// A copy for one served generation's task: the same port, executor, grants and
+    /// tiers, and no registry (only the pump's handler owns it).
     fn detached(&self) -> Self {
         Self {
-            airc: Arc::clone(&self.airc),
+            port: Arc::clone(&self.port),
             executor: Arc::clone(&self.executor),
             grant_authorizer: self.grant_authorizer.clone(),
             generations: None,
             generation_bound: self.generation_bound,
             tiers: Arc::clone(&self.tiers),
         }
-    }
-
-    /// A frame the ingress contract refused: probed with the rule, the caller, the
-    /// command, the channel and the tier; a direct request here is answered with the rule
-    /// (never its params); a frame that was not ours to answer draws no reply.
-    async fn refuse(
-        &self,
-        event: &TranscriptEvent,
-        path: &str,
-        tier: &str,
-        refusal: IngressRefusal,
-    ) -> Result<(), AdapterError> {
-        continuum_base::probe!(
-            class = "airc.command.ingress_refused",
-            rule = refusal.rule(),
-            caller = %event.peer_id.0,
-            path = %path,
-            addressing = ?event.target,
-            channel = %event.room_id.as_uuid(),
-            tier = %tier,
-            me = %self.airc.peer_id().0,
-            "peer command frame refused by the ingress contract"
-        );
-        if !refusal.answered() {
-            return Ok(());
-        }
-        let (reply_to, correlation_id) = Self::reply_route(event)?;
-        let response = AircCommandResponse::error(refusal.reply_message(path));
-        self.reply(
-            event.room_id,
-            event.headers.get(HEADER_AIRC_CHANNEL_NAME).map(String::as_str),
-            reply_to,
-            correlation_id,
-            &response,
-        )
-        .await
     }
 
     /// Pin the generation admission bound (tests: the live lane count is process-global).
@@ -828,7 +607,7 @@ impl CommandRequestHandler {
     }
 
     /// Execute an accepted request and send its reply.
-    async fn answer(&self, parsed: ParsedEnvelope) -> Result<(), AdapterError> {
+    async fn answer(&self, parsed: AdmittedCommand) {
         let started = std::time::Instant::now();
         // WORK SIZE, or elapsed_ms is uninterpretable. Measured 2026-09-06: nine
         // successful cross-grid generations split cleanly bimodal — two at ~32s, six
@@ -885,9 +664,9 @@ impl CommandRequestHandler {
         continuum_base::probe!(
             class = "airc.command.completed",
             path = %parsed.request.path,
-            caller = %parsed.caller_peer_id.0,
-            me = %self.airc.peer_id().0,
-            correlation = %parsed.correlation_id,
+            caller = %parsed.caller().0,
+            me = %self.port.me().0,
+            correlation = %parsed.correlation(),
             outcome = %outcome,
             detail = %detail,
             params_bytes = params_bytes,
@@ -895,8 +674,7 @@ impl CommandRequestHandler {
             elapsed_ms = started.elapsed().as_millis() as u64,
             "peer command request answered"
         );
-        self.send_reply(&parsed, &response).await?;
-        Ok(())
+        self.send_reply(&parsed, &response).await;
     }
 }
 

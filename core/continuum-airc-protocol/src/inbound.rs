@@ -20,43 +20,34 @@
 //! now takes only a [`ConversationEvent`], and the only constructor is
 //! [`classify`], so a protocol frame cannot reach a mind by construction.
 //!
-//! The header markers that exist in airc today, and the ones this keys on:
-//! - `continuum.body_hint` ([`HEADER_CONTINUUM_BODY_HINT`]): stamped by every
-//!   continuum command and event-protocol sender (`AircTransport::build_headers`,
-//!   the event publisher, the command reply). Any value marks a protocol frame.
-//! - `continuum.command.path` ([`HEADER_COMMAND_PATH`]): the command a request
-//!   names, stamped beside the hint, so the ingress gate decides authority
-//!   before the payload is decoded.
-//! - `airc.correlation_id` ([`HEADER_AIRC_CORRELATION_ID`]): airc's command bus
-//!   (`Airc::request` / `reply_in`) pairs a request with its reply; a frame on
-//!   the bus is protocol even without a continuum hint.
-//! - The addressee (`target`) and the room are envelope fields, not payload.
-//!
-//! airc carries NO transport-level marker of its own for "this is a command
-//! request" and no channel kind beyond the addressee: a request rides a room
-//! with `MentionTarget::Peer`. A typed airc frame kind for command requests is
-//! the airc transport owner's contract to add; when it lands this classifier
-//! keys on it first.
+//! What marks a protocol frame, all of it outside the payload:
+//! - the transport kind: airc's typed `Command` / `CommandResult` frames (airc#1620).
+//!   Commands are received ONLY through the identity's addressed inbox
+//!   (`continuum_kernel::routing::addressed_inbox`); one that also surfaces on a room
+//!   stream is routed away here and handled by nothing on the room path;
+//! - `continuum.body_hint` ([`HEADER_CONTINUUM_BODY_HINT`]): the event protocol's frames
+//!   (subscribe / deliver / publish / ack);
+//! - `airc.correlation_id` ([`HEADER_AIRC_CORRELATION_ID`]): airc's request/reply
+//!   pairing, protocol even without a continuum hint.
 
 use std::sync::Arc;
 
-use airc_core::{MentionTarget, PeerId, RoomId, TranscriptEvent};
+use airc_core::{MentionTarget, PeerId, RoomId, TranscriptEvent, TranscriptKind};
 use airc_protocol::HEADER_AIRC_CORRELATION_ID;
 
-use crate::command::{
-    COMMAND_REQUEST_BODY_HINT, COMMAND_RESPONSE_BODY_HINT, HEADER_COMMAND_PATH,
-    HEADER_CONTINUUM_BODY_HINT,
-};
+use crate::command::HEADER_CONTINUUM_BODY_HINT;
 use crate::event::{
     EVENT_ACK_BODY_HINT, EVENT_DELIVER_BODY_HINT, EVENT_PUBLISH_BODY_HINT,
     EVENT_SUBSCRIBE_BODY_HINT, EVENT_UNSUBSCRIBE_BODY_HINT,
 };
 
-/// Which protocol a frame's headers declare.
+/// Which protocol a frame is, by its transport kind or headers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProtocolKind {
-    CommandRequest,
-    CommandResponse,
+    /// airc's typed command request (received only through the addressed inbox).
+    Command,
+    /// airc's typed command result.
+    CommandResult,
     EventSubscribe,
     EventDeliver,
     EventUnsubscribe,
@@ -64,14 +55,14 @@ pub enum ProtocolKind {
     EventAck,
     /// A `continuum.body_hint` this build does not name: still protocol, never perception.
     UnknownHint(String),
-    /// On airc's command bus (a correlation id) with no continuum hint.
+    /// On airc's request/reply bus (a correlation id) with no continuum hint.
     BusCorrelated,
 }
 
 /// Who the frame is addressed to, from the envelope's addressee.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Addressing {
-    /// One named peer: the only shape a peer command may arrive in.
+    /// One named peer.
     Direct(PeerId),
     /// Everyone in the room it was published to.
     RoomBroadcast,
@@ -89,8 +80,8 @@ impl Addressing {
     }
 }
 
-/// A peer command or event-protocol frame, routed by its headers. The payload is
-/// still opaque: [`Self::event`] hands it to the single consumer that decodes it.
+/// A protocol frame that surfaced on a room stream. Nothing on the room path handles
+/// it: it is named for the probe and routed away from perception.
 #[derive(Debug, Clone)]
 pub struct ProtocolEnvelope {
     event: Arc<TranscriptEvent>,
@@ -116,19 +107,6 @@ impl ProtocolEnvelope {
     pub fn channel(&self) -> RoomId {
         self.event.room_id
     }
-
-    /// The command a request names in its `continuum.command.path` header.
-    pub fn command_path(&self) -> Option<&str> {
-        self.event
-            .headers
-            .get(HEADER_COMMAND_PATH)
-            .map(String::as_str)
-    }
-
-    /// The whole event, for the one consumer the headers routed it to.
-    pub fn event(&self) -> &Arc<TranscriptEvent> {
-        &self.event
-    }
 }
 
 /// Something said or done in a room: the only thing a mind's perception takes.
@@ -141,16 +119,17 @@ impl ConversationEvent {
     }
 }
 
-/// One inbound airc event, classified once.
+/// One inbound room event, classified once.
 #[derive(Debug, Clone)]
 pub enum InboundEvent {
     Protocol(ProtocolEnvelope),
     Conversation(ConversationEvent),
 }
 
-/// Classify an inbound event from its headers and addressee. The payload is not read.
+/// Classify a room event from its transport kind, headers and addressee. The payload
+/// is not read.
 pub fn classify(event: Arc<TranscriptEvent>) -> InboundEvent {
-    match protocol_kind(&event.headers) {
+    match protocol_kind(event.kind, &event.headers) {
         Some(kind) => {
             let addressing = Addressing::of(&event.target);
             InboundEvent::Protocol(ProtocolEnvelope {
@@ -163,11 +142,14 @@ pub fn classify(event: Arc<TranscriptEvent>) -> InboundEvent {
     }
 }
 
-fn protocol_kind(headers: &airc_core::Headers) -> Option<ProtocolKind> {
+fn protocol_kind(transport: TranscriptKind, headers: &airc_core::Headers) -> Option<ProtocolKind> {
+    match transport {
+        TranscriptKind::Command => return Some(ProtocolKind::Command),
+        TranscriptKind::CommandResult => return Some(ProtocolKind::CommandResult),
+        _ => {}
+    }
     if let Some(hint) = headers.get(HEADER_CONTINUUM_BODY_HINT) {
         return Some(match hint.as_str() {
-            COMMAND_REQUEST_BODY_HINT => ProtocolKind::CommandRequest,
-            COMMAND_RESPONSE_BODY_HINT => ProtocolKind::CommandResponse,
             EVENT_SUBSCRIBE_BODY_HINT => ProtocolKind::EventSubscribe,
             EVENT_DELIVER_BODY_HINT => ProtocolKind::EventDeliver,
             EVENT_UNSUBSCRIBE_BODY_HINT => ProtocolKind::EventUnsubscribe,
@@ -184,9 +166,10 @@ fn protocol_kind(headers: &airc_core::Headers) -> Option<ProtocolKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use airc_core::{Body, ClientId, EventId, TranscriptKind};
+    use airc_core::{Body, ClientId, EventId};
 
     fn event(
+        kind: TranscriptKind,
         target: MentionTarget,
         headers: airc_core::Headers,
         body: Body,
@@ -196,7 +179,7 @@ mod tests {
             room_id: RoomId::new(),
             peer_id: PeerId::new(),
             client_id: ClientId::new(),
-            kind: TranscriptKind::Message,
+            kind,
             occurred_at_ms: 1,
             lamport: 1,
             target,
@@ -208,28 +191,20 @@ mod tests {
         })
     }
 
-    fn command_headers(path: &str) -> airc_core::Headers {
-        let mut headers = airc_core::Headers::new();
-        headers.insert(
-            HEADER_CONTINUUM_BODY_HINT.into(),
-            COMMAND_REQUEST_BODY_HINT.into(),
-        );
-        headers.insert(HEADER_COMMAND_PATH.into(), path.into());
-        headers
-    }
-
     // what this catches: the split keyed on the payload. The incident's exact payload
-    // (`"kind":"peer"` JSON) with no protocol headers is conversation; the same headers
-    // over an undecodable binary payload are a command request. The class follows the
-    // headers alone, so a payload can neither smuggle a command past the router nor be
-    // needed (decrypted, parsed) to route it.
+    // (`"kind":"peer"` JSON) on a plain room message is conversation (a line, executed by
+    // nothing); airc's typed Command frame over an undecodable binary payload is
+    // protocol, routed away from perception. The class follows the transport kind and
+    // headers alone, so a payload can neither smuggle a command nor be needed (decrypted,
+    // parsed) to route it.
     #[test]
-    fn the_class_follows_the_headers_never_the_payload() {
+    fn the_class_follows_the_transport_kind_and_headers_never_the_payload() {
         let peer_call = Body::Json(serde_json::json!({
             "kind": "peer", "path": "persona/placement/reserve", "params": {}
         }));
         assert!(matches!(
             classify(event(
+                TranscriptKind::Message,
                 MentionTarget::All,
                 airc_core::Headers::new(),
                 peer_call
@@ -239,22 +214,22 @@ mod tests {
 
         let me = PeerId::new();
         match classify(event(
+            TranscriptKind::Command,
             MentionTarget::Peer(me),
-            command_headers("ai/generate"),
+            airc_core::Headers::new(),
             Body::Binary(vec![0xde, 0xad]),
         )) {
             InboundEvent::Protocol(envelope) => {
-                assert_eq!(envelope.kind(), &ProtocolKind::CommandRequest);
+                assert_eq!(envelope.kind(), &ProtocolKind::Command);
                 assert_eq!(envelope.addressing(), Addressing::Direct(me));
-                assert_eq!(envelope.command_path(), Some("ai/generate"));
             }
-            other => panic!("a command-request header is protocol: {other:?}"),
+            other => panic!("airc's Command kind is protocol: {other:?}"),
         }
 
         let mut bus = airc_core::Headers::new();
         bus.insert(HEADER_AIRC_CORRELATION_ID.into(), "c".into());
         assert!(matches!(
-            classify(event(MentionTarget::All, bus, Body::text("x"))),
+            classify(event(TranscriptKind::Message, MentionTarget::All, bus, Body::text("x"))),
             InboundEvent::Protocol(ref e) if e.kind() == &ProtocolKind::BusCorrelated
                 && e.addressing() == Addressing::RoomBroadcast
         ));

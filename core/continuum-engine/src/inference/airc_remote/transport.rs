@@ -6,9 +6,9 @@
 //!   `Arc<airc_lib::Airc>` + a target `PeerId` and dispatches via
 //!   `Airc::request` / `await_reply`, framing the inner
 //!   `TextGenerationRequest` as an `AircCommandRequest{path="ai/generate",
-//!   kind=KIND_PEER}` per `continuum-airc-protocol`. The substrate's
-//!   `CommandRequestHandler::parse_envelope` on the peer side accepts
-//!   this wire shape unchanged.
+//!   kind=KIND_PEER}` per `continuum-airc-protocol`, sent as airc's typed
+//!   `Command` frame; the seat's addressed inbox receives it and its
+//!   ingress contract decides it.
 //! - `StubInferenceTransport` — closure-driven stub for unit tests.
 //! - `LocalAdapterTransport` — a "round-trip via local adapter"
 //!   variant that lets a single-process test prove the
@@ -21,13 +21,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use airc_core::{Body, MentionTarget, PeerId, TranscriptEvent};
-use airc_lib::Airc;
+use airc_core::{Body, MentionTarget, PeerId, TranscriptEvent, TranscriptKind};
+use airc_lib::{Airc, AddressedKind, VerifiedAddressed};
 use airc_protocol::HEADER_AIRC_CORRELATION_ID;
-use continuum_airc_protocol::{
-    AircCommandRequest, AircCommandResponse, COMMAND_RESPONSE_BODY_HINT,
-    HEADER_CONTINUUM_BODY_HINT, KIND_PEER,
-};
+use continuum_airc_protocol::{AircCommandRequest, AircCommandResponse, KIND_PEER};
 use uuid::Uuid;
 
 /// FLOOR on how long a remote INFERENCE request may take, end to end. This is
@@ -291,16 +288,35 @@ struct ReplyExpectation {
 }
 
 impl ReplyExpectation {
+    /// A reply recovered from the room's durable store: airc's typed `CommandResult`
+    /// frame, from the seat, to us, on the request's correlation.
     fn matches(&self, event: &TranscriptEvent) -> bool {
         event.peer_id == self.responder
             && event.room_id == self.room
+            && event.kind == TranscriptKind::CommandResult
             && event.target == MentionTarget::Peer(self.requester)
             && event.headers.get(HEADER_AIRC_CORRELATION_ID) == Some(&self.correlation)
-            && event
-                .headers
-                .get(HEADER_CONTINUUM_BODY_HINT)
-                .map(String::as_str)
-                == Some(COMMAND_RESPONSE_BODY_HINT)
+    }
+
+    /// The reply `await_reply` settled with: verified by airc, typed `CommandResult`,
+    /// from the seat we asked, to us.
+    fn matches_verified(&self, reply: &VerifiedAddressed) -> bool {
+        reply.from() == self.responder
+            && reply.to() == self.requester
+            && reply.kind() == AddressedKind::CommandResult
+            && reply.correlation().to_string() == self.correlation
+    }
+}
+
+/// Who answered and what: the one shape both settlement paths reduce to.
+struct Settled {
+    responder: PeerId,
+    body: Option<Body>,
+}
+
+impl Settled {
+    fn recovered(event: TranscriptEvent) -> Self {
+        Self { responder: event.peer_id, body: event.body }
     }
 }
 
@@ -480,9 +496,8 @@ impl AircInferenceTransport for AircLiveTransport {
         let body = Body::Json(body_value);
         // Reuse the substrate's canonical command-header stamper per
         // R2-N1 on round 1 review: one logical decision lives in one
-        // place. `AircTransport::build_headers` covers path + kind +
-        // body_hint identically; env is None on our envelopes so the
-        // env-header branch is a no-op.
+        // place. `AircTransport::build_headers` covers path + kind;
+        // env is None on our envelopes so the env-header branch is a no-op.
         let mut headers = AircTransport::build_headers(&envelope);
         // The requester's own id for this generation, on the wire BEFORE publication: the
         // seat keys the served work by it, so a cancel can name it even if this turn is
@@ -694,12 +709,16 @@ impl AircInferenceTransport for AircLiveTransport {
             );
         }
         let reply = match awaited {
-            Ok(reply) if expected.matches(&reply) => reply,
+            Ok(reply) if expected.matches_verified(&reply) => Settled {
+                responder: reply.from(),
+                body: reply.body().cloned(),
+            },
             // The generic bus can return the first correlated event. Never
             // accept an unrelated responder; recover the intended answer.
             Ok(_) => self
                 .recover_reply_from_store(&room, &expected, start, deadline)
                 .await
+                .map(Settled::recovered)
                 .ok_or_else(|| {
                     crate::inference::turn_bound::probe_tripped(
                         "remote_deadline",
@@ -733,7 +752,7 @@ impl AircInferenceTransport for AircLiveTransport {
                     .recover_reply_from_store(&room, &expected, start, deadline)
                     .await
                 {
-                    Some(reply) => reply,
+                    Some(reply) => Settled::recovered(reply),
                     None => {
                         crate::inference::turn_bound::probe_tripped(
                             "remote_deadline",
@@ -769,7 +788,7 @@ impl AircInferenceTransport for AircLiveTransport {
         // The seat answered: its work is done, there is nothing left to cancel.
         abandon.disarm();
 
-        let responding_peer = reply.peer_id.0.to_string();
+        let responding_peer = reply.responder.0.to_string();
         let reply_body = reply.body.ok_or_else(|| RemoteInferenceError::Transport {
             message: "remote replied with no body".to_string(),
         })?;

@@ -339,10 +339,11 @@ pub async fn publish_transcript_event(
     event: &Arc<airc_core::TranscriptEvent>,
     bus: &MessageBus,
 ) -> Result<(), String> {
-    // THE ONE INBOUND DECODE POINT: headers decide whether this is a peer command /
-    // protocol frame or conversation, before anything reads the payload. A protocol
-    // frame is the command pump's (it holds its own subscription and the ingress
-    // contract); it never reaches a mind, the chat projection or the bus from here.
+    // THE ONE INBOUND DECODE POINT for room events: the transport kind and headers
+    // decide protocol frame or conversation, before anything reads the payload. The
+    // room path has NO command handling: commands arrive only through the identity's
+    // addressed inbox (`routing::addressed_inbox`), and a protocol frame that surfaces
+    // here never reaches a mind, the chat projection or the bus.
     // 2026-10-30 00:28Z: an untrusted peer's `persona/placement/reserve` requests
     // published into #general were fed to two residents as room speech by this seam.
     let conversation = match continuum_airc_protocol::classify_inbound(Arc::clone(event)) {

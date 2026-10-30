@@ -1,22 +1,23 @@
-//! Publishes one served generation's tokens into the request's room under its stream
-//! id, as they are produced (moved out of `command_ingress.rs` unchanged).
+//! Streams one served generation's tokens to its requester under its stream id, as
+//! they are produced, through the library's stream bound to the request.
 
 use std::sync::Arc;
 
 use airc_core::Body;
-use airc_lib::Airc;
 use tracing::warn;
 use uuid::Uuid;
+
+use crate::routing::addressed_inbox::{AddressedFrame, AddressedPort};
 
 /// Tokens are coalesced and flushed at most this often — the same cadence the local
 /// persona turn uses into a room; one frame per token would be 35 frames/s on a 27B.
 const STREAM_FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
 
-/// Publishes one generation's chunks into the request's room under its stream id.
+/// Streams one generation's chunks to the request it answers, under its stream id.
 pub(super) struct StreamPublisher {
-    pub(super) airc: Arc<Airc>,
-    pub(super) room: airc_core::RoomId,
+    pub(super) port: Arc<dyn AddressedPort>,
+    pub(super) request: Arc<dyn AddressedFrame>,
     pub(super) stream_id: Uuid,
     /// When this seat RECEIVED the request. The first prefill frame or token published
     /// after it is the seat's own receipt-to-first-progress wait — the queue as the seat
@@ -33,17 +34,7 @@ impl StreamPublisher {
         if is_final {
             headers.insert(airc_lib::HEADER_STREAM_FINAL.into(), "true".to_string());
         }
-        match self
-            .airc
-            .publish_with_delivery(
-                airc_lib::PublishTarget::RoomByName(self.room.as_uuid().to_string()),
-                airc_protocol::FrameKind::Event,
-                Body::text(text),
-                headers,
-                airc_bus::DeliveryClass::StreamChunk,
-            )
-            .await
-        {
+        match self.port.stream(self.request.as_ref(), headers, Body::text(text)).await {
             Ok(_) => true,
             Err(e) => {
                 warn!(correlation = %self.stream_id, seq, error = %e, "stream chunk publish failed");

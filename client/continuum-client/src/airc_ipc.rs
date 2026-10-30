@@ -21,16 +21,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use airc_core::{Body, Headers, MentionTarget, PeerId, TranscriptEvent};
-use airc_lib::Airc;
-use airc_protocol::{HEADER_AIRC_CORRELATION_ID, HEADER_AIRC_REPLY_TO};
+use airc_core::{Body, Headers, MentionTarget, PeerId};
+use airc_lib::{AddressedKind, Airc, VerifiedAddressed};
 use continuum_airc_protocol::command::{
-    AircCommandRequest, AircCommandResponse, COMMAND_REQUEST_BODY_HINT, COMMAND_RESPONSE_BODY_HINT,
-    HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH, HEADER_COMMAND_STATUS,
-    HEADER_CONTINUUM_BODY_HINT, KIND_PEER,
+    AircCommandRequest, AircCommandResponse, HEADER_COMMAND_ENV, HEADER_COMMAND_KIND,
+    HEADER_COMMAND_PATH, HEADER_COMMAND_STATUS, KIND_PEER,
 };
 use continuum_airc_protocol::event as event_proto;
-use futures::StreamExt as _;
 use uuid::Uuid;
 
 use crate::error::ClientError;
@@ -108,10 +105,6 @@ impl AircIpcTransport {
         if let Some(env) = &request.env {
             headers.insert(HEADER_COMMAND_ENV.to_string(), env.clone());
         }
-        headers.insert(
-            HEADER_CONTINUUM_BODY_HINT.to_string(),
-            COMMAND_REQUEST_BODY_HINT.to_string(),
-        );
         headers
     }
 
@@ -179,7 +172,7 @@ impl Transport for AircIpcTransport {
             .await
             .map_err(|e| ClientError::Transport(format!("await_reply failed: {e}")))?;
 
-        Self::decode_reply(reply.body).map_err(|e| match e {
+        Self::decode_reply(reply.body().cloned()).map_err(|e| match e {
             ClientError::Refused { reason, outcome, .. } => ClientError::Refused {
                 command: command.to_string(),
                 reason,
@@ -226,7 +219,7 @@ impl Transport for AircIpcTransport {
             .await
             .map_err(|e| ClientError::Transport(format!("airc subscribe await_reply: {e}")))?;
 
-        let ack = event_proto::decode_subscribe_ack(reply.body).map_err(ClientError::Transport)?;
+        let ack = event_proto::decode_subscribe_ack(reply.body().cloned()).map_err(ClientError::Transport)?;
         let subscription_id = ack.subscription_id;
         let publisher = self.target;
 
@@ -336,7 +329,7 @@ impl Transport for AircIpcTransport {
         // Decode the ack to surface a malformed reply; the fan-out count is
         // informational (emit fires into the fan-out — the caller doesn't branch
         // on how many subscribers received it).
-        let _ack = event_proto::decode_publish_ack(reply.body).map_err(ClientError::Transport)?;
+        let _ack = event_proto::decode_publish_ack(reply.body().cloned()).map_err(ClientError::Transport)?;
         Ok(())
     }
 
@@ -393,51 +386,30 @@ impl Transport for AircIpcTransport {
 // dispatches to a handler the SDK PROVIDED, then replies the same
 // `AircCommandResponse` wire (zero drift — same protocol types as `request`).
 
-/// A decoded inbound command-request envelope, ready to dispatch + reply.
+/// A decoded inbound command, ready to dispatch + reply.
 struct InboundCommand {
     path: String,
     params: Value,
-    /// From `airc.reply_to` — where the response ships.
-    reply_to: PeerId,
-    /// From `airc.correlation_id` — pairs the reply with the caller's await.
-    correlation_id: Uuid,
 }
 
-/// Decode an inbound command-request `TranscriptEvent`. `None` (skip) if it's
-/// not a command request or is missing the reply addressing — never a panic.
-fn parse_inbound_command(event: &TranscriptEvent) -> Option<InboundCommand> {
-    let reply_to = PeerId(
-        event
-            .headers
-            .get(HEADER_AIRC_REPLY_TO)?
-            .parse::<Uuid>()
-            .ok()?,
-    );
-    let correlation_id = event
-        .headers
-        .get(HEADER_AIRC_CORRELATION_ID)?
-        .parse::<Uuid>()
-        .ok()?;
-    let Body::Json(value) = event.body.as_ref()? else {
+/// Decode an addressed `Command` frame airc verified. `None` (skip) if it is not a
+/// command or its payload is not a command request: never a panic.
+fn parse_inbound_command(frame: &VerifiedAddressed) -> Option<InboundCommand> {
+    if frame.kind() != AddressedKind::Command {
+        return None;
+    }
+    let Body::Json(value) = frame.body()? else {
         return None;
     };
     let request: AircCommandRequest = serde_json::from_value(value.clone()).ok()?;
     Some(InboundCommand {
         path: request.path,
         params: request.params,
-        reply_to,
-        correlation_id,
     })
 }
 
-/// Ship an `AircCommandResponse` back to the caller, stamping the same status +
-/// body-hint headers the substrate's command_handler uses.
-async fn send_serve_reply(
-    airc: &Airc,
-    reply_to: PeerId,
-    correlation_id: Uuid,
-    response: &AircCommandResponse,
-) {
+/// Ship an `AircCommandResponse` back, bound to the request it answers.
+async fn send_serve_reply(airc: &Airc, request: &VerifiedAddressed, response: &AircCommandResponse) {
     let body = match serde_json::to_value(response) {
         Ok(v) => Body::Json(v),
         Err(e) => {
@@ -450,44 +422,27 @@ async fn send_serve_reply(
         HEADER_COMMAND_STATUS.to_string(),
         response.status_header_value().to_string(),
     );
-    headers.insert(
-        HEADER_CONTINUUM_BODY_HINT.to_string(),
-        COMMAND_RESPONSE_BODY_HINT.to_string(),
-    );
-    if let Err(e) = airc.reply(reply_to, correlation_id, headers, body).await {
-        eprintln!("continuum-client serve reply: airc.reply failed: {e}");
+    if let Err(e) = airc.reply_addressed(request, headers, body).await {
+        eprintln!("continuum-client serve reply: airc reply failed: {e}");
     }
 }
 
-/// The inbound serve loop: subscribe to the broadcast stream, and for each
-/// command-request envelope whose path this client provides, dispatch to the
-/// handler and reply. Dispatch is spawned per request so a slow handler (a
-/// screenshot, a sensor read) doesn't stall the loop. Exits when the airc
-/// stream ends (daemon disconnect) — per no-fallbacks, a lost subscribe ends
-/// the loop loudly rather than silently degrading.
+/// The inbound serve loop: read this identity's addressed inbox (commands airc
+/// verified and addressed here; room traffic never reaches it), and for each
+/// command whose path this client provides, dispatch to the handler and reply.
+/// Dispatch is spawned per request so a slow handler (a screenshot, a sensor read)
+/// doesn't stall the loop. Exits when the inbox closes (daemon disconnect): per
+/// no-fallbacks, a lost inbox ends the loop loudly rather than silently degrading.
 async fn serve_loop(airc: Arc<Airc>, serve: Arc<ServeState>) {
-    let mut stream = match airc.subscribe().await {
-        Ok(s) => s,
+    let mut inbox = match airc.addressed_inbox().await {
+        Ok(inbox) => inbox,
         Err(e) => {
-            eprintln!("continuum-client serve loop: airc subscribe failed: {e}");
+            eprintln!("continuum-client serve loop: airc addressed inbox failed: {e}");
             return;
         }
     };
-    while let Some(item) = stream.next().await {
-        let event = match item {
-            Ok(e) => e,
-            Err(_) => continue, // stream lag — skip
-        };
-        // Only command-request envelopes; everything else (events, chat) skipped.
-        if event
-            .headers
-            .get(HEADER_CONTINUUM_BODY_HINT)
-            .map(String::as_str)
-            != Some(COMMAND_REQUEST_BODY_HINT)
-        {
-            continue;
-        }
-        let Some(parsed) = parse_inbound_command(&event) else {
+    while let Some(request) = inbox.next().await {
+        let Some(parsed) = parse_inbound_command(&request) else {
             continue;
         };
         // Only answer commands THIS client provides; others are for someone else.
@@ -506,9 +461,10 @@ async fn serve_loop(airc: Arc<Airc>, serve: Arc<ServeState>) {
                 Ok(value) => AircCommandResponse::ok(value),
                 Err(e) => AircCommandResponse::error(e.to_string()),
             };
-            send_serve_reply(&airc, parsed.reply_to, parsed.correlation_id, &response).await;
+            send_serve_reply(&airc, &request, &response).await;
         });
     }
+    eprintln!("continuum-client serve loop: addressed inbox closed");
 }
 
 #[cfg(test)]
@@ -516,7 +472,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_headers_includes_path_kind_and_hint() {
+    fn build_headers_includes_path_and_kind() {
         let req = AircCommandRequest::new(
             "ai/inference/generate".to_string(),
             "peer".to_string(),
@@ -531,10 +487,6 @@ mod tests {
         assert_eq!(
             headers.get(HEADER_COMMAND_KIND).map(|s| s.as_str()),
             Some("peer")
-        );
-        assert_eq!(
-            headers.get(HEADER_CONTINUUM_BODY_HINT).map(|s| s.as_str()),
-            Some(COMMAND_REQUEST_BODY_HINT)
         );
         assert!(
             !headers.contains_key(HEADER_COMMAND_ENV),

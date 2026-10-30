@@ -357,7 +357,7 @@ async fn malformed_continuum_body_is_ignored() {
 // what this catches: the 2026-10-30 incident. An untrusted peer published
 // `persona/placement/reserve` requests (a resident's whole prompt in params) into
 // #general, and this seam fed them to two residents as room speech
-// (`mind.feed.event from=e9093c03 residents=2`). A frame whose HEADERS say peer
+// (`mind.feed.event from=e9093c03 residents=2`). A frame whose transport kind says
 // command is routed away before perception; a plain line in the same room, to the
 // same resident, still wakes her.
 #[tokio::test]
@@ -385,23 +385,17 @@ async fn a_peer_command_in_a_room_never_reaches_a_mind_and_room_speech_still_doe
     );
     let bus = MessageBus::new();
 
-    let mut headers = airc_core::Headers::new();
-    headers.insert(
-        continuum_airc_protocol::HEADER_CONTINUUM_BODY_HINT.to_string(),
-        continuum_airc_protocol::COMMAND_REQUEST_BODY_HINT.to_string(),
-    );
-    headers.insert(
-        continuum_airc_protocol::HEADER_COMMAND_PATH.to_string(),
-        "persona/placement/reserve".to_string(),
-    );
+    // airc's typed Command frame (airc#1620), as if it surfaced on the room stream:
+    // the room path has no command handling, and perception never takes it.
     let mut command = transcript_event(
         Some(Body::Json(json!({
             "kind": "peer",
             "path": "persona/placement/reserve",
             "params": { "prompt": "@Aiko a resident's whole prompt" }
         }))),
-        headers,
+        airc_core::Headers::new(),
     );
+    command.kind = TranscriptKind::Command;
     command.room_id = RoomId::from_uuid(ROOM);
     command.target = MentionTarget::Peer(PeerId::from_uuid(persona));
     publish_transcript_event(&Arc::new(command), &bus)

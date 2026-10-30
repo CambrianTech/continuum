@@ -135,20 +135,14 @@ fn reply_identity_room_address_and_framing_are_all_required() {
         room_id: expected.room,
         peer_id: expected.responder,
         client_id: airc_core::ClientId::new(),
-        kind: airc_core::TranscriptKind::Message,
+        kind: airc_core::TranscriptKind::CommandResult,
         occurred_at_ms: 0,
         lamport: 0,
         target: MentionTarget::Peer(expected.requester),
-        headers: airc_core::Headers::from([
-            (
-                HEADER_AIRC_CORRELATION_ID.to_string(),
-                expected.correlation.clone(),
-            ),
-            (
-                HEADER_CONTINUUM_BODY_HINT.to_string(),
-                COMMAND_RESPONSE_BODY_HINT.to_string(),
-            ),
-        ]),
+        headers: airc_core::Headers::from([(
+            HEADER_AIRC_CORRELATION_ID.to_string(),
+            expected.correlation.clone(),
+        )]),
         // No body required to reject an unrelated event: no payload decode.
         body: None,
         attachment: None,
@@ -171,7 +165,8 @@ fn reply_identity_room_address_and_framing_are_all_required() {
         HEADER_AIRC_CORRELATION_ID.to_string(),
         expected.correlation.clone(),
     );
-    event.headers.remove(HEADER_CONTINUUM_BODY_HINT);
+    // A conversational message carrying the same correlation is not a command result.
+    event.kind = airc_core::TranscriptKind::Message;
     assert!(!expected.matches(&event));
 }
 

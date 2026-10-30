@@ -358,7 +358,7 @@ async fn send_reservation_ask(
         .await_reply(pending)
         .await
         .map_err(|e| format!("reserve ask to {peer} unanswered within {}s: {e}", RESERVE_DEADLINE.as_secs()))?;
-    let value = match reply.body {
+    let value = match reply.body().cloned() {
         Some(Body::Json(v)) => v,
         Some(Body::Binary(_)) => return Err("seat replied with binary; expected json".to_string()),
         None => return Err("seat replied with no body".to_string()),

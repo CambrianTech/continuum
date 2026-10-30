@@ -23,6 +23,7 @@
 //! `probe!`/`time!`/`stack!` macros, and the env registry +
 //! `Context::environment()` accessor.
 
+pub mod addressed_inbox;
 pub mod airc_command_protocol;
 pub mod airc_event_adapters;
 pub mod airc_event_protocol;
@@ -54,8 +55,7 @@ pub mod uri_layer;
 pub mod verdict;
 
 pub use airc_command_protocol::{
-    AircCommandRequest, AircCommandResponse, COMMAND_REQUEST_BODY_HINT, COMMAND_RESPONSE_BODY_HINT,
-    HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH, HEADER_COMMAND_STATUS,
+    AircCommandRequest, AircCommandResponse, HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH, HEADER_COMMAND_STATUS,
     HEADER_CONTINUUM_BODY_HINT, STREAM_KIND_PREFILL,
 };
 pub use airc_event_adapters::{
