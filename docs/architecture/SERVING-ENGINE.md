@@ -124,8 +124,19 @@ path calls `destroy()` then `load_model()` (server-context.cpp:978-993), which f
 - `server-slot-page.{h,cpp}`: the one state mover. `SlotPage page_out(slot)` (target, draft and checkpoints via
   `llama_state_seq_get_data`) and `page_in(slot, const SlotPage &)`. The existing `/slots?action=save|restore`
   become callers of it (disk is a `SlotPage` written to a file), so there is one copy of the mover, not two.
-- `rebuild_context(model, cparams)`: the one place a context is created. `load_model` and `reconfigure` both
-  call it; `common_init_from_params`' context half moves behind it.
+- Weights and contexts are separate lifetimes, today fused in three places: `common_init_result` owns the target
+  model and context together (`common.cpp:1404`); `common_speculative_init_result` both loads the draft model and
+  creates the draft/MTP context (`speculative.cpp`); `load_model` builds weights, contexts, slots and batch in one
+  pass (server-context.cpp:1030-1300). The split: `load_weights()` (target model, draft model, mmproj: these
+  survive) and `build_contexts(Geometry)` (target and draft contexts, speculative state, slots, batch: these are
+  rebuilt). `load_model` = `load_weights` + `build_contexts`; `destroy` = `destroy_contexts` + `free_weights`;
+  `reconfigure` = page out, `destroy_contexts`, `build_contexts(target)`, page in. The two common-side owners
+  split the same way, so the context is created in exactly one function per kind.
+- The slot page reuses what exists: `server_prompt_cache_state` (prompt tokens with their host-memory
+  checkpoints, `{main, drft}` state bytes, adapter set) is the page. Its capture (`server_slot::prompt_save`,
+  server-context.cpp:276-300) and restore (`server_prompt_cache::load`, server-task.cpp:1895-1930) become
+  `page_out` and `page_in` over an exact slot, and the prompt cache calls them. Checkpoints are host memory
+  already, so they survive a rebuild untouched.
 - The hook: `server_context` runs a pending reconfigure at the safe point between steps (no slot mid-decode;
   new work waits in the queue, nothing is cancelled).
 
