@@ -10,7 +10,7 @@ async fn forgotten_end_is_committed_before_receipt_and_restored_with_wake(
     let owner = Uuid::new_v4();
     let task = Uuid::new_v4();
     registry.register_from_cfg(cfg_for(owner))?;
-    let receipt = registry.consume_task_end(owner, task, TaskEnd::Stopped)?;
+    let receipt = registry.consume_task_ends(owner, vec![(task, TaskEnd::Stopped)])?;
     assert_eq!(receipt.owner(), owner);
     assert_eq!(receipt.consumed_tasks(), &[task]);
     let old_incarnation = receipt.incarnation();
@@ -24,7 +24,7 @@ async fn forgotten_end_is_committed_before_receipt_and_restored_with_wake(
     assert_ne!(memory.incarnation(), old_incarnation);
     assert_eq!(memory.pending_task_wakes(), vec![task]);
     assert!(memory.admit_task_wake(task));
-    let replay = registry.consume_task_end(owner, task, TaskEnd::Stopped)?;
+    let replay = registry.consume_task_ends(owner, vec![(task, TaskEnd::Stopped)])?;
     assert_eq!(replay.incarnation(), memory.incarnation());
     let next = WorkingMemory::new(8);
     next.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
@@ -42,14 +42,14 @@ async fn absent_conflicting_and_shutdown_consumption_are_explicit_refusals(
     let owner = Uuid::new_v4();
     let task = Uuid::new_v4();
     assert!(
-        matches!(registry.consume_task_end(owner, task, TaskEnd::Lost), Err(TaskConsumptionError::Absent(id)) if id == owner)
+        matches!(registry.consume_task_ends(owner, vec![(task, TaskEnd::Lost)]), Err(TaskConsumptionError::Absent(id)) if id == owner)
     );
     registry.register_from_cfg(cfg_for(owner))?;
-    registry.consume_task_end(owner, task, TaskEnd::Lost)?;
+    registry.consume_task_ends(owner, vec![(task, TaskEnd::Lost)])?;
     let path = volatile_path(owner)?;
     let before = std::fs::read(&path)?;
     assert!(matches!(
-        registry.consume_task_end(owner, task, TaskEnd::Stopped),
+        registry.consume_task_ends(owner, vec![(task, TaskEnd::Stopped)]),
         Err(TaskConsumptionError::Receipt(_))
     ));
     assert_eq!(std::fs::read(&path)?, before);
@@ -58,7 +58,7 @@ async fn absent_conflicting_and_shutdown_consumption_are_explicit_refusals(
     }
     let before = std::fs::read(&path)?;
     assert!(matches!(
-        registry.consume_task_end(owner, Uuid::new_v4(), TaskEnd::Lost),
+        registry.consume_task_ends(owner, vec![(Uuid::new_v4(), TaskEnd::Lost)]),
         Err(TaskConsumptionError::Stopped)
     ));
     assert_eq!(std::fs::read(&path)?, before);
@@ -84,12 +84,20 @@ async fn failed_checkpoint_returns_no_receipt_and_replay_commits_staged_end(
     let obstruction = path.with_extension("json.tmp");
     std::fs::create_dir(&obstruction)?;
     assert!(matches!(
-        registry.consume_task_end(owner, task, TaskEnd::Lost),
+        registry.consume_task_ends(owner, vec![(task, TaskEnd::Lost)]),
         Err(TaskConsumptionError::Checkpoint(_))
     ));
     assert_eq!(std::fs::read(&path)?, before);
+    let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
+    assert!(memory.pending_task_wakes().is_empty());
+    assert!(!memory.admit_task_wake(task));
     std::fs::remove_dir(&obstruction)?;
-    let receipt = registry.consume_task_end(owner, task, TaskEnd::Lost)?;
+    // The ordinary checkpoint owner also publishes a staged end after IO recovers.
+    for (_, result) in registry.flush_volatile_all() {
+        result?;
+    }
+    assert_eq!(memory.pending_task_wakes(), vec![task]);
+    let receipt = registry.consume_task_ends(owner, vec![(task, TaskEnd::Lost)])?;
     assert_eq!(receipt.consumed_tasks(), &[task]);
     let restored = WorkingMemory::new(8);
     restored.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);

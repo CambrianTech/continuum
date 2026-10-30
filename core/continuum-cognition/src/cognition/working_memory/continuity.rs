@@ -262,7 +262,11 @@ impl WorkingMemory {
     }
 
     pub fn restore(&self, mut snap: VolatileSnapshot) {
-        *self.task_results.lock() = snap.task_results.clone();
+        {
+            let mut results = snap.task_results.clone();
+            results.publish_restored();
+            *self.task_results.lock() = results;
+        }
         // Read before any field moves out of the snapshot below.
         let records = snap.action_records();
         // A restored mind keeps only the newest concern evidence its existing

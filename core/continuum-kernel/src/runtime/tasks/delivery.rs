@@ -7,11 +7,12 @@ use uuid::Uuid;
 /// Implemented by the owner of the recipient's durable state, never by a transient
 /// workspace or a notification channel. Success means the exact terminal result and
 /// its outstanding wake obligation are durable. Replays must deduplicate by task ID.
+/// Consume the owner page in one commit; per-result checkpoints amplify storage work.
 #[async_trait::async_trait]
 pub trait TaskOwnerSink: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    async fn consume(&self, owner: Uuid, task: Uuid, end: &TaskEnd) -> Result<(), Self::Error>;
+    async fn consume(&self, owner: Uuid, ends: &[(Uuid, TaskEnd)]) -> Result<(), Self::Error>;
 }
 
 /// Failure retains its boundary: a sink refusal cannot masquerade as an ACK failure,
@@ -19,7 +20,7 @@ pub trait TaskOwnerSink: Send + Sync {
 #[derive(Debug)]
 pub enum DeliveryError<E> {
     Read(String),
-    Consume { task: Uuid, source: E },
+    Consume { owner: Uuid, source: E },
     Acknowledge { task: Uuid, message: String },
 }
 
@@ -27,7 +28,9 @@ impl<E: std::fmt::Display> std::fmt::Display for DeliveryError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Read(message) => write!(f, "task replay read failed: {message}"),
-            Self::Consume { task, source } => write!(f, "task {task} consumption failed: {source}"),
+            Self::Consume { owner, source } => {
+                write!(f, "owner {owner} consumption failed: {source}")
+            }
             Self::Acknowledge { task, message } => {
                 write!(f, "task {task} acknowledgement failed: {message}")
             }
@@ -66,11 +69,13 @@ impl TaskLedger {
             .pending_page(owner, after, limit.get())
             .await
             .map_err(DeliveryError::Read)?;
-        let mut acknowledged = 0;
-        for (task, end) in page.ends {
-            sink.consume(owner, task, &end)
+        if !page.ends.is_empty() {
+            sink.consume(owner, &page.ends)
                 .await
-                .map_err(|source| DeliveryError::Consume { task, source })?;
+                .map_err(|source| DeliveryError::Consume { owner, source })?;
+        }
+        let mut acknowledged = 0;
+        for (task, _) in page.ends {
             self.acknowledge(task, owner)
                 .await
                 .map_err(|message| DeliveryError::Acknowledge { task, message })?;

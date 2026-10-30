@@ -112,6 +112,7 @@ pub(super) fn save_volatile(
     drop(file);
     std::fs::rename(&tmp, &path)?;
     checkpoint_adoption::sync_parent(&path)?;
+    wm.publish_task_checkpoint(&receipt.consumed_tasks);
     Ok(receipt)
 }
 

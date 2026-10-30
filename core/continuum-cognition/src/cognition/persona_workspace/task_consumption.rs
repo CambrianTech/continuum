@@ -20,11 +20,10 @@ impl PersonaWorkspaceRegistry {
     /// obligation. A replay also checkpoints: a prior insertion may have failed IO.
     /// Registration/replacement is excluded until the snapshot is committed; the
     /// next incarnation restores it through the existing registration path.
-    pub fn consume_task_end(
+    pub fn consume_task_ends(
         &self,
         owner: Uuid,
-        task: Uuid,
-        end: TaskEnd,
+        ends: Vec<(Uuid, TaskEnd)>,
     ) -> Result<VolatileReceipt, TaskConsumptionError> {
         let stopped = self.checkpoint_stopped.lock();
         if *stopped {
@@ -37,7 +36,7 @@ impl PersonaWorkspaceRegistry {
             .get(&owner)
             .map(|resident| Arc::clone(&resident.working_memory))
             .ok_or(TaskConsumptionError::Absent(owner))?;
-        memory.stage_task_end(task, end)?;
+        memory.stage_task_ends(ends)?;
         Ok(save_volatile(owner, SaveReason::Periodic, None, &memory)?)
     }
 }
@@ -64,9 +63,9 @@ pub enum TaskSinkError {
 impl continuum_kernel::runtime::tasks::TaskOwnerSink for ResidentTaskSink {
     type Error = TaskSinkError;
 
-    async fn consume(&self, owner: Uuid, task: Uuid, end: &TaskEnd) -> Result<(), Self::Error> {
+    async fn consume(&self, owner: Uuid, ends: &[(Uuid, TaskEnd)]) -> Result<(), Self::Error> {
         let registry = Arc::clone(&self.0);
-        let end = end.clone();
+        let ends = ends.to_vec();
         // Carry the existing test filesystem scope onto the blocking worker.
         #[cfg(test)]
         let test_home = crate::paths::NativeHomeOverride::current();
@@ -75,7 +74,7 @@ impl continuum_kernel::runtime::tasks::TaskOwnerSink for ResidentTaskSink {
             let _native = test_home
                 .as_deref()
                 .map(crate::paths::NativeHomeOverride::install);
-            registry.consume_task_end(owner, task, end)
+            registry.consume_task_ends(owner, ends)
         })
         .await??;
         Ok(())

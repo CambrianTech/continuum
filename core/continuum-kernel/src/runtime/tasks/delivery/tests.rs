@@ -2,13 +2,14 @@
 #![cfg(test)]
 use super::*;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 
 struct Sink {
     ledger: Arc<TaskLedger>,
     refuse: AtomicBool,
+    commits: AtomicUsize,
     seen: parking_lot::Mutex<Vec<(Uuid, Uuid, TaskEnd)>>,
 }
 
@@ -16,17 +17,22 @@ struct Sink {
 impl TaskOwnerSink for Sink {
     type Error = std::io::Error;
 
-    async fn consume(&self, owner: Uuid, task: Uuid, end: &TaskEnd) -> Result<(), Self::Error> {
-        let pending = self
-            .ledger
-            .pending(task, owner)
-            .await
-            .map_err(std::io::Error::other)?;
-        assert_eq!(pending.as_ref(), Some(end), "consumption must precede ACK");
+    async fn consume(&self, owner: Uuid, ends: &[(Uuid, TaskEnd)]) -> Result<(), Self::Error> {
+        for (task, end) in ends {
+            let pending = self
+                .ledger
+                .pending(*task, owner)
+                .await
+                .map_err(std::io::Error::other)?;
+            assert_eq!(pending.as_ref(), Some(end), "consumption must precede ACK");
+        }
         if self.refuse.load(Ordering::SeqCst) {
             return Err(std::io::Error::other("injected persistence refusal"));
         }
-        self.seen.lock().push((owner, task, end.clone()));
+        self.commits.fetch_add(1, Ordering::SeqCst);
+        self.seen
+            .lock()
+            .extend(ends.iter().map(|(task, end)| (owner, *task, end.clone())));
         Ok(())
     }
 }
@@ -43,10 +49,11 @@ async fn refused_consumption_remains_pending_and_replay_needs_no_registered_hand
         ledger: ledger.clone(),
         refuse: AtomicBool::new(true),
         seen: Default::default(),
+        commits: AtomicUsize::new(0),
     };
     let limit = NonZeroUsize::new(32).expect("test: nonzero page");
     assert!(
-        matches!(ledger.deliver_page(owner, None, limit, &sink).await, Err(DeliveryError::Consume { task: failed, .. }) if failed == task)
+        matches!(ledger.deliver_page(owner, None, limit, &sink).await, Err(DeliveryError::Consume { owner: failed, .. }) if failed == owner)
     );
     assert_eq!(ledger.pending(task, owner).await?, Some(TaskEnd::Stopped));
     assert!(sink.seen.lock().is_empty());
@@ -87,6 +94,7 @@ async fn page_delivery_keeps_owner_isolation_and_crosses_empty_pages(
         ledger: ledger.clone(),
         refuse: AtomicBool::new(false),
         seen: Default::default(),
+        commits: AtomicUsize::new(0),
     };
     let mut after = None;
     let mut exhausted = false;
@@ -113,5 +121,37 @@ async fn page_delivery_keeps_owner_isolation_and_crosses_empty_pages(
         ledger.pending(theirs, foreign).await?,
         Some(TaskEnd::Stopped)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn one_owner_page_is_consumed_once_before_its_acknowledgements(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+    let ledger = Arc::new(TaskLedger::new(adapter).await?);
+    let owner = Uuid::new_v4();
+    let first = ledger.accept(owner, "first".into()).await?;
+    let second = ledger.accept(owner, "second".into()).await?;
+    ledger.finish(first, owner, TaskEnd::Stopped).await?;
+    ledger.finish(second, owner, TaskEnd::Lost).await?;
+    let sink = Sink {
+        ledger: ledger.clone(),
+        refuse: AtomicBool::new(false),
+        commits: AtomicUsize::new(0),
+        seen: Default::default(),
+    };
+    let page = ledger
+        .deliver_page(
+            owner,
+            None,
+            NonZeroUsize::new(32).ok_or("invalid test page")?,
+            &sink,
+        )
+        .await?;
+    assert_eq!(page.acknowledged, 2);
+    assert_eq!(sink.commits.load(Ordering::SeqCst), 1);
+    assert_eq!(sink.seen.lock().len(), 2);
+    assert_eq!(ledger.pending(first, owner).await?, None);
+    assert_eq!(ledger.pending(second, owner).await?, None);
     Ok(())
 }
