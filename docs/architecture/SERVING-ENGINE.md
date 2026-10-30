@@ -137,8 +137,12 @@ path calls `destroy()` then `load_model()` (server-context.cpp:978-993), which f
   server-context.cpp:276-300) and restore (`server_prompt_cache::load`, server-task.cpp:1895-1930) become
   `page_out` and `page_in` over an exact slot, and the prompt cache calls them. Checkpoints are host memory
   already, so they survive a rebuild untouched.
-- The hook: `server_context` runs a pending reconfigure at the safe point between steps (no slot mid-decode;
-  new work waits in the queue, nothing is cancelled).
+- The hook: a `SERVER_TASK_TYPE_RECONFIGURE` handled in the task phase, the safe point the fork already argues for
+  `SLOT_SAVE` (server-context.cpp:2685): no `llama_decode` in flight, every sequence's KV at a consistent
+  inter-batch boundary. Mid-turn slots are paged out and in with their host-side sampling state, so the turn
+  continues; drafting restarts on the rebuilt speculative object. New work waits in the queue; nothing is
+  cancelled. Slot ids stay stable: a smaller `n_seq` removes the highest ids, and a busy slot among them is
+  refused by name (the core asks again when that turn ends).
 
 **Contract.**
 1. The model and its mmap are never freed; only contexts are (sequence in section 3, "a relaunch is a pause").
