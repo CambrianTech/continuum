@@ -214,7 +214,7 @@ and the claims below it re-clear against the new price.
 
 | Loop | Runs when | Measures | Decides | Stays stable by |
 |---|---|---|---|---|
-| L1 Token | while she generates | tokens written; pool free | her output keeps growing from the pool; when the pool is tight, it asks colder state to page out, or she finishes | written tokens are the only cost, so the ceiling is the pool, not a guess |
+| L1 Token | while she generates | tokens written; pool free; the lane time she holds and who waits on it | her output keeps growing while its marginal value exceeds the price of the space and the lane time it takes; when the pool is tight, it asks colder state to page out, or she finishes | the ceiling is the pool and the lane price, both measured, never a guess |
 | L2 Act | at each prompt build | her last acts' faults, cuts, prompt cost, outcome | one allocation over her claims: view, tools, grounding, think, answer floor | grants change only between acts |
 | L3 Epoch | when her appends reach her grant | her turnover cost (re-prefill at her prefill rate) against her miss cost (her fault rate × a re-read act's seconds) | the size of her next start | the start is fixed for its epoch (append-only within it) |
 | L4 Residency | when any mind's temperature or the pool changes | each mind's temperature, page-in cost, when her pending task completes (task handles say when she wakes) | which minds' state stays on device, in RAM, on disk; prefetch before a wake | a page moves only when expected saving exceeds measured page cost |
@@ -386,8 +386,13 @@ waiting on; one is idle; and the person starts a game partway through.
 `max_tokens` and accepts a cut on a write larger than any she has made; S1's "no write cut while the pool had
 room" contradicts it. On the M5 the cost was not one cut but three identical ones (Aris, 2026-10-30, 963
 tokens inside her thinking, because the fixed 1,024-token think budget exceeded the grant). Two steps reach L1:
-1. Within today's fixed slot: her output may use all the room her prompt leaves in her slot. Generated tokens
-   are the only cost, and the slot is hers already, so no other mind pays.
+1. Within today's fixed slot: her output is bounded by space (the room her prompt leaves in her slot) and by
+   time (the price of the lane time she holds, L5's tier price). Decode seconds are a cost even inside her
+   own slot: they hold a lane other minds wait on, and with four slots on one engine, every concurrent decode
+   also slows the others' (the decode knee). Kimi's 100,704-token turn ran 8 to 10 minutes inside her own
+   slot. She keeps writing while her marginal value exceeds that price; it falls to zero when nobody waits, so
+   a lone mind is bounded only by her slot (Cormac on #5607). Until L5 publishes a lane price, step 1 is
+   space-bounded only, and the lane time each generation holds is a measured signal, not yet a price.
 2. Beyond her slot: the engine must hold one pool (unified state) and extend a running generation's grant at
    a step boundary, a verb that does not exist yet (SERVING-ENGINE S1 to S3; owner Fable, engine).
 
