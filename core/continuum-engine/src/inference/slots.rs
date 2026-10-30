@@ -38,6 +38,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::paging::pool::{PagedResourcePool, PinHandle, PoolConfig};
 
+mod state_sampler;
+#[cfg(test)]
+use state_sampler::StateSampler;
 mod citizen_slots;
 pub use citizen_slots::*;
 mod page_key;
