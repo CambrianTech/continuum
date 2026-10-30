@@ -66,7 +66,7 @@ async fn live_window_reductions_bound_actual_requests_and_persist() {
             request.tools.as_ref().expect("native tools retained"),
         );
         assert_eq!(schemas, faculty.prompt_view(&ws).tools.tokens);
-        assert_eq!(request.max_tokens, Some(expected_view.completion_reserve));
+        assert_eq!(request.max_tokens, Some(expected_view.output_window));
         let cost = LlmDeliberationFaculty::framing_cost(
             request.system_prompt.as_deref().expect("system framing"),
         ) + LlmDeliberationFaculty::messages_cost(&request.messages)
@@ -149,7 +149,7 @@ async fn live_window_observation_cannot_overwrite_a_newer_binding() {
             assert_eq!(seen[0].model.as_deref(), Some("original-model"));
             assert_eq!(
                 seen[0].max_tokens,
-                Some(faculty.prompt_view_within(&ws, 16_384).completion_reserve)
+                Some(faculty.prompt_view_within(&ws, 16_384).output_window)
             );
         }
         let verdict = faculty.contribute(&ws).await.expect("next verdict");
@@ -165,7 +165,7 @@ async fn live_window_observation_cannot_overwrite_a_newer_binding() {
             Some(
                 faculty
                     .prompt_view_within(&ws, next_window)
-                    .completion_reserve
+                    .output_window
             )
         );
     }

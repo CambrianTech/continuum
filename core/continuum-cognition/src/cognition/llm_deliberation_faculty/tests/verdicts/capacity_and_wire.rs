@@ -178,8 +178,8 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             .contains("Held activity context"));
         assert_eq!(
             request.max_tokens,
-            Some(view.completion_reserve),
-            "the wire carries the plan's grant verbatim"
+            Some(view.output_window),
+            "the wire carries the window the prompt leaves, verbatim"
         );
         let schema_tokens =
             crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap());
