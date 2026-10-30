@@ -51,6 +51,43 @@ env var, lane-queue aging) patched a symptom of two faults. This document names 
 and the one owner each gets. It must hold on every machine we ship to: a 24 GB MacBook
 Pro, the M5, a 5090, a phone. No number in it is a constant for one machine.
 
+## The governing law: a context is a FIFO
+
+Joel, 2026-10-27: "The linear nature of an LLM, fifo, makes it fairly obvious what kinds of
+memory and data architectures make the most sense during this period. Optimization is the
+difference between many minds and many slots and breakdowns."
+
+An engine reuses a prompt up to the first token that differs from the last one, and
+recomputes everything after it. So every rule below follows from where a change lands:
+
+1. **Order by stability.** An immutable head (identity, tools, policy), an append-only middle
+   (her history, results, what reached her rooms), and a tail that alone may change (this
+   act's facts, the clock, the newest result). Whatever can change sits after everything
+   that cannot.
+2. **Never re-place what exists.** An item already sent stays where it was sent. Moving it,
+   reordering it, or re-rendering it in new words re-sends everything behind it.
+3. **Page by position.** The head is one copy shared by every mind; the middle is cold and
+   pages to RAM and disk; the tail is hot and stays in VRAM.
+4. **Collapse only the oldest end, and only at a restart.** A collapse anywhere else rewrites
+   what follows it (goal 7 states why the newest end is never cut).
+5. **One health number: re-processed tokens per act against appended tokens.** Healthy is
+   about 1:1. Every change to what a mind perceives reports it before and after.
+
+Every regression of this kind broke rule 2:
+
+| When | What moved | Cost per act |
+|---|---|---|
+| 10-19 | the results ring grew ahead of its own index, mid-prompt | 16,669-28,803 tokens re-prefilled |
+| 10-24 | the substrate's notices, re-rendered after her view | ~3.6k chars (Benchy, Aiko) |
+| 10-24 | the kanban's claim column and count, ahead of her history | 30% of turns broke the prefix |
+| 10-27 | room updates of a drive, re-placed below every act (#5526) | 12-13k tokens re-prefilled while ~1k was appended (Aris, 12:1) |
+
+The ratio is the difference this law names: at 12:1 the engine spends most of each act
+re-reading, so four residents saturate it; at 1:1 the same machine seats many minds. Work
+on the engine's memory architecture (a fixed-size recurrent state per mind, one shared head
+state for every mind) is measured against the clean 1:1 baseline, never against a feed that
+violates this law.
+
 ## Fault 1: a mind's context is re-rendered every act
 
 Today each act assembles the prompt from about fifteen sources (results ring, workspace

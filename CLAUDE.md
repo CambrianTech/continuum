@@ -360,6 +360,8 @@ A mind's context has ONE codec, `continuum-context`, built like a video codec ov
 - collapse only at a start, oldest first, never her newest (unless her newest alone exceeds what her window leaves it: then it arrives at its summary with a handle she can expand, never dropped; MIND-CONTEXT rule 2);
 - a restart order measured per mind (`motion`).
 
+**A context is a FIFO** (Joel, 10-27): the engine recomputes everything after the first changed token, so the head never changes, the middle only appends, only the tail may change, and nothing already sent is ever moved. The health number is re-processed tokens per act against appended tokens (healthy ~1:1; Aris was 12:1 on 10-27). The doc's "governing law" section has the rules and every regression that broke them.
+
 A new layer implements `Source`, builds its items with `levels`, and gets caching, levels and ordering for free. Never push a prompt message by hand, collapse outside the view, or order by a label. The source-hygiene ratchets `prompt_messages_outside_the_view`, `collapse_outside_the_view` and `hand_churn_labels` fail any PR that adds one.
 
 **The cost of skipping this:** Aiko read one 51,827-char file whole 9 times in 43 acts (the M5, 2026-10-25), because three owners each decided a piece of what she saw.
