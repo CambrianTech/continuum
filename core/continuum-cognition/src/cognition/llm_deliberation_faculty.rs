@@ -239,7 +239,7 @@ pub struct LlmDeliberationFaculty {
     context_view: parking_lot::Mutex<
         Option<continuum_context::view::View<crate::cognition::context_streams::ContextMessage>>,
     >,
-    /// The tool level her current view epoch chose (`prompt/tools_epoch.rs`).
+    /// The tool set her current view epoch chose (`prompt/tools_epoch.rs`).
     tools_epoch: parking_lot::Mutex<Option<prompt::ToolsEpoch>>,
     /// A measurement fork's (`fork_eval_cycle`): its turns warm their own page, never hers.
     forked: bool,

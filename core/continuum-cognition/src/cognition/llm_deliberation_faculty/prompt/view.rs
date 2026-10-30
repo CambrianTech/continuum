@@ -435,7 +435,7 @@ impl LlmDeliberationFaculty {
                 .collect(),
         });
         let tools_grant = calibration.prompt_budget(plan.granted(FLEX_TOOLS) as usize);
-        let (selected, tools_refusal) = self.granted_tools(ws, tools, tools_grant);
+        let (tools_choice, tools_refusal) = self.granted_tools(ws, tools, tools_grant);
         let budget_floor = crate::cognition::rag_budget::turn_need(&claims).saturating_sub(claims.iter().find(|c| c.source_id == FLEX_REPLY).map_or(0, |c| c.floor_tokens)).saturating_add(reply_need);
         // Her reply's grant is her measured need from the one allocation, carried as `max_tokens`.
         // What no claim took is her view's to grow into by appends (`fit_view`), never the
@@ -468,7 +468,7 @@ impl LlmDeliberationFaculty {
         let ctx_floor = if plan.granted(FLEX_GROUNDING) < grounding_floor { 0 } else { ctx_floor };
         let after_framing = calibration
             .prompt_budget((context_window as usize).saturating_sub(completion_reserve))
-            .saturating_sub(selected.tokens)
+            .saturating_sub(tools_choice.sent.tokens)
             .saturating_sub(framing_tokens);
         let window_msg_budget = after_framing.saturating_sub(ctx_floor);
         // History and her view get their grants; the required input is never part of the trade.
@@ -492,7 +492,8 @@ impl LlmDeliberationFaculty {
             .err()
             .map(|mismatch| format!("her view could not be sized: {mismatch}"));
         self.view_sent();
-        self.retain_tools(&selected, tools_refusal.is_some());
+        // The surface this act sends: the epoch's set, or this act's own when it turned the view over.
+        let selected = self.retain_tools(tools_choice, tools_refusal.is_some());
         // Her view as the allocation sized it: the fit below never cuts it.
         let view_len = all_messages.grounding_at;
 

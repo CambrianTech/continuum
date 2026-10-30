@@ -365,8 +365,10 @@ fn a_binding_without_a_model_name_carries_the_adapters_served_model() {
 // buys her whole hands from an ample grant; the next act's claim keeps that level as its
 // target with her core hands as the only floor, and the request carries exactly the
 // selection the allocation bought.
-#[test]
-fn an_epoch_keeps_the_tool_level_its_allocation_bought() {
+/// Asha with tools assigned. Her surface is built from the live native registry
+/// (`rebuild_tool_surface`), not these specs, whose role is only to give her a tool set; her
+/// core hands are smaller than her whole hands there.
+fn asha_with_hands() -> LlmDeliberationFaculty {
     let raw: Vec<NativeToolSpec> = ["code/read", "work/state", "chat/send", "commands/list", "room/join", "code/git/status", "work/submit", "web/fetch"]
         .iter()
         .map(|n| NativeToolSpec {
@@ -381,7 +383,39 @@ fn an_epoch_keeps_the_tool_level_its_allocation_bought() {
         })
         .collect();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Asha", "You are Asha.", adapter).with_tools(raw);
+    LlmDeliberationFaculty::new(Uuid::new_v4(), "Asha", "You are Asha.", adapter).with_tools(raw)
+}
+
+/// The schemas a surface puts on the wire, as bytes.
+fn wire(tools: &crate::cognition::tool_surface::SelectedSurface<'_>) -> String {
+    serde_json::to_string(&tools.specs).expect("schemas")
+}
+
+/// A workspace whose activity declares ONE verb of her hands (not the discovery pair or a focus
+/// verb): its offer is that verb plus `commands/` and `focus/`, a strict subset of her hands, so it
+/// fits any grant that held her hands and selects a different set. Taken from the built surface,
+/// which is the live native registry, so the fixture tracks the registry's names.
+fn declaring_one_hand(faculty: &LlmDeliberationFaculty) -> Workspace {
+    let surface = faculty.tool_surface();
+    let verb = surface
+        .names()
+        .iter()
+        .zip(surface.registry())
+        .find(|(name, spec)| {
+            !name.starts_with("commands/") && !name.starts_with("focus/") && surface.hands().iter().any(|hand| hand.name == spec.name)
+        })
+        .map(|(name, _)| name.clone())
+        .expect("her hands hold a verb besides the discovery pair and focus");
+    Workspace::new("what changed on the board?").room_affordances(vec![verb])
+}
+
+fn view_epoch(faculty: &LlmDeliberationFaculty) -> Option<u64> {
+    faculty.context_view.lock().as_ref().map(|view| view.epoch_id())
+}
+
+#[test]
+fn an_epoch_keeps_the_tool_level_its_allocation_bought() {
+    let faculty = asha_with_hands();
     let ws = Workspace::new("what changed on the board?");
     let first = faculty.prompt_view_within(&ws, 200_000);
     assert!(first.capacity_error.is_none(), "{:?}", first.capacity_error);
@@ -396,4 +430,80 @@ fn an_epoch_keeps_the_tool_level_its_allocation_bought() {
         serde_json::to_string(&first.tools.specs).expect("schemas"),
         "the same epoch sends byte-identical schemas"
     );
+}
+
+// what this catches: the set re-selected every act from that act's affordances while only the
+// level was retained (Aiko on the M5, 2026-10-29: 19 of 89 requests changed the head, all in the
+// tool list, as `git_diff` and `get_task` flipped in and out). Acts of one epoch whose room
+// affordances differ send byte-identical tool lists.
+#[test]
+fn an_epoch_sends_one_tool_set_whatever_its_acts_affordances() {
+    let faculty = asha_with_hands();
+    let ws = Workspace::new("what changed on the board?");
+    let declared = declaring_one_hand(&faculty);
+    let first = faculty.prompt_view_within(&ws, 200_000);
+    assert!(first.capacity_error.is_none(), "{:?}", first.capacity_error);
+    let epoch = view_epoch(&faculty);
+    let alone = faculty
+        .tool_surface()
+        .select_granted(&declared.room_affordances, first.tools_grant)
+        .expect("precondition: the declared verb's offer fits the epoch's grant");
+    assert_ne!(wire(&alone), wire(&first.tools), "precondition: these affordances alone choose another set");
+    let second = faculty.prompt_view_within(&declared, 200_000);
+    let third = faculty.prompt_view_within(&ws, 200_000);
+    assert_eq!(view_epoch(&faculty), epoch, "precondition: no act turned the view over");
+    assert_eq!(wire(&second.tools), wire(&first.tools), "an affordance that changes mid-epoch waits for the next start");
+    assert_eq!(wire(&third.tools), wire(&first.tools), "the epoch's set holds across every act");
+}
+
+// what this catches: a retained set that never re-selects (a room's declared verbs reaching her
+// only after a restart), or a turnover act that sends the old set while the new epoch retains
+// another (the very next act would flip the head). The act that turns the view over sends what
+// its own affordances choose, and the new epoch keeps that set against the acts after it.
+#[test]
+fn a_new_epoch_selects_from_the_affordances_of_the_act_that_started_it() {
+    use continuum_context::source::Source;
+    let faculty = asha_with_hands();
+    let ws = Workspace::new("what changed on the board?");
+    let declared = declaring_one_hand(&faculty);
+    let first = faculty.prompt_view_within(&ws, 200_000);
+    let grant = first.tools_grant;
+    let alone = faculty
+        .tool_surface()
+        .select_granted(&declared.room_affordances, grant)
+        .expect("precondition: the declared verb's offer fits the epoch's grant");
+    assert_ne!(wire(&alone), wire(&first.tools), "precondition: these affordances alone choose another set");
+    let (choice, refused) = faculty.granted_tools(&declared, faculty.tools_claim(&declared), grant);
+    assert!(refused.is_none());
+    assert_eq!(wire(&choice.sent), wire(&first.tools), "before the fit, the act charges the epoch's set");
+    // The fit turns her view over in this act (what `fit_view` does when it outgrows its grant).
+    let none: [&dyn Source<crate::cognition::context_streams::ContextMessage>; 0] = [];
+    faculty.context_view.lock().as_mut().expect("a view").turn_over(Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
+    let epoch = view_epoch(&faculty);
+    let sent = faculty.retain_tools(choice, false);
+    assert_eq!(wire(&sent), wire(&alone), "the turnover act sends its own selection");
+    let next = faculty.prompt_view_within(&ws, 200_000);
+    assert_eq!(view_epoch(&faculty), epoch, "precondition: the next act stays in the new epoch");
+    assert_eq!(wire(&next.tools), wire(&alone), "the new epoch keeps the set its start chose");
+}
+
+// what this catches: a retained set sent past a window that can no longer hold it (an over-budget
+// prompt the server refuses), or the loss taken quietly. A grant below the epoch's level drops
+// the set on the probed path (`delib.tools.epoch_level_lost`), sends what the grant buys, and the
+// epoch then keeps that smaller set.
+#[test]
+fn a_window_that_cannot_hold_the_epochs_set_reselects_loudly() {
+    use crate::cognition::tool_surface::SurfaceReason;
+    let faculty = asha_with_hands();
+    let ws = Workspace::new("what changed on the board?");
+    let first = faculty.prompt_view_within(&ws, 200_000);
+    let claim = faculty.tools_claim(&ws);
+    assert_eq!(claim.level, first.tools.tokens, "precondition: the epoch holds her whole hands");
+    assert!(claim.floor < claim.level, "precondition: core hands are smaller");
+    let (choice, refused) = faculty.granted_tools(&ws, claim, claim.floor);
+    assert!(refused.is_none(), "core hands fit their own floor");
+    assert_eq!((choice.sent.reason, choice.sent.tokens), (SurfaceReason::CoreHandsForWindow, claim.floor));
+    let sent = faculty.retain_tools(choice, false);
+    assert_ne!(wire(&sent), wire(&first.tools), "the lost set is not sent");
+    assert_eq!(faculty.tools_claim(&ws).level, claim.floor, "the epoch keeps the set the window could hold");
 }
