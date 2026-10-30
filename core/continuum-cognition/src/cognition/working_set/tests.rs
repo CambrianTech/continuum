@@ -494,17 +494,19 @@
         assert_eq!(growth_sample(&never_sent), None);
     }
 
-// what this catches: a stop counted under the wrong class on the hour line. Each
-// classifier verdict maps to exactly one stop; a landed turn with only reasoning ended in
-// her think, and one with nothing at all is empty: neither is read as landed work
-// (Fable on #5616).
+// what this catches: a stop counted under the wrong class on the hour line, and a stream
+// that reports no usage read as empty. The class comes from presence: a landed turn with only
+// reasoning ended in her think, one with nothing at all is empty, and an answer or call is
+// landed whatever its token counts (Fable and Codex on #5616).
 #[test]
-fn every_emission_stop_maps_to_exactly_one_counted_stop() {
+fn every_completed_generation_maps_to_exactly_one_counted_stop() {
     use continuum_vitals::health_ledger::Stop;
-    assert_eq!(EmissionStop::Landed.counted(40, 300), Stop::Landed);
-    assert_eq!(EmissionStop::Landed.counted(0, 300), Stop::ThinkEnded);
-    assert_eq!(EmissionStop::Landed.counted(0, 0), Stop::Empty);
-    assert_eq!(EmissionStop::CutMidAnswer.counted(40, 300), Stop::CutAnswer);
-    assert_eq!(EmissionStop::CutMidThought.counted(0, 963), Stop::CutThink);
-    assert_eq!(EmissionStop::ThinkBudgetHit { allowance: 900 }.counted(20, 700), Stop::ThinkBudget);
+    // (length cut, think budget hit, answered, reasoned)
+    assert_eq!(counted_stop(false, false, true, true), Stop::Landed);
+    assert_eq!(counted_stop(false, false, true, false), Stop::Landed, "an answer with no usage is landed");
+    assert_eq!(counted_stop(false, false, false, true), Stop::ThinkEnded, "reasoning only, no usage");
+    assert_eq!(counted_stop(false, false, false, false), Stop::Empty);
+    assert_eq!(counted_stop(true, false, true, true), Stop::CutAnswer);
+    assert_eq!(counted_stop(true, false, false, true), Stop::CutThink);
+    assert_eq!(counted_stop(false, true, true, true), Stop::ThinkBudget);
 }

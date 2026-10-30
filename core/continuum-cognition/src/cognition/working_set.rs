@@ -378,20 +378,25 @@ pub enum EmissionStop {
     ThinkBudgetHit { allowance: u32 },
 }
 
-impl EmissionStop {
-    /// How the hour line counts this stop (`health_ledger::Stop`). A turn that landed with
-    /// reasoning and no answer or call ended inside her think, and one that landed with neither
-    /// produced nothing: each its own class, never "landed".
-    pub fn counted(self, answer_tokens: u32, reasoning_tokens: u32) -> continuum_vitals::health_ledger::Stop {
-        use continuum_vitals::health_ledger::Stop;
-        match self {
-            EmissionStop::Landed if answer_tokens == 0 && reasoning_tokens > 0 => Stop::ThinkEnded,
-            EmissionStop::Landed if answer_tokens == 0 => Stop::Empty,
-            EmissionStop::Landed => Stop::Landed,
-            EmissionStop::CutMidAnswer => Stop::CutAnswer,
-            EmissionStop::CutMidThought => Stop::CutThink,
-            EmissionStop::ThinkBudgetHit { .. } => Stop::ThinkBudget,
-        }
+/// How the hour line counts one completed generation (`health_ledger::Stop`), from what the
+/// response carries: whether it was cut at the output limit, whether its think stopped at the
+/// reasoning budget, and whether an answer (text or a call) and reasoning are present. Never
+/// from token usage, which a stream may not report: a response with usage missing and an answer
+/// present is landed, not empty (Codex on #5616).
+pub fn counted_stop(
+    length_cut: bool,
+    think_budget_hit: bool,
+    answered: bool,
+    reasoned: bool,
+) -> continuum_vitals::health_ledger::Stop {
+    use continuum_vitals::health_ledger::Stop;
+    match (length_cut, think_budget_hit, answered, reasoned) {
+        (true, _, true, _) => Stop::CutAnswer,
+        (true, _, false, _) => Stop::CutThink,
+        (false, true, _, _) => Stop::ThinkBudget,
+        (false, false, true, _) => Stop::Landed,
+        (false, false, false, true) => Stop::ThinkEnded,
+        (false, false, false, false) => Stop::Empty,
     }
 }
 

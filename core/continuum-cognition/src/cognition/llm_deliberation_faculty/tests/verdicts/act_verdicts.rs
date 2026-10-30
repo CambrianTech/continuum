@@ -199,6 +199,64 @@ async fn a_thought_cut_at_the_limit_lifts_nothing_and_hands_her_the_decision() {
 // the executor's teacher fires as an observation and drive_to_settle hands
 // her another generation. Glass-boxed live 2026-08-15: a full bench round
 // produced 17 inference turns and zero acts through exactly this hole.
+// what this catches: a stream that reports no usage (zero tokens) read as an empty
+// generation. The class comes from what the response carries: an answer is landed and
+// reasoning alone ended in her think, whatever the token counts (Codex on #5616).
+#[tokio::test]
+async fn a_response_without_usage_is_counted_by_what_it_carries() {
+    let mut answer = make_response(FinishReason::Stop, "The parser is fine.", None);
+    answer.usage.output_tokens = 0;
+    let mut think = make_response(FinishReason::Stop, "", None);
+    think.reasoning = Some("The parser looks fine, but I have not read the tests yet".to_string());
+    think.usage.output_tokens = 0;
+    for (resp, landed) in [(answer, 1), (think, 0)] {
+        let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", Arc::new(ScriptedAdapter::new(vec![resp])))
+            .with_context_window(32_768);
+        let before = crate::cognition::health_ledger::read_stops();
+        faculty.contribute(&Workspace::new("is the parser right?")).await.expect("verdict");
+        let after = crate::cognition::health_ledger::read_stops();
+        if landed == 1 {
+            assert!(after.landed > before.landed, "an answer with no usage is landed: {before:?} -> {after:?}");
+        } else {
+            assert!(after.think_ended > before.think_ended, "reasoning with no usage ended in her think: {before:?} -> {after:?}");
+        }
+    }
+}
+
+// what this catches: a turn cancelled while its read receipt is suspended losing the stop of a
+// generation that already completed. The stop is counted before any await after the
+// generation (Codex on #5616): here the receipt never returns, the turn is dropped inside it,
+// and the cut think is still on the hour's ledger.
+#[tokio::test]
+async fn a_turn_cancelled_at_its_read_receipt_still_counts_its_stop() {
+    struct NeverReturns(Arc<tokio::sync::Notify>);
+    #[async_trait::async_trait]
+    impl crate::cognition::llm_deliberation_faculty::ReadReceipt for NeverReturns {
+        async fn read_through(&self, _room: Uuid, _event: Uuid) {
+            self.0.notify_one();
+            std::future::pending::<()>().await;
+        }
+    }
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let mut resp = make_response(FinishReason::Length, "", None);
+    resp.reasoning = Some("I should read the parser first, then compare it with".to_string());
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", Arc::new(ScriptedAdapter::new(vec![resp])))
+        .with_tools(vec![read_tool()])
+        .with_context_window(32_768)
+        .with_read_receipt(Arc::new(NeverReturns(entered.clone())));
+    let mut ws = Workspace::new("fix the parser");
+    let source = crate::cognition::workspace::TurnSource { room: Uuid::new_v4(), event: Uuid::new_v4(), lamport: 1 };
+    ws.turns = vec![crate::cognition::workspace::BurstTurn::attributed(false, "Joel", "fix the parser", None).from_event(source)];
+
+    let before = crate::cognition::health_ledger::read_stops();
+    tokio::select! {
+        _ = faculty.contribute(&ws) => panic!("the receipt never returns, so the turn cannot finish"),
+        _ = entered.notified() => {}
+    }
+    let after = crate::cognition::health_ledger::read_stops();
+    assert!(after.cut_think > before.cut_think, "the stop was counted before the receipt: {before:?} -> {after:?}");
+}
+
 // what this catches: a generation cut at the output limit inside her reasoning, counted
 // as a cut think on the hour line, once, even though a fault path handles it and even with
 // no working set. Regression: Aris's three 963-token cuts inside thinking read "think-only 0"
