@@ -45,22 +45,6 @@
         }
     }
 
-    // what this catches: the loopback — a peer-addressed request answered by whoever
-    // hears it (the sender included). Only the named peer answers; a broadcast target
-    // is nobody's to answer.
-    #[test]
-    fn only_the_addressed_peer_answers_a_command_request() {
-        let me = PeerId::new();
-        let other = PeerId::new();
-        assert!(addressed_to(&MentionTarget::Peer(me), me));
-        assert!(!addressed_to(&MentionTarget::Peer(other), me), "another peer's request is not ours");
-        assert!(!addressed_to(&MentionTarget::All, me), "a broadcast is not a peer RPC");
-        assert!(
-            !addressed_to(&MentionTarget::Room(airc_core::RoomId::from_uuid(Uuid::new_v4())), me),
-            "a room target is not a peer RPC"
-        );
-    }
-
     #[test]
     fn parse_envelope_extracts_caller_reply_correlation_and_request() {
         let sender = PeerId::new();
@@ -306,6 +290,7 @@
             request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
             request_channel_name: None,
             presented_grant: None,
+            verified_capabilities: Vec::new(),
             generation: None,
         }
     }
@@ -442,6 +427,7 @@
             request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
             request_channel_name: None,
             presented_grant: None,
+            verified_capabilities: Vec::new(),
             generation: None,
         };
 
@@ -508,6 +494,7 @@
             request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
             request_channel_name: None,
             presented_grant: None,
+            verified_capabilities: Vec::new(),
             generation: None,
         };
         let baseline = leased_in_calls();
@@ -803,10 +790,10 @@
             rig.pump.abort();
         }
 
-        // what this catches: dispatch is classified from the BODY path the handler
-        // executes, never the header. With the only slot held, a request whose header says
-        // ai/generate but whose body is test/echo is answered (not counted as a generation);
-        // a body ai/generate with a missing or wrong header is still bounded (refused).
+        // what this catches: a header that lies about the body. The ingress contract decides
+        // authority on the `continuum.command.path` header before decoding, so a body naming a
+        // different command (ai/generate behind a test/echo header, or the reverse), or a body
+        // with no header at all, is refused by rule and never executes or escapes the bound.
         #[tokio::test]
         async fn generations_are_classified_by_the_executed_body_path() {
             let rig = StdArc::new(rig().await);
@@ -816,12 +803,15 @@
             });
             tokio::time::timeout(WAIT, rig.entered.notified()).await.expect("the held generation reaches the seat");
 
+            let refused_by = |response: &AircCommandResponse, rule: &str| {
+                matches!(response, AircCommandResponse::Error { message, .. } if message.contains(rule))
+            };
             let header_lies = ask(&rig.loop_back, Some("ai/generate"), "test/echo", serde_json::json!({ "n": 2 })).await;
-            assert!(matches!(&header_lies, AircCommandResponse::Ok { .. }), "body test/echo is not a generation: {header_lies:?}");
+            assert!(refused_by(&header_lies, "path_mismatch"), "a lying header is refused: {header_lies:?}");
             let no_header = ask(&rig.loop_back, None, "ai/generate", serde_json::json!({ "prompt": "x" })).await;
-            assert!(overloaded(&no_header), "a body generation without a header is bounded: {no_header:?}");
+            assert!(refused_by(&no_header, "missing_command_path"), "no header, no decision: {no_header:?}");
             let wrong_header = ask(&rig.loop_back, Some("test/echo"), "ai/generate", serde_json::json!({ "prompt": "y" })).await;
-            assert!(overloaded(&wrong_header), "a body generation behind a wrong header is bounded: {wrong_header:?}");
+            assert!(refused_by(&wrong_header, "path_mismatch"), "a body generation behind a wrong header: {wrong_header:?}");
 
             rig.release.notify_one();
             let _ = held.await;

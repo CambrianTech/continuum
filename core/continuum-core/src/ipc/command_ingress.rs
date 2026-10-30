@@ -103,9 +103,19 @@ pub struct CommandRequestHandler {
     /// The admission bound for served generations, read per request
     /// ([`served_generations::admission_bound`]; a test pins it).
     generation_bound: fn() -> usize,
+    /// Where a caller's airc trust tier is read for the ingress contract
+    /// ([`ingress_contract`]): this node's airc trust store.
+    tiers: Arc<dyn PeerTierSource>,
 }
 
+mod ingress_contract;
 mod served_generations;
+mod stream_publisher;
+
+pub use ingress_contract::{
+    admit_caller, admit_frame, required_tier, AddressedCommand, AircTrustStore, IngressRefusal, PeerTierSource,
+};
+use stream_publisher::StreamPublisher;
 
 /// Parsed pieces of an incoming envelope. Pure data; the rest of
 /// the handler operates on this struct so the parse step is testable
@@ -144,6 +154,10 @@ pub struct ParsedEnvelope {
     /// stays the one place the wire shape is read; verified later against the
     /// authenticated sender key.
     pub presented_grant: Option<SignedCapabilityGrant>,
+    /// The capability tags [`presented_grant`](Self::presented_grant) was VERIFIED to
+    /// confer (against the authenticated sender key), set once by the ingress contract
+    /// and threaded into the gate. Empty from [`parse_envelope`](CommandRequestHandler::parse_envelope).
+    pub verified_capabilities: Vec<String>,
 }
 
 /// A requester's stamp on an `ai/generate` request: its own id for the generation, and the
@@ -177,12 +191,14 @@ impl CommandRequestHandler {
     /// purely by tier (presented grants are ignored). Returns `Arc<Self>` because
     /// the airc adapter registry stores adapters as `Arc<dyn ConsumerAdapter>`.
     pub fn new(airc: Arc<Airc>, executor: Arc<CommandExecutor>) -> Arc<Self> {
+        let tiers = AircTrustStore::new(airc.home().to_path_buf());
         Arc::new(Self {
             airc,
             executor,
             grant_authorizer: None,
             generations: Some(Arc::default()),
             generation_bound: served_generations::admission_bound,
+            tiers,
         })
     }
 
@@ -195,24 +211,21 @@ impl CommandRequestHandler {
         executor: Arc<CommandExecutor>,
         grant_authorizer: Arc<GrantAuthorizer>,
     ) -> Arc<Self> {
+        let tiers = AircTrustStore::new(airc.home().to_path_buf());
         Arc::new(Self {
             airc,
             executor,
             grant_authorizer: Some(grant_authorizer),
             generations: Some(Arc::default()),
             generation_bound: served_generations::admission_bound,
+            tiers,
         })
     }
 
-    /// Parse a `TranscriptEvent` into the typed pieces the handler
-    /// needs. Pure function — tests don't need airc to exercise it.
-    ///
-    /// Returns an error if any required header is missing, the body
-    /// is absent or non-JSON, or the body doesn't deserialize as
-    /// [`AircCommandRequest`].
-    pub fn parse_envelope(envelope: &TranscriptEvent) -> Result<ParsedEnvelope, AdapterError> {
-        let caller_peer_id = envelope.peer_id;
-
+    /// The reply addressing a request carries in its headers (`airc.reply_to` +
+    /// `airc.correlation_id`, auto-stamped by `Airc::request()`). Header-only, so a
+    /// refusal can be answered without decoding the payload.
+    fn reply_route(envelope: &TranscriptEvent) -> Result<(PeerId, Uuid), AdapterError> {
         let reply_to_raw = envelope.headers.get(HEADER_AIRC_REPLY_TO).ok_or_else(|| {
             AdapterError::Consumer(format!(
                 "missing required header {HEADER_AIRC_REPLY_TO} on inbound command envelope"
@@ -236,6 +249,37 @@ impl CommandRequestHandler {
                 "header {HEADER_AIRC_CORRELATION_ID}={correlation_raw:?} is not a valid UUID: {e}"
             ))
         })?;
+        Ok((reply_to, correlation_id))
+    }
+
+    /// The capability grant a caller PRESENTED in its headers (base64
+    /// [`HEADER_AIRC_CAPABILITY_GRANT`]), decoded. Absent is normal (a tier-gated call).
+    /// PRESENT-but-undecodable is a client error surfaced LOUDLY (per
+    /// [[no-fallbacks-ever]]) rather than silently dropped.
+    fn presented_grant(headers: &airc_core::Headers) -> Result<Option<SignedCapabilityGrant>, AdapterError> {
+        let Some(b64) = headers.get(HEADER_AIRC_CAPABILITY_GRANT) else {
+            return Ok(None);
+        };
+        let bytes = STANDARD.decode(b64).map_err(|e| {
+            AdapterError::Consumer(format!("header {HEADER_AIRC_CAPABILITY_GRANT} is not valid base64: {e}"))
+        })?;
+        let grant: SignedCapabilityGrant = serde_json::from_slice(&bytes).map_err(|e| {
+            AdapterError::Consumer(format!(
+                "header {HEADER_AIRC_CAPABILITY_GRANT} did not decode as a SignedCapabilityGrant: {e}"
+            ))
+        })?;
+        Ok(Some(grant))
+    }
+
+    /// Parse a `TranscriptEvent` into the typed pieces the handler
+    /// needs. Pure function — tests don't need airc to exercise it.
+    ///
+    /// Returns an error if any required header is missing, the body
+    /// is absent or non-JSON, or the body doesn't deserialize as
+    /// [`AircCommandRequest`].
+    pub fn parse_envelope(envelope: &TranscriptEvent) -> Result<ParsedEnvelope, AdapterError> {
+        let caller_peer_id = envelope.peer_id;
+        let (reply_to, correlation_id) = Self::reply_route(envelope)?;
 
         let body = envelope.body.as_ref().ok_or_else(|| {
             AdapterError::Consumer(
@@ -258,26 +302,7 @@ impl CommandRequestHandler {
             AdapterError::Consumer(format!("decode AircCommandRequest from body JSON: {e}"))
         })?;
 
-        // Optional capability grant the caller presents (base64 JSON). Absent is
-        // normal (tier-gated call). PRESENT-but-undecodable is a client error we
-        // surface LOUDLY (per [[no-fallbacks-ever]]) rather than silently dropping
-        // — the caller intended to present a grant; we won't pretend they didn't.
-        let presented_grant = match envelope.headers.get(HEADER_AIRC_CAPABILITY_GRANT) {
-            None => None,
-            Some(b64) => {
-                let bytes = STANDARD.decode(b64).map_err(|e| {
-                    AdapterError::Consumer(format!(
-                        "header {HEADER_AIRC_CAPABILITY_GRANT} is not valid base64: {e}"
-                    ))
-                })?;
-                let grant: SignedCapabilityGrant = serde_json::from_slice(&bytes).map_err(|e| {
-                    AdapterError::Consumer(format!(
-                        "header {HEADER_AIRC_CAPABILITY_GRANT} did not decode as a SignedCapabilityGrant: {e}"
-                    ))
-                })?;
-                Some(grant)
-            }
-        };
+        let presented_grant = Self::presented_grant(&envelope.headers)?;
 
         Ok(ParsedEnvelope {
             caller_peer_id,
@@ -287,6 +312,7 @@ impl CommandRequestHandler {
             request_channel: envelope.room_id,
             request_channel_name: envelope.headers.get(HEADER_AIRC_CHANNEL_NAME).cloned(),
             presented_grant,
+            verified_capabilities: Vec::new(),
             generation: GenerationStamp::from_headers(&envelope.headers),
         })
     }
@@ -357,11 +383,11 @@ impl CommandRequestHandler {
     }
 
     pub async fn process_request(&self, parsed: &ParsedEnvelope) -> AircCommandResponse {
-        // Verify any presented capability grant against the AUTHENTICATED sender
-        // key; on success its conferred capabilities ride into the gate. Absent /
-        // invalid grant → empty caps → pure tier gating (unchanged behavior).
-        let granted = self.verify_presented_grant(parsed).await;
-        let caller = CallerIdentity::airc(parsed.caller_peer_id).with_granted_capabilities(granted);
+        // The capabilities the ingress contract VERIFIED the presented grant to confer
+        // (once, against the AUTHENTICATED sender key) ride into the gate. None
+        // presented / invalid → empty caps → pure tier gating.
+        let caller = CallerIdentity::airc(parsed.caller_peer_id)
+            .with_granted_capabilities(parsed.verified_capabilities.clone());
         Self::dispatch_request(&self.executor, parsed, caller).await
     }
 
@@ -374,30 +400,32 @@ impl CommandRequestHandler {
     /// AUTHENTICATED sender's key, never the grant's self-asserted `grantee_pubkey`
     /// (the hard gate the review flagged). A non-Authorized outcome logs at debug +
     /// confers nothing; the caller then falls back to tier gating.
-    async fn verify_presented_grant(&self, parsed: &ParsedEnvelope) -> Vec<String> {
-        let (Some(authorizer), Some(grant)) = (
-            self.grant_authorizer.as_ref(),
-            parsed.presented_grant.as_ref(),
-        ) else {
+    async fn verify_presented_grant(
+        &self,
+        caller: PeerId,
+        grant: Option<&SignedCapabilityGrant>,
+        path: &str,
+    ) -> Vec<String> {
+        let (Some(authorizer), Some(grant)) = (self.grant_authorizer.as_ref(), grant) else {
             return Vec::new();
         };
-        let Some(presenting) = self.airc.peer_public_key(parsed.caller_peer_id) else {
+        let Some(presenting) = self.airc.peer_public_key(caller) else {
             warn!(
-                caller = %parsed.caller_peer_id.0,
+                caller = %caller.0,
                 "presented a capability grant but the sender is not enrolled — \
                  cannot establish an authenticated presenting key; ignoring the grant"
             );
             return Vec::new();
         };
         match authorizer
-            .authorize_command(grant, &presenting, &parsed.request.path, EpochMs::now().millis())
+            .authorize_command(grant, &presenting, path, EpochMs::now().millis())
             .await
         {
             GrantAuthOutcome::Authorized => grant.grant.capabilities.clone(),
             other => {
                 debug!(
-                    caller = %parsed.caller_peer_id.0,
-                    path = %parsed.request.path,
+                    caller = %caller.0,
+                    path = %path,
                     outcome = ?other,
                     "presented capability grant did not authorize; falling back to tier gate"
                 );
@@ -530,6 +558,26 @@ impl CommandRequestHandler {
         parsed: &ParsedEnvelope,
         response: &AircCommandResponse,
     ) -> Result<(), AdapterError> {
+        self.reply(
+            parsed.request_channel,
+            parsed.request_channel_name.as_deref(),
+            parsed.reply_to,
+            parsed.correlation_id,
+            response,
+        )
+        .await
+    }
+
+    /// [`send_reply`](Self::send_reply) from the reply addressing alone: the refusal path
+    /// answers from headers without decoding the payload.
+    async fn reply(
+        &self,
+        channel: airc_core::RoomId,
+        channel_name: Option<&str>,
+        reply_to: PeerId,
+        correlation_id: Uuid,
+        response: &AircCommandResponse,
+    ) -> Result<(), AdapterError> {
         let body_value = serde_json::to_value(response)
             .map_err(|e| AdapterError::Consumer(format!("serialize AircCommandResponse: {e}")))?;
         let body = Body::Json(body_value);
@@ -551,25 +599,11 @@ impl CommandRequestHandler {
         // the answer somewhere the requester never subscribed and every
         // dispatch died at the command deadline (grid-smoke 0/3, 2026-08-27).
         self.airc
-            .reply_in(
-                parsed.request_channel,
-                parsed.request_channel_name.as_deref(),
-                parsed.reply_to,
-                parsed.correlation_id,
-                headers,
-                body,
-            )
+            .reply_in(channel, channel_name, reply_to, correlation_id, headers, body)
             .await
             .map_err(|e| AdapterError::Io(format!("airc reply: {e}")))?;
         Ok(())
     }
-}
-
-/// A command request is answered by exactly the peer it names. `All` and `Room`
-/// targets are not peer RPCs (the only dispatch kind wired today), so they are
-/// nobody's to answer either.
-pub(crate) fn addressed_to(target: &airc_core::MentionTarget, me: PeerId) -> bool {
-    matches!(target, airc_core::MentionTarget::Peer(p) if *p == me)
 }
 
 #[async_trait]
@@ -583,36 +617,40 @@ impl ConsumerAdapter for CommandRequestHandler {
     }
 
     async fn on_envelope(&self, envelope: TranscriptEvent) -> Result<(), AdapterError> {
-        // ONLY THE ADDRESSED PEER ANSWERS. Every node in the room hears every
-        // command request; this handler answered all of them — so a peer-addressed
-        // `ai/generate` was answered by whoever heard it first, the SENDER included
-        // (measured 2026-09-06 03:30Z on the M5: a request to an unknown peer came
-        // back with this node's own serving state as "the remote peer's adapter").
-        // A request for another peer is not ours to answer; a request for nobody in
-        // particular is not a peer RPC (only kind=peer is wired) — both are ignored
-        // by name, never answered.
-        if !addressed_to(&envelope.target, self.airc.peer_id()) {
-            continuum_base::probe!(
-                class = "airc.command.request_not_for_me",
-                target = ?envelope.target,
-                me = %self.airc.peer_id().0,
-                "command request addressed to another peer (or to nobody) — not answering"
-            );
-            return Ok(());
+        let me = self.airc.peer_id();
+        let event = Arc::new(envelope);
+        // THE INGRESS CONTRACT (`ingress_contract`), header facts first. Every node in
+        // the room hears every command request; only a DIRECT request ADDRESSED to this
+        // node is ours (a peer-addressed `ai/generate` used to be answered by whoever
+        // heard it first, the sender included: 2026-09-06 on the M5). A room broadcast
+        // is never executed, whatever its payload says (2026-10-30: an untrusted peer's
+        // `persona/placement/reserve` requests in #general ran here).
+        let command = match admit_frame(Arc::clone(&event), me) {
+            Ok(command) => command,
+            Err(refusal) => return self.refuse(&event, "", "unread", refusal).await,
+        };
+        let caller = command.envelope.sender();
+        // The caller's trust tier, and a grant it presented (a HEADER, verified once
+        // against the authenticated sender key), decide before the payload is decoded.
+        let grant = Self::presented_grant(&event.headers)?;
+        let granted = self.verify_presented_grant(caller, grant.as_ref(), &command.path).await;
+        let tier = self.tiers.tier_of(caller).await;
+        let tier_seen = match &tier {
+            Ok(Some(tier)) => tier.as_wire_str(),
+            Ok(None) => "unenrolled",
+            Err(_) => "unreadable",
+        };
+        if let Err(refusal) = admit_caller(tier, &command.path, !granted.is_empty()) {
+            return self.refuse(&event, &command.path, tier_seen, refusal).await;
         }
-        // THE ACCEPT PATH NAMES ITSELF (BigMama, 2026-09-06 22:0xZ): the only probe on
-        // inbound peer commands was the refusal, so a request that was ACCEPTED left no
-        // row and silence read as ambiguous. Now every accepted request says who was
-        // asked, by whom, and what — the receipt the grid's first hop was missing.
-        continuum_base::probe!(
-            class = "airc.command.request_accepted",
-            target = ?envelope.target,
-            me = %self.airc.peer_id().0,
-            from = %envelope.peer_id.0,
-            "command request addressed to this citizen — executing"
-        );
-        let parsed = Self::parse_envelope(&envelope)?;
-        // THE ACCEPT PATH HAD NO PROBE. Only the refusal above emitted one, so a
+        // Only now is the payload decoded, by its one consumer; it must name the command
+        // the header decision was made on.
+        let mut parsed = Self::parse_envelope(&event)?;
+        if parsed.request.path != command.path {
+            return self.refuse(&event, &command.path, tier_seen, IngressRefusal::PathMismatch).await;
+        }
+        parsed.verified_capabilities = granted;
+        // THE ACCEPT PATH HAD NO PROBE. Only the refusal emitted one, so a
         // request that ARRIVED AND RAN was indistinguishable from one that was never
         // sent — and on a node whose citizens generate continuously, a downstream
         // inference row cannot be attributed to a peer without a join key. Measured
@@ -626,9 +664,10 @@ impl ConsumerAdapter for CommandRequestHandler {
             path = %parsed.request.path,
             kind = %parsed.request.kind,
             caller = %parsed.caller_peer_id.0,
-            me = %self.airc.peer_id().0,
+            tier = %tier_seen,
+            me = %me.0,
             correlation = %parsed.correlation_id,
-            "peer command request ACCEPTED — this node answers it"
+            "peer command request ACCEPTED by the ingress contract — this node answers it"
         );
         // The requester abandoned a generation it asked for (card 83f774fb): abort it here
         // instead of finishing it for no one. A control command, answered inline before
@@ -739,7 +778,44 @@ impl CommandRequestHandler {
             grant_authorizer: self.grant_authorizer.clone(),
             generations: None,
             generation_bound: self.generation_bound,
+            tiers: Arc::clone(&self.tiers),
         }
+    }
+
+    /// A frame the ingress contract refused: probed with the rule, the caller, the
+    /// command, the channel and the tier; a direct request here is answered with the rule
+    /// (never its params); a frame that was not ours to answer draws no reply.
+    async fn refuse(
+        &self,
+        event: &TranscriptEvent,
+        path: &str,
+        tier: &str,
+        refusal: IngressRefusal,
+    ) -> Result<(), AdapterError> {
+        continuum_base::probe!(
+            class = "airc.command.ingress_refused",
+            rule = refusal.rule(),
+            caller = %event.peer_id.0,
+            path = %path,
+            addressing = ?event.target,
+            channel = %event.room_id.as_uuid(),
+            tier = %tier,
+            me = %self.airc.peer_id().0,
+            "peer command frame refused by the ingress contract"
+        );
+        if !refusal.answered() {
+            return Ok(());
+        }
+        let (reply_to, correlation_id) = Self::reply_route(event)?;
+        let response = AircCommandResponse::error(refusal.reply_message(path));
+        self.reply(
+            event.room_id,
+            event.headers.get(HEADER_AIRC_CHANNEL_NAME).map(String::as_str),
+            reply_to,
+            correlation_id,
+            &response,
+        )
+        .await
     }
 
     /// Pin the generation admission bound (tests: the live lane count is process-global).
@@ -827,119 +903,6 @@ impl CommandRequestHandler {
 /// The one command whose answer is streamed on the wire, and the one a seat serves
 /// concurrently: one owner for the wire literal (`continuum-airc-protocol`).
 const STREAMED_GENERATE_PATH: &str = continuum_airc_protocol::COMMAND_PATH_AI_GENERATE;
-
-/// Tokens are coalesced and flushed at most this often — the same cadence the local
-/// persona turn uses into a room; one frame per token would be 35 frames/s on a 27B.
-const STREAM_FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
-
-
-/// Publishes one generation's chunks into the request's room under its stream id.
-struct StreamPublisher {
-    airc: Arc<Airc>,
-    room: airc_core::RoomId,
-    stream_id: Uuid,
-    /// When this seat RECEIVED the request. The first prefill frame or token published
-    /// after it is the seat's own receipt-to-first-progress wait — the queue as the seat
-    /// experiences it, which is what it may honestly advertise on its beacon.
-    received_at: std::time::Instant,
-}
-
-impl StreamPublisher {
-    async fn publish(&self, seq: u64, kind: &str, text: String, is_final: bool) -> bool {
-        let mut headers = airc_core::Headers::new();
-        headers.insert(airc_lib::HEADER_STREAM_ID.into(), self.stream_id.to_string());
-        headers.insert(airc_lib::HEADER_STREAM_SEQ.into(), seq.to_string());
-        headers.insert(airc_lib::HEADER_STREAM_KIND.into(), kind.to_string());
-        if is_final {
-            headers.insert(airc_lib::HEADER_STREAM_FINAL.into(), "true".to_string());
-        }
-        match self
-            .airc
-            .publish_with_delivery(
-                airc_lib::PublishTarget::RoomByName(self.room.as_uuid().to_string()),
-                airc_protocol::FrameKind::Event,
-                Body::text(text),
-                headers,
-                airc_bus::DeliveryClass::StreamChunk,
-            )
-            .await
-        {
-            Ok(_) => true,
-            Err(e) => {
-                warn!(correlation = %self.stream_id, seq, error = %e, "stream chunk publish failed");
-                false
-            }
-        }
-    }
-
-    /// Drain the command's sink onto the wire until it closes; returns chunks published.
-    async fn drain(
-        self,
-        mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::ai::adapter::GenerationChunk>,
-    ) -> u64 {
-        use crate::ai::adapter::GenerationChunk;
-        let mut seq = 0u64;
-        let mut published = 0u64;
-        let mut token = String::new();
-        let mut reasoning = String::new();
-        let mut prefill: Option<String> = None;
-        let mut last_flush = std::time::Instant::now();
-        // Recorded once, at the FIRST progress the requester can see (prefill frame or
-        // token) — receipt-to-first-progress is the seat's queue, and only the first
-        // publish is that measurement; every later flush is generation.
-        let mut first_progress_recorded = false;
-        loop {
-            let next = tokio::time::timeout(STREAM_FLUSH_EVERY, rx.recv()).await;
-            let closed = matches!(next, Ok(None));
-            if let Ok(Some(chunk)) = next {
-                match chunk {
-                    GenerationChunk::Token(t) => token.push_str(&t),
-                    GenerationChunk::Reasoning(r) => reasoning.push_str(&r),
-                    GenerationChunk::Prefill { processed, total, cached } => {
-                        prefill = Some(
-                            serde_json::json!({ "processed": processed, "total": total, "cached": cached })
-                                .to_string(),
-                        );
-                    }
-                }
-            }
-            if closed || last_flush.elapsed() >= STREAM_FLUSH_EVERY {
-                if !first_progress_recorded && (prefill.is_some() || !token.is_empty() || !reasoning.is_empty()) {
-                    first_progress_recorded = true;
-                    crate::inference::resource_admission::note_leased_in_first_progress_ms(
-                        self.received_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
-                    );
-                }
-                if let Some(p) = prefill.take() {
-                    published += self.publish(seq, crate::routing::STREAM_KIND_PREFILL, p, false).await as u64;
-                    seq += 1;
-                }
-                if !reasoning.is_empty() {
-                    let flushed = std::mem::take(&mut reasoning);
-                    published += self
-                        .publish(seq, airc_lib::STREAM_KIND_TEXT_REASONING, flushed, false)
-                        .await as u64;
-                    seq += 1;
-                }
-                if !token.is_empty() {
-                    let flushed = std::mem::take(&mut token);
-                    published += self
-                        .publish(seq, airc_lib::STREAM_KIND_TEXT_TOKEN, flushed, false)
-                        .await as u64;
-                    seq += 1;
-                }
-                last_flush = std::time::Instant::now();
-            }
-            if closed {
-                break;
-            }
-        }
-        published += self
-            .publish(seq, airc_lib::STREAM_KIND_TEXT_TOKEN, String::new(), true)
-            .await as u64;
-        published
-    }
-}
 
 #[cfg(test)]
 mod tests;

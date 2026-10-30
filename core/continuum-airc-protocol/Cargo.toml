@@ -22,6 +22,9 @@ ts-rs = { workspace = true }
 # wire-shape source of truth that both substrate AND
 # continuum-client consume.
 airc-core = { workspace = true }
+# airc's own header keys (`airc.correlation_id`): the inbound classifier routes
+# command-bus frames by header, never by payload (`inbound.rs`).
+airc-protocol = { workspace = true }
 # positron-core owns the cross-language UI contract's session frames
 # (Subscribe/Observe/State + StateEnvelope/StateLayer/ObserverSpec/
 # KindRevision). The thin-client WS envelope multiplexes those state-

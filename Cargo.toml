@@ -260,6 +260,9 @@ airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a29
 airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
 airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
 airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
+# airc-trust: the peer trust store's tier writes. Test fixtures only: TwoAircLoopback
+# enrols its two peers at `own_account`, the tier the command ingress contract requires.
+airc-trust = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`

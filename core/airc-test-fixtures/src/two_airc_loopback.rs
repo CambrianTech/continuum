@@ -145,6 +145,15 @@ impl TwoAircLoopback {
             .add_peer(a_spec)
             .await
             .map_err(|e| LoopbackError::AircSpawn(format!("peer_b trust peer_a: {e}")))?;
+        // The two peers model two nodes of ONE account: each holds the other at
+        // `own_account`, the tier the command ingress contract requires of a peer
+        // command (an enrolment alone is `untrusted`, which meets no command).
+        for (holder, peer) in [(&peer_a, peer_b.peer_id()), (&peer_b, peer_a.peer_id())] {
+            airc_trust::set_tier(holder.home(), peer, airc_lib::TrustTier::OwnAccount)
+                .await
+                .map_err(|e| LoopbackError::AircSpawn(format!("own_account tier for {peer:?}: {e}")))?
+                .ok_or_else(|| LoopbackError::AircSpawn(format!("{peer:?} has no trust row to raise")))?;
+        }
 
         // Join the shared fixture room so room-scoped subscribe lands.
         peer_a

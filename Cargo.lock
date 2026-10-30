@@ -252,6 +252,7 @@ dependencies = [
  "airc-core",
  "airc-lib",
  "airc-protocol",
+ "airc-trust",
  "async-trait",
  "continuum-airc-protocol",
  "futures",
@@ -2795,6 +2796,7 @@ name = "continuum-airc-protocol"
 version = "0.1.0"
 dependencies = [
  "airc-core",
+ "airc-protocol",
  "positron-core",
  "serde",
  "serde_json",

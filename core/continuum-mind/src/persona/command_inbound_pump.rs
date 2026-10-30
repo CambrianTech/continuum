@@ -75,7 +75,7 @@ use std::time::Duration;
 
 use airc_lib::adapter::ConsumerAdapter;
 use airc_lib::{Airc, AircError, FilteredEventStream};
-use continuum_airc_protocol::{COMMAND_REQUEST_BODY_HINT, HEADER_CONTINUUM_BODY_HINT};
+use continuum_airc_protocol::{classify_inbound, InboundEvent, ProtocolKind};
 use futures::stream::StreamExt;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -480,11 +480,14 @@ async fn run(
                         if event.peer_id == self_id {
                             continue;
                         }
-                        let hint = event
-                            .headers
-                            .get(HEADER_CONTINUUM_BODY_HINT)
-                            .map(|s| s.as_str());
-                        if hint != Some(COMMAND_REQUEST_BODY_HINT) {
+                        // The one inbound classifier routes by header; only a command
+                        // request reaches the handler (whose ingress contract decides it).
+                        let is_request = matches!(
+                            classify_inbound(Arc::clone(&event)),
+                            InboundEvent::Protocol(ref envelope)
+                                if envelope.kind() == &ProtocolKind::CommandRequest
+                        );
+                        if !is_request {
                             continue;
                         }
                         if let Err(e) = handler.on_envelope((*event).clone()).await {

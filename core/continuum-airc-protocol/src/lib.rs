@@ -17,6 +17,7 @@
 
 pub mod command;
 pub mod event;
+pub mod inbound;
 pub mod ws;
 
 pub use command::{
@@ -26,6 +27,10 @@ pub use command::{
     DEFAULT_COMMAND_DEADLINE, HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH,
     HEADER_COMMAND_STATUS, HEADER_CONTINUUM_BODY_HINT, KIND_BROADCAST, KIND_LOCAL, KIND_PEER,
     KIND_ROOM,
+};
+pub use inbound::{
+    classify as classify_inbound, Addressing, ConversationEvent, InboundEvent, ProtocolEnvelope,
+    ProtocolKind,
 };
 pub use ws::{WsClientMessage, WsServerMessage};
 pub use event::{

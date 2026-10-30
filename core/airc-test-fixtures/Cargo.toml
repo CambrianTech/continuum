@@ -25,6 +25,8 @@ tempfile = "3"
 # Smoke tests of the fixture itself need the request/reply primitives
 # plus the typed header constants.
 airc-protocol = { workspace = true }
+# Sets the loopback peers' trust tier (the ingress contract reads it).
+airc-trust = { workspace = true }
 futures = "0.3"
 
 [features]
