@@ -57,7 +57,7 @@ pub use acting_hands::*;
 mod root_acting_workspace;
 pub use root_acting_workspace::*;
 mod task_consumption;
-pub use task_consumption::TaskConsumptionError;
+pub use task_consumption::{ResidentTaskSink, TaskConsumptionError, TaskSinkError};
 mod own_speech_persisted;
 pub use own_speech_persisted::VolatileReceipt;
 pub(crate) use own_speech_persisted::*;

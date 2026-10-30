@@ -97,3 +97,60 @@ async fn failed_checkpoint_returns_no_receipt_and_replay_commits_staged_end(
     assert_eq!(restored.pending_task_wakes(), vec![task]);
     Ok(())
 }
+
+#[tokio::test]
+async fn ledger_ack_follows_resident_commit_and_restart_keeps_wake_without_handle(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use continuum_kernel::runtime::tasks::{TaskLedger, TaskOutput};
+    let home = tempfile::tempdir()?;
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let (adapter, _database) = continuum_kernel::orm::store::fresh_adapter().await;
+    let ledger = TaskLedger::new(adapter.clone()).await?;
+    let registry = Arc::new(PersonaWorkspaceRegistry::new());
+    let sink = ResidentTaskSink::new(Arc::clone(&registry));
+    let owner = Uuid::new_v4();
+    let task = ledger.accept(owner, "test/result".into()).await?;
+    let end = TaskEnd::Done(TaskOutput::Json(
+        serde_json::json!({"result":"useful result"}),
+    ));
+    ledger.finish(task, owner, end.clone()).await?;
+    let limit = std::num::NonZeroUsize::new(32).ok_or("invalid fixture page")?;
+    assert!(ledger
+        .deliver_page(owner, None, limit, &sink)
+        .await
+        .is_err());
+    assert_eq!(ledger.pending(task, owner).await?, Some(end.clone()));
+    registry.register_from_cfg(cfg_for(owner))?;
+    let checkpoint = volatile_path(owner)?;
+    std::fs::create_dir_all(checkpoint.parent().ok_or("checkpoint parent absent")?)?;
+    let obstruction = checkpoint.with_extension("json.tmp");
+    std::fs::create_dir(&obstruction)?;
+    assert!(ledger
+        .deliver_page(owner, None, limit, &sink)
+        .await
+        .is_err());
+    assert_eq!(ledger.pending(task, owner).await?, Some(end.clone()));
+    std::fs::remove_dir(&obstruction)?;
+    assert_eq!(
+        ledger
+            .deliver_page(owner, None, limit, &sink)
+            .await?
+            .acknowledged,
+        1
+    );
+    assert_eq!(ledger.pending(task, owner).await?, None);
+    let reopened = TaskLedger::new(adapter).await?;
+    let restored = WorkingMemory::new(8);
+    restored.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
+    assert_eq!(restored.pending_task_wakes(), vec![task]);
+    assert_eq!(reopened.terminal(task, owner).await?, Some(end));
+    assert_eq!(
+        reopened
+            .deliver_page(owner, None, limit, &sink)
+            .await?
+            .acknowledged,
+        0
+    );
+    assert_eq!(restored.pending_task_wakes(), vec![task]);
+    Ok(())
+}

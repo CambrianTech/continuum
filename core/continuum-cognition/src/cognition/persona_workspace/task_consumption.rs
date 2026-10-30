@@ -41,3 +41,43 @@ impl PersonaWorkspaceRegistry {
         Ok(save_volatile(owner, SaveReason::Periodic, None, &memory)?)
     }
 }
+
+/// Async adapter for the registered owner. Filesystem work runs on a blocking
+/// worker and is awaited; a worker failure cannot be acknowledged as consumption.
+pub struct ResidentTaskSink(Arc<PersonaWorkspaceRegistry>);
+
+impl ResidentTaskSink {
+    pub fn new(registry: Arc<PersonaWorkspaceRegistry>) -> Self {
+        Self(registry)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TaskSinkError {
+    #[error(transparent)]
+    Consumption(#[from] TaskConsumptionError),
+    #[error("resident task checkpoint worker failed: {0}")]
+    Worker(#[from] tokio::task::JoinError),
+}
+
+#[async_trait::async_trait]
+impl continuum_kernel::runtime::tasks::TaskOwnerSink for ResidentTaskSink {
+    type Error = TaskSinkError;
+
+    async fn consume(&self, owner: Uuid, task: Uuid, end: &TaskEnd) -> Result<(), Self::Error> {
+        let registry = Arc::clone(&self.0);
+        let end = end.clone();
+        // Carry the existing test filesystem scope onto the blocking worker.
+        #[cfg(test)]
+        let test_home = crate::paths::NativeHomeOverride::current();
+        tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            let _native = test_home
+                .as_deref()
+                .map(crate::paths::NativeHomeOverride::install);
+            registry.consume_task_end(owner, task, end)
+        })
+        .await??;
+        Ok(())
+    }
+}
