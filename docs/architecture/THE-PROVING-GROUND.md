@@ -143,6 +143,64 @@ Workload sources:
 
 Cormac owns turning these into the scenario suite (HOW-A-MIND section 10).
 
+## 4a. The data shapes
+
+Every part of the proving ground reads these, so each is defined once (Cormac, the workloads owner). They are
+derived from the capture records' own fields (request and response records in `fixtures/prompt-captures`,
+schema 4; the field list is in `~/.continuum/evidence/2026-10-30-read-loops/README.md`).
+
+**`ActReduction`, one per act, built on the node that holds the capture (P9):**
+
+| Group | Fields |
+|---|---|
+| Identity | persona, room, request, session, cycle, build sha, captured-at, cause and cause root (ids, not content) |
+| Request | context window, max tokens, purpose (enum); system prompt `{tokens, hash}`; each message `{role, tokens, hash}`; each tool `{name, schema hash, tokens}` |
+| Response | finish (enum); usage `{input, output}`; timing `{cached, prefill tokens, prefill ms, decode tokens, decode ms}`; each tool call `{name, args fingerprint}`; text `{tokens, hash}` |
+| Delivery | elapsed ms, wire attempts, error kind (enum) |
+
+- Token counts use the serving model's own tokenizer, recorded by model id, so T1's exact counts are real.
+- `args fingerprint` is the hash of the tool codec's canonical arguments: MIND-CONTEXT invariant 4's
+  fingerprint. Repeats are visible in a reduction without any of the words.
+- A reduction carries outcome kinds (section 7 of HOW-A-MIND: edit applied, message sent, PR opened, move made,
+  tool error, unfulfilled) as typed values reported by the producer, never read from text.
+
+**The text check (P9, enforced by type and test, not by review).** A reduction is accepted only if every
+string field belongs to a closed set: ids, tool names, model ids, enum values and hashes. Everything else is a
+number. The reducer's output type has no free-text field, and a test feeds it a capture with planted words
+and asserts that none survive. A stray string fails the build, so no reviewer has to catch it.
+
+**The scenario file (P5):**
+
+| Field | Contents |
+|---|---|
+| name | |
+| kind | `Scenario`, or `KnownBad { incident, policy revision }` |
+| world | node profile references (measured, or marked unmeasured), the person's timeline (apps, messages, patience) |
+| workload | reduction-set references, and which minds and acts each one replays |
+| events | typed events with their times |
+| policy | a revision, or overrides to it |
+| pass | `[{metric, criterion}]` |
+
+- A criterion is an invariant (`== 0`, never) or a comparison with a named, measured baseline. A threshold
+  someone picked is refused, as R1 requires.
+- A `KnownBad` file states the criterion the prover must report as failing.
+
+**Home.** The types live in one small crate, `continuum-proving-types` (serde, ts-rs bindings, no logic).
+The T0/T1 harness (Fable), the grid world (Codex) and the reducer (Cormac) all depend on it, so no shape is
+defined twice.
+
+**First files: the known-bad suite**
+
+| Known-bad | Evidence | Fails on |
+|---|---|---|
+| The 12,288 reply cap | `2026-10-30-read-loops/` (M5, ab0466601) | repeats per resident-hour; turnovers per act |
+| The 963 grant with the 1,024 think budget | `2026-10-30-think-cuts/` (M5, b7879d85c) | identical cuts; writes per hour |
+| Four fixed slots | the same directory, `engine-58057.log` and `engine-args.txt` | a hot writer cut while other slots idle |
+| 49,152 on another machine | `2026-10-28-working-window/` (the M5 basis), run on a smaller swept profile | turnovers per act on that profile |
+| The 48k to 32k live-rate window | the residents' `.prev` capture segments, 2026-10-28 (no frozen directory) | turnovers per act |
+| Kimi's 100,704-token turn | the 5090 (to be frozen) | act seconds; lane time held |
+| An unfulfilled act repeated (#5604, resident 75ece751) | her card 6c55f7a7 | repeats of an unfulfilled act |
+
 ## 5. What it measures and what passes
 
 Every run reports the same metrics as the live health line and the 15-minute read, from the same receipts.
