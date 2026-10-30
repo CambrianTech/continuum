@@ -88,16 +88,18 @@ pub(super) fn register_pressure_broker(
             crate::clog_warn!("Cargo disk ownership binding refused: {error}");
         }
 
-        // Per-worktree cargo targets (`cache/wt-targets/<worktree>`): one whole target per
-        // git worktree, evicted least-recently-built first and never one a build lock, a
-        // running image, a writer lease or serving custody holds. Unowned until the M5 hit
-        // ENOSPC with 448 GB there on 2026-10-29.
+        // Per-worktree cargo targets (`cache/wt-targets/<worktree>`), unweighed until the
+        // M5 hit ENOSPC with 448 GB there on 2026-10-29. OBSERVE mode: the pool measures,
+        // reports its pressure and publishes what keep-recent or a hot volume would take
+        // (`disk.wt_targets.would_evict`), and deletes nothing. Agents build there from
+        // shells the core never admitted, so deletion waits for build admission (Codex's
+        // next slice), which switches this to WorktreeEvictionMode::Delete. Its work runs
+        // on this runtime's blocking pool, never on the broker's tick.
         if let Some(dir) = crate::system_resources::tracked_dir("wt-targets") {
-            // Its measurements and evictions run on this runtime's blocking pool, never
-            // on the broker's tick (the first walk is the whole class, 448 GB on the M5).
             broker.register(Arc::new(crate::system_resources::WorktreeTargetsPool::new(
                 dir,
                 rt_handle.clone(),
+                crate::system_resources::WorktreeEvictionMode::Observe,
             ))
                 as Arc<dyn crate::paging::pool::ResourcePool>);
         }

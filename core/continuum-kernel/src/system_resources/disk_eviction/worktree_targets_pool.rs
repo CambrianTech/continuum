@@ -33,6 +33,12 @@
 //! measurement (no snapshot yet, or the scanner has observed the class since) or an
 //! eviction (which re-measures and republishes when it ends). Bytes a job frees are
 //! recorded on the class at once and reported to the broker on the next tick.
+//!
+//! PRODUCTION OBSERVES, IT DOES NOT DELETE (Codex on #5601). Agents build into these dirs
+//! from shells the core never admitted, so the registry's exclusion cannot see them, and
+//! naming them out of contract does not protect their work. Until build admission exists
+//! (the next slice) the pool runs in [`WorktreeEvictionMode::Observe`]: it measures, plans, and
+//! publishes what keep-recent or a hot volume WOULD take, and deletes nothing.
 
 use super::*;
 
@@ -42,8 +48,24 @@ use targets::{Plan, Snapshot, Targets};
 /// The prefix a detached child carries until its removal completes.
 const DETACHED_PREFIX: &str = ".evicting-";
 
+/// Whether the pool carries its plan out. A typed mode chosen where the pool is built,
+/// never a flag or an environment variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorktreeEvictionMode {
+    /// Measure, plan, and publish what would be taken (a `disk.wt_targets.would_evict`
+    /// probe naming each target and its bytes); delete nothing. Production, until every
+    /// build into the class is admitted through the disk registry.
+    Observe,
+    /// Carry the plan out: detach and remove each target that passes every hold check.
+    Delete,
+}
+
 pub struct WorktreeTargetsPool {
     targets: Arc<Targets>,
+    mode: WorktreeEvictionMode,
+    /// The last would-take list published in [`WorktreeEvictionMode::Observe`], so an unchanged
+    /// plan is published once rather than once per tick.
+    would_take: parking_lot::Mutex<Vec<(PathBuf, u64)>>,
     /// The runtime whose blocking pool runs measurements and evictions.
     runtime: tokio::runtime::Handle,
     /// The last measurement, published by the background job and read by the tick.
@@ -64,13 +86,23 @@ impl Drop for JobSlot {
 }
 
 impl WorktreeTargetsPool {
-    pub fn new(tracked: Arc<TrackedDir>, runtime: tokio::runtime::Handle) -> Self {
-        Self::from_targets(Targets::new(tracked), runtime)
+    pub fn new(
+        tracked: Arc<TrackedDir>,
+        runtime: tokio::runtime::Handle,
+        mode: WorktreeEvictionMode,
+    ) -> Self {
+        Self::from_targets(Targets::new(tracked), runtime, mode)
     }
 
-    fn from_targets(targets: Targets, runtime: tokio::runtime::Handle) -> Self {
+    fn from_targets(
+        targets: Targets,
+        runtime: tokio::runtime::Handle,
+        mode: WorktreeEvictionMode,
+    ) -> Self {
         Self {
             targets: Arc::new(targets),
+            mode,
+            would_take: parking_lot::Mutex::new(Vec::new()),
             runtime,
             snapshot: Arc::new(tokio::sync::watch::Sender::new(None)),
             busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -101,6 +133,46 @@ impl WorktreeTargetsPool {
                 0
             },
         }
+    }
+
+    /// What a plan would take, before hold checks (they take locks, which is IO): the
+    /// targets outside the budget, then, under a pressure ask, the oldest kept ones until
+    /// the ask is covered. Pure, from the snapshot.
+    fn planned_targets(snapshot: &Snapshot, plan: Plan) -> Vec<(PathBuf, u64)> {
+        let mut taken = Vec::new();
+        let mut bytes = 0u64;
+        for (index, (candidate, size)) in snapshot.live.iter().enumerate() {
+            let asking = plan.pressure_ask > 0 && bytes < plan.pressure_ask;
+            if index >= plan.beyond && !asking {
+                break;
+            }
+            bytes = bytes.saturating_add(*size);
+            taken.push((candidate.path.clone(), *size));
+        }
+        taken
+    }
+
+    /// Publish the would-take list when it changed: the observation the next slice's
+    /// deletion will be judged against.
+    fn publish_would_take(&self, taken: Vec<(PathBuf, u64)>) {
+        let mut last = self.would_take.lock();
+        if *last == taken {
+            return;
+        }
+        let bytes: u64 = taken.iter().map(|(_, size)| *size).sum();
+        let targets: Vec<String> = taken
+            .iter()
+            .map(|(path, size)| format!("{} ({} MB)", path.display(), size / (1024 * 1024)))
+            .collect();
+        continuum_base::probe!(
+            class = "disk.wt_targets.would_evict",
+            tier = %self.targets.tier,
+            count = taken.len() as u64,
+            bytes = bytes,
+            targets = ?targets,
+            "keep-recent / hot-volume plan for wt-targets, NOT carried out (observe mode until build admission exists); each target would still face every hold check"
+        );
+        *last = taken;
     }
 
     /// Is the volume hot by the disk governor's own classification (High or worse)? An
@@ -179,6 +251,11 @@ impl ResourcePool for WorktreeTargetsPool {
                 if snapshot.detached.is_empty() && plan.beyond == 0 && plan.pressure_ask == 0
                     || snapshot.live.is_empty() && snapshot.detached.is_empty()
                 {
+                    self.busy.store(false, Ordering::Release);
+                    return reported;
+                }
+                if self.mode == WorktreeEvictionMode::Observe {
+                    self.publish_would_take(Self::planned_targets(&snapshot, plan));
                     self.busy.store(false, Ordering::Release);
                     return reported;
                 }

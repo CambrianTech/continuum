@@ -14,10 +14,6 @@ pub(super) const OWNED: &[&str] = &[
         // Same owner, same loop, same reasoning — the airc build tree is derived
         // artifacts like its two siblings, so it is OWNED rather than deferred.
         "cargo-target-airc",
-        // Owner: WorktreeTargetsPool — a directory of per-worktree cargo targets, each
-        // derived output; whole unheld dirs go least-recently-built first, never one a cargo
-        // lock, a running image, a writer lease or serving custody holds.
-        "wt-targets",
         // Owner: CitizenWorkspacePool — dormant, non-resident WORKSPACES only, and
         // only after complete verified preservation. Memory is never evicted.
         "citizens",
@@ -138,6 +134,18 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
             "c4f4b8cd: never evicted by the substrate — Joel decided to archive, not delete; \
              removal is an operator's decision. Bounded: written once, the receipt stops \
              any second write",
+        ),
+        // Registered 2026-10-29 (the M5 at ENOSPC, 448 GB here). WorktreeTargetsPool is
+        // built and registered in OBSERVE mode: it measures, reports pressure and publishes
+        // what keep-recent or a hot volume would take, and deletes nothing. Deferred, not
+        // owned, because agents build here from shells the disk registry never admitted, so
+        // its exclusion cannot protect their work (Codex on #5601).
+        (
+            "wt-targets",
+            "#5601 next slice (Codex): build admission, every build into a worktree target \
+             admitted through the disk registry with a lease; then WorktreeTargetsPool runs \
+             in WorktreeEvictionMode::Delete (keep recent within budget, oldest unheld first, \
+             a hot volume may take the newest unheld)",
         ),
         ("forge", "#155: export trimmer — intermediates only, published artifacts stay"),
         // Registered the day benchmark/swe-* landed, BEFORE a sweep ran. Everything under

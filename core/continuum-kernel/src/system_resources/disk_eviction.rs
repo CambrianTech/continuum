@@ -50,4 +50,4 @@ pub use default_cargo_target_budget_bytes::*;
 mod cargo_target_pool;
 pub use cargo_target_pool::*;
 mod worktree_targets_pool;
-pub use worktree_targets_pool::WorktreeTargetsPool;
+pub use worktree_targets_pool::{WorktreeEvictionMode, WorktreeTargetsPool};

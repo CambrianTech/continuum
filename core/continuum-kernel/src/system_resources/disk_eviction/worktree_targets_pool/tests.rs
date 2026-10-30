@@ -72,7 +72,7 @@ fn pool_over(
     let mut targets = fixture_targets(root);
     targets.budget_for = budget;
     targets.volume_sample = volume;
-    WorktreeTargetsPool::from_targets(targets, rt.handle().clone())
+    WorktreeTargetsPool::from_targets(targets, rt.handle().clone(), WorktreeEvictionMode::Delete)
 }
 
 /// One direct tick and the job it started, waited out. Returns what that job freed.
@@ -146,7 +146,11 @@ fn evicts_the_least_recently_built_unheld_target_first_and_never_a_held_one() {
             Ok(Arc::new(()) as Kept)
         }
     };
-    let pool = WorktreeTargetsPool::from_targets(targets, rt.handle().clone());
+    let pool = WorktreeTargetsPool::from_targets(
+        targets,
+        rt.handle().clone(),
+        WorktreeEvictionMode::Delete,
+    );
 
     assert_eq!(tick(&pool, 1), 0, "the first tick only measures");
     assert_eq!(
@@ -224,6 +228,7 @@ fn broker_relieve_actually_deletes_from_an_over_budget_wt_targets_pool() {
     let pool = Arc::new(WorktreeTargetsPool::from_targets(
         targets,
         rt.handle().clone(),
+        WorktreeEvictionMode::Delete,
     ));
     let broker = PressureBroker::new(BrokerConfig::default());
     broker.register(pool.clone() as Arc<dyn ResourcePool>);
@@ -281,6 +286,7 @@ fn a_calm_volume_keeps_the_newest_targets_within_budget_and_evicts_the_older_one
     let pool = Arc::new(WorktreeTargetsPool::from_targets(
         targets,
         rt.handle().clone(),
+        WorktreeEvictionMode::Delete,
     ));
     let broker = PressureBroker::new(BrokerConfig::default());
     broker.register(pool.clone() as Arc<dyn ResourcePool>);
@@ -343,6 +349,7 @@ fn a_slow_walk_never_delays_the_brokers_tick_or_the_pressure_reading() {
     let pool = Arc::new(WorktreeTargetsPool::from_targets(
         targets,
         rt.handle().clone(),
+        WorktreeEvictionMode::Delete,
     ));
     let broker = Arc::new(PressureBroker::new(BrokerConfig::default()));
     broker.register(pool.clone() as Arc<dyn ResourcePool>);
@@ -450,4 +457,53 @@ fn a_profile_lock_created_after_the_snapshot_is_respected() {
         target.join("debug/deps/unit.rlib").exists() && target.join("release/.cargo-lock").exists()
     );
     drop(held);
+}
+
+// what this catches (Codex on #5601): production deletes nothing until build admission
+// exists. In observe mode an over-budget class on a hot volume is measured and planned, the
+// plan is published naming each target it would take, and every byte stays on disk; the
+// broker is told of nothing freed. Mutation check: carrying the plan out in observe mode
+// removes `older`.
+#[test]
+fn observe_mode_publishes_what_it_would_take_and_deletes_nothing() {
+    let rt = runtime();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("wt-targets");
+    let older = target(&root, "older", 2);
+    let newest = target(&root, "newest", 1);
+    let mut targets = fixture_targets(&root);
+    targets.budget_for = |_| 1500;
+    targets.volume_sample = critical_volume;
+    let pool = Arc::new(WorktreeTargetsPool::from_targets(
+        targets,
+        rt.handle().clone(),
+        WorktreeEvictionMode::Observe,
+    ));
+    let broker = PressureBroker::new(BrokerConfig::default());
+    broker.register(pool.clone() as Arc<dyn ResourcePool>);
+
+    assert_eq!(
+        broker_ticks(&broker, &pool, 3),
+        0,
+        "nothing is freed in observe mode"
+    );
+    assert!(
+        older.join("debug/deps/unit.rlib").exists() && newest.join("debug/deps/unit.rlib").exists()
+    );
+    let would: Vec<String> = pool
+        .would_take
+        .lock()
+        .iter()
+        .map(|(path, _)| {
+            path.file_name()
+                .expect("name")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(
+        would,
+        ["older", "newest"],
+        "the budget trim, then the hot volume's ask, oldest first"
+    );
 }
