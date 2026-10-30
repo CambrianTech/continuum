@@ -11,29 +11,7 @@ use std::future::Future;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-/// One raise-once signal from the module to what it governs. Its receiver resolves when the
-/// module raises it, or when the module is gone (which ends what it guards all the same).
-#[derive(Clone)]
-pub(crate) struct Signal(watch::Receiver<bool>);
-
-impl Signal {
-    fn pair() -> (watch::Sender<bool>, Self) {
-        let (raise, raised) = watch::channel(false);
-        (raise, Self(raised))
-    }
-
-    /// Resolves once the signal is raised or its owner dropped it.
-    pub(crate) fn raised(&self) -> impl Future<Output = ()> + Send + 'static {
-        let mut signal = self.0.clone();
-        async move {
-            match signal.wait_for(|raised| *raised).await {
-                Ok(_) => {}
-                // The owner dropped its sender: the listener it governs is gone.
-                Err(_) => {}
-            }
-        }
-    }
-}
+use crate::stop::Signal;
 
 /// A bound listener and the task serving it.
 pub(crate) struct Listener {

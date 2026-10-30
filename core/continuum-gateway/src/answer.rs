@@ -126,7 +126,7 @@ impl<W: Wire> tokio_stream::Stream for Answer<W> {
                 this.generation = None;
                 this.encode_received();
                 this.encoded
-                    .extend(this.encoder.failed(crate::server::STOPPING));
+                    .extend(this.encoder.failed(crate::stop::STOPPING));
                 continue;
             }
             let Some(generation) = this.generation.as_mut() else {
@@ -347,7 +347,7 @@ mod tests {
             "stopped: the generation and its slot are gone"
         );
         assert!(
-            closing.iter().any(|f| f.contains(crate::server::STOPPING)),
+            closing.iter().any(|f| f.contains(crate::stop::STOPPING)),
             "the agent is told why: {closing:?}"
         );
         assert!(poll(&mut answer).is_ready(), "the answer ended");
