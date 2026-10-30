@@ -172,3 +172,83 @@ fn broker_relieve_actually_deletes_from_an_over_budget_wt_targets_pool() {
     );
     assert!(!old.exists() && !remnant.exists());
 }
+
+// what this catches: KEEP RECENT, with no disk pressure (Joel, 2026-10-29: build caches
+// rebuild, so old ones are disposable at any time). On a calm volume an over-budget class
+// keeps its newest targets that fit the budget and evicts the older ones through the broker's
+// ordinary tick, a held one never; repeated ticks do not eat into what fits. Mutation checks:
+// dropping the trim leaves `older` (the calm volume never asks for it); ranking oldest first
+// keeps `older` and evicts `newest`; letting the broker's 60% ask apply over budget evicts `newer`.
+#[test]
+fn a_calm_volume_keeps_the_newest_targets_within_budget_and_evicts_the_older_ones() {
+    use crate::paging::{BrokerConfig, PressureBroker};
+    assert_eq!(
+        WorktreeTargetsPool::beyond_budget(&[1000, 1000, 1000, 1000], 2500),
+        2
+    );
+    assert_eq!(
+        WorktreeTargetsPool::beyond_budget(&[1000, 1000], 2500),
+        0,
+        "within budget, nothing goes"
+    );
+    assert_eq!(
+        WorktreeTargetsPool::beyond_budget(&[10, 5000], 100),
+        1,
+        "the newest is kept even alone over budget"
+    );
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("wt-targets");
+    let oldest_held = target(&root, "oldest-held", 4);
+    let older = target(&root, "older", 3);
+    let newer = target(&root, "newer", 2);
+    let newest = target(&root, "newest", 1);
+    let held = try_exclusive_flock_detailed(&oldest_held.join("debug/.cargo-lock"));
+    assert!(
+        matches!(held, LockAttempt::Acquired(_)),
+        "the fixture build holds its profile lock"
+    );
+    let mut pool = fixture_pool(&root);
+    pool.budget_for = |_| 2500;
+    pool.volume_sample = |path| {
+        Some(DriveInfo {
+            mount: path.into(),
+            total_bytes: 100_000,
+            available_bytes: 90_000,
+            role: DriveRole::System,
+        })
+    };
+    let pool = Arc::new(pool);
+    let broker = PressureBroker::new(BrokerConfig::default());
+    broker.register(pool.clone() as Arc<dyn ResourcePool>);
+
+    let report = broker.relieve();
+    assert!(
+        report.triggered,
+        "an over-budget class is trimmed with the volume at 10%"
+    );
+    assert_eq!(
+        report.bytes_freed, 1000,
+        "exactly the unheld target outside the budget"
+    );
+    assert!(
+        !older.exists(),
+        "the older unheld target outside the budget goes"
+    );
+    assert!(
+        newest.exists() && newer.exists(),
+        "the newest targets that fit the budget stay"
+    );
+    assert!(
+        oldest_held.join("debug/deps/unit.rlib").exists(),
+        "a held target is never evicted"
+    );
+
+    broker.relieve();
+    assert!(
+        newest.exists() && newer.exists(),
+        "a second tick keeps what fits the budget"
+    );
+    assert!(oldest_held.join("debug/deps/unit.rlib").exists());
+    drop(held);
+}

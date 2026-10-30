@@ -40,6 +40,13 @@ pub struct WorktreeTargetsPool {
     /// Whether "every target is held" was already said for the current run of such
     /// evictions, so a standing condition speaks once instead of once per broker tick.
     all_held_reported: std::sync::atomic::AtomicBool,
+    /// The class budget for a volume sample: the cargo-target budget in production. A field
+    /// so a test can stand for a volume small enough to put a fixture over it.
+    pub(super) budget_for: fn(Option<&DriveInfo>) -> u64,
+    /// Each child's measured size, keyed by the `last_built` it was measured at: a build
+    /// that changes the size moves that mark, so an unchanged mark needs no second walk.
+    /// Every relief tick ranks the whole class; this keeps that from re-walking it.
+    sizes: parking_lot::Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, u64)>>,
 }
 
 /// One child target dir, with when a build last wrote into it.
@@ -60,6 +67,8 @@ impl WorktreeTargetsPool {
             volume_sample: super::super::DiskPressureMonitor::volume_for,
             leased: super::super::disk_reporters::cargo_root_leased,
             all_held_reported: std::sync::atomic::AtomicBool::new(false),
+            budget_for: Self::budget,
+            sizes: parking_lot::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -71,26 +80,69 @@ impl WorktreeTargetsPool {
         })
     }
 
-    /// When a build last wrote into `dir`: the newest mtime among the dir, its entries, and
-    /// its entries' entries. A build that compiles anything adds files to `<profile>/deps`,
+    /// KEEP RECENT (Joel, 2026-10-29: build caches rebuild, so old ones are disposable at
+    /// any time, not only under disk pressure). Given sizes ordered least recently built
+    /// first, how many of the oldest fall outside the budget: newest first, a target is kept
+    /// while the running total fits. The newest is always kept, even alone over the budget:
+    /// it is the one a build is most likely about to reuse, and evicting it every tick
+    /// between two builds would make every build cold.
+    pub(super) fn beyond_budget(sizes_oldest_first: &[u64], budget: u64) -> usize {
+        let mut kept = 0u64;
+        for (from_newest, size) in sizes_oldest_first.iter().rev().enumerate() {
+            kept = kept.saturating_add(*size);
+            if from_newest > 0 && kept > budget {
+                return sizes_oldest_first.len() - from_newest;
+            }
+        }
+        0
+    }
+
+    /// A child's size, walked only when a build has written into it since the last walk.
+    fn measured_size(&self, candidate: &Candidate) -> u64 {
+        if let Some((at, size)) = self.sizes.lock().get(&candidate.path) {
+            if *at == candidate.last_built {
+                return *size;
+            }
+        }
+        let size = dir_size_bytes(&candidate.path);
+        self.sizes
+            .lock()
+            .insert(candidate.path.clone(), (candidate.last_built, size));
+        size
+    }
+
+    /// When a build last wrote into `dir`: the newest mtime among its entries and its
+    /// entries' entries. A build that compiles anything adds files to `<profile>/deps`,
     /// `<profile>/.fingerprint` and `<profile>/incremental` (each a depth-2 directory whose
     /// mtime moves when an entry is added or replaced) and relinks `<profile>/<bin>`; under
     /// `--target <triple>` the profile dir is itself at depth 2 and moves when its outputs
-    /// are relinked. A no-op build writes nothing and so does not refresh the rank. Access times are not used: `noatime`/`relatime` mounts make
-    /// them unreliable. `None` when the dir's own mtime cannot be read: its recency is
-    /// unknown, so it is not ranked at all rather than guessed old or new.
+    /// are relinked. A no-op build writes nothing and so does not refresh the rank.
+    ///
+    /// The dir's OWN mtime and every `.cargo-lock` are not read: this pool creates the root
+    /// lock when it checks a target, and that would rank the target it just declined as the
+    /// newest (only an empty target, with nothing else to read, is ranked by its own mtime).
+    /// Access times are not used: `noatime`/`relatime` mounts make them unreliable. `None`
+    /// when no mtime can be read: its recency is unknown, so it is not ranked at all rather
+    /// than guessed old or new.
     pub(super) fn last_built(dir: &Path) -> Option<std::time::SystemTime> {
-        fn visit(path: &Path, descend: bool, newest: &mut std::time::SystemTime) -> Vec<PathBuf> {
+        fn visit(
+            path: &Path,
+            descend: bool,
+            newest: &mut Option<std::time::SystemTime>,
+        ) -> Vec<PathBuf> {
             let Ok(entries) = std::fs::read_dir(path) else {
                 return Vec::new();
             };
             let mut dirs = Vec::new();
             for entry in entries.flatten() {
+                if entry.file_name() == ".cargo-lock" {
+                    continue;
+                }
                 let Ok(metadata) = entry.metadata() else {
                     continue;
                 };
                 if let Ok(modified) = metadata.modified() {
-                    *newest = (*newest).max(modified);
+                    *newest = Some(newest.map_or(modified, |seen| seen.max(modified)));
                 }
                 if descend && metadata.is_dir() && !metadata.is_symlink() {
                     dirs.push(entry.path());
@@ -98,11 +150,14 @@ impl WorktreeTargetsPool {
             }
             dirs
         }
-        let mut newest = std::fs::symlink_metadata(dir).ok()?.modified().ok()?;
+        let mut newest = None;
         for child in visit(dir, true, &mut newest) {
             visit(&child, false, &mut newest);
         }
-        Some(newest)
+        match newest {
+            Some(newest) => Some(newest),
+            None => std::fs::symlink_metadata(dir).ok()?.modified().ok(),
+        }
     }
 
     /// The children to consider, least recently built first, plus any detached trees a
@@ -247,21 +302,23 @@ impl ResourcePool for WorktreeTargetsPool {
     }
 
     fn capacity_bytes(&self) -> u64 {
-        Self::budget((self.volume_sample)(self.tracked.path()).as_ref())
+        (self.budget_for)((self.volume_sample)(self.tracked.path()).as_ref())
     }
 
     fn usage_bytes(&self) -> u64 {
         self.tracked.bytes()
     }
 
-    /// Over its budget OR on a hot volume, the same rule as every build cache.
+    /// Over its budget (the keep-recent line: the broker then trims it on its next tick,
+    /// whatever the volume) OR on a hot volume. Within budget the class reads only the
+    /// volume: a cache that fits its budget is the policy met, not pressure building, so
+    /// the broker is not called to free nothing at 80-100% of it.
     fn pressure(&self) -> f64 {
         let volume = (self.volume_sample)(self.tracked.path());
-        cache_pressure_on_volume(
-            self.tracked.bytes(),
-            Self::budget(volume.as_ref()),
-            volume.as_ref(),
-        )
+        let budget = (self.budget_for)(volume.as_ref());
+        let bytes = self.tracked.bytes();
+        let over = if bytes > budget { bytes } else { 0 };
+        cache_pressure_on_volume(over, budget, volume.as_ref())
     }
 
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
@@ -291,13 +348,27 @@ impl ResourcePool for WorktreeTargetsPool {
         for tree in detached {
             freed = freed.saturating_add(Self::remove_detached(&tree));
         }
-        for candidate in &live {
-            if freed >= want_bytes.max(1) {
+        // Keep recent: everything outside the budget goes, oldest first, held ones excepted.
+        let sizes: Vec<u64> = live.iter().map(|c| self.measured_size(c)).collect();
+        self.sizes
+            .lock()
+            .retain(|path, _| live.iter().any(|c| &c.path == path));
+        let budget = (self.budget_for)((self.volume_sample)(&root).as_ref());
+        let beyond = Self::beyond_budget(&sizes, budget);
+        // Past the budget trim, the broker's ask applies only when the class was within
+        // budget, i.e. the VOLUME brought the broker: then the oldest kept targets go too,
+        // until the ask is met. An over-budget call is answered by the trim alone, and a
+        // volume still hot after it brings the broker back on the next tick.
+        let within_budget = sizes.iter().sum::<u64>() <= budget;
+        for (index, candidate) in live.iter().enumerate() {
+            let pressure_ask = within_budget && freed < want_bytes.max(1);
+            if index >= beyond && !pressure_ask {
                 break;
             }
             let bytes = self.evict_one(&root, candidate);
             if bytes > 0 {
                 evicted += 1;
+                self.sizes.lock().remove(&candidate.path);
             }
             freed = freed.saturating_add(bytes);
         }
