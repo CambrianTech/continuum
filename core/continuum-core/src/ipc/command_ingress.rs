@@ -703,7 +703,7 @@ impl CommandRequestHandler {
                 "ok",
                 String::new(),
                 if measure {
-                    serde_json::to_vec(result)
+                    serde_json::to_vec(result) // airc wire: measure the serialized reply payload.
                         .map(|v| v.len() as u64)
                         .unwrap_or(0) // unwrap_or: the value came FROM serde and is about to be sent; 0 means unmeasured
                 } else {

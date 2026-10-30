@@ -1,64 +1,13 @@
-//! `AircEventPublisher` — peer-side cross-grid event publisher.
+//! Peer-side event subscription state and publisher.
 //!
-//! The inbound symmetric of [`AircEventTransport`](super::AircEventTransport).
-//! When a remote substrate dispatches
-//! `airc://<this-peer>/events/<topic>/subscribe`, its
-//! AircEventTransport packages an
-//! [`AircEventSubscribe`](super::AircEventSubscribe) envelope and
-//! sends via `Airc::request()`. The airc daemon on this side
-//! routes the envelope by body_hint to whichever ConsumerAdapter
-//! claims [`EVENT_SUBSCRIBE_BODY_HINT`]. That adapter wraps THIS
-//! publisher.
+//! Event control handlers in `airc_event_adapters` require verified addressed
+//! requests and share this registry. Their production dispatcher wiring is still
+//! pending; room transcript adapters cannot authorize control requests.
 //!
-//! ## What this commit ships
-//!
-//! This commit lands the **state machine + pure testable seams**:
-//!
-//! - [`EventPublisherState`] — the in-memory subscription registry.
-//!   Tracks active `(subscription_id → ActiveSubscription)` mappings
-//!   with subscriber peer, topic, filter, and a monotonic sequence
-//!   counter for drop-detection on the caller side.
-//! - [`register_subscription`](EventPublisherState::register) /
-//!   [`unregister_subscription`](EventPublisherState::unregister) /
-//!   [`lookup_matching`](EventPublisherState::lookup_matching) —
-//!   the three substrate primitives the ConsumerAdapters delegate
-//!   into.
-//! - Pure free functions: [`parse_subscribe_envelope`],
-//!   [`parse_unsubscribe_envelope`], [`build_subscribe_ack`],
-//!   [`build_unsubscribe_ack`], [`build_deliver_frame`],
-//!   [`matches_filter`] — every refusal/decision branch is
-//!   testable without airc, mirroring the testable-seams pattern
-//!   from `AircEventTransport` and `CommandRequestHandler`.
-//!
-//! ## What lands next
-//!
-//! - **`EventSubscribeAdapter`** + **`EventUnsubscribeAdapter`** —
-//!   thin `ConsumerAdapter` wrappers that parse via the pure
-//!   functions above, delegate to [`EventPublisherState`], and ack
-//!   via `Airc::reply()`. Both share an `Arc<EventPublisherState>`
-//!   so unsubscribe targets the same registry subscribe populated.
-//! - **`AircEventPublisher::publish(topic, payload)`** — fan-out
-//!   method. Looks up matching subscriptions via
-//!   `lookup_matching(topic, &payload)`, builds an
-//!   [`AircEventDeliver`] per subscriber (sequence bumped), sends
-//!   each as a room-broadcast `Airc::publish` with the
-//!   subscription_id header (subscribers demux via
-//!   `AircEventTransport::matches_subscription`).
-//! - Eventually: a local-`Events::emit()` bridge that calls
-//!   `publish()` automatically whenever a topic the substrate has
-//!   subscribers for fires. Until the local Events infrastructure
-//!   exists in continuum-core, the publish API is caller-driven —
-//!   intentionally simple, intentionally not auto-wired.
-//!
-//! ## Design choice: room-broadcast Deliver, header-demux at subscriber
-//!
-//! The airc transport addressing model is room-as-trust-boundary.
-//! `Airc::publish` broadcasts to the current room; subscribers
-//! demux by `HEADER_EVENT_SUBSCRIPTION_ID`. The same shape airc
-//! chat uses (everyone in the room sees the frame; addressing is
-//! semantic). Per-peer point-to-point is an optimization for a
-//! later slice, not a correctness need — subscription_id is a
-//! UUID, indistinguishable to non-subscribers.
+//! Deliver frames currently use room broadcasts with subscription-id demux.
+//! Those identifiers provide routing, not confidentiality: room peers can see
+//! published event payloads. Private event delivery requires a separate migration.
+//! Legacy envelope parsers remain pure compatibility helpers, not admission paths.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -231,7 +180,7 @@ pub struct MatchedSubscription {
 ///
 /// Exposes:
 /// - [`state()`](Self::state) — the shared state for adapter
-///   composition (the two `ConsumerAdapter`s in
+///   composition (the addressed handlers in
 ///   [`super::airc_event_adapters`] take this Arc).
 /// - [`publish()`](Self::publish) — the fan-out method. Looks up
 ///   matching subscriptions, builds an [`AircEventDeliver`] per
@@ -250,8 +199,8 @@ pub struct MatchedSubscription {
 /// let publisher = Arc::new(AircEventPublisher::new(airc.clone()));
 /// let subscribe = EventSubscribeAdapter::new(airc.clone(), publisher.state().clone());
 /// let unsubscribe = EventUnsubscribeAdapter::new(airc.clone(), publisher.state().clone());
-/// airc.register_consumer_adapter(subscribe).await?;
-/// airc.register_consumer_adapter(unsubscribe).await?;
+/// // An addressed dispatcher must call the matching handler with its verified request.
+/// // Production dispatcher wiring is pending; do not register room consumers.
 ///
 /// // Later, when substrate cognition emits an event:
 /// publisher.publish("cognition/analyze/complete", payload).await?;
@@ -285,7 +234,7 @@ impl AircEventPublisher {
         Self { airc, state }
     }
 
-    /// Borrow the shared state. The two `ConsumerAdapter`s in
+    /// Borrow the shared state. The addressed handlers in
     /// [`super::airc_event_adapters`] take this Arc so the
     /// subscribe path populates the same registry the publish path
     /// reads.
