@@ -437,7 +437,12 @@ impl LlmDeliberationFaculty {
         // a need sample.
         // This is the seam that turns the reserve from a `window/2` prior into a
         // measurement.
-        if let Some(reg) = &self.working_set {
+        //
+        // Classified once, for every completed generation, before anything branches on it:
+        // the hour line counts the stop here and nowhere else, so a cut that a fault path
+        // handles below is still counted exactly once (Aris's three cuts inside thinking read
+        // "think-only 0" while the count sat in one branch, the M5 2026-10-30).
+        {
             // The channel split the NEXT turn's allowance is sized from: the server's
             // count apportioned by the bytes the adapter separated into `reasoning`
             // and `text` (a think-only turn is all reasoning; a native call all answer).
@@ -469,6 +474,7 @@ impl LlmDeliberationFaculty {
                 reasoning_budget,
                 allowance,
             );
+            crate::cognition::health_ledger::note_stop(stop.counted(answer_tokens, reasoning_tokens));
             if let super::super::super::working_set::EmissionStop::ThinkBudgetHit { allowance } = stop {
                 continuum_base::probe!(
                     class = "delib.emission.think_budget_hit",
@@ -487,13 +493,15 @@ impl LlmDeliberationFaculty {
                     "think-only cut at the allowance — the peak holds, the need ring does not take it"
                 );
             }
-            let measured = reg.record_emission(
-                self.persona_id,
-                resp.usage.output_tokens,
-                reasoning_tokens,
-                stop,
-                ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
-            );
+            let measured = self.working_set.as_ref().and_then(|reg| {
+                reg.record_emission(
+                    self.persona_id,
+                    resp.usage.output_tokens,
+                    reasoning_tokens,
+                    stop,
+                    ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
+                )
+            });
             if stop == super::super::super::working_set::EmissionStop::CutMidAnswer {
                 // The cost of claiming her measured need (ONE-BUDGET slice 6): a write larger than any
                 // she has measured is cut once, then grows the next claim. Counted, so a live read sees it.
@@ -882,9 +890,6 @@ impl LlmDeliberationFaculty {
                             reasoning_len = reasoning.len(),
                             "generation ended inside the reasoning channel — no answer, no act; routing the think-only teacher"
                         );
-                        // The hour's receipt counts it (`[health] … think-only N`): two of
-                        // these in an hour on the M5 were the whole story of #4194.
-                        crate::cognition::health_ledger::note_think_only();
                         let call = crate::ai::types::ToolCall {
                             id: "tool-attempt-think-only".to_string(),
                             name: crate::cognition::tool_executor::command_executor::THINK_ONLY_SENTINEL

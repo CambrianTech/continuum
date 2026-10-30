@@ -199,6 +199,28 @@ async fn a_thought_cut_at_the_limit_lifts_nothing_and_hands_her_the_decision() {
 // the executor's teacher fires as an observation and drive_to_settle hands
 // her another generation. Glass-boxed live 2026-08-15: a full bench round
 // produced 17 inference turns and zero acts through exactly this hole.
+// what this catches: a generation cut at the output limit inside her reasoning, counted
+// as a cut think on the hour line, once, even though a fault path handles it and even with
+// no working set. Regression: Aris's three 963-token cuts inside thinking read "think-only 0"
+// (the M5, 2026-10-30), because the count sat in one branch the cut never reached.
+#[tokio::test]
+async fn a_length_cut_inside_reasoning_is_counted_as_a_cut_think() {
+    let persona = Uuid::new_v4();
+    let mut resp = make_response(FinishReason::Length, "", None);
+    resp.reasoning = Some("I should read the parser first, then compare it with".to_string());
+    let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
+    let faculty = LlmDeliberationFaculty::new(persona, "Aris", "You are Aris.", adapter)
+        .with_tools(vec![read_tool()])
+        .with_context_window(32_768);
+
+    let before = crate::cognition::health_ledger::read_stops();
+    faculty.contribute(&Workspace::new("fix the parser")).await.expect("verdict");
+    let after = crate::cognition::health_ledger::read_stops();
+    // The ledger is process-wide and other tests run beside this one, so the claim is a
+    // rise, not an absolute count.
+    assert!(after.cut_think > before.cut_think, "the cut think is on the hour's ledger: {before:?} -> {after:?}");
+}
+
 #[tokio::test]
 async fn think_only_turn_routes_the_teacher_sentinel_not_empty_speak() {
     let persona = Uuid::new_v4();
