@@ -221,7 +221,7 @@ and the claims below it re-clear against the new price.
 | L5 Admission | when demand or the decode knee changes | sequence capacity (#5188), decode rate by concurrency | how many minds generate at once | the measured knee, with aging so no mind waits forever |
 | L6 Node | when external load, heat or a training reservation changes | free memory, the person's apps, thermal state | the pool's size; returning memory to the person | gives back at once, takes back only by probing |
 | L0 Placement | when a node joins or leaves, offers change, or a tier below signals a sustained mismatch | offers and prices by gossip; measured transfer cost; each node's outcomes | which node hosts each mind, model, gene and job (ADAPTIVE-GRID-INTELLIGENCE candidate plans) | hysteresis and explicit switching cost; a price flicker never re-homes a mind |
-| L7 Policy | over hours and days | outcomes against decisions (receipts) | the value curves L2 and L3 use for each activity | a new policy replaces the old only after beating it on replay (FOCUS-CONTRACT) |
+| L7 Policy | over hours and days | outcomes of controlled probes: R6's upward tests recorded as experiments, each a bounded, receipted change to one grant for one act class, compared with matched acts without it | the value curves L2 and L3 use for each activity | a new curve replaces the old only after beating it on replay (FOCUS-CONTRACT); never learned from passive correlation, since hard tasks both think longer and fail more (Cormac on #5607) |
 
 ## 6. Scenarios
 
@@ -344,9 +344,11 @@ waiting on; one is idle; and the person starts a game partway through.
 | prompt tokens, cached tokens, fresh tokens, prefill seconds | act | the engine's response timing |
 | output tokens by channel (think, answer), decode seconds | act | the engine's response timing |
 | references: which items she read, cited, edited, expanded | act | her acts' causal records (#5611) |
-| faults: re-reads of folded items, by causal identity | act | the view, from causal identity |
+| faults: a re-read of an item her view held FOLDED; feeds L2 (raise that item's level) | act | the view, from causal identity (#5611) |
+| repeats: a re-read of an item held WHOLE with an unchanged outcome; perception renders it as a repeat, and it never grows the item (Cormac on #5607) | act | the view, from causal identity (#5611) |
+| reversals: per loop, decisions undone within a window, from the receipts; a scenario fails on it, so cascade stability is measured, not promised | loop | the receipts (R11) |
 | stops: landed, cut in answer, cut in think, refused | act | the emission classifier |
-| outcome: did the act change the world (an edit, a message, a PR, a move) | act | the act's result |
+| outcome: a typed result kind reported by the tool that did it (edit applied with its diff hash, message sent with its event id, PR opened with its number, move made, tool error), never inferred from her text. It is the system's service metric for tuning allocation; it never grades her normal work and never reaches a rendering of her or a gate (the no-harness rule) | act | the producing tool, on the act's causal record |
 | waits: page-ins, queue time, a person's waiting time | act | serving and the room |
 | free memory, bytes per token, external load, thermal state | tick | the node authority |
 | decode rate by concurrency; prefill rate | model, node | `decode_knee`, `prefill_rate` |
@@ -380,6 +382,18 @@ waiting on; one is idle; and the person starts a game partway through.
 - loops L2 to L6 as closed loops (today each is an open-loop rule);
 - the policy loop L7.
 
+**What is live today and how it reaches L1** (Cormac on #5607). Merged #5610 sends her measured need as
+`max_tokens` and accepts a cut on a write larger than any she has made; S1's "no write cut while the pool had
+room" contradicts it. On the M5 the cost was not one cut but three identical ones (Aris, 2026-10-30, 963
+tokens inside her thinking, because the fixed 1,024-token think budget exceeded the grant). Two steps reach L1:
+1. Within today's fixed slot: her output may use all the room her prompt leaves in her slot. Generated tokens
+   are the only cost, and the slot is hers already, so no other mind pays.
+2. Beyond her slot: the engine must hold one pool (unified state) and extend a running generation's grant at
+   a step boundary, a verb that does not exist yet (SERVING-ENGINE S1 to S3; owner Fable, engine).
+
+Until step 2, `delib.emission.cut_mid_answer` and the think-only cut probe are the measured gap, and S1's
+no-cut criterion applies after step 2 lands.
+
 **Open-loop numbers to remove** (each becomes a ratchet entry that only goes down):
 - the epoch start's half of the window;
 - `ACT_REASONING_BUDGET`, the deliberation think share, the cold reply prior, the p90 with headroom;
@@ -388,20 +402,24 @@ waiting on; one is idle; and the person starts a game partway through.
 - the fixed slot count and fixed slot window;
 - every other number the inventory finds.
 
-## 10. Questions for review
+## 10. Decisions from review
 
-1. **Human intent:** which inputs may a person set (priorities among activities, a conversation marked
-   live), and is everything else measured?
-2. **The objective:** is it "least expected seconds to an act that changes the world, weighted by each
-   mind's temperature"? Or should usefulness be measured differently?
-3. **Thinking:** is S13's rule (thinking bounded by its measured value to the outcome) the right one?
-4. **The value unit:** GRID-MARKET-CLEARING makes the activity's measured outcome the numeraire. Is that
-   unit right for her normal work, given that her normal work is never graded (CLAUDE.md, "no harness")?
-   The outcome here is an observation of what the act changed (an edit, a message, a merged PR), not a
-   score of her.
+Answers from Cormac's review of #5607 at `f2eb889cb`. Joel's word overrides any of them.
+
+1. **Human intent:** a person may set which activity matters now, and that a conversation is live. Both are
+   typed events, never weights. Everything else is measured.
+2. **The objective:** least expected seconds to a typed world-changing outcome (section 7's taxonomy),
+   weighted by temperature and aged. Guard: a person-waiting call's latency is never traded for throughput;
+   its floor comes first (S15).
+3. **Thinking:** bounded by its measured value to the outcome, measured only by L7's controlled probes.
+4. **The value unit:** GRID-MARKET-CLEARING's numeraire is the activity's measured outcome. For her normal
+   work that is the typed outcome of section 7: an observation of what the act changed, never a score of
+   her.
 5. **Ownership:**
-   - the pool, admission and residency (L4 to L6): Codex;
-   - the mind's side (L1 to L3) and the engine verbs: Fable;
-   - the outcome signals and the policy loop (L7): Cormac.
-6. **The dyno:** which captured sessions become the scenario suite? Section 6 names the shapes; we need real
-   captures for each.
+   - L0 and L4 to L6 (placement, pool, admission, residency, node): Codex;
+   - L1 to L3 and the engine verbs: Fable;
+   - the outcome signals (taxonomy, faults and repeats, stops, the reversal counter) and L7: Cormac;
+   - network capacity for leased minds: airc's NETWORK-AUTHORITY (airc#1628), which L6 consumes rather than
+     measuring its own.
+6. **The dyno:** Cormac builds the scenario suite from captures as part of the step-2 replay validator, and
+   lists the captures each scenario still needs. S7 comes from the M5 read loops of 2026-10-30.
