@@ -20,6 +20,21 @@ impl ElementId {
     pub const fn as_u128(self) -> u128 {
         self.0
     }
+
+    /// The id named by a producer's stable identity, given as its parts (whose, which producer,
+    /// the producer's own id for it): the first 128 bits of their SHA-256. One derivation, so two
+    /// producers never disagree about how an identity becomes an id.
+    pub fn of(identity: &[&[u8]]) -> Self {
+        let mut hasher = Sha256::new();
+        for part in identity {
+            hasher.update(part);
+        }
+        let digest: [u8; 32] = hasher.finalize().into();
+        let (head, _) = digest.split_at(std::mem::size_of::<u128>());
+        let mut bytes = [0u8; std::mem::size_of::<u128>()];
+        bytes.copy_from_slice(head);
+        Self(u128::from_be_bytes(bytes))
+    }
 }
 
 /// What an element follows from.

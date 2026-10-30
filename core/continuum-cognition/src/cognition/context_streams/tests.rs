@@ -125,7 +125,7 @@ fn her_notices_append_once_and_an_ended_one_is_retired() {
     let memory = WorkingMemory::new(8);
     memory.pin_fact("hands", "[hands] your hands stand in the card's checkout");
     memory.record_fact("[rebuilt] the substrate was rebuilt while you were away");
-    let notices = Notices { memory: &memory };
+    let notices = Notices { memory: &memory, persona: uuid::Uuid::nil() };
     let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
     let (mut view, _) = View::start(Vec::new(), &[&notices as &dyn Source<_>], whole).unwrap();
     let text = |view: &View<super::ContextMessage>| view.render().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n");
@@ -160,7 +160,7 @@ fn a_thought_renders_the_same_whatever_the_served_window() {
     let memory = WorkingMemory::new(8);
     memory.record(&"a long line of reasoning about the failing test. ".repeat(80));
     let render = |memory: &WorkingMemory| {
-        Thoughts { memory }.items().into_iter().map(|item| item.full.text).collect::<Vec<_>>()
+        Thoughts { memory, persona: uuid::Uuid::nil() }.items().into_iter().map(|item| item.full.text).collect::<Vec<_>>()
     };
     memory.set_served_window(32_768);
     let narrow = render(&memory);

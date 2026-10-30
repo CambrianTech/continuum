@@ -37,15 +37,7 @@ pub(crate) enum Producer {
 /// and the producer's id for it (an act's `seq`, a turn's event, a view's key). Deterministic, so it
 /// survives epochs and restarts exactly as long as the producer's identity does.
 pub(crate) fn element(persona: uuid::Uuid, producer: Producer, local: &[u8]) -> continuum_context::cause::ElementId {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::new()
-        .chain_update(persona.as_bytes())
-        .chain_update([producer as u8])
-        .chain_update(local)
-        .finalize();
-    let mut head = [0u8; 16];
-    head.copy_from_slice(&digest[..16]);
-    continuum_context::cause::ElementId::from_u128(u128::from_be_bytes(head))
+    continuum_context::cause::ElementId::of(&[persona.as_bytes(), &[producer as u8], local])
 }
 
 /// A standing item of `source` (a banner, a block that leads her view): the root of its activity,

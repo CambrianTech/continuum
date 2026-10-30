@@ -5,11 +5,8 @@ use crate::source::Item;
 /// A fixture occurrence at `key`: its id from the key, its cause unrecorded (these tests are about
 /// levels and starts, not chains).
 fn item(key: impl Into<String>, full: String, summary: Option<String>, pointer: Option<String>) -> Item<String> {
-    use sha2::{Digest, Sha256};
     let key = key.into();
-    let mut head = [0u8; 16];
-    head.copy_from_slice(&Sha256::digest(key.as_bytes())[..16]);
-    let mut item = Item::whole(ElementId::from_u128(u128::from_be_bytes(head)), Cause::Unrecorded, key, full);
+    let mut item = Item::whole(ElementId::of(&[key.as_bytes()]), Cause::Unrecorded, key, full);
     item.summary = summary;
     item.pointer = pointer;
     item

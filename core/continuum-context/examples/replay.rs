@@ -136,10 +136,7 @@ fn item(key: String, text: String) -> Item<String> {
 /// A captured element: a capture records what was sent, never what caused it, so its cause is
 /// `Unrecorded` (counted, never toward closure) and its id comes from its key.
 fn captured(key: String, full: String) -> Item<String> {
-    use sha2::{Digest, Sha256};
-    let mut head = [0u8; 16];
-    head.copy_from_slice(&Sha256::digest(key.as_bytes())[..16]);
-    let id = continuum_context::cause::ElementId::from_u128(u128::from_be_bytes(head));
+    let id = continuum_context::cause::ElementId::of(&[key.as_bytes()]);
     Item::whole(id, continuum_context::cause::Cause::Unrecorded, key, full)
 }
 

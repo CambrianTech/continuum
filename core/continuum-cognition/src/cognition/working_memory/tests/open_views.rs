@@ -155,7 +155,7 @@ fn a_view_in_a_checkout_her_hands_left_is_retired_from_her_view() {
     wm.set_served_window(46_848);
     wm.set_scope(Some("/checkouts/a".into()));
     record(&wm, read(1, 40, 498, None));
-    let views = crate::cognition::context_streams::open_views::OpenViews { memory: &wm };
+    let views = crate::cognition::context_streams::open_views::OpenViews { memory: &wm, persona: uuid::Uuid::nil() };
     let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
     let (mut view, _) = match View::start(Vec::new(), &[&views as &dyn Source<_>], whole) {
         Ok(started) => started,
@@ -187,7 +187,7 @@ fn planning_detail_yields_to_cursor_and_returns_when_granted() {
 
     let wm = WorkingMemory::new(3);
     record(&wm, read(1, 498, 498, None));
-    let source = crate::cognition::context_streams::open_views::OpenViews { memory: &wm };
+    let source = crate::cognition::context_streams::open_views::OpenViews { memory: &wm, persona: uuid::Uuid::nil() };
     let sources: &[&dyn Source<_>] = &[&source];
     let cursor_floor = claims(sources)[0].floor_chars;
     let intent = "I need to inspect the implementation before deciding what to change. ".repeat(64);
@@ -212,7 +212,7 @@ fn planning_detail_yields_to_cursor_and_returns_when_granted() {
     // Checkpointing preserves the complete note even while its visible level is a cursor.
     let restored = WorkingMemory::new(3);
     restored.restore(wm.snapshot());
-    let restored_source = crate::cognition::context_streams::open_views::OpenViews { memory: &restored };
+    let restored_source = crate::cognition::context_streams::open_views::OpenViews { memory: &restored, persona: uuid::Uuid::nil() };
     view.turn_over(Vec::new(), &[&restored_source], whole).expect("matching grants");
     assert!(text(&view).contains(intent.trim()), "the allocation never deleted the note");
 }
