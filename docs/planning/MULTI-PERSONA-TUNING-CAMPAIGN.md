@@ -21,9 +21,10 @@ Each machine runs on its own, so each is a different world for the same algorith
 |---|---|---|---|
 | M5 | unified memory (64 GB), Metal, Qwen3.6-35B-A3B, four fixed slots today | Aiko, Aris, Atlas, Benchy | Fable |
 | 5090 | discrete CUDA, Windows | Kimi and the 5090's residents | Codex (with BigMama's measurements) |
-| IntelMac | CPU-only, the low-end floor ("client first, never crash") | its residents | Codex |
+| IntelMac | the low-end GPU floor: i7-8850H, 32 GB RAM, Radeon Pro 560X 4 GB (Metal 2); Qwen2.5-Coder-1.5B, two slots | none until its core returns (stopped since 2026-10-30 00:52Z for incident containment) | Cormac (his node, his lifecycle) |
 
-The machine assignment is an assumption to confirm with Joel. Placement across nodes waits until all three
+Receipts: IntelMac read by Cormac 2026-10-30 ~22:40Z; its core needs a canary build with #5603's addressed
+ingress before its first round. Placement across nodes waits until all three
 pass on their own.
 
 ## Phases
@@ -93,7 +94,7 @@ the prover predicted that day within its published error.
 ## Coordination
 
 - Ownership follows the designs: Fable has the mind side (L1 to L3, the receipt, the engine verbs) and the
-  M5's rounds; Codex has admission, residency, the node loop and the 5090 and IntelMac rounds; Cormac has the
-  outcome signals, the behaviour model, the scenario and known-bad suites, and the reductions.
+  M5's rounds; Codex has admission, residency, the node loop and the 5090's rounds; Cormac has the outcome signals, the
+  behaviour model, the scenario and known-bad suites, the reductions and IntelMac's rounds.
 - Each round's prediction, receipts and finding go on the round's card, not into this document.
 - No round deploys a change that did not pass T0 against the known-bad suite.
