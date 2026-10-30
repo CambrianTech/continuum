@@ -17,8 +17,22 @@ This document builds on what is already decided and does not repeat it:
 - [ONE-BUDGET](ONE-BUDGET.md): one authority over every resource, and grants that shrink by request;
 - [MIND-CONTEXT-AND-ENGINE-CONFIG](MIND-CONTEXT-AND-ENGINE-CONFIG.md): the codec, levels, epochs and causality.
 
-What those lack, and what this adds: **the dynamics**, meaning the closed loops by which every grant follows
-her demand over many acts, and **the scenarios** the system must pass.
+- the grid governance, which this plugs into and does not parallel:
+  [GRID-MARKET-CLEARING](GRID-MARKET-CLEARING.md) (nested prices from the pager to the N-node mesh),
+  [ADAPTIVE-GRID-INTELLIGENCE](ADAPTIVE-GRID-INTELLIGENCE.md) (placement by measured candidate plans, and
+  learning the policy), [CAPACITY-FABRIC-AND-GOVERNOR](CAPACITY-FABRIC-AND-GOVERNOR.md) (capacity is live,
+  held loosely), [BEING-SOCIETY-GOVERNOR](BEING-SOCIETY-GOVERNOR.md) (the governor serves time, never dictates
+  work), [CONCURRENT-MIND-AND-GOVERNOR](CONCURRENT-MIND-AND-GOVERNOR.md) (govern resources, never gate the mind).
+
+**Where this sits.** Joel, 2026-10-30: "it's a lot like the grid governance and in fact it will need to plug
+into that, because with many nodes we should ideally be smart about where to put what and then how to adapt
+within: slots, learning, so much. And context window RAG budgeting is merely part of a persona." The
+mechanism already agreed is the nested market of GRID-MARKET-CLEARING: each tier publishes a measured price
+for its resource and each claim below it is granted while its measured marginal value exceeds that price.
+Placement across nodes comes first (ADAPTIVE-GRID-INTELLIGENCE's candidate plans); adaptation inside a node
+follows. This document is the **persona end** of that market: the tiers below a lane (a mind, her
+activities, her claims), of which her context window is one claim among several, plus the dynamics and the
+scenarios that must pass from the grid down to her answer.
 
 ## 0. Why: every failure today was an open-loop rule
 
@@ -87,12 +101,17 @@ Two resources are contended, and every demand is on both:
 Every claim sits in one hierarchy, and one allocator solves all of it together:
 
 ```
-node: measured free memory, after the person's own apps and the OS
-  engine pool: memory for state, measured bytes per token; lanes, measured knee
-    mind (her temperature: how active she is, aged so she is never starved)
-      activity (coding, a person's conversation, a live call, a review, a game; one in focus)
-        her claims for this act: view levels, tools, grounding, think, answer
+grid: nodes and their offers (GRID tier: price plus transport cost, by gossip)
+  node: measured free memory after the person's apps and the OS; CPU; disk
+    engine: lanes (time, the measured knee) and state memory (bytes, measured per token)
+      mind (her temperature: how active she is, aged so she is never starved)
+        activity (coding, a person's conversation, a live call, a review, a game; one in focus)
+          her claims: context levels, think, answer, genes resident, tool CPU and disk, dreaming
 ```
+
+Prices flow down, bids flow up (GRID-MARKET-CLEARING section 2): each tier sees only the price above it
+and quotes one below it, so no component needs the whole picture and the same algorithm holds on one node
+or many. The value unit at the top is the activity's measured outcome; every price below it is derived.
 
 **Space and time trade against each other**, which is why one allocator must own both:
 - A mind without a lane now does not need her state on the device now: it can page to RAM and be
@@ -103,6 +122,19 @@ node: measured free memory, after the person's own apps and the OS
   time and much space. The traffic-signal analogy is exact here: phases (who generates) and green times
   (how long) are re-split each cycle from measured demand, with minimum greens (floors) and calls
   (a person's message, a live call's frame).
+
+**A persona's claims, of which her context is one:**
+
+| Claim | Resource | Notes |
+|---|---|---|
+| Her context, by level per item | state memory, prefill time | this is where the RAG budget lives; one claim among these |
+| Her output (think, answer) | state memory as written, decode time on a lane | written tokens are the only ones that cost |
+| Her genes (adapters resident) | device memory, page-in time | paged by what her mind is on (genome paging) |
+| Her hands (builds, tests, tools) | CPU, disk, RAM | a resident's own build is hers to run (residents build freely) |
+| Her senses and voice (vision, hearing, speech) | encode and decode time, small memory | critical faculties are gates, never priced (GRID-MARKET-CLEARING invariant 1) |
+| Her dreaming and learning | slack only | the idle class; it yields within a step |
+| Her memory (recall, embeddings) | CPU, RAM index | |
+| Placement (which node serves her) | network, a node's whole offer | decided first, at the grid tier |
 
 **Per mind, per activity:** each mind's demand is the sum of her activities' claims, weighted by which one
 is in focus. The activity in focus gets detail and action; the others keep a floor (their chain heads,
@@ -128,9 +160,15 @@ Each is testable, and the scenarios in section 6 test them.
 - **R3. Focus.** Detail goes by causal distance from her current act and by which activity is in focus.
   Everything else folds to a cheaper level that keeps a path back. Nothing is dropped silently, chain heads
   stay whole, and her newest result stays whole (FOCUS-CONTRACT rule 4; MIND-CONTEXT causality).
-- **R4. Flex.** Every consumer is a flex item: its basis is its measured current need, its minimum is its
-  causal or required floor, and its grow and shrink are marginal-value curves measured from outcomes. The
-  container is measured capacity. One allocator solves all of them together (ONE-BUDGET).
+- **R4. Flex, cleared by price.** Every consumer is a flex item: its basis is its measured current need, its
+  minimum is its causal or required floor (a reservation, visible in the books, never traded), and its grow
+  and shrink are marginal-value curves measured from outcomes. The container is measured capacity. A claim
+  grows while its marginal value exceeds its tier's price; the price rises with measured excess demand and
+  falls with slack. That is the whole rule: no share, fraction or percentile anywhere (GRID-MARKET-CLEARING;
+  ONE-BUDGET).
+- **R4a. Placement first, then adaptation within.** Where a mind, a model, a gene or a job runs is decided
+  at the grid tier from measured candidate plans (ADAPTIVE-GRID-INTELLIGENCE); everything else in this
+  document adapts within that placement, and a sustained mismatch is a signal back to placement.
 - **R5. Closed loops at every timescale**, each with a measured error signal and a measured cost of
   switching (section 5).
 - **R6. Both ways.** Any loop that can shrink a grant must also probe upward, or it ratchets down forever
@@ -171,7 +209,8 @@ Each is testable, and the scenarios in section 6 test them.
 ## 5. The loops, by timescale
 
 Each loop runs on events, not timers, and each is slower than the loop inside it (cascade control), so they
-do not fight.
+do not fight. Each is one tier of the nested market: it measures its tier's excess demand, moves its price,
+and the claims below it re-clear against the new price.
 
 | Loop | Runs when | Measures | Decides | Stays stable by |
 |---|---|---|---|---|
@@ -181,6 +220,7 @@ do not fight.
 | L4 Residency | when any mind's temperature or the pool changes | each mind's temperature, page-in cost, when her pending task completes (task handles say when she wakes) | which minds' state stays on device, in RAM, on disk; prefetch before a wake | a page moves only when expected saving exceeds measured page cost |
 | L5 Admission | when demand or the decode knee changes | sequence capacity (#5188), decode rate by concurrency | how many minds generate at once | the measured knee, with aging so no mind waits forever |
 | L6 Node | when external load, heat or a training reservation changes | free memory, the person's apps, thermal state | the pool's size; returning memory to the person | gives back at once, takes back only by probing |
+| L0 Placement | when a node joins or leaves, offers change, or a tier below signals a sustained mismatch | offers and prices by gossip; measured transfer cost; each node's outcomes | which node hosts each mind, model, gene and job (ADAPTIVE-GRID-INTELLIGENCE candidate plans) | hysteresis and explicit switching cost; a price flicker never re-homes a mind |
 | L7 Policy | over hours and days | outcomes against decisions (receipts) | the value curves L2 and L3 use for each activity | a new policy replaces the old only after beating it on replay (FOCUS-CONTRACT) |
 
 ## 6. Scenarios
@@ -355,9 +395,13 @@ waiting on; one is idle; and the person starts a game partway through.
 2. **The objective:** is it "least expected seconds to an act that changes the world, weighted by each
    mind's temperature"? Or should usefulness be measured differently?
 3. **Thinking:** is S13's rule (thinking bounded by its measured value to the outcome) the right one?
-4. **Ownership:**
+4. **The value unit:** GRID-MARKET-CLEARING makes the activity's measured outcome the numeraire. Is that
+   unit right for her normal work, given that her normal work is never graded (CLAUDE.md, "no harness")?
+   The outcome here is an observation of what the act changed (an edit, a message, a merged PR), not a
+   score of her.
+5. **Ownership:**
    - the pool, admission and residency (L4 to L6): Codex;
    - the mind's side (L1 to L3) and the engine verbs: Fable;
    - the outcome signals and the policy loop (L7): Cormac.
-5. **The dyno:** which captured sessions become the scenario suite? Section 6 names the shapes; we need real
+6. **The dyno:** which captured sessions become the scenario suite? Section 6 names the shapes; we need real
    captures for each.
