@@ -343,8 +343,9 @@ reply edges. The view's `Item` gains the same link.
   - `cause` is a typed, stable id assigned by the producer that persists the element (the engram id), never
     an in-view position. That lets edges cross sources, epochs and restarts. The view resolves a cause to
     whatever level it holds. A cause it cannot resolve (outside the epoch, evicted) is the typed
-    `CauseNotHeld` and renders as its handle, so "nothing appears without its cause" stays true across an
-    epoch.
+    `CauseNotHeld`. It renders a durable, resolvable handle with typed availability, so the cause stays
+    reachable across an epoch. A `CauseNotHeld` does not count as demonstrated closure; the validator
+    reports it separately.
   - `Root` exists only for a genuine origin (an external message, the start of an activity), and the ratchet
     counts `Root` constructions per source.
   - `content` is the hash of the whole, computed once where the whole is stored (`StoredWhole` gains it at
@@ -366,8 +367,14 @@ reply edges. The view's `Item` gains the same link.
      view. (Key plus cause cannot catch the loop: each re-read's result is caused by a new act. Cormac's
      review.) A new act whose fingerprint matches a prior act in its chain, and whose outcome content is
      unchanged, is recorded as an edge back to that ancestor and renders as "repeat of #n, outcome
-     unchanged", never as a fresh element. This is perception, not a gate: she still decides, but her input
-     now differs from her last, so the recursion ends.
+     unchanged", never as a fresh element.
+     - **Same output is not the same effect** (Codex). Two appends or sends can both return "OK" and still
+       cause two effects. Every occurrence keeps its own id, order and side-effect receipt, and is never
+       erased. Repeated content renders by reference to the earlier occurrence. "Outcome unchanged" is
+       claimed only on the producer's evidence: a read whose content hash is unchanged qualifies; an "OK"
+       from a write does not.
+     - This is perception, not a gate and never an injected instruction. It makes progression visible.
+       Whether she stops repeating is behavior: only live useful work proves it.
   5. **Asking again for a folded ancestor is a measured miss.** The measurement is the existing
      handle-expand request on a folded node, counted in that one place. It raises that chain's claim in
      the one allocation (ONE-BUDGET), so what she keeps needing stays whole, decided by her own misses
@@ -389,9 +396,14 @@ reply edges. The view's `Item` gains the same link.
   invariant 4, not a separate mechanism.
 - **Enforcement.**
   - A ratchet: no item is constructed without a cause.
-  - A replay validator, in seconds and with no live peers: across captured traces, no identical (input
-    fingerprint, action) pair recurs without a perceivable delta, and every rendered effect has its cause
-    represented.
+  - A replay validator, in seconds and with no live peers. It proves visible progression and retained
+    outcomes, not behavior:
+    - across captured traces, a repeated (action fingerprint, outcome) renders as a repeat, never as fresh;
+    - every rendered effect has its cause represented, with `CauseNotHeld` counted separately;
+    - fixtures: an unchanged-read repeat (renders as a repeat), a repeated write with identical output
+      (two occurrences, both kept), and a cause across a restart (resolves through its durable id).
+
+    The M5 2026-10-30 read loops are an acceptance case, not a universal diagnosis.
   - Live, on the health line: repeats per resident-hour.
 
 **Build order and owners:**
