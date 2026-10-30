@@ -29,6 +29,8 @@ pub struct TaskReceiptConflict {
 
 #[derive(Debug, thiserror::Error)]
 pub enum TaskReceiptError {
+    #[error("task {0} has no published consumption receipt")]
+    Unpublished(Uuid),
     #[error(transparent)]
     Conflict(#[from] TaskReceiptConflict),
     #[error("terminal fingerprint encoding failed: {0}")]
@@ -106,18 +108,21 @@ impl WorkingMemory {
     /// Notification delivery and entering the service loop are not perception.
     /// Returns whether staging changed. False does not prove persistence: an earlier
     /// stage may still need a checkpoint retry. Unknown tasks cannot create receipts.
-    pub fn stage_task_read(&self, task: Uuid) -> bool {
+    pub fn stage_task_reads(&self, tasks: &[Uuid]) -> Result<bool, TaskReceiptError> {
         let mut results = self.task_results.lock();
-        if !results.published.contains_key(&task) {
-            return false;
-        }
-        match results.entries.get_mut(&task) {
-            Some(entry) if entry.wake_pending => {
-                entry.wake_pending = false;
-                true
+        for task in tasks {
+            if !results.published.contains_key(task) || !results.entries.contains_key(task) {
+                return Err(TaskReceiptError::Unpublished(*task));
             }
-            Some(_) | None => false,
         }
+        let mut changed = false;
+        for task in tasks {
+            if let Some(entry) = results.entries.get_mut(task) {
+                changed |= entry.wake_pending;
+                entry.wake_pending = false;
+            }
+        }
+        Ok(changed)
     }
 }
 
@@ -165,7 +170,7 @@ mod tests {
         assert!(!restored
             .stage_task_end(task, TaskEnd::Stopped)
             .expect("identical replay"));
-        assert!(restored.stage_task_read(task));
+        assert!(restored.stage_task_reads(&[task]).expect("published task"));
         assert!(!restored
             .stage_task_end(task, TaskEnd::Stopped)
             .expect("replay after admission"));
@@ -183,6 +188,17 @@ mod tests {
     }
 
     #[test]
+    fn read_batch_refuses_unknown_task_without_partial_retirement() {
+        let memory = WorkingMemory::new(8);
+        let task = Uuid::new_v4();
+        memory.stage_task_end(task, TaskEnd::Stopped).expect("stage");
+        memory.publish_task_checkpoint(memory.snapshot().task_results.publication());
+        assert!(memory.stage_task_reads(&[task, Uuid::new_v4()]).is_err());
+        memory.publish_task_checkpoint(memory.snapshot().task_results.publication());
+        assert_eq!(memory.pending_task_wakes(), vec![task]);
+    }
+
+    #[test]
     fn older_checkpoint_cannot_publish_a_later_read() {
         let memory = WorkingMemory::new(8);
         let task = Uuid::new_v4();
@@ -191,7 +207,7 @@ mod tests {
             .expect("stage end");
         memory.publish_task_checkpoint(memory.snapshot().task_results.publication());
         let earlier = memory.snapshot().task_results.publication();
-        assert!(memory.stage_task_read(task));
+        assert!(memory.stage_task_reads(&[task]).expect("published task"));
         memory.publish_task_checkpoint(earlier);
         assert_eq!(memory.pending_task_wakes(), vec![task]);
         memory.publish_task_checkpoint(memory.snapshot().task_results.publication());
@@ -231,10 +247,10 @@ mod tests {
         assert!(matches!(memory.stage_task_end(first, TaskEnd::Stopped),
             Err(TaskReceiptError::Conflict(TaskReceiptConflict { task })) if task == first));
         assert!(memory.pending_task_wakes().is_empty());
-        assert!(!memory.stage_task_read(first));
+        assert!(memory.stage_task_reads(&[first]).is_err());
         memory.publish_task_checkpoint(snapshot.task_results.publication());
         assert_eq!(memory.pending_task_wakes(), vec![first]);
-        assert!(!memory.stage_task_read(later));
-        assert!(!memory.stage_task_read(Uuid::new_v4()));
+        assert!(memory.stage_task_reads(&[later]).is_err());
+        assert!(memory.stage_task_reads(&[Uuid::new_v4()]).is_err());
     }
 }

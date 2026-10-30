@@ -9,6 +9,8 @@ pub enum TaskConsumptionError {
     Stopped,
     #[error("task owner {0} is not a registered resident")]
     Absent(Uuid),
+    #[error("task read receipt belongs to a replaced memory incarnation for {0}")]
+    Replaced(Uuid),
     #[error(transparent)]
     Receipt(#[from] super::super::working_memory::TaskReceiptError),
     #[error("task consumption checkpoint failed: {0}")]
@@ -25,6 +27,37 @@ impl PersonaWorkspaceRegistry {
         owner: Uuid,
         ends: Vec<(Uuid, TaskEnd)>,
     ) -> Result<VolatileReceipt, TaskConsumptionError> {
+        self.commit_task_state(owner, |memory| {
+            memory.stage_task_ends(ends)?;
+            Ok(())
+        })
+    }
+
+    /// Commit only reads reported by this registered memory incarnation. A repeated
+    /// receipt still saves: an earlier staging may have survived a failed write.
+    pub fn record_task_reads(
+        &self,
+        owner: Uuid,
+        incarnation: Uuid,
+        tasks: &[Uuid],
+    ) -> Result<VolatileReceipt, TaskConsumptionError> {
+        self.commit_task_state(owner, |memory| {
+            if memory.incarnation() != incarnation {
+                return Err(TaskConsumptionError::Replaced(owner));
+            }
+            memory.stage_task_reads(tasks)?;
+            Ok(())
+        })
+    }
+
+    /// One admission and persistence owner for task arrivals and rendered reads.
+    fn commit_task_state(
+        &self,
+        owner: Uuid,
+        stage: impl FnOnce(
+            &super::super::working_memory::WorkingMemory,
+        ) -> Result<(), TaskConsumptionError>,
+    ) -> Result<VolatileReceipt, TaskConsumptionError> {
         let stopped = self.checkpoint_stopped.lock();
         if *stopped {
             return Err(TaskConsumptionError::Stopped);
@@ -36,7 +69,7 @@ impl PersonaWorkspaceRegistry {
             .get(&owner)
             .map(|resident| Arc::clone(&resident.working_memory))
             .ok_or(TaskConsumptionError::Absent(owner))?;
-        memory.stage_task_ends(ends)?;
+        stage(&memory)?;
         Ok(save_volatile(owner, SaveReason::Periodic, None, &memory)?)
     }
 }

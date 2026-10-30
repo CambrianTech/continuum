@@ -24,7 +24,7 @@ async fn forgotten_end_is_committed_before_receipt_and_restored_with_wake(
     let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
     assert_ne!(memory.incarnation(), old_incarnation);
     assert_eq!(memory.pending_task_wakes(), vec![task]);
-    assert!(memory.stage_task_read(task));
+    assert!(memory.stage_task_reads(&[task])?);
     let replay = registry.consume_task_ends(owner, vec![(task, TaskEnd::Stopped)])?;
     assert_eq!(replay.incarnation(), memory.incarnation());
     let next = WorkingMemory::new(8);
@@ -91,7 +91,7 @@ async fn failed_checkpoint_returns_no_receipt_and_replay_commits_staged_end(
     assert_eq!(std::fs::read(&path)?, before);
     let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
     assert!(memory.pending_task_wakes().is_empty());
-    assert!(!memory.stage_task_read(task));
+    assert!(memory.stage_task_reads(&[task]).is_err());
     std::fs::remove_dir(&obstruction)?;
     // The ordinary checkpoint owner also publishes a staged end after IO recovers.
     for (_, result) in registry.flush_volatile_all() {
@@ -175,7 +175,7 @@ async fn failed_read_checkpoint_keeps_wake_pending_until_retry(
     registry.register_from_cfg(cfg_for(owner))?;
     registry.consume_task_ends(owner, vec![(task, TaskEnd::Stopped)])?;
     let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
-    assert!(memory.stage_task_read(task));
+    assert!(memory.stage_task_reads(&[task])?);
     let obstruction = volatile_path(owner)?.with_extension("json.tmp");
     std::fs::create_dir(&obstruction)?;
     let failed = registry.flush_volatile_all();
@@ -186,7 +186,7 @@ async fn failed_read_checkpoint_keeps_wake_pending_until_retry(
     restarted.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
     assert_eq!(restarted.pending_task_wakes(), vec![task]);
     assert!(
-        !memory.stage_task_read(task),
+        !memory.stage_task_reads(&[task])?,
         "already staged is not durable success"
     );
     std::fs::remove_dir(&obstruction)?;
@@ -197,5 +197,37 @@ async fn failed_read_checkpoint_keeps_wake_pending_until_retry(
     let restarted = WorkingMemory::new(8);
     restarted.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
     assert!(restarted.pending_task_wakes().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn task_read_receipt_rejects_replaced_memory_and_retries_failed_commit(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let registry = PersonaWorkspaceRegistry::new();
+    let owner = Uuid::new_v4();
+    let task = Uuid::new_v4();
+    registry.register_from_cfg(cfg_for(owner))?;
+    let accepted = registry.consume_task_ends(owner, vec![(task, TaskEnd::Stopped)])?;
+    registry.register_from_cfg(cfg_for(owner))?;
+    let current = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
+    assert!(
+        matches!(registry.record_task_reads(owner, accepted.incarnation(), &[task]), Err(TaskConsumptionError::Replaced(id)) if id == owner)
+    );
+    assert_eq!(current.pending_task_wakes(), vec![task]);
+    let obstruction = volatile_path(owner)?.with_extension("json.tmp");
+    std::fs::create_dir(&obstruction)?;
+    assert!(matches!(
+        registry.record_task_reads(owner, current.incarnation(), &[task]),
+        Err(TaskConsumptionError::Checkpoint(_))
+    ));
+    assert_eq!(current.pending_task_wakes(), vec![task]);
+    std::fs::remove_dir(&obstruction)?;
+    registry.record_task_reads(owner, current.incarnation(), &[task])?;
+    assert!(current.pending_task_wakes().is_empty());
+    let restored = WorkingMemory::new(8);
+    restored.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
+    assert!(restored.pending_task_wakes().is_empty());
     Ok(())
 }
