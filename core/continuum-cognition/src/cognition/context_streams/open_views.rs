@@ -13,8 +13,7 @@ pub(crate) struct OpenViews<'a> {
     pub memory: &'a WorkingMemory,
 }
 
-/// Required, as the block was: the history fit dropping it made her re-read from line 1 every
-/// turn (Benchy, the M5, 2026-10-17), so collapsed it is still itself.
+/// Standing notices contain no allocatable detail.
 fn required(key: String, text: String) -> Item<ContextMessage> {
     let message = ContextMessage::user(text);
     Item { key, full: message.clone(), summary: None, pointer: Some(message), stored: None }
@@ -26,7 +25,7 @@ impl Source<ContextMessage> for OpenViews<'_> {
     }
 
     fn priority(&self) -> u8 {
-        priority::NOTICES
+        priority::ACTIONS
     }
 
     fn required(&self) -> bool {
@@ -39,7 +38,13 @@ impl Source<ContextMessage> for OpenViews<'_> {
             return Vec::new();
         }
         let mut items = vec![required("banner".to_owned(), Views::BANNER.to_owned())];
-        items.extend(lines.into_iter().map(|(key, line)| required(key, format!("- {line}"))));
+        items.extend(lines.into_iter().map(|(key, full, pointer)| Item {
+            key,
+            full: ContextMessage::user(format!("- {full}")),
+            summary: None,
+            pointer: Some(ContextMessage::user(format!("- {pointer}"))),
+            stored: None,
+        }));
         items
     }
 

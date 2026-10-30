@@ -209,9 +209,9 @@ impl WorkingMemory {
         self.open_views.lock().render(scope.as_deref())
     }
 
-    /// Her open views visible from where her hands stand, one `(key, line)` each: the items of
+    /// Her open views visible from where her hands stand, one `(key, full, pointer)` each: the items of
     /// her view's open-views stream (`context_streams::open_views`).
-    pub(crate) fn open_view_lines(&self) -> Vec<(String, String)> {
+    pub(crate) fn open_view_lines(&self) -> Vec<(String, String, String)> {
         let scope = self.scope.lock().clone();
         self.open_views.lock().lines(scope.as_deref())
     }
