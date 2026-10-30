@@ -1,0 +1,8 @@
+[
+  {
+    "card": "2de02f40-3058-4b6a-9760-32bcac75219f",
+    "family": "lc-parent-scope",
+    "lesson": "a property declared on the enclosing scope (a class-level skip) is invisible on the member it governs, so a check made on the member alone takes the wrong branch: pytest ran tearDown for a unittest @skip class under --pdb because its deferral read only the method; the fix also reads the parent",
+    "evidence": "Kimi's submission 28087ebb at 4997cae043a9 (team-proof/20261027-2007-kimi-credit.json), Sahar's PASS 2aacd135 (class skip + --pdb: sE, tearDown ran, NameError; method skip: s, no tearDown), read from the windows 5090's durable ledger by Codex on 2026-10-28"
+  }
+]
