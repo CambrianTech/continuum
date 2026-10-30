@@ -192,7 +192,9 @@ async fn provider_context_feedback_bounds_replay_and_scales_next_turn() {
         160
     );
     let fault = faculty.contribute(&ws).await.expect("bounded refusal");
-    assert!(fault.fault.is_some());
+    // Bounded: a fault or a typed capacity refusal (the newest-result refit's end), never a
+    // third request (asserted by the call count below).
+    assert!(fault.fault.is_some() || fault.capacity_refusal.is_some(), "{:?}", fault.fault);
     assert_eq!(
         adapter.call_count(),
         2,

@@ -188,7 +188,10 @@ async fn a_scaled_calibration_after_turnovers_keeps_her_view_within_the_window()
         .collect();
     turns.push(BurstTurn::attributed(false, "Peer", "Review the current artifact.", Some(161)));
     let ws = Workspace::new(Burst::from_turns(room, turns.clone()));
-    assert!(faculty.contribute(&ws).await.expect("bounded refusal").fault.is_some());
+    // Bounded: two refusals end the turn, as a fault or a typed capacity refusal (the
+    // newest-result refit's end), never a third request.
+    let refused = faculty.contribute(&ws).await.expect("bounded refusal");
+    assert!(refused.fault.is_some() || refused.capacity_refusal.is_some(), "{:?}", refused.fault);
     let next = faculty.contribute(&ws).await.expect("next tick");
     assert!(next.fault.is_none(), "{:?}", next.fault);
     let (effective, calibration) = faculty.prompt_fit(&faculty.binding.load());
