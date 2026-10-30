@@ -763,13 +763,12 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
         crate::cognition::working_set::EmissionStop::CutMidAnswer);
 }
 
-// what this catches: the request's `max_tokens` is the window her fitted prompt leaves,
-// carried verbatim on an act and on a pass alike; the reserve is only her reply's claim (the
-// cold prior while unmeasured). An idle window's slack is hers to write with through that
-// bound, never through a reservation claimed above her context (a 12,288-token act cap
-// starved her reads on the M5, 2026-10-30, ONE-BUDGET.md slice 6).
+// what this catches: the request carries the view's grant verbatim, on an act and on a pass
+// alike, and an unmeasured reply's grant is the cold prior, never a runaway cap claimed above
+// her context: a 12,288-token act cap starved her reads on the M5 (2026-10-30, ONE-BUDGET.md
+// slice 6). An idle window's slack is her view's room, not the reply's.
 #[tokio::test]
-async fn the_request_carries_the_window_her_prompt_leaves() {
+async fn an_unmeasured_turn_carries_its_measured_grant_and_no_cap() {
     let window = 32_768u32;
     let persona = Uuid::new_v4();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
@@ -782,13 +781,7 @@ async fn the_request_carries_the_window_her_prompt_leaves() {
     .with_context_window(window);
     let ws = Workspace::new("act on the card");
     let view = faculty.prompt_view(&ws);
-    assert_eq!(view.completion_reserve, LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS, "an unmeasured reply claims the prior");
-    assert_eq!(
-        view.output_window as usize,
-        window as usize - PromptCalibration::default().charge(view.estimated_prompt_tokens),
-        "the bound is the window the prompt leaves"
-    );
-    assert!(view.output_window >= view.completion_reserve, "never below what the fit reserved");
+    assert_eq!(view.completion_reserve, LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS, "an unmeasured reply claims the prior, no cap");
     let binding = faculty.binding.load_full();
     for (kind, purpose) in [
         (TurnKind::Act, "cognition/act"),
@@ -796,7 +789,7 @@ async fn the_request_carries_the_window_her_prompt_leaves() {
     ] {
         let request = faculty.build_request_within(
             &binding,
-            view.output_window,
+            view.completion_reserve,
             view.messages.clone(),
             None,
             view.system.clone(),
@@ -804,7 +797,7 @@ async fn the_request_carries_the_window_her_prompt_leaves() {
             Some(ws.room_id),
             kind,
         );
-        assert_eq!(request.max_tokens, Some(view.output_window), "{purpose}: the window the prompt leaves, verbatim");
+        assert_eq!(request.max_tokens, Some(view.completion_reserve), "{purpose}: the grant, verbatim");
         assert_eq!(request.purpose.as_deref(), Some(purpose));
     }
 }

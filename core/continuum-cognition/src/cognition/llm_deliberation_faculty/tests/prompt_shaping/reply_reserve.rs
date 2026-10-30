@@ -39,7 +39,7 @@ fn prompt_plus_completion_cap_never_exceeds_the_served_window() {
     let binding = faculty.binding.load_full();
     let request = faculty.build_request_within(
         &binding,
-        view.output_window,
+        view.completion_reserve,
         view.messages.clone(),
         None,
         view.system.clone(),
@@ -51,8 +51,7 @@ fn prompt_plus_completion_cap_never_exceeds_the_served_window() {
     let cap = request
         .max_tokens
         .expect("deliberation must bound generation to the reserved room");
-    assert_eq!(cap, view.output_window, "the generation bound IS the window the prompt leaves — one source of truth");
-    assert!(cap >= view.completion_reserve, "never below what the fit reserved for her reply");
+    assert_eq!(cap, view.completion_reserve, "the generation cap IS the reserved room — one source of truth");
     // The closed invariant: prompt-at-ceiling + the generation cap fits n_ctx.
     let prompt_tokens = estimate_guard_tokens(&view.system) + estimate_guard_tokens(&view.user_text());
     assert!(

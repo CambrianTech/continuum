@@ -262,7 +262,7 @@ impl LlmDeliberationFaculty {
 
                 let request = self.build_request_within(
                     &binding,
-                    view.output_window,
+                    view.completion_reserve,
                     view.messages.clone(),
                     tools,
                     view.system.clone(),
@@ -291,7 +291,7 @@ impl LlmDeliberationFaculty {
             // The allowance belongs to THIS view, refreshed on every refit: the template
             // is built once, and a template's `max_tokens` from an earlier plan would
             // bound the reply to a window the prompt no longer leaves.
-            request.max_tokens = Some(view.output_window.max(1));
+            request.max_tokens = Some(view.completion_reserve.max(1));
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
             if rejected_prompt_tokens.is_some_and(|previous| estimated_prompt_tokens >= previous) {
                 return Some(Contribution::deliberation_fault(
@@ -368,11 +368,9 @@ impl LlmDeliberationFaculty {
                     }
                     rejected_prompt_tokens = Some(estimated_prompt_tokens);
                     rejected_measured_tokens = Some(requested);
-                    // The refit protects the reply's RESERVATION (her measured need), never the
-                    // opportunistic bound the request carried: reducing the prompt to keep a
-                    // whole-window bound would trade her context for output she does not need.
-                    let reserve = view.completion_reserve;
-                    view = match self.refit_rejected_prompt(view, requested, available, reserve) {
+                    view = match self.refit_rejected_prompt(
+                        view, requested, available, sent_allowance.unwrap_or(0),
+                    ) {
                         Ok(view) => view,
                         Err(error) => {
                             return Some(
@@ -456,7 +454,7 @@ impl LlmDeliberationFaculty {
             // A deliberation's think that stopped AT its budget is censored, not measured
             // (Cormac on #4409): the classifier records it at the allowance so the need ring
             // never learns the budget and contracts the next allowance geometrically.
-            let allowance = sent_allowance.unwrap_or(view.output_window); // unwrap_or: a request built with no max_tokens was bounded by the reserve alone
+            let allowance = sent_allowance.unwrap_or(view.completion_reserve); // unwrap_or: a request built with no max_tokens was bounded by the reserve alone
             let reasoning_budget = match self.turn_kind(ws) {
                 TurnKind::Pass => crate::inference::request_body::deliberation_reasoning_budget(
                     u64::from(allowance),

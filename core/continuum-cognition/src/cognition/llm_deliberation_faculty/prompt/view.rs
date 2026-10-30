@@ -437,10 +437,9 @@ impl LlmDeliberationFaculty {
         let tools_grant = calibration.prompt_budget(plan.granted(FLEX_TOOLS) as usize);
         let (selected, tools_refusal) = self.granted_tools(ws, tools, tools_grant);
         let budget_floor = crate::cognition::rag_budget::turn_need(&claims).saturating_sub(claims.iter().find(|c| c.source_id == FLEX_REPLY).map_or(0, |c| c.floor_tokens)).saturating_add(reply_need);
-        // The fit reserves her reply its grant: her measured need from the one allocation. What
-        // no claim took is her view's to grow into by appends (`fit_view`); the request's
-        // `max_tokens` is the window her fitted prompt leaves (`output_window`, below), so the
-        // reply is bounded by the window itself, never by a reservation sized for the worst case.
+        // Her reply's grant is her measured need from the one allocation, carried as `max_tokens`.
+        // What no claim took is her view's to grow into by appends (`fit_view`), never the
+        // reply's: a cap claimed above her context starved her reads (ONE-BUDGET slice 6).
         let reply_grant = plan.granted(FLEX_REPLY);
         let completion_reserve = reply_grant.max(1) as usize;
         continuum_base::probe!(
@@ -764,7 +763,6 @@ impl LlmDeliberationFaculty {
             input_identity,
             estimated_prompt_tokens,
             completion_reserve: completion_reserve as u32,
-            output_window: (context_window as usize).saturating_sub(calibration.charge(estimated_prompt_tokens)).max(completion_reserve) as u32,
             capacity_error,
             budget_fault,
             protocol_error,

@@ -66,7 +66,7 @@ async fn live_window_reductions_bound_actual_requests_and_persist() {
             request.tools.as_ref().expect("native tools retained"),
         );
         assert_eq!(schemas, faculty.prompt_view(&ws).tools.tokens);
-        assert_eq!(request.max_tokens, Some(expected_view.output_window));
+        assert_eq!(request.max_tokens, Some(expected_view.completion_reserve));
         let cost = LlmDeliberationFaculty::framing_cost(
             request.system_prompt.as_deref().expect("system framing"),
         ) + LlmDeliberationFaculty::messages_cost(&request.messages)
@@ -149,7 +149,7 @@ async fn live_window_observation_cannot_overwrite_a_newer_binding() {
             assert_eq!(seen[0].model.as_deref(), Some("original-model"));
             assert_eq!(
                 seen[0].max_tokens,
-                Some(faculty.prompt_view_within(&ws, 16_384).output_window)
+                Some(faculty.prompt_view_within(&ws, 16_384).completion_reserve)
             );
         }
         let verdict = faculty.contribute(&ws).await.expect("next verdict");
@@ -165,7 +165,7 @@ async fn live_window_observation_cannot_overwrite_a_newer_binding() {
             Some(
                 faculty
                     .prompt_view_within(&ws, next_window)
-                    .output_window
+                    .completion_reserve
             )
         );
     }
@@ -305,9 +305,7 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                 let ask = pair[1].messages.iter().position(|m| m.content_text().contains(stimulus)).unwrap();
                 assert!(ground[0] < ask);
                 assert_eq!(pair[0].system_prompt, pair[1].system_prompt);
-                // The retry's bound is the window its reduced prompt leaves at the measured
-                // density: recomputed, inside the served window.
-                assert!(pair[1].max_tokens.is_some_and(|bound| bound < window), "{:?}", pair[1].max_tokens);
+                assert_eq!(pair[0].max_tokens, pair[1].max_tokens);
                 assert_eq!(serde_json::to_value(&pair[0].tools).unwrap(), serde_json::to_value(&pair[1].tools).unwrap());
                 assert!(LlmDeliberationFaculty::messages_cost(&pair[1].messages)
                     < LlmDeliberationFaculty::messages_cost(&pair[0].messages));

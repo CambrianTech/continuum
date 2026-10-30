@@ -120,16 +120,14 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         assert!(view.capacity_error.is_none(), "{view:?}");
         // The reply and the prompt negotiate in ONE allocation: the required stimulus and
         // result are never traded, the reply always keeps its floor and claims no more than
-        // its measured need (the cold prior here), and the request is bounded by the window
-        // the prompt leaves. What the fixture must still prove is that the oversized result
-        // rides the wire inside the window (asserted below).
+        // its measured need (the cold prior here). What the fixture must still prove is that
+        // the oversized result rides the wire inside the window (asserted below).
         assert!(
             (LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS..=LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS)
                 .contains(&view.completion_reserve),
             "the reply keeps its floor and claims no more than its need: {}",
             view.completion_reserve
         );
-        assert!(view.output_window >= view.completion_reserve, "the bound never falls below the reserve");
         let contribution = faculty
             .contribute(&ws)
             .await
@@ -178,8 +176,8 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             .contains("Held activity context"));
         assert_eq!(
             request.max_tokens,
-            Some(view.output_window),
-            "the wire carries the window the prompt leaves, verbatim"
+            Some(view.completion_reserve),
+            "the wire carries the plan's grant verbatim"
         );
         let schema_tokens =
             crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap());

@@ -308,8 +308,9 @@ impl LlmDeliberationFaculty {
     pub fn build_request_within(
         &self,
         binding: &ModelBinding,
-        // The window the fitted prompt leaves (`DeliberationPromptView::output_window`):
-        // carried as `max_tokens` verbatim, never re-derived here.
+        // The reply's grant as the prompt plan granted it
+        // (`DeliberationPromptView::completion_reserve`): carried as `max_tokens`
+        // verbatim, never re-derived here — the prompt was fitted to leave exactly it.
         allowance: u32,
         messages: Vec<ChatMessage>,
         tools: Option<Vec<NativeToolSpec>>,
