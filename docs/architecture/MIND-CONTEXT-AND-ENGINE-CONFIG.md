@@ -324,6 +324,121 @@ collapse the newest, admission instead of turnovers, a restart order measured pe
 slot/seed), Cormac (checkpoints at the head boundary and on turnover). The replay validator
 (`continuum-context` `examples/replay.rs`) and the live 15-minute read are the receipts for each slice.
 
+### Revision, 2026-10-30: causality is in the type, so nothing can loop as if it were progress
+
+**The failure.** On the M5 (build ab0466601, 2026-10-30) residents read the same file up to 8 times an hour
+and made 2 edits in 75 reads. Every act's turnover collapsed her earlier results to one-line notes, so her
+next input looked like her last and she repeated the act. Every loop we have recorded has this one shape:
+the next input equals the last, because a cause lost its effect or an effect lost its cause. Patching the
+budget that caused today's instance (ONE-BUDGET slice 6) does not make the next instance impossible. The
+data type has to.
+
+**The design** (Joel: "pointers into a linked list ... we already built into engrams ... handle it
+generically ... at a fundamental and centralized level"). Every element she perceives is a node in a causal
+chain: an act, its result, a message and its reply, a game move, a perception fact, an event from any
+activity. Engrams already link provenance (`EngramOrigin::ToolInvocation`, the parent of a reflection) and
+reply edges. The view's `Item` gains the same link.
+
+- **`Item { key, cause, content, ... }`.**
+  - `cause` is a typed, stable id assigned by the producer that persists the element (the engram id), never
+    an in-view position. That lets edges cross sources, epochs and restarts. The view resolves a cause to
+    whatever level it holds. A cause it cannot resolve (outside the epoch, evicted) is the typed
+    `CauseNotHeld`. It renders a durable, resolvable handle with typed availability, so the cause stays
+    reachable across an epoch. A `CauseNotHeld` does not count as demonstrated closure; the validator
+    reports it separately.
+  - `Root` exists only for a genuine origin (an external message, the start of an activity), and the ratchet
+    counts `Root` constructions per source.
+  - `content` is the hash of the whole, computed once where the whole is stored (`StoredWhole` gains it at
+    spill time), so a deferred whole is never re-read to compare.
+  - The constructor requires `cause` and `content`, so a source cannot build an item without causality.
+    Engram provenance and the view's link become one type: the view holds a chain within an epoch, and
+    engrams persist it.
+- **The view enforces it, centrally, for every source.** No source can opt out:
+  1. **Causal closure.** An element renders only if its cause is represented: whole, summarized, or folded
+     with its outcome. Nothing appears as an effect without its cause, and "read X" never appears without
+     what X said or how it ended.
+  2. **Every chain's head is whole.** This generalizes "never clip the newest end" (goal 7) from the newest
+     message to the newest element of each causal thread.
+  3. **Collapse folds a chain segment; it never breaks a chain.** A contiguous run becomes one node that
+     keeps its outcome and a pointer back. The chain shortens and stays linked.
+  4. **A cycle cannot be presented as progress.** Repeat identity is (action fingerprint, outcome content).
+     The fingerprint is the normalized request: the verb and its arguments as the tool saw them. No
+     argument is excluded by default; an exclusion is named only by the tool's own schema, never by the
+     view. (Key plus cause cannot catch the loop: each re-read's result is caused by a new act. Cormac's
+     review.) A new act whose fingerprint matches a prior act in its chain, and whose outcome content is
+     unchanged, is recorded as an edge back to that ancestor and renders as "repeat of #n, outcome
+     unchanged", never as a fresh element.
+     - **Same output is not the same effect** (Codex). Two appends or sends can both return "OK" and still
+       cause two effects. Every occurrence keeps its own id, order and side-effect receipt, and is never
+       erased. Repeated content renders by reference to the earlier occurrence. "Outcome unchanged" is
+       claimed only on the producer's evidence: a read whose content hash is unchanged qualifies; an "OK"
+       from a write does not.
+     - This is perception, not a gate and never an injected instruction. It makes progression visible.
+       Whether she stops repeating is behavior: only live useful work proves it.
+  5. **Asking again for a folded ancestor is a measured miss.** The measurement is the existing
+     handle-expand request on a folded node, counted in that one place. It raises that chain's claim in
+     the one allocation (ONE-BUDGET), so what she keeps needing stays whole, decided by her own misses
+     rather than a constant.
+- **Overflow, in ONE-BUDGET terms.**
+  - A finished chain (its outcome settled) folds whole into one node holding its outcome; only live chains
+    hold a skeleton.
+  - If the live chains' skeletons still exceed the grant (a small window, the 8 GB case), the allocation
+    returns the typed refusal or abstention of contract 5 ("demand, feasibility and allocation are three
+    things"). It never breaks a chain to fit.
+- **The flexbox allocates chains.** A chain is the claim unit:
+  - floor: its causal skeleton (head plus fold nodes);
+  - want: the whole chain;
+  - grow pass: most-missed and most-recent segments first.
+
+  The allocator is unchanged; its claims are now causally whole.
+- **One owner.** `continuum-context` owns the item type and the five invariants. Sources supply cause
+  links. Engrams reuse the link type. #5604's proprioception for unfulfilled acts becomes one consumer of
+  invariant 4, not a separate mechanism.
+- **Enforcement.**
+  - A ratchet: no item is constructed without a cause.
+  - A replay validator, in seconds and with no live peers. It proves visible progression and retained
+    outcomes, not behavior:
+    - across captured traces, a repeated (action fingerprint, outcome) renders as a repeat, never as fresh;
+    - every rendered effect has its cause represented, with `CauseNotHeld` counted separately;
+    - fixtures: an unchanged-read repeat (renders as a repeat), a repeated write with identical output
+      (two occurrences, both kept), and a cause across a restart (resolves through its durable id).
+
+    The M5 2026-10-30 read loops are an acceptance case, not a universal diagnosis.
+  - Live, on the health line: repeats per resident-hour.
+
+**Build order and owners:**
+1. The item type, typed causes, `CauseNotHeld`, the `Root` ratchet and invariants 1-3, in
+   `continuum-context`, with every source supplying causes. Owner: Fable.
+2. Invariant 4's fingerprint and its replay validator, which builds on the deferred-whole and fold code.
+   Owner: Cormac. The validator replays the M5 2026-10-30 captures and must fire on the 8-reads-an-hour case.
+3. Invariant 5 and the overflow rule, together with ONE-BUDGET slice 6's measured claims. Owner: Fable.
+
+Each step lands with its validator and a 15-minute live read.
+
+**The render receipt: what was actually sent** (Codex on #5585 and #5611, 2026-10-30). An item's id, cause
+and content hash say what it IS. Nothing yet says what the render SENT, so no consumer can know whether she
+perceived a result or only that it was delivered. Codex's task wakes need exactly that: a wake may
+discharge only when the whole result was actually in a prompt she was sent.
+
+- **One receipt per render,** produced by the view (`continuum-context`), the only place that decides levels,
+  bound to its epoch and allocation (FOCUS-CONTRACT rule 8). It is not assembled by sources or consumers.
+- **Per item:** its `ElementId`; the level actually sent (`Whole`, `Summary`, `Pointer`, or folded into a named
+  run); the content hash of the body actually sent; and its load outcome:
+  - `Resident`: the whole was in memory;
+  - `Loaded`: a stored whole was read back for this render;
+  - `LoadFailed { handle, kind }`: a stored whole could not be read, so its resident pointer was sent and the
+    failure is explicit, never rendered as if whole.
+- **Consumers read the receipt, never the prompt text.** A task wake discharges only on its result's item
+  with level `Whole` and load `Resident` or `Loaded`. Delivery, durable checkpoints and ACKs are separate
+  facts and never imply she saw it (Codex).
+- **The receipt is the source of the signals** in HOW-A-MIND-GETS-WHAT-SHE-NEEDS section 7: faults (a
+  re-read of an item whose last receipt said folded), repeats (whole, unchanged), and the allocation
+  receipt the proving ground reduces.
+- **No per-source clipping and no second allocator:** the receipt reports the one allocation's outcome;
+  nothing downstream re-decides levels.
+- Owner: Fable (the receipt, in the view), after #5611 lands. Codex consumes it for task wakes and owns the
+  task source on top of it.
+
 ## Fault 2: engine configuration is decided in five places
 
 `lane_args`, `llama_server`, `backend_receipt`, `serving_plan` and `kv_cache_plan` each
