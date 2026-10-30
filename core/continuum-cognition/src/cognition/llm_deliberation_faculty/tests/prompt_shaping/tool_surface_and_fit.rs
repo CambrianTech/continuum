@@ -365,8 +365,9 @@ fn a_binding_without_a_model_name_carries_the_adapters_served_model() {
 // buys her whole hands from an ample grant; the next act's claim keeps that level as its
 // target with her core hands as the only floor, and the request carries exactly the
 // selection the allocation bought.
-/// Asha with hands whose core is smaller than the whole (`chat/send`, `room/join`, `web/fetch`
-/// are extended) and a `code/**` subtree an activity can declare.
+/// Asha with tools assigned. Her surface is built from the live native registry
+/// (`rebuild_tool_surface`), not these specs, whose role is only to give her a tool set; her
+/// core hands are smaller than her whole hands there.
 fn asha_with_hands() -> LlmDeliberationFaculty {
     let raw: Vec<NativeToolSpec> = ["code/read", "work/state", "chat/send", "commands/list", "room/join", "code/git/status", "work/submit", "web/fetch"]
         .iter()
@@ -388,6 +389,24 @@ fn asha_with_hands() -> LlmDeliberationFaculty {
 /// The schemas a surface puts on the wire, as bytes.
 fn wire(tools: &crate::cognition::tool_surface::SelectedSurface<'_>) -> String {
     serde_json::to_string(&tools.specs).expect("schemas")
+}
+
+/// A workspace whose activity declares ONE verb of her hands (not the discovery pair or a focus
+/// verb): its offer is that verb plus `commands/` and `focus/`, a strict subset of her hands, so it
+/// fits any grant that held her hands and selects a different set. Taken from the built surface,
+/// which is the live native registry, so the fixture tracks the registry's names.
+fn declaring_one_hand(faculty: &LlmDeliberationFaculty) -> Workspace {
+    let surface = faculty.tool_surface();
+    let verb = surface
+        .names()
+        .iter()
+        .zip(surface.registry())
+        .find(|(name, spec)| {
+            !name.starts_with("commands/") && !name.starts_with("focus/") && surface.hands().iter().any(|hand| hand.name == spec.name)
+        })
+        .map(|(name, _)| name.clone())
+        .expect("her hands hold a verb besides the discovery pair and focus");
+    Workspace::new("what changed on the board?").room_affordances(vec![verb])
 }
 
 fn view_epoch(faculty: &LlmDeliberationFaculty) -> Option<u64> {
@@ -421,11 +440,14 @@ fn an_epoch_keeps_the_tool_level_its_allocation_bought() {
 fn an_epoch_sends_one_tool_set_whatever_its_acts_affordances() {
     let faculty = asha_with_hands();
     let ws = Workspace::new("what changed on the board?");
-    let declared = Workspace::new("what changed on the board?").room_affordances(vec!["code/**".to_string()]);
+    let declared = declaring_one_hand(&faculty);
     let first = faculty.prompt_view_within(&ws, 200_000);
     assert!(first.capacity_error.is_none(), "{:?}", first.capacity_error);
     let epoch = view_epoch(&faculty);
-    let alone = faculty.tool_surface().select_granted(&declared.room_affordances, first.tools_grant).expect("code/** fits");
+    let alone = faculty
+        .tool_surface()
+        .select_granted(&declared.room_affordances, first.tools_grant)
+        .expect("precondition: the declared verb's offer fits the epoch's grant");
     assert_ne!(wire(&alone), wire(&first.tools), "precondition: these affordances alone choose another set");
     let second = faculty.prompt_view_within(&declared, 200_000);
     let third = faculty.prompt_view_within(&ws, 200_000);
@@ -443,10 +465,14 @@ fn a_new_epoch_selects_from_the_affordances_of_the_act_that_started_it() {
     use continuum_context::source::Source;
     let faculty = asha_with_hands();
     let ws = Workspace::new("what changed on the board?");
-    let declared = Workspace::new("what changed on the board?").room_affordances(vec!["code/**".to_string()]);
+    let declared = declaring_one_hand(&faculty);
     let first = faculty.prompt_view_within(&ws, 200_000);
     let grant = first.tools_grant;
-    let alone = faculty.tool_surface().select_granted(&declared.room_affordances, grant).expect("code/** fits");
+    let alone = faculty
+        .tool_surface()
+        .select_granted(&declared.room_affordances, grant)
+        .expect("precondition: the declared verb's offer fits the epoch's grant");
+    assert_ne!(wire(&alone), wire(&first.tools), "precondition: these affordances alone choose another set");
     let (choice, refused) = faculty.granted_tools(&declared, faculty.tools_claim(&declared), grant);
     assert!(refused.is_none());
     assert_eq!(wire(&choice.sent), wire(&first.tools), "before the fit, the act charges the epoch's set");
