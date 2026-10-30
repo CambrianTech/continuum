@@ -75,9 +75,8 @@ impl ContextMessage {
 }
 
 impl Block for ContextMessage {
-    fn chars(&self) -> usize {
-        // `str::chars`, not this trait's `chars`, which `String` also implements.
-        self.text.as_str().chars().count()
+    fn text(&self) -> &str {
+        &self.text
     }
 }
 

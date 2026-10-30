@@ -6,13 +6,21 @@
 //! them. A source that cannot key its state (the clock, this act's ask) is not a source:
 //! it rides the fresh tail after the epoch.
 
+use crate::cause::{Cause, Content, ContentHash, ElementId};
 use crate::epoch::Block;
 
 /// One item of a source's state, in both renderings the view may choose between.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item<T> {
-    /// Stable for the item's life: the same result, file or notice keeps its key.
+    /// Stable for the item's life: the same result, file or notice keeps its key. What the item is
+    /// ABOUT; the occurrence is `id`.
     pub key: String,
+    /// This occurrence, named by its producer: two reads of one file share a `key` and have two ids.
+    pub id: ElementId,
+    /// What this occurrence follows from (`crate::cause`).
+    pub cause: Cause,
+    /// Its whole's hash, taken once where the whole is held or stored.
+    pub content: Content,
     /// The item itself.
     pub full: T,
     /// A coarser rendering between whole and pointer (a file's outline and the lines she
@@ -39,12 +47,16 @@ pub struct StoredWhole {
     pub chars: usize,
     /// The handle the render's loader opens (a spill path, a result id).
     pub handle: String,
+    /// The whole's hash, taken at spill time with its size: compared without reading it back.
+    pub content: ContentHash,
 }
 
-impl<T> Item<T> {
-    /// An item that is resident whole, with no coarser levels yet.
-    pub fn whole(key: impl Into<String>, full: T) -> Self {
-        Self { key: key.into(), full, summary: None, pointer: None, stored: None }
+impl<T: Block> Item<T> {
+    /// An occurrence resident whole, with no coarser levels yet. Its cause is required: a source
+    /// cannot build an element without saying what it follows from.
+    pub fn whole(id: ElementId, cause: Cause, key: impl Into<String>, full: T) -> Self {
+        let content = Content::Hashed(ContentHash::of(full.text()));
+        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None }
     }
 }
 
