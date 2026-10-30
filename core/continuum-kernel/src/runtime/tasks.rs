@@ -162,6 +162,17 @@ impl TaskLedger {
             Some(_) => return Err("task delivery fact has an invalid identity or shape".into()),
             None => {}
         }
+        self.read_terminal(task, owner).await
+    }
+
+    /// Resolve the durable terminal even after delivery acknowledgement. Resident
+    /// checkpoints carry references; the ledger remains the one output owner.
+    pub async fn terminal(&self, task: Uuid, owner: Uuid) -> Result<Option<TaskEnd>, String> {
+        self.authorize(task, owner).await?;
+        self.read_terminal(task, owner).await
+    }
+
+    async fn read_terminal(&self, task: Uuid, owner: Uuid) -> Result<Option<TaskEnd>, String> {
         match self
             .facts
             .find_by_id(Uuid::new_v5(&task, b"terminal"))

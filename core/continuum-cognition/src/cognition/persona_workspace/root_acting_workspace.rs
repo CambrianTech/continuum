@@ -347,7 +347,7 @@ impl PersonaWorkspaceRegistry {
 
     /// Periodic crash checkpoint. A busy writer coalesces this tick; no queue
     /// of blocking jobs accumulates behind slow storage.
-    pub fn checkpoint_volatile_all(&self) -> Vec<(Uuid, std::io::Result<()>)> {
+    pub fn checkpoint_volatile_all(&self) -> Vec<(Uuid, std::io::Result<VolatileReceipt>)> {
         let Some(stopped) = self.checkpoint_stopped.try_lock() else {
             return Vec::new();
         };
@@ -358,7 +358,7 @@ impl PersonaWorkspaceRegistry {
     }
 
     /// Explicit save is repeatable and leaves periodic persistence running.
-    pub fn flush_volatile_all(&self) -> Vec<(Uuid, std::io::Result<()>)> {
+    pub fn flush_volatile_all(&self) -> Vec<(Uuid, std::io::Result<VolatileReceipt>)> {
         let _checkpoint = self.checkpoint_stopped.lock();
         self.write_volatile_all(SaveReason::Seam)
     }
@@ -367,7 +367,7 @@ impl PersonaWorkspaceRegistry {
     /// then snapshot CURRENT residents. The caller must quiesce mutation first.
     /// Blocking work can outlive an async timeout; callers must receipt that as
     /// uncertain, never successful. No later periodic write can overtake this one.
-    pub fn stop_volatile_checkpoints(&self) -> Vec<(Uuid, std::io::Result<()>)> {
+    pub fn stop_volatile_checkpoints(&self) -> Vec<(Uuid, std::io::Result<VolatileReceipt>)> {
         let mut stopped = self.checkpoint_stopped.lock();
         *stopped = true;
         self.write_volatile_all(SaveReason::Seam)
@@ -375,7 +375,7 @@ impl PersonaWorkspaceRegistry {
 
     // Only called under checkpoint_stopped. The cycle lookup lock is released
     // before snapshot/serialization/IO, keeping room turns and roster reads free.
-    pub(super) fn write_volatile_all(&self, reason: SaveReason) -> Vec<(Uuid, std::io::Result<()>)> {
+    pub(super) fn write_volatile_all(&self, reason: SaveReason) -> Vec<(Uuid, std::io::Result<VolatileReceipt>)> {
         // ONE staged-read budget for the whole seam, shared by every resident, so the save
         // phase is bounded by the phase and not by resident count; a periodic write has none.
         let staged_deadline = matches!(reason, SaveReason::Seam)
@@ -436,7 +436,7 @@ impl PersonaWorkspaceRegistry {
                 let test_home = crate::paths::NativeHomeOverride::current();
                 #[cfg(test)]
                 let test_home = &test_home;
-                let results: Vec<(Uuid, std::io::Result<()>)> = std::thread::scope(|scope| {
+                let results: Vec<(Uuid, std::io::Result<VolatileReceipt>)> = std::thread::scope(|scope| {
                     let handles: Vec<_> = residents
                         .into_iter()
                         .map(|(id, memory)| {

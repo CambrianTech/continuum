@@ -40,6 +40,21 @@ pub(super) fn volatile_path(persona_id: Uuid) -> std::io::Result<std::path::Path
         .join("volatile.json"))
 }
 
+/// Proof returned only after the exact snapshot is synced and renamed. The registry
+/// must match the incarnation against its current resident before using these IDs.
+#[derive(Debug)]
+pub struct VolatileReceipt {
+    owner: Uuid,
+    incarnation: Uuid,
+    consumed_tasks: Vec<Uuid>,
+}
+
+impl VolatileReceipt {
+    pub fn owner(&self) -> Uuid { self.owner }
+    pub fn incarnation(&self) -> Uuid { self.incarnation }
+    pub fn consumed_tasks(&self) -> &[Uuid] { &self.consumed_tasks }
+}
+
 /// Persist the volatile tier — atomic tmp+rename so a crash mid-write never
 /// leaves a torn file. Called under the registry checkpoint gate, on a blocking
 /// worker. Failures propagate to both periodic and shutdown lifecycle receipts.
@@ -48,7 +63,7 @@ pub(super) fn save_volatile(
     reason: SaveReason,
     staged_deadline: Option<std::time::Instant>,
     wm: &super::super::working_memory::WorkingMemory,
-) -> std::io::Result<()> {
+) -> std::io::Result<VolatileReceipt> {
     let path = volatile_path(persona_id)?;
     let _checkpoint_lock = checkpoint_adoption::lock_checkpoint(&path, true)?;
     let mut snapshot = wm.snapshot();
@@ -75,6 +90,11 @@ pub(super) fn save_volatile(
     snapshot.acting_card = wm
         .peek_restored_acting_card()
         .or_else(|| acting_card_of(persona_id));
+    let receipt = VolatileReceipt {
+        owner: persona_id,
+        incarnation: wm.incarnation(),
+        consumed_tasks: snapshot.task_results.consumed_ids(),
+    };
     let persisted = PersistedVolatile {
         wm: snapshot,
         own_speech: OwnSpeechPersisted::ByRoom(super::super::deliberation_budget::own_speech_by_room(
@@ -91,7 +111,8 @@ pub(super) fn save_volatile(
     file.sync_all()?;
     drop(file);
     std::fs::rename(&tmp, &path)?;
-    checkpoint_adoption::sync_parent(&path)
+    checkpoint_adoption::sync_parent(&path)?;
+    Ok(receipt)
 }
 
 /// Load the previous life's volatile tier under the same owner lock as saves

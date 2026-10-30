@@ -68,10 +68,13 @@ mod tests {
         ledger
             .finish(handle_task, owner, TaskEnd::Done(handle.clone()))
             .await?;
+        ledger.acknowledge(binary_task, owner).await?;
+        assert_eq!(ledger.pending(binary_task, owner).await?, None);
+        assert!(ledger.terminal(binary_task, Uuid::new_v4()).await.is_err());
         drop(ledger);
         let reopened = TaskLedger::new(adapter).await?;
         assert_eq!(
-            reopened.pending(binary_task, owner).await?,
+            reopened.terminal(binary_task, owner).await?,
             Some(TaskEnd::Done(binary))
         );
         assert_eq!(
