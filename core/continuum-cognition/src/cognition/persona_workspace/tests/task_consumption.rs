@@ -24,7 +24,7 @@ async fn forgotten_end_is_committed_before_receipt_and_restored_with_wake(
     let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
     assert_ne!(memory.incarnation(), old_incarnation);
     assert_eq!(memory.pending_task_wakes(), vec![task]);
-    assert!(memory.admit_task_wake(task));
+    assert!(memory.stage_task_read(task));
     let replay = registry.consume_task_ends(owner, vec![(task, TaskEnd::Stopped)])?;
     assert_eq!(replay.incarnation(), memory.incarnation());
     let next = WorkingMemory::new(8);
@@ -91,7 +91,7 @@ async fn failed_checkpoint_returns_no_receipt_and_replay_commits_staged_end(
     assert_eq!(std::fs::read(&path)?, before);
     let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
     assert!(memory.pending_task_wakes().is_empty());
-    assert!(!memory.admit_task_wake(task));
+    assert!(!memory.stage_task_read(task));
     std::fs::remove_dir(&obstruction)?;
     // The ordinary checkpoint owner also publishes a staged end after IO recovers.
     for (_, result) in registry.flush_volatile_all() {
@@ -161,5 +161,41 @@ async fn ledger_ack_follows_resident_commit_and_restart_keeps_wake_without_handl
         0
     );
     assert_eq!(restored.pending_task_wakes(), vec![task]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_read_checkpoint_keeps_wake_pending_until_retry(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let registry = PersonaWorkspaceRegistry::new();
+    let owner = Uuid::new_v4();
+    let task = Uuid::new_v4();
+    registry.register_from_cfg(cfg_for(owner))?;
+    registry.consume_task_ends(owner, vec![(task, TaskEnd::Stopped)])?;
+    let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
+    assert!(memory.stage_task_read(task));
+    let obstruction = volatile_path(owner)?.with_extension("json.tmp");
+    std::fs::create_dir(&obstruction)?;
+    let failed = registry.flush_volatile_all();
+    assert_eq!(failed.len(), 1);
+    assert!(failed[0].1.is_err());
+    assert_eq!(memory.pending_task_wakes(), vec![task]);
+    let restarted = WorkingMemory::new(8);
+    restarted.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
+    assert_eq!(restarted.pending_task_wakes(), vec![task]);
+    assert!(
+        !memory.stage_task_read(task),
+        "already staged is not durable success"
+    );
+    std::fs::remove_dir(&obstruction)?;
+    for (_, result) in registry.flush_volatile_all() {
+        result?;
+    }
+    assert!(memory.pending_task_wakes().is_empty());
+    let restarted = WorkingMemory::new(8);
+    restarted.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
+    assert!(restarted.pending_task_wakes().is_empty());
     Ok(())
 }

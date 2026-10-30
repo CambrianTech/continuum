@@ -95,6 +95,7 @@ pub(super) fn save_volatile(
         incarnation: wm.incarnation(),
         consumed_tasks: snapshot.task_results.consumed_ids(),
     };
+    let task_publication = snapshot.task_results.publication();
     let persisted = PersistedVolatile {
         wm: snapshot,
         own_speech: OwnSpeechPersisted::ByRoom(super::super::deliberation_budget::own_speech_by_room(
@@ -112,7 +113,7 @@ pub(super) fn save_volatile(
     drop(file);
     std::fs::rename(&tmp, &path)?;
     checkpoint_adoption::sync_parent(&path)?;
-    wm.publish_task_checkpoint(&receipt.consumed_tasks);
+    wm.publish_task_checkpoint(task_publication);
     Ok(receipt)
 }
 

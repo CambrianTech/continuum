@@ -4,7 +4,7 @@ use super::WorkingMemory;
 use continuum_kernel::runtime::tasks::TaskEnd;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -12,7 +12,7 @@ pub(crate) struct TaskResults {
     entries: BTreeMap<Uuid, ConsumedEnd>,
     // Runtime publication fence; durable restoration publishes its saved entries.
     #[serde(skip)]
-    eligible: BTreeSet<Uuid>,
+    published: BTreeMap<Uuid, bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -83,11 +83,11 @@ impl WorkingMemory {
     }
 
     /// The shared checkpoint writer calls this only after syncing its exact snapshot.
-    pub(crate) fn publish_task_checkpoint(&self, saved: &[Uuid]) {
+    pub(crate) fn publish_task_checkpoint(&self, saved: TaskPublication) {
         let mut results = self.task_results.lock();
-        for task in saved {
-            if results.entries.contains_key(task) {
-                results.eligible.insert(*task);
+        for (task, pending) in saved.0 {
+            if results.entries.contains_key(&task) {
+                results.published.insert(task, pending);
             }
         }
     }
@@ -95,20 +95,20 @@ impl WorkingMemory {
     pub fn pending_task_wakes(&self) -> Vec<Uuid> {
         let results = self.task_results.lock();
         results
-            .entries
+            .published
             .iter()
-            .filter_map(|(task, entry)| {
-                (entry.wake_pending && results.eligible.contains(task)).then_some(*task)
-            })
+            .filter_map(|(task, pending)| pending.then_some(*task))
             .collect()
     }
 
-    /// Called only when the owning turn admits this task's wake. Sending to a
-    /// channel, reading output, and acknowledging the ledger are not admission.
-    /// Returns false if no pending obligation exists; never fabricates a receipt.
-    pub fn admit_task_wake(&self, task: Uuid) -> bool {
+    /// Stage retirement only after a successful rendered-context read receipt.
+    /// The wake remains published until the checkpoint containing retirement commits.
+    /// Notification delivery and entering the service loop are not perception.
+    /// Returns whether staging changed. False does not prove persistence: an earlier
+    /// stage may still need a checkpoint retry. Unknown tasks cannot create receipts.
+    pub fn stage_task_read(&self, task: Uuid) -> bool {
         let mut results = self.task_results.lock();
-        if !results.eligible.contains(&task) {
+        if !results.published.contains_key(&task) {
             return false;
         }
         match results.entries.get_mut(&task) {
@@ -121,9 +121,21 @@ impl WorkingMemory {
     }
 }
 
+/// Exact wake projection of one serialized snapshot. Constructed only by its owner.
+pub(crate) struct TaskPublication(BTreeMap<Uuid, bool>);
+
 impl TaskResults {
+    pub(crate) fn publication(&self) -> TaskPublication {
+        TaskPublication(
+            self.entries
+                .iter()
+                .map(|(id, end)| (*id, end.wake_pending))
+                .collect(),
+        )
+    }
+
     pub(crate) fn publish_restored(&mut self) {
-        self.eligible = self.entries.keys().copied().collect();
+        self.published = self.publication().0;
     }
 
     /// A checkpoint receipt must use IDs from its serialized snapshot, not from
@@ -153,15 +165,37 @@ mod tests {
         assert!(!restored
             .stage_task_end(task, TaskEnd::Stopped)
             .expect("identical replay"));
-        assert!(restored.admit_task_wake(task));
+        assert!(restored.stage_task_read(task));
         assert!(!restored
             .stage_task_end(task, TaskEnd::Stopped)
             .expect("replay after admission"));
+        assert_eq!(
+            restored.pending_task_wakes(),
+            vec![task],
+            "staged retirement is not a committed read receipt"
+        );
+        restored.publish_task_checkpoint(restored.snapshot().task_results.publication());
         assert!(restored.pending_task_wakes().is_empty());
         let next_life = WorkingMemory::new(8);
         next_life.restore(restored.snapshot());
         assert!(next_life.pending_task_wakes().is_empty());
         assert_eq!(next_life.snapshot().task_results.consumed_ids(), vec![task]);
+    }
+
+    #[test]
+    fn older_checkpoint_cannot_publish_a_later_read() {
+        let memory = WorkingMemory::new(8);
+        let task = Uuid::new_v4();
+        memory
+            .stage_task_end(task, TaskEnd::Stopped)
+            .expect("stage end");
+        memory.publish_task_checkpoint(memory.snapshot().task_results.publication());
+        let earlier = memory.snapshot().task_results.publication();
+        assert!(memory.stage_task_read(task));
+        memory.publish_task_checkpoint(earlier);
+        assert_eq!(memory.pending_task_wakes(), vec![task]);
+        memory.publish_task_checkpoint(memory.snapshot().task_results.publication());
+        assert!(memory.pending_task_wakes().is_empty());
     }
 
     #[test]
@@ -197,10 +231,10 @@ mod tests {
         assert!(matches!(memory.stage_task_end(first, TaskEnd::Stopped),
             Err(TaskReceiptError::Conflict(TaskReceiptConflict { task })) if task == first));
         assert!(memory.pending_task_wakes().is_empty());
-        assert!(!memory.admit_task_wake(first));
-        memory.publish_task_checkpoint(&snapshot.task_results.consumed_ids());
+        assert!(!memory.stage_task_read(first));
+        memory.publish_task_checkpoint(snapshot.task_results.publication());
         assert_eq!(memory.pending_task_wakes(), vec![first]);
-        assert!(!memory.admit_task_wake(later));
-        assert!(!memory.admit_task_wake(Uuid::new_v4()));
+        assert!(!memory.stage_task_read(later));
+        assert!(!memory.stage_task_read(Uuid::new_v4()));
     }
 }
