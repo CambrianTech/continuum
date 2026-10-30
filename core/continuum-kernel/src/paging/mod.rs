@@ -28,5 +28,6 @@ pub use broker::{
 pub use filesystem_tier_pool::FilesystemTierPool;
 pub use pool::{
     lru_priority, size_weighted_lru, EvictionPriority, PagedResourcePool, PinHandle, PoolConfig,
-    PoolEntry, PoolEntryView, PoolStats, ResourceError, ResourcePool, ResourcePoolEntry, Sizer,
+    PoolEntry, PoolEntryView, PoolStats, Relief, ResourceError, ResourcePool, ResourcePoolEntry,
+    Sizer,
 };

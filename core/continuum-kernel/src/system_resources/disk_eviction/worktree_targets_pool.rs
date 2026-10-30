@@ -272,6 +272,27 @@ impl ResourcePool for WorktreeTargetsPool {
     fn snapshot(&self) -> Vec<ResourcePoolEntry> {
         Vec::new()
     }
+
+    /// Observe mode is not a relief candidate: the broker never asks it to free and never
+    /// alerts on it (a "0 bytes freed" alert every tick would bury the real ones).
+    fn relief(&self) -> crate::paging::pool::Relief {
+        match self.mode {
+            WorktreeEvictionMode::Observe => crate::paging::pool::Relief::ObservesOnly,
+            WorktreeEvictionMode::Delete => crate::paging::pool::Relief::Evicts,
+        }
+    }
+
+    /// Each relief pass in observe mode: with the ask the broker would make, measure and
+    /// publish the would-take list (the same tick path, which deletes nothing in this mode);
+    /// below the act line, an empty plan.
+    fn observe(&self, would_ask: Option<u64>) {
+        match would_ask {
+            Some(want) => {
+                self.evict_at_least(want);
+            }
+            None => self.publish_would_take(Vec::new()),
+        }
+    }
 }
 
 #[cfg(test)]

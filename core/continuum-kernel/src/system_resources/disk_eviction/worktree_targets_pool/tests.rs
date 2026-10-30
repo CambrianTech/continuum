@@ -462,8 +462,9 @@ fn a_profile_lock_created_after_the_snapshot_is_respected() {
 // what this catches (Codex on #5601): production deletes nothing until build admission
 // exists. In observe mode an over-budget class on a hot volume is measured and planned, the
 // plan is published naming each target it would take, and every byte stays on disk; the
-// broker is told of nothing freed. Mutation check: carrying the plan out in observe mode
-// removes `older`.
+// broker neither asks it to free nor alerts on it, on a hot volume, every pass. Mutation
+// checks: carrying the plan out in observe mode removes `older`; leaving observe pools in
+// the relief candidates puts one "0 bytes freed" alert per pass into `alerts`.
 #[test]
 fn observe_mode_publishes_what_it_would_take_and_deletes_nothing() {
     let rt = runtime();
@@ -481,6 +482,11 @@ fn observe_mode_publishes_what_it_would_take_and_deletes_nothing() {
     ));
     let broker = PressureBroker::new(BrokerConfig::default());
     broker.register(pool.clone() as Arc<dyn ResourcePool>);
+    let alerts = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let sink = alerts.clone();
+    broker.add_alert_sink(Arc::new(move |alert: crate::paging::PressureAlert| {
+        sink.lock().push(alert.tier_name)
+    }));
 
     assert_eq!(
         broker_ticks(&broker, &pool, 3),
@@ -505,5 +511,10 @@ fn observe_mode_publishes_what_it_would_take_and_deletes_nothing() {
         would,
         ["older", "newest"],
         "the budget trim, then the hot volume's ask, oldest first"
+    );
+    assert!(
+        alerts.lock().is_empty(),
+        "no relief request and no alert for an observe-only pool: {:?}",
+        alerts.lock()
     );
 }

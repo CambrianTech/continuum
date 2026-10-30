@@ -316,7 +316,24 @@ impl PressureBroker {
     ///                     immediately; parallel only matters if eviction
     ///                     is async, which it isn't in our design)
     pub fn relieve(&self) -> ReliefReport {
-        let global = self.global_pressure();
+        // Observe-only pools are never relief candidates (no request, no alert); each pass
+        // tells them the ask they would get, so they can plan and report it.
+        for pool in self.pools.read().iter() {
+            if pool.relief() == crate::paging::pool::Relief::ObservesOnly {
+                let would_ask = (pool.pressure() >= self.config.act_above)
+                    .then(|| evict_amount_for(pool.as_ref()));
+                pool.observe(would_ask);
+            }
+        }
+        // The tier is read over relief candidates only: a pool that cannot be asked must not
+        // escalate the tier for the pools that can.
+        let global = self
+            .pools
+            .read()
+            .iter()
+            .filter(|p| p.relief() == crate::paging::pool::Relief::Evicts)
+            .map(|p| p.pressure())
+            .fold(0.0_f64, f64::max);
         let tier = PressureTier::for_pressure(global);
         if (tier == PressureTier::Normal || tier == PressureTier::Warning)
             && global < self.config.act_above
@@ -332,6 +349,7 @@ impl PressureBroker {
         // Build (pressure, ref) list, sorted descending by pressure.
         let mut pressured: Vec<(f64, Arc<dyn ResourcePool>)> = pools
             .iter()
+            .filter(|p| p.relief() == crate::paging::pool::Relief::Evicts)
             .map(|p| (p.pressure(), p.clone()))
             .filter(|(p, _)| *p >= self.config.act_above)
             .collect();
