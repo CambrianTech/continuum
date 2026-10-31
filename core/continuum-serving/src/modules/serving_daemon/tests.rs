@@ -315,7 +315,7 @@ pub(crate) async fn exercise_cancelled_exclusive_teacher(
                 tasks: vec![],
                 teacher_model: "exclusive-teacher-fixture".into(),
                 temperature: 0.0,
-                max_fix_iters: 0,
+                max_fix_iters: Some(0),
             })
             .await
     });

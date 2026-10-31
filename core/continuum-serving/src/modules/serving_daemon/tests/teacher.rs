@@ -29,6 +29,9 @@ async fn explicit_teacher_batch_keeps_shared_generation_owned_until_terminal() {
         );
         return;
     }
+    // The grader writes into its disk class; the fixture registry gives this child the real
+    // class layout under its own temporary home.
+    continuum_kernel::system_resources::disk_reporters::prepare_writer_fixture().await;
     crate::model_registry::init_global().expect("model registry for real teacher adapter");
     use crate::cognition::eval::EvalTask;
     use crate::cognition::eval::TeacherBatchRequest;
@@ -110,7 +113,7 @@ async fn explicit_teacher_batch_keeps_shared_generation_owned_until_terminal() {
         tasks,
         teacher_model: "teacher-fixture".into(),
         temperature: 0.0,
-        max_fix_iters: 0,
+        max_fix_iters: Some(0),
     };
     let first_owner = daemon.clone();
     let first_request = request(vec![task.clone()]);
