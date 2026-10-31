@@ -23,6 +23,19 @@ outputs:
 runs:
   using: composite
   steps:
+    # The shared target is 24 GB unpacked (warm run 41193606500 at f0f786d19, 2026-10-31: 24G
+    # after pruning 5.79 GB of test executables), restored beside its 5 GiB download, and a crate
+    # job builds its tests on top. On the root disk that ran out mid-setup and mid-build (#5638,
+    # #5649 twice, #5641 on 10-31: "No space left on device"). /mnt is the runner's own scratch
+    # disk; the build lives there. Not a separate mount means no room for the cache: say so.
+    - name: Build on the runner's scratch disk
+      shell: bash
+      run: |
+        mountpoint -q /mnt || { echo "::error::/mnt is not a separate disk on this runner; the 24 GB shared target does not fit the root disk"; exit 1; }
+        sudo install -d -o "$(id -u)" -g "$(id -g)" /mnt/target
+        echo "CARGO_TARGET_DIR=/mnt/target" >> "$GITHUB_ENV"
+        df -h / /mnt
+
     - name: Install Rust toolchain from rust-toolchain.toml
       shell: bash
       run: |
@@ -95,7 +108,7 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: |
-          target
+          /mnt/target
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db
