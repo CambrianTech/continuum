@@ -706,12 +706,12 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
     assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, true, false)).2, 10, "live held work");
     assert_eq!(shape(reply_claim(TurnKind::Act, None, 1, false, false)).2, 10, "a pending cut");
     // Measured: her think + answer, whole; an act floors at her answer channel.
-    let need = OutputNeed { reasoning: 900, answer: 300, turns: 5 };
+    let need = OutputNeed { reasoning: 900, answer: 300, turns: 5, reasoning_at_least: None };
     assert_eq!(shape(reply_claim(TurnKind::Pass, Some(need), 0, false, false)).1, 1_200);
-    let kimi = OutputNeed { reasoning: 6_100, answer: 4_077, turns: 32 };
+    let kimi = OutputNeed { reasoning: 6_100, answer: 4_077, turns: 32, reasoning_at_least: None };
     assert_eq!(shape(reply_claim(TurnKind::Act, Some(kimi), 0, false, false)), (4_077, 10_177, 8));
     // A large measured need claims all of it: the window and the allocation bound it.
-    let huge = OutputNeed { reasoning: 30_000, answer: 20_000, turns: 9 };
+    let huge = OutputNeed { reasoning: 30_000, answer: 20_000, turns: 9, reasoning_at_least: None };
     assert_eq!(shape(reply_claim(TurnKind::Act, Some(huge), 0, false, false)), (20_000, 50_000, 8));
     // A pending cut's measured peak is retained as demand, not doubled again (cf9e's 3,587).
     assert_eq!(shape(reply_claim(TurnKind::Pass, Some(need), 3_587, false, false)).1, 3_587);
@@ -723,7 +723,7 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
     let clipped = output_allowance(
         TurnKind::Pass,
         None,
-        Some(OutputNeed { reasoning: 3_000, answer: 500, turns: 5 }),
+        Some(OutputNeed { reasoning: 3_000, answer: 500, turns: 5, reasoning_at_least: None }),
         2_172,
     );
     assert_eq!((clipped.allowance, clipped.need_clipped), (2_172, true), "a need past the grant is said");
