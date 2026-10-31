@@ -80,14 +80,15 @@ def analyze_bone_hierarchy(glb):
     nodes = gltf.get("nodes", [])
     
     # Build parent->children map
-    children_map = {}
+    children_map = {}  # parent_idx -> list of (child_gltf_index)
     node_names = {}
     for idx, node in enumerate(nodes):
         nid = node.get("name", f"unnamed-{idx}")
-        node_names[idx] = nid
+        node_index = node.get("index", idx)  # glTF index field or fallback to position
+        node_names[node_index] = nid
         parent_idx = node.get("parent")
         if parent_idx is not None:
-            children_map.setdefault(parent_idx, []).append(node)
+            children_map.setdefault(parent_idx, []).append(node_index)
     
     # Find root nodes (no parent)
     roots = [n for n in nodes if "parent" not in n]
@@ -102,12 +103,12 @@ def analyze_bone_hierarchy(glb):
         kids = children_map.get(node_idx, [])
         if not kids:
             return 1
-        return 1 + max(get_depth(k["index"], visited) for k in kids)
-    
+        # kids are now integers (gltf indices), pass directly
+        return 1 + max(get_depth(k, visited) for k in kids)
     max_depths = {}
-    for root in roots:
-        name = root.get("name", f"root-{root.get('index')}")
-        depth = get_depth(root["index"])
+    for idx, root in enumerate(roots):
+        name = root.get("name", f"root-{idx}")
+        depth = get_depth(root.get("index", idx))
         max_depths[name] = depth
     
     # Count bones with "J_" prefix (VRM joint names) vs standard skeleton
