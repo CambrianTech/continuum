@@ -457,16 +457,22 @@ and content hash say what it IS. Nothing yet says what the render SENT, so no co
 perceived a result or only that it was delivered. Codex's task wakes need exactly that: a wake may
 discharge only when the whole result was actually in a prompt she was sent.
 
-- **One receipt per render,** produced by the view (`continuum-context`), the only place that decides levels,
-  bound to its epoch and allocation (FOCUS-CONTRACT rule 8). It is not assembled by sources or consumers.
+- **A render is not a send** (Codex). The view (`continuum-context`), the only place that decides levels,
+  produces a candidate receipt with each render. It becomes THE receipt only at the successful submission
+  boundary, bound to the submitted request's id, epoch and allocation (FOCUS-CONTRACT rule 8). A render that is
+  discarded (a refit, a refusal) or a send that fails produces no receipt and discharges nothing. It is not
+  assembled by sources or consumers.
 - **Per item:** its `ElementId`; the level actually sent (`Whole`, `Summary`, `Pointer`, or folded into a named
   run); the content hash of the body actually sent; and its load outcome:
   - `Resident`: the whole was in memory;
   - `Loaded`: a stored whole was read back for this render;
-  - `LoadFailed { handle, kind }`: a stored whole could not be read, so its resident pointer was sent and the
-    failure is explicit, never rendered as if whole.
-- **Consumers read the receipt, never the prompt text.** A task wake discharges only on its result's item
-  with level `Whole` and load `Resident` or `Loaded`. Delivery, durable checkpoints and ACKs are separate
+  - a stored whole that cannot be read is never silently replaced by its pointer (that would be an automatic
+    fallback). The load returns a typed `Unavailable { handle, kind }` to the one allocator: a mandatory whole
+    refuses or defers explicitly (a capacity outcome); an optional item's lower level is an explicit
+    decision by the allocator, which yields a fresh render and a fresh candidate receipt (Codex).
+- **Consumers read the receipt, never the prompt text.** A task wake discharges only when all hold: the
+  request was actually submitted; its result's item was sent at level `Whole` with load `Resident` or
+  `Loaded`; and the sent content hash and memory incarnation match the task result it is for. Delivery, durable checkpoints and ACKs are separate
   facts and never imply she saw it (Codex).
 - **The receipt is the source of the signals** in HOW-A-MIND-GETS-WHAT-SHE-NEEDS section 7: faults (a
   re-read of an item whose last receipt said folded), repeats (whole, unchanged), and the allocation

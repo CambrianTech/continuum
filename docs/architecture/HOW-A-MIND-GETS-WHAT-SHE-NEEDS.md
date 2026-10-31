@@ -402,7 +402,9 @@ no-cut criterion applies after step 2 lands.
 **Open-loop numbers to remove** (each becomes a ratchet entry that only goes down):
 - the epoch start's half of the window;
 - `ACT_REASONING_BUDGET`, the deliberation think share, the cold reply prior, the p90 with headroom;
-- `WORKING_WINDOW_TOKENS` (#5612 deletes it);
+- `WORKING_WINDOW_TOKENS`, replaced by L3's measured decision (her turnover cost against her miss cost),
+  never deleted bare: a bare slot-sized window raised mean prefill per act in the replay (ONE-BUDGET
+  contract 7; #5612 holds and folds into L3);
 - `ACT_LATENCY_BUDGET_SECS`, `PASS_LATENCY_BUDGET_SECS`, `DECODE_FLOOR_TPS`;
 - the fixed slot count and fixed slot window;
 - every other number the inventory finds.
