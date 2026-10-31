@@ -29,29 +29,6 @@ fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
     assert!(!ring.contains(&"a".repeat(cap / 2)), "its whole result left the ring");
 }
 
-// what this catches: a checkpoint from the build before the log losing what a collapsed
-// result reopens. Its pointer lines and ledger lines carry no seq column; the #n the old
-// owner wrote keys them, and the pointer's saved whole stays reachable for the spill guard.
-#[test]
-fn a_checkpoint_from_before_the_log_restores_its_pointers_and_ledger() {
-    let mut legacy = WorkingMemory::new(8).snapshot();
-    legacy.receipt_heads = vec!["[action #7] code/read(\"a.rs\")".into(), "[action #8] code/shell(\"ls\")".into()];
-    legacy.receipt_head_rooms = vec![None, None];
-    legacy.recent_results = vec![(8, None, "a.rs\nb.rs".into(), "code/shell".into(), Some("h8".into()))];
-    legacy.evicted_pointers = vec![("[result #7; room unrecorded; operation code/read; output handle: tool/output h7 — collapsed]".into(), "h7".into())];
-    legacy.next_action_seq = 9;
-    let reachable = legacy.reachable_handles();
-    assert!(reachable.contains("h7") && reachable.contains("h8"), "{reachable:?}");
-    let wm = WorkingMemory::new(8);
-    wm.restore(legacy);
-    let lines: Vec<String> = ledger(&wm).into_iter().map(|(_, head)| head).collect();
-    assert_eq!(lines, ["[action #7] code/read(\"a.rs\")", "[action #8] code/shell(\"ls\")"]);
-    let ring = wm.recent_results_messages().join("\n");
-    // Its pointer keeps the exact text the older build wrote: operation and all.
-    assert!(ring.contains("[result #7; room unrecorded; operation code/read; output handle: tool/output h7 — collapsed]"), "{ring}");
-    assert!(ring.contains("a.rs\nb.rs"), "{ring}");
-}
-
 // what this catches: a restart changing what she reads of her own acts (Cormac on #5254: a
 // collapsed pointer re-rendered as "operation unrecorded" with no workspace, because the
 // checkpoint kept a pointer only as text). Every record is checkpointed whole, so her ring
@@ -80,25 +57,6 @@ fn a_restart_keeps_every_act_as_she_read_it() {
     restored.restore(wm.snapshot());
     assert_eq!(pointers(&restored), index);
     assert_eq!(ledger(&restored), lines);
-}
-
-// what this catches: a rollback to the build before the log restoring her blank. The
-// checkpoint keeps the wire shape that build reads beside the records it now restores from.
-#[test]
-fn a_checkpoint_keeps_the_shape_the_previous_build_reads() {
-    let wm = WorkingMemory::new(8);
-    let cap = 2 * BODY;
-    wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), None, saved("first-handle"));
-    for act in 2..=5 {
-        record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
-    }
-    wm.record_settlement("done", None);
-    shed(&wm, cap / 2);
-    let snap = wm.snapshot();
-    assert!(snap.receipt_heads.first().is_some_and(|head| head.starts_with("[action #1]")));
-    assert_eq!(snap.evicted_pointers.first().map(|(_, handle)| handle.as_str()), Some("first-handle"));
-    assert_eq!(snap.recent_results.last().map(|(seq, ..)| *seq), Some(5));
-    assert_eq!(snap.actions.len(), 5);
 }
 
 // what this catches (card d624a9a1): an act's line cutting an argument mid-value. A cut path

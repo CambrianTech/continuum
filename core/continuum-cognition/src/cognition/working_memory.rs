@@ -149,10 +149,7 @@ impl<'a> ResultAttribution<'a> {
 
 /// The line a collapsed result leaves: what it was, and the handle that reopens it.
 fn collapsed_pointer(record: &action_log::ActionRecord) -> String {
-    match &record.written_pointer {
-        Some(pointer) => pointer.clone(),
-        None => format!("[result {}{} — collapsed]", ResultAttribution::of(record), workspace_label(record.scope.as_deref())),
-    }
+    format!("[result {}{} — collapsed]", ResultAttribution::of(record), workspace_label(record.scope.as_deref()))
 }
 
 /// Recognize ONLY the standalone pointer representation emitted by this owner.
@@ -430,43 +427,14 @@ pub struct VolatileSnapshot {
     /// then says nothing rather than guessing a change it cannot see (#165).
     #[serde(default)]
     pub build_sha: String,
-    /// The proprioception receipt archive (#414) — act-history head lines that must
-    /// survive a reboot exactly as the ring entries do (the counter already did; a
-    /// counter without its lines is the deprivation this field exists to end). Empty
-    /// on snapshots written before this field (serde default): restore starts the
-    /// archive fresh and the ledger's counter-only arm stays honest about the gap.
-    #[serde(default)]
-    pub receipt_heads: Vec<String>,
-    /// Room tags parallel to `receipt_heads`, index-aligned (slice B). A
-    /// SEPARATE defaulted field — not a tuple — so snapshots written before
-    /// scoping still deserialize; restore pads missing tags with `None`
-    /// (honest "unscoped", never a guessed room).
-    #[serde(default)]
-    pub receipt_head_rooms: Vec<Option<Uuid>>,
-    /// Recent act result TAILS `(seq, room, tail)` — the cross-turn feedback
-    /// channel (2026-08-16). Defaulted so pre-field snapshots deserialize;
-    /// restore then starts the buffer fresh.
-    #[serde(default)]
-    pub recent_results: Vec<(u64, Option<Uuid>, String, String, Option<String>)>,
-    /// Additive attribution preserves the existing receipt tuple wire format. Missing
-    /// legacy attribution is unknown, never inferred from a room or the current root.
-    #[serde(default)]
-    pub result_scopes: BTreeMap<u64, String>,
     /// Her state at the seam — the whole held card, her ledger, what was staged, what tore
     /// the life (card 49b5e806, Kimi 2026-09-26). Stamped by `save_volatile`, which knows
     /// whose memory this is and why it is being written; rendered FIRST on wake. `None` on
     /// snapshots from before this field and for a citizen at home with nothing to hand.
     #[serde(default)]
     pub handoff: Option<crate::cognition::handoff::Handoff>,
-    /// The collapsed results' pointers, each with the handle it reopens: what a result
-    /// leaves when it collapses out of the ring is HOW she reaches it again, so it survives
-    /// a restart exactly as the ring does (Astra on #4963: a read collapsed at settlement
-    /// lost its only handle on restart). Empty on snapshots written before this field.
-    #[serde(default)]
-    pub evicted_pointers: Vec<(String, String)>,
-    /// Her actions, whole ([`action_log`]): what a restore reads. The ring, archive and
-    /// pointer fields above are the same acts in the shape the previous build reads, kept
-    /// so a rollback still restores her. Empty on snapshots written before it.
+    /// Her actions, whole ([`action_log`]): what a restore reads, the one shape (no projection
+    /// for another build: this is the first version, Joel 2026-10-31).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) actions: Vec<action_log::ActionRecord>,
     /// Her context view ([`WorkingMemory`]'s `view`). Absent on snapshots written before it,
@@ -522,63 +490,9 @@ impl VolatileSnapshot {
         }
     }
 
-    /// Her actions as records: the records it carries, or, for a checkpoint written before
-    /// them, the ring, archive and pointer index read back into records. Those older lines
-    /// are keyed by the `#n` this owner wrote at their head (one with none is dropped and
-    /// counted), and an older pointer keeps the exact text it was written with, since its
-    /// operation and workspace are not stored apart from it.
+    /// Her actions as records, as the checkpoint carries them.
     pub(crate) fn action_records(&self) -> Vec<action_log::ActionRecord> {
-        if !self.actions.is_empty() {
-            return self.actions.clone();
-        }
-        let blank = |seq: u64, room: Option<Uuid>| action_log::ActionRecord {
-            seq,
-            room,
-            scope: None,
-            operation: "unrecorded".into(),
-            head: None,
-            result: None,
-            handle: None,
-            written_pointer: None,
-            summary: None,
-            stored_chars: None,
-            received_ms: None,
-        };
-        let mut records: BTreeMap<u64, action_log::ActionRecord> = BTreeMap::new();
-        let mut unkeyed = 0usize;
-        for (seq, room, result, operation, handle) in &self.recent_results {
-            let record = records.entry(*seq).or_insert_with(|| blank(*seq, *room));
-            record.scope = self.result_scopes.get(seq).cloned();
-            record.operation = operation.clone();
-            record.result = Some(result.clone());
-            record.handle = handle.clone();
-        }
-        let mut rooms = self.receipt_head_rooms.iter();
-        for head in &self.receipt_heads {
-            let room = rooms.next().copied().flatten();
-            let Some(seq) = written_seq(head, "[action #") else {
-                unkeyed += 1;
-                continue;
-            };
-            records.entry(seq).or_insert_with(|| blank(seq, room)).head = Some(head.clone());
-        }
-        for (pointer, handle) in &self.evicted_pointers {
-            let Some(seq) = written_seq(pointer, "[result #") else {
-                unkeyed += 1;
-                continue;
-            };
-            let record = records.entry(seq).or_insert_with(|| blank(seq, None));
-            record.handle.get_or_insert_with(|| handle.clone());
-            record.written_pointer = Some(pointer.clone());
-        }
-        if unkeyed > 0 {
-            continuum_base::probe!(
-                class = "wm.actions.unkeyed_on_restore",
-                unkeyed = %unkeyed,
-                "checkpoint lines without an action number were dropped on restore"
-            );
-        }
-        records.into_values().collect()
+        self.actions.clone()
     }
 
     /// Every saved result this checkpoint still reaches; the persisted twin of what working
@@ -614,11 +528,6 @@ impl VolatileSnapshot {
     }
 }
 
-/// The `#n` this owner wrote right after `prefix` at the head of a line.
-fn written_seq(line: &str, prefix: &str) -> Option<u64> {
-    let digits: String = line.strip_prefix(prefix)?.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok()
-}
 
 /// "; workspace <dir>" for a result recorded under a root; empty for one recorded before.
 fn workspace_label(root: Option<&str>) -> String {

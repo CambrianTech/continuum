@@ -48,10 +48,6 @@ pub(crate) struct ActionRecord {
     /// The saved whole; `None` when the save failed, and then the result never collapses
     /// (nothing else holds its bytes).
     pub handle: Option<String>,
-    /// The pointer exactly as a build before the records wrote it, restored from its
-    /// checkpoint: its operation and workspace live only in that text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub written_pointer: Option<String>,
     /// The result's summary level (`continuum_context::levels`): a numbered read's outline,
     /// else an output's head and tail; what her view gives it when it cannot keep it whole.
     /// Kept after the result collapses, so what she read stays addressable.

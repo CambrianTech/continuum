@@ -634,13 +634,13 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let gate = Arc::new(AtomicBool::new(false));
-        let mut faculty = ActThenSpeak::new();
+        let wm = Arc::new(WorkingMemory::new(8));
+        let mut faculty = ActThenSpeak::new().with_memory(Arc::clone(&wm));
         faculty.admission_open = Some(Arc::clone(&gate));
         let exec = Arc::new(RecordingExecutor {
             seen_context: Arc::new(Mutex::new(None)),
             result_content: "4".into(),
         });
-        let wm = Arc::new(WorkingMemory::new(8));
         let cycle = WorkspaceCycle::new(
             vec![
                 Arc::new(faculty),

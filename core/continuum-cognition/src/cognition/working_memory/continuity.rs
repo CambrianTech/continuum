@@ -180,41 +180,14 @@ impl WorkingMemory {
             }
             (entries, authored)
         };
-        // The log, projected into the wire shape older builds read (see
-        // `VolatileSnapshot::action_records`), under one lock so a concurrent collapse
-        // cannot move a record between the projections.
         let last_action = self.last_action.lock().clone();
-        let (archive, recent_results, result_scopes, pointers, records) = {
-            let actions = self.actions.lock();
-            let archive: Vec<(Option<Uuid>, String)> = actions
-                .records()
-                .filter_map(|record| record.head.as_ref().map(|head| (record.room, head.clone())))
-                .collect();
-            let recent_results: Vec<(u64, Option<Uuid>, String, String, Option<String>)> = actions
-                .retained()
-                .filter_map(|r| r.result.clone().map(|result| (r.seq, r.room, result, r.operation.clone(), r.handle.clone())))
-                .collect();
-            let result_scopes: BTreeMap<u64, String> = actions
-                .retained()
-                .filter_map(|r| r.scope.clone().map(|scope| (r.seq, scope)))
-                .collect();
-            let pointers: Vec<(String, String)> = actions
-                .indexed_pointers()
-                .into_iter()
-                .filter_map(|r| r.handle.clone().map(|handle| (super::collapsed_pointer(r), handle)))
-                .collect();
-            (archive, recent_results, result_scopes, pointers, actions.records().cloned().collect())
-        };
+        let records: Vec<action_log::ActionRecord> = self.actions.lock().records().cloned().collect();
         VolatileSnapshot {
             pending_emissions: self.pending_emissions.lock().clone(),
             entries,
             action_statements,
             last_action,
             action_fps: self.action_fps.lock().iter().cloned().collect(),
-            receipt_heads: archive.iter().map(|(_, head)| head.clone()).collect(),
-            receipt_head_rooms: archive.iter().map(|(room, _)| *room).collect(),
-            recent_results,
-            result_scopes,
             next_action_seq: self.next_action_seq.load(Ordering::Relaxed),
             saved_at_ms: continuum_base::time::EpochMs::now().millis(),
             build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
@@ -229,7 +202,6 @@ impl WorkingMemory {
                 .filter(|d| d.status == DispatchStatus::Running)
                 .map(|d| d.label.clone())
                 .collect(),
-            evicted_pointers: pointers,
             actions: records,
             context_view: self.view.lock().clone(),
             receipt_children: self.receipt_children.lock().clone(),

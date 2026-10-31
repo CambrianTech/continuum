@@ -267,12 +267,7 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         interrupted_dispatches: Vec::new(),
         build_sha: String::new(), // pre-field snapshot: no rebuild guessed either
         acting_card: None,
-        receipt_heads: Vec::new(),
-        receipt_head_rooms: Vec::new(), // pre-archive snapshot: ledger's counter-only arm covers it
-        recent_results: Vec::new(),
-        result_scopes: Default::default(),
         handoff: None,
-        evicted_pointers: Vec::new(),
         actions: Vec::new(),
         context_view: None,
         receipt_children: Default::default(),

@@ -32,7 +32,7 @@ async fn latest_action_returns_full_result_trail_keeps_its_call_line() {
         .pinned_active_result_block()
         .expect("the whole result is pinned for the mind");
     assert!(
-        pinned.contains("Full result of your most recent action (#1; room unrecorded; operation unrecorded):"),
+        pinned.contains("Full result of your most recent action (#1; room unrecorded; operation code/read):"),
         "the whole result reaches the mind"
     );
     assert!(

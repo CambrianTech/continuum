@@ -60,23 +60,16 @@ fn a_step_is_scoped_to_its_root_and_every_result_is_perceived_labelled_with_its_
     results.record_settlement("reported", None);
     shed(&results, 0);
     let snapshot = results.snapshot();
-    assert!(!snapshot.evicted_pointers.is_empty(), "fixture exercises the collapsed ring");
-    let mut encoded = serde_json::to_value(&snapshot).expect("snapshot serializes");
+    assert!(snapshot.action_records().iter().any(|r| r.result.is_none() && r.handle.is_some()), "fixture exercises a collapsed result");
+    let encoded = serde_json::to_value(&snapshot).expect("snapshot serializes");
     let restored = WorkingMemory::new(2);
     restored.restore(serde_json::from_value(encoded.clone()).expect("snapshot round trip"));
     let shown = restored.recent_results_messages().join("\n");
     restored.set_scope(Some("task-b".into()));
     assert!(shown.contains("scope-a-output") && restored.recent_results_messages().join("\n") == shown, "{shown}");
-    assert_eq!(restored.snapshot().evicted_pointers, snapshot.evicted_pointers, "pointers retain custody");
-    // Pre-attribution snapshots stay explicitly unknown, not falsely assigned
-    // to the restoring root or hidden based on missing bounded entry metadata.
-    encoded.as_object_mut().unwrap().remove("result_scopes");
-    let legacy = WorkingMemory::new(2);
-    legacy.restore(serde_json::from_value(encoded).expect("legacy snapshot"));
-    legacy.set_scope(Some("task-b".into()));
-    assert!(legacy.recent_results_messages().join("\n").contains("scope-a-output"));
+    assert_eq!(restored.snapshot().action_records(), snapshot.action_records(), "collapsed results retain custody");
     // Receipt publication, pruning and snapshots share custody: a concurrent
-    // checkpoint must never downgrade a known-root result to legacy unknown.
+    // checkpoint must never lose a result's root.
     let concurrent = WorkingMemory::new(2);
     concurrent.set_scope(Some("writer-root".into()));
     std::thread::scope(|threads| {
@@ -86,9 +79,8 @@ fn a_step_is_scoped_to_its_root_and_every_result_is_perceived_labelled_with_its_
         for _ in 0..128 {
             concurrent.publish_live_handles();
             let snapshot = concurrent.snapshot();
-            for seq in snapshot.recent_results.iter().map(|r| r.0)
-                .chain(snapshot.last_action.iter().map(|r| r.0)) {
-                assert_eq!(snapshot.result_scopes.get(&seq).map(String::as_str), Some("writer-root"));
+            for record in snapshot.action_records().iter().filter(|r| r.result.is_some()) {
+                assert_eq!(record.scope.as_deref(), Some("writer-root"));
             }
         }
     });
@@ -245,16 +237,26 @@ fn a_receipt_s_per_call_results_stay_reachable_as_long_as_the_receipt() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-// what this catches (Codex on #4987): a legacy receipt with no handle files its children
+// what this catches (Codex on #4987): a receipt with no handle (its save failed) files its children
 // under `seq:N`; restore saves it and it takes a handle, so the children must move to that
 // key or the next publish prunes them as belonging to no receipt.
 #[test]
-fn a_restored_legacy_receipt_keeps_its_children_under_its_new_handle() {
+fn a_restored_handleless_receipt_keeps_its_children_under_its_new_handle() {
     let child = format!("{:016x}", Uuid::new_v4().as_u128() as u64);
     let mut snapshot = WorkingMemory::new(8).snapshot();
-    snapshot.recent_results.push((7, None, "a legacy receipt".into(), "code/read".into(), None));
+    snapshot.actions.push(crate::cognition::working_memory::action_log::ActionRecord {
+        seq: 7,
+        room: None,
+        scope: None,
+        operation: "code/read".into(),
+        head: None,
+        result: Some("a receipt whose save failed".into()),
+        handle: None,
+        summary: None,
+        stored_chars: None,
+        received_ms: None,
+    });
     snapshot.receipt_children.insert(receipt_key(7, None), vec![child.clone()]);
-    snapshot.actions = snapshot.action_records(); // what retain_handleless does first
     let unsaved = snapshot.unsaved_receipts();
     let handle = format!("{:016x}", Uuid::new_v4().as_u128() as u64);
     snapshot.actions[0].handle = Some(handle.clone()); // what a successful save sets
@@ -346,7 +348,6 @@ fn results_are_never_evicted_at_receipt_however_large_the_ring() {
     }
     assert!(wm.resident_result_bytes() >= 40 * chunk as u64, "all 40 bodies resident: {}", wm.resident_result_bytes());
     let snapshot = wm.snapshot();
-    assert!(snapshot.evicted_pointers.is_empty(), "nothing collapsed to a pointer");
     assert!(snapshot.actions.iter().all(|record| record.result.is_some()), "every record holds its body");
 }
 

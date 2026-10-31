@@ -315,7 +315,6 @@ impl WorkingMemory {
                     summary: result_summary(&tail, &acts),
                     result: Some(tail),
                     handle,
-                    written_pointer: None,
                     stored_chars: None,
                     received_ms: Some(continuum_base::time::EpochMs::now().millis()),
                 },

@@ -247,25 +247,6 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
     assert_whole_or_handle(&restarted);
 }
 
-// e731: pre-result-ring snapshots have a full body but no room/operation
-// attribution. Rendering must expose that absence instead of inventing it.
-#[test]
-fn legacy_full_result_without_metadata_stays_explicitly_unattributed() {
-    let wm = WorkingMemory::new(8);
-    wm.record_receipt("legacy body");
-    let mut snapshot = wm.snapshot();
-    snapshot.recent_results.clear();
-    let restored = WorkingMemory::new(8);
-    restored.restore(snapshot);
-    let (seq, full) = restored
-        .active_action_full()
-        .expect("test: legacy body restored");
-    assert_eq!(
-        restored.full_result_message(seq, &full),
-        "Full result of your most recent action (#1; room unrecorded; operation unrecorded):\nlegacy body"
-    );
-}
-
 // what this catches (Step 3 back-compat): an OLD volatile.json — written before
 // the WmEntry.acts field existed — restores WITHOUT panic, the `acts` defaulting
 // to empty via `#[serde(default)]` (the same contract as saved_at_ms/build_sha).
