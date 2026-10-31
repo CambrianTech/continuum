@@ -88,11 +88,11 @@ mod tests {
     #[async_trait::async_trait]
     impl TaskOwnerSink for Sink {
         type Error = std::io::Error;
-        async fn consume(&self, owner: Uuid, _: &[(Uuid, TaskEnd)]) -> Result<(), Self::Error> {
+        async fn consume(&self, owner: Uuid, ends: &[(Uuid, TaskEnd)]) -> Result<BTreeSet<Uuid>, Self::Error> {
             if owner == self.refused && self.refuse.load(Ordering::SeqCst) {
                 Err(std::io::Error::other("injected owner refusal"))
             } else {
-                Ok(())
+                Ok(ends.iter().map(|(task, _)| *task).collect())
             }
         }
     }

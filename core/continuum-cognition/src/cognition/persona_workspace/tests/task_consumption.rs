@@ -180,7 +180,7 @@ async fn failed_checkpoint_returns_no_receipt_and_replay_commits_staged_end(
 }
 
 #[tokio::test]
-async fn ledger_ack_follows_resident_commit_and_restart_keeps_wake_without_handle(
+async fn ledger_ack_requires_perception_and_restart_replays_unread_ends(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use continuum_kernel::runtime::tasks::{TaskLedger, TaskOutput};
     let home = tempfile::tempdir()?;
@@ -217,14 +217,15 @@ async fn ledger_ack_follows_resident_commit_and_restart_keeps_wake_without_handl
             .deliver_page(owner, None, limit, &sink)
             .await?
             .acknowledged,
-        1
+        0
     );
-    assert_eq!(ledger.pending(task, owner).await?, None);
+    assert_eq!(ledger.pending(task, owner).await?, Some(end.clone()));
     let reopened = TaskLedger::new(adapter).await?;
     let restored = WorkingMemory::new(8);
     restored.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
     assert_eq!(restored.pending_task_wakes(), vec![task]);
-    assert_eq!(reopened.terminal(task, owner).await?, Some(end));
+    assert_eq!(reopened.terminal(task, owner).await?, Some(end.clone()));
+    registry.register_from_cfg(cfg_for(owner))?;
     assert_eq!(
         reopened
             .deliver_page(owner, None, limit, &sink)
@@ -233,6 +234,31 @@ async fn ledger_ack_follows_resident_commit_and_restart_keeps_wake_without_handl
         0
     );
     assert_eq!(restored.pending_task_wakes(), vec![task]);
+    assert_eq!(reopened.pending(task, owner).await?, Some(end.clone()));
+    let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
+    use continuum_context::{source::Source, view::View};
+    let source = crate::cognition::context_streams::tasks::Tasks { memory: &memory, persona: owner };
+    let (view, _) = View::<crate::cognition::context_streams::ContextMessage>::start(
+        Vec::new(), &[&source as &dyn Source<_>], |claims| claims.iter().map(|claim| claim.full_chars).collect()
+    )?;
+    let receipt = crate::cognition::render_receipt::RenderReceipt {
+        owner, incarnation: memory.incarnation(), request: "served-task-result".into(), view: view.receipt(),
+    };
+    std::fs::create_dir(&obstruction)?;
+    assert!(sink.record_rendered(receipt.clone()).await.is_err());
+    assert!(reopened.deliver_page(owner, None, limit, &sink).await.is_err());
+    assert_eq!(reopened.pending(task, owner).await?, Some(end.clone()));
+    std::fs::remove_dir(&obstruction)?;
+    sink.record_rendered(receipt).await?;
+    // Crash after the perception checkpoint but before ACK: replay uses the
+    // restored exact receipt, without prompting her again or remembering a handle.
+    registry.register_from_cfg(cfg_for(owner))?;
+    assert_eq!(reopened.deliver_page(owner, None, limit, &sink).await?.acknowledged, 1);
+    assert_eq!(reopened.pending(task, owner).await?, None);
+    registry.register_from_cfg(cfg_for(owner))?;
+    assert_eq!(reopened.deliver_page(owner, None, limit, &sink).await?.acknowledged, 0);
+    assert!(registry.cycles.lock()[&owner].working_memory.pending_task_wakes().is_empty());
+    assert_eq!(reopened.terminal(task, owner).await?, Some(end));
     Ok(())
 }
 

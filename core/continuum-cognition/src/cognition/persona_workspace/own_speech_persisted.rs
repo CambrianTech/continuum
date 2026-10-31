@@ -47,12 +47,14 @@ pub struct VolatileReceipt {
     owner: Uuid,
     incarnation: Uuid,
     consumed_tasks: Vec<Uuid>,
+    perceived_tasks: std::collections::BTreeSet<Uuid>,
 }
 
 impl VolatileReceipt {
     pub fn owner(&self) -> Uuid { self.owner }
     pub fn incarnation(&self) -> Uuid { self.incarnation }
     pub fn consumed_tasks(&self) -> &[Uuid] { &self.consumed_tasks }
+    pub fn perceived_tasks(&self) -> &std::collections::BTreeSet<Uuid> { &self.perceived_tasks }
 }
 
 /// Persist the volatile tier — atomic tmp+rename so a crash mid-write never
@@ -94,6 +96,7 @@ pub(super) fn save_volatile(
         owner: persona_id,
         incarnation: wm.incarnation(),
         consumed_tasks: snapshot.task_results.consumed_ids(),
+        perceived_tasks: snapshot.task_results.perceived_ids(),
     };
     let task_publication = snapshot.task_results.publication();
     let persisted = PersistedVolatile {

@@ -56,7 +56,8 @@ impl WorkingMemory {
     /// Stage a terminal reference and its wake obligation atomically. Whole output
     /// remains in TaskLedger; the fingerprint detects conflicting replay without
     /// duplicating binary/JSON bodies in every resident checkpoint. The registry must
-    /// checkpoint this exact state before acknowledging consumption to the ledger.
+    /// checkpoint this exact state before publishing the wake. Only a later
+    /// checkpointed perception receipt can authorize ledger acknowledgement.
     /// A replay is inert, including after its wake has already been admitted.
     pub fn stage_task_end(&self, task: Uuid, end: TaskEnd) -> Result<bool, TaskReceiptError> {
         self.stage_task_ends(vec![(task, end)])
@@ -170,6 +171,11 @@ impl TaskResults {
     /// a second read of mutable working memory after IO completes.
     pub(crate) fn consumed_ids(&self) -> Vec<Uuid> {
         self.entries.keys().copied().collect()
+    }
+
+    /// Perception in this exact serialized snapshot; filing alone never qualifies.
+    pub(crate) fn perceived_ids(&self) -> std::collections::BTreeSet<Uuid> {
+        self.entries.iter().filter_map(|(task, end)| (!end.wake_pending).then_some(*task)).collect()
     }
 }
 

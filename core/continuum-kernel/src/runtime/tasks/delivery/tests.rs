@@ -6,6 +6,42 @@ use std::sync::{
     Arc,
 };
 
+struct PerceptionSink(parking_lot::Mutex<BTreeSet<Uuid>>);
+
+#[async_trait::async_trait]
+impl TaskOwnerSink for PerceptionSink {
+    type Error = std::io::Error;
+
+    async fn consume(&self, _: Uuid, _: &[(Uuid, TaskEnd)]) -> Result<BTreeSet<Uuid>, Self::Error> {
+        Ok(self.0.lock().clone())
+    }
+}
+
+#[tokio::test]
+async fn only_page_scoped_perception_can_ack_and_invalid_batch_has_no_partial_effects(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+    let ledger = TaskLedger::new(adapter).await?;
+    let owner = Uuid::new_v4();
+    let first = ledger.accept(owner, "first".into()).await?;
+    let second = ledger.accept(owner, "second".into()).await?;
+    ledger.finish(first, owner, TaskEnd::Stopped).await?;
+    ledger.finish(second, owner, TaskEnd::Lost).await?;
+    let sink = PerceptionSink(Default::default());
+    let limit = NonZeroUsize::new(32).ok_or("invalid fixture page")?;
+    assert_eq!(ledger.deliver_page(owner, None, limit, &sink).await?.acknowledged, 0);
+    let foreign = Uuid::new_v4();
+    sink.0.lock().extend([first, foreign]);
+    assert!(matches!(ledger.deliver_page(owner, None, limit, &sink).await,
+        Err(DeliveryError::InvalidReceipt { task }) if task == foreign));
+    assert_eq!(ledger.pending(first, owner).await?, Some(TaskEnd::Stopped));
+    sink.0.lock().remove(&foreign);
+    assert_eq!(ledger.deliver_page(owner, None, limit, &sink).await?.acknowledged, 1);
+    assert_eq!(ledger.pending(first, owner).await?, None);
+    assert_eq!(ledger.pending(second, owner).await?, Some(TaskEnd::Lost));
+    Ok(())
+}
+
 struct Sink {
     ledger: Arc<TaskLedger>,
     refuse: AtomicBool,
@@ -17,7 +53,7 @@ struct Sink {
 impl TaskOwnerSink for Sink {
     type Error = std::io::Error;
 
-    async fn consume(&self, owner: Uuid, ends: &[(Uuid, TaskEnd)]) -> Result<(), Self::Error> {
+    async fn consume(&self, owner: Uuid, ends: &[(Uuid, TaskEnd)]) -> Result<BTreeSet<Uuid>, Self::Error> {
         for (task, end) in ends {
             let pending = self
                 .ledger
@@ -33,7 +69,7 @@ impl TaskOwnerSink for Sink {
         self.seen
             .lock()
             .extend(ends.iter().map(|(task, end)| (owner, *task, end.clone())));
-        Ok(())
+        Ok(ends.iter().map(|(task, _)| *task).collect())
     }
 }
 

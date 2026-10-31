@@ -156,9 +156,10 @@ pub enum TaskSinkError {
 impl continuum_kernel::runtime::tasks::TaskOwnerSink for ResidentTaskSink {
     type Error = TaskSinkError;
 
-    async fn consume(&self, owner: Uuid, ends: &[(Uuid, TaskEnd)]) -> Result<(), Self::Error> {
+    async fn consume(&self, owner: Uuid, ends: &[(Uuid, TaskEnd)]) -> Result<std::collections::BTreeSet<Uuid>, Self::Error> {
+        let offered: std::collections::BTreeSet<_> = ends.iter().map(|(task, _)| *task).collect();
         let ends = ends.to_vec();
-        self.commit(move |registry| registry.consume_task_ends(owner, ends)).await?;
-        Ok(())
+        let receipt = self.commit(move |registry| registry.consume_task_ends(owner, ends)).await?;
+        Ok(receipt.perceived_tasks().intersection(&offered).copied().collect())
     }
 }
