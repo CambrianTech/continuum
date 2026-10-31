@@ -520,8 +520,11 @@ pub struct Model {
     /// or an explicit path if one exists. TOML should normally leave this
     /// absent for portable models; the loader fills it when the artifact is
     /// already pulled locally.
-    #[serde(default)]
     pub gguf_local_path: Option<PathBuf>,
+
+    /// Explicitly named GGUF file (just the filename, not a full path) that is this model's
+    /// active quant when multiple quants coexist in the same snapshot directory. Set by the
+    /// operator or pull logic to pin which quant is the 
     /// Local filesystem path to the multimodal projector GGUF (mmproj).
     /// Required for vision/audio-capable local models — the projector
     /// encodes raw image / audio bytes into tokens compatible with this
