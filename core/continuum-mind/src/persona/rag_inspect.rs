@@ -202,7 +202,7 @@ pub struct InspectedItem {
     pub tokens: u32,
     pub score: f64,
     pub content: String,
-    pub peer_id_prefix: String,
+    pub peer_id_shown: String,
     pub lamport: u64,
     pub age_s: u64,
     /// The item has a coarser summary level her view can fall back to.
@@ -249,7 +249,7 @@ pub async fn inspect_persona_rag(
 /// - "Which layer is broken?" — per-source deliveries and each item's
 ///   levels (whole, summary, pointer).
 /// - "Is this contextually relevant?" — per-item score + age +
-///   peer_id_prefix in the deliveries (unchanged).
+///   peer_id_shown in the deliveries (unchanged).
 ///
 /// Per [[inference-is-an-adapter-always-in-the-loop]], the inference
 /// goes through an `AIProviderAdapter` — the same trait the
@@ -315,7 +315,7 @@ pub async fn inspect_persona_rag_with_inference(
                 .get("lamport")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let peer_id_prefix = item
+            let peer_id_shown = item
                 .metadata
                 .get("peer_id")
                 .and_then(|v| v.as_str())
@@ -337,7 +337,7 @@ pub async fn inspect_persona_rag_with_inference(
                 tokens: item.tokens,
                 score,
                 content,
-                peer_id_prefix,
+                peer_id_shown,
                 lamport,
                 age_s,
                 has_summary: item.summary.is_some(),

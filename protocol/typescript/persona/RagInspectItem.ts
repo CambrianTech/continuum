@@ -4,7 +4,7 @@
  * One item the source delivered, with the mechanic-grade rationale
  * flattened for the wire (content, score, age_s, etc).
  */
-export type RagInspectItem = { index: number, tokens: number, score: number, content: string, peerIdPrefix: string, lamport: number, ageS: number, 
+export type RagInspectItem = { index: number, tokens: number, score: number, content: string, peerIdShown: string, lamport: number, ageS: number, 
 /**
  * The item has a coarser summary level her view can fall back to.
  */

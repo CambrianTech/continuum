@@ -108,7 +108,7 @@ async fn inspected_items_carry_score_age_and_peer_prefix() {
     );
     assert_eq!(it.lamport, 42);
     assert_eq!(it.age_s, 5);
-    assert_eq!(it.peer_id_prefix.len(), 8);
+    assert_eq!(it.peer_id_shown.len(), 8);
     assert!(it.metadata.get("event_id").is_some());
     // levels are reported, whatever the source set
     let _ = (it.has_summary, it.has_pointer);

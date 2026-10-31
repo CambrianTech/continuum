@@ -148,7 +148,7 @@ pub struct RagInspectItem {
     #[ts(type = "number")]
     pub score: f64,
     pub content: String,
-    pub peer_id_prefix: String,
+    pub peer_id_shown: String,
     #[ts(type = "number")]
     pub lamport: u64,
     #[ts(type = "number")]
@@ -256,7 +256,7 @@ impl RagInspectResult {
                         tokens: i.tokens,
                         score: i.score,
                         content: i.content,
-                        peer_id_prefix: i.peer_id_prefix,
+                        peer_id_shown: i.peer_id_shown,
                         lamport: i.lamport,
                         age_s: i.age_s,
                         has_summary: i.has_summary,
@@ -593,8 +593,8 @@ mod tests {
         assert_eq!(first.content, "hello world");
         assert!((first.score - 1.0).abs() < 1e-9);
         assert_eq!(first.age_s, 100);
-        // peer_id_prefix is 8 hex chars from the UUID.
-        assert_eq!(first.peer_id_prefix.len(), 8);
+        // peer_id_shown is 8 hex chars from the UUID.
+        assert_eq!(first.peer_id_shown.len(), 8);
     }
 
     #[tokio::test]
