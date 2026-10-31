@@ -195,7 +195,7 @@ pub struct LlmDeliberationFaculty {
     /// Where this faculty records its chain-of-thought after a verdict, so the
     /// persona can resume its train of thought next turn (the
     /// [`WorkingMemory`](crate::cognition::working_memory::WorkingMemory)
-    /// her view's thoughts source reads). `None` → reasoning is dropped (the prior
+    /// `WorkingMemoryFaculty` reads). `None` → reasoning is dropped (the prior
     /// behavior). Only the suppressed-thinking default makes `reasoning` empty, so
     /// this self-activates exactly when thinking is on.
     working_memory: Option<Arc<crate::cognition::working_memory::WorkingMemory>>,

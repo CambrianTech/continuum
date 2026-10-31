@@ -90,8 +90,13 @@ const TPS_FULL_SCALE: u64 = 40;
 /// Prefill/ingest t/s that reads as pegged (M-series ingest ~300-800).
 const PFX_FULL_SCALE: u64 = 800;
 
+/// `v` as a share of a full scale, in percent. Past the full scale it reads as full, and an
+/// empty scale reads as nothing for nothing and full for anything.
 fn pct_usize(v: usize, full: usize) -> u8 {
-    (v.saturating_mul(100) / full.max(1)).min(100) as u8
+    if v >= full {
+        return if v == 0 { 0 } else { 100 };
+    }
+    (v.saturating_mul(100) / full) as u8 // v < full, so the share is below 100 and fits a u8
 }
 
 /// One tick's radiated readouts from `registry` — the SAMPLE half of the
