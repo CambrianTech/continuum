@@ -78,7 +78,6 @@ pub use continuum_mind::modules::persona_rag_inspect;
 pub mod persona_rag_inspect_filesystem;
 pub mod ports;
 pub mod pressure_broker_module;
-pub mod prompt_reuse;
 pub mod rag;
 pub mod recipe;
 pub mod resources_module;

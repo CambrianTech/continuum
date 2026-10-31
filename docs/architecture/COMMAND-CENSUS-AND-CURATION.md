@@ -97,11 +97,11 @@ Of the 50 `cognition/*` arms, ~30 exist **only** because TypeScript used to driv
 - **KEEP (already migrated):** code/read,write,edit,list,exists,glob,tree,search; code/git/*; code/cargo/check,test; code/shell,shell-poll,shell-kill.
 - **Finding #4 reconcile:** code/shell-create,execute,cd,status,watch,sentinel,destroy (legacy) → fold needed verbs onto the handle-based family, DELETE spoofable duplicates.
 - **KEEP:** code/create-workspace, delete, diff, undo, history (migrate; identity → ctx.caller).
-- **RETYPE:** search/execute, search/vector, search/list, search/params (untyped today). **Access** AiSafe.
+- **RETYPE:** search/execute, search/list, search/params (untyped today). **Access** AiSafe.
 - **KEEP:** vdd/report, vdd/score (Privileged — eval infra).
 
 ### ai/inference cluster (18) → KEEP (clean), DELETE the TS fallthrough
-- **KEEP (typed):** ai/generate (AiSafe), ai/providers/list, ai/model-info, ai/providers/health, ai/models/list, ai/lora/list, ai/lora/capabilities; inference/capacity; embedding/similarity,similarity-matrix,top-k,cluster; models/discover,capabilities; serving/plan,status.
+- **KEEP (typed):** ai/generate (AiSafe), ai/providers/list, ai/model-info, ai/providers/health, ai/models/list, ai/lora/list, ai/lora/capabilities; embedding/similar,groups; models/discover,capabilities; serving/plan,status.
 - **DELETE:** `ai/*` TS fallthrough (finding #5, Wave Z).
 - inference-coordinator: no commands (bootstrap) — nothing to migrate.
 

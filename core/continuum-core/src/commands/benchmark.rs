@@ -18,7 +18,6 @@ use ts_rs::TS;
 use crate::recipe::bench_title::dispatch_card_title;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
-pub(crate) mod credit_recovery;
 
 // ---------------------------------------------------------------------------------------
 // SWE-bench: the repo-test grader on the command surface.

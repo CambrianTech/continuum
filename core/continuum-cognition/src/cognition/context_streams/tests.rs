@@ -67,6 +67,60 @@ fn her_view_survives_a_restart_in_her_checkpoint() {
     assert!(restored.take_view().is_none(), "taken once, by the act that resumes it");
 }
 
+// what this catches: the 2026-10-31 M5 outage. #5639 added `level` to the view's events, so every
+// resident's checkpoint (written by the build before) failed to decode and registration refused all
+// four for 32 minutes. A real view with only its `level` fields removed must be dropped (it is
+// derived) while everything authoritative restores and saves again; a corrupt AUTHORITATIVE field
+// must still refuse (Codex on #5659).
+#[test]
+fn a_view_from_an_older_build_is_dropped_and_authoritative_state_survives() {
+    use continuum_context::view::{Claim, View};
+    use crate::cognition::working_memory::VolatileSnapshot;
+
+    let memory = WorkingMemory::new(8);
+    memory.record_receipt("I ran code/list Result: 4 files");
+    memory.record_settlement("listed the four files", None);
+    let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    let (view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap();
+    memory.keep_view(Some(view));
+    let good = serde_json::to_value(memory.snapshot()).expect("encode");
+
+    // The older build's shape: the same real view, its `level` fields removed and nothing else.
+    fn strip_levels(value: &mut serde_json::Value) -> usize {
+        match value {
+            serde_json::Value::Object(map) => {
+                let here = usize::from(map.remove("level").is_some());
+                here + map.values_mut().map(strip_levels).sum::<usize>()
+            }
+            serde_json::Value::Array(items) => items.iter_mut().map(strip_levels).sum(),
+            _ => 0,
+        }
+    }
+    let mut older = good.clone();
+    assert!(strip_levels(&mut older["context_view"]) > 0, "the fixture reproduces the missing-level view");
+
+    let snap: VolatileSnapshot = serde_json::from_value(older).expect("an older view never refuses the checkpoint");
+    let restored = WorkingMemory::new(8);
+    restored.restore(snap);
+    assert!(restored.take_view().is_none(), "the stale view is dropped: her next act opens a new epoch");
+    assert!(restored.has_receipt(), "her newest result survives");
+    let settled = |m: &WorkingMemory| m.recent_entries().iter().any(|entry| entry.text.contains("listed the four files"));
+    assert!(settled(&restored), "her settlement survives");
+
+    // The next save keeps every authoritative field and carries no view until she renders one.
+    let saved = serde_json::to_value(restored.snapshot()).expect("encode");
+    assert!(saved.get("context_view").is_none());
+    let again = WorkingMemory::new(8);
+    again.restore(serde_json::from_value(saved).expect("the repaired save decodes"));
+    assert!(again.has_receipt() && settled(&again), "authoritative state survives the repaired save");
+
+    // A corrupt authoritative field is still refused: only the derived view is forgiven.
+    let mut corrupt = good;
+    corrupt["next_action_seq"] = serde_json::json!("not a number");
+    assert!(serde_json::from_value::<VolatileSnapshot>(corrupt).is_err());
+}
+
 // what this catches (Cormac on #5255): a result kept in memory but never saved under a handle
 // collapsing at a turnover to its one-line ledger head, which nothing can reopen (goal 7). Its
 // collapsed form is the whole result, so the view can only keep it, never cut it.

@@ -290,3 +290,4 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         "no fabricated save age on legacy snapshots: {q:?}"
     );
 }
+

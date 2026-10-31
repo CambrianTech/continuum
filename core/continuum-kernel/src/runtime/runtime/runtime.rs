@@ -481,12 +481,10 @@ pub const MODULES: &[ModuleSpec] = &[
         ServiceGroup::ResourceGov,
         ModuleCategory::Core,
     ),
-    // Inference — the engine. (The bare `inference` shell module was deleted in
-    // 89519a899 when its sole command `inference/capacity` became a stateless
-    // self-routing command; this MODULES entry is dropped to match — leaving it
-    // made `required_modules()` demand a module that no longer registers, which
-    // hard-failed boot with "missing [inference]". The engine is now carried by
-    // the coordinator / handle / llm / ai_provider modules below.)
+    // Inference — the engine, carried by the coordinator / handle / llm /
+    // ai_provider modules below. (No bare `inference` module: listing one made
+    // `required_modules()` demand a module that does not register, which
+    // hard-failed boot with "missing [inference]".)
     ModuleSpec::new(
         "inference-coordinator",
         ServiceGroup::Inference,

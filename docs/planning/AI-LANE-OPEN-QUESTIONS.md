@@ -149,7 +149,7 @@ How does the local daemon discover which peers run which models warm
 - **Blocks:** AircRemoteInferenceAdapter routing.
 - **Candidates:**
   - Periodic capacity beacon over airc (publish current
-    `inference/capacity` per peer)
+    measured sequence capacity (#5188) per peer)
   - On-demand probe (ask all peers "do you have X warm?")
   - Centralized scope-wide capacity registry
   - Hybrid: long-poll capacity stream + on-demand verification
@@ -212,7 +212,8 @@ without breaking them?
 
 #### Q12 — Per-modality `ai/capacity` shape
 
-`inference/capacity` returns one number today (LLM slots). The
+LLM sequence capacity is the engine's measured contract (#5188; the
+fixed-count `inference/capacity` is deleted). The
 unified `ai/capacity` should report vision / audio / embedding /
 classical-ML caps separately. What's the wire shape?
 

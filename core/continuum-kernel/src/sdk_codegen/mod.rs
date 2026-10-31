@@ -183,7 +183,7 @@ macro_rules! register_stateless_command {
 /// action_command! {
 ///     /// Show git status for the caller's workspace.
 ///     pub struct CodeGitStatus { state: Arc<CodeState> }
-///     name: "code/git-status",
+///     name: "code/git/status",
 ///     access: AiSafe,
 ///     params: GitStatusParams,
 ///     output: GitStatusResult,
