@@ -531,3 +531,33 @@
         assert_eq!(result.status, ShellExecutionStatus::Completed);
         assert!(result.stderr.unwrap().contains("error_msg"));
     }
+
+    // what this catches: a handed-back execution that timed out publishing nothing, so her
+    // panel read `[running]` forever (the M5, 2026-10-30: six long cargo runs never reported
+    // back). Every exit settles through one step that publishes (HER-TOOLS T2).
+    #[test]
+    fn a_handed_back_execution_that_times_out_publishes_its_completion() {
+        let (dir, rt) = setup_workspace();
+        set_shell_completion_bus(std::sync::Arc::new(crate::runtime::message_bus::MessageBus::new()));
+        let bus = SHELL_COMPLETION_BUS.get().expect("bus wired").clone(); // another test may have wired it first
+        let mut rx = bus.receiver();
+        let mut session = ShellSession::new("test", "p1", dir.path()).unwrap();
+        let id = session.execute("sleep 30", Some(300), rt.handle()).unwrap();
+        session.executions[&id].lock().unwrap().handed_back = true;
+        let handle = uuid::Uuid::parse_str(&id).unwrap();
+        let ended = rt.block_on(async {
+            loop {
+                // 10 s is this test's bound on a 300 ms timeout reaching the bus, not a product timeout.
+                let event = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.expect("completion arrives").expect("bus open");
+                if event.name != crate::runtime::command_events::COMMAND_COMPLETED_TOPIC {
+                    continue;
+                }
+                let ev: crate::runtime::command_events::CommandCompletedEvent = serde_json::from_value((*event.payload).clone()).unwrap();
+                if ev.handle == Some(handle) {
+                    return ev;
+                }
+            }
+        });
+        assert!(!ended.success);
+        assert_eq!(ended.error.as_deref(), Some("timed out at its timeout_ms"));
+    }

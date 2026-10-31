@@ -41,16 +41,14 @@ pub fn fold_completion(wm: &WorkingMemory, ev: CommandCompletedEvent) -> bool {
     let Some(label) = wm.dispatched_label(handle) else {
         return false;
     };
+    // A failure keeps its output: the error line first, then the result. Keeping only the error
+    // ("exit 101") dropped the build log at exactly the moment she needed it.
+    let body = ev.result.as_ref().map(result_text);
     let (content, status) = if ev.success {
-        let body = ev
-            .result
-            .as_ref()
-            .map(result_text)
-            .unwrap_or_else(|| "done".to_string());
-        (body, DispatchStatus::Done)
+        (body.unwrap_or_else(|| "done".to_string()), DispatchStatus::Done) // unwrap_or_else: a completion with no result says only that it is done
     } else {
-        let body = ev.error.unwrap_or_else(|| "failed".to_string());
-        (body, DispatchStatus::Failed)
+        let error = ev.error.unwrap_or_else(|| "failed".to_string()); // unwrap_or_else: a failure with no error text still reads as failed
+        (body.map_or_else(|| error.clone(), |body| format!("{error}\n{body}")), DispatchStatus::Failed) // map_or_else: no result leaves the error alone
     };
     wm.record_dispatch_event(handle, &label, &content, status);
     true
@@ -166,5 +164,14 @@ mod tests {
         let ours = snap.iter().find(|(h, ..)| *h == mine).unwrap();
         assert_eq!(ours.3, DispatchStatus::Failed);
         assert_eq!(ours.2, "link error");
+
+        // A failure that carries output keeps it after the error line: the log is why she looks
+        // (it was dropped, leaving only "exit 101").
+        let mut failed = ev(Some(mine), false, serde_json::Value::Null);
+        failed.result = Some(serde_json::json!("error[E0432]: unresolved import"));
+        assert!(fold_completion(&wm, failed));
+        let snap = wm.dispatched_snapshot();
+        let ours = snap.iter().find(|(h, ..)| *h == mine).unwrap();
+        assert_eq!(ours.2, "link error\nerror[E0432]: unresolved import");
     }
 }

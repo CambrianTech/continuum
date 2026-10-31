@@ -37,8 +37,7 @@ pub(super) async fn run_shell_command(
                 s.status = ShellExecutionStatus::Failed;
                 s.stderr_lines.push(format!("no usable shell: {why}"));
                 s.process_ended = true; // no child was spawned
-                s.finished_at = Some(continuum_base::time::EpochMs::now().millis());
-                s.output_notify.notify_one();
+                settle(&mut s);
             }
             return;
         }
@@ -156,9 +155,8 @@ pub(super) async fn run_shell_command(
             if let Ok(mut s) = state.lock() {
                 s.status = ShellExecutionStatus::Failed;
                 s.stderr_lines.push(format!("Failed to spawn bash: {e}"));
-                s.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                 s.process_ended = true; // nothing started, so nothing is left running
-                s.output_notify.notify_one();
+                settle(&mut s);
             }
             return;
         }
@@ -178,9 +176,8 @@ pub(super) async fn run_shell_command(
             s.status = ShellExecutionStatus::Failed;
             s.stderr_lines
                 .push("Failed to capture shell output: stdout/stderr pipes unavailable".to_string());
-            s.finished_at = Some(continuum_base::time::EpochMs::now().millis());
             s.process_ended = true; // the child was told to die and nothing reads it
-            s.output_notify.notify_one();
+            settle(&mut s);
         }
         return;
     };
@@ -322,69 +319,62 @@ pub(super) async fn run_shell_command(
     let _ = stdout_task.await;
     let _ = stderr_task.await;
 
-    // Update final state (if not already set by timeout/kill)
-    if let Some(status) = exit_status {
-        if let Ok(mut s) = state.lock() {
-            if s.status == ShellExecutionStatus::Running {
-                s.exit_code = status.code();
-                s.status = if status.success() {
-                    ShellExecutionStatus::Completed
-                } else {
-                    ShellExecutionStatus::Failed
-                };
-                s.finished_at = Some(continuum_base::time::EpochMs::now().millis());
-                // Wake any blocked watch() calls to deliver final status
-                s.output_notify.notify_one();
-                // PUSHED COMPLETION (2026-08-24): a handed-back execution's
-                // finish previously reached her only if she remembered to
-                // poll. Publish the same command:completed shape tracked
-                // dispatches use; the dispatch listener folds it into her
-                // working memory IF the handle was registered (apply.rs does,
-                // on handback).
-                if s.handed_back {
-                    if let (Some(bus), Ok(handle)) =
-                        (SHELL_COMPLETION_BUS.get(), uuid::Uuid::parse_str(&s.id))
-                    {
-                        let mut lines: Vec<&String> =
-                            s.stdout_lines.iter().chain(s.stderr_lines.iter()).collect();
-                        let cut = lines.len().saturating_sub(20);
-                        let tail: String = lines
-                            .split_off(cut)
-                            .into_iter()
-                            .map(String::as_str)
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        let ev = crate::runtime::command_events::CommandCompletedEvent {
-                            command_name: "code/shell".to_string(),
-                            duration_ms: s.finished_at.unwrap_or(0).saturating_sub(s.started_at), // set 3 lines up; 0 → saturates to 0ms, display only
-                            success: s.exit_code == Some(0),
-                            error: (s.exit_code != Some(0))
-                                .then(|| format!("exit {}", s.exit_code.map_or(-1, |c| c))),
-                            handle: Some(handle),
-                            result: Some(serde_json::json!({
-                                "exitCode": s.exit_code,
-                                "tail": tail,
-                            })),
-                        };
-                        if let Ok(payload) = serde_json::to_value(&ev) { // bus fan-out boundary — the same encode tracked dispatches pay
-                            bus.publish_async_only(
-                                crate::runtime::command_events::COMMAND_COMPLETED_TOPIC,
-                                payload,
-                            );
-                        }
-                    }
-                }
-
-                log_info!(
-                    "code",
-                    "shell",
-                    "Execution {} finished: exit={} cmd={}",
-                    &s.id[..8],
-                    s.exit_code.unwrap_or(-1), // killed/no-status path reads as conventional -1 in the error line
-                    &s.command
-                );
-            }
+    // The final status for every way out: a timeout or a kill set theirs above; an exit sets it
+    // here; a wait error (no status, its line already in stderr) is a failure.
+    if let Ok(mut s) = state.lock() {
+        if s.status == ShellExecutionStatus::Running {
+            s.exit_code = exit_status.and_then(|status| status.code());
+            let succeeded = exit_status.is_some_and(|status| status.success());
+            s.status = if succeeded { ShellExecutionStatus::Completed } else { ShellExecutionStatus::Failed };
         }
+        settle(&mut s);
+    }
+}
+
+/// The ONE terminal step every way out of a run takes (HER-TOOLS T2: completion on every exit).
+/// It stamps the end, wakes blocked watchers and, for an execution already handed back to her
+/// as a handle, publishes its completion. Before this, only a normal exit published: a timeout,
+/// a kill or a wait error left her panel entry `[running]` forever (the M5, 2026-10-30: six long
+/// cargo runs never reported back, and Aris launched the same test three times).
+fn settle(s: &mut ExecutionState) {
+    s.finished_at.get_or_insert_with(|| continuum_base::time::EpochMs::now().millis());
+    s.output_notify.notify_one();
+    if s.handed_back {
+        publish_completion(s);
+    }
+    log_info!("code", "shell", "Execution {} ended {:?}: exit={:?} cmd={}", s.id, s.status, s.exit_code, s.command);
+}
+
+/// Publish a handed-back execution's completion in the `command:completed` shape tracked
+/// dispatches use; the dispatch listener folds it into her working memory. The output travels
+/// as retained, whole: her view decides how much of it she sees (HER-TOOLS rule 4), never a
+/// line count here.
+fn publish_completion(s: &ExecutionState) {
+    let (Some(bus), Ok(handle)) = (SHELL_COMPLETION_BUS.get(), uuid::Uuid::parse_str(&s.id)) else {
+        return;
+    };
+    let succeeded = s.status == ShellExecutionStatus::Completed;
+    let ended = match (&s.status, s.exit_code) {
+        (ShellExecutionStatus::TimedOut, _) => "timed out at its timeout_ms".to_string(),
+        (ShellExecutionStatus::Killed, _) => "killed".to_string(),
+        (_, Some(code)) => format!("exit {code}"),
+        (_, None) => "ended without an exit status".to_string(),
+    };
+    let ev = crate::runtime::command_events::CommandCompletedEvent {
+        command_name: "code/shell".to_string(),
+        duration_ms: s.finished_at.map_or(0, |end| end.saturating_sub(s.started_at)), // map_or: settle stamped the end before this
+        success: succeeded,
+        error: (!succeeded).then(|| ended.clone()),
+        handle: Some(handle),
+        result: Some(serde_json::json!({
+            "ended": ended,
+            "exitCode": s.exit_code,
+            "stdout": s.stdout_lines.join("\n"),
+            "stderr": s.stderr_lines.join("\n"),
+        })),
+    };
+    if let Ok(payload) = serde_json::to_value(&ev) { // bus fan-out boundary: the same encode tracked dispatches pay
+        bus.publish_async_only(crate::runtime::command_events::COMMAND_COMPLETED_TOPIC, payload);
     }
 }
 
