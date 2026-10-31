@@ -144,7 +144,7 @@ pub enum DiskPressureLevel {
 }
 
 impl DiskPressureLevel {
-    fn from_pressure(p: f64) -> Self {
+    pub(crate) fn from_pressure(p: f64) -> Self {
         if p >= 0.95 {
             Self::Critical
         } else if p >= 0.90 {

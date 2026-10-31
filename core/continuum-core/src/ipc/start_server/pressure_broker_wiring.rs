@@ -8,6 +8,7 @@ pub(super) fn register_pressure_broker(
     resource_daemon: &Arc<crate::resources::ResourceDaemon>,
     disk_pressure_monitor: &Arc<crate::system_resources::DiskPressureMonitor>,
     pressure_monitor: &Arc<crate::system_resources::MemoryPressureMonitor>,
+    rt_handle: &tokio::runtime::Handle,
 ) {
     // Phase 2 of #1239 (continuum#1299 PR-1): PressureBrokerModule.
     // Brings the cross-pool PressureBroker online — instantiates the
@@ -85,6 +86,22 @@ pub(super) fn register_pressure_broker(
             &broker,
         ) {
             crate::clog_warn!("Cargo disk ownership binding refused: {error}");
+        }
+
+        // Per-worktree cargo targets (`cache/wt-targets/<worktree>`), unweighed until the
+        // M5 hit ENOSPC with 448 GB there on 2026-10-29. OBSERVE mode: the pool measures,
+        // reports its pressure and publishes what keep-recent or a hot volume would take
+        // (`disk.wt_targets.would_evict`), and deletes nothing. Agents build there from
+        // shells the core never admitted, so deletion waits for build admission (Codex's
+        // next slice), which switches this to WorktreeEvictionMode::Delete. Its work runs
+        // on this runtime's blocking pool, never on the broker's tick.
+        if let Some(dir) = crate::system_resources::tracked_dir("wt-targets") {
+            broker.register(Arc::new(crate::system_resources::WorktreeTargetsPool::new(
+                dir,
+                rt_handle.clone(),
+                crate::system_resources::WorktreeEvictionMode::Observe,
+            ))
+                as Arc<dyn crate::paging::pool::ResourcePool>);
         }
 
         // Rotation-generation eviction owners (2026-08-06): the

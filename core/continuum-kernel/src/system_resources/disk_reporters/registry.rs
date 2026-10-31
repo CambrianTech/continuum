@@ -62,6 +62,10 @@ struct State {
     consumers: Option<Consumers>,
     active: std::collections::HashMap<std::path::PathBuf, usize>,
     permanent: std::collections::HashSet<std::path::PathBuf>,
+    /// Target dirs an eviction is detaching. A writer admission that overlaps one is
+    /// refused until the claim drops, and an eviction cannot claim a dir a lease overlaps:
+    /// one lock decides both, so neither can slip between the other's check and act.
+    evicting: std::collections::HashSet<std::path::PathBuf>,
 }
 #[derive(Clone, Debug)]
 struct Observation {
@@ -126,7 +130,38 @@ impl Drop for RootLease {
     }
 }
 
+/// An eviction's exclusive claim on one target dir: held from before its lock scan until
+/// it is detached, so no writer is admitted to it in between (see `State::evicting`).
+struct EvictionClaim {
+    state: Arc<Mutex<State>>,
+    path: std::path::PathBuf,
+}
+impl Drop for EvictionClaim {
+    fn drop(&mut self) {
+        self.state.lock().evicting.remove(&self.path);
+    }
+}
+
+/// Either path at, beneath or above the other.
+fn overlaps(a: &Path, b: &Path) -> bool {
+    crate::paths::has_path_prefix(a, b) || crate::paths::has_path_prefix(b, a)
+}
+
 impl Registry {
+    /// Claim `dir` for eviction, or say why not: an admitted writer's lease overlaps it, or
+    /// another eviction already holds it.
+    fn claim_for_eviction(&self, dir: &Path) -> Result<super::Kept, String> {
+        let mut state = self.0.lock();
+        if state.active.keys().any(|root| overlaps(root, dir)) {
+            return Err("an admitted cargo writer holds its lease".into());
+        }
+        if state.evicting.iter().any(|claimed| overlaps(claimed, dir)) {
+            return Err("another eviction holds it".into());
+        }
+        state.evicting.insert(dir.to_path_buf());
+        Ok(Arc::new(EvictionClaim { state: self.0.clone(), path: dir.to_path_buf() }))
+    }
+
     pub(super) async fn new(dirs: Vec<Arc<TrackedDir>>) -> Self {
         let registry = Self(
             Arc::new(Mutex::new(State {
@@ -136,6 +171,7 @@ impl Registry {
                 consumers: None,
                 active: Default::default(),
                 permanent: Default::default(),
+                evicting: Default::default(),
             })),
             tokio::sync::Mutex::new(None),
             Mutex::new(Default::default()),
@@ -441,7 +477,16 @@ impl Registry {
         let records = durable
             .as_mut()
             .ok_or_else(|| "disk root ownership has not restored yet".to_string())?;
-        *self.0.lock().active.entry(physical.clone()).or_default() += 1;
+        {
+            let mut state = self.0.lock();
+            if state.evicting.iter().any(|dir| overlaps(dir, &physical)) {
+                return Err(format!(
+                    "{} is being evicted; admit again once it is detached (the build then gets a fresh target)",
+                    physical.display()
+                ));
+            }
+            *state.active.entry(physical.clone()).or_default() += 1;
+        }
         let lease = Arc::new(RootLease {
             state: self.0.clone(),
             path: physical.clone(),
@@ -698,6 +743,14 @@ pub async fn register_cargo_target(path: &Path) -> Result<(), String> {
 
 pub(super) async fn observe_citizen_target(path: &Path, peer: uuid::Uuid) -> Result<Arc<TrackedDir>, String> {
     writer_registry()?.observe_citizen_target(path, peer).await
+}
+
+/// The root authority's eviction claim on `dir` (a physical target dir), held by the caller
+/// until the dir is detached. Refused while an admitted writer's lease overlaps it; while
+/// it is held, [`admit_cargo_target`] for an overlapping root is refused. No installed
+/// registry means no authority to exclude writers, so the claim is refused (fail closed).
+pub(crate) fn claim_for_eviction(dir: &Path) -> Result<super::Kept, String> {
+    writer_registry()?.claim_for_eviction(dir)
 }
 
 /// Called while holding this citizen's hands, which also excludes discovery's

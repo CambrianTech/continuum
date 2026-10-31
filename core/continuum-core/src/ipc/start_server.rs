@@ -96,6 +96,7 @@ pub fn start_server(
         &resource_daemon,
         &disk_pressure_monitor,
         &pressure_monitor,
+        &rt_handle,
     );
     inference_modules::register_inference_modules(&runtime);
 

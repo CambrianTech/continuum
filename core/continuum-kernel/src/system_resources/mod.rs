@@ -41,7 +41,8 @@ pub use concurrency::local_inference_capacity;
 
 pub use disk_eviction::{
     serving_active_artifacts, serving_tier_capacity_bytes, ActiveArtifactSet, CargoTargetPool,
-    cargo_target_budget_bytes, NvmeServingTierPool, DEFAULT_CARGO_TARGET_BUDGET_BYTES,
+    cargo_target_budget_bytes, NvmeServingTierPool, WorktreeEvictionMode, WorktreeTargetsPool,
+    DEFAULT_CARGO_TARGET_BUDGET_BYTES,
 };
 pub use disk_pressure::{
     is_disk_gate_closed, DiskPathReport, DiskPressureLevel, DiskPressureMonitor,

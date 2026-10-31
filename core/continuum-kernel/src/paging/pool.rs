@@ -231,6 +231,29 @@ pub trait ResourcePool: Send + Sync {
             inflight_count: 0,
         }
     }
+
+    /// What the broker may ask of this pool. Default: it evicts, and the broker relieves it
+    /// (and alerts on it) when its pressure crosses the act line.
+    fn relief(&self) -> Relief {
+        Relief::Evicts
+    }
+
+    /// For [`Relief::ObservesOnly`]: called on every relief pass in place of
+    /// `evict_at_least`, with the ask the broker WOULD make (`None` while the pool is below
+    /// the act line). The pool plans and reports; it frees nothing and the broker emits no
+    /// alert for it. Never called on an evicting pool.
+    fn observe(&self, _would_ask: Option<u64>) {}
+}
+
+/// Whether a pool is a relief candidate. Read by the broker, never matched by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relief {
+    /// The broker asks it to free bytes and alerts on the outcome.
+    Evicts,
+    /// The pool is weighed and told the would-be ask, but never asked to free and never
+    /// alerted on: a class whose deletion waits on a contract that does not exist yet
+    /// (an alert every tick saying "0 bytes freed" would bury the real ones).
+    ObservesOnly,
 }
 
 /// Stats snapshot — for monitoring + PressureBroker decisions.
