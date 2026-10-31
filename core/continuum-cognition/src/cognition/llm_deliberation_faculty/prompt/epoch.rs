@@ -417,32 +417,6 @@ impl LlmDeliberationFaculty {
     }
 }
 
-/// Each view source's character grant at a turnover: the start the next epoch re-prefills,
-/// leaving a growth reserve for the acts that follow to append into.
-///
-/// `available` is what the window's one allocation leaves her view (its sources' grants plus
-/// the room no claim took), in the allocation's tokens. The higher-priority sources (the
-/// grounding blocks: identity, tools, policy) start whole at their grant, `grounding` in all;
-/// they change least and only supersede. The lowest-priority sources (her conversation,
-/// results and thoughts), which grow by appends, start at `growing` and the reserve is what
-/// is left. The reserve is derived, not picked: an epoch whose growing sources start at
-/// `growing` and reserve `reserve` lives `reserve / per_act` acts (`per_act` = the median an
-/// act appended, [`View::appended_per_act`]), so their re-prefill amortizes to
-/// `growing * per_act / reserve` per act. Holding that to at most one act's own appends gives
-/// `reserve >= growing`: the measured rate cancels, and `growing` is at most half of
-/// `available - grounding`. (The grounding's own re-prefill adds `grounding / life` per act
-/// on top, the price of keeping it whole.) The reserve must also hold one act's appends, so
-/// `growing` is at most `available - grounding - per_act` as well, which binds only when an
-/// act appends more than half of what the growing sources may hold. Before the epoch being
-/// replaced appended anything (`None`) the first bound stands alone. Both are the derivation's,
-/// on every machine: no share learned on one box decides how much of what she read she keeps
-/// (a quarter, replayed on M5 captures, collapsed every read but her newest on 2026-10-30,
-/// ONE-BUDGET.md slice 6).
-///
-/// The one allocator spends it: a higher-priority source asks for its whole grant as its
-/// minimum, which `flex_allocate` serves first in priority order, and the lowest priority
-/// shares what is left. The newest end is never cut: a source keeps its newest items whole
-/// and collapses its oldest first, at the start only ([`View::turn_over`]).
 /// What her view does this act.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in super::super) enum Turnover {
@@ -480,6 +454,32 @@ pub(in super::super) fn turnover_due<E>(
     Ok(if would_restore()? { Turnover::Restore } else { Turnover::Keep })
 }
 
+/// Each view source's character grant at a turnover: the start the next epoch re-prefills,
+/// leaving a growth reserve for the acts that follow to append into.
+///
+/// `available` is what the window's one allocation leaves her view (its sources' grants plus
+/// the room no claim took), in the allocation's tokens. The higher-priority sources (the
+/// grounding blocks: identity, tools, policy) start whole at their grant, `grounding` in all;
+/// they change least and only supersede. The lowest-priority sources (her conversation,
+/// results and thoughts), which grow by appends, start at `growing` and the reserve is what
+/// is left. The reserve is derived, not picked: an epoch whose growing sources start at
+/// `growing` and reserve `reserve` lives `reserve / per_act` acts (`per_act` = the median an
+/// act appended, [`View::appended_per_act`]), so their re-prefill amortizes to
+/// `growing * per_act / reserve` per act. Holding that to at most one act's own appends gives
+/// `reserve >= growing`: the measured rate cancels, and `growing` is at most half of
+/// `available - grounding`. (The grounding's own re-prefill adds `grounding / life` per act
+/// on top, the price of keeping it whole.) The reserve must also hold one act's appends, so
+/// `growing` is at most `available - grounding - per_act` as well, which binds only when an
+/// act appends more than half of what the growing sources may hold. Before the epoch being
+/// replaced appended anything (`None`) the first bound stands alone. Both are the derivation's,
+/// on every machine: no share learned on one box decides how much of what she read she keeps
+/// (a quarter, replayed on M5 captures, collapsed every read but her newest on 2026-10-30,
+/// ONE-BUDGET.md slice 6).
+///
+/// The one allocator spends it: a higher-priority source asks for its whole grant as its
+/// minimum, which `flex_allocate` serves first in priority order, and the lowest priority
+/// shares what is left. The newest end is never cut: a source keeps its newest items whole
+/// and collapses its oldest first, at the start only ([`View::turn_over`]).
 #[cfg(test)]
 thread_local! {
     /// Set by a test: [`start_grants`] answers for one fewer source than it was asked.
