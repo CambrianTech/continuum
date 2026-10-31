@@ -21,7 +21,7 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 schemars = { version = "0.8", features = ["uuid1"] }
-reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
 inventory = "0.3"  # recall decisions register their protected collection

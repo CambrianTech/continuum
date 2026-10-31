@@ -14,8 +14,8 @@ continuum-bridge-protocol = { path = "../livekit-protocol" }
 
 # LiveKit WebRTC — the ONLY binary that links webrtc-sys.
 # No ort, no fastembed, no candle — zero protobuf conflict.
-livekit = { version = "0.7", features = ["native-tls"] }
-livekit-api = { version = "0.4", features = ["native-tls"] }
+livekit.workspace = true
+livekit-api.workspace = true
 
 # Async runtime
 tokio = { workspace = true }
