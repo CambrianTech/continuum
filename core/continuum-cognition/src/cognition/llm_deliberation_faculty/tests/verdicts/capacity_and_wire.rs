@@ -571,7 +571,9 @@ async fn a_refused_tail_rebuilds_her_request_without_it_once() {
 
 // what this catches: a prompt built on a broken allocator contract sent anyway (Codex on #5564).
 // An allocator answering for the wrong number of view sources is a GrantMismatch; it reaches the
-// turn's budget_fault and contribute refuses it before the adapter is ever called.
+// turn's budget_fault and contribute refuses it before the adapter is ever called. The room is
+// longer than the window, so her view must start from the allocator's grants: a view that fits
+// and keeps appending prices no start (`turnover_due`) and builds nothing from them.
 #[tokio::test(flavor = "current_thread")]
 async fn an_allocator_answering_for_the_wrong_sources_refuses_the_turn_before_dispatch() {
     use crate::cognition::workspace::Burst;
@@ -581,7 +583,7 @@ async fn an_allocator_answering_for_the_wrong_sources_refuses_the_turn_before_di
         .with_tools(vec![read_tool()]);
     let room = crate::identity::ActivityRoom::mint();
     let turns: Vec<_> = (0..20)
-        .map(|i| BurstTurn::attributed(i % 2 == 0, if i % 2 == 0 { "Ivar" } else { "Peer" }, format!("line {i} ").repeat(20), Some(i)))
+        .map(|i| BurstTurn::attributed(i % 2 == 0, if i % 2 == 0 { "Ivar" } else { "Peer" }, format!("line {i} ").repeat(1_000), Some(i)))
         .collect();
     let ws = Workspace::new(Burst::from_turns(room, turns));
     crate::cognition::llm_deliberation_faculty::prompt::SHORT_GRANTS.with(|short| short.set(true));
