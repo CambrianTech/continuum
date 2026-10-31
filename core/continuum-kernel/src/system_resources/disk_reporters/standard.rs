@@ -63,7 +63,7 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
     let mut dirs = vec![
         // Retain the historical root when configuration moves future writes.
         // Boot and later writers register configured roots in this same registry.
-        TrackedDir::new("cargo-target", continuum.join("cache/cargo-target")),
+        cached(continuum, "cargo-target"),
         // THE CACHE I INVENTED IS A CACHE THE SUBSTRATE OWNS (Joel, 2026-09-08: "the
         // system is supposed to manage disk; you've been defying design principles so it
         // can't"). Worktree builds must not write into the shared target — a worktree
@@ -73,7 +73,7 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // it was never registered: the 2026-07-13 law says a new directory the substrate
         // writes unbounded data into gets a TrackedDir row and an eviction decision, and
         // hand-sweeping it is exactly the compensation the law exists to end.
-        TrackedDir::new("cargo-target-wt", continuum.join("cache/cargo-target-wt")),
+        cached(continuum, "cargo-target-wt"),
         // THE THIRD CARGO TREE, unregistered until now (2026-09-21, the M5 at 97%: this
         // directory held 9.8 GB that no reporter could see and no pool could evict). The
         // airc build gets its own target dir for the same reason worktree builds do —
@@ -88,12 +88,12 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // next cargo tree to appear went unregistered anyway. A row is not remembered by
         // a doc; it is remembered by the class-coverage test below refusing an unlisted
         // class, which is why this lands with its eviction entry in the same change.
-        TrackedDir::new("cargo-target-airc", continuum.join("cache/cargo-target-airc")),
+        cached(continuum, "cargo-target-airc"),
         // The eye's browser profiles. Playwright defaults them into the OS temp dir,
         // where nothing of ours can see or evict them: 337 leaked profiles from 31
         // orphaned browsers accumulated there over a week (card de9b8876). A directory
         // under our own cache root is one the monitor can weigh and the reaper can clear.
-        TrackedDir::new("eye-profiles", continuum.join("cache/eye-profiles")),
+        cached(continuum, "eye-profiles"),
         // CI-built cores the deploy consumer downloads instead of compiling (card 50ca737e):
         // Legacy placement remains observable after configured storage redirects future writes.
         TrackedDir::new("core-artifacts", continuum.join("cache/artifacts")),
@@ -103,29 +103,29 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // contract while the disk went from 46 GB free to ZERO under a test build. 186 GB of
         // it was weights on NO serving path (two concluded experiments), which is exactly the
         // sub-class an owner evicts: not in the catalog, not the active or pinned model.
-        TrackedDir::new("models", continuum.join("models")),
+        kept(continuum, "models"),
         TrackedDir::new("genome-models", continuum.join("genome/models")),
-        TrackedDir::new("citizens", continuum.join("citizens")),
+        kept(continuum, "citizens"),
         // Per-persona durable mind state: longterm.db + working-set.json, one dir per uuid.
         // UNTRACKED until 2026-08-20, which made it invisible to BOTH halves of the governed-
         // disk contract — no size report, and the eviction guard could not flag a missing
         // decision because that guard iterates THIS list. Exactly the silent-class shape the
         // 2026-07-13 incident was about, found at 295 dirs / 18 MB with 286 of them under
         // 100 KB — spawn ghosts (#437), not minds.
-        TrackedDir::new("personas", continuum.join("personas")),
-        TrackedDir::new("forge", continuum.join("forge")),
+        kept(continuum, "personas"),
+        kept(continuum, "forge"),
         // Benchmark working set: per-instance repo clones + per-instance venvs. Grows LINEARLY
         // with instances graded — a full SWE-bench Lite sweep is 300 repos, and one sympy
         // checkout is ~240 MB. Entirely re-creatable (git + uv), which is what makes it a
         // cache class rather than data.
-        TrackedDir::new("benchmarks", continuum.join("benchmarks")),
+        kept(continuum, "benchmarks"),
         // The retired benchmark harness's state, moved here once at boot (card c4f4b8cd
         // step 2; `harness_archive`). Written once, never grown.
         TrackedDir::new("benchmark-harness-archive", continuum.join("archive/benchmark-harness")),
         // Managed clones of repos a citizen claimed a card for when this node had no
         // checkout (`card_staging::ensure_managed_clone`). One full clone per repo, and
         // every per-card worktree for that repo is cut from it.
-        TrackedDir::new("repos", continuum.join("repos")),
+        kept(continuum, "repos"),
         // THE LARGEST THING ON THE 5090'S SYSTEM VOLUME WAS INVISIBLE (2026-09-18, the
         // day it hit 0 bytes free): the Kimi K3 expert-bank container, 760 GB, plus
         // 25 GB of MoE probe runs — both written under the home by the K3 pager work
@@ -139,8 +139,8 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // 5090's C: reached 98% with a 3.0 GB workspace trace in it; IntelMac held 1.3 GB
         // across 76 trace files. Its writers now bound each persona's files; the total still
         // scales with persona count, which is why the class needs this row and an owner.
-        TrackedDir::new("fixtures", continuum.join("fixtures")),
-        TrackedDir::new("moe-probe", continuum.join("moe-probe")),
+        kept(continuum, "fixtures"),
+        kept(continuum, "moe-probe"),
         // The substrate's OWN rotation-generation dirs. Registered
         // 2026-08-06 — they had been the two directories continuum
         // writes to most continuously and the only ones the disk
@@ -176,8 +176,8 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // (card d166e4f2). One per repo; it grows with the repo's history and is never
         // pruned (preciousObjects), so its size is the class to watch.
         TrackedDir::new("airc-mirrors", home.join(".airc/mirrors")),
-        TrackedDir::new("logs", continuum.join("logs")),
-        TrackedDir::new("probes", continuum.join("probes")),
+        kept(continuum, "logs"),
+        kept(continuum, "probes"),
         // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
         // (~31 GB logical each). RAII drop removes them on every in-process return
         // path, and the provision-time orphan sweep (`cognition/eval.rs::
@@ -190,7 +190,7 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // capture (SERVING_WIRE_CAPTURE_DIR default location). Opt-in writers,
         // bounded by operator attention in practice — tracked so "in practice"
         // never becomes the 2026-07-13 silent-class shape.
-        TrackedDir::new("eval-captures", continuum.join("eval-captures")),
+        kept(continuum, "eval-captures"),
         // KV disk pages (restore economy): one file per activity, overwritten on
         // each save, under one subdir per MODEL (any window restores from it).
         // Bounded by residents × rooms per model, and by the save-side store
@@ -198,11 +198,11 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // first, never one younger than a day). A page at 20-40k tokens of q8_0
         // KV is hundreds of MB, so the class is small in COUNT but real in
         // bytes — exactly what must never be an untracked writer.
-        TrackedDir::new("kv-pages", continuum.join("cache/kv-pages")),
+        cached(continuum, "kv-pages"),
         // Every lane's `--train-dir`: adapters the engine's /train writes, in flight or
         // left by a crashed run (a finished one moves into its job dir). Registered with
         // the flag itself (2026-09-26) so it is never an unweighed writer.
-        TrackedDir::new("engine-train", continuum.join("cache/engine-train")),
+        cached(continuum, "engine-train"),
     ];
     // Present only when its real location is KNOWN (see the warn above). Kept
     // CONDITIONAL rather than defaulted: fabricating a path here is how a class
@@ -226,4 +226,16 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         dirs.push(TrackedDir::new("hf-hub", root));
     }
     dirs
+}
+
+/// A durable class's default root: its name under the continuum home. A row spells a path only
+/// where it differs (a relocatable cache, airc's own home, the system temp dir).
+fn kept(continuum: &std::path::Path, name: &'static str) -> Arc<TrackedDir> {
+    TrackedDir::new(name, continuum.join(name))
+}
+
+/// A rebuildable class's default root: its name under `cache/`, where everything the substrate
+/// can regenerate lives together.
+fn cached(continuum: &std::path::Path, name: &'static str) -> Arc<TrackedDir> {
+    TrackedDir::new(name, continuum.join("cache").join(name))
 }

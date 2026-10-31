@@ -21,6 +21,8 @@ use super::TrackedDir;
 #[derive(Clone)]
 pub struct ClassWriter {
     dir: Arc<TrackedDir>,
+    /// The owner's directory inside the class (`owned_by`); empty for the class root.
+    scope: PathBuf,
 }
 
 /// An exclusive lock on one name in a class, held until dropped.
@@ -30,7 +32,7 @@ pub struct ClassLock {
 
 impl TrackedDir {
     pub fn writer(self: &Arc<Self>) -> ClassWriter {
-        ClassWriter { dir: Arc::clone(self) }
+        ClassWriter { dir: Arc::clone(self), scope: PathBuf::new() }
     }
 }
 
@@ -52,6 +54,13 @@ impl ClassWriter {
         self.dir.class()
     }
 
+    /// The same class, scoped to one owner's directory (`<class root>/<owner>/`): a persona's,
+    /// a citizen's. The one place an owner's directory name is formed; a caller names only its
+    /// file.
+    pub fn owned_by(&self, owner: uuid::Uuid) -> Self {
+        ClassWriter { dir: Arc::clone(&self.dir), scope: self.scope.join(owner.to_string()) }
+    }
+
     /// Where `relative` lives in this class. Refused unless it names something inside the class
     /// root: no absolute path, no `..`, no `.`, not empty.
     pub fn path(&self, relative: &Path) -> io::Result<PathBuf> {
@@ -62,7 +71,7 @@ impl ClassWriter {
                 format!("{} is not a path inside disk class {}", relative.display(), self.class()),
             ));
         }
-        Ok(self.dir.path().join(relative))
+        Ok(self.dir.path().join(&self.scope).join(relative))
     }
 
     fn prepared(&self, relative: &Path) -> io::Result<PathBuf> {
@@ -164,6 +173,21 @@ mod tests {
         assert_eq!(left.len(), 1, "no staging file left beside it");
         assert_eq!(writer.publish_new(name, b"three").expect_err("taken").kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(&path).expect("read"), b"two", "a refused publish changed nothing");
+    }
+
+    // what this catches: an owner's file landing outside its owner's directory, or a caller
+    // forming the directory name by hand differently from the next one.
+    #[test]
+    fn an_owner_writes_inside_its_own_directory() {
+        let (_root, writer) = class();
+        let owner = uuid::Uuid::from_u128(7);
+        let mine = writer.owned_by(owner);
+        mine.replace(Path::new("emission.json"), b"{}").expect("write");
+        assert_eq!(
+            mine.path(Path::new("emission.json")).expect("path"),
+            writer.path(Path::new(&owner.to_string())).expect("owner dir").join("emission.json")
+        );
+        assert!(mine.path(Path::new("../other")).is_err(), "an owner cannot reach a sibling");
     }
 
     // what this catches: a writer that guesses a directory when its class is not registered.
