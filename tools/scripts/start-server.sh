@@ -1013,7 +1013,9 @@ fi
 if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ] && [ -z "${LLAMA_SERVER_BIN:-}" ]; then
   case "$(uname -s)" in
     Darwin|Linux)
-      if ! "$SCRIPT_DIR/install-llama-server.sh" >&2; then
+      # The CLI this deploy just built claims the engine slot (Codex on #5535): the installer
+      # refuses a CLI that cannot, so it is handed this one, never an older one on PATH.
+      if ! CONTINUUM_CLI="$CONTINUUM_CLI_BIN" "$SCRIPT_DIR/install-llama-server.sh" >&2; then
         echo "⚠ engine build failed in the build-only pass; the core deploys, lanes keep their current engine" >&2
       fi
       ;;

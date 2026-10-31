@@ -156,6 +156,20 @@ pub fn process_start_s(pid: u32) -> Option<u64> {
     }
 }
 
+/// Whether the process `pid` that started at `started_s` is the one running now: the ONE rule
+/// every owner record (an engine incarnation, an engine slot reservation) is judged by.
+pub fn process_liveness_with(pid: u32, started_s: u64, probe: impl Fn(u32) -> ProcessProbe) -> Liveness {
+    if started_s == 0 {
+        return Liveness::Unknown;
+    }
+    match probe(pid) {
+        ProcessProbe::Absent => Liveness::Dead,
+        ProcessProbe::Unreadable | ProcessProbe::Present(0) => Liveness::Unknown,
+        ProcessProbe::Present(s) if s == started_s => Liveness::Alive,
+        ProcessProbe::Present(_) => Liveness::Dead, // the pid was reused by a later process
+    }
+}
+
 impl EngineIncarnation {
     /// The incarnation of the process `pid` serving `port` right now, only when its start time
     /// is readable (a binding without one could never be verified or released).
@@ -168,15 +182,7 @@ impl EngineIncarnation {
     }
 
     pub fn liveness_with(&self, probe: impl Fn(u32) -> ProcessProbe) -> Liveness {
-        if self.started_s == 0 {
-            return Liveness::Unknown;
-        }
-        match probe(self.pid) {
-            ProcessProbe::Absent => Liveness::Dead,
-            ProcessProbe::Unreadable | ProcessProbe::Present(0) => Liveness::Unknown,
-            ProcessProbe::Present(s) if s == self.started_s => Liveness::Alive,
-            ProcessProbe::Present(_) => Liveness::Dead, // the pid was reused by a later process
-        }
+        process_liveness_with(self.pid, self.started_s, probe)
     }
 
     pub fn liveness(&self) -> Liveness {

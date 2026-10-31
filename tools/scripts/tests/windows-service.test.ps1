@@ -815,6 +815,9 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
             $script:migrationDescription = (@{ engine = (Join-Path $source 'llama-server.exe') } | ConvertTo-Json -Compress)
             function Get-ScheduledTask { [pscustomobject]@{ Description = $script:migrationDescription } }
             function Get-CimInstance { [pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $third 'llama-server.exe') } }
+            # The slot is the core's claim (`idle-slot --owner-pid`, proven by the selector
+            # fixtures below); this scope proves what preparation does with the claimed slot.
+            function Select-CoreEngineSlot { $destination }
             $receiptPath = Join-Path $scratch 'prepared-engine-path'
             Prepare-CoreServiceEngine -RepoRoot $sourceRepo -Description $script:migrationDescription -ReceiptPath $receiptPath
             if ([IO.File]::ReadAllText($receiptPath) -cne (Join-Path $destination 'llama-server.exe') -or
@@ -2081,7 +2084,10 @@ public static class RegisteredGsudoFixture {
         else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
     }
     Set-Content -LiteralPath $fakeCli -Value @'
-if ($args[0] -eq '--help') { 'continuum engine idle-slot'; 'continuum engine promote <slot> <commit:backend>'; exit 0 }
+if ($args[0] -eq '--help') { 'continuum engine idle-slot --owner-pid <pid>'; 'continuum engine promote <slot> <commit:backend>'; exit 0 }
+if ($args[0] -eq 'engine' -and $args[1] -eq 'release-slot') {
+    Add-Content -LiteralPath (Join-Path $env:CONTINUUM_HOME 'released') -Value "$($args[2]) $($args[4])"; exit 0
+}
 $payload = Get-ManagedPayloadRoot -HomeRoot $env:CONTINUUM_HOME
 if ($args[0] -eq 'engine' -and $args[1] -eq 'promote') {
     if ($env:FAKE_PROMOTE_RC) { 'refused'; exit ([int]$env:FAKE_PROMOTE_RC) }
@@ -2118,16 +2124,31 @@ exit 64
         try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'running engine executes from it' }
         if (-not $refused) { throw 'A readable live engine inside the core answer was overwritten' }
     } finally { $env:FAKE_IDLE_SLOT = $null; $env:FAKE_IDLE_RC = $null; $script:liveProcesses = @() }
-    # The pre-verb path skips a busy deploy too: every slot live by the process table.
-    $script:liveProcesses = @('engine-a', 'engine-b', 'engine-c' | ForEach-Object {
-        [pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installedPayload "bin\$_\llama-server.exe") } })
-    try {
-        if ($null -ne (Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -SkipIfBusy)) { throw 'The pre-verb path did not skip a busy deploy' }
-        $refused = $false
-        try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null | Out-Null } catch { $refused = $_ -match 'All installed engine slots' }
-        if (-not $refused) { throw 'A first install with every slot live was not refused' }
-    } finally { $script:liveProcesses = @() }
-    Write-Output 'PASS: the engine slot is the core answer from its lane records when the CLI knows the verb'
+    # Codex on #5535: a CLI that cannot CLAIM a slot (an older slot-capable one without
+    # --owner-pid, or none at all) is refused before any selection, build or write; there is no
+    # process-table fallback, even with -SkipIfBusy.
+    $oldCli = Join-Path $scratch 'old-continuum-cli.ps1'
+    $oldCalls = Join-Path $scratch 'old-cli-calls'
+    Set-Content -LiteralPath $oldCli -Value @"
+if (`$args[0] -eq '--help') { 'continuum engine idle-slot'; 'continuum engine promote <slot> <commit:backend>'; exit 0 }
+Add-Content -LiteralPath '$oldCalls' -Value (`$args -join ' '); exit 0
+"@
+    function Invoke-InstallerProcess {
+        param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+        if ($FilePath -eq $fakeCli -or $FilePath -eq $oldCli) { & $FilePath @ArgumentList }
+        else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+    }
+    $currentBefore = Get-Content -LiteralPath (Join-Path $installedPayload 'bin\current') -Raw -ErrorAction SilentlyContinue
+    foreach ($cli in @($oldCli, $null)) {
+        foreach ($skip in @($false, $true)) {
+            $refused = $false
+            try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $cli -SkipIfBusy:$skip | Out-Null } catch { $refused = $_ -match 'Update the lifecycle tool first' }
+            if (-not $refused) { throw "A CLI that cannot claim was not refused (cli=$cli, skip=$skip)" }
+        }
+    }
+    if (Test-Path -LiteralPath $oldCalls) { throw "The old CLI was asked to act: $(Get-Content -LiteralPath $oldCalls -Raw)" }
+    if ((Get-Content -LiteralPath (Join-Path $installedPayload 'bin\current') -Raw -ErrorAction SilentlyContinue) -cne $currentBefore) { throw 'A refused install changed current' }
+    Write-Output 'PASS: the engine slot is the core answer from its lane records, and a CLI that cannot claim is refused'
 
     # what this catches (the 5090, 2026-10-10 02:05Z): an activation that failed after writing
     # install-active.json but before promoting `current` leaves the core's pointers naming
@@ -2144,6 +2165,11 @@ exit 64
         $refused = $false
         try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'release receipt still names it' }
         if (-not $refused) { throw 'A slot the active receipt names was staged into' }
+        # Codex on #5535: the core CLAIMED engine-c for this installer; a refusal releases it.
+        $released = Join-Path $installed 'released'
+        if (-not (Test-Path -LiteralPath $released) -or -not @(Get-Content -LiteralPath $released | Where-Object { $_ -ceq "engine-c $PID" }).Count) {
+            throw 'A refused claimed slot was not released'
+        }
         if ($null -ne (Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli -SkipIfBusy)) { throw 'A deploy staged into a receipted slot instead of skipping' }
         Remove-Item -LiteralPath $activeReceipt
         Set-Content -LiteralPath $previousReceipt -Value (& $receiptNaming 'engine-c')
@@ -2153,10 +2179,6 @@ exit 64
         $env:FAKE_IDLE_SLOT = 'engine-b'
         $picked = Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli
         if ($picked -ne (ConvertTo-CoreImagePath (Join-Path $installedPayload 'bin\engine-b'))) { throw "An unreceipted idle slot was not used: $picked" }
-        # The pre-verb path skips a receipted slot and takes the next free one.
-        Set-Content -LiteralPath $previousReceipt -Value (& $receiptNaming 'engine-a')
-        $picked = Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null
-        if ($picked -ne (Join-Path (ConvertTo-CoreImagePath (Join-Path $installedPayload 'bin')) 'engine-b')) { throw "The pre-verb path did not skip the receipted slot: $picked" }
     } finally {
         $env:FAKE_IDLE_SLOT = $null; $env:FAKE_IDLE_RC = $null
         foreach ($r in @($activeReceipt, $previousReceipt)) { if (Test-Path -LiteralPath $r) { Remove-Item -LiteralPath $r } }

@@ -43,13 +43,13 @@ impl LlamaServerProcess {
                 continuum_process::kill9(pid);
             }
             continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.debug_build_refused",
-                bin = %prepared.engine_program,
+                bin = %prepared.engine_program(),
                 "refused to serve from a DEBUG build (startup stderr) — build for speed"
             );
             return Err(LlamaServerError::Spawn(format!(
                 "{} announced itself a DEBUG build on startup (asserts enabled; its speed is not valid). \
                  Rebuild llama-server in release from the canary pin and relaunch.",
-                prepared.engine_program
+                prepared.engine_program()
             )));
         }
         // READY AND ACCEPTED: this lane owns its page dir. Before the ledger attaches
@@ -146,7 +146,7 @@ impl LlamaServerProcess {
                      than serve every citizen from system RAM behind a green /health. Check the \
                      backend build (a DL-backend build can list CUDA0 from a shell and still fail \
                      to load it under the core) — last stderr:\n{}",
-                    prepared.engine_program,
+                    prepared.engine_program(),
                     self.stderr_log_tail()
                 )));
             }
@@ -257,7 +257,7 @@ impl LlamaServerProcess {
             target,
             invocation,
             Some(prepared.clone()),
-            &prepared.engine_program,
+            prepared.engine_program(),
             context,
             slots,
         );

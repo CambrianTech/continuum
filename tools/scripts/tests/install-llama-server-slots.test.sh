@@ -5,11 +5,14 @@
 # and a fake cmake: no native build, no service, no core.
 #
 # What each case catches:
-#   old CLI      the first deploy is driven by a CLI without the verbs: pre-slot install, said so
+#   old CLI      a slot-capable CLI that cannot CLAIM (no --owner-pid) is refused before anything is
+#                built or written: no unclaimed install path exists (Codex on #5535)
 #   migrate      a pre-slot engine already verified at the pin moves into a slot with NO rebuild
 #   current      the current slot at the pin is a no-op: no idle-slot query, no promote
 #   none idle    exit 3 skips the engine build, exits 0, promotes nothing
 #   refused      any other idle-slot failure fails loud, never guesses a slot
+#   claim        idle-slot claims the slot for THIS installer's pid, and the same pid releases it
+#                at exit (a launch can never run a slot a build holds; Codex on #5535)
 set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 scratch_root="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
@@ -40,12 +43,14 @@ want="$head:$backend"
 
 # Fake cmake: the slot cases must never reach a build; if one does, it fails loud.
 printf '#!/usr/bin/env bash\necho "cmake must not run in this case" >&2\nexit 97\n' > "$scratch/bin/cmake"
-# Fake CLI: `--help` advertises the verbs unless OLD_CLI; `engine` answers from the fixture.
+# Fake CLI: `--help` advertises the claiming verb, or with OLD_CLI only the earlier unclaimed
+# `idle-slot`; `engine` answers from the fixture.
 cat > "$scratch/bin/continuum" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--help" ]; then
   echo "usage: continuum ..."
-  [ -z "${OLD_CLI:-}" ] && echo "       continuum engine idle-slot           print the engine slot"
+  if [ -n "${OLD_CLI:-}" ]; then echo "       continuum engine idle-slot           print the engine slot"
+  else echo "       continuum engine idle-slot --owner-pid <pid>   claim and print the engine slot"; fi
   exit 0
 fi
 [ "${1:-}" = "engine" ] || exit 64
@@ -56,6 +61,7 @@ echo "$*" >> "$FIXTURE_LOG"
 case "$1" in
   idle-slot) [ "$IDLE_RC" = 0 ] && echo "$root/$IDLE_SLOT"; exit "$IDLE_RC" ;;
   promote) [ "${PROMOTE_RC:-0}" = 0 ] || exit "$PROMOTE_RC"; printf '%s\n' "$2" > "$root/current"; exit 0 ;;
+  release-slot) exit 0 ;;
 esac
 exit 64
 SH
@@ -75,12 +81,15 @@ engine_at() { # dir stamp: a runnable engine stamped at `stamp`
 run() { bash "$repo/tools/scripts/install-llama-server.sh" > "$scratch/out" 2> "$scratch/err"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-# old CLI: the pre-slot install stands, and the log says why.
-fresh_home; engine_at "$CONTINUUM_HOME/bin" "$want"
-OLD_CLI=1 IDLE_RC=0 IDLE_SLOT=engine-a run || fail "old CLI: exit $?"
-[ "$(cat "$scratch/out")" = "$CONTINUUM_HOME/bin/llama-server" ] || fail "old CLI: $(cat "$scratch/out")"
-grep -q "no engine slots yet" "$scratch/err" || fail "old CLI: the skew is not said"
+# old CLI: refused before any build or write; the cause names the tool to update.
+fresh_home; engine_at "$CONTINUUM_HOME/bin" "old000:$backend"
+before="$(cd "$HOME" && find . -type f -exec ls -l {} + | sort)"
+if OLD_CLI=1 IDLE_RC=0 IDLE_SLOT=engine-a run; then fail "old CLI: exited 0"; fi
+grep -q "Update the lifecycle tool first" "$scratch/err" || fail "old CLI: the cause is not named: $(cat "$scratch/err")"
+[ ! -s "$scratch/out" ] || fail "old CLI: named an engine: $(cat "$scratch/out")"
 [ ! -s "$scratch/log" ] || fail "old CLI: engine verbs were called"
+[ "$(cd "$HOME" && find . -type f -exec ls -l {} + | sort)" = "$before" ] || fail "old CLI: the home was changed"
+[ "$(cat "$CONTINUUM_HOME/bin/.llama-server.stamp")" = "old000:$backend" ] || fail "old CLI: the engine was rebuilt"
 
 # migrate: the verified pre-slot engine is copied into the idle slot and promoted, no build.
 fresh_home; engine_at "$CONTINUUM_HOME/bin" "$want"
@@ -89,6 +98,9 @@ IDLE_RC=0 IDLE_SLOT=engine-a run || fail "migrate: exit $?"
 [ "$(cat "$CONTINUUM_HOME/bin/engine-a/.llama-server.stamp")" = "$want" ] || fail "migrate: slot not stamped"
 grep -qx "promote engine-a $want" "$scratch/log" || fail "migrate: not promoted with the pin"
 [ -x "$CONTINUUM_HOME/bin/llama-server" ] || fail "migrate: the pre-slot engine a lane may run was removed"
+claimer="$(sed -n 's/^idle-slot --owner-pid \([0-9][0-9]*\)$/\1/p' "$scratch/log")"
+[ -n "$claimer" ] || fail "claim: idle-slot was not asked to claim for the installer: $(cat "$scratch/log")"
+grep -qx "release-slot engine-a --owner-pid $claimer" "$scratch/log" || fail "claim: the installer did not release its claim: $(cat "$scratch/log")"
 
 # current: the active slot already at the pin is a no-op.
 fresh_home; engine_at "$CONTINUUM_HOME/bin/engine-b" "$want"; echo engine-b > "$CONTINUUM_HOME/bin/current"

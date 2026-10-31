@@ -36,7 +36,7 @@ struct LaunchContract {
 impl LaunchContract {
     fn of(prepared: &PreparedLocalLaunch) -> Self {
         Self {
-            engine_program: prepared.engine_program.clone(),
+            engine_program: prepared.engine_program().to_string(),
             gguf: prepared.gguf.clone(),
             model_id: prepared.target.model.id.clone(),
             adapters: prepared.target.adapter_paths(),
@@ -335,7 +335,8 @@ mod tests {
         target.placement = LanePlacement::Cpu;
         Arc::new(PreparedLocalLaunch {
             target,
-            engine_program: "llama-server".into(),
+            engine: super::super::checked_engine::CheckedEngine::Operator { program: "llama-server".into() },
+            engine_custody: Default::default(),
             endpoint: root.to_string(),
             invocation: crate::inference::lane_args::LaneInvocation { args: vec!["-c".into(), ctx.into()], ..Default::default() },
             engine_install: None,
@@ -399,7 +400,7 @@ mod tests {
         let transition = endpoint.transition().await;
         let generation = transition.start_generation().expect("the engine's generation");
         process.install_child(child, generation.clone(), None, None);
-        let evidence = process.publish_launched_evidence(&kept.engine_program, pid);
+        let evidence = process.publish_launched_evidence(kept.engine_program(), pid);
         drop(transition);
         let tail = ReadyTail {
             prepared: kept,

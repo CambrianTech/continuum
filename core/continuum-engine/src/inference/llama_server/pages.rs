@@ -167,6 +167,8 @@ pub(super) struct RetiringPageOwner {
     pub(super) _resource_reservation: Option<crate::resources::LeaseGuard>,
     pub(super) _engine_install: Option<crate::inference::engine_install::EngineInstallReceipt>,
     pub(super) _local_inputs: Option<crate::inference::launch_inputs::LocalLaunchInputs>,
+    // An engine slot claim the lane record could not take over: released at exit.
+    pub(super) _engine_slot: Option<crate::inference::engine_slots::SlotClaim>,
 }
 
 
@@ -209,6 +211,7 @@ impl PageDirState {
 pub(super) fn retire_page_owner(
     owned: OwnedEngine,
     reservation: Option<PageDirReservation>,
+    engine_slot: Option<crate::inference::engine_slots::SlotClaim>,
     signal: impl FnOnce(&mut tokio::process::Child) -> std::io::Result<()>,
 ) {
     let OwnedEngine {
@@ -234,6 +237,7 @@ pub(super) fn retire_page_owner(
         _resource_reservation: resource_reservation,
         _engine_install: engine_install,
         _local_inputs: local_inputs,
+        _engine_slot: engine_slot,
     });
     guard.collect_exited();
 }

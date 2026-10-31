@@ -7,8 +7,9 @@ function Get-ManagedPayloadRoot { $fixtureRoot }
 function Invoke-InstallerProcess {
     param($FilePath, $ArgumentList)
     $global:LASTEXITCODE = 0
-    if ($ArgumentList[0] -eq '--help') { return 'continuum engine idle-slot [--exclude-slot slot]...' }
-    if (($ArgumentList -join ' ') -cne 'engine idle-slot --exclude-slot engine-a') {
+    if ($ArgumentList[0] -eq '--help') { return 'continuum engine idle-slot --owner-pid <pid> [--exclude-slot slot]...' }
+    # The claim is this installer's (Codex on #5535): its own pid, with the receipted exclusions.
+    if (($ArgumentList -join ' ') -cne "engine idle-slot --owner-pid $PID --exclude-slot engine-a") {
         throw "Installer custody was not passed to the selector: $ArgumentList"
     }
     Join-Path $fixtureRoot 'bin\engine-b'

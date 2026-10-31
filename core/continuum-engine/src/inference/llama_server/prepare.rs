@@ -1,13 +1,15 @@
 //! Prepare responsibility of the llama-server process owner.
 use super::*;
 impl LlamaServerProcess {
-    /// The engine this launch runs: [`server_bin`], resolved now (see `prepare_local_launch`).
-    pub(super) fn engine_bin(&self) -> Result<String, LlamaServerError> {
+    /// The engine this launch runs, checked now (see `prepare_local_launch`): the slot holding
+    /// this core's pin, as the artifact the spawn consumes ([`super::checked_engine`]). A refusal
+    /// returns before anything launches, so no stale engine runs and no incumbent is touched.
+    pub(super) fn checked_engine(&self) -> Result<super::checked_engine::CheckedEngine, LlamaServerError> {
         #[cfg(any(test, feature = "test-fixtures"))]
         if let Some(pin) = &self.bin_pin {
-            return Ok(pin.clone());
+            return Ok(super::checked_engine::CheckedEngine::Operator { program: pin.clone() });
         }
-        server_bin()
+        super::engine_pin::hold_current_engine_to_pin().map_err(LlamaServerError::EngineUnpinned)
     }
 }
 
@@ -20,8 +22,12 @@ impl LlamaServerProcess {
         // The engine is resolved per launch, never cached on the process: after a promote the
         // next launch must take the slot `current` now names (card 2c5d0ec0), or #4464's
         // convergence relaunches onto the binary it is trying to leave.
-        let bin = self.engine_bin()?;
-        crate::inference::engine_slots::note_unowned_launch(&bin, super::engine_install::engine_override().is_some());
+        // The slot this core's source pins, never whichever one `current` was left naming: an
+        // unpinned node refuses here, before the incumbent is touched (`EngineUnpinned`).
+        let engine = self.checked_engine()?;
+        // The slot's claim from the moment of validation: no build claims it while this holds.
+        let engine_custody = engine.claim_slot().map_err(LlamaServerError::EngineUnpinned)?;
+        let bin = engine.program().to_string();
         // Resolve the GGUF from the model struct already in hand — no re-fetch by
         // id. No file → fail loud; we never serve a substitute model
         // ([[fallbacks-are-illegal-fail-loud]]).
@@ -521,7 +527,8 @@ impl LlamaServerProcess {
         };
         Ok(PreparedLocalLaunch {
             target: target.clone(),
-            engine_program: bin.clone(),
+            engine,
+            engine_custody: Arc::new(parking_lot::Mutex::new(engine_custody)),
             endpoint: self.root.clone(),
             invocation,
             engine_install,

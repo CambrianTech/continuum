@@ -79,7 +79,7 @@ fn serving_uses_the_supervisors_engine() {
     const CHILD: &str = "CONTINUUM_ENGINE_CONTRACT_TEST_CHILD";
     const ENGINE: &str = "prepared release/engine-b/llama-server.exe";
     if std::env::var_os(CHILD).is_some() {
-        assert_eq!(super::server_bin().unwrap(), ENGINE);
+        assert_eq!(super::super::engine_install::server_bin().unwrap(), ENGINE);
         return;
     }
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());

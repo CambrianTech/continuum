@@ -17,7 +17,7 @@ pub(super) struct OwnedEngine {
 pub struct LlamaServerProcess {
     pub(super) root: String,
     pub(super) v1_url: String,
-    /// A test's fixture engine in place of [`server_bin`]'s per-launch resolution.
+    /// A test's fixture engine in place of the pin hold's checked engine (`checked_engine`).
     #[cfg(any(test, feature = "test-fixtures"))]
     pub(super) bin_pin: Option<String>,
     pub(super) client: reqwest::Client,
@@ -48,6 +48,9 @@ pub struct LlamaServerProcess {
     /// not be written — kept until the owned child reports exit
     /// (see [`PageDirReservation`]). Empty when the record carries the dir.
     pub(super) retained_page_dir: Arc<parking_lot::Mutex<Option<PageDirReservation>>>,
+    /// The engine slot claim of the CURRENT child when its registry record could not be
+    /// written: kept until the owned child reports exit. Empty when the record names the slot.
+    pub(super) retained_engine_slot: Arc<parking_lot::Mutex<Option<crate::inference::engine_slots::SlotClaim>>>,
     /// True for THE host's live persona lane (pins the canonical port, writes the
     /// reclaim pidfile, reaps a crashed predecessor's orphan). False for an
     /// [`EphemeralServingLane`]'s `with_root` process, which owns its own scanned
@@ -147,6 +150,7 @@ impl LlamaServerProcess {
             retiring_discard: parking_lot::Mutex::new(None),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
             retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
+            retained_engine_slot: Arc::new(parking_lot::Mutex::new(None)),
             // THE host's live lane — pins the canonical port, owns the reclaim
             // pidfile. `new()`/`with_client()` are the live constructors.
             is_live_lane: true,
@@ -183,6 +187,7 @@ impl LlamaServerProcess {
             retiring_discard: parking_lot::Mutex::new(None),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
             retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
+            retained_engine_slot: Arc::new(parking_lot::Mutex::new(None)),
             // Ephemeral lane on its OWN scanned port: NOT the canonical live lane.
             // It must never write the canonical pidfile or reclaim the live port.
             is_live_lane: false,
@@ -230,7 +235,8 @@ impl LlamaServerProcess {
         let child = self.child.lock().unwrap().take(); // unwrap: poisoned = prior panic while mutating the owned child
         if let Some(child) = child {
             let reservation = self.retained_page_dir.lock().take();
-            retire_page_owner(child, reservation, signal);
+            let engine_slot = self.retained_engine_slot.lock().take();
+            retire_page_owner(child, reservation, engine_slot, signal);
         }
     }
 
@@ -295,7 +301,8 @@ impl LlamaServerProcess {
             }
         };
         let reservation = self.retained_page_dir.lock().take();
-        retire_page_owner(owned, reservation, signal);
+        let engine_slot = self.retained_engine_slot.lock().take();
+        retire_page_owner(owned, reservation, engine_slot, signal);
         Ok(EngineRetirementReceipt {
             identity: expected.clone(),
         })
