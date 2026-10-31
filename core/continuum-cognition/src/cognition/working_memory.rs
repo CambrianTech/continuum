@@ -251,7 +251,7 @@ pub struct WorkingMemory {
     /// SAME recency channel as `last_action`, but keyed so concurrent sentinels/compiles/
     /// debuggers stream in without clobbering each other. Fed by the completion/progress
     /// listener (`record_dispatch_event`); surfaced by the faculty so the mind perceives
-    /// "what I sent away, and where it's at" each heartbeat. A finished handle retires once she has answered a prompt that showed its end.
+    /// "what I sent away, and where it's at" each heartbeat. A finished handle stays until a submitted render receipt shows its end reached her.
     dispatched: Mutex<HashMap<Uuid, DispatchedAction>>,
     /// Monotonic stamp applied to ACTION entries. Two reasons: (1) it makes each
     /// recorded action a DISTINCT string even when the persona repeats the identical

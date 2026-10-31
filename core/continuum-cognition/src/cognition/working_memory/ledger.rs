@@ -301,10 +301,7 @@ impl WorkingMemory {
             // The record and the active slot publish together, so a concurrent publisher
             // cannot prune a not-yet-visible receipt.
             let mut actions = self.actions.lock();
-            let previous = self.last_action.lock().replace((seq, a.to_string()));
-            if let Some((answered_since, _)) = previous {
-                self.retire_perceived_dispatches(answered_since);
-            }
+            *self.last_action.lock() = Some((seq, a.to_string()));
             actions.push(
                 action_log::ActionRecord {
                     seq,

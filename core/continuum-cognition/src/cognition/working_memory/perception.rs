@@ -348,8 +348,9 @@ impl WorkingMemory {
     /// `Done`/`Failed` marks it. The mind perceives outstanding + freshly-finished handles
     /// via the faculty next heartbeat, so it can act on a result the moment it lands
     /// without ever blocking. `label` is set once (first event) and preserved across
-    /// updates. A finished handle retires once she has answered a prompt that showed its end
-    /// ([`Self::retire_perceived_dispatches`]); a running one never does
+    /// updates. A finished handle stays until a submitted render receipt shows its end reached
+    /// her (HER-TASKS' acknowledge point, the render receipt in progress); until that exists
+    /// nothing retires one, so an end she has not perceived is never dropped (Codex on #5637)
     /// ([[act-results-need-a-recency-channel-not-semantic-recall]]).
     pub fn record_dispatch_event(
         &self,
@@ -369,17 +370,6 @@ impl WorkingMemory {
         entry.latest = content.trim().to_string();
         entry.status = status;
         entry.seq = seq;
-    }
-
-    /// Retire every finished handle whose end she has perceived: one whose terminal event is
-    /// older than `answered_since`, the sequence of an act recorded before the act now being
-    /// recorded. That act's prompt was built after it, and her view renders every dispatched
-    /// handle, so the end was in a prompt she answered. Acts and dispatch events share one
-    /// sequence, so this is an ordering, never a count; a running handle never retires.
-    pub(super) fn retire_perceived_dispatches(&self, answered_since: u64) {
-        self.dispatched
-            .lock()
-            .retain(|_, action| action.status == DispatchStatus::Running || action.seq >= answered_since);
     }
 
     /// The label of a dispatched handle THIS persona owns, or `None` if the handle isn't

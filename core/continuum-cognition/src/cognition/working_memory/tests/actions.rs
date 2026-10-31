@@ -177,25 +177,22 @@ async fn dispatched_commands_stream_back_by_handle() {
     );
 }
 
-// what this catches: a finished background handle held forever (the old 16-handle cap only
-// evicted past a count) or dropped before she could see how it ended. It retires once she has
-// answered a prompt built after its end (an act recorded after the act that followed it); a
-// running handle never retires, however many acts pass.
+// what this catches: a finished background handle dropped before a submitted prompt showed her
+// its end. An act recorded later proves nothing about an optional source being allocated (Codex
+// on #5637), so nothing retires a handle until the render receipt acknowledges it: the old
+// 16-handle count evicted finished ends she may never have seen.
 #[test]
-fn a_finished_dispatch_retires_once_she_has_answered_a_prompt_that_showed_its_end() {
+fn a_finished_dispatch_stays_until_a_receipt_acknowledges_it() {
     let wm = WorkingMemory::new(8);
     let (compile, sentinel) = (Uuid::from_u128(1), Uuid::from_u128(2));
     wm.record_dispatch_event(sentinel, "research task", "searching…", DispatchStatus::Running);
     wm.record_dispatch_event(compile, "compile core", "0 errors", DispatchStatus::Done);
-    let handles = |wm: &WorkingMemory| wm.dispatched_snapshot().into_iter().map(|(h, ..)| h).collect::<Vec<_>>();
-    wm.record_receipt("an act whose prompt may predate the compile's end");
-    assert_eq!(handles(&wm).len(), 2, "the next act's prompt may not have shown it yet");
-    wm.record_receipt("an act whose prompt was built after the compile ended");
-    assert_eq!(handles(&wm), vec![sentinel], "its end was in a prompt she answered");
     for _ in 0..20 {
         wm.record_receipt("more acts");
     }
-    assert_eq!(handles(&wm), vec![sentinel], "a running handle never retires");
+    let mut handles: Vec<Uuid> = wm.dispatched_snapshot().into_iter().map(|(h, ..)| h).collect();
+    handles.sort();
+    assert_eq!(handles, vec![compile, sentinel], "acts alone never retire a finished end, and a running one stays");
 }
 
 // what this catches: record/recent round-trips, blank reasoning is ignored, and
