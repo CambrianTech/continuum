@@ -5,10 +5,7 @@ use continuum_context::cause::{Cause, Origin};
 use continuum_context::source::{Item, Source};
 
 use super::{element, priority, ContextMessage, Producer};
-use crate::cognition::working_memory::{collapse_thought, render_dispatched, WmKind, WorkingMemory};
-
-/// What a collapsed thought keeps: its end, where the decision is.
-const POINTER_KEEP: usize = 200;
+use crate::cognition::working_memory::{render_dispatched, WmKind, WorkingMemory};
 
 pub(crate) struct Thoughts<'a> {
     pub memory: &'a WorkingMemory,
@@ -26,12 +23,12 @@ impl Source<ContextMessage> for Thoughts<'_> {
     }
 
     fn items(&self) -> Vec<Item<ContextMessage>> {
-        let thoughts: Vec<String> = self
+        let thoughts: Vec<(u64, String)> = self
             .memory
             .recent_entries()
             .into_iter()
             .filter(|entry| matches!(entry.kind, WmKind::Thought | WmKind::Settlement))
-            .map(|entry| entry.text)
+            .map(|entry| (entry.occurrence, entry.text))
             .collect();
         let dispatched = render_dispatched(&self.memory.dispatched_snapshot());
         if thoughts.is_empty() && dispatched.is_none() {
@@ -45,17 +42,19 @@ impl Source<ContextMessage> for Thoughts<'_> {
         let mut items = vec![super::standing(self.persona, "thoughts", "banner", banner)];
         // Her thoughts are one interior chain: each follows the one before it.
         let mut previous = None;
-        items.extend(thoughts.into_iter().map(|text| {
-            let id = element(self.persona, Producer::Thought, text.as_bytes());
+        items.extend(thoughts.into_iter().map(|(occurrence, text)| {
+            // Keyed by its occurrence, never by what it says: a settlement that repeats an
+            // earlier one ("passed" after "failed" after "passed") is its own item, so her latest
+            // state reads right (it collapsed into the first and read as "failed"). A thought,
+            // once recorded, does not change, and neither may its rendering: whole, its summary
+            // from the codec (`levels`), and how much of her thoughts she reads is the one
+            // allocation's call at an epoch start, never a per-act cut here (Benchy on the M5,
+            // 2026-10-24: a share-of-window cut re-appended every thought on every act).
+            let id = element(self.persona, Producer::Thought, &occurrence.to_be_bytes());
             let cause = previous.replace(id).map_or(Cause::Root(Origin::ActivityStart), Cause::Of);
-            // Keyed by what it says: a thought, once recorded, does not change, and neither may
-            // its rendering. Full is the whole thought; how much of her thoughts she reads is the
-            // one allocation's call at an epoch start (collapsed to `pointer`), never a per-act
-            // head here. Cut to a share of the served window, the same thought rendered 1,284
-            // chars on one act and 1,445 on the next, so every act re-appended every thought
-            // (Benchy on the M5, 2026-10-24 22:3xZ: ~7k chars of unchanged thoughts per act).
-            Item::whole(id, cause, text.clone(), ContextMessage::user(format!("- {text}")))
-                .with_pointer(ContextMessage::user(format!("- {}", collapse_thought(&text, POINTER_KEEP))))
+            let summary = continuum_context::levels::summarize(&text, continuum_context::levels::Shape::Output)
+                .map(|summary| ContextMessage::user(format!("- {summary}")));
+            Item::whole(id, cause, format!("thought#{occurrence}"), ContextMessage::user(format!("- {text}"))).with_summary(summary)
         }));
         // Fresh each event, newest last; one item, so a status change appends one line set.
         items.extend(dispatched.map(|text| {

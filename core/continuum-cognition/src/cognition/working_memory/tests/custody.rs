@@ -1,21 +1,6 @@
 #![cfg(test)]
 use super::*;
 
-// what this catches: her collapsed thought keeping the re-orientation and losing
-// the decision (Kimi, 2026-10-04: "keep the end"). The decision survives, the
-// marker still names the collapse for the framing-echo detector, short thoughts
-// are untouched.
-
-#[test]
-fn a_collapsed_thought_keeps_its_end() {
-    let thought = format!("Let me organize my state as Kimi. {} Decision: re-claim after the core redeploys.", "x".repeat(400));
-    let shown = collapse_thought(&thought, 60);
-    assert!(shown.ends_with("Decision: re-claim after the core redeploys."), "{shown}");
-    assert!(!shown.contains("Let me organize"), "the re-orientation is what collapses");
-    assert!(shown.contains(crate::cognition::framing_echo::COLLAPSE_MARKER));
-    assert_eq!(collapse_thought("short", 60), "short");
-}
-
 // what this catches: a receipt made while rooted at one card's checkout
 // leaking into perception while she stands at another (the 9/5 "my context
 // is confused" opener), and coming back when she returns.
@@ -407,4 +392,26 @@ fn a_restore_prices_a_legacy_evicted_result_from_its_saved_output() {
     let label = restored.action_whole_label(acts[0].seq).expect("test: a label").chars().count();
     assert_eq!(acts[0].stored.as_ref().map(|(chars, _)| *chars), Some(label + measured), "priced from its saved output, label included");
     assert_eq!(acts[1].stored, None, "an output that can't be read stays a pointer");
+}
+
+// what this catches: two entries sharing an occurrence after a restore (Codex on card 4ee623ad).
+// An occurrence is never checkpointed, so the checkpoint's shape is unchanged; restore numbers
+// every entry it brings back from the one counter, and the next append is distinct and newest.
+#[test]
+fn restored_and_appended_entries_never_share_an_occurrence() {
+    let wm = WorkingMemory::new(8);
+    wm.record_settlement("first", None);
+    wm.record_settlement("second", None);
+    let saved = serde_json::to_value(wm.snapshot()).expect("test: a snapshot serializes");
+    assert!(!saved.to_string().contains("occurrence"), "no occurrence in the checkpoint: {saved}");
+    let restored = WorkingMemory::new(8);
+    restored.restore(serde_json::from_value(saved).expect("test: the checkpoint loads"));
+    restored.record_settlement("after the restore", None);
+    let occurrences: Vec<u64> = restored.recent_entries().iter().map(|entry| entry.occurrence).collect();
+    let mut distinct = occurrences.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), occurrences.len(), "every occurrence distinct: {occurrences:?}");
+    assert!(occurrences.iter().all(|&o| o > 0), "none left unstamped: {occurrences:?}");
+    assert_eq!(occurrences.last(), distinct.last(), "the append is the newest: {occurrences:?}");
 }
