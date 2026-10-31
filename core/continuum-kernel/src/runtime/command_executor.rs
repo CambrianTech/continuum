@@ -168,6 +168,8 @@ pub struct CommandExecutor {
     /// TS bridge.
     remote_transport: Arc<dyn Transport>,
     task_ledger: tokio::sync::OnceCell<Arc<super::tasks::TaskLedger>>,
+    /// Background terminals held until the ledger durably commits them (`tasks::custody`).
+    task_custody: Arc<super::tasks::TerminalCustody>,
 }
 
 impl CommandExecutor {
@@ -179,6 +181,7 @@ impl CommandExecutor {
             policy: Arc::new(crate::routing::AllowAllPolicy),
             remote_transport: Arc::new(crate::routing::NotImplementedRemoteTransport),
             task_ledger: tokio::sync::OnceCell::new(),
+            task_custody: super::tasks::TerminalCustody::new(),
         }
     }
 

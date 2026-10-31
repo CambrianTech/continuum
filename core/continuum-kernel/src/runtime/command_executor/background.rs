@@ -1,7 +1,7 @@
 //! Persist acceptance before execution and the terminal result before notification.
 use super::{CommandExecutor, DispatchFailure};
 use crate::routing::{CallerIdentity, CommandUri};
-use crate::runtime::tasks::{TaskEnd, TaskLedger, TaskOutput};
+use crate::runtime::tasks::{Committed, HeldTerminal, TaskEnd, TaskLedger, TaskOutput};
 use futures::FutureExt;
 use serde_json::Value;
 use std::sync::Arc;
@@ -79,24 +79,47 @@ impl CommandExecutor {
                     outcome: error.outcome,
                 },
             };
-            let winner = match ledger.finish(handle, owner, end).await {
-                Ok(winner) => winner,
-                Err(error) => {
-                    tracing::error!(%handle, %owner, %error, "task ended but terminal persistence failed; acceptance remains unresolved");
-                    return;
-                }
-            };
-            // A competing supervisor may have persisted a different terminal first.
-            // Every delivery must project that durable winner, never this writer's loser.
-            let outcome = completion(winner);
-            this.emit_command_completed(
-                command.path(),
-                &outcome,
-                start.elapsed().as_millis() as u64,
-                Some(handle),
-            );
+            // Custody first: the end is held until the ledger commits it, so a failed commit keeps
+            // it for the next flush instead of losing it (Codex on #5585).
+            let terminal = HeldTerminal { task: handle, owner, end, command: command.path().to_string(), elapsed_ms: start.elapsed().as_millis() as u64 };
+            if this.task_custody.hold(terminal.clone()).is_err() {
+                tracing::error!(%handle, %owner, ?terminal.end, "task ended after shutdown closed custody; reported, not delivered");
+                return;
+            }
+            match this.task_custody.commit(ledger.as_ref(), handle).await {
+                Ok(Some(committed)) => this.deliver_terminal(committed),
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%handle, %owner, %error, "terminal commit failed; held for the next flush"),
+            }
         });
         Ok(handle)
+    }
+}
+
+impl CommandExecutor {
+    /// Retry every held terminal against the ledger and deliver what commits. Called on the
+    /// existing lifecycle tick (cognition's task reconcile), never by a timer of its own.
+    pub async fn flush_task_terminals(&self) -> Result<usize, String> {
+        let ledger = self.task_ledger().await?;
+        let committed = self.task_custody.flush(ledger.as_ref()).await;
+        let delivered = committed.len();
+        committed.into_iter().for_each(|done| self.deliver_terminal(done));
+        Ok(delivered)
+    }
+
+    /// Close custody at shutdown: wait for in-flight commits, try once more, deliver what committed,
+    /// and return every terminal still held so the supervisor reports it (never dropped silently).
+    pub async fn shutdown_task_terminals(&self) -> Result<Vec<HeldTerminal>, String> {
+        let ledger = self.task_ledger().await?;
+        let (committed, unresolved) = self.task_custody.shutdown(ledger.as_ref()).await;
+        committed.into_iter().for_each(|done| self.deliver_terminal(done));
+        Ok(unresolved)
+    }
+
+    /// Deliver a committed terminal: the store's durable winner, never this writer's proposal.
+    fn deliver_terminal(&self, committed: Committed) {
+        let outcome = completion(committed.winner);
+        self.emit_command_completed(&committed.held.command, &outcome, committed.held.elapsed_ms, Some(committed.held.task));
     }
 }
 

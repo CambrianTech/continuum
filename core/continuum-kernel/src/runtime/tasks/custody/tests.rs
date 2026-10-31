@@ -1,0 +1,121 @@
+use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+/// A store that fails its first `fail` commits, then commits `winner` (or the proposal when `None`),
+/// counting attempts and optionally pausing inside each (to race and to cancel).
+struct Store {
+    fail: AtomicUsize,
+    winner: Option<TaskEnd>,
+    attempts: AtomicUsize,
+    pause: Duration,
+}
+
+impl Store {
+    fn new(fail: usize, winner: Option<TaskEnd>, pause: Duration) -> Self {
+        Store { fail: AtomicUsize::new(fail), winner, attempts: AtomicUsize::new(0), pause }
+    }
+}
+
+#[async_trait::async_trait]
+impl TerminalStore for Store {
+    async fn finish(&self, _task: Uuid, _owner: Uuid, end: TaskEnd) -> Result<TaskEnd, String> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(self.pause).await;
+        if self.fail.load(Ordering::SeqCst) > 0 {
+            self.fail.fetch_sub(1, Ordering::SeqCst);
+            return Err("injected durability failure".into());
+        }
+        Ok(self.winner.clone().unwrap_or(end)) // unwrap_or: no forced winner means the store commits the proposal itself
+    }
+}
+
+fn held(task: u128, end: TaskEnd) -> HeldTerminal {
+    HeldTerminal { task: Uuid::from_u128(task), owner: Uuid::from_u128(99), end, command: "code/shell".into(), elapsed_ms: 5 }
+}
+
+// what this catches: a terminal lost when its durable commit fails (background.rs logged and
+// returned): it stays held through N failures and is delivered once the store recovers.
+#[tokio::test]
+async fn a_failed_commit_keeps_the_terminal_until_a_flush_commits_it() {
+    let custody = TerminalCustody::new();
+    let store = Store::new(2, None, Duration::ZERO);
+    custody.hold(held(1, TaskEnd::Stopped)).expect("custody is open"); // test: a fixture step that must succeed
+    assert!(custody.commit(&store, Uuid::from_u128(1)).await.is_err());
+    assert!(custody.flush(&store).await.is_empty(), "second failure: still held");
+    assert_eq!(custody.held(), 1);
+    let delivered = custody.flush(&store).await;
+    assert_eq!(delivered.len(), 1, "recovered: committed once");
+    assert_eq!(delivered[0].winner, TaskEnd::Stopped);
+    assert_eq!(custody.held(), 0);
+    assert!(custody.flush(&store).await.is_empty(), "never delivered twice");
+}
+
+// what this catches: delivering this writer's losing proposal when another supervisor committed a
+// different end first: only the store's durable winner is delivered.
+#[tokio::test]
+async fn only_the_durable_winner_is_delivered() {
+    let custody = TerminalCustody::new();
+    let store = Store::new(0, Some(TaskEnd::Lost), Duration::ZERO);
+    custody.hold(held(2, TaskEnd::Stopped)).expect("custody is open"); // test: a fixture step that must succeed
+    let done = custody.commit(&store, Uuid::from_u128(2)).await.expect("the store commits").expect("committed"); // test: a fixture step that must succeed
+    assert_eq!(done.winner, TaskEnd::Lost);
+    assert_eq!(done.held.end, TaskEnd::Stopped, "the proposal is kept only as the record");
+}
+
+// what this catches: a finish and a flush racing on one task both delivering it: one attempt holds
+// the claim, the other yields, and the store sees exactly one commit.
+#[tokio::test]
+async fn racing_commits_deliver_once() {
+    let custody = TerminalCustody::new();
+    let store = Store::new(0, None, Duration::from_millis(30));
+    custody.hold(held(3, TaskEnd::Stopped)).expect("custody is open"); // test: a fixture step that must succeed
+    let (a, b) = tokio::join!(custody.commit(&store, Uuid::from_u128(3)), custody.flush(&store));
+    let delivered = usize::from(a.expect("the store commits").is_some()) + b.len(); // test: a fixture step that must succeed
+    assert_eq!(delivered, 1);
+    assert_eq!(store.attempts.load(Ordering::SeqCst), 1);
+}
+
+// what this catches: a commit cancelled mid-IO (its future dropped) leaving the task claimed forever
+// or erasing the held terminal: the claim is released and the terminal stays held.
+#[tokio::test]
+async fn a_cancelled_commit_releases_its_claim_and_keeps_the_terminal() {
+    let custody = TerminalCustody::new();
+    let slow = Store::new(0, None, Duration::from_secs(5));
+    custody.hold(held(4, TaskEnd::Stopped)).expect("custody is open"); // test: a fixture step that must succeed
+    assert!(tokio::time::timeout(Duration::from_millis(20), custody.commit(&slow, Uuid::from_u128(4))).await.is_err());
+    assert_eq!(custody.held(), 1, "cancellation must not erase the terminal");
+    let fast = Store::new(0, None, Duration::ZERO);
+    assert_eq!(custody.flush(&fast).await.len(), 1, "the claim was released");
+}
+
+// what this catches: shutdown dropping held terminals silently, or admitting new ones after it
+// closed: it waits for in-flight work, tries once more, and returns what it still holds.
+#[tokio::test]
+async fn shutdown_returns_every_unresolved_terminal_and_refuses_new_ones() {
+    let custody = TerminalCustody::new();
+    let broken = Store::new(usize::MAX, None, Duration::ZERO);
+    custody.hold(held(5, TaskEnd::Stopped)).expect("custody is open"); // test: a fixture step that must succeed
+    custody.hold(held(6, TaskEnd::Lost)).expect("custody is open"); // test: a fixture step that must succeed
+    let (committed, mut unresolved) = custody.shutdown(&broken).await;
+    assert!(committed.is_empty());
+    unresolved.sort_by_key(|t| t.task);
+    assert_eq!(unresolved.iter().map(|t| t.task).collect::<Vec<_>>(), vec![Uuid::from_u128(5), Uuid::from_u128(6)]);
+    assert_eq!(custody.hold(held(7, TaskEnd::Stopped)), Err(CustodyError::Closed));
+}
+
+// what this catches: shutdown returning while a commit is still in flight (its result would be lost
+// between the store and the report).
+#[tokio::test]
+async fn shutdown_waits_for_an_in_flight_commit() {
+    let custody = TerminalCustody::new();
+    let store = Store::new(0, None, Duration::from_millis(40));
+    custody.hold(held(8, TaskEnd::Stopped)).expect("custody is open"); // test: a fixture step that must succeed
+    let in_flight = custody.commit(&store, Uuid::from_u128(8));
+    let (done, (committed, unresolved)) = tokio::join!(in_flight, async {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        custody.shutdown(&store).await
+    });
+    assert!(done.expect("the store commits").is_some(), "the in-flight attempt committed"); // test: a fixture step that must succeed
+    assert!(committed.is_empty() && unresolved.is_empty(), "nothing left, nothing double-delivered");
+}

@@ -198,7 +198,13 @@ impl ServiceModule for CognitionModule {
             in_flight = crate::cognition::turn_ingress::in_flight(),
             "citizens inside a turn right now — the drain budget's competitor, sampled before the drain instead of only at it"
         );
-        let replay = self.reconcile_tasks().await;
+        // Terminals whose durable commit failed are retried on this same tick, before replay reads
+        // the ledger: one lifecycle owner, no timer of the custody's own.
+        let replay = async {
+            self.executor.require()?.flush_task_terminals().await?;
+            self.reconcile_tasks().await
+        }
+        .await;
         let checkpoint = checkpoint_residents(CheckpointBoundary::Periodic).await;
         match (replay, checkpoint) {
             (Ok(()), Ok(())) => Ok(()),

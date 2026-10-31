@@ -15,6 +15,8 @@ mod output;
 pub use output::TaskOutput;
 mod delivery;
 pub use delivery::{DeliveryError, DeliveryPage, TaskOwnerSink};
+mod custody;
+pub use custody::{Committed, CustodyError, HeldTerminal, TerminalStore, TerminalCustody};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TaskEnd {
