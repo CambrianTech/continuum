@@ -110,15 +110,6 @@ impl VoiceModule {
             adapter_name,
         );
 
-        log_info!(
-            "module",
-            "voice_synthesize_handle",
-            "Stored handle {} ({} samples, {}ms, {})",
-            &info.handle[..8],
-            info.sample_count,
-            info.duration_ms,
-            info.adapter
-        );
         Ok(CommandResult::Json(serde_json::json!({
             "handle": info.handle,
             "sample_count": info.sample_count,
@@ -142,7 +133,7 @@ impl VoiceModule {
         let samples = self.state.audio_pool.get(&voice_handle).ok_or_else(|| {
             format!(
                 "Audio handle not found or expired: {}",
-                &handle[..8.min(handle.len())]
+                voice_handle.short()
             )
         })?;
 
@@ -168,7 +159,7 @@ impl VoiceModule {
             "module",
             "voice_play_handle",
             "Played handle {} into call {} for user {} ({} samples, {}ms)",
-            &handle[..8],
+            voice_handle.short(),
             call_id,
             user_id,
             sample_count,

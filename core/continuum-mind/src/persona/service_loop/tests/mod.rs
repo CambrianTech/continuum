@@ -394,7 +394,7 @@
             submissions: Vec::new(),
             last_submission_rejection: None,
         };
-        let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+        let id8: String = airc_core::shown_id::shown_form(card.card_id.as_uuid());
         let burst = held_work_burst(&[&card], &[]);
         assert!(burst.contains(&id8), "short id must appear: {burst}");
         assert!(

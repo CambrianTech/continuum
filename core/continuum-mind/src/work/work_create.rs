@@ -210,7 +210,7 @@ impl ActionCommand for WorkState {
                     "you HOLD card {} — `open` from its holder would drop your claim and leave your diff \
                      behind. To read the card: work/get. To hand it back: work/release (with a note for \
                      the next holder). To mark progress: work/state in_progress|review|done.",
-                    short8(card_id.as_uuid())
+                    airc_core::shown_id::shown_form(card_id.as_uuid())
                 )));
             }
         }

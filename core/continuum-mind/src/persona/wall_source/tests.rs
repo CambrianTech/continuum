@@ -150,8 +150,7 @@
             .deliver(&ctx())
             .await;
         let text = delivery.items.iter().map(|i| i.content.as_str()).collect::<Vec<_>>().join("\n");
-        let live8 = live.simple().to_string();
-        assert!(text.contains(&format!("ledger of card {} \"RenameIndex crashes\" (in_progress)", &live8[..8])), "{text}");
+        assert!(text.contains(&format!("ledger of card {} \"RenameIndex crashes\" (in_progress)", airc_core::shown_id::shown_form(live))), "{text}");
         assert!(!text.contains(&merged.to_string()), "a merged card's ledger leaves the context: {text}");
         assert_eq!(delivery.items.len(), 1, "only the live card's ledger is delivered");
     }

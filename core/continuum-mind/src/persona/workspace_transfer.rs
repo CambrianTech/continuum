@@ -328,7 +328,7 @@ pub async fn has_unpushed_work(root: &Path) -> bool {
 /// commits she made is the receipt that she made them. Kimi's §12 pass committed as a bare
 /// `wip(...)` and the merger had to add her trailer by hand (card e5e72485).
 pub fn wip_message(card: Uuid, node: &str, actor: Option<(Uuid, &str)>) -> String {
-    let subject = format!("wip({}): continuum act on node {node}", &card.to_string()[..8]);
+    let subject = format!("wip({}): continuum act on node {node}", airc_core::shown_id::shown_form(card));
     match actor {
         Some((peer, name)) => format!("{subject}
 

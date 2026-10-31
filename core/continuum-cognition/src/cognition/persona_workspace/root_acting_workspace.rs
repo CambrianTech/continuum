@@ -267,7 +267,7 @@ impl PersonaWorkspaceRegistry {
         }
         let mut listed: Vec<String> = roster
             .iter()
-            .map(|(id, name)| format!("{name} ({})", &id.to_string()[..8]))
+            .map(|(id, name)| format!("{name} ({})", airc_core::shown_id::shown_form(*id)))
             .collect();
         listed.sort();
         format!("Online now: {}.", listed.join(", "))
