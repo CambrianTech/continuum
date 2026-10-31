@@ -31,6 +31,8 @@ runs:
     - name: Build on the runner's scratch disk
       shell: bash
       run: |
+        df -h; lsblk -o NAME,SIZE,MOUNTPOINT; cat /etc/os-release | head -3
+        sudo du -sh /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache /usr/share/swift /usr/local/share/powershell /usr/local/share/chromium /opt/microsoft 2>/dev/null || true
         mountpoint -q /mnt || { echo "::error::/mnt is not a separate disk on this runner; the 24 GB shared target does not fit the root disk"; exit 1; }
         sudo install -d -o "$(id -u)" -g "$(id -g)" /mnt/target
         echo "CARGO_TARGET_DIR=/mnt/target" >> "$GITHUB_ENV"
