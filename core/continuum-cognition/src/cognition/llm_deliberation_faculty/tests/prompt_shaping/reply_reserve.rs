@@ -159,7 +159,7 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
     .with_context_window(window)
     .with_working_set(reg.clone());
     let wanted = |who: Uuid, pending: u32| {
-        reply_claim(TurnKind::Pass, reg.need_of(who), pending, false, false).max_tokens
+        reply_claim(TurnKind::Pass, reg.need_of(who), pending, false, false, None).max_tokens
     };
 
     let cold = wanted(persona, 0);

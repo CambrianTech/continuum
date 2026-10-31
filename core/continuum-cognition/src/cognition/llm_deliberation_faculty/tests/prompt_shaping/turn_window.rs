@@ -700,21 +700,30 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
         (c.floor_tokens, c.max_tokens, c.priority)
     };
     // Unmeasured: a reply-sized prior, never a window fraction.
-    assert_eq!(shape(reply_claim(TurnKind::Pass, None, 0, false, false)), (floor, prior, 4));
-    assert_eq!(shape(reply_claim(TurnKind::Pass, None, 0, false, true)), (floor, prior, 6));
-    assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, false, false)), (floor, prior, 8));
-    assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, true, false)).2, 10, "live held work");
-    assert_eq!(shape(reply_claim(TurnKind::Act, None, 1, false, false)).2, 10, "a pending cut");
+    assert_eq!(shape(reply_claim(TurnKind::Pass, None, 0, false, false, None)), (floor, prior, 4));
+    assert_eq!(shape(reply_claim(TurnKind::Pass, None, 0, false, true, None)), (floor, prior, 6));
+    assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, false, false, None)), (floor, prior, 8));
+    assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, true, false, None)).2, 10, "live held work");
+    assert_eq!(shape(reply_claim(TurnKind::Act, None, 1, false, false, None)).2, 10, "a pending cut");
     // Measured: her think + answer, whole; an act floors at her answer channel.
     let need = OutputNeed { reasoning: 900, answer: 300, turns: 5, reasoning_at_least: None };
-    assert_eq!(shape(reply_claim(TurnKind::Pass, Some(need), 0, false, false)).1, 1_200);
+    assert_eq!(shape(reply_claim(TurnKind::Pass, Some(need), 0, false, false, None)).1, 1_200);
     let kimi = OutputNeed { reasoning: 6_100, answer: 4_077, turns: 32, reasoning_at_least: None };
-    assert_eq!(shape(reply_claim(TurnKind::Act, Some(kimi), 0, false, false)), (4_077, 10_177, 8));
+    assert_eq!(shape(reply_claim(TurnKind::Act, Some(kimi), 0, false, false, None)), (4_077, 10_177, 8));
     // A large measured need claims all of it: the window and the allocation bound it.
     let huge = OutputNeed { reasoning: 30_000, answer: 20_000, turns: 9, reasoning_at_least: None };
-    assert_eq!(shape(reply_claim(TurnKind::Act, Some(huge), 0, false, false)), (20_000, 50_000, 8));
+    assert_eq!(shape(reply_claim(TurnKind::Act, Some(huge), 0, false, false, None)), (20_000, 50_000, 8));
+    // A recent cut think tests upward only under a measured time term, never past it, and not at
+    // all with no measured rate (the M5, 2026-10-31: Benchy, need 520 + 217, cut at 597+ thinking,
+    // time term 832). Card b726a311.
+    let benchy = OutputNeed { reasoning: 520, answer: 217, turns: 16, reasoning_at_least: Some(700) };
+    assert_eq!(shape(reply_claim(TurnKind::Pass, Some(benchy), 0, false, false, Some(832))).1, 832, "up to the time term");
+    assert_eq!(shape(reply_claim(TurnKind::Pass, Some(benchy), 0, false, false, Some(2_000))).1, 917, "to the lower bound under a roomy term");
+    assert_eq!(shape(reply_claim(TurnKind::Pass, Some(benchy), 0, false, false, None)).1, 737, "no rate, no upward test");
+    let uncut = OutputNeed { reasoning_at_least: None, ..benchy };
+    assert_eq!(shape(reply_claim(TurnKind::Pass, Some(uncut), 0, false, false, Some(832))).1, 737, "an uncut need is unchanged");
     // A pending cut's measured peak is retained as demand, not doubled again (cf9e's 3,587).
-    assert_eq!(shape(reply_claim(TurnKind::Pass, Some(need), 3_587, false, false)).1, 3_587);
+    assert_eq!(shape(reply_claim(TurnKind::Pass, Some(need), 3_587, false, false, None)).1, 3_587);
     // The terms beside the allowance: reported, never the bound.
     let a = output_allowance(TurnKind::Pass, Some(12.0), None, 6_932);
     assert_eq!((a.allowance, a.time_term, a.need_term), (6_932, Some(720), None));
