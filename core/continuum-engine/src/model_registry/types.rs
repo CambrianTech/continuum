@@ -521,10 +521,16 @@ pub struct Model {
     /// absent for portable models; the loader fills it when the artifact is
     /// already pulled locally.
     pub gguf_local_path: Option<PathBuf>,
-
     /// Explicitly named GGUF file (just the filename, not a full path) that is this model's
     /// active quant when multiple quants coexist in the same snapshot directory. Set by the
-    /// operator or pull logic to pin which quant is the 
+    /// operator or pull logic to pin which quant is the correct one.
+    ///
+    /// When present, `first_gguf_in_dir` checks for a file matching this name before
+    /// falling back to mtime-based selection. This prevents an accidental pull from
+    /// silently switching the active quant when a new GGUF lands in the same snapshot dir.
+    #[serde(default)]
+    pub active_quant_name: Option<String>,
+
     /// Local filesystem path to the multimodal projector GGUF (mmproj).
     /// Required for vision/audio-capable local models — the projector
     /// encodes raw image / audio bytes into tokens compatible with this
