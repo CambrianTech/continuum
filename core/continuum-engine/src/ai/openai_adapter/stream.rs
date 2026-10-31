@@ -535,7 +535,7 @@ impl OpenAICompatibleAdapter {
         let mut finish_reason = finish_reason_str
             .as_deref()
             .map(|r| self.map_finish_reason(r))
-            .unwrap_or(FinishReason::Stop);
+            .unwrap_or(FinishReason::Unreported); // no marker arrived: say so, never claim a stop
         let generation_completed =
             finish_reason_str.is_some() && !matches!(finish_reason, FinishReason::Error);
 

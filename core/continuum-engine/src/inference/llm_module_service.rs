@@ -478,6 +478,9 @@ fn translate_adapter_finish_reason(adapter_reason: &AdapterFinishReason) -> Fini
         AdapterFinishReason::Error => FinishReason::Error {
             reason: "adapter returned Error finish".to_string(),
         },
+        AdapterFinishReason::Unreported => FinishReason::Error {
+            reason: "the stream ended without a finish reason".to_string(),
+        },
     }
 }
 
