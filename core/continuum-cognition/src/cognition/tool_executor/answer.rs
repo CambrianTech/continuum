@@ -51,18 +51,17 @@ const IDENTIFYING: &[&str] = &[
     "act", "card_id", "cardId", "submission_id", "room", "name", "branch", "title",
 ];
 
-/// Line 1: what ended, how, and which call it was.
+/// Line 1: what ended, how, and which call it was. The arguments go through the one call
+/// renderer (`render_call_args`: a single-line value whole, a multi-line one as its shape and
+/// hash), so a heredoc never spills past line 1 and a call reads the same here as in her ledger.
 pub fn status_line(status: Status, tool: &str, input: &Value, cause: Option<&str>) -> String {
-    let args: Vec<String> = IDENTIFYING
+    let identifying: serde_json::Map<String, Value> = IDENTIFYING
         .iter()
-        .filter_map(|key| input.get(*key).filter(|v| !v.is_null()).map(|v| (key, v)))
-        .map(|(key, value)| match value {
-            Value::String(text) => format!("{key}={text}"),
-            other => format!("{key}={other}"),
-        })
+        .filter_map(|key| input.get(*key).filter(|v| !v.is_null()).map(|v| ((*key).to_owned(), v.clone())))
         .collect();
+    let args = crate::cognition::act_observe::recency::render_call_args(&Value::Object(identifying));
     let cause = cause.map(|c| format!(" {c}")).unwrap_or_default(); // unwrap_or_default: no cause, nothing after the call
-    format!("{} {tool}({}){cause}", status.word(), args.join(", "))
+    format!("{} {tool}({args}){cause}", status.word())
 }
 
 /// The whole result as she reads it: line 1, the body, and the footer line when the call became
@@ -116,6 +115,10 @@ mod tests {
         );
         assert!(render(Status::Refused, "code_shell-poll", &json!({"execution_id": "3f2a"}), Some("invalid"), "no shell 3f2a", None)
             .starts_with("refused code_shell-poll(execution_id=3f2a) invalid\n"));
+        // A heredoc is named by its shape, never echoed: line 1 stays one line (Cormac on #5635).
+        let heredoc = json!({"cmd": "cat > a.rs <<'EOF'\nfn main() {}\nEOF"});
+        let line = status_line(Status::Failed, "bash", &heredoc, Some("exit 1"));
+        assert!(!line.contains('\n') && line.contains("3 lines") && line.ends_with(" exit 1"), "{line}");
     }
 
     // what this catches: a success whose body opens with `"error":null` (code/search's answer did,

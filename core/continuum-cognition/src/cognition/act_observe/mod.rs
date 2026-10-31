@@ -29,7 +29,7 @@
 // a constant; see `cognition/context_budget.rs`.
 
 mod perception;
-mod recency;
+pub(crate) mod recency;
 
 mod observation;
 pub use observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
