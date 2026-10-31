@@ -180,7 +180,7 @@ pub(super) async fn run_pass_team(
             ok,
             grade,
             acts,
-            answer: answer.chars().take(ANSWER_CAPTURE_CHARS).collect(),
+            answer,
             latency_ms: m.latency_ms,
             output_tokens: m.output_tokens,
             tokens_per_second: m.tokens_per_second(),
