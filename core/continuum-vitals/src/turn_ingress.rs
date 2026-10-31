@@ -58,13 +58,11 @@ pub fn in_flight() -> u64 {
 
 /// ADMIT a turn, or refuse because the node is stopping.
 ///
-/// # Why not read `activity_gate`'s engaged flag
+/// # Why a permit taken at admission
 ///
-/// `persona_engaged` is stamped where a serving LANE is acquired, deliberately — a room
-/// wake alone is not wakefulness, or a busy room would cancel every dream. So a turn that
-/// has been admitted and is still composing context, or is queued for a lane, is not yet
-/// `engaged`. Draining on that flag would walk past exactly the turns that have taken
-/// input and not yet written anything, which are the ones whose loss is invisible.
+/// A turn that has been admitted and is still composing context, or is waiting for a lane,
+/// has taken input and written nothing yet; its loss would be invisible. Admission is the
+/// first moment it exists, so the permit counts it from there.
 #[must_use = "the permit IS the turn's admission; dropping it immediately ends the turn"]
 pub fn admit() -> Option<continuum_kernel::runtime::Permit<'static>> {
     GATE.admit()
