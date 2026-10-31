@@ -40,6 +40,13 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
     for item in &mut receipt.view.items { item.level = continuum_context::level::Level::Folded; }
     assert!(sink.record_rendered(receipt).await?.is_none());
     receipt = exact.clone();
+    for item in &mut receipt.view.items {
+        let of = item.element.ok_or("terminal receipt lacks element")?;
+        item.level = continuum_context::level::Level::Repeat { of };
+    }
+    assert!(sink.record_rendered(receipt).await?.is_none());
+    assert_eq!(memory.pending_task_wakes(), vec![task], "repeat is not a newly perceived terminal end");
+    receipt = exact.clone();
     for item in &mut receipt.view.items { item.retired = true; }
     assert!(sink.record_rendered(receipt).await?.is_none());
     assert_eq!(memory.pending_task_wakes(), vec![task]);
