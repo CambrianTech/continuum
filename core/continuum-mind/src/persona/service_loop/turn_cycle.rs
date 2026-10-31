@@ -17,6 +17,8 @@ pub(super) struct SpokenTurn {
     pub(super) response_text: String,
     pub(super) turn_credit: Option<crate::persona::training_producer::CapturedCredit>,
     pub(super) turn_generation_receipts: Vec<crate::ai::provenance::GenerationReceipt>,
+    /// Her held card's sync, run right after the reply is published.
+    pub(super) card_sync: crate::persona::card_hands::CardSync,
 }
 
 /// What the cycle needs beyond the trigger: the burst it reasons over and the engram of
@@ -178,12 +180,12 @@ pub(super) async fn run_turn_cycle(
                 Some(ctx.identity.peer_id.to_string()),
             );
             let turn_act_count;
-            let (step, turn_metrics, settled_receipts, turn_credit) = {
+            let (step, turn_metrics, settled_receipts, turn_credit, card_sync) = {
                 // A citizen holding a card works at that repo, in a ROOM turn too: the turn
                 // is bound to her card claim's hands (card fc9e9fd7), its credit captured on
                 // her act, and its work synced to the card's branch, by the one owner her
                 // own-time turn uses as well (card 959f3d5c).
-                let (outcome, credit) = crate::persona::card_hands::drive_in_held_card(
+                let (outcome, credit, card_sync) = crate::persona::card_hands::drive_in_held_card(
                     &cycle,
                     ctx.identity.peer_id.as_uuid(),
                     &ctx.identity.agent_name,
@@ -202,7 +204,7 @@ pub(super) async fn run_turn_cycle(
                 // The driver stays a driver: no learning policy at any call site.
                 turn_act_count = outcome.acts;
                 let (step, metrics, receipts) = crate::cognition::act_observe::SettleStep::from_settled(outcome);
-                (step, metrics, receipts, credit)
+                (step, metrics, receipts, credit, card_sync)
             };
             // The credit is the turn's held CARD, captured with it, NOT read back out of
             // `acting_card_of`, a mutable persona-global that a later focus rebind would
@@ -241,6 +243,13 @@ pub(super) async fn run_turn_cycle(
             deferred_input.settle(msg, wake_engram, attention, &step);
             // The room that chose this turn's cycle above, so the notices it read are the ones answered.
             deferred_input.notices_read(turn_room, &turn_generation_receipts);
+            // A turn with a reply hands its card sync to the publish; any other runs it now.
+            let card_sync = if matches!(step, crate::cognition::act_observe::SettleStep::Spoke(_)) {
+                card_sync
+            } else {
+                card_sync.run().await;
+                crate::persona::card_hands::CardSync::done()
+            };
             match step {
                 crate::cognition::act_observe::SettleStep::CapacityRefused { .. }
                 | crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch => {
@@ -251,6 +260,7 @@ pub(super) async fn run_turn_cycle(
                     response_text: text,
                     turn_credit,
                     turn_generation_receipts,
+                    card_sync,
                     })
                 }
                 crate::cognition::act_observe::SettleStep::Acted { calls, intent } => {
