@@ -23,8 +23,13 @@ use serde_json::Value;
 /// How a call ended, one word from a closed set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
-    /// It ran and did what was asked.
+    /// It ran and its command asserted it succeeded.
     Ok,
+    /// It ran; its command declares no outcome (not opted into a verdict), so none is claimed.
+    Ran,
+    /// It ran but its result did not decode as its command's own declared output: schema drift,
+    /// a defect, never a success (the kernel's `ActVerdict::Undecodable`).
+    Unreadable,
     /// It became a task that is still running; its end is delivered to her.
     Running,
     /// It ran and reported failure (a nonzero exit, a failed check).
@@ -37,9 +42,26 @@ impl Status {
     fn word(self) -> &'static str {
         match self {
             Status::Ok => "ok",
+            Status::Ran => "ran",
+            Status::Unreadable => "unreadable",
             Status::Running => "running",
             Status::Failed => "failed",
             Status::Refused => "refused",
+        }
+    }
+}
+
+impl Status {
+    /// The word for a command's verdict. Exhaustive, so a new verdict must be given its word;
+    /// only an asserted success reads `ok` (Cormac on #5635).
+    pub fn of(verdict: crate::sdk_codegen::ActVerdict) -> Self {
+        use crate::sdk_codegen::{ActVerdict, ToolVerdict};
+        match verdict {
+            ActVerdict::Declared(ToolVerdict::Succeeded) => Status::Ok,
+            ActVerdict::Declared(ToolVerdict::Failed) => Status::Failed,
+            ActVerdict::Declared(ToolVerdict::Running) => Status::Running,
+            ActVerdict::Undecodable => Status::Unreadable,
+            ActVerdict::Unprojected => Status::Ran,
         }
     }
 }
@@ -119,6 +141,18 @@ mod tests {
         let heredoc = json!({"cmd": "cat > a.rs <<'EOF'\nfn main() {}\nEOF"});
         let line = status_line(Status::Failed, "bash", &heredoc, Some("exit 1"));
         assert!(!line.contains('\n') && line.contains("3 lines") && line.ends_with(" exit 1"), "{line}");
+    }
+
+    // what this catches: line 1 claiming `ok` for a result nobody could read (schema drift) or for a
+    // command that declares no outcome; only an asserted success reads `ok`.
+    #[test]
+    fn only_an_asserted_success_reads_ok() {
+        use crate::sdk_codegen::{ActVerdict, ToolVerdict};
+        assert_eq!(Status::of(ActVerdict::Declared(ToolVerdict::Succeeded)), Status::Ok);
+        assert_eq!(Status::of(ActVerdict::Declared(ToolVerdict::Failed)), Status::Failed);
+        assert_eq!(Status::of(ActVerdict::Declared(ToolVerdict::Running)), Status::Running);
+        assert_eq!(Status::of(ActVerdict::Undecodable), Status::Unreadable);
+        assert_eq!(Status::of(ActVerdict::Unprojected), Status::Ran);
     }
 
     // what this catches: a success whose body opens with `"error":null` (code/search's answer did,

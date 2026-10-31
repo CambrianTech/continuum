@@ -671,13 +671,7 @@ impl ToolExecutor for CommandToolExecutor {
                     // so its newlines were `\n` sequences, the spill counted it as ONE line,
                     // and the line-range way into it was meaningless (Benchy, the M5,
                     // 2026-10-16: a 248-line read arrived as "1 lines (13449 chars)").
-                    let status = if verdict.failed() {
-                        super::answer::Status::Failed
-                    } else if verdict.running() {
-                        super::answer::Status::Running
-                    } else {
-                        super::answer::Status::Ok
-                    };
+                    let status = super::answer::Status::of(verdict);
                     let cause = (status == super::answer::Status::Failed).then(|| super::answer::exit_cause(&value)).flatten();
                     super::answer::without_empty_fields(&mut value);
                     let task = dispatch_handle.filter(|_| status == super::answer::Status::Running).map(|h| h.to_string());
