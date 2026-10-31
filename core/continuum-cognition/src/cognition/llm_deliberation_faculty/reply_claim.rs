@@ -12,9 +12,13 @@ use super::*;
 /// her view of the reads she had just made, so every act re-read them (the M5, 2026-10-30,
 /// ONE-BUDGET.md slice 6).
 ///
-/// - floor = min: an act's measured answer channel (the tool call itself), else the smallest
-///   usable reply ([`LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS`]). The caller caps it so
-///   required input always fits: the reply never takes from required content.
+/// - floor = min: what an act needs to LAND, her measured reasoning plus her measured answer (the
+///   tool call), else the smallest usable reply ([`LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS`]).
+///   A grant of the answer alone let a tight window buy an act that could only be cut while it
+///   still thought, and a cut think is censored, so the grant never grew (the M5, 95dbb3b42,
+///   2026-10-31: Benchy granted 675 five times in a row, each cut thinking, no answer, no call).
+///   The caller caps it so required input always fits: the reply never takes from required
+///   content; the view, which can shrink, gives way first.
 /// - max: her measured need (reasoning + answer), or the reply-sized cold prior until it is
 ///   measured; at least a pending cut's measured peak, retained until that concern settles
 ///   (the ordinary need decays through the short reads between, and the retried write would
@@ -37,7 +41,7 @@ pub fn reply_claim(
     directed: bool,
 ) -> crate::cognition::rag_budget::RagSourceBudget {
     let floor = match (kind, need) {
-        (TurnKind::Act, Some(n)) => n.answer.max(LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS),
+        (TurnKind::Act, Some(n)) => n.total().max(LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS),
         _ => LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS,
     };
     let wanted = need
@@ -57,5 +61,24 @@ pub fn reply_claim(
         min_tokens: floor,
         max_tokens: wanted,
         required: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cognition::working_set::OutputNeed;
+
+    // what this catches: an act's floor that excludes her thinking, so a tight window grants the
+    // answer alone and every such act is cut mid-think with nothing landed (the M5, 2026-10-31:
+    // Benchy cut five times in a row at a 675-token grant).
+    #[test]
+    fn an_acts_floor_is_her_measured_thinking_plus_her_answer() {
+        let need = OutputNeed { reasoning: 700, answer: 160, turns: 30 };
+        let act = reply_claim(TurnKind::Act, Some(need), 0, true, false);
+        assert_eq!(act.floor_tokens, need.total().max(LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS));
+        assert!(act.floor_tokens >= 860, "the floor holds the thinking an act takes before its call");
+        let pass = reply_claim(TurnKind::Pass, Some(need), 0, false, false);
+        assert_eq!(pass.floor_tokens, LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS, "a pass may stay brief");
     }
 }
