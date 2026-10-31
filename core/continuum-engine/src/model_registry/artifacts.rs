@@ -320,7 +320,16 @@ pub fn expand_user_path(p: &Path) -> PathBuf {
     p.to_path_buf()
 }
 
-fn resolve_gguf(model_id: &str, hint: Option<&str>, explicit: Option<&Path>) -> Option<PathBuf> {
+/// Resolve a GGUF for `model`, respecting its explicit [`Model::active_quant_name`]
+/// (a named file preference that pins which quant in a multi-quant snapshot directory
+/// is the active one). When the field is absent, falls back to mtime-newest — the
+/// historical behaviour.
+pub fn resolve_gguf(
+    model_id: &str,
+    hint: Option<&str>,
+    explicit: Option<&Path>,
+    active_quant_name: Option<&str>,
+) -> Option<PathBuf> {
     if let Some(path) = explicit {
         let expanded = expand_user_path(path);
         if expanded.exists() {
@@ -328,7 +337,7 @@ fn resolve_gguf(model_id: &str, hint: Option<&str>, explicit: Option<&Path>) -> 
         }
     }
 
-    if let Some(path) = resolve_from_local_model_roots(model_id) {
+    if let Some(path) = resolve_from_local_model_roots(model_id, active_quant_name) {
         return Some(path);
     }
 
@@ -341,10 +350,13 @@ fn resolve_gguf(model_id: &str, hint: Option<&str>, explicit: Option<&Path>) -> 
     resolve_from_huggingface_model_id(model_id)
 }
 
-fn resolve_from_local_model_roots(model_id: &str) -> Option<PathBuf> {
+fn resolve_from_local_model_roots(
+    model_id: &str,
+    active_quant_name: Option<&str>,
+) -> Option<PathBuf> {
     for root in local_model_roots() {
         if let Some(dir) = find_model_dir_in_root(model_id, &root) {
-            if let Some(gguf) = first_gguf_in_dir(&dir) {
+            if let Some(gguf) = first_gguf_in_dir(&dir, active_quant_name) {
                 return Some(gguf);
             }
         }
@@ -367,7 +379,7 @@ pub fn resolve_device_fit_override(
     if !dir.is_dir() {
         return None;
     }
-    let first_shard = first_gguf_in_dir(&dir)?;
+    let first_shard = first_gguf_in_dir(&dir, None)?;
     // The foundry records the resident byte total the shrink produced, so the plan
     // verifies fit without loading the GGUF. Missing sidecar = not our foundry's
     // artifact → refuse rather than guess its size ([[no-masking-fallbacks-my-style-tell]]).
@@ -458,7 +470,7 @@ fn find_model_dir_in_root(model_id: &str, root: &Path) -> Option<PathBuf> {
     let mut best: Option<(usize, PathBuf)> = None;
     for entry in fs::read_dir(root).ok()?.flatten() {
         let path = entry.path();
-        if !path.is_dir() || first_gguf_in_dir(&path).is_none() {
+        if !path.is_dir() || first_gguf_in_dir(&path, None).is_none() {
             continue;
         }
         let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -564,11 +576,18 @@ fn collect_ggufs_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn first_gguf_in_dir(dir: &Path) -> Option<PathBuf> {
+fn first_gguf_in_dir(dir: &Path, active_quant_name: Option<&str>) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     for entry in fs::read_dir(dir).ok()?.flatten() {
         let p = entry.path();
         if is_main_model_gguf(&p) {
+            // Filter by active quant name when specified (multi-quant snapshot dirs)
+            if let Some(qn) = active_quant_name {
+                let fname = p.file_name().and_then(|n| n.to_string_lossy()).unwrap_or_default();
+                if !fname.contains(qn) {
+                    continue;
+                }
+            }
             candidates.push(p);
         }
     }
