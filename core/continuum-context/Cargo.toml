@@ -10,6 +10,9 @@ sha2 = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# The replay validator fingerprints captured calls through the one canonical encoding the core
+# uses (`ToolCall::canonical_input`), so offline and live repeat identity cannot drift.
+continuum-tool-protocol = { path = "../continuum-tool-protocol" }
 
 # The replay validator's tests run with the crate's (`cargo test -p continuum-context`).
 [[example]]
