@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 continuum-process = { path = "../continuum-process" }
-tempfile = { version = "3", optional = true }
+tempfile = { workspace = true, optional = true }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-tool-protocol = { path = "../continuum-tool-protocol" }
 tokio.workspace = true
@@ -17,53 +17,53 @@ uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
 continuum-service = { path = "../continuum-service" }  # the resident alarm a node beacons (card 1c157668)
 continuum-host = { path = "../continuum-host" }
-schemars = { version = "0.8", features = ["uuid1"] }
+schemars = { workspace = true }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
-reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
-dashmap = "6.1"  # Lock-free concurrent HashMap
-inventory = "0.3"
-libc = "0.2"     # Process group management (setsid, kill -pgid)
-fs2 = "0.4"      # Cross-platform advisory file locks (flock / LockFileEx)
+dashmap = { workspace = true }  # Lock-free concurrent HashMap
+inventory = { workspace = true }
+libc = { workspace = true }     # Process group management (setsid, kill -pgid)
+fs2 = { workspace = true }      # Cross-platform advisory file locks (flock / LockFileEx)
 continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }  # the CLI's platform lifecycle; its tests must not link this crate
-base64 = "0.22"  # Base64 encoding for audio data
-sha2 = "0.10"   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
+base64 = { workspace = true }  # Base64 encoding for audio data
+sha2 = { workspace = true }   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
 airc-core.workspace = true
 airc-protocol.workspace = true
 airc-lib.workspace = true
 async-trait.workspace = true
-axum = "0.8"
+axum = { workspace = true }
 parking_lot.workspace = true
-futures = "0.3"  # For VAD block_on in audio thread
+futures = { workspace = true }  # For VAD block_on in audio thread
 ort.workspace = true  # ONNX Runtime for TTS
-num_cpus = "1.16"  # CPU count detection
-dirs = "5.0"  # User directories for model paths
-sysinfo = "0.33"  # Cross-platform CPU, memory, system resource monitoring
+num_cpus = { workspace = true }  # CPU count detection
+dirs = { workspace = true }  # User directories for model paths
+sysinfo = { workspace = true }  # Cross-platform CPU, memory, system resource monitoring
 llama = { path = "../llama" }
 candle-core.workspace = true
 candle-nn.workspace = true  # For VarBuilder
 candle-transformers.workspace = true
 safetensors.workspace = true  # Model weight files
-half = "2.4"                  # f16/bf16 handling for LoRA
+half = { workspace = true }                  # f16/bf16 handling for LoRA
 tracing.workspace = true
 ts-rs.workspace = true  # TypeScript type generation
 rayon.workspace = true  # ai::embedding's matrix and top-k kernels run across cores
-wide = "0.7"  # Portable SIMD (f32x8) for embedding similarity math — NEON on
+wide = { workspace = true }  # Portable SIMD (f32x8) for embedding similarity math — NEON on
               # aarch64 (Mac) / AVX on x86 (Linux grid), guaranteed vectorization
               # at any opt-level (not auto-vec, which only fires in release).
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60", features = ["Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_AppLocker", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_Environment", "Win32_System_SystemServices"] }
+windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_Security", "Win32_Security_AppLocker", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-metal = "0.32"
+metal = { workspace = true }
 
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
-tempfile = "3"                   # Temp directories for code module tests
+tempfile = { workspace = true }                   # Temp directories for code module tests
 airc-protocol = { workspace = true }
-futures = "0.3"
+futures = { workspace = true }
 
 [features]
 default = []

@@ -41,7 +41,6 @@ pub mod recall_engrams;
 pub mod record_content;
 pub mod redact_memory;
 pub mod register_domain_keywords;
-pub mod respond;
 pub mod score_interaction;
 pub mod select_model;
 pub mod set_sleep_mode;
@@ -72,7 +71,6 @@ use recall_engrams::RecallEngrams;
 use record_content::RecordContent;
 use redact_memory::RedactMemory;
 use register_domain_keywords::RegisterDomainKeywords;
-use respond::Respond;
 use select_model::SelectModel;
 use set_sleep_mode::SetSleepMode;
 use sync_adapters::SyncAdapters;
@@ -163,9 +161,6 @@ pub fn command_objects(
             state: state.clone(),
         }),
         Arc::new(RecallEngrams {
-            state: state.clone(),
-        }),
-        Arc::new(Respond {
             state: state.clone(),
         }),
         Arc::new(InboxDrainFrame { state }),

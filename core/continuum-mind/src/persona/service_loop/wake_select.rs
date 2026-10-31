@@ -37,12 +37,6 @@ pub(super) async fn await_wake(
             mind.next_mind_check = Some(tokio::time::Instant::now());
         }
     }
-    // HER turn boundary: idle whenever the loop is back at its wake select. The
-    // matching `engaged` stamp is set where a serving lane is actually acquired
-    // (the deliberation faculty) — a room wake alone is not wakefulness, or a
-    // busy room would cancel every dream (measured: 290 paged out in 20 min with
-    // the stamp on the wake itself).
-    crate::cognition::activity_gate::persona_idle(ctx.identity.peer_id.as_uuid());
     // BIASED: a line already in her inbox beats a due self-tick. Without the
     // order, a directed line that made her yield a parked lane wait could
     // lose the next wake to the tick again (random branch choice) — a yield

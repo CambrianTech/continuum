@@ -125,75 +125,12 @@ pub(super) async fn run_turn_cycle(
             }
             let framing = crate::cognition::workspace::TurnFraming::message(attention);
 
-            // ── Ambient-yield under lane saturation (#171 / #139) ───────────────
-            // The fan-out killer: a room burst wakes N peers, and each spends a full
-            // ~54s deliberation on the shared 2 lanes just to decide "not for me" —
-            // so the ONE directed question everyone's waiting on sits behind minutes
-            // of ambient chatter (glass-boxed: first-token up to 28 min). Ambient
-            // participation is the DEFAULT and stays that way — but it is the
-            // LOWEST-priority room work. So when every shared decode slot is busy,
-            // an ambient turn YIELDS: she participates ambiently when there's
-            // capacity (a later beat, lanes free — a self-tick re-perceives the room
-            // incl. this line), never at the cost of the addressed question. A
-            // priority turn (named or human opportunity) keeps its lane.
+            // Priority lives at the lane, per generation: an ambient turn's calls ask at
+            // `LanePriority::Ambient` and queue behind directed and held work there, for one
+            // generation at a time. No permit spans her turn, so her tool runs never hold
+            // capacity another mind needs (LOCKS-AND-FIFOS-AUDIT.md row 9; on the M5,
+            // 2026-10-31, the turn-long permit left the engine with two of three slots busy).
             //
-            // This is resource PRIORITY, the same admission doctrine as the idle
-            // self-tick, NOT a `will_respond` gate: the substrate never decides her
-            // output; it only declines to spend a saturated lane on unaddressed
-            // chatter. `high_water` is already advanced above, so a yielded message
-            // can't re-trigger. [[idle-is-self-directed-free-time]]
-            // [[never-thrash-sticky-hysteresis-on-every-lane]]
-            // [[conversational-latency-is-a-misdirection-budget]]
-            // #171: an ambient (non-directed) turn must claim one of a small number
-            // of ambient slots or YIELD — a PERMIT, not a gauge. The gauge-based
-            // first cut didn't fire: a simultaneous room-burst wakes N peers who all
-            // read inflight=0 (none had generated yet) and stampede. The permit is
-            // held across the whole turn, so ambient concurrency is bounded no matter
-            // when everyone woke. Priority turns bypass entirely, including a human
-            // speaking without a mention. Ambient turns defer to a later beat with free
-            // capacity (a self-tick re-perceives the room); high_water is pre-advanced
-            // so it can't re-trigger, and the durable transcript loses nothing.
-            // A CARD-HOLDER IS NOT A STAMPEDE RESPONSE (2026-09-20, the M5's first
-            // bounded hour: 4 minds on 2 lanes, ambient budget 1, 11 lane grants,
-            // writes 0). The #171 permit bounds the fan-out of minds deciding "not for
-            // me"; a mind holding a card is not deciding that — she is the mind the
-            // lane exists for. She goes straight to the lane gate, where the Work class
-            // (`LanePriority::Work`) still bounds her and ambient turns yield to her.
-            // Read off the board she already keeps; an unreadable board = no proof of
-            // held work = the ambient rule, as before.
-            let holds_work = match conversation.stream_citizen() {
-                Some(citizen) => citizen
-                    .active_claims()
-                    .await
-                    .map(|cards| cards.iter().any(crate::persona::act_question::card_is_held))
-                    .unwrap_or(false), // unwrap_or: an unreadable board proves nothing — the ambient rule stands
-                None => false,
-            };
-            if holds_work && !attention.requires_priority() {
-                continuum_base::probe!(
-                    class = "persona.turn.work_holder_bypasses_ambient_permit",
-                    persona = %ctx.identity.agent_name,
-                    "a mind holding a card goes straight to the lane gate — the ambient anti-stampede permit is for minds deciding whether a room line is theirs"
-                );
-            }
-            let _ambient_permit = if attention.requires_priority() || holds_work {
-                None
-            } else {
-                match crate::inference::resource_admission::try_hold_ambient_turn() {
-                    Some(permit) => Some(permit),
-                    None => {
-                        continuum_base::probe!(
-                            class = "persona.turn.ambient_yielded",
-                            persona = %ctx.identity.agent_name,
-                            lamport = msg.lamport,
-                            "ambient turn yielded — ambient slots busy; the addressed \
-                             question is served first (#171)"
-                        );
-                        outcome.turns_skipped += 1;
-                        return CycleVerdict::Skip;
-                    }
-                }
-            };
             // Directed vs ambient part ways HERE — the fix for the live/eval
             // convergence divergence the ACTING-ORGANISM comments flagged (eval
             // SPOKE 36/38; the live path single-stepped a DIRECT question, `Acted`

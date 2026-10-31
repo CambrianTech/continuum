@@ -60,9 +60,25 @@ fn set_teach_progress(p: TeachProgress) {
 /// the terminal RESULT, cross-process and surviving the run, so `genome/teach-status --run_id`
 /// resolves to complete+result (or a failed row) regardless of who's watching or when.
 pub fn teach_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
-    crate::paths::ContinuumLayout::home()
-        .ok()
-        .map(|layout| layout.progress().join("teach").join(format!("{run_id}.json")))
+    progress_class().ok()?.path(&ledger_name(run_id)).ok()
+}
+
+/// Run ledgers live in the `progress` disk class (`disk_reporters::standard`): measured, with an
+/// eviction decision, written only through the class.
+const PROGRESS_CLASS: &str = "progress";
+
+fn progress_class() -> std::io::Result<continuum_kernel::system_resources::disk_reporters::ClassWriter> {
+    continuum_kernel::system_resources::disk_reporters::ClassWriter::of(PROGRESS_CLASS)
+}
+
+fn ledger_name(run_id: &str) -> std::path::PathBuf {
+    std::path::Path::new("teach").join(format!("{run_id}.json"))
+}
+
+/// Replace `run_id`'s ledger row whole (staged, synced, placed through the class): the one writer
+/// of a teach run's ledger, for its live progress rows and its terminal row alike.
+pub fn write_teach_ledger(run_id: &str, row: &serde_json::Value) -> std::io::Result<()> {
+    progress_class()?.replace(&ledger_name(run_id), serde_json::to_string(row)?.as_bytes())
 }
 
 /// The run_id of the teach pass executing NOW — set at `run_teach` entry so the emit
@@ -88,14 +104,10 @@ fn write_teach_progress_ledger(prog: &TeachProgress) {
         },
         Err(_) => return,
     };
-    let Some(path) = teach_ledger_path(&run_id) else {
-        return;
-    };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     let row = serde_json::json!({ "runId": run_id, "complete": false, "progress": prog });
-    let _ = std::fs::write(&path, serde_json::to_string(&row).unwrap_or_default());
+    if let Err(error) = write_teach_ledger(&run_id, &row) {
+        tracing::warn!(%run_id, %error, "teach progress row not written: a status poller sees the previous row");
+    }
 }
 
 /// Emit ONE teach progress event to the message bus, so a UI / the operator can WATCH

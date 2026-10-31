@@ -403,3 +403,31 @@ fn a_batch_receipts_summary_keeps_every_operation() {
     let shell = summary_of(vec![act("code/shell", serde_json::json!({ "command": "cargo build" }), serde_json::json!({ "success": false, "stdout": log }).to_string())]).unwrap_or_default();
     assert!(shell.contains("error[E0308]: mismatched types") && !shell.contains("[outline"), "an output keeps its ends: {shell}");
 }
+
+// what this catches: an act's declared effects (`ActionRecord.act`, MIND-CONTEXT invariant 4) are
+// derived, like her view: a record written by a build whose `Act` had another shape must restore
+// with no act (that act is simply never a repeat), never refuse the checkpoint and the resident
+// with it (the 2026-10-31 M5 outage's shape, card c990acbe). A valid act stays whole, and a corrupt
+// AUTHORITATIVE field still refuses.
+#[test]
+fn an_act_from_an_older_build_is_dropped_and_its_record_survives() {
+    use crate::cognition::working_memory::action_log::ActionRecord;
+    let wm = WorkingMemory::new(8);
+    let listed = act("code/list", serde_json::json!({"path": "."}), "4 files".into());
+    wm.record_receipt_typed(&[listed], "I ran code/list Result: 4 files", None, Default::default());
+    let record = wm.snapshot().action_records().pop().expect("the act is on record");
+    assert!(record.act.is_some(), "a typed act records what it asked for");
+
+    let whole = serde_json::to_string(&record).expect("encode");
+    let decoded: ActionRecord = serde_json::from_str(&whole).expect("a current act decodes");
+    assert_eq!(decoded, record, "the derived decoder is lossless");
+
+    let mut stale = record.clone();
+    stale.act = None;
+    let older = serde_json::to_string(&stale).expect("encode").replacen('{', "{\"act\":\"an older shape\",", 1);
+    let restored: ActionRecord = serde_json::from_str(&older).expect("an older act never refuses its record");
+    assert_eq!(restored, stale, "only the act is dropped");
+
+    let corrupt = older.replacen("\"seq\":", "\"seq\":\"not a number\",\"_was\":", 1);
+    assert!(serde_json::from_str::<ActionRecord>(&corrupt).is_err(), "only the derived act is forgiven");
+}

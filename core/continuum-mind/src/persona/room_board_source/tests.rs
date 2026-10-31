@@ -57,9 +57,9 @@
     }
 
     // what this catches: a card dispatched MINUTES AGO being structurally unshowable.
-    // Only five titles are ever rendered; taken in board order a fresh card lands at the
-    // end and never appears, so the citizen reads an honest "N claimable" above five
-    // titles that are all old. Measured live 2026-08-07: three freshly dispatched bench
+    // Taken in board order a fresh card landed at the end and never appeared (five
+    // titles were rendered), so the citizen read an honest "N claimable" above titles
+    // that were all old. Every live card is now delivered, newest claimable first. Measured live 2026-08-07: three freshly dispatched bench
     // cards sat in every citizen's board cache and in NONE of their prompt windows while
     // the count was correct throughout — the count was never the lie, the sample was.
     #[tokio::test]
@@ -89,12 +89,17 @@
             .find(|i| i.metadata["kind"] == "available-work-lead")
             .expect("available-work lead");
 
+        let first_card = delivery
+            .items
+            .iter()
+            .find(|i| i.key.starts_with("card:"))
+            .expect("the live cards are delivered");
         assert!(
-            lead.content.contains("bench coder-write-eval"),
-            "the just-dispatched card must be VISIBLE, not just counted:\n{}",
-            lead.content
+            first_card.content.contains("bench coder-write-eval"),
+            "the just-dispatched card must be the first card she reads, not just counted:\n{}",
+            first_card.content
         );
-        // The count stays honest — it always was. This fix is about the sample.
+        // The count stays honest — it always was.
         assert_eq!(lead.metadata["open_count"], 9);
     }
 
@@ -223,6 +228,29 @@
         assert_eq!(headline.metadata["held_count"], 1);
         assert_eq!(headline.metadata["open_count"], 40);
         assert!(headline.content.contains("40 claimable"), "{}", headline.content);
+    }
+
+    // what this catches: settled history crowding out her live work (the M5, 2026-10-31: 840
+    // closed cards, 31,185 chars of her prompt, while her own results collapsed to handles).
+    // Live cards are delivered; merged and closed ones are one counted line naming work/list.
+    #[tokio::test]
+    async fn settled_cards_are_one_counted_history_line_not_cards() {
+        let mut cards = vec![
+            card("live open", CardState::Open, None),
+            card("live review", CardState::Review, None),
+        ];
+        for i in 0..5 {
+            cards.push(card(&format!("closed {i}"), CardState::Closed, None));
+        }
+        cards.push(card("merged", CardState::Merged, None));
+        let reader = Arc::new(StubReader::new(snapshot(cards)));
+        let delivery = RoomBoardSource::new(persona(), reader).deliver(&ctx()).await;
+        let titles: Vec<&str> = delivery.items.iter().filter(|i| i.key.starts_with("card:")).map(|i| i.content.as_str()).collect();
+        assert_eq!(titles.len(), 2, "only live cards are delivered as cards: {titles:?}");
+        assert!(titles.iter().all(|t| !t.contains("closed") && !t.contains("merged")), "{titles:?}");
+        let history = delivery.items.iter().find(|i| i.key == "history").expect("a history line counts the settled cards"); // expect: the board above holds six settled cards
+        assert_eq!(history.metadata["settled_count"], 6);
+        assert!(history.content.contains("work/list"), "{}", history.content);
     }
 
     #[tokio::test]
@@ -415,8 +443,11 @@
             .expect("open cards must produce an available-work lead");
         assert_eq!(lead.metadata["open_count"], 2);
         assert!(lead.content.contains("[available work]"));
-        assert!(lead.content.contains("Compile wordstats"));
         assert!(lead.content.contains("work/claim"));
+        assert!(
+            d.items.iter().any(|i| i.key.starts_with("card:") && i.content.contains("Compile wordstats")),
+            "each claimable card follows the lead whole"
+        );
 
         // A board with only claimed cards → no lead, just the card list.
         let claimed_only = Arc::new(StubReader::new(snapshot(vec![card(
@@ -670,15 +701,12 @@
             all.contains("claim lapsed (was YOURS) — claimable"),
             "the lapsed card renders its lapse honestly: {all}"
         );
-        let closed = all
-            .lines()
-            .find(|line| line.contains("finished work"))
-            .expect("closed card remains visible");
+        // A settled card is counted in the history line, not rendered as a card (#5677).
+        assert!(!all.contains("finished work"), "the closed card is not a card line: {all}");
         assert!(
-            closed.contains("[Closed]") && closed.contains("claim lapsed (was YOURS)"),
-            "{closed}"
+            all.contains("[board history] 1 card(s) merged or closed"),
+            "the closed card is counted in the history line: {all}"
         );
-        assert!(!closed.contains("claimable") && !closed.contains("resume it"), "{closed}");
     }
 
     // what this catches: the exam-bleed regression (glass-boxed live 2026-07-10,

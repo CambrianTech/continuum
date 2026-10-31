@@ -226,10 +226,12 @@ pub async fn install_tracked_dirs(dirs: Vec<Arc<TrackedDir>>) -> Vec<Arc<Tracked
 }
 
 /// Fetch a tracked cache class by name, e.g. `"cargo-target"`. `None`
-/// before boot installs the registry (tests, tools) — callers treat that
-/// as "class not under management," never a default path guess.
+/// before boot installs the registry (tools) — callers treat that as "class
+/// not under management," never a default path guess. A test build that ran
+/// `prepare_writer_fixture` resolves against that fixture's registry, the same
+/// classes rooted in its temporary home.
 pub fn tracked_dir(name: &str) -> Option<Arc<TrackedDir>> {
-    TRACKED_DIRS.get()?.snapshot().into_iter().find(|d| d.name == name)
+    registry::writer_registry().ok()?.snapshot().into_iter().find(|d| d.name == name)
 }
 
 impl DiskReporter for TrackedDir {

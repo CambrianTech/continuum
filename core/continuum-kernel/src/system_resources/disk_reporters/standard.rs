@@ -177,6 +177,10 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // pruned (preciousObjects), so its size is the class to watch.
         TrackedDir::new("airc-mirrors", home.join(".airc/mirrors")),
         kept(continuum, "logs"),
+        // Run ledgers (`<continuum>/progress/<kind>/<run>.json`): a detached job's live progress
+        // row and its terminal result, read by `*/status` across processes. Written through the
+        // class (genome::teach::progress::write_teach_ledger for teach runs).
+        kept(continuum, "progress"),
         kept(continuum, "probes"),
         // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
         // (~31 GB logical each). RAII drop removes them on every in-process return

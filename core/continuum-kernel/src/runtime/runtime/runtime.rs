@@ -521,7 +521,10 @@ pub const MODULES: &[ModuleSpec] = &[
         ServiceGroup::Cognition,
         ModuleCategory::Core,
     ),
-    ModuleSpec::new("agent", ServiceGroup::Cognition, ModuleCategory::Core),
+    // (`agent` was retired here with `AgentModule`, a second autonomous loop beside the persona
+    // minds (#5660). Its spec stayed and boot hard-failed with "missing [agent]" on the M5
+    // (2026-10-31, canary 107e10ddc; rolled back by `continuum reboot`): the same trap as
+    // `search` and `inference` above.)
     // Cognition — AIRC-Healthy-conditional persona hosting (registers only when
     // discovery succeeded across all four sub-steps)
     ModuleSpec::new(

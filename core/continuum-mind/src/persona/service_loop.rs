@@ -11,14 +11,10 @@
 //!     • lease the brain (`ctx.cognition.lock().await`)
 //!     • `compose_for_turn` — engram + airc through the
 //!       FlexboxRagBudgetAdapter
-//!     • project into `RespondInput` (canonical agent contract: media,
-//!       capabilities, tools, recalled engrams, room context)
-//!     • `persona::response::respond(input)` — the substrate's per-
-//!       persona cognition cycle (shared analyze + score + genome
-//!       activate + evaluate_response + clean_and_validate +
-//!       tool_executor + audit + record_turn)
-//!     • post the resulting text via `conversation.say` (or honor
-//!       `PersonaResponse::Silent { reason, .. }`)
+//!     • the workspace cycle: admit → build_workspace_turns → Burst →
+//!       deliberation → act/observe until the turn settles
+//!     • post the resulting text via `conversation.say` (or honor her
+//!       chosen silence)
 //!
 //! **See `docs/architecture/PERSONA-COGNITION-PIPELINE.md` for the
 //! full per-persona cycle.** The bypass that previously called
@@ -31,9 +27,8 @@
 //!
 //! - [[no-if-statements-use-llms-for-cognition]]: the loop does the
 //!   minimum substrate filtering — pre-watermark / self / non-text —
-//!   and hands the rest to `respond()`. No heuristic "should I respond"
-//!   gate; the brain's cycle (with `full_evaluate` + `score_persona`
-//!   + the LLM's own decision via `evaluate_response`) owns that.
+//!   and hands the rest to the workspace cycle. No heuristic "should I
+//!   respond" gate; her own deliberation owns that.
 //! - [[no-fallbacks-ever]]: per-message errors are logged + counted on
 //!   the outcome, not swallowed; the loop continues with the next
 //!   message rather than substituting a default response.

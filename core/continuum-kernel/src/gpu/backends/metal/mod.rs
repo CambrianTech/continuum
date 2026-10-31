@@ -17,11 +17,11 @@
 //! - `process_bytes` → Mach `task_info(mach_task_self(), TASK_VM_INFO)`
 //!   → `phys_footprint`. This process's authoritative footprint, including
 //!   unified-memory GPU buffers mapped into our address space.
-//! - `utilization` / `temperature_c` / `power_watts` → IOReport.framework.
-//!   No maintained Rust crate; requires our own Objective-C runtime shim.
-//!   Phase 2.0a-IOReport ships separately. For now these return defaults
-//!   (0.0 / None) so the policy can still rely on memory-pressure signals
-//!   — the load-bearing signal — without blocking on the IOReport work.
+//! - `utilization` → the IOKit registry: the `IOAccelerator` service's
+//!   `PerformanceStatistics` → `Device Utilization %` (`io_accelerator.rs`), the number
+//!   the node is judged by (Joel, 2026-10-31: "Success is completed allocated and active gpu").
+//! - `temperature_c` / `power_watts` → IOReport.framework (Phase 2.0a-IOReport, separate);
+//!   `None` until then.
 //!
 //! ## Unified vs discrete memory (task #163 fix)
 //!
@@ -52,6 +52,7 @@
 //!     from the original mono-file version by making the FFI layer its
 //!     own visible surface.
 
+mod io_accelerator;
 pub(crate) mod mach_ffi;
 
 use crate::gpu::device_probe::{GpuDeviceProbe, GpuSample, MonitoredGpu};
@@ -173,17 +174,16 @@ impl GpuDeviceProbe for MetalProbe {
     /// Two Mach syscalls (Unified) or one Metal property read (Discrete). In-process
     /// and non-blocking, so this returns without ever yielding.
     ///
-    /// Utilization / temperature / power stay `None` pending
-    /// Phase 2.0a-IOReport (IOReport.framework for compute utilization, SMC channels
-    /// for thermals + power). `None` is the correct answer for a sensor we do not
-    /// read — the base maps it to "no reading", not to 0.
+    /// Utilization from the IOKit registry (`io_accelerator`); temperature and power stay
+    /// `None` pending Phase 2.0a-IOReport (SMC channels). `None` is the correct answer for a
+    /// sensor we do not read — the base maps it to "no reading", not to 0.
     async fn sample(&self) -> GpuSample {
         let (free_bytes, process_bytes) =
             sample_memory(self.memory_mode, self.total_bytes, &self.device);
         GpuSample {
             free_bytes,
             process_bytes,
-            utilization: None,
+            utilization: io_accelerator::read_device_utilization(),
             temperature_c: None,
             power_watts: None,
         }

@@ -7,7 +7,7 @@ description = "Git's working-tree residue, judged once: a git that died mid-writ
 
 [dependencies]
 continuum-host = { path = "../continuum-host" } # file identity: unlink only the lock that was judged
-sysinfo = "0.33" # the one process scan: is any git working in this tree?
+sysinfo = { workspace = true } # the one process scan: is any git working in this tree?
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }

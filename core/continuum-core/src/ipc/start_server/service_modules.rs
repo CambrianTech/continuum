@@ -102,9 +102,6 @@ pub(super) fn register_code_data_and_service_modules(
     // Provides mcp/list-tools, mcp/search-tools, mcp/tool-help
     runtime.register(Arc::new(crate::modules::mcp::MCPModule::new()));
 
-    // AgentModule: Autonomous AI coding agents with structured tool calling
-    // Provides agent/start, agent/status, agent/stop, agent/list, agent/wait
-    runtime.register(Arc::new(AgentModule::new(rt_handle.clone())));
     CodeHandles {
         file_engines,
         shell_sessions,

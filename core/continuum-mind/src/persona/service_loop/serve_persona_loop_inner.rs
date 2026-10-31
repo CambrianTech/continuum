@@ -37,8 +37,8 @@ pub(super) async fn serve_persona_loop_inner(
     // cognition layer through the global provider registry — slice
     // 1D / task #161 registers it at supervisor boot so
     // `evaluate_response` finds it by model_id. The loop itself does
-    // not invoke inference directly; `persona::response::respond`
-    // owns the agent contract per the cognition pipeline doc.
+    // not invoke inference directly; the workspace cycle owns the
+    // agent contract per the cognition pipeline doc.
     let mut outcome = ServeOutcome::default();
 
     // Never-stop heartbeat: a persona is not a request→response handler that goes
@@ -130,11 +130,8 @@ pub(super) async fn serve_persona_loop_inner(
         // Taken the moment a wake is produced, BEFORE the match, because the
         // `Wake::Tick` arm does its self-tick deliberation INLINE and then `continue`s —
         // it never reaches the code below it. A permit taken after the match would have
-        // counted inbound turns and silently missed every self-directed one, which is the
-        // same blindness as draining on `activity_gate`'s `engaged` flag: that one is
-        // stamped at serving-lane acquisition, so a turn still composing its context does
-        // not appear there either. Both gaps hide turns that have consumed input and
-        // written nothing.
+        // counted inbound turns and silently missed every self-directed one: turns that have
+        // consumed input and written nothing.
         //
         // Held to the end of the loop body, so it is released on EVERY exit path — the
         // `continue` at the end of the tick arm included. A manual decrement would have to
@@ -264,9 +261,8 @@ pub(super) async fn serve_persona_loop_inner(
         // RTOS-debugger breakpoint: turn entry at the service-loop
         // level. Pair with `persona.turn.spoke` /
         // `persona.turn.silent` / `persona.turn.error` (same lamport)
-        // for the complete per-turn record. The `respond_inner`-level
-        // probes (`persona.response.enter` etc.) live INSIDE the
-        // cognition; this one names the airc-boundary turn.
+        // for the complete per-turn record. This one names the
+        // airc-boundary turn.
         // Cognition pulse: this stamp is what EARNS her claim renewals
         // (cognition_pulse.rs) — a turn starting, even one that later defers
         // on serving pressure, is proof she is working her holds.
@@ -289,12 +285,6 @@ pub(super) async fn serve_persona_loop_inner(
         // admit → build_workspace_turns → Burst → workspace cycle
         // (RecallFaculty feeds the prompt, deliberation decides,
         // act→observe drives to settle). That is the live path below.
-        //
-        // NOT `persona::response::respond(RespondInput)` — that verb
-        // only has one caller, PersonaServiceModule, which the module
-        // audit declares UNWIRED ("shadowed", runtime/registry.rs) so
-        // the respond path is dead code, kept only until the verbs it
-        // owns are dismantled or re-homed.
         //
         // See docs/architecture/PERSONA-COGNITION-PIPELINE.md for the
         // full pipeline.
