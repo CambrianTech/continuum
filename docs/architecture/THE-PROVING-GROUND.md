@@ -245,14 +245,23 @@ size.
 | Policy | Seam the harness calls | Today |
 |---|---|---|
 | A mind's view and levels | `continuum-context::View` and `levels` | a library already; the dyno's re-modelled fit rules are deleted |
-| One mind's allocation | the allocator's pure plan function | lives in `continuum-cognition`; ONE-BUDGET slice 1 (`continuum-flex`) moves it to a small crate, which also makes T0 fast to build |
-| Emission classification | `EmissionStop::classify_with_budget` | pure; moves with the allocator |
-| Admission and lane price | Codex's L5 owner | to be shaped by Codex; `contention.rs`'s policies until then |
-| Node capacity | `capacity/sim`'s `AllocationPolicy` | production already |
-| Residency | Codex's L4 owner | to be shaped by Codex |
+| One mind's allocation, every tier's clearing | `cambrian-flex` (airc workspace `crates/flex`), through continuum's shared airc pin | the shared solver (ONE-BUDGET slice 1); the harness never re-implements it |
+| Emission classification | `EmissionStop::classify(hit_cap, answered)` and its one accounting projection (#5616) | pure; no second classifier is extracted into the harness |
+| Admission and lane price | Codex's L5 endpoint admission owner: persistent ticket, atomic eligibility and commitment, blocker-specific progress, directed-input yield, cancellation, terminal outcome | **unavailable** until that owner is callable; no re-modelled policy (`contention.rs`) stands in for it, since a copy cannot validate the production owner (Codex on #5617) |
+| Node capacity | `capacity/sim`'s `AllocationPolicy`, moving to slice 2's typed physical-pool observation | production already |
+| Residency | Codex's L4 owner, driving real lease and page custody transitions and observing release acknowledgements, never deleting occupancy when an intent is cancelled | **unavailable** until callable |
 
 A policy that cannot be called without its crate's whole runtime is a seam defect, fixed in that crate (the
 extraction is the fix), never by copying the policy into the harness.
+
+**Events the admission and residency runs must include** (Codex on #5617), asserting both useful progress and
+physical conservation from the owners' own receipts, never from a copied occupancy number (which misses pending
+shrinks and page custody):
+- delayed and duplicate release acknowledgements;
+- a caller cancelling while the physical work continues;
+- a queued wait while holders make progress;
+- a directed interruption before a slot is owned;
+- a capacity drop and its recovery (the person's game, HOW-A-MIND S4).
 
 **Clock and randomness** come from the harness into every policy (P8); the ratchet that counts direct clock
 reads covers the policy crates the harness drives.
