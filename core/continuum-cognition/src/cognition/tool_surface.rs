@@ -87,6 +87,13 @@ pub struct ToolSurface {
     names: Vec<String>,
     /// Every native verb. Priced for the window sensor; the source a declared set selects from.
     registry: Offer,
+    /// The canonical name of each entry in `authorized`, same order.
+    authorized_names: Vec<String>,
+    /// Every verb she is authorized to call, native or not, in canonical order and wire dialect:
+    /// what her head chooses from and what `commands/help` loads into her tail. Built from the
+    /// native registry alone, a help-loaded verb that was not native was silently dropped, and
+    /// help's "callable on your next act" was false (the M5, 10-30: Atlas, 35 help calls).
+    authorized: Offer,
     /// Her hands: what an activity that declares nothing offers.
     hands: Offer,
     /// Her hands without the extended verbs: what a window too small for them offers.
@@ -110,7 +117,7 @@ impl ToolSurface {
         let (floor, _) = self.claim_tokens(declared);
         let recipe = self.declared(declared);
         let base = recipe.as_ref().map_or(&self.hands.specs, |offer| &offer.specs);
-        let wanted: Vec<_> = self.names.iter().zip(&self.registry.specs)
+        let wanted: Vec<_> = self.authorized_names.iter().zip(&self.authorized.specs)
             .filter(|(name, spec)| held.contains(name) || base.iter().any(|b| b.name == spec.name))
             .map(|(_, spec)| spec.clone()).collect();
         (floor, tool_surface_tokens_of(&wanted))
@@ -141,10 +148,22 @@ impl ToolSurface {
 
     /// Build every surface from the native registry, sorted by command name so the bytes
     /// on the wire never depend on registration order, then renamed into the model's dialect.
-    pub fn build(mut raw: Vec<NativeToolSpec>, to_wire: impl Fn(NativeToolSpec) -> NativeToolSpec) -> Self {
+    pub fn build(
+        mut raw: Vec<NativeToolSpec>,
+        mut authorized: Vec<NativeToolSpec>,
+        to_wire: impl Fn(NativeToolSpec) -> NativeToolSpec,
+    ) -> Self {
         raw.sort_by(|a, b| a.name.cmp(&b.name));
+        // Her natives are always callable, whatever list `with_tools` was given: the authorized
+        // set is her natives plus every other authorized verb, and where both name one verb the
+        // native spec wins, so a verb in her hands is the same spec in the authorized set.
+        authorized.retain(|other| !raw.iter().any(|native| native.name == other.name));
+        authorized.extend(raw.iter().cloned());
+        authorized.sort_by(|a, b| a.name.cmp(&b.name));
         let wire = |specs: Vec<NativeToolSpec>| Offer::of(specs.into_iter().map(&to_wire).collect());
         Self {
+            authorized_names: authorized.iter().map(|spec| spec.name.clone()).collect(),
+            authorized: wire(authorized),
             names: raw.iter().map(|spec| spec.name.clone()).collect(),
             hands: wire(hands_surface(&raw)),
             core: wire(core_hands(&raw)),
@@ -181,9 +200,9 @@ impl ToolSurface {
     /// description, and what its schema costs on the wire.
     pub fn vocabulary(&self) -> Result<tool_working_set::Vocabulary, String> {
         let schemas = self
-            .names
+            .authorized_names
             .iter()
-            .zip(self.registry.specs.iter())
+            .zip(self.authorized.specs.iter())
             .map(|(name, spec)| {
                 let tokens = u32::try_from(tool_surface_tokens_of(std::slice::from_ref(spec)))
                     .map_err(|e| format!("{name}: schema size: {e}"))?;
@@ -200,7 +219,7 @@ impl ToolSurface {
             return Vec::new();
         };
         sent.iter()
-            .filter_map(|spec| self.names.iter().zip(&self.registry.specs).find(|(_, wire)| wire.name == spec.name))
+            .filter_map(|spec| self.authorized_names.iter().zip(&self.authorized.specs).find(|(_, wire)| wire.name == spec.name))
             .map(|(name, _)| name.clone())
             .collect()
     }
@@ -211,7 +230,7 @@ impl ToolSurface {
     pub fn retained(&self, names: &[String], reason: SurfaceReason, tokens: usize) -> SelectedSurface<'_> {
         let specs: Vec<NativeToolSpec> = names
             .iter()
-            .filter_map(|name| self.names.iter().zip(&self.registry.specs).find(|(canonical, _)| *canonical == name))
+            .filter_map(|name| self.authorized_names.iter().zip(&self.authorized.specs).find(|(canonical, _)| *canonical == name))
             .map(|(_, spec)| spec.clone())
             .collect();
         SelectedSurface {
@@ -231,9 +250,9 @@ impl ToolSurface {
     pub fn learned(&self, floor: &[NativeToolSpec], held: &[String], loaded: &[String], reserve_tokens: usize) -> SelectedSurface<'_> {
         let mut specs = floor.to_vec();
         let pick = |wanted: &[String], have: &[NativeToolSpec]| -> Vec<NativeToolSpec> {
-            self.names
+            self.authorized_names
                 .iter()
-                .zip(self.registry.specs.iter())
+                .zip(self.authorized.specs.iter())
                 .filter(|(name, spec)| wanted.contains(name) && !have.iter().any(|kept| kept.name == spec.name))
                 .map(|(_, spec)| spec.clone())
                 .collect()
@@ -440,6 +459,22 @@ mod tests {
         assert_eq!((selected.tokens, selected.demand_tokens()), (floor, extended));
     }
 
+    // what this catches: `commands/help` loading a verb that is not native and the tail silently
+    // dropping it, so help's "callable on your next act" was false (the M5, 10-30: Atlas made 35
+    // help calls for `chat/poll`, which never joined her tools).
+    #[test]
+    fn a_help_loaded_verb_that_is_not_native_rides_the_tail() {
+        let native: Vec<_> = REGISTRY.iter().copied().map(spec).collect();
+        let mut authorized = native.clone();
+        authorized.push(spec("chat/poll"));
+        let surface = ToolSurface::build(native, authorized.clone(), |s| s);
+        let floor = surface.hands().to_vec();
+        let selected = surface.learned(&floor, &[], &["chat/poll".to_string()], 0);
+        assert!(selected.tail.iter().any(|t| t.name == "chat/poll"), "{:?}", selected.tail);
+        assert!(!surface.hands().iter().any(|t| t.name == "chat/poll"), "loading never widens her hands");
+        assert_eq!(surface.vocabulary().expect("vocabulary").len(), authorized.len());
+    }
+
     fn spec(name: &str) -> NativeToolSpec {
         NativeToolSpec {
             name: name.to_string(),
@@ -459,7 +494,8 @@ mod tests {
     ];
 
     fn built(order: impl Iterator<Item = &'static str>) -> ToolSurface {
-        ToolSurface::build(order.map(spec).collect(), |s| s)
+        let specs: Vec<_> = order.map(spec).collect();
+        ToolSurface::build(specs.clone(), specs, |s| s)
     }
 
     fn wire(selected: &SelectedSurface<'_>) -> String {
