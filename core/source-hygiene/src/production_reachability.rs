@@ -58,7 +58,7 @@
 //! against this crate; references are searched across every workspace root. See
 //! [`super::workspace_src_roots`].
 
-use super::{split_code_and_comment, CrateRule, SourceFile, Violation};
+use super::{lexer::split_code_and_comment, CrateRule, SourceFile, Violation};
 use std::collections::HashMap;
 
 /// Constructor shapes that mark a type as machinery someone is meant to stand up.
@@ -165,7 +165,7 @@ impl ProductionReachability {
             if own_impl_depth.is_some() && CONSTRUCTOR_SHAPES.iter().any(|s| code.contains(s)) {
                 return true;
             }
-            let delta = crate::brace_delta(code);
+            let delta = crate::lexer::brace_delta(code);
             depth += delta;
             // `delta < 0` closes a multi-line impl; a one-line `impl X {}` (delta 0) opens
             // and closes on its own line and must not stay open over the rest of the file.
@@ -301,11 +301,7 @@ mod tests {
                    impl AgentContext {\n    pub async fn bootstrap() -> Self { Self {} }\n}\n\
                    #[cfg(test)]\nmod tests {\n    fn t() { let _ = AgentContext::bootstrap(); }\n}\n";
         let production = own.split("#[cfg(test)]").next().unwrap_or(own); // the split marker is present by construction above
-        let file = SourceFile {
-            rel: "context/agent.rs".into(),
-            production: production.into(),
-            raw: own.into(),
-        };
+        let file = SourceFile::fixture("context/agent.rs", production, own);
         let corpus = format!(
             "{own}\npub use agent::{{AgentContext, AgentMetadata}};\n/// `AgentContext` (Slice 4)\n"
         );
@@ -331,8 +327,8 @@ mod tests {
                    #[cfg(test)]\nmod tests;\n";
         let tests = "//! Tests for agent.\n#![cfg(test)]\nuse super::*;\nfn t() { let _ = AgentContext::bootstrap(); }\n";
         let files = [
-            SourceFile { rel: "context/agent.rs".into(), production: own.into(), raw: own.into() },
-            SourceFile { rel: "context/agent/tests.rs".into(), production: String::new(), raw: tests.into() },
+            SourceFile::fixture("context/agent.rs", own, own),
+            SourceFile::fixture("context/agent/tests.rs", "", tests),
         ];
         assert_eq!(files[1].owning_module(), "context/agent");
         let corpus = format!("{own}\n{tests}");
@@ -345,38 +341,31 @@ mod tests {
     /// the wrong question — and flagging every wire DTO would bury the real findings.
     #[test]
     fn a_plain_data_carrier_is_not_machinery() {
-        let dto = SourceFile {
-            rel: "wire.rs".into(),
-            production: "pub struct Payload {\n    pub id: String,\n}\n".into(),
-            raw: "pub struct Payload {\n    pub id: String,\n}\n".into(),
-        };
+        let dto_src = "pub struct Payload {\n    pub id: String,\n}\n";
+        let dto = SourceFile::fixture("wire.rs", dto_src, dto_src);
         assert!(!ProductionReachability::is_machinery(&dto, "Payload"));
 
-        let machine = SourceFile {
-            rel: "thing.rs".into(),
-            production: "pub struct Runner {}\nimpl Runner {\n    pub fn new() -> Self { Self {} }\n}\n"
-                .into(),
-            raw: "pub struct Runner {}\nimpl Runner {\n    pub fn new() -> Self { Self {} }\n}\n".into(),
-        };
+        let machine_src = "pub struct Runner {}\nimpl Runner {\n    pub fn new() -> Self { Self {} }\n}\n";
+        let machine = SourceFile::fixture("thing.rs", machine_src, machine_src);
         assert!(ProductionReachability::is_machinery(&machine, "Runner"));
 
         // what this catches (review of #4672): a constructor on ANOTHER type in the file
         // made every pub type there read as machinery.
         let neighbour = "pub enum Outcome { A }\nimpl Outcome {\n    pub fn ok(&self) -> bool { true }\n}\nstruct Scratch;\nimpl Scratch {\n    fn new() -> Self { Scratch }\n}\n";
-        let mixed = SourceFile { rel: "mixed.rs".into(), production: neighbour.into(), raw: neighbour.into() };
+        let mixed = SourceFile::fixture("mixed.rs", neighbour, neighbour);
         assert!(!ProductionReachability::is_machinery(&mixed, "Outcome"));
         assert!(ProductionReachability::is_machinery(&mixed, "Scratch"));
 
         // what this also catches (Astra, review of #4678): a "}" inside a string closed
         // the impl early, so the constructor after it was missed.
         let stringy = "pub struct Runner {}\nimpl Runner {\n    fn label() -> &'static str { \"}\" }\n    pub fn new() -> Self { Runner {} }\n}\n";
-        let quoted = SourceFile { rel: "stringy.rs".into(), production: stringy.into(), raw: stringy.into() };
+        let quoted = SourceFile::fixture("stringy.rs", stringy, stringy);
         assert!(ProductionReachability::is_machinery(&quoted, "Runner"));
 
         // what this also catches (Cormac, review of #4678): a one-line empty impl stayed
         // open, so a later neighbour's constructor counted as this type's.
         let empty = "pub struct Marker;\nimpl Marker {}\nstruct Other;\nimpl Other {\n    fn new() -> Self { Other }\n}\n";
-        let one_line = SourceFile { rel: "empty.rs".into(), production: empty.into(), raw: empty.into() };
+        let one_line = SourceFile::fixture("empty.rs", empty, empty);
         assert!(!ProductionReachability::is_machinery(&one_line, "Marker"));
     }
 }

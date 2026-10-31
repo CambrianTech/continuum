@@ -239,7 +239,7 @@ pub struct LlmDeliberationFaculty {
     context_view: parking_lot::Mutex<
         Option<continuum_context::view::View<crate::cognition::context_streams::ContextMessage>>,
     >,
-    /// The tool level her current view epoch chose (`prompt/tools_epoch.rs`).
+    /// The tool set her current view epoch chose (`prompt/tools_epoch.rs`).
     tools_epoch: parking_lot::Mutex<Option<prompt::ToolsEpoch>>,
     /// A measurement fork's (`fork_eval_cycle`): its turns warm their own page, never hers.
     forked: bool,
@@ -456,21 +456,12 @@ impl LlmDeliberationFaculty {
     /// licence to spin; on a small one the person does not fit.
     ///
     /// `MIN_SERVE_CTX` and not a new literal, deliberately: the smallest window the serving
-    /// stack hands out. It is only the unmeasured WANT of the reply's claim: what no other
-    /// claim takes still flows to the reply under its runaway bound, measurement replaces
-    /// it with her need, and a turn cut inside its answer records that channel at DOUBLE,
-    /// so an act that really needs more room earns it back within a turn.
+    /// stack hands out. It is only the unmeasured WANT of the reply's claim; measurement
+    /// replaces it with her need, and a turn cut inside its answer records that channel at
+    /// DOUBLE, so an act that really needs more room earns it back within a turn. What no
+    /// claim takes is her view's room, never the reply's (ONE-BUDGET.md slice 6: a runaway
+    /// cap claimed above her context brought this defect back on 2026-10-30).
     const COMPLETION_COLD_PRIOR_TOKENS: u32 = crate::inference::planning::MIN_SERVE_CTX;
-
-
-    /// The most an ACT turn may generate — a RUNAWAY bound, not a budget.
-    /// Measured acts that COMMITTED a tool call ran 4,188–9,818 tokens on the
-    /// 27B (the model thinks before it calls; 2026-09-07 acceptance rows), so
-    /// any cap below that faults the act and re-samples it — more decode for
-    /// zero committed work (IntelMac's review of #3824). This binds only past
-    /// the largest committed act we have seen; the real lever is bounding the
-    /// THINKING on act turns, which is card 61b6e54d's next slice.
-    pub const ACT_OUTPUT_CAP: u32 = 12_288;
 
     /// The TIME term's budgets, in seconds, per turn kind — `budget × her measured
     /// decode rate` is a FLOOR the allowance may rise to on a fast lane (the 5090 at

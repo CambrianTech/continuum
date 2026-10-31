@@ -38,10 +38,7 @@ async fn a_writing_turn_after_a_cut_gets_its_reply_on_a_46848_window() {
     let seen = adapter.seen.lock().unwrap();
     let request = &seen[0];
     let reply = request.max_tokens.expect("the reply is bounded");
-    assert!(
-        (10_808..=LlmDeliberationFaculty::ACT_OUTPUT_CAP).contains(&reply),
-        "the retried write gets at least the doubled cut, under the act's bound: {reply}"
-    );
+    assert!(reply >= 10_808, "the retried write gets at least the doubled cut: {reply}");
     let wire_tokens =
         LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
             + LlmDeliberationFaculty::messages_cost(&request.messages)
@@ -195,7 +192,9 @@ async fn provider_context_feedback_bounds_replay_and_scales_next_turn() {
         160
     );
     let fault = faculty.contribute(&ws).await.expect("bounded refusal");
-    assert!(fault.fault.is_some());
+    // Bounded: a fault or a typed capacity refusal (the newest-result refit's end), never a
+    // third request (asserted by the call count below).
+    assert!(fault.fault.is_some() || fault.capacity_refusal.is_some(), "{:?}", fault.fault);
     assert_eq!(
         adapter.call_count(),
         2,
@@ -396,7 +395,6 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
                     LlmDeliberationFaculty::holds_live_work(&ws),
                     ws.directed_at_self(),
                 )
-                .0
                 .min_tokens as usize;
             let cluster = history
                 .iter()

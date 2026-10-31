@@ -1,5 +1,8 @@
 # Her hands are hers
 
+> How each call answers her (results, handles, long-running tasks, reflexes, sentinels) is
+> [HER-TOOLS.md](HER-TOOLS.md); this document is where she works.
+>
 > Companion to [HER-LOOP-IS-HER-OWN.md](HER-LOOP-IS-HER-OWN.md), which leaves her hands for
 > "the gap list from watching her try to ship something real, end to end". The principle is the
 > README's: a citizen is a first-class peer, a free-form equivalent of a Claude Code or Codex

@@ -1,5 +1,16 @@
 use super::*;
+use crate::cause::{Cause, Content, ElementId};
 use crate::source::Item;
+
+/// A fixture occurrence at `key`: its id from the key, its cause unrecorded (these tests are about
+/// levels and starts, not chains).
+fn item(key: impl Into<String>, full: String, summary: Option<String>, pointer: Option<String>) -> Item<String> {
+    let key = key.into();
+    let mut item = Item::whole(ElementId::of(&[key.as_bytes()]), Cause::Unrecorded, key, full);
+    item.summary = summary;
+    item.pointer = pointer;
+    item
+}
 
 /// A source shaped like the M5's: items keyed, each renderable in full or as a pointer.
 struct Fake {
@@ -31,19 +42,13 @@ impl Source<String> for Fake {
     fn items(&self) -> Vec<Item<String>> {
         self.items
             .iter()
-            .map(|(key, text)| Item {
-                key: key.clone(),
-                full: text.clone(),
-                summary: None,
-                pointer: Some(format!("[{key}: {} chars, reopen by key]", text.len())),
-                stored: None,
-            })
+            .map(|(key, text)| item(key.clone(), text.clone(), None, Some(format!("[{key}: {} chars, reopen by key]", text.len()))))
             .collect()
     }
     fn retired(&self) -> Vec<Item<String>> {
         self.retired
             .iter()
-            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), summary: None, pointer: Some(text.clone()), stored: None })
+            .map(|(key, text)| item(key.clone(), text.clone(), None, Some(text.clone())))
             .collect()
     }
 }
@@ -180,7 +185,7 @@ fn an_item_without_a_pointer_leaves_the_view_when_collapsed() {
             1
         }
         fn items(&self) -> Vec<Item<String>> {
-            self.0.iter().map(|t| Item { key: (*t).to_owned(), full: (*t).to_owned(), summary: None, pointer: None, stored: None }).collect()
+            self.0.iter().map(|t| item(*t, (*t).to_owned(), None, None)).collect()
         }
     }
     let mut turns = Turns(vec!["one", "two", "three"]);
@@ -244,13 +249,7 @@ impl Source<String> for Leveled {
     fn items(&self) -> Vec<Item<String>> {
         self.0
             .iter()
-            .map(|(key, full, summary)| Item {
-                key: (*key).to_owned(),
-                full: full.clone(),
-                summary: summary.clone(),
-                pointer: Some(format!("[{key}]")),
-                stored: None,
-            })
+            .map(|(key, full, summary)| item(*key, full.clone(), summary.clone(), Some(format!("[{key}]"))))
             .collect()
     }
 }
@@ -386,13 +385,12 @@ impl Source<String> for Spilled {
     fn items(&self) -> Vec<Item<String>> {
         let pointer = "[result #3341: saved, reopen by its handle]".to_owned();
         vec![
-            Item { key: "3340".to_owned(), full: "an older result".to_owned(), summary: None, pointer: Some("[result #3340]".to_owned()), stored: None },
-            Item {
-                key: "3341".to_owned(),
-                full: pointer.clone(),
-                summary: None,
-                pointer: Some(pointer),
-                stored: Some(crate::source::StoredWhole { chars: self.body.chars(), handle: "spill/3341".to_owned() }),
+            item("3340", "an older result".to_owned(), None, Some("[result #3340]".to_owned())),
+            {
+                let mut stored = item("3341", pointer.clone(), None, Some(pointer));
+                stored.stored = Some(crate::source::StoredWhole { chars: self.body.chars(), handle: "spill/3341".to_owned(), content: Content::Absent });
+                stored.content = Content::Absent;
+                stored
             },
         ]
     }
@@ -449,13 +447,7 @@ impl Source<String> for Folding {
     fn items(&self) -> Vec<Item<String>> {
         self.items
             .iter()
-            .map(|(seq, full, summary)| Item {
-                key: seq.to_string(),
-                full: full.clone(),
-                summary: summary.clone(),
-                pointer: Some(format!("[result #{seq}; room r; operation code/read; output handle: tool/output {seq:0>16} — collapsed; {}]", "p".repeat(80))),
-                stored: None,
-            })
+            .map(|(seq, full, summary)| item(seq.to_string(), full.clone(), summary.clone(), Some(format!("[result #{seq}; room r; operation code/read; output handle: tool/output {seq:0>16} — collapsed; {}]", "p".repeat(80)))))
             .collect()
     }
     fn fold(&self, folded: &[Item<String>]) -> Option<String> {
@@ -569,5 +561,34 @@ fn an_act_appends_one_result_and_neither_turns_over_nor_grows_the_floor() -> Res
     assert_eq!(fold_blocks(&view), 1, "the fold block is not re-rendered mid-epoch");
     assert_eq!(claims(&[&actions])[0].floor_chars, floor, "one more act, the same one-block floor");
     assert!(!view.start_would_restore(&[&actions], |_| vec![grant])?, "the same grant restores nothing");
+    Ok(())
+}
+
+// what this catches: a receipt that cannot say which occurrence she was shown, or at what level,
+// or in what order (the acknowledgement of a task's end reads exactly this, HER-TASKS; the
+// allocator reads it to learn what a grant bought).
+#[test]
+fn the_receipt_names_each_shown_occurrence_and_its_level_in_prompt_order() -> Result<(), GrantMismatch> {
+    let mut results = Fake::new("results", 1);
+    results.push("r1", &"a".repeat(3_000));
+    results.push("r2", "two");
+    let (mut view, _) = View::start(Vec::new(), &[&results as &dyn Source<String>], |_| vec![100])?;
+    results.push("r3", "three");
+    view.advance(&[&results]);
+    let receipt = view.receipt();
+    let id = |k: &str| Some(ElementId::of(&[k.as_bytes()]));
+    let shown: Vec<_> = receipt.items.iter().map(|r| (r.element, r.level)).collect();
+    assert_eq!(shown[shown.len() - 2..], [(id("r2"), Level::Full), (id("r3"), Level::Full)], "{shown:?}");
+    match shown[0] {
+        (element, Level::Pointer) => assert_eq!(element, id("r1")),
+        (None, Level::Folded) => {}
+        other => panic!("the oldest, too large for the grant, is not whole: {other:?}"),
+    }
+    assert_eq!(receipt.epoch, view.epoch_id());
+    assert_eq!(receipt.items.iter().map(|r| r.chars).sum::<usize>(), view.chars(), "the receipt accounts for every block after the head");
+    assert_eq!(view.take_submitted(), None, "nothing was sent yet");
+    view.sent();
+    assert_eq!(view.take_submitted(), Some(receipt), "the sent prompt's receipt, taken once");
+    assert_eq!(view.take_submitted(), None);
     Ok(())
 }

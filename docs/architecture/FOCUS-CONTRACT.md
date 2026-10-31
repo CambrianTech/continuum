@@ -99,7 +99,7 @@ Do not implement permanent lane reduction from a stale training-demand record.
 
 | Boundary | Coordinating owner | Deliverable |
 |---|---|---|
-| Single allocation and sources; Positron/RAG semantics | Fable | Source migration, private sizing APIs and `prompt_self_sizing` ratchet at zero |
+| Single allocation and sources; Positron/RAG semantics | Fable | Source migration, private sizing APIs and `self_sized` ratchet at zero |
 | Serving, inference and grid | Codex | Wants/grants consumer audit, capacity and handoff conformance, Windows running receipts |
 | Lived capture, Dreaming and genes | Cormac | Capture-after-allocation invariant, durable demand/recovery review and learning receipts |
 | Modality/provider integrations | Relevant existing module owners, coordinated by Fable | Same levels/cost/retrieval contract; no independent prompt budget |

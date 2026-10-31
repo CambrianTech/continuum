@@ -26,6 +26,7 @@ jobs:
       lib_tests: ${{ steps.select.outputs.lib_tests }}
       cli: ${{ steps.select.outputs.cli }}
       bins: ${{ steps.select.outputs.bins }}
+      examples: ${{ steps.select.outputs.examples }}
     steps:
       - uses: actions/checkout@v4
       - run: node --test tools/scripts/tests/ci-change-scope.test.cjs tools/scripts/tests/ci-cargo-freshness.test.cjs
@@ -56,7 +57,7 @@ jobs:
             } catch (error) {
               core.warning(`Cannot classify changes; running all checks: ${error.message}`);
             }
-            core.info(`Selected crates: ${selection.crates.join(', ') || '(none)'}; CLI handoff: ${selection.cli}; binaries: ${JSON.stringify(selection.bins)}`);
+            core.info(`Selected crates: ${selection.crates.join(', ') || '(none)'}; CLI handoff: ${selection.cli}; binaries: ${JSON.stringify(selection.bins)}; examples: ${JSON.stringify(selection.examples)}`);
             core.setOutput('rust', String(selection.rust));
             core.setOutput('installer', String(selection.installer));
             core.setOutput('crates', JSON.stringify(selection.crates));
@@ -64,6 +65,7 @@ jobs:
             core.setOutput('lib_tests', JSON.stringify(LIB_TESTS));
             core.setOutput('cli', String(selection.cli));
             core.setOutput('bins', JSON.stringify(selection.bins));
+            core.setOutput('examples', JSON.stringify(selection.examples));
 
   # One job per affected crate, in parallel (card 44a3c460). The selector derives the set:
   # every crate a changed path lies in plus all of its dependents, from the Cargo.toml graph.
@@ -102,13 +104,13 @@ jobs:
       # (spawn into the engine's group, readiness, core exit and re-follow; card 1d7d6d4c).
       - name: integration targets (capability grant trust gate, engine log relay)
         if: matrix.crate == 'continuum-core'
-        run: cargo test -p continuum-core --test capability_grant_e2e --test log_relay_e2e --profile dev-fast --features "$FEATURES"
+        run: cargo test --locked -p continuum-core --test capability_grant_e2e --test log_relay_e2e --profile dev-fast --features "$FEATURES"
 
       # continuum-host's real-process fixtures fork, so they live in their own test binary, apart from
       # the lib tests' sockets (a fork can carry a socket being created into the child; card 1d7d6d4c).
       - name: continuum-host process fixtures
         if: matrix.crate == 'continuum-host'
-        run: cargo test -p continuum-host --test output_handoff --profile dev-fast --features "$FEATURES"
+        run: cargo test --locked -p continuum-host --test output_handoff --profile dev-fast --features "$FEATURES"
 
       # ---- continuum-core: script fixtures, the warnings ratchet, the core lib binary ----
       - name: cargo test -p continuum-core --lib
@@ -122,7 +124,7 @@ jobs:
           # compiler-message records, which the render-diagnostics form sends to stderr
           # as text instead. The artifact script reads compiler-artifact records, present
           # in both.
-          python3 tools/scripts/ci-lib-test-artifact.py --capture lib-artifacts.jsonl -- cargo test -p continuum-core --lib --profile dev-fast --features "$FEATURES" --no-run --timings --message-format=json
+          python3 tools/scripts/ci-lib-test-artifact.py --capture lib-artifacts.jsonl -- cargo test --locked -p continuum-core --lib --profile dev-fast --features "$FEATURES" --no-run --timings --message-format=json
           # Warning debt is monotonic: the same stream, counted against
           # scripts/ratchets/rust-warnings-baseline.txt (grow = red; shrink = lower it here).
           # This build compiles every crate the ratchet counts (core, engine, hands, live,
@@ -162,11 +164,24 @@ jobs:
           for bin in $BINS; do args+=(--bin "$bin"); done
           cargo check --locked -p "$CRATE" --profile dev-fast --features "$FEATURES" "${args[@]}"
 
+      # ---- the examples this change touches (#5511, #5611): built, and those declaring `test = true`
+      # run their own tests; the lib build compiles neither ----
+      - name: cargo check and test the examples this change touches
+        if: ${{ fromJSON(needs.changes.outputs.examples || '{}')[matrix.crate] != null }}
+        env:
+          EXAMPLES: ${{ join(fromJSON(needs.changes.outputs.examples || '{}')[matrix.crate].all, ' ') }}
+          TESTED: ${{ join(fromJSON(needs.changes.outputs.examples || '{}')[matrix.crate].tested, ' ') }}
+        run: |
+          args=(); for example in $EXAMPLES; do args+=(--example "$example"); done
+          cargo check --locked -p "$CRATE" --profile dev-fast --features "$FEATURES" "${args[@]}"
+          tested=(); for example in $TESTED; do tested+=(--example "$example"); done
+          if [ ${#tested[@]} -gt 0 ]; then cargo test --locked -p "$CRATE" --profile dev-fast --features "$FEATURES" "${tested[@]}"; fi
+
       # ---- continuum-kernel: lib tests ----
       - name: cargo test -p continuum-kernel --lib
         if: matrix.crate == 'continuum-kernel'
         run: |
-          cargo test -p continuum-kernel --lib --profile dev-fast --features "$FEATURES" -- \
+          cargo test --locked -p continuum-kernel --lib --profile dev-fast --features "$FEATURES" -- \
             --skip 'gpu::memory_manager::'
 
       # ---- continuum-engine: lib tests and the native/fs2 custody interop fixture ----
@@ -178,8 +193,8 @@ jobs:
           c++ -std=c++17 -O1 -pthread -I core/vendor/llama.cpp/ggml/src -I core/vendor/llama.cpp/ggml/include \
             core/vendor/llama.cpp/tests/test-moe-residency.cpp -o "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
           "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
-          cargo test -p continuum-engine --lib --profile dev-fast --features "$FEATURES"
-          interop_output=$(cargo test -p continuum-engine --lib --profile dev-fast --features "$FEATURES" \
+          cargo test --locked -p continuum-engine --lib --profile dev-fast --features "$FEATURES"
+          interop_output=$(cargo test --locked -p continuum-engine --lib --profile dev-fast --features "$FEATURES" \
             model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
             -- --exact --ignored --nocapture 2>&1)
           printf '%s\n' "$interop_output"
@@ -194,14 +209,14 @@ jobs:
       # [workspace.metadata.ci] own_lib_test_step names the crates with their own steps above and below) ----
       - name: cargo test -p ${{ matrix.crate }} --lib
         if: fromJSON(needs.changes.outputs.lib_tests)[matrix.crate]
-        run: cargo test -p "$CRATE" --lib --profile dev-fast --features "$FEATURES"
+        run: cargo test --locked -p "$CRATE" --lib --profile dev-fast --features "$FEATURES"
 
       # ---- continuum-mind: lib tests, compile-fail doc guards ----
       - name: cargo test -p continuum-mind --lib
         if: matrix.crate == 'continuum-mind'
         run: |
           # The allocator skip moved here with persona.
-          cargo test -p continuum-mind --lib --profile dev-fast --features "$FEATURES" -- \
+          cargo test --locked -p continuum-mind --lib --profile dev-fast --features "$FEATURES" -- \
             --skip 'persona::allocator::tests::test_allocate'
 
       # The --lib step already builds the mind rlib (test-fixtures) in this profile.
@@ -214,7 +229,7 @@ jobs:
           # Same profile as the --lib build above, deliberately: a different profile
           # here would be a SECOND full codegen of a 625k-line crate, not a cheap extra step.
           # The guard lives in the mind crate (persona::viewstate_rag) since the mind cut.
-          cargo test -p continuum-mind --doc --profile dev-fast --features "$FEATURES" BindingIsUnstatable 2>&1 | tee doc-guard.log
+          cargo test --locked -p continuum-mind --doc --profile dev-fast --features "$FEATURES" BindingIsUnstatable 2>&1 | tee doc-guard.log
           if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
             echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
             echo "A zero-match filter exits 0, so this is how a renamed or deleted"
@@ -231,7 +246,7 @@ jobs:
             echo "were modified but their regenerated TypeScript bindings"
             echo "(in protocol/typescript/) were not committed."
             echo ""
-            echo "Fix: run cargo test locally to regenerate, then:"
+            echo "Fix: run cargo test --locked locally to regenerate, then:"
             echo "  git add protocol/typescript/"
             echo "  git commit --amend --no-edit"
             echo "  git push --force-with-lease"
@@ -261,7 +276,7 @@ jobs:
       - uses: ./.github/actions/rust-ci-setup
       # The CLI links this library, but linking never executes its serve-loop tests.
       - name: Client transport lifecycle regressions
-        run: cargo test -p continuum-client --lib --profile dev-fast
+        run: cargo test --locked -p continuum-client --lib --profile dev-fast
       - name: CLI installed-release handoff regressions
         run: |
           set -o pipefail
@@ -275,7 +290,7 @@ jobs:
             tests::deploy_consume_tests::the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running \
             tests::reboot_tests::a_decoded_hold_of_unknown_cause_is_unreadable_never_free \
             tests::deploy_consume_tests::a_held_handoff_charges_no_attempt_and_keeps_no_deferral; do
-            cargo test -p continuum-core --bin continuum --profile dev-fast --features "$FEATURES" "$test" -- --exact 2>&1 | tee cli-handoff.log
+            cargo test --locked -p continuum-core --bin continuum --profile dev-fast --features "$FEATURES" "$test" -- --exact 2>&1 | tee cli-handoff.log
             if ! grep -q 'test result: ok. 1 passed;' cli-handoff.log; then
               echo "::error::The exact CLI handoff regression did not execute: $test"
               exit 1
@@ -373,7 +388,7 @@ jobs:
           & $env:CONTINUUM_NATIVE_CONTAINER_LEASE_TEST
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:CONTINUUM_REQUIRE_WINDOWS_REPARSE_TEST = '1'
-          $exitProof = & cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures 'inference::lane_registry::tests::shutdown_confirmation_waits_for_exit_and_preserves_replacements' -- --exact 2>&1
+          $exitProof = & cargo test --locked -p continuum-engine --lib --profile dev-fast --features test-fixtures 'inference::lane_registry::tests::shutdown_confirmation_waits_for_exit_and_preserves_replacements' -- --exact 2>&1
           $exitProofResult = $LASTEXITCODE
           $exitProof | Write-Output
           if ($exitProofResult -ne 0) { exit $exitProofResult }
@@ -381,7 +396,7 @@ jobs:
           # The engine's native custody fixtures (expert placement, engine install) live in the
           # engine crate (core/continuum-engine); they run from there. Core's compile on Windows
           # is the windows-msvc check's job, so no core test binary is built here.
-          $interop = & cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures 'model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes' -- --exact --ignored --nocapture 2>&1
+          $interop = & cargo test --locked -p continuum-engine --lib --profile dev-fast --features test-fixtures 'model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes' -- --exact --ignored --nocapture 2>&1
           $interopResult = $LASTEXITCODE
           $interop | Write-Output
           if ($interopResult -ne 0) { exit $interopResult }
@@ -398,7 +413,7 @@ jobs:
             'inference::llama_server::late_ready::tests::a_publication_cancelled_before_its_ledger_keeps_the_launch',
             'inference::llama_server::late_ready::tests::a_restarted_core_adopts_a_healthy_engine_it_never_spawned'
           )) {
-            $output = & cargo test -p continuum-engine --lib --profile dev-fast --features test-fixtures $test -- --exact --nocapture 2>&1
+            $output = & cargo test --locked -p continuum-engine --lib --profile dev-fast --features test-fixtures $test -- --exact --nocapture 2>&1
             $result = $LASTEXITCODE
             $output | Write-Output
             if ($result -ne 0) { exit $result }
@@ -413,7 +428,7 @@ jobs:
             'system_resources::disk_eviction::tests::redirected_profile_or_incremental_child_never_reaches_external_data',
             'system_resources::disk_eviction::tests::ladder_frees_in_order_and_preserves_release_outputs'
           )) {
-            $output = & cargo test -p continuum-kernel --lib --profile dev-fast --features test-fixtures $test -- --exact --nocapture 2>&1
+            $output = & cargo test --locked -p continuum-kernel --lib --profile dev-fast --features test-fixtures $test -- --exact --nocapture 2>&1
             $result = $LASTEXITCODE
             $output | Write-Output
             if ($result -ne 0) { exit $result }
@@ -422,14 +437,14 @@ jobs:
       - name: Windows owned process custody and console fixtures
         if: needs.changes.outputs.rust != 'false'
         run: |
-          $output = & cargo test -p continuum-process --lib --profile dev-fast 2>&1
+          $output = & cargo test --locked -p continuum-process --lib --profile dev-fast 2>&1
           $result = $LASTEXITCODE
           $output | Write-Output
           if ($result -ne 0) { exit $result }
           if (($output -join "`n") -notmatch 'test result: ok\. [1-9][0-9]* passed;') { throw 'Process fixtures did not execute' }
       - name: Type-check integration targets using the same headless profile
         if: needs.changes.outputs.rust != 'false'
-        run: cargo check -p continuum-core --test '*' --profile dev-fast --features test-fixtures
+        run: cargo check --locked -p continuum-core --test '*' --profile dev-fast --features test-fixtures
       - name: Windows maintenance durable-stop regression
         if: needs.changes.outputs.rust != 'false'
         run: |
@@ -438,7 +453,7 @@ jobs:
             'maintenance::tests::maintenance_is_bounded_and_recovery_cannot_repeat_observation'
             'maintenance::tests::every_drain_observation_and_restart_failure_restores_once'
           )) {
-            $output = & cargo test -p continuum-core --bin continuum --profile dev-fast --features test-fixtures $test -- --exact 2>&1
+            $output = & cargo test --locked -p continuum-core --bin continuum --profile dev-fast --features test-fixtures $test -- --exact 2>&1
             $result = $LASTEXITCODE
             $output | Write-Output
             if ($result -ne 0) { exit $result }
@@ -447,7 +462,7 @@ jobs:
       - name: Windows deploy maintenance custody regression
         if: needs.changes.outputs.rust != 'false'
         run: |
-          $output = & cargo test -p continuum-core --lib --profile dev-fast --features test-fixtures 'modules::deploy_actuator::tests::maintenance_blocks_real_spawner_before_scheduler_or_detached_child' -- --exact 2>&1
+          $output = & cargo test --locked -p continuum-core --lib --profile dev-fast --features test-fixtures 'modules::deploy_actuator::tests::maintenance_blocks_real_spawner_before_scheduler_or_detached_child' -- --exact 2>&1
           $result = $LASTEXITCODE
           $output | Write-Output
           if ($result -ne 0) { exit $result }
@@ -456,7 +471,7 @@ jobs:
       - name: Windows connected teacher restoration regression
         if: needs.changes.outputs.rust != 'false'
         run: |
-          $output = & cargo test -p continuum-serving --lib --profile dev-fast --features test-fixtures 'modules::serving_daemon::tests::cancelled_exclusive_teacher_restores_real_owned_child' -- --exact 2>&1
+          $output = & cargo test --locked -p continuum-serving --lib --profile dev-fast --features test-fixtures 'modules::serving_daemon::tests::cancelled_exclusive_teacher_restores_real_owned_child' -- --exact 2>&1
           $result = $LASTEXITCODE
           $output | Write-Output
           if ($result -ne 0) { exit $result }
@@ -533,7 +548,7 @@ jobs:
       # lines instead of 624,456.
       - name: continuum-cli-lifecycle tests (the CLI's platform lifecycle, no core link)
         if: needs.changes.outputs.rust != 'false'
-        run: cargo test -p continuum-cli-lifecycle
+        run: cargo test --locked -p continuum-cli-lifecycle
 
   # Preserve the required Windows context; neither child can silently disappear.
   cargo-check-windows:

@@ -31,7 +31,7 @@ So we design for **target SIZES**, not specific GPUs Joel owns:
 | **Primary desktop GPU** | NVIDIA Ampere+ class, 24 GB VRAM (RTX 3090 / A5000 / 5090) | Daily driver desktop GPU | Qwen-2.5-14B → 30B at Q4_K_M |
 | **Supported older desktop GPU** | NVIDIA Pascal, 11 GB VRAM (GTX 1080 Ti) | Older desktop still in use; substrate citizen | Qwen-2.5-7B at Q4_K_M (~4.5 GB) |
 | **Joel's actual hardware** | 1080 Ti + 5090 on Windows; MacBookPro15,1 + Intel Mac | Drives the test matrix; CI must work on all of these | as per tier |
-| **Edge local** | MacBookPro15,1 + AMD Radeon Pro 560X | Lower-bound proof; heuristic + reflective + grid offload | None local (CPU 1.1 tok/s); grid offload for real work |
+| **Edge local** | MacBookPro15,1 (i7-8850H CPU; its Radeon Pro 560X and UHD 630 both measured slower than the CPU or unusable, 2026-10-31, MULTI-PERSONA-TUNING-CAMPAIGN) | Lower-bound proof; heuristic + reflective + grid offload | Qwen2.5-Coder-1.5B on the CPU (decode 22.5-22.8 tok/s measured 2026-10-31); grid offload for larger work |
 | **Grid peer** | Any reachable continuum-core-server | Same command surface; transport is the only difference | Whatever that peer hosts |
 
 **Critical principles:**

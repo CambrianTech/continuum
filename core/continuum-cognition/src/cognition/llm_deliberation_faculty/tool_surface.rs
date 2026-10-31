@@ -9,6 +9,7 @@ impl LlmDeliberationFaculty {
     /// commands on return. [[joel-boundary-design-values]]
     pub(super) fn rebuild_tool_surface(&mut self) {
         self.prompt_feedback.store(None); // New schema bytes invalidate prior prompt observations.
+        *self.tools_epoch.get_mut() = None; // a new surface is selected afresh, never rebuilt from the old one's names
         if self.tools.is_empty() {
             self.surface = ToolSurface::default();
             return;
@@ -57,7 +58,8 @@ impl LlmDeliberationFaculty {
         })
     }
 
-    /// Her learned head over `selected` (the activity's surface). It always computes and
+    /// Her learned head over `selected` (the activity's surface): that surface plus the verbs her
+    /// head holds beyond it (`ToolSurface::learned`), never fewer. It always computes and
     /// reserves the head the next epoch would hold, so a turnover can adopt it and the shadow
     /// receipt (`delib.tool_head.epoch`) measures it. It changes what is SENT only on a server
     /// that takes `tail_tools`, where a verb outside the head stays callable.
@@ -80,10 +82,27 @@ impl LlmDeliberationFaculty {
             return selected;
         }
         let reserve = next.as_ref().map_or(0, |next| next.tokens() as usize); // map_or: no next head reserves nothing beyond this one
-        match head.held() {
-            Some(held) => self.surface.learned(&held, &head.loaded(), reserve),
-            None => selected.reserving(reserve),
+        let Some(held) = head.held() else {
+            return selected.reserving(reserve);
+        };
+        let floor: &[crate::ai::types::NativeToolSpec] = match selected.specs.as_deref() {
+            Some(specs) => specs,
+            None => &[],
+        };
+        let learned = self.surface.learned(floor, &held, &head.loaded(), reserve);
+        if learned.tokens <= budget {
+            return learned;
         }
+        // Her floor plus her head's extras exceed the grant: the activity's surface, which fit,
+        // goes out instead, and the shortfall is loud (the extras stay one `commands/help` away).
+        continuum_base::probe!(
+            class = "delib.tool_head.over_grant",
+            persona = %self.persona_name,
+            head_tokens = learned.tokens as u64,
+            grant = budget as u64,
+            "her learned head (floor plus held extras) did not fit the tools grant; her activity's surface went out without the extras"
+        );
+        selected
     }
 
     /// Her native tool surfaces, as built for her tool set and model.

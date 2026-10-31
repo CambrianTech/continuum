@@ -9,15 +9,7 @@
 use crate::epoch::Block;
 use crate::source::{whole_chars, Item, Source};
 
-/// How much of an item the view renders: whole, its summary, its pointer, or inside its
-/// source's one fold block with the rest of the oldest run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Level {
-    Full,
-    Summary,
-    Pointer,
-    Folded,
-}
+pub(super) use crate::level::Level;
 
 /// How much of an item a level shows, for comparing two levels of one item.
 pub(super) fn rank(level: &Level) -> u8 {

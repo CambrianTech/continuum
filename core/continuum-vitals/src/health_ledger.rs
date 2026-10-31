@@ -19,14 +19,14 @@ pub struct Ledger {
     pub settles: AtomicU64,
     pub credits_staged: AtomicU64,
     pub credits_settled: AtomicU64,
-    /// Turns that ended INSIDE the reasoning channel — no answer, no act (the
-    /// `persona.act.think_only` seam). Two in an hour on the M5 (2026-09-20) were the
-    /// whole story of #4194's allowance floor; on the hour line a regression is one number.
-    pub think_only: AtomicU64,
+    /// How every completed generation stopped, counted once at the one place it is
+    /// classified (see [`Stop`]). Counting at a branch instead missed every cut: Aris's
+    /// three 963-token cuts inside thinking (the M5, 2026-10-30) read "think-only 0".
+    pub(crate) stops: StopCounters,
     /// Turn iterations that NEVER REACHED THE MODEL — she waited at the serving gate and
     /// produced nothing (the `persona.act.lane_starved` seam, card cff534ba). The sibling
-    /// of `think_only` and NOT the same failure: a think-only turn GOT a lane and ended
-    /// inside the reasoning channel; a lane-starved turn never got one. On the M5
+    /// of the stops and NOT the same failure: a generation that stopped (landed, cut, or
+    /// ended in its reasoning) GOT a lane; a lane-starved turn never got one. On the M5
     /// 2026-09-20 ~21:55Z two of the hour's turns were `model_ms=0` waits of 6 and 25
     /// minutes at `lanes_available=0`, and the line called them acts.
     pub lane_starved: AtomicU64,
@@ -84,7 +84,7 @@ pub static LEDGER: Ledger = Ledger {
     settles: AtomicU64::new(0),
     credits_staged: AtomicU64::new(0),
     credits_settled: AtomicU64::new(0),
-    think_only: AtomicU64::new(0),
+    stops: StopCounters::new(),
     lane_starved: AtomicU64::new(0),
     generations: AtomicU64::new(0),
     generations_dropped: AtomicU64::new(0),
@@ -97,10 +97,104 @@ pub static LEDGER: Ledger = Ledger {
     lane_window_start_ms: AtomicU64::new(0),
 };
 
-/// A turn ended inside the reasoning channel with no answer and no act (the
-/// `persona.act.think_only` seam) — the allowance did not hold her think.
-pub fn note_think_only() {
-    LEDGER.think_only.fetch_add(1, Ordering::Relaxed);
+/// How one completed generation stopped: the outcome the hour line counts. Mapped once
+/// from the emission classifier's verdict where it is made, so every generation lands in
+/// exactly one class whatever branch handles it afterwards. A generation that ERRORED never
+/// completed and is not a stop: it is counted in `generations_dropped`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stop {
+    /// The model stopped on its own with an answer or a call.
+    Landed,
+    /// The model stopped on its own having produced nothing: no answer, no call, no reasoning.
+    /// It said and did nothing, so it is never read as work.
+    Empty,
+    /// The model stopped on its own inside its reasoning: no answer, no call.
+    ThinkEnded,
+    /// Cut at the output limit inside the answer.
+    CutAnswer,
+    /// Cut at the output limit inside the reasoning, nothing said.
+    CutThink,
+    /// Landed, with the think stopped at the reasoning budget the request set.
+    ThinkBudget,
+}
+
+/// One counter per [`Stop`], fed only by [`note_stop`].
+#[derive(Default)]
+pub(crate) struct StopCounters {
+    landed: AtomicU64,
+    empty: AtomicU64,
+    think_ended: AtomicU64,
+    cut_answer: AtomicU64,
+    cut_think: AtomicU64,
+    think_budget: AtomicU64,
+}
+
+impl StopCounters {
+    pub(crate) const fn new() -> Self {
+        Self {
+            landed: AtomicU64::new(0),
+            empty: AtomicU64::new(0),
+            think_ended: AtomicU64::new(0),
+            cut_answer: AtomicU64::new(0),
+            cut_think: AtomicU64::new(0),
+            think_budget: AtomicU64::new(0),
+        }
+    }
+
+    /// Count one generation that stopped as `stop`.
+    pub(crate) fn note(&self, stop: Stop) {
+        self.counter(stop).fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn counter(&self, stop: Stop) -> &AtomicU64 {
+        match stop {
+            Stop::Landed => &self.landed,
+            Stop::Empty => &self.empty,
+            Stop::ThinkEnded => &self.think_ended,
+            Stop::CutAnswer => &self.cut_answer,
+            Stop::CutThink => &self.cut_think,
+            Stop::ThinkBudget => &self.think_budget,
+        }
+    }
+
+    fn read(&self, take: impl Fn(&AtomicU64) -> u64) -> StopCounts {
+        StopCounts {
+            landed: take(&self.landed),
+            empty: take(&self.empty),
+            think_ended: take(&self.think_ended),
+            cut_answer: take(&self.cut_answer),
+            cut_think: take(&self.cut_think),
+            think_budget: take(&self.think_budget),
+        }
+    }
+}
+
+/// The hour's stops, as read: every class side by side, never summed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StopCounts {
+    pub landed: u64,
+    pub empty: u64,
+    pub think_ended: u64,
+    pub cut_answer: u64,
+    pub cut_think: u64,
+    pub think_budget: u64,
+}
+
+/// One completed generation stopped as `stop`. Called once per generation, at the
+/// emission classifier.
+pub fn note_stop(stop: Stop) {
+    LEDGER.stops.note(stop);
+}
+
+/// The hour's stops, read and reset by the tick. Its own reader, for the reason
+/// [`snapshot_lane_starved_and_reset`] gives.
+pub fn snapshot_stops_and_reset() -> StopCounts {
+    LEDGER.stops.read(|c| c.swap(0, Ordering::Relaxed))
+}
+
+/// The hour's stops so far, without a reset (the on-demand health read).
+pub fn read_stops() -> StopCounts {
+    LEDGER.stops.read(|c| c.load(Ordering::Relaxed))
 }
 
 /// A placement move landed (the `placement.move.opportunity` seam and the switch's
@@ -437,10 +531,10 @@ pub struct CitizenHealth {
     pub settles: u64,
     pub credits_staged: u64,
     pub credits_settled: u64,
-    /// Turns this hour that ended inside the reasoning channel — no answer, no act.
-    pub think_only: u64,
+    /// How this hour's generations stopped, every class side by side.
+    pub stops: StopCounts,
     /// Turn iterations this hour that never reached the model — a wait, not an act, and
-    /// not a think-only turn either. Its own term on the line (card cff534ba).
+    /// not a stop either. Its own term on the line (card cff534ba).
     pub lane_starved: u64,
     /// Generations this hour that reached a terminal answer, and the ones dropped in
     /// flight (card ebce2ba0). `generations` is the denominator the drop RATE is read
@@ -715,18 +809,23 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         // THE WAYS AN HOUR CAN GO, SIDE BY SIDE AND NEVER SUMMED. `acts` is work that
         // reached the model and came back with hands; `lane-starved` never reached it at
         // all (card cff534ba — 6 and 25 minutes of waiting read as two of "8 acts" on the
-        // M5, 2026-09-20); `think-only` reached it and ended inside the reasoning channel
-        // (#4283); `prefix reuse` is how much of each prompt the engine did not re-read
-        // (card c119ace7); `moves` is minds changing seats and `oldest dormant turn` is a
-        // mind with no seat at all (card 10bba591). Six different problems, six owners.
-        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · lane-starved {} · think-only {} · dropped {} · writes {} · lane grants {} · settles {} · learning credits {} staged / {} settled{}{} · moves: {} on opportunity / {} on failure{} — {}",
+        // M5, 2026-09-20); `stops` is how each generation that reached it ended, every
+        // class apart (a cut inside thinking is not a landed turn); `prefix reuse` is how much of each
+        // prompt the engine did not re-read (card c119ace7); `moves` is minds changing
+        // seats and `oldest dormant turn` is a mind with no seat at all (card 10bba591).
+        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · lane-starved {} · stops: landed {} / empty {} / think-ended {} / cut-answer {} / cut-think {} / think-budget {} · dropped {} · writes {} · lane grants {} · settles {} · learning credits {} staged / {} settled{}{} · moves: {} on opportunity / {} on failure{} — {}",
         h.window_secs / 60,
         h.resident,
         lanes,
         h.served_window / 1000,
         h.acts,
         h.lane_starved,
-        h.think_only,
+        h.stops.landed,
+        h.stops.empty,
+        h.stops.think_ended,
+        h.stops.cut_answer,
+        h.stops.cut_think,
+        h.stops.think_budget,
         dropped,
         h.writes,
         h.lanes_granted,
@@ -773,7 +872,7 @@ pub fn snapshot_prompt_and_reset() -> (u64, u64) {
     )
 }
 
-pub fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64, u64) {
+pub fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64) {
     (
         LEDGER.acts.swap(0, Ordering::Relaxed),
         LEDGER.writes.swap(0, Ordering::Relaxed),
@@ -781,6 +880,38 @@ pub fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64, u64) {
         LEDGER.settles.swap(0, Ordering::Relaxed),
         LEDGER.credits_staged.swap(0, Ordering::Relaxed),
         LEDGER.credits_settled.swap(0, Ordering::Relaxed),
-        LEDGER.think_only.swap(0, Ordering::Relaxed),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: a stop class counted under another, or not at all. Each class
+    // lands in its own counter exactly once per note; the regression is Aris's three
+    // cuts inside thinking (the M5, 2026-10-30), which the old branch counter never saw.
+    #[test]
+    fn every_stop_class_is_counted_once_in_its_own_counter() {
+        let stops = StopCounters::new();
+        for stop in [Stop::CutThink, Stop::CutThink, Stop::CutThink, Stop::Landed, Stop::Empty, Stop::ThinkEnded, Stop::CutAnswer, Stop::ThinkBudget] {
+            stops.note(stop);
+        }
+        assert_eq!(
+            stops.read(|c| c.load(Ordering::Relaxed)),
+            StopCounts { landed: 1, empty: 1, think_ended: 1, cut_answer: 1, cut_think: 3, think_budget: 1 }
+        );
+    }
+
+    // what this catches: the tick's read-and-reset losing or keeping counts. A read
+    // without reset leaves the hour intact; the tick's swap returns the hour and starts
+    // the next one at zero.
+    #[test]
+    fn a_snapshot_without_reset_keeps_the_hour_and_the_tick_starts_the_next_at_zero() {
+        let stops = StopCounters::new();
+        stops.note(Stop::CutThink);
+        let peek = stops.read(|c| c.load(Ordering::Relaxed));
+        assert_eq!(peek.cut_think, 1);
+        assert_eq!(stops.read(|c| c.swap(0, Ordering::Relaxed)).cut_think, 1);
+        assert_eq!(stops.read(|c| c.load(Ordering::Relaxed)), StopCounts::default());
+    }
 }

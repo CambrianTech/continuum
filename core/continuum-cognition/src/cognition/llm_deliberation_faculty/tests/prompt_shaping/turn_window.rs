@@ -689,52 +689,39 @@ fn a_held_work_card_survives_budget_pressure_that_drops_everything_else() {
     );
 }
 
-// what this catches (the M5, 2026-09-20 20:58–21:14Z, after #4194): the allowance
-// fell to a floor — `kind=pass measured_tps=0.0 allowance=768`, `kind=act
-// allowance=1500` — and Qwen3.8 ended two turns inside its reasoning channel
-// (`persona.act.think_only reasoning_len=2730`, `2112`): no answer, no act. And
-// (2026-10-18 02:10Z) Benchy's first write cut mid-call against a reserve of twice
-// her read-only peak. Pinned on the pure claim: an unmeasured reply wants a
-// reply-sized prior, never a constant floor; a measured need is wanted whole; an
-// act floors at her answer channel; a pending cut doubles back; priority follows
-// the turn (ambient 4, directed 6, act 8, act on live work or after a cut 10); the
-// runaway bounds hold; the time/need terms are reported, never the bound; and the
-// channel split that feeds the need.
+// what this catches: the reply's claim as one claimant in the allocation: its floor (an
+// act's measured answer channel), its want (her measured need, or the reply-sized prior),
+// its priority from the turn (ambient 4, directed 6, act 8, act on live work or after a
+// pending cut 10), a pending cut's measured peak retained, and NO
+// token cap: a cap claimed above her context starved her reads (the M5, 2026-10-30,
+// ONE-BUDGET.md slice 6). The time/need terms are reported, never the bound.
 #[test]
-fn the_reply_claim_holds_the_reasoning_channel_under_its_runaway_bound() {
+fn the_reply_claims_her_measured_need_and_no_cap() {
     use crate::cognition::working_set::OutputNeed;
     let floor = LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS;
     let prior = LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS;
-    let cap = LlmDeliberationFaculty::ACT_OUTPUT_CAP;
-    // (floor, wanted, priority, runaway bound)
-    let shape = |(c, r): (crate::cognition::rag_budget::RagSourceBudget, u32)| {
+    // (floor, wanted, priority)
+    let shape = |c: crate::cognition::rag_budget::RagSourceBudget| {
         assert_eq!(c.min_tokens, c.floor_tokens, "above its floor the reply grows by priority");
         assert!(c.required, "the reply always gets its floor");
-        (c.floor_tokens, c.max_tokens, c.priority, r)
+        (c.floor_tokens, c.max_tokens, c.priority)
     };
-    // Unmeasured: a reply-sized prior, never 768 or any constant floor.
-    assert_eq!(shape(reply_claim(TurnKind::Pass, None, 0, false, false)), (floor, prior, 4, cap));
-    assert_eq!(shape(reply_claim(TurnKind::Pass, None, 0, false, true)), (floor, prior, 6, cap));
-    assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, false, false)), (floor, prior, 8, cap));
+    // Unmeasured: a reply-sized prior, never a window fraction.
+    assert_eq!(shape(reply_claim(TurnKind::Pass, None, 0, false, false)), (floor, prior, 4));
+    assert_eq!(shape(reply_claim(TurnKind::Pass, None, 0, false, true)), (floor, prior, 6));
+    assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, false, false)), (floor, prior, 8));
     assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, true, false)).2, 10, "live held work");
     assert_eq!(shape(reply_claim(TurnKind::Act, None, 1, false, false)).2, 10, "a pending cut");
-    // The M5's shape: a mind that thinks ~900 tokens before a 300-token answer.
+    // Measured: her think + answer, whole; an act floors at her answer channel.
     let need = OutputNeed { reasoning: 900, answer: 300, turns: 5 };
-    let (_, wanted, _, runaway) = shape(reply_claim(TurnKind::Pass, Some(need), 0, false, false));
-    assert_eq!(wanted, 1_200, "her measured think + answer, whole");
-    assert_eq!(runaway, cap, "a small need still gets the act's cap as its bound");
-    // Kimi (the 5090, 2026-10-06): an act floors at her answer channel and wants
-    // her whole turn; a pass is bounded at twice her p90 turn.
+    assert_eq!(shape(reply_claim(TurnKind::Pass, Some(need), 0, false, false)).1, 1_200);
     let kimi = OutputNeed { reasoning: 6_100, answer: 4_077, turns: 32 };
-    assert_eq!(shape(reply_claim(TurnKind::Act, Some(kimi), 0, false, false)), (4_077, 10_177, 8, cap));
-    assert_eq!(shape(reply_claim(TurnKind::Pass, Some(kimi), 0, false, false)).3, 20_354);
-    // A pending cut doubles back (cf9e's 3,587 → 7,174), under the runaway bound.
-    assert_eq!(shape(reply_claim(TurnKind::Pass, Some(need), 3_587, false, false)).1, 7_174);
-    assert_eq!(shape(reply_claim(TurnKind::Act, Some(kimi), 7_174, false, false)).1, cap);
-    assert_eq!(shape(reply_claim(TurnKind::Pass, Some(kimi), 7_174, false, false)).1, 14_348);
-    // A runaway need never claims past the bound, floor included.
+    assert_eq!(shape(reply_claim(TurnKind::Act, Some(kimi), 0, false, false)), (4_077, 10_177, 8));
+    // A large measured need claims all of it: the window and the allocation bound it.
     let huge = OutputNeed { reasoning: 30_000, answer: 20_000, turns: 9 };
-    assert_eq!(shape(reply_claim(TurnKind::Act, Some(huge), 0, false, false)), (cap, cap, 8, cap));
+    assert_eq!(shape(reply_claim(TurnKind::Act, Some(huge), 0, false, false)), (20_000, 50_000, 8));
+    // A pending cut's measured peak is retained as demand, not doubled again (cf9e's 3,587).
+    assert_eq!(shape(reply_claim(TurnKind::Pass, Some(need), 3_587, false, false)).1, 3_587);
     // The terms beside the allowance: reported, never the bound.
     let a = output_allowance(TurnKind::Pass, Some(12.0), None, 6_932);
     assert_eq!((a.allowance, a.time_term, a.need_term), (6_932, Some(720), None));
@@ -772,18 +759,16 @@ fn the_reply_claim_holds_the_reasoning_channel_under_its_runaway_bound() {
     let (think, answer) = reasoning_answer_split(1000, 2000, tool_bytes);
     assert_eq!(think + answer, 1000);
     assert!(answer > 0);
-    assert_eq!(crate::cognition::working_set::EmissionStop::classify(true, answer),
+    assert_eq!(crate::cognition::working_set::EmissionStop::classify(true, answer > 0),
         crate::cognition::working_set::EmissionStop::CutMidAnswer);
 }
 
-// what this catches: the request carries the view's allowance VERBATIM — the
-// prompt plan's flex grant — on an act and on a pass alike. An unmeasured mind on
-// a roomy window gets what no other claim took, up to the runaway bound: the
-// reserve that left 30k of an idle window unused while her reply was cut (the
-// two-step yield) cannot come back, and the act bound still holds (losing it
-// reproduces the 5,316-token act, 157 s on the lane).
+// what this catches: the request carries the view's grant verbatim, on an act and on a pass
+// alike, and an unmeasured reply's grant is the cold prior, never a runaway cap claimed above
+// her context: a 12,288-token act cap starved her reads on the M5 (2026-10-30, ONE-BUDGET.md
+// slice 6). An idle window's slack is her view's room, not the reply's.
 #[tokio::test]
-async fn an_unmeasured_turn_carries_its_grant_under_the_runaway_bound() {
+async fn an_unmeasured_turn_carries_its_measured_grant_and_no_cap() {
     let window = 32_768u32;
     let persona = Uuid::new_v4();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
@@ -796,11 +781,7 @@ async fn an_unmeasured_turn_carries_its_grant_under_the_runaway_bound() {
     .with_context_window(window);
     let ws = Workspace::new("act on the card");
     let view = faculty.prompt_view(&ws);
-    assert_eq!(
-        view.completion_reserve,
-        LlmDeliberationFaculty::ACT_OUTPUT_CAP,
-        "an idle window's slack is hers to write with, up to the runaway bound"
-    );
+    assert_eq!(view.completion_reserve, LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS, "an unmeasured reply claims the prior, no cap");
     let binding = faculty.binding.load_full();
     for (kind, purpose) in [
         (TurnKind::Act, "cognition/act"),

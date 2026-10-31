@@ -70,8 +70,8 @@ impl LlmDeliberationFaculty {
                 // is priced from its measured size, never as the pointer resident in its place,
                 // or the allocation would never grant room to see it (FOCUS-CONTRACT rule 7).
                 let whole = |item: &continuum_context::source::Item<ContextMessage>| {
-                    let extra = continuum_context::source::whole_chars(item).saturating_sub(item.full.text.chars().count());
-                    cost(&item.full) + extra / continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN
+                    let extra = continuum_context::source::whole_chars(item).saturating_sub(item.full().text.chars().count());
+                    cost(item.full()) + extra / continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN
                 };
                 let want: usize = items.iter().map(whole).sum();
                 crate::cognition::rag_budget::RagSourceBudget {
@@ -429,8 +429,10 @@ impl LlmDeliberationFaculty {
 /// on top, the price of keeping it whole.) The reserve must also hold one act's appends, so
 /// `growing` is at most `available - grounding - per_act` as well, which binds only when an
 /// act appends more than half of what the growing sources may hold. Before the epoch being
-/// replaced appended anything (`None`) the share start (`EPOCH_START_SHARE`) stands alone; the replay's half-window
-/// start halved turnovers (continuum-context `examples/replay.rs`).
+/// replaced appended anything (`None`) the first bound stands alone. Both are the derivation's,
+/// on every machine: no share learned on one box decides how much of what she read she keeps
+/// (a quarter, replayed on M5 captures, collapsed every read but her newest on 2026-10-30,
+/// ONE-BUDGET.md slice 6).
 ///
 /// The one allocator spends it: a higher-priority source asks for its whole grant as its
 /// minimum, which `flex_allocate` serves first in priority order, and the lowest priority
@@ -455,7 +457,7 @@ pub(in super::super) fn start_grants(
     // Characters per allocation token, the ratio each claim was priced at (`view_claims`).
     let wanted_tokens: u64 = grants.iter().flatten().map(|a| u64::from(a.requested_max)).sum();
     let wanted_chars: u64 = claims.iter().zip(&grants).filter(|(_, a)| a.is_some()).map(|(c, _)| c.full_chars as u64).sum();
-    let per_act_tokens = appended_per_act.map_or(0, |chars| (chars as u64 * wanted_tokens).div_ceil(wanted_chars.max(1)) as usize); // map_or: no act measured yet reserves the share start alone
+    let per_act_tokens = appended_per_act.map_or(0, |chars| (chars as u64 * wanted_tokens).div_ceil(wanted_chars.max(1)) as usize); // map_or: no act measured yet: the half bound alone
     let lowest = claims.iter().map(|claim| claim.priority).min().unwrap_or(0); // unwrap_or: no claims means nothing to grant
     let grounding: usize = claims
         .iter()
@@ -474,8 +476,9 @@ pub(in super::super) fn start_grants(
     // never used: it starts with the whole growable room. Halved, a 5,204-token start held 1,887
     // chars and her history rendered empty after a scaled calibration
     // (a_scaled_calibration_after_turnovers).
+    // `reserve >= growing` with `growing + reserve = growable`: half, from the amortization.
     let growing = if per_act_tokens < growable {
-        (growable / EPOCH_START_SHARE).min(growable - per_act_tokens)
+        (growable / 2).min(growable - per_act_tokens)
     } else {
         growable
     };
@@ -534,15 +537,3 @@ pub(in super::super) fn start_grants(
 
 #[cfg(test)]
 mod tests;
-
-/// The share of what grounding leaves that a new epoch starts her growing sources at; the rest is
-/// room to append before the next turnover. A turnover re-prefills the start, and turnovers come
-/// once per (window - start) of appends, so prefill per act from turnovers is
-/// `start * appended / (window - start)`: a smaller start is cheaper, bounded by what it collapses
-/// (which stays reachable through handles).
-// derived-or-floor: derived — the dyno over the M5 residents' captures at the 48k working window,
-// 2026-10-28 (~/.continuum/evidence/2026-10-28-working-window/, replay --share 2/3/4): a quarter
-// start cut prefill per request 10-25% against a half (Benchy 42 -> 34 s, Aiko 25 -> 19, Aris 33 -> 32,
-// Atlas 21 -> 17) with fewer turnovers and fewer items collapsed overall. The closed-form optimum
-// from her measured expand rate replaces this (FLOW plan §2b).
-const EPOCH_START_SHARE: usize = 4;

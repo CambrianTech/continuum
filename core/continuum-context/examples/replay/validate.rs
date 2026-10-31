@@ -146,17 +146,19 @@ impl Restored {
     /// its pointer. An item sent whole already is left as it was.
     pub fn enrich(&self, items: &mut [Item<String>]) {
         for item in items {
-            let Some(whole) = self.by_seq.get(&item.key) else { continue };
-            if item.full.chars().count() >= whole.chars().count() {
+            let Some(whole) = self.by_seq.get(item.key()) else { continue };
+            if item.full().chars().count() >= whole.chars().count() {
                 continue;
             }
-            let sent = item.full.clone();
+            let sent = item.full().clone();
             let header = sent.lines().next().unwrap_or_default().to_owned(); // unwrap_or_default: an empty item has no header line
-            item.summary = summarize(whole, Shape::Code(&gutter))
+            let summary = summarize(whole, Shape::Code(&gutter))
                 .or_else(|| summarize(whole, Shape::Output))
                 .map(|summary| format!("{header}\n{summary}"));
-            item.full = format!("{header}\n{whole}");
-            item.pointer = Some(sent);
+            // Rebuilt, never edited in place: its content hash is the whole it now holds.
+            *item = Item::whole(item.id(), item.cause(), item.key(), format!("{header}\n{whole}"))
+                .with_summary(summary)
+                .with_pointer(sent);
         }
     }
 

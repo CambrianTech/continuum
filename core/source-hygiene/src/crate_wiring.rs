@@ -50,7 +50,7 @@ pub fn policy_gaps(repo: &Path, members: &[Member], policy: &Policy) -> Vec<Stri
         }
     }
     for m in members.iter().filter(|m| policy.pending.contains(&m.name)) {
-        if !has_tests(&repo.join("core").join(&m.dir).join("src")) {
+        if !has_tests(repo, &m.dir) {
             out.push(format!("{} is in pending but has no tests: it is by_nature, not debt", m.name));
         }
     }
@@ -60,9 +60,9 @@ pub fn policy_gaps(repo: &Path, members: &[Member], policy: &Policy) -> Vec<Stri
     out
 }
 
-/// Whether a crate's `src/` declares any test.
-pub fn has_tests(src: &Path) -> bool {
-    crate::collect_files(src).iter().any(|file| file.raw.contains("#[test]") || file.raw.contains("#[tokio::test"))
+/// Whether the crate at `core/<dir>` declares any test in its `src/`.
+pub fn has_tests(repo: &Path, dir: &str) -> bool {
+    crate::collect_files(repo, &format!("core/{dir}/src")).iter().any(|file| file.raw.contains("#[test]") || file.raw.contains("#[tokio::test"))
 }
 
 /// The quoted strings of `"key":[...]` in the selector's `crate-sets` JSON line.

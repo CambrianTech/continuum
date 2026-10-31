@@ -67,7 +67,7 @@ impl Sediment {
         }
         for source in sources {
             let name = source.name.clone();
-            source.items.retain(|item| !self.keys.contains(&(name.clone(), item.key.clone())));
+            source.items.retain(|item| !self.keys.contains(&(name.clone(), item.key().to_owned())));
         }
     }
 
@@ -76,15 +76,15 @@ impl Sediment {
     pub fn settle(&mut self, sources: &mut [Captured], grants: &[usize]) -> usize {
         let mut batch = Vec::new();
         for (source, grant) in sources.iter_mut().zip(grants) {
-            let standing: usize = source.items.iter().filter(|item| !settles(&source.name, &item.key)).map(|item| item.full.chars().count()).sum();
+            let standing: usize = source.items.iter().filter(|item| !settles(&source.name, item.key())).map(|item| item.full().chars().count()).sum();
             let mut room = grant.saturating_sub(standing);
             // Newest first: the items that still fit whole stay young; from the first that does
             // not, every older item settles (a contiguous oldest run). Her newest item of each
             // source stays young whatever its grant: the newest is never collapsed.
             let mut boundary = 0;
             let mut newest = true;
-            for (index, item) in source.items.iter().enumerate().rev().filter(|(_, item)| settles(&source.name, &item.key)) {
-                let chars = item.full.chars().count();
+            for (index, item) in source.items.iter().enumerate().rev().filter(|(_, item)| settles(&source.name, item.key())) {
+                let chars = item.full().chars().count();
                 if std::mem::take(&mut newest) {
                     room = room.saturating_sub(chars);
                     continue;
@@ -98,11 +98,11 @@ impl Sediment {
             let name = source.name.clone();
             let mut index = 0;
             source.items.retain(|item| {
-                let settle = index < boundary && settles(&name, &item.key);
+                let settle = index < boundary && settles(&name, item.key());
                 index += 1;
                 if settle {
-                    let key = (name.clone(), item.key.clone());
-                    let pointer = item.pointer.clone().unwrap_or_else(|| item.full.clone()); // unwrap_or_else: an item without a pointer is its own handle
+                    let key = (name.clone(), item.key().to_owned());
+                    let pointer = item.pointer().cloned().unwrap_or_else(|| item.full().clone()); // unwrap_or_else: an item without a pointer is its own handle
                     self.keys.insert(key.clone());
                     batch.push((key, pointer));
                 }
@@ -152,7 +152,7 @@ impl Sediment {
 
 /// Every (source, key) the sources offer this act, before the sediment filters them.
 pub fn offered(sources: &[Captured]) -> HashSet<(String, String)> {
-    sources.iter().flat_map(|source| source.items.iter().map(|item| (source.name.clone(), item.key.clone()))).collect()
+    sources.iter().flat_map(|source| source.items.iter().map(|item| (source.name.clone(), item.key().to_owned()))).collect()
 }
 
 /// The grants each source gets under `rule`'s start, mapped back to `sources` by name: the
@@ -165,13 +165,14 @@ pub fn grants_by_source(sources: &[Captured], claims: &[Claim], grants: &[usize]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use continuum_context::source::Item;
 
     fn source(name: &str, sizes: &[usize]) -> Captured {
         let items = sizes
             .iter()
             .enumerate()
-            .map(|(n, size)| Item { key: n.to_string(), full: "x".repeat(*size), summary: None, pointer: Some(format!("[result #{n}]")), stored: None })
+            .map(|(n, size)| {
+                crate::captured(n.to_string(), "x".repeat(*size)).with_pointer(format!("[result #{n}]"))
+            })
             .collect();
         Captured { name: name.to_owned(), items }
     }
@@ -183,7 +184,7 @@ mod tests {
         let mut sources = vec![source("actions", &[100, 100, 10, 100, 50]), source("room-doctrine", &[500])];
         let mut sediment = Sediment::default();
         assert_eq!(sediment.settle(&mut sources, &[150, 0]), 3);
-        let young: Vec<&str> = sources[0].items.iter().map(|item| item.key.as_str()).collect();
+        let young: Vec<&str> = sources[0].items.iter().map(|item| item.key()).collect();
         assert_eq!(young, ["3", "4"], "from the first item that does not fit, the whole oldest run settles");
         assert_eq!(sources[1].items.len(), 1, "a standing block never settles");
         assert!(sediment.heads("head")[1].starts_with(HEADER) && sediment.heads("head")[1].ends_with("[result #2]"));

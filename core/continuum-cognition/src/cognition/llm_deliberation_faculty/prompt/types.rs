@@ -388,9 +388,9 @@ pub struct DeliberationPromptView {
     pub input_identity: [u8; 32],
     /// Cached pre-calibration cost, including selected schemas and framing.
     pub estimated_prompt_tokens: usize,
-    /// The reply's allowance this plan granted (its flex grant plus what no other claim
-    /// took, under its runaway bound) — charged against the window here, and carried
-    /// verbatim as the wire request's `max_tokens`.
+    /// Her reply's grant in the one allocation: her measured need (no cap). Charged against the
+    /// window here and carried verbatim as the wire request's `max_tokens`; a turn cut at it
+    /// records its cut channel at double, so the next claim grows from the evidence.
     pub completion_reserve: u32,
     pub capacity_error: Option<PromptCapacityError>,
     /// The assembled prompt broke the one budget (`prompt/budget.rs`): the act fails and

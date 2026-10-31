@@ -32,6 +32,8 @@ pub(crate) struct PendingInput {
     uncertain: Vec<(Uuid, Uuid)>,
     /// Uncertain rows a completed turn has answered: the loop closes them.
     answered: Vec<Uuid>,
+    /// When she last passed her initiative turn; engagement forgets it (card d0cf9473).
+    initiative_passed_at_ms: Option<u64>,
 }
 mod recovered;
 struct RetainedInput {
@@ -197,6 +199,21 @@ impl PendingInput {
                 }
             }
         }
+    }
+    /// Her initiative turn's outcome on the self-cycle that began at `cycle_ms`: a pass is
+    /// remembered so the next beat waits for her perception to move
+    /// ([`Initiative::on_beat`](crate::persona::initiative_turn::Initiative::on_beat));
+    /// engagement forgets it. The cycle's start, not its end: a line that arrived while
+    /// she deliberated may not be in what she passed on, so it still moves her.
+    pub(crate) fn note_initiative(&mut self, work: &crate::persona::act_question::WorkQuestionOutcome, cycle_ms: u64) {
+        if work.engaged {
+            self.initiative_passed_at_ms = None;
+        } else if work.drove {
+            self.initiative_passed_at_ms = Some(cycle_ms);
+        }
+    }
+    pub(crate) fn initiative_passed_at_ms(&self) -> Option<u64> {
+        self.initiative_passed_at_ms
     }
     pub(crate) fn settle_self(
         &mut self,

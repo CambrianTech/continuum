@@ -4,7 +4,22 @@ use super::*;
 
 /// One act as her view renders it: seq, full, summary, pointer, and its stored whole (rendered
 /// chars, handle) when its body is not resident.
-pub(crate) type ActRendering = (u64, String, Option<String>, String, Option<(usize, String)>);
+/// One act as her view renders it: who it is (its `seq` in her ledger, the room it was for), its
+/// levels, and where its whole is stored when it left RAM.
+#[derive(Clone, Debug)]
+pub(crate) struct ActRendering {
+    pub seq: u64,
+    /// The room the act was for; acts in one room are one chain.
+    pub room: Option<uuid::Uuid>,
+    pub full: String,
+    pub summary: Option<String>,
+    pub pointer: String,
+    /// `(chars, handle)` of a whole that left RAM for its saved output.
+    pub stored: Option<(usize, String)>,
+    /// The hash of the act's RAW result bytes, before any label: two identical outcomes hash
+    /// equal whatever their seq or room (`Absent` when the result is not resident).
+    pub content: continuum_context::cause::Content,
+}
 
 impl WorkingMemory {
     /// Typed snapshot of the window, oldest → newest — the kind-aware sibling
@@ -209,9 +224,9 @@ impl WorkingMemory {
         self.open_views.lock().render(scope.as_deref())
     }
 
-    /// Her open views visible from where her hands stand, one `(key, line)` each: the items of
+    /// Her open views visible from where her hands stand, one `(key, full, pointer)` each: the items of
     /// her view's open-views stream (`context_streams::open_views`).
-    pub(crate) fn open_view_lines(&self) -> Vec<(String, String)> {
+    pub(crate) fn open_view_lines(&self) -> Vec<crate::cognition::open_views::ViewLine> {
         let scope = self.scope.lock().clone();
         self.open_views.lock().lines(scope.as_deref())
     }
@@ -262,7 +277,10 @@ impl WorkingMemory {
                 };
                 let full = whole.unwrap_or_else(|| pointer.clone());
                 let summary = record.summary.as_deref().map(|summary| format!("[result {attribution}{workspace} — summary; expand with tool/output] {summary}"));
-                (record.seq, full, summary, pointer, stored)
+                let content = record.result.as_deref().map_or(continuum_context::cause::Content::Absent, |result| {
+                    continuum_context::cause::Content::Hashed(continuum_context::cause::ContentHash::of(result))
+                });
+                ActRendering { seq: record.seq, room: record.room, full, summary, pointer, stored, content }
             })
             .collect();
         (renderings, in_flight)

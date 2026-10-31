@@ -268,7 +268,7 @@ impl LlmDeliberationFaculty {
                 };
                 let text = render(GroundingPiece::whole(c));
                 let minimum = if c.standing_grounding { render(GroundingPiece::minimum(c)) } else { text.clone() };
-                crate::cognition::context_streams::blocks::Grounding { faculty: c.faculty.as_str().to_owned(), text, minimum, units: std::sync::Arc::clone(&c.units) }
+                crate::cognition::context_streams::blocks::Grounding { persona: self.persona_id, faculty: c.faculty.as_str().to_owned(), text, minimum, units: std::sync::Arc::clone(&c.units) }
             })
             .collect();
         let result_pointers = Vec::new();
@@ -380,7 +380,7 @@ impl LlmDeliberationFaculty {
             input_identity: input.finalize().into(),
             history: messages,
             streams: super::types::Streams {
-                conversation: crate::cognition::context_streams::conversation::Conversation { turns },
+                conversation: crate::cognition::context_streams::conversation::Conversation { persona: self.persona_id, turns },
                 blocks,
             },
             result_pointers,

@@ -412,6 +412,47 @@ impl LlmDeliberationFaculty {
                 }
             }
         };
+        // The channel split the NEXT turn's allowance is sized from: the server's
+        // count apportioned by the bytes the adapter separated into `reasoning`
+        // and `text` (a think-only turn is all reasoning; a native call all answer).
+        // The answer share is the rest of the output count; whether she answered at all
+        // is presence, never this split (`EmissionStop::classify`).
+        let (reasoning_tokens, _) = reasoning_answer_split(
+            resp.usage.output_tokens,
+            resp.reasoning.as_ref().map_or(0, |r| r.len()),
+            answer_payload_bytes(&resp.text, resp.content.as_deref()),
+        );
+        // WHERE the cap fell decides what the cut measures: inside the answer, the
+        // answer channel grows (a write cut mid-payload gets its room); inside the
+        // think, nothing was said and the need ring does not take it — a thinking
+        // model fills any allowance, and doubling that walked her to the deadline
+        // (`EmissionStop`). The cut itself is the fault paths' business below.
+        // A deliberation's think that stopped AT its budget is censored, not measured
+        // (Cormac on #4409): the classifier records it at the allowance so the need ring
+        // never learns the budget and contracts the next allowance geometrically.
+        let allowance = sent_allowance.unwrap_or(view.completion_reserve); // unwrap_or: a request built with no max_tokens was bounded by the reserve alone
+        let reasoning_budget = match self.turn_kind(ws) {
+            TurnKind::Pass => crate::inference::request_body::deliberation_reasoning_budget(
+                u64::from(allowance),
+            )
+            .map(|b| b as u32),
+            TurnKind::Act => None,
+        };
+        // The one classification, from what the response carries (an answer is text or a call;
+        // a stream may not report usage), counted here before any await after the generation: a
+        // cancellation at the read receipt below must not lose the stop of a generation that
+        // already completed (Codex on #5616).
+        let answered = answer_payload_bytes(resp.text.trim(), resp.content.as_deref()) > 0
+            || resp.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty());
+        let reasoned = resp.reasoning.as_deref().is_some_and(|r| !r.trim().is_empty());
+        let stop = super::super::super::working_set::EmissionStop::classify_with_budget(
+            matches!(resp.finish_reason, FinishReason::Length),
+            answered,
+            reasoning_tokens,
+            reasoning_budget,
+            allowance,
+        );
+        crate::cognition::health_ledger::note_stop(stop.counted(answered, reasoned));
         // Sent and answered: she read what this prompt rendered (read_receipt.rs), never before.
         self.send_read_receipt(ws).await;
         let messages = &view.messages;
@@ -437,38 +478,12 @@ impl LlmDeliberationFaculty {
         // a need sample.
         // This is the seam that turns the reserve from a `window/2` prior into a
         // measurement.
-        if let Some(reg) = &self.working_set {
-            // The channel split the NEXT turn's allowance is sized from: the server's
-            // count apportioned by the bytes the adapter separated into `reasoning`
-            // and `text` (a think-only turn is all reasoning; a native call all answer).
-            let (reasoning_tokens, answer_tokens) = reasoning_answer_split(
-                resp.usage.output_tokens,
-                resp.reasoning.as_ref().map_or(0, |r| r.len()),
-                answer_payload_bytes(&resp.text, resp.content.as_deref()),
-            );
-            // WHERE the cap fell decides what the cut measures: inside the answer, the
-            // answer channel grows (a write cut mid-payload gets its room); inside the
-            // think, nothing was said and the need ring does not take it — a thinking
-            // model fills any allowance, and doubling that walked her to the deadline
-            // (`EmissionStop`). The cut itself is the fault paths' business below.
-            // A deliberation's think that stopped AT its budget is censored, not measured
-            // (Cormac on #4409): the classifier records it at the allowance so the need ring
-            // never learns the budget and contracts the next allowance geometrically.
-            let allowance = sent_allowance.unwrap_or(view.completion_reserve); // unwrap_or: a request built with no max_tokens was bounded by the reserve alone
-            let reasoning_budget = match self.turn_kind(ws) {
-                TurnKind::Pass => crate::inference::request_body::deliberation_reasoning_budget(
-                    u64::from(allowance),
-                )
-                .map(|b| b as u32),
-                TurnKind::Act => None,
-            };
-            let stop = super::super::super::working_set::EmissionStop::classify_with_budget(
-                matches!(resp.finish_reason, FinishReason::Length),
-                answer_tokens,
-                reasoning_tokens,
-                reasoning_budget,
-                allowance,
-            );
+        //
+        // Classified once, for every completed generation, before anything branches on it:
+        // the hour line counts the stop here and nowhere else, so a cut that a fault path
+        // handles below is still counted exactly once (Aris's three cuts inside thinking read
+        // "think-only 0" while the count sat in one branch, the M5 2026-10-30).
+        {
             if let super::super::super::working_set::EmissionStop::ThinkBudgetHit { allowance } = stop {
                 continuum_base::probe!(
                     class = "delib.emission.think_budget_hit",
@@ -487,14 +502,26 @@ impl LlmDeliberationFaculty {
                     "think-only cut at the allowance — the peak holds, the need ring does not take it"
                 );
             }
-            let measured = reg.record_emission(
-                self.persona_id,
-                resp.usage.output_tokens,
-                reasoning_tokens,
-                stop,
-                ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
-            );
+            let measured = self.working_set.as_ref().and_then(|reg| {
+                reg.record_emission(
+                    self.persona_id,
+                    resp.usage.output_tokens,
+                    reasoning_tokens,
+                    stop,
+                    ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
+                )
+            });
             if stop == super::super::super::working_set::EmissionStop::CutMidAnswer {
+                // The cost of claiming her measured need (ONE-BUDGET slice 6): a write larger than any
+                // she has measured is cut once, then grows the next claim. Counted, so a live read sees it.
+                continuum_base::probe!(
+                    class = "delib.emission.cut_mid_answer",
+                    persona = %self.persona_name,
+                    allowance,
+                    output_tokens = resp.usage.output_tokens,
+                    peak = measured.as_ref().map_or(0, |m| m.peak_tokens), // map_or: an unrecorded emission has no peak to report
+                    "an answer cut at its measured grant: recorded at double, the next claim grows"
+                );
                 if let (Some(wm), Some(measured)) = (&self.working_memory, measured) {
                     wm.retain_truncated_emission(ws.activity_room_id, measured.peak_tokens);
                 }
@@ -872,9 +899,6 @@ impl LlmDeliberationFaculty {
                             reasoning_len = reasoning.len(),
                             "generation ended inside the reasoning channel — no answer, no act; routing the think-only teacher"
                         );
-                        // The hour's receipt counts it (`[health] … think-only N`): two of
-                        // these in an hour on the M5 were the whole story of #4194.
-                        crate::cognition::health_ledger::note_think_only();
                         let call = crate::ai::types::ToolCall {
                             id: "tool-attempt-think-only".to_string(),
                             name: crate::cognition::tool_executor::command_executor::THINK_ONLY_SENTINEL

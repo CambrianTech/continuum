@@ -57,18 +57,16 @@ fn record(wm: &WorkingMemory, act: Observation) {
     wm.record_receipt_typed(&[act], "[action] code/read", None, saved("open-view-receipt"));
 }
 
-// what this catches: a view that says she read a file but not what it said, so once the
-// bytes left her window she read it again (Benchy, the M5, 2026-10-18 05:01-05:03Z:
-// `lib.rs` re-read whole with "read 1-498 (all of it)" in her prompt). Her stated
-// reasoning for the read rides the view; a later read replaces it.
+// Intent is retained as detail, but cannot truthfully be described as understanding of
+// a result that had not arrived when the intent was written.
 #[test]
-fn a_view_keeps_what_she_understood_when_she_read_it() {
+fn a_view_keeps_pre_read_intent_without_claiming_it_is_understanding() {
     let wm = WorkingMemory::new(3);
     wm.set_served_window(46_848);
     record(&wm, read(1, 498, 498, None));
     wm.annotate_open_views("each rule is a module with a predicate over SourceFile, registered in scan()");
     let block = wm.open_views_block().expect("an open view renders");
-    assert!(block.contains("my note when I read it: \"each rule is a module with a predicate over SourceFile, registered in scan()\""), "{block}");
+    assert!(block.contains("intent before this read: \"each rule is a module with a predicate over SourceFile, registered in scan()\""), "{block}");
     record(&wm, read(1, 80, 498, None));
     wm.annotate_open_views("the Violation struct is the report shape");
     let block = wm.open_views_block().expect("still open");
@@ -157,7 +155,7 @@ fn a_view_in_a_checkout_her_hands_left_is_retired_from_her_view() {
     wm.set_served_window(46_848);
     wm.set_scope(Some("/checkouts/a".into()));
     record(&wm, read(1, 40, 498, None));
-    let views = crate::cognition::context_streams::open_views::OpenViews { memory: &wm };
+    let views = crate::cognition::context_streams::open_views::OpenViews { memory: &wm, persona: uuid::Uuid::nil() };
     let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
     let (mut view, _) = match View::start(Vec::new(), &[&views as &dyn Source<_>], whole) {
         Ok(started) => started,
@@ -177,4 +175,44 @@ fn a_view_in_a_checkout_her_hands_left_is_retired_from_her_view() {
     wm.set_scope(Some("/checkouts/a".into()));
     let back = view.advance(&[&views as &dyn Source<_>]);
     assert_eq!(back.items, 1, "offered again when her hands return");
+}
+
+// Capture57: eight cursor records carried 25,534 characters of copied pre-read intent
+// as mandatory pointers. A larger note must increase demand, never the cursor floor.
+// Exercise the actual source and epoch turnover; no per-source truncation or cap.
+#[test]
+fn planning_detail_yields_to_cursor_and_returns_when_granted() {
+    use continuum_context::source::Source;
+    use continuum_context::view::{claims, Claim, View};
+
+    let wm = WorkingMemory::new(3);
+    record(&wm, read(1, 498, 498, None));
+    let source = crate::cognition::context_streams::open_views::OpenViews { memory: &wm, persona: uuid::Uuid::nil() };
+    let sources: &[&dyn Source<_>] = &[&source];
+    let cursor_floor = claims(sources)[0].floor_chars;
+    let intent = "I need to inspect the implementation before deciding what to change. ".repeat(64);
+    wm.annotate_open_views(&intent);
+    let demand = claims(sources);
+    assert_eq!(demand[0].floor_chars, cursor_floor, "intent is not mandatory input");
+    assert!(demand[0].full_chars > cursor_floor + intent.len());
+    let whole = |claims: &[Claim]| claims.iter().map(|c| c.full_chars).collect();
+    let floor = |claims: &[Claim]| claims.iter().map(|c| c.floor_chars).collect();
+    let (mut view, _) = View::start(Vec::new(), sources, whole).expect("matching grants");
+    let text = |view: &View<crate::cognition::context_streams::ContextMessage>| {
+        view.render().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n")
+    };
+    assert!(text(&view).contains(intent.trim()));
+    view.turn_over(Vec::new(), sources, floor).expect("matching grants");
+    let reduced = text(&view);
+    assert!(reduced.contains(PATH) && reduced.contains("read 1-498 (all of it)"), "{reduced}");
+    assert!(reduced.contains("code/read") && reduced.contains("start_line/end_line"), "retrieval remains resolvable: {reduced}");
+    assert!(!reduced.contains("I need to inspect"), "pre-read planning must yield: {reduced}");
+    assert_eq!(claims(sources), demand, "allocation does not rewrite stored wants");
+
+    // Checkpointing preserves the complete note even while its visible level is a cursor.
+    let restored = WorkingMemory::new(3);
+    restored.restore(wm.snapshot());
+    let restored_source = crate::cognition::context_streams::open_views::OpenViews { memory: &restored, persona: uuid::Uuid::nil() };
+    view.turn_over(Vec::new(), &[&restored_source], whole).expect("matching grants");
+    assert!(text(&view).contains(intent.trim()), "the allocation never deleted the note");
 }

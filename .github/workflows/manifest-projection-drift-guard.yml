@@ -63,14 +63,14 @@ jobs:
       # names the fix (cargo run -p manifest-gen).
       - name: Verify generated projections in sync with install-manifest.toml
         run: |
-          if ! cargo run -q -p manifest-gen -- --check; then
+          if ! cargo run --locked -q -p manifest-gen -- --check; then
             echo "::error::install-manifest projection drift detected."
             echo "tools/scripts/install-manifest.toml was edited but the generated"
             echo "per-platform projections (tools/scripts/generated/) were not"
             echo "regenerated + committed. The install runners would use stale values."
             echo ""
             echo "Fix: regenerate locally, then commit the generated files:"
-            echo "  cargo run -p manifest-gen"
+            echo "  cargo run --locked -p manifest-gen"
             echo "  git add tools/scripts/generated/"
             echo "  git commit --amend --no-edit   # or a follow-up commit"
             echo "  git push --force-with-lease"

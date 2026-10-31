@@ -30,6 +30,9 @@
 //!   which she acted or spoke is engagement (the engaged beat); a pass is not, so the
 //!   beat backs off toward rest exactly as a fruitless musing did. A message turn never
 //!   offers it: the message snaps her beat to engaged, and that beat offers it.
+//! - ASKED AGAIN ONLY ON SOMETHING NEW: after a pass, the next offer waits until something
+//!   she perceives has moved ([`Initiative::on_beat`]); on unchanged perception her prompt
+//!   is the same and so is the question.
 //!
 //! The earlier attempt this must not repeat (card_holder.rs, Kimi 2026-10-06): a gate
 //! that could not see a followed claim read `no_held_work` and she created a new review
@@ -47,6 +50,22 @@ pub enum Initiative {
     Offered,
     /// A message turn: the speak question was this turn's; her next beat offers it.
     NotOffered,
+}
+
+impl Initiative {
+    /// Her heartbeat's offer. After she passes, the next offer waits until something she
+    /// perceives has moved: with her perception unchanged her prompt is byte-identical, so
+    /// asking again only spends the engine on the same question (the M5, 2026-10-27: Aiko
+    /// was asked five times on the same 102,073 tokens, 25-88 s of engine each, card
+    /// d0cf9473). A line, a board change or a view update in any of her activities moves
+    /// it; her beat still rests through the quiet ticks between. Pure.
+    pub(crate) fn on_beat(passed_at_ms: Option<u64>, perception_moved_at_ms: Option<u64>) -> Self {
+        match passed_at_ms {
+            None => Self::Offered,
+            Some(passed) if perception_moved_at_ms.is_some_and(|moved| moved > passed) => Self::Offered,
+            Some(_) => Self::NotOffered,
+        }
+    }
 }
 
 /// The line her initiative turn opens with. A statement of her situation, never an
@@ -180,6 +199,16 @@ mod tests {
             assert!(own_time.contains(means), "own time names {means:?} among her means");
             assert!(!INITIATIVE_MOMENT.contains(means), "the opening line is not a menu: {means:?}");
         }
+    }
+
+    // what this catches: re-asking a mind that passed on a prompt that cannot have changed
+    // (card d0cf9473), and the opposite failure, never asking again once her world moves.
+    #[test]
+    fn after_a_pass_only_a_moved_perception_offers_her_initiative_again() {
+        assert_eq!(Initiative::on_beat(None, None), Initiative::Offered, "never passed: offered");
+        assert_eq!(Initiative::on_beat(Some(1_000), None), Initiative::NotOffered, "nothing ever moved");
+        assert_eq!(Initiative::on_beat(Some(1_000), Some(1_000)), Initiative::NotOffered, "moved before the pass");
+        assert_eq!(Initiative::on_beat(Some(1_000), Some(1_001)), Initiative::Offered, "moved since the pass");
     }
 
     // what this catches: the initiative framing losing its act shape or gaining a

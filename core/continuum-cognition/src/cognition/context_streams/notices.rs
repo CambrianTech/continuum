@@ -4,20 +4,26 @@
 //! M5, 2026-10-24: the largest new text per act, ahead of her own results). Keyed, an unchanged
 //! notice is appended once per epoch and a changed one appends its new version.
 
+use continuum_context::cause::{Cause, Origin};
 use continuum_context::source::{Item, Source};
 
-use super::{priority, ContextMessage};
+use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::framing_echo::NOTICES_HEADER;
 use crate::cognition::working_memory::WorkingMemory;
 
 pub(crate) struct Notices<'a> {
     pub memory: &'a WorkingMemory,
+    /// Whose occurrences these are (`super::element`).
+    pub persona: uuid::Uuid,
 }
 
 /// A notice is required input: collapsed, it is still itself, so no grant can drop it.
-fn required(key: String, text: String) -> Item<ContextMessage> {
-    let message = ContextMessage::user(text);
-    Item { key, full: message.clone(), summary: None, pointer: Some(message), stored: None }
+impl Notices<'_> {
+    /// A notice comes from her situation, outside her: an external origin.
+    fn notice(&self, key: String, text: String) -> Item<ContextMessage> {
+        let message = ContextMessage::user(text);
+        Item::whole(element(self.persona, Producer::Notice, key.as_bytes()), Cause::Root(Origin::External), key, message.clone()).with_pointer(message)
+    }
 }
 
 impl Source<ContextMessage> for Notices<'_> {
@@ -41,8 +47,8 @@ impl Source<ContextMessage> for Notices<'_> {
         let banner = format!(
             "{NOTICES_HEADER} (status observations about my situation — not a message from anyone, and not my own words):"
         );
-        let mut items = vec![required("banner".to_owned(), banner)];
-        items.extend(notices.into_iter().map(|(key, text)| required(key, format!("- {text}"))));
+        let mut items = vec![super::standing(self.persona, "notices", "banner", ContextMessage::user(banner))];
+        items.extend(notices.into_iter().map(|(key, text)| self.notice(key, format!("- {text}"))));
         items
     }
 
@@ -53,8 +59,11 @@ impl Source<ContextMessage> for Notices<'_> {
             .ended_notice_keys()
             .into_iter()
             .map(|key| {
-                let notice = format!("- [ended] the notice {key} no longer holds");
-                required(key, notice)
+                // The end of a notice follows from that notice.
+                let message = ContextMessage::user(format!("- [ended] the notice {key} no longer holds"));
+                let id = element(self.persona, Producer::Notice, format!("ended/{key}").as_bytes());
+                let cause = Cause::Of(element(self.persona, Producer::Notice, key.as_bytes()));
+                Item::whole(id, cause, key, message.clone()).with_pointer(message)
             })
             .collect()
     }

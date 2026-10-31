@@ -288,16 +288,32 @@ impl LlmDeliberationFaculty {
                 .and_then(|r| r.timing.as_ref())
                 .map(|t| (t.cached_tokens, t.prefill_tokens)),
         );
-        receipts.push(
-            match &gen_result {
-                Ok(response) => {
-                    crate::ai::provenance::GenerationReceipt::from_response(request_id, response)
-                }
-                Err(error) => crate::ai::provenance::GenerationReceipt::faulted(
-                    request_id,
-                    error.to_string(),
-                ),
+        // The render receipt: taken on every outcome, so a failed request's prompt is never
+        // receipted, and delivered only where the request was served.
+        let submitted = self.context_view.lock().as_mut().and_then(continuum_context::view::View::take_submitted);
+        let receipted_request = request_id.clone();
+        let receipt = match &gen_result {
+            Ok(response) => crate::ai::provenance::GenerationReceipt::from_response(request_id, response),
+            Err(error) => crate::ai::provenance::GenerationReceipt::faulted(request_id, error.to_string()),
+        };
+        // Counted where the served receipt is made, the one producer of the facts her service
+        // window reads: in the window it was served in, whether or not her turn settles soon.
+        if matches!(receipt.outcome, crate::ai::provenance::GenerationOutcome::Served { .. }) {
+            crate::cognition::resident_service::note_generation(self.persona_id);
+            // A measurement fork's prompts are not hers: they never acknowledge what she was shown.
+            if let (Some(view), false, Some(memory)) =
+                (submitted, self.forked, self.working_memory.as_ref())
+            {
+                crate::cognition::render_receipt::deliver(crate::cognition::render_receipt::RenderReceipt {
+                    owner: self.persona_id,
+                    incarnation: memory.incarnation(),
+                    request: receipted_request,
+                    view,
+                });
             }
+        }
+        receipts.push(
+            receipt
             .with_capture(completed.as_deref())
             .with_genes(genes)
             .with_allocation(allocation),
@@ -308,7 +324,7 @@ impl LlmDeliberationFaculty {
     pub fn build_request_within(
         &self,
         binding: &ModelBinding,
-        // The reply's allowance as the prompt plan granted it
+        // The reply's grant as the prompt plan granted it
         // (`DeliberationPromptView::completion_reserve`): carried as `max_tokens`
         // verbatim, never re-derived here — the prompt was fitted to leave exactly it.
         allowance: u32,
