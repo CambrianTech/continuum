@@ -997,7 +997,12 @@ if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; 
   fi
   (cd "$REPO_ROOT" && npm run build -w @continuum/web >"$ui_build_log" 2>&1 \
     && echo "  desktop build landed (reload / continuum desktop to open it)" \
-    || echo "  ⚠ background desktop build failed — read $ui_build_log" >&2) &
+    || echo "  ⚠ background desktop build failed — read $ui_build_log" >&2;\
+    # Write dist manifest for deploy-verify and desktop probes: git sha + timestamp\
+    if [ -d "$REPO_ROOT/apps/web/dist" ]; then\
+      DIST_MANIFEST="$REPO_ROOT/apps/web/dist/.dist-manifest"\
+      printf 'sha=%s\nbuilt_at=%s\n' "$(cd "$REPO_ROOT" && git rev-parse HEAD 2>/dev/null || echo unknown)" "$(date +%s)" > "$DIST_MANIFEST" \
+    fi) &
 fi
 
 # THE ENGINE CONVERGES ON A DEPLOY TOO (card 7c5f139d). A deploy's build-only pass runs this

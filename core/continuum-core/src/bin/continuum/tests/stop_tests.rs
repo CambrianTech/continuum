@@ -7,11 +7,11 @@ use super::*;
 // verb that fixes it; the promise is reserved for a configured dist that is still in flight.
 #[test]
 fn the_desktop_receipt_never_promises_a_build_the_launch_path_is_not_making() {
-    let up = super::desktop_receipt(true, false, 8975);
+    let up = super::desktop_receipt(true, false, 8975, None);
     assert!(up.contains("http://127.0.0.1:8975/"), "{up}");
-    let in_flight = super::desktop_receipt(false, true, 8975);
+    let in_flight = super::desktop_receipt(false, true, 8975, None);
     assert!(in_flight.contains("lands in the background"), "{in_flight}");
-    let unconfigured = super::desktop_receipt(false, false, 8975);
+    let unconfigured = super::desktop_receipt(false, false, 8975, None);
     assert!(unconfigured.contains("not configured") && unconfigured.contains("CONTINUUM_UI_DIST"), "{unconfigured}");
     assert!(!unconfigured.contains("lands in the background"), "no promise without a dist: {unconfigured}");
 }
