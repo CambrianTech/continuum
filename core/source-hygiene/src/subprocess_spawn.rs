@@ -23,7 +23,7 @@
 //!
 //! A real subprocess (llama-server, git, cargo, a benchmark's own test runner, the
 //! browser) is fine — through `bounded_command`, with a bound and a named outcome.
-use super::{split_code_and_comment, SourceFile, SourceRule, Violation};
+use super::{lexer::split_code_and_comment, SourceFile, SourceRule, Violation};
 
 /// Programs that a library, module, or std already answers for. The replacement is
 /// the rule's message, so the site that trips it also says what to write instead.

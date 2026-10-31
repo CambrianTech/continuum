@@ -35,7 +35,7 @@
 //! one is **the unjustified count may never rise** — every new site names its
 //! boundary, every old one touched is a chance to ratchet down.
 
-use super::{split_code_and_comment, SourceFile, SourceRule, Violation};
+use super::{lexer::split_code_and_comment, SourceFile, SourceRule, Violation};
 
 /// Same bar as the unwrap rule — a justification has to say something.
 // context-budget-exempt: bounds the length of a COMMENT a human types, never a

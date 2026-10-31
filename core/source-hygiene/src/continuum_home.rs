@@ -25,7 +25,7 @@ pub struct ContinuumHomeResolvedOnce;
 /// The code of a line, strings intact: the scanner's one string-aware split, so a `//`
 /// inside `"http://…"` is never read as a comment (Astra on #5196).
 fn code(line: &str) -> &str {
-    super::split_code_and_comment(line).0
+    super::lexer::split_code_and_comment(line).0
 }
 
 /// Whether the code at `i` joins `.continuum` onto a path by hand, including a `.join(`
