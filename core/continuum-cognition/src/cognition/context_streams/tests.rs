@@ -184,3 +184,23 @@ fn her_folded_acts_name_their_range_and_count_in_one_line() {
     assert_eq!(block.text, "[actions #3200-#3330: 131 earlier acts folded; reopen one with tool/output act=<n>]");
     assert!(actions.fold(&[item("banner")]).is_none(), "a run that is not acts names nothing");
 }
+
+// what this catches: a repeated settlement collapsing into the earlier one because thoughts were
+// keyed by their text: she settled passed, failed, passed and her view read passed once and
+// failed once, so her latest state looked like "failed" (found porting e731576c, 2026-10-31).
+// Each settlement is its own occurrence, in order.
+#[test]
+fn a_repeated_settlement_reaches_her_view_as_its_own_occurrence() {
+    use continuum_context::view::{Claim, View};
+    let memory = WorkingMemory::new(8);
+    let thoughts = super::thoughts::Thoughts { memory: &memory, persona: uuid::Uuid::nil() };
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    let (mut view, _) = View::start(Vec::new(), &[&thoughts as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
+    for state in ["passed", "failed", "passed"] {
+        memory.record_settlement(&format!("all regression tests {state}"), None);
+        view.advance(&[&thoughts as &dyn Source<_>]);
+    }
+    let text = view.render().map(|m: &super::ContextMessage| m.text.clone()).collect::<Vec<_>>().join("\n");
+    assert_eq!(text.matches("tests passed").count(), 2, "{text}");
+    assert!(text.rfind("tests passed") > text.rfind("tests failed"), "her latest settlement reads last: {text}");
+}

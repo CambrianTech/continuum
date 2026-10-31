@@ -439,7 +439,7 @@ impl WorkingMemory {
             entry.scope != scope
                 || !matches!(entry.kind, WmKind::ActionStatement { room: authored_room } if Some(authored_room) == room)
         });
-        e.push_back(WmEntry {
+        self.push_entry(&mut e, WmEntry {
             disk_change: Default::default(),
             kind: WmKind::Settlement,
             text: if a.is_empty() {
@@ -450,10 +450,8 @@ impl WorkingMemory {
             scope: None,
             acts: Vec::new(),
             native_calls: Vec::new(),
+            occurrence: 0,
         });
-        while e.len() > self.capacity {
-            e.pop_front();
-        }
         drop(e);
         // Settling closes over the current act→observe loop: the most recent action's
         // FULL result has done its "what next" job. Advance the active boundary PAST it

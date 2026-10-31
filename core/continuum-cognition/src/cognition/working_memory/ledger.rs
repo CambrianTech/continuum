@@ -17,17 +17,15 @@ impl WorkingMemory {
         }
         let scope = self.scope.lock().clone();
         let mut entries = self.entries.lock();
-        entries.push_back(WmEntry {
+        self.push_entry(&mut entries, WmEntry {
             disk_change: Default::default(),
             kind: WmKind::ActionStatement { room },
             text: text.to_owned(),
             acts: Vec::new(),
             native_calls: calls.to_vec(),
             scope,
+            occurrence: 0,
         });
-        while entries.len() > self.capacity {
-            entries.pop_front();
-        }
     }
 
     /// The latest authored decision in this exact activity/root, until settlement.
@@ -56,6 +54,7 @@ impl WorkingMemory {
             ended_pins: Mutex::new(Vec::new()),
             restored_acting_card: Mutex::new(None),
             entries: Mutex::new(VecDeque::new()),
+            next_entry_seq: AtomicU64::new(1),
             scope: Mutex::new(None),
             pending_emissions: Mutex::new(Vec::new()),
             last_action: Mutex::new(None),
@@ -168,23 +167,31 @@ impl WorkingMemory {
 
     /// Record the reasoning the persona just produced. Blank/empty is ignored
     /// (suppressed-thinking turns record nothing). Oldest ages out past capacity.
+    /// Record `entry` in her ring: stamped with the next occurrence (the one owner of entry
+    /// identity), the oldest leaving past capacity.
+    pub(super) fn push_entry(&self, entries: &mut VecDeque<WmEntry>, mut entry: WmEntry) {
+        entry.occurrence = self.next_entry_seq.fetch_add(1, Ordering::Relaxed);
+        entries.push_back(entry);
+        while entries.len() > self.capacity {
+            entries.pop_front();
+        }
+    }
+
     pub fn record(&self, reasoning: &str) {
         let r = reasoning.trim();
         if r.is_empty() {
             return;
         }
         let mut e = self.entries.lock();
-        e.push_back(WmEntry {
+        self.push_entry(&mut e, WmEntry {
             disk_change: Default::default(),
             kind: WmKind::Thought,
             text: r.to_string(),
             acts: Vec::new(),
             native_calls: Vec::new(),
             scope: None,
+            occurrence: 0,
         });
-        while e.len() > self.capacity {
-            e.pop_front();
-        }
     }
 
     /// Record an ACTION the persona's hands just took (a tool call + its result
@@ -336,17 +343,15 @@ impl WorkingMemory {
         let native_calls = e.iter_mut().rev()
             .find(|entry| entry.scope == scope && matches!(entry.kind, WmKind::ActionStatement { room: r } if Some(r) == room))
             .map(|entry| std::mem::take(&mut entry.native_calls)).unwrap_or_default();
-        e.push_back(WmEntry {
+        self.push_entry(&mut e, WmEntry {
             disk_change,
             kind: WmKind::Receipt { n: seq },
             text,
             acts,
             native_calls,
             scope,
+            occurrence: 0,
         });
-        while e.len() > self.capacity {
-            e.pop_front();
-        }
         drop(e);
         // After BOTH the ring and the entry carrying this batch's acts: the set published
         // here names the receipt's handle and each call's, which is what lets the act seam
