@@ -93,7 +93,7 @@ pub fn select_failure_message(
 }
 
 /// Generate text using the best available provider
-/// This is a convenience function for internal use (e.g., AgentModule)
+/// This is a convenience function for internal use (e.g., the recipe generator)
 pub async fn generate_text(
     registry: &AdapterRegistry,
     request: TextGenerationRequest,

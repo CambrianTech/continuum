@@ -13,7 +13,6 @@
 pub mod access;
 mod tool_aliases;
 pub use continuum_store::commands::adapter;
-pub mod agent;
 pub mod ai;
 pub mod airc;
 pub mod auth;

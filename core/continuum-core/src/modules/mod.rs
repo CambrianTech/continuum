@@ -9,7 +9,6 @@
 //! Phase 4: data, embedding, inference, search, training, logger (absorb external workers)
 
 pub mod acting_provider;
-pub mod agent;
 pub mod ai_provider;
 pub mod airc;
 pub mod airc_bridge_directive;

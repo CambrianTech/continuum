@@ -2,11 +2,6 @@
 // Source: generator/generate-rust-bindings.ts
 // Re-generate: npx tsx generator/generate-rust-bindings.ts
 
-// agent: explicit exports (has duplicate types)
-export type { AgentAction } from './agent';
-export type { AgentStatus } from './agent';
-export type { ToolCall } from './agent';
-export type { ToolResult } from './agent';
 // ai: explicit exports (has duplicate types)
 export type { ActiveAdapterRequest } from './ai';
 export type { AudioInput } from './ai';
