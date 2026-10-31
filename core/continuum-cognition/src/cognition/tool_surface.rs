@@ -287,7 +287,7 @@ impl ToolSurface {
             .filter(|(name, _)| {
                 let named = declared.iter().any(|pattern| declares(pattern, name));
                 granted |= named;
-                named || ["commands/", "focus/", "tool/"].iter().any(|own| name.starts_with(own))
+                named || name.starts_with("commands/") || name.starts_with("focus/") || name == "tool/output"
             })
             .map(|(_, spec)| spec.clone())
             .collect();
