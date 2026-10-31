@@ -241,4 +241,18 @@ fn her_unchanged_reread_reaches_her_view_as_a_repeat_and_an_undeclared_act_never
         memory.record_settlement("wrote", None);
         assert_eq!(view.advance(&[&actions as &dyn Source<_>]).repeats, 0, "an undeclared act is never a repeat");
     }
+
+    // Card 7d7b1ace: the read-only verbs declare it too. `git_status` resolves to `code/git/status`,
+    // declared through action_command!'s `effect:` clause, so an unchanged status is a repeat.
+    let memory = WorkingMemory::new(8);
+    let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
+    let (mut view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
+    let status = "On branch main\nnothing to commit, working tree clean\n".repeat(20);
+    let mut repeats = 0;
+    for _ in 0..2 {
+        memory.record_receipt_typed(&[act("git_status", None)], &status, None, unsaved());
+        memory.record_settlement("checked", None);
+        repeats += view.advance(&[&actions as &dyn Source<_>]).repeats;
+    }
+    assert_eq!(repeats, 1, "an unchanged status, asked again, arrives as a repeat");
 }
