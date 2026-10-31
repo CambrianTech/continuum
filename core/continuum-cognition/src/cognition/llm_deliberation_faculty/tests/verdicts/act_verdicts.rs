@@ -209,13 +209,19 @@ async fn a_response_without_usage_is_counted_by_what_it_carries() {
     let mut think = make_response(FinishReason::Stop, "", None);
     think.reasoning = Some("The parser looks fine, but I have not read the tests yet".to_string());
     think.usage.output_tokens = 0;
-    for (resp, landed) in [(answer, 1), (think, 0)] {
+    // Codex's case on #5616: cut at the limit inside an answer, usage missing. The policy and the
+    // counter read one classification, so this is a cut in the answer, never a cut think.
+    let mut cut = make_response(FinishReason::Length, "The parser is fine, but the", None);
+    cut.usage.output_tokens = 0;
+    for (resp, landed) in [(answer, 1), (think, 0), (cut, 2)] {
         let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", Arc::new(ScriptedAdapter::new(vec![resp])))
             .with_context_window(32_768);
         let before = crate::cognition::health_ledger::read_stops();
         faculty.contribute(&Workspace::new("is the parser right?")).await.expect("verdict");
         let after = crate::cognition::health_ledger::read_stops();
-        if landed == 1 {
+        if landed == 2 {
+            assert!(after.cut_answer > before.cut_answer, "a cut answer with no usage is a cut answer: {before:?} -> {after:?}");
+        } else if landed == 1 {
             assert!(after.landed > before.landed, "an answer with no usage is landed: {before:?} -> {after:?}");
         } else {
             assert!(after.think_ended > before.think_ended, "reasoning with no usage ended in her think: {before:?} -> {after:?}");

@@ -759,7 +759,7 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
     let (think, answer) = reasoning_answer_split(1000, 2000, tool_bytes);
     assert_eq!(think + answer, 1000);
     assert!(answer > 0);
-    assert_eq!(crate::cognition::working_set::EmissionStop::classify(true, answer),
+    assert_eq!(crate::cognition::working_set::EmissionStop::classify(true, answer > 0),
         crate::cognition::working_set::EmissionStop::CutMidAnswer);
 }
 
