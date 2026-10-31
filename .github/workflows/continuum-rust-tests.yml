@@ -211,6 +211,12 @@ jobs:
         if: fromJSON(needs.changes.outputs.lib_tests)[matrix.crate]
         run: cargo test --locked -p "$CRATE" --lib --profile dev-fast --features "$FEATURES"
 
+      # ---- continuum-pack: the base layer's load/store keeps its compiler lock (no unwrap, expect or
+      # panic outside tests; lib.rs) and lint-clean, with its derive; the --lib step above built it ----
+      - name: cargo clippy -p continuum-pack -p continuum-pack-derive
+        if: matrix.crate == 'continuum-pack'
+        run: cargo clippy --locked -p continuum-pack -p continuum-pack-derive --profile dev-fast --all-targets --features continuum-pack/conformance -- -D warnings
+
       # ---- continuum-mind: lib tests, compile-fail doc guards ----
       - name: cargo test -p continuum-mind --lib
         if: matrix.crate == 'continuum-mind'

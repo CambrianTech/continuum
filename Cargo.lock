@@ -3588,6 +3588,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-pack"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "continuum-base",
+ "continuum-host",
+ "continuum-pack-derive",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "continuum-pack-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "continuum-perception"
 version = "0.1.0"
 dependencies = [
