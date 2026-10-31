@@ -516,14 +516,6 @@ pub(super) async fn run_pass(
                         round = redrive_round as u64,
                         "settled on a RED DoD — handing her the verdict with a bounded re-drive"
                     );
-                    let tail: String = dod_out
-                        .chars()
-                        .rev()
-                        .take(4000)
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .rev()
-                        .collect();
                     let red_delivery = crate::cognition::rag_budget::RagDelivery {
                     source_id: "airc".to_string(),
                     items: vec![crate::cognition::rag_budget::RagItem {
@@ -531,9 +523,9 @@ pub(super) async fn run_pass(
                         summary: None,
                         pointer: None,
                         content: format!(
-                            "You settled, but the task's definition-of-done currently FAILS.                              Its output ends:
+                            "You settled, but the task's definition-of-done currently FAILS.                              Its output is:
 
-{tail}
+{dod_out}
 
 Fix the workspace and finish —                              the grade reads the files, and a red build scores zero."
                         ),
