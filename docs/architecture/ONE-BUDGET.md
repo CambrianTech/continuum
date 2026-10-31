@@ -293,7 +293,38 @@ claims' blocks make meaningful) and the child returns, for each, its achieved va
 treats the result as the child's increments, with the gap carried forward. A child never sees anything but its
 grant; a parent never sees the child's claims.
 
-*Validators (part 2's PR).* Two joint claims competing for the last unit of one component (neither half-granted);
+*Boundaries, made explicit* (Codex on #5620, part 2):
+1. **Pools, not just units.** A component is a typed amount in a **physical pool**: `PoolId` plus unit. Two GPUs
+   are two pools of bytes, never interchangeable; on unified memory the device view and the RAM view are aliases
+   of one pool, normalized to it before clearing. The pool topology is measured and revisioned; a claim or an
+   observation from another topology revision is refused, not mapped. The `NodeResources` struct above is an
+   example, not a schema: a node's vector is built from its measured pools.
+2. **Lanes are concurrency over an interval.** A lane component declares its interval and is constrained in
+   instantaneous concurrency (how many generations run at once, the measured knee), not as a bare total of
+   seconds, so two claims can never be granted overlapping use of the same seat.
+3. **Child quotes are pure.** The parent asks a child for quotes against one immutable snapshot of custody and
+   observations; a quote mints no lease and requests no shrink. The parent selects, and exactly one allocation
+   (parent and child together) commits atomically, fenced to that snapshot; a commit against a stale snapshot is
+   refused. The child's physical occupancy stays charged in the parent until it is really released. The upper
+   bound is certified for the original problem, not only the sampled candidates: the relaxed value is concave in
+   the grant, so at each sampled grant its price (a subgradient) gives a line above the whole curve, and the
+   bound between samples is the lowest such line.
+4. **A grant reserves until it is realized.** From grant to L5's commit, the granted bundle is reserved; no other
+   claimant can use it while slot, page and generation are being chosen. `Unrealizable` is a typed outcome that
+   releases only the unspent reservation; any physical operation that started keeps its custody. Realizations and
+   releases carry a stable lease and incarnation plus an **operation identity**, so a delayed failure or an engine
+   replaced underneath (ABA) can never withdraw a newer bundle.
+5. **Zero prices, ties and termination, in the shared solver.** A component whose price is zero does not
+   constrain, so an increment's priced size counts only priced components; when every price is zero (slack),
+   every positive-value increment that fits is admitted, in value order, ties by `ClaimId`. Each iteration admits
+   or rejects at least one increment, so the solve ends within as many iterations as there are increments; the
+   result is feasible at every step, and the bound is reported. No stopping threshold is picked and nothing loops
+   unbounded on the hot path.
+
+*Validators (part 2's PR).* Two discrete GPUs plus unified-memory aliases; simultaneous time-overlapping lane
+claims; repeated pure child quotes leave custody unchanged; a commit on a stale quote is refused; a failed L5
+realization after paging started keeps its bytes; a delayed failure after a regrant cannot free the new credit;
+zero-price and overload termination; two joint claims competing for the last unit of one component (neither half-granted);
 a bundle that fits on one component and not another (not admitted, priced in the component that bound); a parent
 re-granting a child less (the child's shrinks follow part 1's custody rules); conservation across nested tiers
 under the randomized drivers extended to vectors; L5's report that a granted bundle could not be realized, and
