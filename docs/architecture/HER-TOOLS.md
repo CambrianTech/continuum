@@ -62,7 +62,7 @@ What HER-TOOLS owns is what a call SAYS: `Answer`, its one rendering, and the su
 ```rust
 pub struct Answer {
     pub effect: Effect,             // what the call did to the world
-    pub body: Selected,             // the part her ResultGrant buys, never self-sized
+    pub body: Selected,             // exactly the selection she asked for; never self-sized
     pub rest: Option<Call>,         // the exact call that reads what the grant left out
     pub fix: Option<Call>,          // on a refusal: the call that would work
     pub running: Option<TaskId>,    // a call that became a Task
@@ -72,8 +72,13 @@ pub enum Effect { Observed { hash: ContentHash },   // content always returned; 
 ```
 
 Its laws:
-- **Size is her grant** (was 4). `Ctx` carries `ResultGrant`; `Selected` is built only from it,
-  and `rest` names the next position whenever anything was left out.
+- **The view is the only sizer** (was 4). A command returns exactly her selection (a page, a
+  filter, a pattern, or the whole), never sized by itself. Her view sizes the newest result: it
+  already shows it whole, at its summary level or as a pointer with its handle
+  (`fit_newest_result`), and older ones by the one allocation. `rest` names the next position
+  whenever the view showed less than the selection. (An earlier draft passed a `ResultGrant`
+  through `Ctx`; reading the code showed the view already owns this, so a second sizer at the
+  command would be the defect.)
 - **Say what changed, including nothing** (was 5). An empty output cannot be constructed. For a
   verb that changes the world, `Unchanged` and `Already` are the producer's own evidence (an edit
   equal to the text, a join to a room she is in, a commit already made). An observation never
@@ -114,7 +119,7 @@ wake: task <id> is running; you will be woken when it ends. Do not poll.
 - **Body, by kind, one convention each.** File content: numbered lines in `cat -n` form, the
   numbers she pages by. Command output: stdout then stderr, each under its own label. A
   change: the changed lines with their numbers and the sha, bytes or remote it produced. A list:
-  one element per line. The body is whatever her grant buys of the selection; it carries no
+  one element per line. The body is the selection, shown at the level her view grants; it carries no
   advice and no prose about itself.
 - **Footer lines, fixed keys, only when they apply.** `more:` when the body left anything out,
   `fix:` on a refusal, `wake:` when the call became a task. Each `<call>` is an exact native call
@@ -133,9 +138,14 @@ falls to zero as commands migrate (the view's own fold levels reuse the renderer
 ### The ratchet: every verb named to her is in her hands (was 7)
 
 `fix`, `rest` and every description, banner and fold pointer render `Call`s, typed values over
-the command registry, rendered in her wire dialect. A verb that is not on her surface cannot be
-a `Call`'s target (the type refuses it), and `named_verbs_offered` catches the strings that are
-still prose. `commands/help` loads any authorized verb into her tail.
+the command registry, rendered in her wire dialect. A `Call` is constructed against her
+AUTHORIZED vocabulary (the type refuses an unauthorized or nonexistent verb), not against the
+surface: requiring a target already on the surface while that surface is being chosen is
+circular (Codex on #5632). Every `Call` a rendered context names claims its verb's schema in the
+same one allocation, so a submitted prompt never names a verb she cannot call; the long tail
+rides `tail_tools`. No per-command `NATIVE` flip is the general fix (`tool/output` is native
+because every fold names it). `named_verbs_offered` catches the strings that are still prose;
+`commands/help` loads any authorized verb into her tail.
 
 ### What compresses
 
@@ -169,7 +179,7 @@ move, measured on replay before the live node.
 
 | # | Slice | Friction | Owner | Done when |
 |---|---|---|---|---|
-| T1 | `ResultGrant` in `Ctx` + the render receipt bound at submission (MIND-CONTEXT); `tool/output` native, sized from the grant, its three self-sized sites and spill's budget parameter deleted; reads return content and hash, and the view renders `Repeat { of }` only while #n is whole in the sent context; `EFFECT = Reopens` (Cormac's 7d7b1ace half); #5630 folds in | 1 | Fable (Cormac reviews; Codex consumes the receipt in #5585) | replay: identical read repeats fall from 314 toward 0 with no repeat rendered for a folded ancestor; live: `tool/output` > 0 per resident-hour |
+| T1 | The render receipt bound at submission (MIND-CONTEXT); `tool/output` native, returning her selection for the view to size, its three self-sized sites and spill's budget parameter deleted; reads return content and hash, and the view renders `Repeat { of }` only while #n is whole in the sent context; `EFFECT = Reopens` (Cormac's 7d7b1ace half); #5630 folds in | 1 | Fable (Cormac reviews; Codex consumes the receipt in #5585) | replay: identical read repeats fall from 314 toward 0 with no repeat rendered for a folded ancestor; live: `tool/output` > 0 per resident-hour |
 | T2 | Tasks: HER-TASKS' slices on Codex's ledger (#5585), measured here: completion on every exit as a wake, the task verbs, no default kill, retention in a class handle | 4, 10 | per HER-TASKS (Fable, Codex, Cormac) | wrong-handle polls 0; every long run reports back; no re-launch of a running command |
 | T3 | Results say what changed (rule 5) and errors carry the fix (rule 6) across code/*, git/*, room/*; `git_push` answers remote, branch and sha; the autocommit becomes visible in her commit's answer; `named_verbs_offered` ratchet and help loading any authorized verb (rule 7) | 6, 7, 8, 9 | Fable (code, help), Cormac (room, work answers) | Benchy-class commit+push in under 5 acts on replay; help loops 0 |
 | T4 | Reflex (HER-TASKS kind): diagnostics after a structured edit, its result an `Answer` | (new) | Fable | a compile error seen the act after the edit, before a build, in the replay of a broken edit |
@@ -186,20 +196,38 @@ by T1's grant:
 
 ```rust
 pub struct RenderReceipt {
-    pub request: RequestId,
+    pub owner: PersonaId,
+    pub incarnation: MemoryIncarnation, // the registered working-memory incarnation that received it
+    pub request: RequestId,             // idempotency key: a replayed submission records nothing new
     pub epoch: EpochId,
-    pub items: Vec<RenderedItem>,      // what she was actually shown, in prompt order
-    pub unavailable: Vec<ElementId>,   // a whole that could not be read: goes back to the allocator
+    pub items: Vec<RenderedItem>,       // what she was actually shown, in prompt order
+    pub unavailable: Vec<ElementId>,    // a whole that could not be read: goes back to the allocator
 }
-pub struct RenderedItem { pub id: ElementId, pub level: Level, pub tokens: u32 }
-pub struct ResultGrant { pub tokens: u32 }   // in Ctx: the newest result's render budget
+pub struct RenderedItem { pub id: ElementId, pub extent: Option<ExtentId>, pub level: Level, pub tokens: u32 }
 ```
 
+Recorded only at the successful backend submission boundary, never at fitting or rendering: a
+prompt that was built but not accepted by the engine was not seen. Bound to the owner and her
+registered incarnation as well as request and epoch, because occurrence identity alone cannot
+say which incarnation of her received it; #5585's `record_task_reads(owner, incarnation, tasks)`
+refuses a replacement incarnation (Codex on #5632).
+
 `Level` is the view's (Whole, a summary level, or `Repeat { of }` only while the ancestor is whole
-in the same submitted context); an explicit reopen is always Whole. `ElementId` is occurrence
-identity (#5611 causal items), not content: for her thoughts this depends on Cormac's card
-4ee623ad (the thoughts source keys by text today, so passed, failed, passed collapses to failed);
-until it lands, a thought's `RenderedItem.id` inherits that defect.
+in the same submitted context). **Whole means the whole selected immutable extent**, and a paged
+result carries that extent's identity (`ExtentId`: the saved output and the range or byte span,
+whose content is immutable by its content address). An explicit reopen asks for an extent; it
+never bypasses the view's sizing for an arbitrarily large artifact.
+
+**What acknowledges a task's end.** Seeing that a task ended and reading its output are
+different facts. The terminal result is the task item's line 1 (`failed bash(cargo test) exit
+101`), present at every level of that item (the rendering keeps line 1 in every fold), so the
+first receipt that shows the task item at ANY level acknowledges the end (`acknowledge(task,
+owner)` at perception, HER-TASKS). An item that is `unavailable` or not rendered acknowledges
+nothing. Its output stays reachable by `more:` and is never required to be read whole.
+
+`ElementId` is occurrence identity (#5611 causal items), not content: for her thoughts this
+depends on Cormac's card 4ee623ad (the thoughts source keys by text today, so passed, failed,
+passed collapses to failed); until it lands, a thought's `RenderedItem.id` inherits that defect.
 
 ## Acceptance
 
