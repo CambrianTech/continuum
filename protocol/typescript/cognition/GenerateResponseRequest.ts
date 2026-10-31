@@ -29,5 +29,4 @@ maxTokens?: number,
  * Hard cap on how long PR-2's async composer waits before
  * returning timeout.
  */
-timeoutMs?: number, 
-};
+timeoutMs?: number, };
