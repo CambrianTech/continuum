@@ -674,6 +674,26 @@ mod repeats {
         assert_eq!(levels, [(Some(id(1)), Level::Full), (Some(id(2)), Level::Repeat { of: id(1) })], "{levels:?}");
     }
 
+    // what this catches (Codex on #5652): a cause cycle among earlier acts (1 -> 2 -> 1, a malformed
+    // chain) looping the ancestor walk forever when a later act arrives under it. Each step must land
+    // strictly before the last; the walk runs on a thread so a regression fails instead of hanging.
+    #[test]
+    fn a_cause_cycle_beneath_an_arrival_ends_the_walk() {
+        let (sent, got) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let id = |seq: usize| ElementId::of(&[b"act", &seq.to_be_bytes()]);
+            let read = |seq: usize, cause: Cause, output: &str| {
+                let act = Act { fingerprint: Fingerprint::of([("code/read", br#"{"path":"a.rs"}"#.as_slice())]), effect: ToolEffect::Observes };
+                Item::rendered(id(seq), cause, seq.to_string(), output.to_owned(), Content::Hashed(ContentHash::of(output))).with_act(act)
+            };
+            let items = vec![read(1, Cause::Of(id(2)), "one"), read(2, Cause::Of(id(1)), "two"), read(3, Cause::Of(id(2)), "three")];
+            let (_, repeated_of) = super::super::repeat::resolve(&Acts(Vec::new()), items, |_| true, |_| true);
+            sent.send(repeated_of).ok();
+        });
+        let repeated_of = got.recv_timeout(std::time::Duration::from_secs(5));
+        assert_eq!(repeated_of, Ok(vec![None, None, None]), "the walk ends at the cycle and finds no repeat");
+    }
+
     // what this catches: the same output from a tool that changes the world read as "nothing
     // happened" (Codex: two appends that both answer OK are two appends), and a tool that
     // declares nothing, or a reopen, ever rendered as a repeat.

@@ -61,8 +61,8 @@ pub(super) fn resolve<T: Block>(
 /// For each arriving act, the position of the occurrence it repeats: walking its `Cause::Of` chain
 /// back through earlier items of this source, the nearest act with its fingerprint and content
 /// hash whose whole is held. An ancestor that matches but is not whole (folded, collapsed, itself
-/// a repeat) is passed over for an older one. The walk only moves to earlier positions, so a
-/// malformed chain cannot loop.
+/// a repeat) is passed over for an older one. Every step lands strictly before the previous one,
+/// so a malformed chain (a cause cycle) ends the walk instead of looping.
 fn ancestors<T>(
     items: &[Item<T>],
     whole: &impl Fn(&Item<T>) -> bool,
@@ -76,12 +76,16 @@ fn ancestors<T>(
         .map(|(position, item)| {
             let identity = observed(item).filter(|_| arriving(item))?;
             let mut cause = item.cause;
+            // Each step must land strictly before the last one visited, so a cycle among earlier
+            // causes (1 -> 2 -> 1) ends the walk instead of looping (Codex on #5652).
+            let mut bound = position;
             while let Cause::Of(parent) = cause {
-                let earlier = at.get(&parent).copied().filter(|&earlier| earlier < position)?;
+                let earlier = at.get(&parent).copied().filter(|&earlier| earlier < bound)?;
                 let ancestor = &items[earlier];
                 if observed(ancestor) == Some(identity) && whole(ancestor) {
                     return Some(earlier);
                 }
+                bound = earlier;
                 cause = ancestor.cause;
             }
             None
