@@ -205,6 +205,11 @@ impl ActionCommand for ToolOutput {
          follow nextByteOffset. Check encoding (utf8 or base64). Line/regex scans examine \
          the whole file with bounded memory; an oversized line is refused with its byte \
          offset, never partially searched.";
+    // Native: her view folds results and names this verb as the way back to each whole
+    // (`perception.rs`, `actions.rs`, the open-views banner). A verb the view names but the
+    // surface never offers made her re-read files instead (the M5, 2026-10-31: Aiko 19
+    // reads in an hour, 0 reopens), so the reopen verb rides her hands.
+    const NATIVE: bool = true;
     type Params = ToolOutputParams;
     type Output = ToolOutputResult;
 

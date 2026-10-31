@@ -55,6 +55,9 @@ fn native_surface_is_derived_from_the_per_command_native_flag() {
         // that never declares NATIVE is invisible to every citizen — this list is
         // the reachability contract, not a nicety.
         "room/members",
+        // The reopen verb her view names for every folded result (the M5, 2026-10-31: never
+        // offered, 0 reopens, files re-read instead).
+        "tool/output",
     ] {
         assert!(
             names.contains(expected),
@@ -69,28 +72,9 @@ fn native_surface_is_derived_from_the_per_command_native_flag() {
         "code/glob is AiSafe but not declared native — must stay catalog-only, not native"
     );
 
-    // And it stays BOUNDED (the muting guardrail) — nowhere near the full registry.
-    // < 40 → < 42, stated plainly (2026-09-01): activity/recipes + activity/invite
-    // joined the native set (the spawn→invite→brief flow — see the agentic-surface
-    // ceiling note in llm_deliberation_faculty for the full rationale + token cost).
-    // < 42 → < 47, stated plainly (2026-09-28, Joel: citizens get Claude's hands):
-    // code/shell-poll (follow a long install, build or server), code/git/add,
-    // code/git/push, code/github/pr-create and code/github/pr-comment joined.
-    // < 47 -> < 48, stated plainly (2026-09-28, Joel: every activity's participants make
-    // cards toward its goals): work/create joined; a citizen could claim and move cards
-    // but not create them, so she could not break a project into slices.
-    // < 48 -> < 49, stated plainly (2026-09-28, Joel: help her screenshot and drive her
-    // own site): perception/interact joined, a persistent browser session she drives
-    // and sees after each step, so a slice's "Accepts" has visual evidence (card 3569675f).
-    // < 49 -> < 52, stated plainly (2026-10-05, Joel: agency; her loop is her own):
-    // focus/continue, focus/nudge and focus/mute joined, her self-determination verbs,
-    // which were registered and documented but never offered (NATIVE unset); Kimi
-    // reported "present in the registry, absent from my menu" twice before this.
-    assert!(
-        names.len() < 52,
-        "native set stayed bounded ({} tools); a full dump would re-mute personas",
-        names.len()
-    );
+    // No count cap: what she is sent is priced by the one allocation
+    // (`ToolSurface::select_granted` refuses schemas beyond the grant, with core hands as the
+    // floor), so the old `names.len() < N`, bumped by hand eight times, decided nothing.
 }
 
 // what this catches: the yield verb must be REACHABLE — offered on the same surface
