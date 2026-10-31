@@ -41,37 +41,21 @@ no caller; no reflex exists.
 Every audit finding is one of two missing shapes. Each lives once in the substrate and every
 command gets it by returning it; nothing below is a per-command behaviour.
 
-### `Task`: anything that runs
+### `Task`: anything that runs is HER-TASKS.md
 
-```rust
-pub struct Task {
-    pub id: TaskId,            // one namespace: shells, builds, helpers, reflexes, sentinels
-    pub act: ActSeq,           // the act that started it; `act #n` reopens its saved result
-    pub label: String,         // her words for it ("cargo test -p continuum-context")
-    pub output: ClassHandle,   // retained whole under its disk class (ONE-BUDGET); never head-cut
-    pub claim: ClaimId,        // CPU, RAM, disk in the one allocation; no constant limit
-}
-pub enum Ended { Exited(i32), Failed(String), Killed { by: Stopper }, Revoked(GrantId) }
-pub enum Stopper { Her, Authority }
-```
+The task half is already designed, and this document does not redefine it:
+[HER-TASKS.md](HER-TASKS.md) (#5581, 2026-10-29) on Codex's durable task ledger (#5585). One
+registry and handle namespace; exactly one end on every path (exit, failure, timeout, stop,
+panic, spawn failure); delivery to the owner recorded at start, as a wake, durable across
+restart; no default kill; reflexes (automation with no mind in it) and sentinels (a mind she
+sends out) on the same primitive. What this audit adds to it is measured, not structural: the
+2,264-act evidence above (friction 4: 69 wrong-handle or finished-handle polls; friction 10:
+six long runs that never reported back) is HER-TASKS' acceptance numbers on replay. Two
+refinements from review apply there: a sentinel's wake needs no rate constant (one pending wake
+per watch, matches coalesce until she perceives it, the act it costs priced by her measured act
+cost), and a reflex's result is an `Answer` sized by her grant like any other, with no count cap.
 
-Its laws, each a former rule:
-- **One namespace** (was 1). An unresolved id is answered with what it is and the ids she holds.
-- **Completion is a wake** (was 2). Every `Ended` variant publishes `TaskEnded { id, ended,
-  duration }` as a stimulus to her mind; no exit path is silent.
-- **A wait is not a kill** (was 3). A call that outlives the act's wait answers `Running(id)`
-  and keeps running; only `Stopper::Her` or a revoked grant ends it.
-- **Reflex = a task an event starts** (was 8): after a structured edit, the touched crate's
-  diagnostics run as a Task; its `TaskEnded` delivers an `Answer` sized from her grant like any
-  result, the rest one `rest` call away. No per-file or total count.
-- **Sentinel = a condition over a task's stream** (was 9): `Watch { task, until: Condition }`
-  emits a `TaskEnded`-shaped wake when the condition holds. Its rate needs no constant: a watch
-  holds at most one pending wake, and further matches coalesce into it until she perceives it,
-  so a chatty watcher costs at most one act per perception. What that act costs is priced in her
-  allocation by her measured act cost; a watch is a claim, revoked like any other.
-- **No orphans.** A task belongs to her durable identity, not to a process. A restart re-adopts
-  her live tasks and delivers completions that happened while she was down; a retired mind's
-  tasks are released through the authority (`Ended::Revoked`), never left running unowned.
+What HER-TOOLS owns is what a call SAYS: `Answer`, its one rendering, and the surface ratchet.
 
 ### `Answer`: everything a call says back
 
@@ -163,7 +147,8 @@ fields. Two shapes replace roughly a dozen.
 
 ## The verbs
 
-Her hands gain one task subtree, and lose the per-kind verbs it replaces:
+The task verbs are HER-TASKS' (T4 there); summarized here for the surface ratchet, so her hands
+gain one task subtree and lose the per-kind verbs it replaces:
 
 | Verb | Replaces | Does |
 |---|---|---|
@@ -185,10 +170,10 @@ move, measured on replay before the live node.
 | # | Slice | Friction | Owner | Done when |
 |---|---|---|---|---|
 | T1 | `ResultGrant` in `Ctx` + the render receipt bound at submission (MIND-CONTEXT); `tool/output` native, sized from the grant, its three self-sized sites and spill's budget parameter deleted; reads return content and hash, and the view renders `Repeat { of }` only while #n is whole in the sent context; `EFFECT = Reopens` (Cormac's 7d7b1ace half); #5630 folds in | 1 | Fable (Cormac reviews; Codex consumes the receipt in #5585) | replay: identical read repeats fall from 314 toward 0 with no repeat rendered for a folded ancestor; live: `tool/output` > 0 per resident-hour |
-| T2 | One task namespace and the `task/*` verbs; completion on every exit, as a wake; timeout moves to background; poll returns only the new output; the 10,000-line head cut replaced by retention in the class handle | 4, 10 | Fable (task owner), Codex (the wake through the event mind's scheduler) | wrong-handle polls 0; every long run reports back; no re-launch of a running command |
+| T2 | Tasks: HER-TASKS' slices on Codex's ledger (#5585), measured here: completion on every exit as a wake, the task verbs, no default kill, retention in a class handle | 4, 10 | per HER-TASKS (Fable, Codex, Cormac) | wrong-handle polls 0; every long run reports back; no re-launch of a running command |
 | T3 | Results say what changed (rule 5) and errors carry the fix (rule 6) across code/*, git/*, room/*; `git_push` answers remote, branch and sha; the autocommit becomes visible in her commit's answer; `named_verbs_offered` ratchet and help loading any authorized verb (rule 7) | 6, 7, 8, 9 | Fable (code, help), Cormac (room, work answers) | Benchy-class commit+push in under 5 acts on replay; help loops 0 |
-| T4 | Reflex: diagnostics after a structured edit, as a priced task | (new) | Fable | a compile error seen the act after the edit, before a build, in the replay of a broken edit |
-| T5 | Sentinels: `task/watch` on the condition engine; the dead watch code wired or deleted | (new) | Codex (scheduler), Fable (verb) | a watched build wakes her on FAILED without a poll |
+| T4 | Reflex (HER-TASKS kind): diagnostics after a structured edit, its result an `Answer` | (new) | Fable | a compile error seen the act after the edit, before a build, in the replay of a broken edit |
+| T5 | Sentinels (HER-TASKS kind) and watches; the dead shell watch code wired or deleted | (new) | per HER-TASKS | a watched build wakes her on FAILED without a poll |
 
 Out of this document, owned elsewhere: 2 (admission deadline, Codex L5), 3 (the reply allowance,
 ONE-BUDGET), 5 (work verb contracts, Cormac), and Benchy's credential (Joel's decision between
