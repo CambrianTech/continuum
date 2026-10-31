@@ -328,6 +328,10 @@ fn outside_literals(code: &str) -> impl Iterator<Item = (usize, u8)> + '_ {
                 i += 1;
                 continue;
             }
+            if let Some(len) = raw_string_len(bytes, i) {
+                i += len;
+                continue;
+            }
             if let Some(len) = char_literal_len(bytes, i) {
                 i += len;
                 continue;
@@ -337,6 +341,40 @@ fn outside_literals(code: &str) -> impl Iterator<Item = (usize, u8)> + '_ {
         }
         None
     })
+}
+
+/// The byte length of a raw string literal starting at `i`, if one does: `r"..."`, `r#"..."#` with
+/// any number of `#`, and the byte forms `br"..."`, `br#"..."#`. Its body may hold `"` freely, so
+/// only the closing quote followed by the same number of `#` ends it (Codex on #5609:
+/// `write(path, r#"let source = "fn main() {}";"#)` hid the write). The prefix must start a token,
+/// so an identifier ending in `r` or `br` is not one. A raw string left open on this line runs to
+/// the line's end, the limit every line reader here shares.
+fn raw_string_len(bytes: &[u8], i: usize) -> Option<usize> {
+    let starts_token = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+    if !starts_token {
+        return None;
+    }
+    let mut at = i;
+    if bytes.get(at) == Some(&b'b') {
+        at += 1;
+    }
+    if bytes.get(at) != Some(&b'r') {
+        return None;
+    }
+    at += 1;
+    let hashes = bytes[at..].iter().take_while(|&&b| b == b'#').count();
+    at += hashes;
+    if bytes.get(at) != Some(&b'"') {
+        return None;
+    }
+    at += 1;
+    while at < bytes.len() {
+        if bytes[at] == b'"' && bytes[at + 1..].iter().take(hashes).filter(|&&b| b == b'#').count() == hashes {
+            return Some(at + 1 + hashes - i);
+        }
+        at += 1;
+    }
+    Some(bytes.len() - i)
 }
 
 /// `code` without a function signature it declares: what follows the body's opening brace, or
@@ -470,6 +508,12 @@ mod tests {
     // the literal's brace was dropped and a real write escaped the writes ratchet (Codex on #5609).
     #[test]
     fn a_signature_is_declared_only_outside_literals() {
+        let raw = r##"std::fs::write(path, r#"let source = "fn main() {}";"#)?;"##;
+        assert_eq!(without_signature(raw), raw, "a fn inside a raw string with embedded quotes is text");
+        let byte_raw = r##"let b = br#"fn x() { "}" }"#;"##;
+        assert_eq!(without_signature(byte_raw), byte_raw);
+        assert_eq!(brace_delta(byte_raw), 0, "braces inside a raw byte string are not blocks");
+        assert_eq!(without_signature("let bar = barrier(fn_ptr);"), "let bar = barrier(fn_ptr);", "an identifier ending in r is not a raw string");
         let write = r#"std::fs::write(path, "fn main() {}")?;"#;
         assert_eq!(without_signature(write), write, "a fn inside a string is text");
         assert_eq!(without_signature("fn cap(&self) -> usize { self.grant.take(8) }"), " self.grant.take(8) }");
