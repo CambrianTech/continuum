@@ -7,7 +7,7 @@ use crate::ai::types::ToolCall;
 use crate::cognition::act_observe::test_support::{admission, body_with_wm, ScriptedExecutor};
 use crate::cognition::act_observe::*;
 use crate::cognition::working_memory::WorkingMemory;
-use crate::cognition::workspace::{Faculty, SalienceArbiter, TurnFraming, WorkspaceCycle};
+use crate::cognition::workspace::{SalienceArbiter, TurnFraming, WorkspaceCycle};
 
 // what this catches:41f4e3ef — a directed drive must persist real receipt-linked
 // progress before settlement; cancellation/rollback cannot lose the last whole
