@@ -165,11 +165,19 @@ pub struct AdmissionPatience {
 }
 
 impl AdmissionPatience {
-    pub fn for_turn(bound: Option<std::time::Duration>, elapsed: std::time::Duration) -> Self {
+    /// A generation occupancy estimate is not an admission expiry. Healthy queue
+    /// and paging work stays owned until admitted or the requester cancels.
+    pub fn for_turn() -> Self {
         Self {
             readiness: crate::inference::slots::EndpointSlots::TURN_READINESS_PATIENCE,
-            deadline: bound.map(|bound| tokio::time::Instant::now() + bound.saturating_sub(elapsed)),
+            deadline: None,
         }
+    }
+
+    /// An explicit caller expiry, already expressed on the monotonic clock.
+    /// Do not derive this from predicted generation occupancy.
+    pub fn until(deadline: tokio::time::Instant) -> Self {
+        Self { deadline: Some(deadline), ..Self::for_turn() }
     }
 }
 
@@ -193,8 +201,9 @@ impl From<std::time::Duration> for AdmissionPatience {
 /// `patience` is how long the turn holds through a CLOSED endpoint (an engine still
 /// loading, a transition in flight) before it is refused — the caller's bound, since
 /// only the caller knows what its request can afford: the persona adapter passes
-/// `AdmissionPatience::for_turn(turn_bound, elapsed)`. Readiness time is cumulative
-/// across retries; healthy slot and adapter waits spend only the request deadline.
+/// `AdmissionPatience::for_turn()`. Readiness time is cumulative across retries;
+/// healthy slot and adapter waits end only on cancellation or an explicit caller
+/// expiry supplied with `AdmissionPatience::until`.
 /// A test that asserts immediate readiness refusal passes zero. See `EndpointSlots::admit_when_ready`
 /// for the boot window that cost Kimi 16 turns.
 pub async fn admit_turn(

@@ -214,7 +214,7 @@ impl OpenAICompatibleAdapter {
                 &self.client,
                 root,
                 approx_tokens,
-                crate::inference::turn_admission::AdmissionPatience::for_turn(request.turn_bound, start.elapsed()),
+                crate::inference::turn_admission::AdmissionPatience::for_turn(),
             )
             .await
             .map_err(crate::ai::inference_error::InferenceError::Unavailable)?;
@@ -450,7 +450,7 @@ impl OpenAICompatibleAdapter {
                     &self.client,
                     root,
                     0,
-                    crate::inference::turn_admission::AdmissionPatience::for_turn(request.turn_bound, start.elapsed()),
+                    crate::inference::turn_admission::AdmissionPatience::for_turn(),
                 )
                 .await
                 .map_err(crate::ai::inference_error::InferenceError::Unavailable)?,
