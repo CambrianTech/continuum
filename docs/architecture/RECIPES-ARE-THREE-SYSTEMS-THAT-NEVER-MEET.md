@@ -36,7 +36,7 @@ The cruelty of it: **`recipe/mod.rs` already states the correct doctrine**, verb
 > of command invocations... Adding a new recipe — or a new recipe CONCEPT — is authoring data,
 > never committing Rust. The extension surface is the command system itself... (the
 > static-plumbing trap this module replaces — `reviewers: N` on the benchmark recipe format
-> needed a recompile; a pipeline step calling `persona/roster` does not)."*
+> needed a recompile; a pipeline step calling `presence/directory` does not)."*
 
 That module is right, it is built, and **`benchmark.rs` did not use it** — it hand-rolled a
 third loader against a fourth store six months later. The trap the module was written to

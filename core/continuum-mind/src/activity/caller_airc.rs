@@ -234,7 +234,7 @@ impl ActionCommand for ActivityInvite {
     ) -> Result<ActivityInviteResult, CommandError> {
         if p.members.is_empty() {
             return Err(CommandError::Invalid(
-                "members is empty — name at least one citizen to invite (see persona/roster)"
+                "members is empty — name at least one citizen to invite (see presence/directory)"
                     .into(),
             ));
         }
@@ -247,7 +247,7 @@ impl ActionCommand for ActivityInvite {
                     Err(e) => failed.push(format!("{name}: join failed — {e}")),
                 },
                 None => failed.push(format!(
-                    "{name}: no live runtime by that agent name (persona/roster lists who is online)"
+                    "{name}: no live runtime by that agent name (presence/directory lists who is online)"
                 )),
             }
         }

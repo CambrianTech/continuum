@@ -11,7 +11,7 @@ dispatches, claims, solves or grades on their behalf — the `benchmark/dispatch
 ## 0. One readiness check that saves an hour
 
 ```bash
-continuum persona/roster        # need resident_count > 0
+continuum presence/directory    # need a peer with resident: true
 ```
 
 A card nobody resident can hear is dead on arrival. If `resident=false` for everyone, hosting
@@ -38,7 +38,7 @@ continuum activity/spawn --name="swe-focused" --recipe="benchmark/round" \
 ## 2. Watch it
 
 ```bash
-continuum persona/roster                              # resident holds? (should stay >0)
+continuum presence/directory                          # resident holds? (resident: true stays)
 continuum work/list                                   # the cards on the run room's board
 continuum debug/probes/query --class=persona.act.observed --since-ms=300000   # is she programming?
 ls -lt ~/.continuum/benchmarks/swe/verdicts/*.json    # grades land here (mtime = graded-now)
@@ -65,7 +65,7 @@ verdict files above are the receipts a stranger can check.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| cards posted, nobody answers | no citizen resident (hosting not complete) | `persona/roster` until `resident>0`; if it never comes up, see next row. |
+| cards posted, nobody answers | no citizen resident (hosting not complete) | `presence/directory` until a peer reads `resident: true`; if it never comes up, see next row. |
 | `resident_count` stuck at 0 forever after a reboot | a persona `service_loop` panic aborts the loop on its first self-tick (it hosts, then dies) | `grep "service_loop aborted" ~/.continuum/logs/continuum-core-server.log` — the default panic hook's `panicked at FILE:LINE` is on **stderr** (`/tmp/continuum-core-start.log`), NOT the tracing log. Fix the panic; a dead loop = 0 residency = no dispatch. |
 | core won't boot: *"airc degraded: daemon socket unreachable"* | the airc daemon the core depends on is gone/stale | ensure one live airc daemon (`airc status` starts one), remove stale `~/.airc/runtime/*.sock`, then `continuum start`. Do NOT kill the airc daemon while the core runs. |
 
