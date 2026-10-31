@@ -426,9 +426,9 @@ pub struct VolatileSnapshot {
     /// for another build: this is the first version, Joel 2026-10-31).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) actions: Vec<action_log::ActionRecord>,
-    /// Her context view ([`WorkingMemory`]'s `view`). Absent on snapshots written before it,
-    /// and then her first act after the restore starts a new one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Her context view ([`WorkingMemory`]'s `view`), derived: absent, or no longer decodable
+    /// (`derived_view`), her first act after the restore starts a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "derived_view::or_new_epoch")]
     pub(crate) context_view: Option<ContextView>,
     /// Each retained receipt's per-call dependencies ([`WorkingMemory`]'s `receipt_children`),
     /// so a restart keeps what a restored receipt points at reachable. Empty on snapshots
@@ -600,6 +600,7 @@ pub struct WmEntry {
 }
 
 
+mod derived_view;
 mod action_log;
 mod continuity;
 mod ledger;
