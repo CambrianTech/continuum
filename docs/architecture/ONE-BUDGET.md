@@ -141,6 +141,74 @@ Doctrine account (DEVELOPMENT-DOCTRINE.md, "Completion includes deletion and pro
 - **Limit, stated.** Lexical rules are a backstop. The lasting enforcement is the type: once slice 2 lands,
   a cache, ring or class can only be constructed from a `GrantRx`, so an unbudgeted one does not compile.
 
+### Slice 1 in detail: `continuum-flex`, the one solver, cleared by price (for review before code)
+
+**Why it changes from `flex_allocate`.** Today's solver (`continuum-grounding/src/rag_budget/flex_allocate.rs`,
+three production callers: the deliberation view, its epoch start, grounding) allocates by integer priorities and
+min/max/grow shares, all picked numbers. HOW-A-MIND-GETS-WHAT-SHE-NEEDS R4 and GRID-MARKET-CLEARING replace that
+with one rule: a claim grows while its measured marginal value exceeds its tier's price, and the price moves with
+measured excess demand. Slice 1 builds that solver once, as a floor crate, and every tier calls it: the
+`ResourceDaemon`'s tiers (slice 2, Codex), the engine's lanes and state (L5), a mind's claims (slice 6).
+
+**Crate.** `continuum-flex`: pure (no I/O, no clock, no randomness; P8 of THE-PROVING-GROUND), generic over a
+unit (`Tokens`, `Bytes`, `LaneSeconds`), serde and ts-rs for receipts, no dependency above the floor.
+
+**Types.**
+- `Claim<U>`:
+  - `id: ClaimId` and `owner: OwnerId` (typed ids, never strings);
+  - `floor: Floor<U>`: `Required(U)` is a reservation, granted before anything is traded and never traded
+    (GRID-MARKET-CLEARING invariant 4); `Optional(U)` is the least amount worth having at all;
+  - `value: Value<U>`: what each additional unit is worth, measured and versioned (`ValueVersion`).
+    `Steps` for discrete levels (an item's pointer, summary, whole: each a cost and a value) or `Curve` for a
+    continuous amount (output room, a cache); concave by construction, checked on input;
+  - `switch_cost: Value`: the measured cost of changing this claim's grant (a re-prefill, a page move),
+    so the solver never moves a grant for less than it costs (R7, hysteresis as a measurement);
+  - `current: Option<Grant<U>>`: what it holds now.
+- `Capacity<U>`: the measured amount, its source and time; `Unavailable` when not measured, which clears
+  nothing and says so (never a default).
+- `Grant<U>`: the claim, the amount (and the step, for `Steps`), the tier's price, the tier's epoch and a
+  generation (monotonic per tier, so a stale grant is refused), and a reason: `Floor`, `Cleared`, `Held` (a
+  change was not worth its switch cost), `UnderProvisioned` (a required floor did not fit: an explicit outcome
+  for scheduling, never a clip).
+- `Clearing<U>`: one solve's receipt: capacity, each claim's value version, every grant, the price, what is
+  unallocated, and any under-provision. The proving ground and the live receipts both read it (R11).
+
+**The algorithm.**
+1. Required floors first, in one pass; if they do not fit, the result is `UnderProvisioned` with the claims
+   named, and nothing optional is granted.
+2. The remaining capacity goes to the next increment of highest value per unit across all claims, one
+   increment at a time, until capacity is spent or no increment's value per unit exceeds zero. For concave
+   values this greedy order is optimal; for `Steps` it is the standard density order, and its gap from optimal
+   is bounded by one step per claim, stated in the receipt.
+3. The price is the value per unit of the last increment admitted.
+4. A change from a claim's current grant is applied only when its value gain exceeds its `switch_cost`;
+   otherwise the grant is `Held`.
+
+**Nesting.** A tier is itself a claim on its parent: its children's values, summed, are its value curve one
+level up. The parent clears and grants the tier an amount at its price; the tier clears its children within
+that amount. Prices flow down and bids flow up; no tier sees more than its parent's grant and its children's
+claims (GRID-MARKET-CLEARING section 2).
+
+**Where values come from: measured, never picked.** A claim's value is measured from outcomes: for a context
+item, how often items of its kind were referenced or faulted when held at each level (Cormac's behaviour model,
+from the reductions); for output room, the measured cost of a cut; for a lane, the measured seconds saved. The
+policy loop (L7) refines them from controlled probes. Until a kind has measurements, its value is the
+population's measurement for the same activity (HOW-A-MIND S9), marked as such in the receipt. The integer
+priorities in `priority::*` are deleted with `flex_allocate`.
+
+**Migration.** The three callers move to `continuum-flex` in the PR that adds it, `flex_allocate` and
+`RagSourceBudget`'s priority/min/max/grow are deleted, and `context_codec`'s ratchet points at the new owner.
+The behaviour change is proven on the proving ground's T0 against the known-bad suite before it reaches a
+resident.
+
+**Review questions.**
+1. Codex (slice 2): is `Clearing<U>` with nested tiers the shape the `ResourceDaemon` publishes, and is
+   `generation` enough to fence stale grants across your leases?
+2. Cormac: can the behaviour model produce per-kind level values (reference and fault rates by level) from the
+   reductions for the first slice?
+3. Both: the `Steps` gap bound versus an exact small knapsack per tier, which is affordable at a mind's item
+   counts; is the bound acceptable or should small tiers solve exactly?
+
 ### Slice 6 in detail: a mind's context (the defect live on 2026-10-30)
 
 **Every machine, no machine's numbers** (Joel, 2026-10-30: "You are not coding for a 64gb MacBook m5. You
