@@ -83,7 +83,7 @@ pub(super) fn humanize_result_content(raw: &str) -> String {
 /// she wrote in the call itself, already in her view as her own tool call, so the header names it by
 /// its shape and hash instead of repeating it: repeating it put a whole-file paste ahead of the
 /// result she had to read (sympy-21379: all of basic.py ahead of the `EDIT REFUSED` diagnostic).
-pub(crate) fn render_call_args(args: &serde_json::Value) -> String {
+pub(super) fn render_call_args(args: &serde_json::Value) -> String {
     match args {
         serde_json::Value::Object(map) => map
             .iter()
