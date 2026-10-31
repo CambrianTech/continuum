@@ -187,7 +187,7 @@ impl LlmDeliberationFaculty {
         if self.surface.registry().is_empty() {
             return; // no hands offered — nothing to fit, nothing to warn about
         }
-        let window = self.working_window();
+        let window = self.binding.load().context_window;
         let needed = self.min_window_for_agentic_surface();
         if window >= needed {
             return;

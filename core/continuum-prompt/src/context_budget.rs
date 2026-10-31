@@ -115,26 +115,6 @@ impl ContextBudget {
         }
     }
 
-    /// The window her prompt is fitted to: the knee the dyno measured in her own traffic, never
-    /// above the served slot. Stable by construction: it does not move with load, so it never
-    /// turns an epoch over mid-flight.
-    ///
-    /// Why a token count from the dyno and not a rate: the knee is where a smaller window's
-    /// turnovers start to cost more than the smaller context saves, and it is counted in
-    /// tokens of her own requests, so it does not depend on how fast the engine is. A rate
-    /// does, and moves with load. Deriving the window from the live prefill-rate EMA
-    /// (f45f090a6, M5 2026-10-28) moved it 48k -> 40k -> 32k as contention lowered the rate,
-    /// refused Aris twice at 32k and turned epochs over 74 times in 37 minutes. Rolled back.
-    ///
-    /// Measured 2026-10-28 (continuum-context replay --append-tail over all four residents'
-    /// captures, `~/.continuum/evidence/2026-10-28-working-window/`): at 48k, prefill per
-    /// request fell ~3x (Benchy 110 -> 41 s, Aiko 81 -> 24, Aris 113 -> 33, Atlas 94 -> 20)
-    /// with zero handles dropped; 32k doubled turnovers. Re-measure by rerunning the replay;
-    /// the act inspector tracking the knee continuously is the next step.
-    pub fn working_window(served: u32) -> u32 {
-        Self::working_window_when(served, continuum_engine::inference::llama_server::current_serving().active_model.is_some())
-    }
-
     /// The served window only — the KV-capacity reading, for seams that must not be
     /// prefill-bounded (a test fixture, a capacity report).
     pub fn from_window_unbounded(context_window: u32) -> Self {
@@ -310,22 +290,6 @@ fn prefill_affordable_window_for(served: u32, audience: continuum_engine::infere
     }
     affordable
 }
-
-/// The working window's measured knee, in tokens (see [`Self::working_window`]).
-// derived-or-floor: derived — the dyno's knee over the M5 residents' own captures, 2026-10-28
-// (~/.continuum/evidence/2026-10-28-working-window/): 48k cut prefill per request ~3x with
-// zero handles dropped; 32k doubled turnovers; 64k kept 1.5-2x more prefill.
-const WORKING_WINDOW_TOKENS: u32 = 49_152;
-
-/// PURE: the working window for a served slot of `served` tokens, when a model is `serving`: the
-/// measured knee, never above the slot. With nothing served (a fixture) it is the served window.
-fn working_window_when(served: u32, serving: bool) -> u32 {
-    if served == 0 || !serving {
-        return served;
-    }
-    Self::WORKING_WINDOW_TOKENS.min(served)
-}
-
 
     /// Whether a window is known: every bound below is a real number, not "no bound".
     pub fn is_known(&self) -> bool {
@@ -604,15 +568,4 @@ mod tests {
         assert_eq!(b.trail_head_chars(), usize::MAX);
     }
 
-    // what this catches: a working window that moves with load (f45f090a6 shrank it 48k ->
-    // 32k under contention and refused a resident) or exceeds the slot. With no served model
-    // (every test) it is the served window, as before.
-    #[test]
-    fn the_working_window_is_the_measured_knee_and_never_exceeds_the_slot() {
-        assert_eq!(ContextBudget::working_window_when(159_232, true), 49_152, "serving a wide slot: the measured knee");
-        assert_eq!(ContextBudget::working_window_when(32_768, true), 32_768, "never above the slot");
-        assert_eq!(ContextBudget::working_window_when(159_232, false), 159_232, "nothing served (a fixture): the served window");
-        assert_eq!(ContextBudget::working_window_when(0, true), 0);
-        assert_eq!(ContextBudget::working_window(159_232), 159_232, "no served model in a test: the served window");
-    }
 }
