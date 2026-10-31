@@ -240,6 +240,7 @@ fn a_restored_handleless_receipt_keeps_its_children_under_its_new_handle() {
         summary: None,
         stored_chars: None,
         received_ms: None,
+        act: None,
     });
     snapshot.receipt_children.insert(receipt_key(7, None), vec![child.clone()]);
     let unsaved = snapshot.unsaved_receipts();

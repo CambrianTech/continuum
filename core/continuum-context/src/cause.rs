@@ -27,17 +27,51 @@ impl ElementId {
     /// so the boundary between parts is part of the identity: `["ab", "c"]` and `["a", "bc"]` are
     /// different occurrences (Cormac on #5611).
     pub fn of(identity: &[&[u8]]) -> Self {
-        let mut hasher = Sha256::new();
-        for part in identity {
-            hasher.update((part.len() as u64).to_le_bytes());
-            hasher.update(part);
-        }
-        let digest: [u8; 32] = hasher.finalize().into();
+        let digest = length_prefixed_digest(identity.iter().copied());
         let (head, _) = digest.split_at(std::mem::size_of::<u128>());
         let mut bytes = [0u8; std::mem::size_of::<u128>()];
         bytes.copy_from_slice(head);
         Self(u128::from_be_bytes(bytes))
     }
+}
+
+/// SHA-256 over parts, each prefixed by its length, so the boundary between parts is part of
+/// what is hashed. The one derivation behind every identity built from parts here.
+fn length_prefixed_digest<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    hasher.finalize().into()
+}
+
+/// What an act asked for (MIND-CONTEXT invariant 4): its calls in order, each the verb and its
+/// arguments as the tool saw them (`ToolCall::canonical_input`). No argument is excluded here;
+/// an exclusion is named only by the tool's own schema. Two acts with equal fingerprints asked
+/// the same thing; whether the outcome was unchanged is the producer's evidence, never this.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct Fingerprint([u8; 32]);
+
+impl Fingerprint {
+    /// The fingerprint of an act's calls, each `(verb, canonical arguments)`, in the order made.
+    pub fn of<'a>(calls: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> Self {
+        Self(length_prefixed_digest(
+            calls.into_iter().flat_map(|(verb, arguments)| [verb.as_bytes(), arguments]),
+        ))
+    }
+}
+
+/// What a command declares its calls do to the world: one type, on the floor, declared by each
+/// command in the kernel's descriptor and read here.
+pub use continuum_base::tool_effect::ToolEffect;
+
+/// What an act asked for and what its tool declares it does: the producer's half of invariant 4.
+/// Whether its outcome was unchanged is decided by the view, from this and the item's content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct Act {
+    pub fingerprint: Fingerprint,
+    pub effect: ToolEffect,
 }
 
 /// What an element follows from.
@@ -101,6 +135,19 @@ mod tests {
 
     // what this catches: two different occurrences sharing an id because their identity parts
     // concatenate to the same bytes; every chain is keyed by the id (Cormac on #5611).
+    // what this catches: two acts that asked different things sharing a fingerprint because a
+    // verb's bytes ran into its arguments, or because the order of calls was dropped (invariant 4
+    // would then call a new request a repeat).
+    #[test]
+    fn a_fingerprint_keeps_each_calls_verb_arguments_and_order() {
+        let read = Fingerprint::of([("code/read", br#"{"path":"a.rs"}"#.as_slice())]);
+        assert_eq!(read, Fingerprint::of([("code/read", br#"{"path":"a.rs"}"#.as_slice())]));
+        assert_ne!(read, Fingerprint::of([("code/search", br#"{"path":"a.rs"}"#.as_slice())]));
+        assert_ne!(read, Fingerprint::of([("code/rea", br#"d{"path":"a.rs"}"#.as_slice())]));
+        let (a, b) = (("code/read", b"1".as_slice()), ("code/search", b"2".as_slice()));
+        assert_ne!(Fingerprint::of([a, b]), Fingerprint::of([b, a]));
+    }
+
     #[test]
     fn the_boundary_between_identity_parts_is_part_of_the_id() {
         assert_ne!(ElementId::of(&[b"ab", b"c"]), ElementId::of(&[b"a", b"bc"]));

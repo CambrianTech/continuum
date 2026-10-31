@@ -9,8 +9,8 @@
 //! epoch is measured there is none, and every read is whole. Each new epoch starts unmeasured,
 //! so a page size that fell with her acts is tested whole again at every turnover.
 //!
-//! Only the DISPATCHED copy carries the budget. Her own calls, which repeat detection keys on
-//! (`ToolCall::loop_fingerprint`), stay exactly as she made them.
+//! Only the DISPATCHED copy carries the budget. Her own calls, which repeat identity is built
+//! from (`ToolCall::canonical_input`), stay exactly as she made them.
 //!
 //! [`WorkingMemory::view_headroom`]: crate::cognition::working_memory::WorkingMemory::view_headroom
 

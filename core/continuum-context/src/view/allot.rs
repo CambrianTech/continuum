@@ -17,7 +17,7 @@ pub(super) fn rank(level: &Level) -> u8 {
         Level::Folded => 0,
         Level::Pointer => 1,
         Level::Summary => 2,
-        Level::Full => 3,
+        Level::Full | Level::Repeat { .. } => 3,
     }
 }
 

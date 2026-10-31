@@ -2811,6 +2811,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
+ "serde",
  "tempfile",
  "tracing",
  "uuid",
@@ -2978,6 +2979,8 @@ dependencies = [
 name = "continuum-context"
 version = "0.1.0"
 dependencies = [
+ "continuum-base",
+ "continuum-tool-protocol",
  "serde",
  "serde_json",
  "sha2",

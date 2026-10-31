@@ -19,6 +19,8 @@ pub(crate) struct ActRendering {
     /// The hash of the act's RAW result bytes, before any label: two identical outcomes hash
     /// equal whatever their seq or room (`Absent` when the result is not resident).
     pub content: continuum_context::cause::Content,
+    /// What the act asked for and what its commands declare (`ActionRecord::act`).
+    pub act: Option<continuum_context::cause::Act>,
 }
 
 impl WorkingMemory {
@@ -275,7 +277,7 @@ impl WorkingMemory {
                 let content = record.result.as_deref().map_or(continuum_context::cause::Content::Absent, |result| {
                     continuum_context::cause::Content::Hashed(continuum_context::cause::ContentHash::of(result))
                 });
-                ActRendering { seq: record.seq, room: record.room, full, summary, pointer, stored, content }
+                ActRendering { seq: record.seq, room: record.room, full, summary, pointer, stored, content, act: record.act }
             })
             .collect();
         (renderings, in_flight)

@@ -76,12 +76,14 @@ impl Source<ContextMessage> for Actions<'_> {
         for act in acts {
             let cause = last_in_room.insert(act.room, act.seq).map_or(Cause::Root(Origin::ActivityStart), |prev| Cause::Of(self.act(prev)));
             let stored = act.stored.map(|(chars, handle)| StoredWhole { chars, handle, content: Content::Absent });
-            items.push(
-                Item::rendered(self.act(act.seq), cause, act.seq.to_string(), ContextMessage::user(act.full), act.content)
-                    .with_summary(act.summary.map(ContextMessage::user))
-                    .with_pointer(ContextMessage::user(act.pointer))
-                    .with_stored(stored),
-            );
+            let item = Item::rendered(self.act(act.seq), cause, act.seq.to_string(), ContextMessage::user(act.full), act.content)
+                .with_summary(act.summary.map(ContextMessage::user))
+                .with_pointer(ContextMessage::user(act.pointer))
+                .with_stored(stored);
+            items.push(match act.act {
+                Some(identity) => item.with_act(identity),
+                None => item,
+            });
         }
         items
     }
@@ -110,6 +112,18 @@ impl Source<ContextMessage> for Actions<'_> {
         let count = folded.len();
         Some(ContextMessage::user(format!(
             "[actions #{first}-#{last}: {count} earlier acts folded; reopen one with tool/output act=<n>]"
+        )))
+    }
+
+    /// An act the view found repeats an earlier one whose whole she has in front of her (the same
+    /// request to a command that only observes, the same outcome): one line naming it and how to
+    /// reopen it, never a second copy of the whole (MIND-CONTEXT invariant 4).
+    fn repeat(&self, item: &Item<ContextMessage>, ancestor: &Item<ContextMessage>) -> Option<ContextMessage> {
+        Some(ContextMessage::user(format!(
+            "[result #{}: repeat of #{}, outcome unchanged; reopen with tool/output act={}]",
+            item.key(),
+            ancestor.key(),
+            ancestor.key()
         )))
     }
 

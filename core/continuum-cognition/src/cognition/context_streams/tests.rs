@@ -204,3 +204,41 @@ fn a_repeated_settlement_reaches_her_view_as_its_own_occurrence() {
     assert_eq!(text.matches("tests passed").count(), 2, "{text}");
     assert!(text.rfind("tests passed") > text.rfind("tests failed"), "her latest settlement reads last: {text}");
 }
+
+// what this catches: invariant 4 left unreachable from her real acts (a correct view rule no
+// producer feeds). Two `read_file` calls of one path with one result, recorded the way the act
+// seam records them, reach her view as the whole once and then "repeat of #1": the alias resolves
+// to `code/read`, whose descriptor declares it observes. Two identical `code/write` calls, which
+// declare no effect, both arrive whole (an undeclared effect authorizes nothing; Codex).
+#[test]
+fn her_unchanged_reread_reaches_her_view_as_a_repeat_and_an_undeclared_act_never_does() {
+    use crate::cognition::act_observe::test_support::act;
+    use continuum_context::view::{Claim, View};
+
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    let body = "fn parse(&mut self) -> Result<Tree, Error> { self.step()?; }\n".repeat(40);
+    let memory = WorkingMemory::new(8);
+    let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
+    let (mut view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
+    let unsaved = || crate::ai::types::ResultCustody::Unsaved;
+    // Each act settles before the next, as her turn does: an act still in flight rides whole
+    // after her view, so it enters the actions stream once it is settled.
+    memory.record_receipt_typed(&[act("read_file", Some("src/parse.rs"))], &body, None, unsaved());
+    memory.record_settlement("read", None);
+    assert_eq!(view.advance(&[&actions as &dyn Source<_>]).repeats, 0);
+    memory.record_receipt_typed(&[act("read_file", Some("src/parse.rs"))], &body, None, unsaved());
+    memory.record_settlement("read again", None);
+    assert_eq!(view.advance(&[&actions as &dyn Source<_>]).repeats, 1);
+    let text = view.render().map(|m: &super::ContextMessage| m.text.clone()).collect::<Vec<_>>().join("\n");
+    assert_eq!(text.matches(body.as_str()).count(), 1, "the whole arrives once");
+    assert!(text.contains("repeat of #1, outcome unchanged; reopen with tool/output act=1]"), "{text}");
+
+    let memory = WorkingMemory::new(8);
+    let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
+    let (mut view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
+    for _ in 0..2 {
+        memory.record_receipt_typed(&[act("code/write", Some("src/parse.rs"))], "wrote 40 lines", None, unsaved());
+        memory.record_settlement("wrote", None);
+        assert_eq!(view.advance(&[&actions as &dyn Source<_>]).repeats, 0, "an undeclared act is never a repeat");
+    }
+}

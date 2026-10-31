@@ -65,6 +65,11 @@ pub(crate) struct ActionRecord {
     /// result received since).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub received_ms: Option<u64>,
+    /// What the act asked for and what its commands declare they do (MIND-CONTEXT invariant 4):
+    /// the view renders an unchanged observation as a repeat from this. `None` for a record from
+    /// a build before it was kept, or a legacy text receipt: such an act is never a repeat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub act: Option<continuum_context::cause::Act>,
 }
 
 impl ActionRecord {
