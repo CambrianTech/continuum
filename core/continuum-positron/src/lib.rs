@@ -150,7 +150,7 @@ pub use connection::Connection;
 pub use dispatch::{apply_command, CommandDispatch};
 pub use kanban::{
     KanbanCardState, KanbanCardView, KanbanHold, KanbanLaneState, KanbanLaneView, KanbanPriority,
-    KanbanPullRequest, KanbanViewState,
+    KanbanPullRequest, KanbanReviewOutcome, KanbanReviewView, KanbanViewState,
 };
 pub use observer::{apply_observe, ObserverRegistration};
 pub use revisions::Revisions;
