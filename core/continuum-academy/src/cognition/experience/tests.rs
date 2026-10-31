@@ -233,6 +233,14 @@
             lived_fault.grade.contains("inference fault"),
             "the fault cause is named in the grade"
         );
+        let mut persistence_failed = faulted;
+        persistence_failed.failure = Some(crate::cognition::act_observe::SettlementFailure::ReceiptPersistence(
+            std::sync::Arc::new(crate::cognition::persona_workspace::TaskSinkError::OwnerGone(peer.as_uuid())),
+        ));
+        let lived_persistence = ExperienceRecord::from_lived_turn("ping", &persistence_failed);
+        assert!(!lived_persistence.ok, "checkpoint failure is not accepted experience");
+        assert!(lived_persistence.grade.contains("receipt persistence fault"));
+        assert!(!lived_persistence.grade.contains("inference fault"));
 
         // NON-CONVERGENCE: the drive-loop ran out its action budget mid-Act and never
         // reached a verdict — the lived analog of the eval's "did not finish". A

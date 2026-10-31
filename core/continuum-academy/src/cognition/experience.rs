@@ -257,7 +257,12 @@ impl ExperienceRecord {
                 &settled.capacity_refusal,
                 converged,
             ) {
-                (Some(cause), _, _) => format!("lived turn: settlement fault — {cause}"),
+                (Some(crate::cognition::act_observe::SettlementFailure::Inference(cause)), _, _) => {
+                    format!("lived turn: inference fault — {cause}")
+                }
+                (Some(crate::cognition::act_observe::SettlementFailure::ReceiptPersistence(cause)), _, _) => {
+                    format!("lived turn: receipt persistence fault — {cause}")
+                }
                 (None, Some(error), _) => format!("lived turn: prompt capacity refused — {error}"),
                 (None, None, false) => {
                     "lived turn: did not converge (action budget exhausted mid-act)".to_string()

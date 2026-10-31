@@ -102,7 +102,7 @@ pub async fn settle_step(
     }
     if let Err(error) = cycle.persist_render_receipts(std::mem::take(&mut ws.render_receipts)).await {
         continuum_base::probe!(class = "settle.receipt_persistence_failed", room = %room_id,
-            error = %error, "served generation retained; checkpoint failed before speech or action");
+            error = %error, "served generation retained; checkpoint failed before applying final speech or action");
         return (SettleStep::ReceiptPersistenceFailed { error: Arc::new(error) }, metrics, step_receipts);
     }
     // A FAILED model call is not a verdict and not a silence — surface it LOUD so no

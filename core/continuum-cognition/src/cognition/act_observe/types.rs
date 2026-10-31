@@ -168,7 +168,8 @@ pub enum SettleStep {
     /// broken lane. `error` names the cause verbatim from the adapter.
     InferenceFailed { error: String },
     /// The generation was served, but its observed task ends could not be
-    /// checkpointed. No subsequent action or speech was emitted by this step.
+    /// checkpointed. This step did not apply its command or final speech decision.
+    /// Generation-time streaming may already have exposed provisional tokens.
     ReceiptPersistenceFailed { error: std::sync::Arc<crate::cognition::persona_workspace::TaskSinkError> },
 }
 
