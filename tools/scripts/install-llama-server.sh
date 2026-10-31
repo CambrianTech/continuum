@@ -326,6 +326,9 @@ declare -a CMAKE_ARGS=(
   -DLLAMA_BUILD_TESTS=OFF
   -DLLAMA_BUILD_EXAMPLES=OFF
   -DLLAMA_CURL=OFF
+  # No TLS in the engine: it listens on localhost and loads local GGUF paths, so
+  # cpp-httplib needs no OpenSSL (LLAMA_OPENSSL defaults ON and finds whatever is installed).
+  -DLLAMA_OPENSSL=OFF
   "${BACKEND_DEFS[@]}"
 )
 

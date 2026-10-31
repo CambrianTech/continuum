@@ -21,11 +21,11 @@ chrono = { workspace = true }
 parking_lot = { workspace = true }
 once_cell = { workspace = true }
 futures-util = { workspace = true }
-futures = "0.3"
-dashmap = "6.1"
-regex = "1"
-sysinfo = "0.33"
-libc = "0.2"
+futures = { workspace = true }
+dashmap = { workspace = true }
+regex = { workspace = true }
+sysinfo = { workspace = true }
+libc = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }

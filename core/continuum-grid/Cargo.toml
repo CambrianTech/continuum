@@ -26,13 +26,13 @@ async-trait.workspace = true
 tracing.workspace = true
 ts-rs.workspace = true
 airc-core.workspace = true
-dashmap = "6.1"
-futures = "0.3"
+dashmap = { workspace = true }
+futures = { workspace = true }
 rand.workspace = true
-reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
-sysinfo = "0.33"
+reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
+sysinfo = { workspace = true }
 thiserror.workspace = true
-libc = "0.2"
+libc = { workspace = true }
 
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build gets the per-process continuum home (card d11d9827)

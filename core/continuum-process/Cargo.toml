@@ -10,14 +10,14 @@ tracing.workspace = true
 continuum-kernel = { path = "../continuum-kernel" }
 tokio.workspace = true
 airc-core.workspace = true
-sysinfo = "0.33"
-libc = "0.2"
+sysinfo = { workspace = true }
+libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Console"] }
+windows-sys = { workspace = true, features = ["Win32_System_Threading", "Win32_System_Console"] }
 
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
-tempfile = "3"
+tempfile = { workspace = true }
 
 
