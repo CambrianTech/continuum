@@ -87,6 +87,35 @@ cause: a unit that lets a live reply land before its curve falls is worth much; 
 is worth little; a unit after a curve has fallen to zero is worth nothing, so the market stops spending on a
 conversation that has moved on, with no rule written to say so.
 
+**The definition** (Codex on #5621: "weighted time" is not yet one dimensionally defined unit until this is
+stated). For each claim `i`:
+- `U_i(t)`: the value of a **verified** completion at time `t`, in the common unit, weighted by the one human
+  input (whose outcome matters now) and normalized so every claim's weight is comparable;
+- `U_i(never)`: its value if it is not completed within its **horizon** `H_i` (usually zero; a commitment
+  someone is counting on is negative: failing it costs);
+- `T_i`: its completion time, a random variable given the resources it holds, predicted from measurement;
+- **the marginal value of a resource bundle** `r` to claim `i` is `E[U_i(T_i | with r)] - E[U_i(T_i | without r)]`,
+  taken over the measured completion-time distribution and including the chance of not completing before `H_i`.
+
+That last clause is what keeps a flat job from being worth nothing: on its flat region, more resources do not
+make it more valuable sooner, but they raise the probability it completes before its horizon. As its horizon
+nears and that probability falls, the marginal value of resources to it rises, so a long, flat job gains
+priority from its own curve, not from a fixed aging rule or a second scheduler. Long-lived work enters as
+verified sub-outcomes (each passing test, each merged slice), each with its own `U(t)`, so progress counts
+before the whole completes.
+
+**Non-concave value** (Codex). A hard deadline, an all-or-none outcome or two resources that only help together
+are not concave. The conversion from `U_i(t)` to solver increments is an explicit model with its own provenance
+and uncertainty:
+- an all-or-none outcome becomes an indivisible increment (whole or nothing; the solver reports its achieved
+  value and relaxed upper bound, never claiming optimality);
+- complementary resources become a joint claim, solved as a bundle at the lowest common tier (slice 1 part 2);
+- a shape the conversion cannot represent is a typed `Unsupported` state, never approximated silently.
+
+Validators (none can be proved by a linearized copy of production policy): a flat long job competing with
+repeated short arrivals (the long job completes before its horizon; nobody starves); an all-or-none deadline job
+(granted whole in time or not at all, never half); each against the production solver through its seam.
+
 **What is measured and what is learned.**
 - The curves' shapes come from the activity: a conversation's decay is measured from how long people and peers
   actually wait before moving on; a deadline is the medium's frame time.
@@ -96,20 +125,22 @@ conversation that has moved on, with no rule written to say so.
 - Gates stay outside the currency: privacy, permission and a live faculty working at all are never bought or sold
   (invariant 1).
 
-**Why this currency works peer to peer** (Joel: "we need something like this especially for grid and definitely
-for its p2p form"). A P2P grid has no one trusted in the middle, so the currency must be something each node can
-measure for itself and no peer can forge:
-- **Every node prices in its own measured time.** How long its person or its minds waited, and whether the
-  outcome verified, are observed locally. There is no global ledger and no shared balance to forge.
-- **A trade is judged by the buyer's measurement.** A peer's offer promises work by a time; the buyer measures
-  what arrived, when, and whether it verified. That measurement is the settlement: promised against delivered
-  becomes the seller's reputation (`capacity/settlement.rs`), and an over-promising peer's future offers are
-  discounted by it. Reciprocity, as in BitTorrent's tit-for-tat, not a token: "market" stays coordination
-  scalars between grid citizens (section "What we are NOT building").
-- **Prices travel by gossip and decisions stay local** (invariant 2): each node clears against last-known quotes;
-  a stale quote is unpriced, never free (invariant 7); a partition falls back to local clearing (invariant 5).
-- **A peer's claim of value is never taken as given.** Only the buyer's own curve prices what it buys; a seller's
-  price is an offer, discounted by its measured reliability.
+**Peer to peer** (Joel: "we need something like this especially for grid and definitely for its p2p form"; Codex
+on #5621 scoped it). A P2P grid has no one trusted in the middle:
+- **A measurement is evidence for the node that measured it,** not a universal settlement: a buyer can report
+  dishonestly and identities can change. Every node prices in its own measured time and keeps its own books.
+- **Reputation is scoped to the authenticated observer and the peer's incarnation:** what this node observed a
+  peer deliver, keyed by that peer's authenticated identity and lease, kept apart from what other nodes claim.
+  A remote claim about a third peer is weighed by the claimant's own scoped reputation, never adopted as a
+  local observation.
+- **A seller's price is an offer,** discounted by its scoped reliability; only the buyer's own curve prices what
+  it buys.
+- **Prices travel by gossip and decisions stay local** (invariant 2); a stale quote is unpriced, never free
+  (invariant 7).
+- **A partition is an explicit placement state** (invariant 5): local clearing continues for local work, while
+  work in flight on the unreachable peer keeps its custody and its pending outcome. It is never replayed locally
+  while its fate is unknown, and its remote credit is not released until the peer reports or the custody is
+  withdrawn by its own lease rules.
 
 **In the solver** (`cambrian-flex`, ONE-BUDGET slice 1), a claim's `Value` is in this currency, and its
 increments are the marginal change in expected value per unit of resource, evaluated on its curve at the
