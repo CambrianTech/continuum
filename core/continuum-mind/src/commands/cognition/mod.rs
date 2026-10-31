@@ -50,7 +50,7 @@ pub mod track_response;
 pub mod vision_describe;
 
 // The stateless commands are continuum-cognition's; the old paths still name them.
-pub use continuum_cognition::commands::{check_redundancy, embed_tools, generate_recipe, generate_response, plan_turn_batch, rate_proposals, semantic_search_tools, should_respond, validate_response_decision};
+pub use continuum_cognition::commands::{embed_tools, generate_recipe, generate_response, plan_turn_batch, rate_proposals, semantic_search_tools, should_respond, validate_response_decision};
 
 use admit_inbox_message::AdmitInboxMessage;
 use cache_message::CacheMessage;
@@ -86,7 +86,7 @@ use vision_describe::VisionDescribe;
 /// [`CognitionModule::commands`](crate::modules::cognition::CognitionModule) so they
 /// reach `command_registry()`, the persona tool surface, the ACL, codegen, and `uu`.
 ///
-/// The stateless oxidizer commands ([`should_respond`], [`check_redundancy`],
+/// The stateless oxidizer commands ([`should_respond`],
 /// [`generate_response`], [`embed_tools`], [`semantic_search_tools`],
 /// [`validate_response_decision`], [`score_interaction`], [`check_adequacy`],
 /// [`plan_turn_batch`], [`rate_proposals`], [`generate_recipe`]) hold no module state,

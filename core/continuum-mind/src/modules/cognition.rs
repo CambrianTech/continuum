@@ -17,7 +17,6 @@
 //! - `cognition/admit-inbox-message`: Run admission gate on an InboxMessage (#1121 PR-4)
 //! - `cognition/recall-engrams`: Query the persona's admitted engram store (#1121 PR-5)
 //! - `cognition/should-respond`: Rust-owned AI gating decision
-//! - `cognition/check-redundancy`: Rust-owned draft redundancy decision
 //! - `cognition/full-evaluate`: Unified 6-gate evaluation (replaces 5 TS gates)
 //! - `cognition/track-response`: Track response for rate limiting
 //! - `cognition/set-sleep-mode`: Set voluntary sleep mode
@@ -370,12 +369,11 @@ impl ServiceModule for CognitionModule {
             // `CognitionModule::commands()`. `access: Internal`. No match arm here.
 
             // ================================================================
-            // AI Gating + Draft Redundancy — MIGRATED to the typed registry.
+            // AI Gating — MIGRATED to the typed registry.
             // ================================================================
-            // `cognition/should-respond` and `cognition/check-redundancy` are now
-            // stateless `ActionCommand`s in `crate::commands::cognition` (each calls
-            // the same free fn — `evaluate_gating` / `evaluate_redundancy` — over its
-            // typed request). `route_object` dispatches them via `command_registry()`,
+            // `cognition/should-respond` is now a stateless `ActionCommand` in
+            // `crate::commands::cognition` (it calls `evaluate_gating` over its typed
+            // request). `route_object` dispatches them via `command_registry()`,
             // so they reach the ACL, codegen, `uu`, and grid routing. Both are
             // `access: Internal`. No match arm here — a second registration would be
             // the only place they could collide, and there is none.
