@@ -728,7 +728,7 @@ impl ToolExecutor for CommandToolExecutor {
                             class = "persona.act.refused",
                             persona = %ctx.persona_id,
                             command = attempted,
-                            reason = %raw.chars().take(240).collect::<String>(),
+                            reason = %raw,
                             "a command refused her act"
                         );
                     }
