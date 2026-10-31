@@ -456,12 +456,13 @@ fn an_epoch_sends_one_tool_set_whatever_its_acts_affordances() {
     assert_eq!(wire(&third.tools), wire(&first.tools), "the epoch's set holds across every act");
 }
 
-// what this catches: a retained set that never re-selects (a room's declared verbs reaching her
-// only after a restart), or a turnover act that sends the old set while the new epoch retains
-// another (the very next act would flip the head). The act that turns the view over sends what
-// its own affordances choose, and the new epoch keeps that set against the acts after it.
+// what this catches: a view turnover that re-selects her tools (the M5, 2026-10-31 on 526bbe418:
+// Aris's set flipped between 38 and 23 verbs at turnovers in one room, and all 13 cold prefills in
+// two hours followed a head change). A turnover re-renders only what follows the head, so her set
+// outlives it: the turnover act and the acts after it send the set she held, whatever their
+// affordances choose.
 #[test]
-fn a_new_epoch_selects_from_the_affordances_of_the_act_that_started_it() {
+fn a_view_turnover_keeps_her_tool_set() {
     use continuum_context::source::Source;
     let faculty = asha_with_hands();
     let ws = Workspace::new("what changed on the board?");
@@ -471,26 +472,24 @@ fn a_new_epoch_selects_from_the_affordances_of_the_act_that_started_it() {
     let alone = faculty
         .tool_surface()
         .select_granted(&declared.room_affordances, grant)
-        .expect("precondition: the declared verb's offer fits the epoch's grant");
+        .expect("precondition: the declared verb's offer fits the grant");
     assert_ne!(wire(&alone), wire(&first.tools), "precondition: these affordances alone choose another set");
     let (choice, refused) = faculty.granted_tools(&declared, faculty.tools_claim(&declared), grant);
     assert!(refused.is_none());
-    assert_eq!(wire(&choice.sent), wire(&first.tools), "before the fit, the act charges the epoch's set");
     // The fit turns her view over in this act (what `fit_view` does when it outgrows its grant).
     let none: [&dyn Source<crate::cognition::context_streams::ContextMessage>; 0] = [];
     faculty.context_view.lock().as_mut().expect("a view").turn_over(Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
-    let epoch = view_epoch(&faculty);
     let sent = faculty.retain_tools(choice, false);
-    assert_eq!(wire(&sent), wire(&alone), "the turnover act sends its own selection");
-    let next = faculty.prompt_view_within(&ws, 200_000);
-    assert_eq!(view_epoch(&faculty), epoch, "precondition: the next act stays in the new epoch");
-    assert_eq!(wire(&next.tools), wire(&alone), "the new epoch keeps the set its start chose");
+    assert_eq!(wire(&sent), wire(&first.tools), "the turnover act sends the set she held");
+    let next = faculty.prompt_view_within(&declared, 200_000);
+    assert_eq!(wire(&next.tools), wire(&first.tools), "and so does every act after it");
 }
 
-// what this catches: a retained set sent past a window that can no longer hold it (an over-budget
-// prompt the server refuses), or the loss taken quietly. A grant below the epoch's level drops
-// the set on the probed path (`delib.tools.epoch_level_lost`), sends what the grant buys, and the
-// epoch then keeps that smaller set.
+// what this catches: a held set sent past a window that can no longer hold it (an over-budget
+// prompt the server refuses), the loss taken quietly, or a fallback that never recovers (every
+// downward move needs its upward one). A grant below her level drops the set on the probed path
+// (`delib.tools.epoch_level_lost`), sends what the grant buys and holds it; a window that holds
+// her whole hands again restores them once (`delib.tools.head_restored`).
 #[test]
 fn a_window_that_cannot_hold_the_epochs_set_reselects_loudly() {
     use crate::cognition::tool_surface::SurfaceReason;
@@ -505,5 +504,10 @@ fn a_window_that_cannot_hold_the_epochs_set_reselects_loudly() {
     assert_eq!((choice.sent.reason, choice.sent.tokens), (SurfaceReason::CoreHandsForWindow, claim.floor));
     let sent = faculty.retain_tools(choice, false);
     assert_ne!(wire(&sent), wire(&first.tools), "the lost set is not sent");
-    assert_eq!(faculty.tools_claim(&ws).level, claim.floor, "the epoch keeps the set the window could hold");
+    assert_eq!(faculty.tools_claim(&ws).level, claim.floor, "she holds the set the window could hold");
+    // Up, once: a window that holds her whole hands again restores them, and they then hold.
+    let restored = faculty.prompt_view_within(&ws, 200_000);
+    assert_eq!(wire(&restored.tools), wire(&first.tools), "the core-hands fallback gives way to her whole hands");
+    let after = faculty.prompt_view_within(&ws, 200_000);
+    assert_eq!(wire(&after.tools), wire(&first.tools), "and the restored set holds");
 }
