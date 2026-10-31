@@ -4,7 +4,6 @@ use super::*;
 mod action_log;
 mod actions;
 mod custody;
-mod faculty;
 mod open_views;
 mod pins;
 mod provenance;

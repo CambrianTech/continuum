@@ -190,7 +190,6 @@ use super::*;
         // of a mind with no live working memory still protects it (Astra on acdfb010a).
         {
             let memory = WorkingMemory::new(8);
-            memory.set_served_window(16_384);
             let cap = 8_192; // a test body size; a shed below it collapses the older ones
             let saved = |handle: &str| crate::ai::types::ResultCustody::Whole { handle: handle.into() };
             memory.record_receipt_typed(&[], &"c".repeat(cap / 2), None, saved("c011a75ed0000001"));

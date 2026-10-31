@@ -22,7 +22,6 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             None,
         )]));
         let wm = Arc::new(WorkingMemory::new(8));
-        wm.set_served_window(window);
         let result = format!(
             "src/lib.rs:42: concrete_review_target\n{{\"payload\":\"{}\"}}\nclaimable_now: 29\ntotal_on_board: 43",
             "x".repeat(window as usize * 2),
@@ -218,7 +217,6 @@ async fn an_8192_window_keeps_required_content_under_a_large_measured_need() {
     let need = reg.need_of(persona).expect("measured");
     assert!(need.total() > window, "the fixture's need exceeds the whole seat");
     let wm = Arc::new(WorkingMemory::new(8));
-    wm.set_served_window(window);
     let result = format!("src/schema.rs:7: accounts_table_defined\n{}", "column detail ".repeat(40));
     wm.record_receipt(&result);
     let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
@@ -286,7 +284,6 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
         ));
         let registry = WorkingSetRegistry::new();
         let wm = Arc::new(WorkingMemory::new(8));
-        wm.set_served_window(window);
         let oversized = "payload ".repeat(window as usize);
         let mut ws = if oversized_part == 0 {
             Workspace::new(&oversized)

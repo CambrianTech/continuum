@@ -24,8 +24,8 @@
 //!
 //! ## How it wires into the Workspace brain
 //!
-//! - [`WorkingMemoryFaculty`] is a PERCEPTION-tier faculty: each tick it bids the
-//!   recent reasoning into the workspace so the phase-2 deliberator conditions on it.
+//! - Her view's sources (`context_streams`: thoughts, actions) read it each act, so the
+//!   deliberator perceives her recent reasoning and her own acts as items of her view.
 //! - The deliberation faculty WRITES its reasoning here after producing a verdict
 //!   (the thing that thinks records its thinking). Read at phase 1, written at phase
 //!   2 → next tick reads the updated buffer. That's the rolling working memory.
@@ -38,14 +38,12 @@
 //! helps, remember what you reasoned." No config flag needed.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use async_trait::async_trait;
 use parking_lot::Mutex;
 
-use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 
 // How many recent steps to carry forward is NOT a constant. It is
 // `ContextBudget::WORKING_MEMORY_STEPS` — the COUNT sibling of the per-step SIZE bound
@@ -76,10 +74,6 @@ use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 /// carrying two opposite meanings in one prompt. One token, one meaning.
 pub const WM_SETTLEMENT_PREFIX: &str = "[answered]";
 
-/// The faculty's bid salience. Same tier as retrieved grounding
-/// (`RETRIEVED_SALIENCE` = 0.5): useful context that informs the decision but must
-/// not outrank standing framing (roster/doctrine, 0.9) or a strong recall hit.
-const WORKING_MEMORY_SALIENCE: f32 = 0.5;
 
 // The trail-head and latest-action bounds are NOT constants. They are fractions of this
 // mind's LIVE served context window, owned by `ContextBudget` — see
@@ -92,7 +86,6 @@ use crate::cognition::act_observe::Observation;
 /// Her context view, the type her working memory checkpoints.
 pub(crate) type ContextView =
     continuum_context::view::View<crate::cognition::context_streams::ContextMessage>;
-use crate::cognition::context_budget::ContextBudget;
 
 /// Clip a full action-result body to [`WM_ACTION_FULL_MAX_CHARS`] for prompt inclusion.
 /// Returns the body unchanged when it fits; otherwise a `char`-boundary-safe head plus
@@ -115,10 +108,6 @@ pub fn collapse_thought(text: &str, keep: usize) -> String {
     format!("[{} earlier chars — my full thought, collapsed] …{tail}", total - keep)
 }
 
-/// Max distinct dispatched (background) handles tracked at once. A persona with more than
-/// this many sentinels/compiles/debuggers in flight is unusual; past the cap the
-/// oldest-updated finished handle is evicted first (a still-running one is never dropped).
-const MAX_DISPATCHED: usize = 16;
 
 /// Borrowed provenance already carried by the result ring. Displaying a result
 /// in another activity must not erase where it came from or which operation ran.
@@ -202,14 +191,6 @@ struct DispatchedAction {
     seq: u64,
 }
 
-/// A bounded, rolling buffer of the persona's recent reasoning. Cheap to clone the
-/// `Arc`; shared between the writer (deliberation faculty) and the reader
-/// (`WorkingMemoryFaculty`). `parking_lot::Mutex` — no poisoning, and every access
-/// is a quick sync snapshot/push with no `.await` held across the lock.
-/// The working-memory faculty's canonical id — the ONE string the contribution
-/// carries and every consumer (stability ordering in the deliberation tail,
-/// capture tooling) matches on.
-pub(crate) const WM_FACULTY_ID: &str = "working-memory";
 
 /// A keyed working-memory fact with a lifetime in work turns.
 #[derive(Debug, Clone)]
@@ -220,6 +201,10 @@ struct TurnPinnedFact {
     detail: Option<String>,
 }
 
+/// A bounded, rolling buffer of the persona's recent reasoning. Cheap to clone the `Arc`;
+/// written by the deliberation faculty and read by her view's sources (`context_streams`).
+/// `parking_lot::Mutex` — no poisoning, and every access is a quick sync snapshot/push with no
+/// `.await` held across the lock.
 #[derive(Debug)]
 pub struct WorkingMemory {
     /// Process-unique construction ordinal. It keys this mind's set of live spill handles
@@ -249,7 +234,6 @@ pub struct WorkingMemory {
     /// bound below. `0` = not yet known (cold boot / mid-relaunch), which means NO clipping:
     /// the deliberation guard still trims the assembled prompt to the real `n_ctx`, so an
     /// unknown window must never be replaced with an invented one.
-    served_window: AtomicU32,
     entries: Mutex<VecDeque<WmEntry>>,
     /// The acting root her receipts are stamped with (set at the work-turn
     /// rooting seam, cleared on restore). See [`WmEntry::scope`].
@@ -270,7 +254,7 @@ pub struct WorkingMemory {
     /// SAME recency channel as `last_action`, but keyed so concurrent sentinels/compiles/
     /// debuggers stream in without clobbering each other. Fed by the completion/progress
     /// listener (`record_dispatch_event`); surfaced by the faculty so the mind perceives
-    /// "what I sent away, and where it's at" each heartbeat. Bounded by `MAX_DISPATCHED`.
+    /// "what I sent away, and where it's at" each heartbeat. A finished handle retires once she has answered a prompt that showed its end.
     dispatched: Mutex<HashMap<Uuid, DispatchedAction>>,
     /// Monotonic stamp applied to ACTION entries. Two reasons: (1) it makes each
     /// recorded action a DISTINCT string even when the persona repeats the identical
@@ -600,7 +584,7 @@ impl VolatileSnapshot {
     /// Every saved result this checkpoint still reaches; the persisted twin of what working
     /// memory publishes live, through the same log and the same rule.
     pub(crate) fn reachable_handles(&self) -> HashSet<String> {
-        let log = action_log::ActionLog::from_records(self.action_records(), usize::MAX);
+        let log = action_log::ActionLog::from_records(self.action_records());
         reachable_handles(log.receipt_keys(), &self.receipt_children, &self.open_views)
     }
 
@@ -711,14 +695,11 @@ pub struct WmEntry {
 
 mod action_log;
 mod continuity;
-mod faculty;
 mod ledger;
 mod perception;
 mod residency;
 
 pub use action_log::ActOutputRefusal;
-pub use faculty::WorkingMemoryFaculty;
-pub(crate) use faculty::render_dispatched;
 pub(crate) use ledger::operation_level;
 pub(crate) use residency::{ResidentResults, ShedCandidate};
 
@@ -731,3 +712,32 @@ impl Drop for WorkingMemory {
 
 #[cfg(test)]
 mod tests;
+
+/// Background commands she sent away (sentinels, compiles, debuggers), streaming their
+/// status back by handle: what is outstanding and what just finished, so she can pass a
+/// handle to a follow-up command. `None` when nothing was dispatched.
+pub(crate) fn render_dispatched(dispatched: &[(Uuid, String, String, DispatchStatus)]) -> Option<String> {
+    if dispatched.is_empty() {
+        return None;
+    }
+    let lines = dispatched
+        .iter()
+        .map(|(h, label, latest, status)| {
+            let hs = h.to_string();
+            let short = hs.get(..8).unwrap_or(hs.as_str());
+            let tag = match status {
+                DispatchStatus::Running => "running",
+                DispatchStatus::Done => "done",
+                DispatchStatus::Failed => "failed",
+            };
+            let tail = if latest.is_empty() {
+                String::new()
+            } else {
+                format!(": {latest}")
+            };
+            format!("- #{short} {label} [{tag}]{tail}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!("Commands you dispatched (background, by handle):\n{lines}"))
+}

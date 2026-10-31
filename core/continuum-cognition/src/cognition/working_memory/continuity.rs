@@ -183,12 +183,13 @@ impl WorkingMemory {
         // The log, projected into the wire shape older builds read (see
         // `VolatileSnapshot::action_records`), under one lock so a concurrent collapse
         // cannot move a record between the projections.
-        let archive_chars = self.budget().receipt_archive_chars();
         let last_action = self.last_action.lock().clone();
         let (archive, recent_results, result_scopes, pointers, records) = {
             let actions = self.actions.lock();
-            let archive: Vec<(Option<Uuid>, String)> =
-                actions.archive(archive_chars).into_iter().map(|(r, head)| (r.room, head.to_owned())).collect();
+            let archive: Vec<(Option<Uuid>, String)> = actions
+                .records()
+                .filter_map(|record| record.head.as_ref().map(|head| (record.room, head.clone())))
+                .collect();
             let recent_results: Vec<(u64, Option<Uuid>, String, String, Option<String>)> = actions
                 .retained()
                 .filter_map(|r| r.result.clone().map(|result| (r.seq, r.room, result, r.operation.clone(), r.handle.clone())))
@@ -298,11 +299,9 @@ impl WorkingMemory {
                 e.pop_front();
             }
         }
-        // Same re-clamp contract as `entries`: the log bounds itself to THIS life's share, and
-        // the collapse below folds results a bigger-window life held into pointers, never a
-        // silent deletion.
-        *self.actions.lock() =
-            action_log::ActionLog::from_records(records, self.budget().receipt_archive_chars());
+        // The log is restored whole: what of its bodies stays in RAM is the one memory owner's
+        // to shed (`residency`), never a share of this life's window.
+        *self.actions.lock() = action_log::ActionLog::from_records(records);
         *self.last_action.lock() = snap.last_action;
         *self.receipt_children.lock() = snap.receipt_children;
         *self.view.lock() = snap.context_view;
@@ -398,7 +397,6 @@ impl WorkingMemory {
         // hers to decide.
         let current = env!("CONTINUUM_BUILD_GIT_SHA");
         if !snap.build_sha.is_empty() && snap.build_sha != current {
-            let short = |s: &str| s.chars().take(9).collect::<String>();
             // Same lifetime as [resumed]: the rebuild is news at the wake, not a
             // standing condition — after two turns her receipts on THIS build exist.
             self.pin_fact_for_turns("rebuilt", &format!(
@@ -408,8 +406,8 @@ impl WorkingMemory {
                  not re-read to check. Only the TOOLS may behave differently now: a tool that \
                  failed before may work on this build, worth re-trying rather than concluding \
                  from memory.",
-                short(&snap.build_sha),
-                short(current),
+                snap.build_sha,
+                current,
             ), 2);
         }
     }
@@ -437,7 +435,9 @@ impl WorkingMemory {
     /// never inferred from an owner field — an expired claim still names its last holder,
     /// and a card in Review is absent from her live claims for a reason that is not a lapse.
     pub fn note_claim_gone(&self, card: uuid::Uuid, verdict: ClaimGone) {
-        let id8: String = card.simple().to_string().chars().take(8).collect();
+        // Ids whole, as the verbs that take them read them: a prefix is a cut, and the board
+        // resolves either form (`continuum_base::id_resolve`).
+        let id = card.simple();
         let edge = |ms: Option<u64>| {
             ms.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
                 .map(|t| format!(" (lease edge {}Z)", t.format("%H:%M")))
@@ -448,26 +448,26 @@ impl WorkingMemory {
             // Each sentence is what the board SHOWS NOW — never a story about how it got
             // there (the wake did not watch the lease lapse or the transfer happen).
             ClaimGone::HeldBy { peer, expires_at_ms } => format!(
-                "[claim] card {id8} is NO LONGER YOURS: your checkpoint had you working it, and \
+                "[claim] card {id} is NO LONGER YOURS: your checkpoint had you working it, and \
                  the board now shows {} holding it{}. {untouched} Do not resume as its holder — \
                  work/get {card} shows its state; take it back with work/claim only when it \
                  reads claimable.",
-                peer.simple().to_string().chars().take(8).collect::<String>(),
+                peer.simple(),
                 edge(expires_at_ms),
             ),
             ClaimGone::Lapsed { expired_at_ms } => format!(
-                "[claim] card {id8} is NO LONGER YOURS: your checkpoint had you working it, and \
+                "[claim] card {id} is NO LONGER YOURS: your checkpoint had you working it, and \
                  the board now shows it unheld — the last lease on it ran out{} and nobody holds \
                  it. {untouched} work/claim {card} takes it back, then continue from your ledger.",
                 edge(expired_at_ms),
             ),
             ClaimGone::MovedOn { state } => format!(
-                "[claim] card {id8} is no longer in your hands: the board now shows it in {state} \
+                "[claim] card {id} is no longer in your hands: the board now shows it in {state} \
                  — that is the card's life advancing, not a lapse. {untouched} Nothing to \
                  re-claim; work/get {card} shows where it stands."
             ),
             ClaimGone::Unknown => format!(
-                "[claim] your checkpoint had you working card {id8}, but no board you stand in \
+                "[claim] your checkpoint had you working card {id}, but no board you stand in \
                  shows it now, so nothing can be said about who holds it. {untouched} \
                  work/get {card} before assuming it is yours or free."
             ),

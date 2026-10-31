@@ -125,7 +125,6 @@ fn cfg_for(persona_id: uuid::Uuid, name: &str) -> crate::cognition::persona_work
         system_prompt: format!("You are {name}, an engineer on the grid."),
         admission: crate::cognition::act_observe::test_support::admission(),
         adapter: std::sync::Arc::new(crate::ai::HeuristicInferenceAdapter::new()),
-        capacity: None,
         grounding_sources: Vec::new(),
         embedder: None,
         tool_executor: None,

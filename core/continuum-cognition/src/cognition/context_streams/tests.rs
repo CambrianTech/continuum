@@ -162,9 +162,7 @@ fn a_thought_renders_the_same_whatever_the_served_window() {
     let render = |memory: &WorkingMemory| {
         Thoughts { memory, persona: uuid::Uuid::nil() }.items().into_iter().map(|item| item.full().text.clone()).collect::<Vec<_>>()
     };
-    memory.set_served_window(32_768);
     let narrow = render(&memory);
-    memory.set_served_window(131_072);
     assert_eq!(render(&memory), narrow, "the window changed and the thought's rendering did not");
 }
 

@@ -22,7 +22,6 @@ async fn a_writing_turn_after_a_cut_gets_its_reply_on_a_46848_window() {
     let cut = reg.record_emission_in_memory(persona, 5_404, 0, EmissionStop::CutMidAnswer, 4);
     assert_eq!(cut.peak_tokens, 10_808, "a cut mid-answer records the answer at double");
     let wm = Arc::new(WorkingMemory::new(8));
-    wm.set_served_window(window);
     let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
     let faculty = LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", adapter.clone())
         .with_context_window(window)
@@ -281,7 +280,6 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
             None,
         )]));
         let wm = Arc::new(WorkingMemory::new(8));
-        wm.set_served_window(window);
         wm.record_receipt("latest complete tool receipt");
         // Optional history does not outrank the reply reserve. Give this
         // established citizen measured emissions so the large source

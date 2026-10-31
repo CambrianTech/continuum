@@ -354,7 +354,6 @@ mod tests {
                     RecallMetadataRegistry::new(),
                 ))),
                 adapter: std::sync::Arc::new(HeuristicInferenceAdapter::new()),
-                capacity: None,
                 grounding_sources: Vec::new(),
                 embedder: None,
                 tool_executor: None,

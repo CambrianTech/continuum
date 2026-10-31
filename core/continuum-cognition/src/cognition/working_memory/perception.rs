@@ -173,9 +173,9 @@ impl WorkingMemory {
     /// The FULL result of the just-executed act, ready to render as a **pinned**
     /// trailing prompt block — the run-18057-f1 fix.
     ///
-    /// This block used to live INSIDE the working-memory faculty's single
-    /// [`Contribution`](crate::cognition::workspace::Contribution) at
-    /// `WORKING_MEMORY_SALIENCE` (0.5). That bid competes in `arbiter.focus()`
+    /// This block used to live INSIDE a working-memory faculty's single
+    /// [`Contribution`](crate::cognition::workspace::Contribution) bid (deleted with that
+    /// faculty, card c537d687). That bid competed in `arbiter.focus()`
     /// top-k, so under capacity pressure the whole contribution — the just-fetched
     /// grep/read result included — was truncated, and the persona generated blind
     /// to what her own hands had returned (the 0-byte SWE-bench patch). The message
@@ -189,9 +189,6 @@ impl WorkingMemory {
     /// would add nothing.
     pub fn pinned_active_result_block(&self) -> Option<String> {
         let (seq, full) = self.active_action_full()?;
-        if full.chars().count() <= self.budget().trail_head_chars() {
-            return None;
-        }
         // Shown as the producer handed it over: whole, or its handle. A consumer never
         // re-cuts (CONTENT-TRAVELS-BY-HANDLE.md, forbidden moves).
         Some(self.full_result_message(seq, &full))
@@ -353,8 +350,9 @@ impl WorkingMemory {
     /// `Done`/`Failed` marks it. The mind perceives outstanding + freshly-finished handles
     /// via the faculty next heartbeat, so it can act on a result the moment it lands
     /// without ever blocking. `label` is set once (first event) and preserved across
-    /// updates. Bounded by `MAX_DISPATCHED` — a finished handle is evicted before a
-    /// running one when over cap ([[act-results-need-a-recency-channel-not-semantic-recall]]).
+    /// updates. A finished handle retires once she has answered a prompt that showed its end
+    /// ([`Self::retire_perceived_dispatches`]); a running one never does
+    /// ([[act-results-need-a-recency-channel-not-semantic-recall]]).
     pub fn record_dispatch_event(
         &self,
         handle: Uuid,
@@ -373,17 +371,17 @@ impl WorkingMemory {
         entry.latest = content.trim().to_string();
         entry.status = status;
         entry.seq = seq;
-        if m.len() > MAX_DISPATCHED {
-            // Evict the oldest-updated FINISHED handle; never drop one still running.
-            if let Some(victim) = m
-                .iter()
-                .filter(|(_, a)| a.status != DispatchStatus::Running)
-                .min_by_key(|(_, a)| a.seq)
-                .map(|(h, _)| *h)
-            {
-                m.remove(&victim);
-            }
-        }
+    }
+
+    /// Retire every finished handle whose end she has perceived: one whose terminal event is
+    /// older than `answered_since`, the sequence of an act recorded before the act now being
+    /// recorded. That act's prompt was built after it, and her view renders every dispatched
+    /// handle, so the end was in a prompt she answered. Acts and dispatch events share one
+    /// sequence, so this is an ordering, never a count; a running handle never retires.
+    pub(super) fn retire_perceived_dispatches(&self, answered_since: u64) {
+        self.dispatched
+            .lock()
+            .retain(|_, action| action.status == DispatchStatus::Running || action.seq >= answered_since);
     }
 
     /// The label of a dispatched handle THIS persona owns, or `None` if the handle isn't

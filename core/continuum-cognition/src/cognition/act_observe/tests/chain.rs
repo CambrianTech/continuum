@@ -22,7 +22,7 @@ async fn a_settle_chain_links_each_act_caused_by_its_predecessor() {
         result_content: "ok\n".into(),
     });
     let adm = admission();
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), adm.clone()));
     let room = Uuid::new_v4();
     let chain = ActChain::new();
@@ -80,7 +80,7 @@ async fn a_chain_rooted_in_its_trigger_links_the_first_act_to_what_caused_the_tu
         result_content: "ok\n".into(),
     });
     let adm = admission();
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), adm.clone()));
     let room = Uuid::new_v4();
 
@@ -114,7 +114,7 @@ async fn an_unrooted_chain_leaves_its_first_act_honestly_unlinked() {
         result_content: "ok\n".into(),
     });
     let adm = admission();
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), adm.clone()));
     let chain = ActChain::rooted_in(&crate::cognition::workspace::Cause::Ambient);
 

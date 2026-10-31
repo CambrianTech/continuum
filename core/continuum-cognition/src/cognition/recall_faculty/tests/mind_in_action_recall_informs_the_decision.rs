@@ -18,7 +18,6 @@ use super::*;
         let ws = WorkspaceCycle::new(
             faculties,
             Arc::new(super::super::super::workspace::SalienceArbiter),
-            5,
         )
         .with_capture(Arc::new(PrintingSink))
         .run("teammate asks: where did we land on the deploy?")

@@ -1,20 +1,6 @@
 #![cfg(test)]
 use super::*;
 
-/// what this catches: a mind with no pin yet answering "no bound" on its own. `budget()`
-/// fell to `ContextBudget::unknown()` whenever `set_served_window` had not run (before
-/// the first act after a restore, or a cycle with no loadout), and an unknown budget is
-/// usize::MAX on every bound. A fresh mind answers what the serving truth answers.
-#[test]
-fn a_fresh_mind_budgets_against_the_serving_truth_not_an_unset_pin() {
-    let wm = WorkingMemory::new(8);
-    let live = ContextBudget::live();
-    assert_eq!(wm.budget().is_known(), live.is_known());
-    assert_eq!(wm.budget().recent_results_chars(), live.recent_results_chars());
-    wm.set_served_window(16_384);
-    assert!(wm.budget().is_known(), "a pinned window is a known budget");
-}
-
 // what this catches: her collapsed thought keeping the re-orientation and losing
 // the decision (Kimi, 2026-10-04: "keep the end"). The decision survives, the
 // marker still names the collapse for the framing-echo detector, short thoughts
@@ -55,7 +41,6 @@ fn a_step_is_scoped_to_its_root_and_every_result_is_perceived_labelled_with_its_
     // Result custody must obey the same scope even after entry-trail eviction,
     // a shed's collapse and checkpoint restoration. Storage remains intact.
     let results = WorkingMemory::new(2);
-    results.set_served_window(16_384);
     results.set_scope(Some("task-a".into()));
     let body_a = format!("task-a-only {}", "a".repeat(BODY));
     results.record_receipt_typed(&[], &body_a, None, saved("scope-a-output"));
@@ -118,7 +103,6 @@ fn a_mind_s_saved_handles_are_live_until_it_drops() {
     let file = std::path::PathBuf::from(format!("/spill/p/{handle}.log"));
     let live = |p: &std::path::Path| crate::cognition::tool_executor::spill::is_live(p);
     let wm = WorkingMemory::new(8);
-    wm.set_served_window(16_384);
     let cap = 2 * BODY;
     wm.record_receipt_typed(&[], &"a".repeat(cap / 2), None, saved(&handle));
     assert!(live(&file), "referenced by the ring");
@@ -145,7 +129,6 @@ fn a_moved_body_s_handle_stays_live_behind_any_number_of_newer_pointers() {
     let handle = || format!("{:016x}", Uuid::new_v4().as_u128() as u64);
     let live = |h: &str| crate::cognition::tool_executor::spill::is_live(&std::path::PathBuf::from(format!("/spill/p/{h}.log")));
     let wm = WorkingMemory::new(8);
-    wm.set_served_window(16_384);
     let first = handle();
     wm.record_receipt_typed(&[], &"f".repeat(BODY), None, saved(&first));
     for _ in 0..30 {
@@ -215,7 +198,6 @@ fn a_receipt_s_per_call_results_stay_reachable_as_long_as_the_receipt() {
     };
     let (receipt, children) = (id(), [id(), id()]);
     let wm = WorkingMemory::new(2); // two entries: the third receipt rolls the first out
-    wm.set_served_window(16_384);
     let cap = 2 * BODY;
     wm.record_receipt_typed(&[act(&children[0]), act(&children[1])], &"r".repeat(cap / 2), None, saved(&receipt));
     for _ in 0..3 {
@@ -314,7 +296,6 @@ fn each_call_s_saved_result_is_live_once_its_receipt_is_recorded() {
     };
     let file = std::path::PathBuf::from(format!("/spill/p/{call_handle}.log"));
     let wm = WorkingMemory::new(8);
-    wm.set_served_window(16_384);
     wm.record_receipt_typed(&[act], "read it", None, ResultCustody::Unsaved);
     assert!(
         crate::cognition::tool_executor::spill::is_live(&file),
@@ -332,7 +313,6 @@ fn each_call_s_saved_result_is_live_once_its_receipt_is_recorded() {
 #[test]
 fn restore_keeps_every_resident_body_whatever_the_window() {
     let source = WorkingMemory::new(8);
-    source.set_served_window(65_536);
     for i in 0..4 {
         source.record_receipt_typed(&[], &format!("r{i} {}", "w".repeat(64 * BODY)), None, saved(&format!("restore-{i}")));
     }
@@ -346,7 +326,6 @@ fn restore_keeps_every_resident_body_whatever_the_window() {
     assert_eq!(entries(&unknown), held, "no window yet: nothing moves at restore");
     assert_eq!(unknown.resident_result_bytes(), source.resident_result_bytes(), "every body restored resident");
     let small = WorkingMemory::new(8);
-    small.set_served_window(16_384);
     small.restore(snapshot);
     assert_eq!(entries(&small), held, "a small window changes nothing her view is offered");
 }
@@ -358,7 +337,6 @@ fn restore_keeps_every_resident_body_whatever_the_window() {
 #[test]
 fn results_are_never_evicted_at_receipt_however_large_the_ring() {
     let wm = WorkingMemory::new(8);
-    wm.set_served_window(16_384);
     let chunk = 64 * BODY;
     for i in 0..40 {
         wm.record_receipt_typed(&[], &format!("r{i} {}", "w".repeat(chunk)), None, saved(&format!("ring-{i}")));
@@ -379,7 +357,6 @@ fn results_are_never_evicted_at_receipt_however_large_the_ring() {
 #[test]
 fn an_unsaved_result_keeps_its_bytes_through_a_shed_and_restore() {
     let wm = WorkingMemory::new(8);
-    wm.set_served_window(16_384);
     let cap = 2 * BODY;
     let unsaved = format!("UNSAVED {}", "u".repeat(cap / 2));
     wm.record_receipt_typed(&[], &unsaved, None, crate::ai::types::ResultCustody::Unsaved);
@@ -395,7 +372,6 @@ fn an_unsaved_result_keeps_its_bytes_through_a_shed_and_restore() {
         "the saved ones around it collapsed"
     );
     let restored = WorkingMemory::new(8);
-    restored.set_served_window(16_384);
     restored.restore(wm.snapshot());
     assert!(whole(&restored), "and through restore");
 }

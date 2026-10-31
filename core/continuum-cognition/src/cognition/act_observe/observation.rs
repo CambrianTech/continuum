@@ -263,8 +263,14 @@ impl Observation {
     /// #205 KV-stability invariant. `intent` is batch-level (one per `apply_act`
     /// call, shared by every act in the batch), so it is passed rather than
     /// stored per-`Observation`.
+    /// The call as she made it, `name(args)`: its arguments by shape, never by size
+    /// (`render_call_args`). The one rendering of a call, for its recency trace, its summary part
+    /// and its ledger line.
+    pub(crate) fn call_line(&self) -> String {
+        format!("{}({})", self.call.name, render_call_args(&self.call.input))
+    }
+
     pub fn render_recency(&self, intent: &str) -> String {
-        let args = render_call_args(&self.call.input);
         // The intent rides the result as a ONE-LINE reason, its first line: a shape rule,
         // never a size, and never the whole monologue.
         // Measured 2026-09-04: one result header carried 2,902 chars of intent
@@ -276,13 +282,7 @@ impl Observation {
         } else {
             format!(" because {}", intent_label(intent))
         };
-        format!(
-            "{}({}){}\nResult:\n{}\n\n",
-            self.call.name,
-            args,
-            because,
-            self.body_text().trim(),
-        )
+        format!("{}{}\nResult:\n{}\n\n", self.call_line(), because, self.body_text().trim())
     }
 
     /// This act as one part of a batch receipt's summary level: the recency header (its name and
@@ -290,11 +290,10 @@ impl Observation {
     /// summary reads what the receipt shows her, never the executor's serialized JSON, where a
     /// read's numbered lines are escaped and no code level is found (Codex on #5424).
     pub(crate) fn render_summary_part(&self, level: impl Fn(&str) -> Option<String>) -> String {
-        let args = render_call_args(&self.call.input);
         let body = self.body_text();
         let body = body.trim();
         let shown = level(body).unwrap_or_else(|| body.to_owned()); // unwrap_or: a body with no smaller level is its own summary
-        format!("{}({})\nResult:\n{}\n\n", self.call.name, args, shown)
+        format!("{}\nResult:\n{}\n\n", self.call_line(), shown)
     }
 
     /// The RECALL-channel rendering: the COLLAPSED reference the Episodic engram

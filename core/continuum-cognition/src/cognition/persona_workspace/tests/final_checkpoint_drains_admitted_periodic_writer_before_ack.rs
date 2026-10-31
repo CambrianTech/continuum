@@ -136,7 +136,6 @@ use super::*;
             system_prompt: "You are Ivar, an engineer on the grid.".to_string(),
             admission: seed_admission(1_000_000_000),
             adapter: Arc::new(HeuristicInferenceAdapter::new()),
-            capacity: None,
             grounding_sources: Vec::new(),
             embedder: None,
             tool_executor: None,
@@ -411,7 +410,6 @@ use super::*;
         let cycle = WorkspaceCycle::new(
             faculties,
             Arc::new(SalienceArbiter),
-            DEFAULT_WORKSPACE_CAPACITY,
         )
         .with_capture(sink.clone());
 

@@ -62,7 +62,6 @@ fn record(wm: &WorkingMemory, act: Observation) {
 #[test]
 fn a_view_keeps_pre_read_intent_without_claiming_it_is_understanding() {
     let wm = WorkingMemory::new(3);
-    wm.set_served_window(46_848);
     record(&wm, read(1, 498, 498, None));
     wm.annotate_open_views("each rule is a module with a predicate over SourceFile, registered in scan()");
     let block = wm.open_views_block().expect("an open view renders");
@@ -152,7 +151,6 @@ fn a_view_in_a_checkout_her_hands_left_is_retired_from_her_view() {
     use continuum_context::view::{Claim, View};
 
     let wm = WorkingMemory::new(3);
-    wm.set_served_window(46_848);
     wm.set_scope(Some("/checkouts/a".into()));
     record(&wm, read(1, 40, 498, None));
     let views = crate::cognition::context_streams::open_views::OpenViews { memory: &wm, persona: uuid::Uuid::nil() };

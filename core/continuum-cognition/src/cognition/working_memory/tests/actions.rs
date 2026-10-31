@@ -7,13 +7,11 @@ use super::*;
 // replaces the prior. This is why a persona reading a 130-line file can now answer about
 // the whole file instead of looping on the doc-comment head.
 #[tokio::test]
-async fn latest_action_returns_full_result_trail_keeps_head() {
+async fn latest_action_returns_full_result_trail_keeps_its_call_line() {
     let wm = Arc::new(WorkingMemory::new(8));
-    // Truncation bounds are fractions of a LIVE window now; an unknown-window memory
-    // is unbounded by contract, so a clipping test must declare the window it measures.
-    wm.set_served_window(16_384);
-    let big = format!("line0\n{}", "x".repeat(5_000)); // > WM_ACTION_HEAD_CHARS
-    wm.record_receipt(&big);
+    let big = format!("line0\n{}", "x".repeat(5_000));
+    let read = crate::cognition::act_observe::test_support::act("code/read", Some("src/a.rs"));
+    wm.record_receipt_typed(&[read], &big, None, crate::ai::types::ResultCustody::Unsaved);
 
     // The full result is available whole.
     let (seq, full) = wm.last_action_full().expect("latest act kept");
@@ -23,14 +21,10 @@ async fn latest_action_returns_full_result_trail_keeps_head() {
         "the mind gets the WHOLE result, not a truncated stub"
     );
 
-    // The rolling trail carries only the head (KV-stable proprioception).
+    // The rolling trail carries the act's call line, never a cut of its result: what she did,
+    // stable across acts (KV-stable proprioception); the result is whole in its record.
     let trail = wm.recent();
-    assert_eq!(trail.len(), 1);
-    assert!(trail[0].starts_with("[action #1]"));
-    assert!(
-        trail[0].chars().count() < big.chars().count(),
-        "trail entry is head-truncated, not the whole result"
-    );
+    assert_eq!(trail, ["[action #1] code/read(file_path=src/a.rs)"]);
 
     // The full result is PINNED by the message builder (#392) as its own durable
     // trailing block — it is no longer part of the evictable faculty bid.
@@ -59,8 +53,8 @@ async fn latest_action_returns_full_result_trail_keeps_head() {
 #[tokio::test]
 async fn the_pinned_result_is_what_the_producer_handed_over_never_re_cut() {
     let wm = Arc::new(WorkingMemory::new(8));
-    wm.set_served_window(16_384);
-    let over_share = "z".repeat(wm.budget().latest_action_chars() + 4_000);
+    // Larger than any share of any served window a working memory used to cut to.
+    let over_share = "z".repeat(1 << 20);
     wm.record_receipt(&over_share);
     let pinned = wm
         .pinned_active_result_block()
@@ -78,20 +72,12 @@ async fn full_result_drops_out_after_the_persona_settles_but_a_new_act_reactivat
     let wm = Arc::new(WorkingMemory::new(8));
     // Truncation bounds are fractions of a LIVE window now; an unknown-window memory
     // is unbounded by contract, so a clipping test must declare the window it measures.
-    wm.set_served_window(16_384);
     let dump = format!("code/tree result\n{}", "n".repeat(3_000)); // > WM_ACTION_HEAD_CHARS
     wm.record_receipt(&dump);
 
-    // The proprioceptive trail head lives in the faculty contribution; the FULL result
-    // is the PINNED block the message builder appends (#392). This test spans both.
-    let faculty_trail = |wm: Arc<WorkingMemory>| async move {
-        WorkingMemoryFaculty::new(wm)
-            .contribute(&Workspace::new("tick"))
-            .await
-            .expect("bids")
-            .content
-            .clone()
-    };
+    // The proprioceptive trail line lives in her trail; the FULL result is the PINNED block
+    // the message builder appends (#392). This test spans both.
+    let trail = |wm: &WorkingMemory| wm.recent().join("\n");
 
     // Active (acted, not yet spoken): the full result is present in the pinned block.
     assert!(
@@ -112,7 +98,7 @@ async fn full_result_drops_out_after_the_persona_settles_but_a_new_act_reactivat
         "after settling, the 2k-token dump stops riding along the prompt (#139/#165)"
     );
     assert!(
-        faculty_trail(wm.clone()).await.contains("[action #1]"),
+        trail(&wm).contains("[action #1]"),
         "but the proprioceptive trail head survives — the mind still knows it acted"
     );
 
@@ -175,13 +161,8 @@ async fn dispatched_commands_stream_back_by_handle() {
     assert_eq!(c.3, DispatchStatus::Done);
     assert_eq!(c.2, "0 errors, 0 warnings");
 
-    // The faculty surfaces both dispatched handles to the mind.
-    let rendered = WorkingMemoryFaculty::new(wm.clone())
-        .contribute(&Workspace::new("a fresh burst"))
-        .await
-        .expect("bids when dispatched work exists")
-        .content
-        .clone();
+    // Her view's thoughts source surfaces both dispatched handles through this rendering.
+    let rendered = render_dispatched(&wm.dispatched_snapshot()).expect("dispatched work renders");
     assert!(
         rendered.contains("Commands you dispatched"),
         "the mind sees its sentinels"
@@ -194,6 +175,27 @@ async fn dispatched_commands_stream_back_by_handle() {
         rendered.contains("research task [running]"),
         "in-flight shown"
     );
+}
+
+// what this catches: a finished background handle held forever (the old 16-handle cap only
+// evicted past a count) or dropped before she could see how it ended. It retires once she has
+// answered a prompt built after its end (an act recorded after the act that followed it); a
+// running handle never retires, however many acts pass.
+#[test]
+fn a_finished_dispatch_retires_once_she_has_answered_a_prompt_that_showed_its_end() {
+    let wm = WorkingMemory::new(8);
+    let (compile, sentinel) = (Uuid::from_u128(1), Uuid::from_u128(2));
+    wm.record_dispatch_event(sentinel, "research task", "searching…", DispatchStatus::Running);
+    wm.record_dispatch_event(compile, "compile core", "0 errors", DispatchStatus::Done);
+    let handles = |wm: &WorkingMemory| wm.dispatched_snapshot().into_iter().map(|(h, ..)| h).collect::<Vec<_>>();
+    wm.record_receipt("an act whose prompt may predate the compile's end");
+    assert_eq!(handles(&wm).len(), 2, "the next act's prompt may not have shown it yet");
+    wm.record_receipt("an act whose prompt was built after the compile ended");
+    assert_eq!(handles(&wm), vec![sentinel], "its end was in a prompt she answered");
+    for _ in 0..20 {
+        wm.record_receipt("more acts");
+    }
+    assert_eq!(handles(&wm), vec![sentinel], "a running handle never retires");
 }
 
 // what this catches: record/recent round-trips, blank reasoning is ignored, and

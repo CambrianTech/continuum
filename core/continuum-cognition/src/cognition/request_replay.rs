@@ -484,7 +484,6 @@ mod tests {
         // A diagnostic changes only named historical pointers, never tool protocol or settings.
         let mut diagnostic = request.clone();
         let wm = crate::cognition::working_memory::WorkingMemory::new(8);
-        wm.set_served_window(16_384);
         wm.record_receipt_typed(&[], "historical result", Some(room),
             crate::ai::types::ResultCustody::Whole { handle: "0123abcd".into() });
         wm.record_receipt("current result");

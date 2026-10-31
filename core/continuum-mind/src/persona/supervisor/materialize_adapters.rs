@@ -468,7 +468,6 @@ pub async fn materialize_adapters(
             system_prompt: system_prompt.to_string(),
             admission: cognition.admission.clone(),
             adapter: adapter.clone(),
-            capacity: None,
             // S1: the node's recipe registry, so this citizen's tool surface follows
             // the room she acts in (its recipe's affordances), not a global list.
             experience: crate::experience::source::node_experience_source(),

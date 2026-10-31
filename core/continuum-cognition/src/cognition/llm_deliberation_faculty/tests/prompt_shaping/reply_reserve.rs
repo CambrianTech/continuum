@@ -774,7 +774,6 @@ fn a_budget_too_small_for_even_one_unit_emits_no_header_at_all() {
 #[test]
 fn the_results_ring_renders_before_churning_grounding() {
     let wm = Arc::new(crate::cognition::working_memory::WorkingMemory::new(3));
-    wm.set_served_window(32_768);
     let custody = |h: &str| crate::ai::types::ResultCustody::Whole { handle: h.into() };
     wm.record_receipt_typed(&[], "RING-ENTRY older result", None, custody("1111111111111111"));
     wm.record_receipt_typed(&[], "the newest result", None, custody("2222222222222222"));
