@@ -2480,6 +2480,17 @@ function Mod-LlamaServer {
     if ((Get-Content -LiteralPath (Join-Path $preserved[0].FullName 'service.err.log') -Raw).Trim() -ne 'child failure receipt') { throw 'Restart overwrote prior failure stderr' }
     Write-Output 'PASS: restart preserves the preceding failure receipts'
 
+    # A failed archive must not fall through to truncating the only failure receipt.
+    $blockedLogs = Join-Path $scratch 'blocked-log-archive'
+    New-Item -ItemType Directory -Path $blockedLogs | Out-Null
+    Set-Content -LiteralPath (Join-Path $blockedLogs 'service-attempts') -Value 'not a directory'
+    Set-Content -LiteralPath (Join-Path $blockedLogs 'service.err.log') -Value 'retain this failure'
+    & $shell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File $runner -ExecutablePath $child -CorePath $core -SocketPath $socket -EnginePath $child -LogDirectory $blockedLogs
+    if ($LASTEXITCODE -eq 0) { throw 'Failed output preservation reported success' }
+    if ((Get-Content -LiteralPath (Join-Path $blockedLogs 'service.err.log') -Raw).Trim() -ne 'retain this failure') { throw 'Failed preservation truncated stderr' }
+    if (Test-Path -LiteralPath (Join-Path $blockedLogs 'service.out.log')) { throw 'Child ran after preservation failure' }
+    Write-Output 'PASS: failed preservation refuses launch without losing prior stderr'
+
     # Published engines use an explicit backend on GPU-less CI and cannot reuse
     # a native-CPU stamp. Extend this fixture without building an engine.
     & {
