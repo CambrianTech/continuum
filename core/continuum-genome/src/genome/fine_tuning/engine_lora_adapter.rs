@@ -53,6 +53,7 @@ mod move_adapter;
 use move_adapter::*;
 mod engine_lora_fine_tuner;
 use engine_lora_fine_tuner::*;
+pub use engine_lora_fine_tuner::{learn_conversation, shadow_shape};
 
 #[cfg(test)]
 mod tests;

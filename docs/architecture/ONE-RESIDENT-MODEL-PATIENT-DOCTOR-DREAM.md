@@ -255,6 +255,40 @@ Engine surface (fork): load or save a mind's session state into the lane's step 
 3. A snapshot opens a gene trial with no relaunch, and her next cards draw arms.
 4. A deploy seam: checkpoints are written, the next core resumes them at their step counts, and a format mismatch opens from the stable gene.
 
+### 9.6 The minimal wiring, on what the fork already has (2026-10-28)
+
+Measured 2026-10-28 (read-only trace of canary 4f1b548b5): no reviewed correction has become a gene since the examiner landed; the last gene trained anywhere is gene 1 (5090, 10-10). Every correction went through the batch interim (§9.4) and stalled there: on the 5090 Kimi's correction parked, its re-dispatch failed in 2 ms on a 503, 11 examples sat under the threshold of 16; on the M5 the one in-engine job was killed by a reboot after 54 min, and `persona.genome.turn_genes` read `genes=0` on all 71 turns. Joel, the same day: "It's not a batch!!!" "if you take care of a little at a time, you never strain resources."
+
+The fork already takes the step: `learn_on_slot` learns one served reply on the slot that served it, into a loaded shadow adapter (`lora_id`), paced at `LEARN_DUTY` of the loop (0.10 today; the governor's measured background share is the target, more when she is idle), deferring with `retry_after_ms` while another slot is busy; a completion can carry its own `learn` so it trains before the slot is released. Nothing in core calls it. The wiring, each slice with its gate:
+
+| Slice | What | Gate |
+|---|---|---|
+| D1 (fork) | two routes on what exists: `POST /lora-adapters/fresh {name, rank, alpha, targets, top_layers, seed}` writes a fresh adapter (`common_lora_write_fresh`, the zero-B init `/train` uses: output unchanged until the first step) into `--train-dir` and loads it dormant; `POST /lora-adapters/save {id, name}` writes a loaded adapter (`llama_adapter_lora_save`), immutable | a fresh shadow serves identically to the base; a saved shadow loads back and serves the same |
+| D2 (core, serving) | per mind: her shadow loaded dormant on her lane (a copy of her stable gene, or a zero-initialized adapter), a `learn` client (served messages + `lora_id`, `retry_after_ms` honoured, never dropped), a `save` client | one served turn learned on the M5 with residents turning; directed wait flat |
+| D3 (core, dreaming) | arrival: an accepted training example (the trigger journal, §9.2) is one learn on her shadow, now, as a `background` flow stage; the journal cursor advances when the step commits; the dispatch threshold stops gating anything | a reviewed correction is learned within minutes of review, with no job, threshold or flush |
+| D4 (core, genome) | promotion at a boundary (`DreamTrigger`: idle, card boundary): save a snapshot (D1), `adapter_manifest::register`, `GeneTrials::open`; the examiner fires on its own | the acceptance test runs on a learned gene for the first time |
+| D5 (academy) | the examiner's related tasks drawn from the correction's own task family (today a fixed six-task no-unwrap set) | a pass or fail says something about the correction it tests |
+
+**Wakefulness sets the share; the amygdala wakes her** (Joel, 2026-10-28: "It's low latency or low wakefulness process almost like the damn metaphor means something." "The amygdala will be key here too. Literal wakefulness and sleep dreaming."). The duty share is not a constant (the fork's `LEARN_DUTY` 0.10 today) but a function of her wakefulness: awake in a turn, a thin trickle that yields at once; drowsy (quiet), more; asleep, deep dreaming takes most of the engine. Wakefulness is her measured activity temperature (plan goal 9), the one number the scheduler already reads. The amygdala is the arousal signal: a stimulus that matters (a mention, a direct question, a surprise spike, cussing or caps) raises the interrupt that wakes her, and dreaming yields within one step so the turn starts alert. A low-latency stimulus and a low-wakefulness dream are the two ends of the same dial.
+
+Not in this wiring, and not dropped: recency-weighted replay (§8.1), session checkpoints (§9.2), the one-owner claim on the grid (§9.3); each is the next slice after D4.
+
+### 9.7 How anything becomes a lesson, with no one choosing (2026-10-28)
+
+The hard part is automation (Joel, 2026-10-28: "The challenge is in automation of learning"). Every stage below runs by itself: nothing is picked by a rule, a reviewer, a button or an agent's call (Joel, 2026-10-15: "Her own mind determines what's relevant not someone clicking a button or her the same"; learning is "truly continual from her own engrams and actions not controlled by some agent or human"). Controls (pause, inspect, steer) sit on top of a loop that already runs. §9.6 D3 as first written feeds `/learn` rows a producer picked by rule; that is the explicit-lesson path and a test tool, and D3 is re-aimed at the stages below.
+
+| Stage | What it is | Automatic because |
+|---|---|---|
+| **Source** | everything she perceives and does: others' messages, tool results, files read, her thoughts, her acts; the tokens of every turn's prefill and reply | it is the turn she already serves; nothing selects it |
+| **Signal: prediction error** | the per-span loss of the serving forward pass (the logits she already computes): what surprised her model | the engine reports it with the completion (fork: per-span NLL, the same capability the examiner lacks for its NLL leg) |
+| **Weight: her own relevance** | engram salience and attention, the amygdala's valuation, which genes were active, and outcome credit that flows back to the spans that led to a graded card | her own state at that moment, already measured; lesson weight = prediction error x relevance, and a low weight costs nothing |
+| **Destination: a gene region** | the regions active for what her mind is on (the composer's selection by signature distance); none near enough, a new gene seeded at these spans' centroid | geometry, never a trait label or a card; thresholds measured, never set |
+| **Step: on the slot, in her sleep share** | after a turn completes its slot still holds the whole prompt: the in-slot learn trains the weighted spans into the active genes' shadows, no re-prefill, at the share her wakefulness allows (§9.6) | the turn ends; the step follows; the amygdala wakes her and it yields |
+| **Record and replay: engrams** | an admitted engram keeps its span, surprise and salience; sleep replays the high-surprise, high-relevance ones (consolidate, forget the noise) | the governor's sleep share, never a schedule |
+| **Promotion: fitness** | shadow to stable at a boundary when held-out loss fell and the smoke turn passes; genes that are used and lower surprise live, the rest fade | usage and surprise, measured; reversible |
+
+New engine work: per-span loss reported with a completion; per-span label weights on the in-slot learn (it labels only the reply today); a learn into several shadows at once (the active genes, MoE-like). Core: relevance per span from the engram and amygdala signals, gene routing by distance with minting, the sleep replay draw. Check with Astra before building (Joel, 2026-10-15).
+
 ## 10. Coursework is a room, not a runner (mapped 2026-09-28)
 
 Joel, relayed by Codex on 2026-09-28: academy, benchmarks, simulations and learning follow the same runtime and room state, with as few differences from inference as possible.

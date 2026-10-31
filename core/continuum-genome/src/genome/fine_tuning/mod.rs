@@ -97,7 +97,7 @@ pub mod mlx_lora_adapter;
 pub mod mlx_train;
 mod native_jobs;
 mod python_trainer_readiness;
-pub use native_jobs::materialized_defaults;
+pub use native_jobs::{materialized_defaults, DEFAULT_LEARNING_RATE};
 pub mod cuda_lora_adapter;
 pub mod engine_lora_adapter;
 pub mod training_hold_store;
