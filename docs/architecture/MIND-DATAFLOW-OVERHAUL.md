@@ -53,6 +53,9 @@ validator that proves it in seconds, then the live read.
   I/O; board and active-work grounding behind the existing `CachedRagSource` with a card-event
   invalidator (the pattern workspace-map, doctrine and wall already use).
 - Owner: Fable. Validator: per-turn airc reads -> 0 (probe count); turn timing before/after.
+- Measured first (M5, 526bbe418): from her tool result (`persona.act.observed`) to her next lane
+  request (`delib.gate.lane_wait`) took ~0.2 s, board reads included. The reads are local, so this row
+  is I/O and CPU hygiene, not latency: it follows rows 1 and 6.
 
 ### 3. Her context: sources push, the view appends (rebuild #3, #4, #11)
 - Today: the view is append-only (correct), but each act every source re-offers every item to be
@@ -115,6 +118,7 @@ On the hourly health line, beside acts/hour, and the "done when" of every row ab
 
 ## Order
 
-Rows 1 and 6 first (the engine's line and the learning loop are the two biggest misses); rows 2 and 3
-next (they feed every act); 4, 5 and 7 as their owners free up. One change per crate at a time, each
+Rows 1 and 6 first (the engine's line, measured at 75-90 s of an act, and the learning loop, measured
+at zero output); then 3 and 5 (CPU and copies per act); 2, 4 and 7 as their owners free up. Every
+row is measured before it is built: a row whose measured cost is small waits. One change per crate at a time, each
 with its validator first and its live read after, merged as it lands.
