@@ -10,33 +10,31 @@
 //! dependencies as a union over every feature configuration, so one optional feature
 //! (pocket-tts's hf-hub 0.4.3, card b48bf496) would make reqwest look like it reaches
 //! OpenSSL in every build. `cargo tree --workspace --target all -e normal,build -i <crate>`
-//! is the default build's real graph on every platform, read without compiling.
+//! is the default build's real graph on every platform, read without compiling. One tree of the
+//! whole graph, which must succeed: an inverted tree (`-i name`) exits non-zero both for a crate
+//! outside the graph and for a cargo that failed, so it read every failure as "not reached"
+//! (Cormac on #5513, reproduced offline with a crate missing).
 
 /// The OpenSSL family: none of these may be reached by the default build on any target.
 pub const FORBIDDEN: &[&str] = &["openssl", "openssl-sys", "native-tls", "hyper-tls", "tokio-native-tls"];
 
-/// Which forbidden crates the default build reaches, given a way to ask Cargo whether one is
-/// in the graph. `reaches(name)` is `Ok(true)` when it is.
-pub fn reached<E>(mut reaches: impl FnMut(&str) -> Result<bool, E>) -> Result<Vec<&'static str>, E> {
-    let mut found = Vec::new();
-    for name in FORBIDDEN {
-        if reaches(name)? {
-            found.push(*name);
-        }
-    }
-    Ok(found)
+/// Which forbidden crates appear in `tree`: `cargo tree --prefix none -f {p}` output, one package
+/// per line as `name vX.Y.Z[ (path)]`.
+pub fn reached(tree: &str) -> Vec<&'static str> {
+    let packages: std::collections::BTreeSet<&str> = tree.lines().filter_map(|line| line.split_whitespace().next()).collect();
+    FORBIDDEN.iter().copied().filter(|name| packages.contains(name)).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // what this catches: a forbidden crate reported by the resolver is named, and one it
-    // can't find is not (the inverted tree prints nothing for a package not in the graph).
+    // what this catches: a forbidden crate in the tree is named by its package name, and a crate
+    // whose name merely contains one (`openssl-probe`, a path) is not.
     #[test]
-    fn only_the_crates_the_resolver_finds_are_reported() {
-        let found = reached::<()>(|name| Ok(name == "native-tls")).unwrap(); // unwrap: the closure never errs
-        assert_eq!(found, vec!["native-tls"]);
+    fn only_forbidden_packages_in_the_tree_are_reported() {
+        let tree = "reqwest v0.12.9\nnative-tls v0.2.12\nopenssl-probe v0.1.5\ncontinuum-core v0.1.0 (/x/openssl)\n";
+        assert_eq!(reached(tree), vec!["native-tls"]);
     }
 
     // what this catches: OpenSSL or native-tls creeping back into the default build on any
@@ -44,15 +42,14 @@ mod tests {
     #[test]
     fn the_default_build_reaches_no_openssl() {
         let root = crate::repo_root().expect("the workspace root is above this crate");
-        let found = reached(|name| {
-            let out = std::process::Command::new(env!("CARGO"))
-                .args(["tree", "--workspace", "--target", "all", "-e", "normal,build", "--offline", "-i", name])
-                .current_dir(&root)
-                .output()?;
-            // An inverted tree for a package outside the graph exits non-zero, saying so.
-            Ok::<bool, std::io::Error>(out.status.success() && !out.stdout.is_empty())
-        })
-        .expect("cargo tree runs");
+        let out = std::process::Command::new(env!("CARGO"))
+            .args(["tree", "--workspace", "--target", "all", "-e", "normal,build", "--offline", "--prefix", "none", "-f", "{p}"])
+            .current_dir(&root)
+            .output()
+            .expect("cargo runs");
+        // A failed resolve is a failed check, never "not reached".
+        assert!(out.status.success(), "cargo tree failed, so the graph is unknown: {}", String::from_utf8_lossy(&out.stderr));
+        let found = reached(&String::from_utf8_lossy(&out.stdout));
         assert!(
             found.is_empty(),
             "the default build reaches the OpenSSL family again: {found:?}. Use rustls; TLS is \
