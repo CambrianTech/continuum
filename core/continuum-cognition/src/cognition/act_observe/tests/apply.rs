@@ -36,7 +36,7 @@ async fn a_batch_whose_effect_mark_is_refused_never_reaches_the_executor() {
         result_content: "4\n".into(),
     });
     let adm = admission();
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), adm.clone()));
     let chain = ActChain::new().with_effects(Some(crate::cognition::act_observe::EffectGate(Arc::new(Refused))));
     let outcome = apply_act(&cycle, &[tool_call()], "check the math", Uuid::new_v4(), &chain, None, None).await;
@@ -69,7 +69,7 @@ async fn a_sentinel_only_batch_is_no_effect_and_takes_no_mark() {
         seen_context: Arc::new(Mutex::new(None)),
         result_content: "reported".into(),
     });
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), admission()));
     let chain = ActChain::new().with_effects(Some(crate::cognition::act_observe::EffectGate(Arc::new(Refused))));
     let cut = ToolCall {
@@ -95,7 +95,7 @@ async fn apply_act_scopes_to_the_room_and_observes_the_result() {
         result_content: "4\n".into(),
     });
     let adm = admission();
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), adm.clone()));
 
     let room = Uuid::new_v4();
@@ -235,7 +235,7 @@ async fn a_folded_running_alias_still_registers_its_dispatch_handle() {
     let exec = Arc::new(FoldedRunningExecutor { handle });
     let the_body = body(exec.clone(), admission());
     let wm = the_body.working_memory.clone();
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(the_body);
 
     let call = ToolCall {
@@ -292,7 +292,7 @@ async fn a_folded_running_alias_still_registers_its_dispatch_handle() {
 // live in the faculty now lives here (the faculty only emits the Act verdict).
 #[tokio::test]
 async fn apply_act_without_hands_abstains() {
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8);
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter));
     assert!(
         matches!(
             apply_act(
@@ -317,7 +317,7 @@ async fn apply_act_without_hands_abstains() {
 #[tokio::test]
 async fn apply_act_abstains_when_the_hand_fails() {
     let adm = admission();
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(Arc::new(FailingExecutor), adm.clone()));
     assert!(
         matches!(
@@ -394,21 +394,21 @@ async fn an_acts_calls_carry_the_generation_that_issued_them() {
     ];
 
     let exec = StampingExecutor { issued: None, seen: Arc::new(Mutex::new(Vec::new())) };
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(Arc::new(exec.clone()), admission()));
     let stamped = apply_act(&cycle, &two_submits, "submit both", Uuid::new_v4(), &ActChain::new(), None, Some("gen-1".into())).await;
     assert!(matches!(stamped, ActOutcome::Acted { .. }), "{stamped:?}");
     assert_eq!(seen_of(&exec), vec![Some("gen-1".to_string()); 2], "one act, one issuing generation, every call");
 
     let exec = StampingExecutor { issued: None, seen: Arc::new(Mutex::new(Vec::new())) };
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(Arc::new(exec.clone()), admission()));
     let unstamped = apply_act(&cycle, &[tool_call()], "no generation", Uuid::new_v4(), &ActChain::new(), None, None).await;
     assert!(matches!(unstamped, ActOutcome::Acted { .. }), "{unstamped:?}");
     assert_eq!(seen_of(&exec), vec![None], "no generation, no stamp");
 
     let plain = Arc::new(RecordingExecutor { seen_context: Arc::new(Mutex::new(None)), result_content: "ok".into() });
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8).with_acting(body(plain, admission()));
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter)).with_acting(body(plain, admission()));
     let acted = apply_act(&cycle, &[tool_call()], "cannot stamp", Uuid::new_v4(), &ActChain::new(), None, Some("gen-2".into())).await;
     assert!(matches!(acted, ActOutcome::Acted { .. }), "hands that cannot stamp still act: {acted:?}");
 }

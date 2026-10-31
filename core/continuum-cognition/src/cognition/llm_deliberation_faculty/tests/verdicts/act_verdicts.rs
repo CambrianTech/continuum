@@ -465,7 +465,7 @@ async fn directed_turn_withholds_the_silence_escape() {
     // "This message names you". Exercise the real framing -> cycle ->
     // prompt seam on both admission and act-result re-perception.
     let identity = PersonaIdentity::new(faculty.persona_id, "Kimi");
-    let cycle = WorkspaceCycle::new(vec![], Arc::new(SalienceArbiter), 4);
+    let cycle = WorkspaceCycle::new(vec![], Arc::new(SalienceArbiter));
     for (text, human, expected_attention, expected_class) in [
         (
             "Joel here — which card do you hold?",

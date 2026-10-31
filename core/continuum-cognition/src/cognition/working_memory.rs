@@ -24,8 +24,8 @@
 //!
 //! ## How it wires into the Workspace brain
 //!
-//! - [`WorkingMemoryFaculty`] is a PERCEPTION-tier faculty: each tick it bids the
-//!   recent reasoning into the workspace so the phase-2 deliberator conditions on it.
+//! - Her view's sources (`context_streams`: thoughts, actions) read it each act, so the
+//!   deliberator perceives her recent reasoning and her own acts as items of her view.
 //! - The deliberation faculty WRITES its reasoning here after producing a verdict
 //!   (the thing that thinks records its thinking). Read at phase 1, written at phase
 //!   2 → next tick reads the updated buffer. That's the rolling working memory.
@@ -38,14 +38,12 @@
 //! helps, remember what you reasoned." No config flag needed.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use async_trait::async_trait;
 use parking_lot::Mutex;
 
-use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 
 // How many recent steps to carry forward is NOT a constant. It is
 // `ContextBudget::WORKING_MEMORY_STEPS` — the COUNT sibling of the per-step SIZE bound
@@ -76,10 +74,6 @@ use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 /// carrying two opposite meanings in one prompt. One token, one meaning.
 pub const WM_SETTLEMENT_PREFIX: &str = "[answered]";
 
-/// The faculty's bid salience. Same tier as retrieved grounding
-/// (`RETRIEVED_SALIENCE` = 0.5): useful context that informs the decision but must
-/// not outrank standing framing (roster/doctrine, 0.9) or a strong recall hit.
-const WORKING_MEMORY_SALIENCE: f32 = 0.5;
 
 // The trail-head and latest-action bounds are NOT constants. They are fractions of this
 // mind's LIVE served context window, owned by `ContextBudget` — see
@@ -92,7 +86,6 @@ use crate::cognition::act_observe::Observation;
 /// Her context view, the type her working memory checkpoints.
 pub(crate) type ContextView =
     continuum_context::view::View<crate::cognition::context_streams::ContextMessage>;
-use crate::cognition::context_budget::ContextBudget;
 
 /// Clip a full action-result body to [`WM_ACTION_FULL_MAX_CHARS`] for prompt inclusion.
 /// Returns the body unchanged when it fits; otherwise a `char`-boundary-safe head plus
@@ -115,10 +108,6 @@ pub fn collapse_thought(text: &str, keep: usize) -> String {
     format!("[{} earlier chars — my full thought, collapsed] …{tail}", total - keep)
 }
 
-/// Max distinct dispatched (background) handles tracked at once. A persona with more than
-/// this many sentinels/compiles/debuggers in flight is unusual; past the cap the
-/// oldest-updated finished handle is evicted first (a still-running one is never dropped).
-const MAX_DISPATCHED: usize = 16;
 
 /// Borrowed provenance already carried by the result ring. Displaying a result
 /// in another activity must not erase where it came from or which operation ran.
@@ -160,10 +149,7 @@ impl<'a> ResultAttribution<'a> {
 
 /// The line a collapsed result leaves: what it was, and the handle that reopens it.
 fn collapsed_pointer(record: &action_log::ActionRecord) -> String {
-    match &record.written_pointer {
-        Some(pointer) => pointer.clone(),
-        None => format!("[result {}{} — collapsed]", ResultAttribution::of(record), workspace_label(record.scope.as_deref())),
-    }
+    format!("[result {}{} — collapsed]", ResultAttribution::of(record), workspace_label(record.scope.as_deref()))
 }
 
 /// Recognize ONLY the standalone pointer representation emitted by this owner.
@@ -202,14 +188,6 @@ struct DispatchedAction {
     seq: u64,
 }
 
-/// A bounded, rolling buffer of the persona's recent reasoning. Cheap to clone the
-/// `Arc`; shared between the writer (deliberation faculty) and the reader
-/// (`WorkingMemoryFaculty`). `parking_lot::Mutex` — no poisoning, and every access
-/// is a quick sync snapshot/push with no `.await` held across the lock.
-/// The working-memory faculty's canonical id — the ONE string the contribution
-/// carries and every consumer (stability ordering in the deliberation tail,
-/// capture tooling) matches on.
-pub(crate) const WM_FACULTY_ID: &str = "working-memory";
 
 /// A keyed working-memory fact with a lifetime in work turns.
 #[derive(Debug, Clone)]
@@ -220,6 +198,10 @@ struct TurnPinnedFact {
     detail: Option<String>,
 }
 
+/// A bounded, rolling buffer of the persona's recent reasoning. Cheap to clone the `Arc`;
+/// written by the deliberation faculty and read by her view's sources (`context_streams`).
+/// `parking_lot::Mutex` — no poisoning, and every access is a quick sync snapshot/push with no
+/// `.await` held across the lock.
 #[derive(Debug)]
 pub struct WorkingMemory {
     /// Process-unique construction ordinal. It keys this mind's set of live spill handles
@@ -249,7 +231,6 @@ pub struct WorkingMemory {
     /// bound below. `0` = not yet known (cold boot / mid-relaunch), which means NO clipping:
     /// the deliberation guard still trims the assembled prompt to the real `n_ctx`, so an
     /// unknown window must never be replaced with an invented one.
-    served_window: AtomicU32,
     entries: Mutex<VecDeque<WmEntry>>,
     /// The acting root her receipts are stamped with (set at the work-turn
     /// rooting seam, cleared on restore). See [`WmEntry::scope`].
@@ -270,7 +251,7 @@ pub struct WorkingMemory {
     /// SAME recency channel as `last_action`, but keyed so concurrent sentinels/compiles/
     /// debuggers stream in without clobbering each other. Fed by the completion/progress
     /// listener (`record_dispatch_event`); surfaced by the faculty so the mind perceives
-    /// "what I sent away, and where it's at" each heartbeat. Bounded by `MAX_DISPATCHED`.
+    /// "what I sent away, and where it's at" each heartbeat. A finished handle stays until a submitted render receipt shows its end reached her.
     dispatched: Mutex<HashMap<Uuid, DispatchedAction>>,
     /// Monotonic stamp applied to ACTION entries. Two reasons: (1) it makes each
     /// recorded action a DISTINCT string even when the persona repeats the identical
@@ -448,43 +429,20 @@ pub struct VolatileSnapshot {
     /// then says nothing rather than guessing a change it cannot see (#165).
     #[serde(default)]
     pub build_sha: String,
-    /// The proprioception receipt archive (#414) — act-history head lines that must
-    /// survive a reboot exactly as the ring entries do (the counter already did; a
-    /// counter without its lines is the deprivation this field exists to end). Empty
-    /// on snapshots written before this field (serde default): restore starts the
-    /// archive fresh and the ledger's counter-only arm stays honest about the gap.
-    #[serde(default)]
-    pub receipt_heads: Vec<String>,
-    /// Room tags parallel to `receipt_heads`, index-aligned (slice B). A
-    /// SEPARATE defaulted field — not a tuple — so snapshots written before
-    /// scoping still deserialize; restore pads missing tags with `None`
-    /// (honest "unscoped", never a guessed room).
-    #[serde(default)]
-    pub receipt_head_rooms: Vec<Option<Uuid>>,
-    /// Recent act result TAILS `(seq, room, tail)` — the cross-turn feedback
-    /// channel (2026-08-16). Defaulted so pre-field snapshots deserialize;
-    /// restore then starts the buffer fresh.
+    /// Retained results `(seq, room, result, operation, handle)`, read only by checkpoint
+    /// adoption's validation (`persona_workspace::checkpoint_adoption`). It goes when adoption's
+    /// writes move onto their disk class handle (ONE-BUDGET row 5, card 2b326931; then adoption reads
+    /// `actions`): the one shape is `actions`.
     #[serde(default)]
     pub recent_results: Vec<(u64, Option<Uuid>, String, String, Option<String>)>,
-    /// Additive attribution preserves the existing receipt tuple wire format. Missing
-    /// legacy attribution is unknown, never inferred from a room or the current root.
-    #[serde(default)]
-    pub result_scopes: BTreeMap<u64, String>,
     /// Her state at the seam — the whole held card, her ledger, what was staged, what tore
     /// the life (card 49b5e806, Kimi 2026-09-26). Stamped by `save_volatile`, which knows
     /// whose memory this is and why it is being written; rendered FIRST on wake. `None` on
     /// snapshots from before this field and for a citizen at home with nothing to hand.
     #[serde(default)]
     pub handoff: Option<crate::cognition::handoff::Handoff>,
-    /// The collapsed results' pointers, each with the handle it reopens: what a result
-    /// leaves when it collapses out of the ring is HOW she reaches it again, so it survives
-    /// a restart exactly as the ring does (Astra on #4963: a read collapsed at settlement
-    /// lost its only handle on restart). Empty on snapshots written before this field.
-    #[serde(default)]
-    pub evicted_pointers: Vec<(String, String)>,
-    /// Her actions, whole ([`action_log`]): what a restore reads. The ring, archive and
-    /// pointer fields above are the same acts in the shape the previous build reads, kept
-    /// so a rollback still restores her. Empty on snapshots written before it.
+    /// Her actions, whole ([`action_log`]): what a restore reads, the one shape (no projection
+    /// for another build: this is the first version, Joel 2026-10-31).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) actions: Vec<action_log::ActionRecord>,
     /// Her context view ([`WorkingMemory`]'s `view`). Absent on snapshots written before it,
@@ -542,69 +500,15 @@ impl VolatileSnapshot {
         }
     }
 
-    /// Her actions as records: the records it carries, or, for a checkpoint written before
-    /// them, the ring, archive and pointer index read back into records. Those older lines
-    /// are keyed by the `#n` this owner wrote at their head (one with none is dropped and
-    /// counted), and an older pointer keeps the exact text it was written with, since its
-    /// operation and workspace are not stored apart from it.
+    /// Her actions as records, as the checkpoint carries them.
     pub(crate) fn action_records(&self) -> Vec<action_log::ActionRecord> {
-        if !self.actions.is_empty() {
-            return self.actions.clone();
-        }
-        let blank = |seq: u64, room: Option<Uuid>| action_log::ActionRecord {
-            seq,
-            room,
-            scope: None,
-            operation: "unrecorded".into(),
-            head: None,
-            result: None,
-            handle: None,
-            written_pointer: None,
-            summary: None,
-            stored_chars: None,
-            received_ms: None,
-        };
-        let mut records: BTreeMap<u64, action_log::ActionRecord> = BTreeMap::new();
-        let mut unkeyed = 0usize;
-        for (seq, room, result, operation, handle) in &self.recent_results {
-            let record = records.entry(*seq).or_insert_with(|| blank(*seq, *room));
-            record.scope = self.result_scopes.get(seq).cloned();
-            record.operation = operation.clone();
-            record.result = Some(result.clone());
-            record.handle = handle.clone();
-        }
-        let mut rooms = self.receipt_head_rooms.iter();
-        for head in &self.receipt_heads {
-            let room = rooms.next().copied().flatten();
-            let Some(seq) = written_seq(head, "[action #") else {
-                unkeyed += 1;
-                continue;
-            };
-            records.entry(seq).or_insert_with(|| blank(seq, room)).head = Some(head.clone());
-        }
-        for (pointer, handle) in &self.evicted_pointers {
-            let Some(seq) = written_seq(pointer, "[result #") else {
-                unkeyed += 1;
-                continue;
-            };
-            let record = records.entry(seq).or_insert_with(|| blank(seq, None));
-            record.handle.get_or_insert_with(|| handle.clone());
-            record.written_pointer = Some(pointer.clone());
-        }
-        if unkeyed > 0 {
-            continuum_base::probe!(
-                class = "wm.actions.unkeyed_on_restore",
-                unkeyed = %unkeyed,
-                "checkpoint lines without an action number were dropped on restore"
-            );
-        }
-        records.into_values().collect()
+        self.actions.clone()
     }
 
     /// Every saved result this checkpoint still reaches; the persisted twin of what working
     /// memory publishes live, through the same log and the same rule.
     pub(crate) fn reachable_handles(&self) -> HashSet<String> {
-        let log = action_log::ActionLog::from_records(self.action_records(), usize::MAX);
+        let log = action_log::ActionLog::from_records(self.action_records());
         reachable_handles(log.receipt_keys(), &self.receipt_children, &self.open_views)
     }
 
@@ -634,11 +538,6 @@ impl VolatileSnapshot {
     }
 }
 
-/// The `#n` this owner wrote right after `prefix` at the head of a line.
-fn written_seq(line: &str, prefix: &str) -> Option<u64> {
-    let digits: String = line.strip_prefix(prefix)?.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok()
-}
 
 /// "; workspace <dir>" for a result recorded under a root; empty for one recorded before.
 fn workspace_label(root: Option<&str>) -> String {
@@ -717,14 +616,11 @@ mod action_log;
 mod continuity;
 mod task_results;
 pub use task_results::{TaskReceiptConflict, TaskReceiptError};
-mod faculty;
 mod ledger;
 mod perception;
 mod residency;
 
 pub use action_log::ActOutputRefusal;
-pub use faculty::WorkingMemoryFaculty;
-pub(crate) use faculty::render_dispatched;
 pub(crate) use ledger::operation_level;
 pub(crate) use residency::{ResidentResults, ShedCandidate};
 

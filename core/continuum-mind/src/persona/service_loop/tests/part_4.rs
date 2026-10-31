@@ -105,7 +105,6 @@ use super::*;
             system_prompt: "You are Paige.".to_string(),
             admission,
             adapter: Arc::new(HeuristicInferenceAdapter::new().with_canned_response("PASS: done")),
-            capacity: None,
             grounding_sources: Vec::new(),
             embedder: None,
             tool_executor: None,
@@ -205,7 +204,6 @@ use super::*;
                     HeuristicInferenceAdapter::new()
                         .with_canned_response("The tests failed after the latest change."),
                 ),
-                capacity: None,
                 grounding_sources: Vec::new(),
                 embedder: None,
                 tool_executor: None,
@@ -304,7 +302,6 @@ use super::*;
         let cycle = crate::cognition::workspace::WorkspaceCycle::new(
             vec![],
             Arc::new(crate::cognition::workspace::SalienceArbiter),
-            4,
         );
         let mut unavailable = current.clone();
         unavailable.card_id = airc_lib::WorkCardId::new();
@@ -508,7 +505,6 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
         adapter: Arc::new(
             HeuristicInferenceAdapter::new().with_canned_response("PASS: nothing calls me right now"),
         ),
-        capacity: None,
         grounding_sources: Vec::new(),
         embedder: None,
         // Her hands: an initiative turn is offered only to a mind that can act.

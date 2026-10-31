@@ -226,6 +226,14 @@ impl ActOutcome {
     }
 }
 
+/// A call's arguments as she reads them, by shape and never by size: a single-line value whole,
+/// a multi-line value (a file's body, a heredoc) by its reference, so one line stays one line.
+/// The one argument renderer (`Observation::call_line`, and a result's status line in
+/// `tool_executor::answer`).
+pub(crate) fn call_args(input: &serde_json::Value) -> String {
+    render_call_args(input)
+}
+
 impl Observation {
     /// Execution alone is not success: projected running/failed/undecodable
     /// results do not establish an effect. Legacy unprojected commands retain
@@ -257,32 +265,20 @@ impl Observation {
         self.output.verdict.failed() || self.output.result.is_error == Some(true)
     }
 
-    /// The RECENCY-channel rendering: the FULL trace working memory keeps so the
-    /// mind can act on what it just fetched. Byte-identical to the old inline
-    /// `apply.rs` block (`{name}({args}){because}\nResult:\n{bounded}\n\n`) — the
-    /// #205 KV-stability invariant. `intent` is batch-level (one per `apply_act`
-    /// call, shared by every act in the batch), so it is passed rather than
-    /// stored per-`Observation`.
-    pub fn render_recency(&self, intent: &str) -> String {
-        let args = render_call_args(&self.call.input);
-        // The intent rides the result as a ONE-LINE reason, its first line: a shape rule,
-        // never a size, and never the whole monologue.
-        // Measured 2026-09-04: one result header carried 2,902 chars of intent
-        // ("Let me get oriented…") ahead of 790 chars of actual output; across a
-        // turn, 6.1k of 20.6k result chars were intent echo. The output is what
-        // she must read; the reason is a label.
-        let because = if intent.trim().is_empty() {
-            String::new()
-        } else {
-            format!(" because {}", intent_label(intent))
-        };
-        format!(
-            "{}({}){}\nResult:\n{}\n\n",
-            self.call.name,
-            args,
-            because,
-            self.body_text().trim(),
-        )
+    /// The call as she made it, `name(args)`: its arguments by shape, never by size
+    /// (`render_call_args`). The one rendering of a call, for its recency trace, its summary part
+    /// and its ledger line.
+    pub(crate) fn call_line(&self) -> String {
+        format!("{}({})", self.call.name, call_args(&self.call.input))
+    }
+
+    /// The RECENCY-channel rendering: the FULL trace working memory keeps so the mind can act on
+    /// what it just fetched, `{call}\nResult:\n{body}\n\n`, stable across acts (the #205
+    /// KV-stability invariant).
+    pub fn render_recency(&self) -> String {
+        // No reason clause: her intent reaches her whole as her own thought, and #5611's causes
+        // link each result to its act, so a result carries its call and its output only.
+        format!("{}\nResult:\n{}\n\n", self.call_line(), self.body_text().trim())
     }
 
     /// This act as one part of a batch receipt's summary level: the recency header (its name and
@@ -290,11 +286,10 @@ impl Observation {
     /// summary reads what the receipt shows her, never the executor's serialized JSON, where a
     /// read's numbered lines are escaped and no code level is found (Codex on #5424).
     pub(crate) fn render_summary_part(&self, level: impl Fn(&str) -> Option<String>) -> String {
-        let args = render_call_args(&self.call.input);
         let body = self.body_text();
         let body = body.trim();
         let shown = level(body).unwrap_or_else(|| body.to_owned()); // unwrap_or: a body with no smaller level is its own summary
-        format!("{}({})\nResult:\n{}\n\n", self.call.name, args, shown)
+        format!("{}\nResult:\n{}\n\n", self.call_line(), shown)
     }
 
     /// The RECALL-channel rendering: the COLLAPSED reference the Episodic engram
@@ -351,27 +346,9 @@ pub fn extract_paths(input: &serde_json::Value) -> Vec<PathBuf> {
     out
 }
 
-/// Clip an act's intent to a one-line reason of at most `max_chars` characters
-/// (first line, head-trimmed with an ellipsis). Pure; used by the recency render.
-/// The intent's label on a result: its first line. A shape rule, never a size: the rest of what she
-/// thought is her own message, already in her view.
-pub fn intent_label(intent: &str) -> String {
-    intent.trim().lines().next().map_or_else(String::new, |first| first.trim().to_string()) // an empty intent labels nothing
-}
-
 #[cfg(test)]
 mod tests {
 
-    // what this catches: the monologue riding every result (2,902 chars of intent ahead of 790
-    // chars of output, measured 2026-09-04). The label is the first line, by shape, never a size.
-    #[test]
-    fn intent_on_a_result_is_its_first_line() {
-        let long = "Let me get oriented properly this time. I've been confusing myself with stale context and the board says otherwise.\nSecond line never rides.";
-        let label = super::intent_label(long);
-        assert!(label.starts_with("Let me get oriented") && !label.contains("Second line"), "{label:?}");
-        assert_eq!(super::intent_label("read the card"), "read the card");
-        assert_eq!(super::intent_label("   "), "");
-    }
 
     use super::*;
 

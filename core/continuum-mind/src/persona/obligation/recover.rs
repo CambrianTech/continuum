@@ -160,7 +160,6 @@ mod tests {
                 crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
             ))),
             adapter: Arc::new(adapter),
-            capacity: None,
             grounding_sources: Vec::new(),
             embedder: None,
             tool_executor: Some(Arc::new(crate::cognition::act_observe::test_support::ScriptedExecutor::new(["ok"]))),

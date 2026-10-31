@@ -559,7 +559,7 @@ impl Workspace {
     /// every context contribution that won attention this tick, newline-joined.
     /// This is where the persona reads what its perception faculties surfaced —
     /// roster/doctrine grounding, recall hits, and (the proprioception channel)
-    /// the `WorkingMemoryFaculty`'s render of its own recent acts. A deliberation
+    /// her view's render of its own recent acts. A deliberation
     /// faculty scans THIS, not the raw `world_state` burst — the burst is the
     /// stimulus, the broadcast is what the mind actually knows going into the
     /// decision. (Replaces the deleted eval-only `[you just acted]` world-state

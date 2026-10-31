@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use crate::ai::types::ToolCall;
 use crate::cognition::act_observe::test_support::{admission, body_with_wm, ScriptedExecutor};
 use crate::cognition::act_observe::*;
-use crate::cognition::working_memory::{WorkingMemory, WorkingMemoryFaculty};
+use crate::cognition::working_memory::WorkingMemory;
 use crate::cognition::workspace::{Faculty, SalienceArbiter, TurnFraming, WorkspaceCycle};
 
 // what this catches:41f4e3ef — a directed drive must persist real receipt-linked
@@ -40,7 +40,6 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
     ]);
     hands.pause_before = Some((5, Arc::clone(&entered), release));
     let wm = Arc::new(WorkingMemory::new(8));
-    wm.set_served_window(32_768);
     let body = body_with_wm(Arc::new(hands), admission(), Arc::clone(&wm));
     let persona = body.persona_id;
     let responses = (0..5)
@@ -85,11 +84,9 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
         }]);
     let cycle = WorkspaceCycle::new(
         vec![
-            Arc::new(WorkingMemoryFaculty::new(wm)) as Arc<dyn Faculty>,
             Arc::new(faculty),
         ],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body);
     let card = Uuid::new_v4();

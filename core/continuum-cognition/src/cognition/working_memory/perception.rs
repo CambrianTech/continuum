@@ -173,9 +173,9 @@ impl WorkingMemory {
     /// The FULL result of the just-executed act, ready to render as a **pinned**
     /// trailing prompt block — the run-18057-f1 fix.
     ///
-    /// This block used to live INSIDE the working-memory faculty's single
-    /// [`Contribution`](crate::cognition::workspace::Contribution) at
-    /// `WORKING_MEMORY_SALIENCE` (0.5). That bid competes in `arbiter.focus()`
+    /// This block used to live INSIDE a working-memory faculty's single
+    /// [`Contribution`](crate::cognition::workspace::Contribution) bid (deleted with that
+    /// faculty, card c537d687). That bid competed in `arbiter.focus()`
     /// top-k, so under capacity pressure the whole contribution — the just-fetched
     /// grep/read result included — was truncated, and the persona generated blind
     /// to what her own hands had returned (the 0-byte SWE-bench patch). The message
@@ -189,9 +189,6 @@ impl WorkingMemory {
     /// would add nothing.
     pub fn pinned_active_result_block(&self) -> Option<String> {
         let (seq, full) = self.active_action_full()?;
-        if full.chars().count() <= self.budget().trail_head_chars() {
-            return None;
-        }
         // Shown as the producer handed it over: whole, or its handle. A consumer never
         // re-cuts (CONTENT-TRAVELS-BY-HANDLE.md, forbidden moves).
         Some(self.full_result_message(seq, &full))
@@ -258,8 +255,6 @@ impl WorkingMemory {
                 let workspace = workspace_label(record.scope.as_deref());
                 let whole = record.result.as_deref().map(|result| format!("[result {attribution}{workspace}] {result}"));
                 let pointer = match (&record.handle, &whole, &record.head) {
-                    // An older build's pointer, as it was written (its operation lives there).
-                    (Some(_), _, _) if record.written_pointer.is_some() => record.written_pointer.clone().into_iter().collect(),
                     (Some(_), _, _) => format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"),
                     // Retained but never saved: no handle could reopen a collapsed line, so it stays
                     // whole (goal 7: the full result stays reachable; Cormac on #5255).
@@ -353,8 +348,10 @@ impl WorkingMemory {
     /// `Done`/`Failed` marks it. The mind perceives outstanding + freshly-finished handles
     /// via the faculty next heartbeat, so it can act on a result the moment it lands
     /// without ever blocking. `label` is set once (first event) and preserved across
-    /// updates. Bounded by `MAX_DISPATCHED` — a finished handle is evicted before a
-    /// running one when over cap ([[act-results-need-a-recency-channel-not-semantic-recall]]).
+    /// updates. A finished handle stays until a submitted render receipt shows its end reached
+    /// her (HER-TASKS' acknowledge point, the render receipt in progress); until that exists
+    /// nothing retires one, so an end she has not perceived is never dropped (Codex on #5637)
+    /// ([[act-results-need-a-recency-channel-not-semantic-recall]]).
     pub fn record_dispatch_event(
         &self,
         handle: Uuid,
@@ -373,17 +370,6 @@ impl WorkingMemory {
         entry.latest = content.trim().to_string();
         entry.status = status;
         entry.seq = seq;
-        if m.len() > MAX_DISPATCHED {
-            // Evict the oldest-updated FINISHED handle; never drop one still running.
-            if let Some(victim) = m
-                .iter()
-                .filter(|(_, a)| a.status != DispatchStatus::Running)
-                .min_by_key(|(_, a)| a.seq)
-                .map(|(h, _)| *h)
-            {
-                m.remove(&victim);
-            }
-        }
     }
 
     /// The label of a dispatched handle THIS persona owns, or `None` if the handle isn't

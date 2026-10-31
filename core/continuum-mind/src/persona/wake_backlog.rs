@@ -626,7 +626,7 @@ mod tests {
     async fn starved_priority_input_survives_until_dispatch_without_replaying_actions() {
         use crate::cognition::act_observe::test_support::{admission, body_with_wm, ActThenSpeak, RecordingExecutor};
         use crate::cognition::act_observe::{drive_to_settle_with_input, SettleStep};
-        use crate::cognition::working_memory::{WorkingMemory, WorkingMemoryFaculty};
+        use crate::cognition::working_memory::WorkingMemory;
         use crate::cognition::workspace::{Burst, Faculty, SalienceArbiter, TurnAttention, TurnFraming, WorkspaceCycle};
         use std::sync::{Arc, Mutex};
         use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
@@ -634,20 +634,18 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let gate = Arc::new(AtomicBool::new(false));
-        let mut faculty = ActThenSpeak::new();
+        let wm = Arc::new(WorkingMemory::new(8));
+        let mut faculty = ActThenSpeak::new().with_memory(Arc::clone(&wm));
         faculty.admission_open = Some(Arc::clone(&gate));
         let exec = Arc::new(RecordingExecutor {
             seen_context: Arc::new(Mutex::new(None)),
             result_content: "4".into(),
         });
-        let wm = Arc::new(WorkingMemory::new(8));
         let cycle = WorkspaceCycle::new(
             vec![
-                Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
                 Arc::new(faculty),
             ],
             Arc::new(SalienceArbiter),
-            8,
         )
         .with_acting(body_with_wm(exec.clone(), admission(), wm));
         let original = IncomingMessage {

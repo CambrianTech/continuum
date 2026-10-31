@@ -29,7 +29,6 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     // shape: `code/search` returned the `_sympify` location she must edit next. Large
     // enough to clear the trail-head threshold so the pinned block surfaces.
     let wm = Arc::new(WorkingMemory::new(8));
-    wm.set_served_window(16_384);
     let needle = "sympy/core/expr.py:123:        return self == sympify(other)  # _sympify HERE";
     let grep_result = format!(
         "code/search matches:\n{needle}\n{}",
@@ -265,7 +264,6 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     // (a burst to pointers once the share is exceeded), so the window is sized to
     // hold this 16.8k-char inventory beside the next batch; a smaller window would
     // collapse it at the batch's receipt, which is the other mechanism, not this one.
-    wm.set_served_window(65_536);
     let pin = crate::cognition::tool_executor::spill::LivePin::new();
     let custody = pin.retain(persona, &inventory);
     let handle = custody.handle().expect("saved inventory").to_owned();

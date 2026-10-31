@@ -48,10 +48,6 @@ pub(crate) struct ActionRecord {
     /// The saved whole; `None` when the save failed, and then the result never collapses
     /// (nothing else holds its bytes).
     pub handle: Option<String>,
-    /// The pointer exactly as a build before the records wrote it, restored from its
-    /// checkpoint: its operation and workspace live only in that text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub written_pointer: Option<String>,
     /// The result's summary level (`continuum_context::levels`): a numbered read's outline,
     /// else an output's head and tail; what her view gives it when it cannot keep it whole.
     /// Kept after the result collapses, so what she read stays addressable.
@@ -98,18 +94,17 @@ pub(super) struct ActionLog {
 }
 
 impl ActionLog {
-    /// A log from records in any order, bounded to `archive_chars` like a live one.
-    pub fn from_records(mut records: Vec<ActionRecord>, archive_chars: usize) -> Self {
+    /// A log from records in any order. Nothing here bounds it: a record keeps its line and its
+    /// handle for as long as her mind lives, and its body's RAM is the one memory owner's to
+    /// shed (`residency`), never a character cap.
+    pub fn from_records(mut records: Vec<ActionRecord>) -> Self {
         records.sort_by_key(|record| record.seq);
         records.dedup_by_key(|record| record.seq);
-        let mut log = Self { records: records.into() };
-        log.prune(archive_chars);
-        log
+        Self { records: records.into() }
     }
 
-    pub fn push(&mut self, record: ActionRecord, archive_chars: usize) {
+    pub fn push(&mut self, record: ActionRecord) {
         self.records.push_back(record);
-        self.prune(archive_chars);
     }
 
     pub fn get(&self, seq: u64) -> Option<&ActionRecord> {
@@ -137,22 +132,6 @@ impl ActionLog {
             .collect();
         pointers.reverse();
         pointers
-    }
-
-    /// The newest ledger lines that fit `archive_chars`, oldest first; at least the newest.
-    pub fn archive(&self, archive_chars: usize) -> Vec<(&ActionRecord, &str)> {
-        let mut used = 0usize;
-        let mut kept: Vec<(&ActionRecord, &str)> = Vec::new();
-        for (record, head) in self.records.iter().rev().filter_map(|r| r.head.as_deref().map(|h| (r, h))) {
-            let cost = head.chars().count() + 1;
-            if !kept.is_empty() && used + cost > archive_chars {
-                break;
-            }
-            used += cost;
-            kept.push((record, head));
-        }
-        kept.reverse();
-        kept
     }
 
     /// Every receipt whose dependencies must stay reachable: each retained result's key and
@@ -214,12 +193,4 @@ impl ActionLog {
         Collapsed { total }
     }
 
-    /// Drop the records nothing can reach any more: past the ledger's share, no body in RAM,
-    /// and no handle to reload one from. A record naming a handle stays, since its whole is
-    /// reachable through her view (`StoredWhole`) for as long as the record is.
-    fn prune(&mut self, archive_chars: usize) {
-        let keep: HashSet<u64> = self.archive(archive_chars).into_iter().map(|(record, _)| record.seq).collect();
-        self.records
-            .retain(|record| record.result.is_some() || record.handle.is_some() || keep.contains(&record.seq));
-    }
 }

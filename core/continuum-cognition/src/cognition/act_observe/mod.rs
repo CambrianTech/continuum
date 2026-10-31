@@ -32,7 +32,7 @@ mod perception;
 mod recency;
 
 mod observation;
-pub use observation::{extract_paths, intent_label, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
+pub use observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
 
 mod types;
 pub use types::{SettleOutcome, SettleStep};
@@ -76,7 +76,7 @@ pub mod test_support {
     }
 
     /// Body that shares a specific working-memory buffer — so a test can wire the
-    /// SAME buffer into a `WorkingMemoryFaculty` on the cycle and watch the
+    /// SAME buffer into her view's sources and watch the
     /// perception of the persona's own hands flow act→memory→next-tick perception
     /// (the proprioception channel that replaced the deleted world-state fold).
     pub fn body_with_wm(
@@ -335,7 +335,7 @@ pub mod test_support {
     /// canonical act→observe arc the driver exists to run.
     ///
     /// It perceives its own hands through the working-memory proprioception channel
-    /// (the `WorkingMemoryFaculty` stamps each act `[action #n]`), NOT the deleted
+    /// (her trail stamps each act `[action #n]`), NOT the deleted
     /// world-state fold. It remembers the highest action stamp it has already spoken
     /// about (`responded_through`) so that across SEPARATE concerns — where the
     /// volatile buffer still carries the prior concern's action — it re-awakens and
@@ -345,14 +345,46 @@ pub mod test_support {
     pub struct ActThenSpeak {
         pub responded_through: std::sync::atomic::AtomicU64,
         pub admission_open: Option<Arc<std::sync::atomic::AtomicBool>>,
+        /// The working memory her view reads, when the test wires one (`perceived_with`).
+        pub memory: Option<Arc<crate::cognition::working_memory::WorkingMemory>>,
     }
     impl ActThenSpeak {
         pub fn new() -> Self {
             Self {
                 responded_through: std::sync::atomic::AtomicU64::new(0),
                 admission_open: None,
+                memory: None,
             }
         }
+
+        /// Perceive her own acts the way her view gives them, from `memory`.
+        pub fn with_memory(mut self, memory: Arc<crate::cognition::working_memory::WorkingMemory>) -> Self {
+            self.memory = Some(memory);
+            self
+        }
+    }
+
+    /// What a fixture deliberation perceives, as production's does: the broadcast, plus (when
+    /// wired) what her view gives her from working memory, which is her settled acts' results
+    /// (the actions source), the newest result riding whole after her view, and her trail.
+    pub fn perceived_with(ws: &Workspace, memory: Option<&crate::cognition::working_memory::WorkingMemory>) -> String {
+        let mut perceived = ws.perceived();
+        if let Some(memory) = memory {
+            let (acts, _) = memory.action_renderings();
+            for act in acts {
+                perceived.push('\n');
+                perceived.push_str(&act.full);
+            }
+            if let Some(newest) = memory.pinned_active_result_block() {
+                perceived.push('\n');
+                perceived.push_str(&newest);
+            }
+            for line in memory.recent() {
+                perceived.push('\n');
+                perceived.push_str(&line);
+            }
+        }
+        perceived
     }
     /// Highest `[action #N]` stamp present in the assembled perception, 0 if none.
     pub fn latest_action_seq(perceived: &str) -> u64 {
@@ -380,7 +412,7 @@ pub mod test_support {
             }
 
             use std::sync::atomic::Ordering;
-            let latest = latest_action_seq(&ws.perceived());
+            let latest = latest_action_seq(&perceived_with(ws, self.memory.as_deref()));
             if latest > self.responded_through.load(Ordering::Relaxed) {
                 self.responded_through.store(latest, Ordering::Relaxed);
                 Some(Contribution::verdict(

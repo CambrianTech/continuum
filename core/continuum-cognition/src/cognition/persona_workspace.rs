@@ -33,7 +33,7 @@ use crate::ai::embedding::{CachingEmbeddingProvider, EmbeddingProvider, LexicalE
 use super::llm_deliberation_faculty::LlmDeliberationFaculty;
 use super::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
 use super::recall_faculty::RecallFaculty;
-use super::working_memory::{WorkingMemory, WorkingMemoryFaculty};
+use super::working_memory::WorkingMemory;
 use super::workspace::{ActingBody, Faculty, SituationFocusArbiter, WorkspaceCycle};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::cognition::admission_state::AdmissionState;

@@ -5,7 +5,7 @@ use continuum_context::cause::{Cause, Origin};
 use continuum_context::source::{Item, Source};
 
 use super::{element, priority, ContextMessage, Producer};
-use crate::cognition::working_memory::{collapse_thought, render_dispatched, WmKind, WorkingMemory};
+use crate::cognition::working_memory::{collapse_thought, WmKind, WorkingMemory};
 
 /// What a collapsed thought keeps: its end, where the decision is.
 const POINTER_KEEP: usize = 200;
@@ -33,8 +33,7 @@ impl Source<ContextMessage> for Thoughts<'_> {
             .filter(|entry| matches!(entry.kind, WmKind::Thought | WmKind::Settlement))
             .map(|entry| entry.text)
             .collect();
-        let dispatched = render_dispatched(&self.memory.dispatched_snapshot());
-        if thoughts.is_empty() && dispatched.is_none() {
+        if thoughts.is_empty() {
             return Vec::new();
         }
         // First person, explicitly not a message (#264: a second-person header read as a
@@ -56,10 +55,6 @@ impl Source<ContextMessage> for Thoughts<'_> {
             // (Benchy on the M5, 2026-10-24 22:3xZ: ~7k chars of unchanged thoughts per act).
             Item::whole(id, cause, text.clone(), ContextMessage::user(format!("- {text}")))
                 .with_pointer(ContextMessage::user(format!("- {}", collapse_thought(&text, POINTER_KEEP))))
-        }));
-        // Fresh each event, newest last; one item, so a status change appends one line set.
-        items.extend(dispatched.map(|text| {
-            super::standing(self.persona, "thoughts", "dispatched", ContextMessage::user(text))
         }));
         items
     }

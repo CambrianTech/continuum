@@ -171,7 +171,6 @@ mod tests {
                 system_prompt: "You are Ivar, an engineer on the grid.".to_string(),
                 admission: seed_admission(1_000_000_000),
                 adapter: Arc::new(HeuristicInferenceAdapter::new()),
-                capacity: None,
                 grounding_sources: Vec::new(),
                 embedder: None,
                 tool_executor: None,

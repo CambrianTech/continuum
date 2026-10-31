@@ -12,6 +12,7 @@ pub(crate) mod blocks;
 pub(crate) mod conversation;
 pub(crate) mod notices;
 pub(crate) mod open_views;
+pub(crate) mod tasks;
 pub(crate) mod thoughts;
 
 use continuum_context::epoch::Block;
@@ -31,6 +32,7 @@ pub(crate) enum Producer {
     Thought,
     Notice,
     Standing,
+    Task,
 }
 
 /// An occurrence's id from its producer's own stable identity: whose (`persona`), which producer,
@@ -51,6 +53,7 @@ pub(crate) fn standing(persona: uuid::Uuid, source: &str, key: &str, message: Co
 pub(crate) struct MemoryStreams<'a> {
     pub actions: actions::Actions<'a>,
     pub thoughts: thoughts::Thoughts<'a>,
+    pub tasks: tasks::Tasks<'a>,
     pub open_views: open_views::OpenViews<'a>,
     pub notices: notices::Notices<'a>,
 }
@@ -60,6 +63,7 @@ impl<'a> MemoryStreams<'a> {
         Self {
             actions: actions::Actions { memory, persona },
             thoughts: thoughts::Thoughts { memory, persona },
+            tasks: tasks::Tasks { memory, persona },
             open_views: open_views::OpenViews { memory, persona },
             notices: notices::Notices { memory, persona },
         }

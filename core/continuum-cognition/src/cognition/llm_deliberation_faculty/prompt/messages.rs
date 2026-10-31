@@ -213,8 +213,8 @@ impl LlmDeliberationFaculty {
         // today: the working-memory faculty).
         // PINNED just-executed result (#392, run-18057-f1). The full result of the act
         // she just ran is appended DIRECTLY from the shared working-memory buffer as the
-        // newest trailing turn — deliberately NOT routed as a faculty bid. As part of the
-        // working-memory contribution at `WORKING_MEMORY_SALIENCE` it competed in
+        // newest trailing turn — deliberately NOT routed as a faculty bid. As part of a
+        // working-memory faculty's bid (that faculty is deleted) it competed in
         // `arbiter.focus()` top-k and was evicted whole under capacity pressure, so the
         // persona generated blind to her own grep/read output (the 0-byte SWE-bench patch).
         // Reading it here puts no attention pass between the hands and the mind.
@@ -246,12 +246,11 @@ impl LlmDeliberationFaculty {
         // between acts (`deliberation_prompt::stable_prefix_order`). Outside the view a block
         // sat behind it, and every act's append landed before it and re-sent it: on the M5
         // (2026-10-21 19:56Z) Aris re-prefilled 49k chars from `[workspace-map]` on. Her
-        // working-memory bid is not one of them: her thoughts and actions are their own streams.
+        // thoughts and actions are not among them: they are their own streams in her view.
         let mut pieces: Vec<&Contribution> = ws
             .broadcast
             .iter()
             .filter(|c| c.decision.is_none() && c.fault.is_none() && c.trailing)
-            .filter(|c| c.faculty.as_str() != crate::cognition::working_memory::WM_FACULTY_ID)
             .filter(|c| !c.content.trim().is_empty())
             .collect();
         pieces.sort_by(|a, b| deliberation_prompt::stable_prefix_order(a.faculty.as_str(), b.faculty.as_str()));

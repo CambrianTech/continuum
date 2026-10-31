@@ -1,15 +1,10 @@
 use super::*;
 
 impl WorkspaceCycle {
-    pub fn new(
-        faculties: Vec<Arc<dyn Faculty>>,
-        arbiter: Arc<dyn Arbiter>,
-        capacity: usize,
-    ) -> Self {
+    pub fn new(faculties: Vec<Arc<dyn Faculty>>, arbiter: Arc<dyn Arbiter>) -> Self {
         Self {
             faculties,
             arbiter,
-            capacity: capacity.max(1),
             capture: Arc::new(NoopWorkspaceCaptureSink),
             acting: None,
             genome: empty_genome(),
@@ -436,7 +431,7 @@ impl WorkspaceCycle {
     ///
     /// This is what makes "pull relevant memory, *then* decide" real: the decider
     /// is never blind to recall. Still one tick over the consolidated burst, still
-    /// `O(capacity)` for the bounded context — no per-event slowdown.
+    /// `O(bids)` for the context — no per-event slowdown.
     /// TEST-ONLY ambient shorthand: the burst names its room (a raw string
     /// converts with [`ActivityRoom::test_room`](crate::identity::ActivityRoom::test_room)
     /// under `#[cfg(test)]`), so even faculty-isolation ticks run in a

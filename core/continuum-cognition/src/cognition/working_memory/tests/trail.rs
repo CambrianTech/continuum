@@ -12,7 +12,6 @@ use super::*;
 fn recent_results_survive_subsequent_acts_and_stay_bounded() {
     let wm = WorkingMemory::new(8);
     // A known window, as the act→observe seam pins it before any receipt in production.
-    wm.set_served_window(16_384);
     record_saved(&wm, "[action] code/run(sol.rs) error[E0601]: `main` function not found");
     record_saved(&wm, "[action] code/list() sol.rs sol2.rs");
     record_saved(&wm, "[action] code/tree() workspace/");
@@ -55,18 +54,17 @@ fn recent_results_survive_subsequent_acts_and_stay_bounded() {
     );
 }
 
-// what this catches: e731576c — actual settlement records must reach the
-// memory contribution even when a one-word correction resembles an older
-// answer, or a later answer repeats the original state.
-#[tokio::test]
-async fn settlement_trail_preserves_corrections_and_later_repeated_reports() {
+// what this catches: e731576c — actual settlement records must be kept, in order and whole,
+// even when a one-word correction resembles an older answer, or a later answer repeats the
+// original state.
+#[test]
+fn settlement_trail_preserves_corrections_and_later_repeated_reports() {
     let passed = "I verified the candidate build and all regression tests passed \
                   after checking the shared workspace changes against the review requirements.";
     let failed = "I verified the candidate build and all regression tests failed \
                   after checking the shared workspace changes against the review requirements.";
     assert!(super::super::super::deliberation_budget::near_identical_substantial(passed, failed));
-    let wm = Arc::new(WorkingMemory::new(8));
-    wm.set_served_window(32_768);
+    let wm = WorkingMemory::new(8);
     wm.record_settlement(passed, None);
     wm.record_receipt("code/read found the regression");
     wm.record_settlement(failed, None);
@@ -81,27 +79,10 @@ async fn settlement_trail_preserves_corrections_and_later_repeated_reports() {
             &WmKind::Settlement
         ]
     );
-    assert!(entries
-        .iter()
-        .all(|entry| entry.text.chars().count() <= wm.budget().trail_head_chars()));
-    let expected: Vec<_> = entries
-        .iter()
-        .map(|entry| format!("- {}", entry.text))
-        .collect();
-    let contribution = WorkingMemoryFaculty::new(wm)
-        .contribute(&Workspace::new("What changed in the latest review?"))
-        .await
-        .expect("test: recorded working memory contributes");
-    let actual: Vec<_> = contribution
-        .content
-        .lines()
-        .filter(|line| line.starts_with("- "))
-        .collect();
-    assert_eq!(
-        actual, expected,
-        "the rendered trail must preserve every recorded entry in order"
-    );
-    assert!(!contribution.content.contains("not re-shown"));
+    let texts: Vec<&str> = entries.iter().map(|entry| entry.text.as_str()).collect();
+    assert!(texts[0].ends_with(passed), "the first report, whole: {}", texts[0]);
+    assert!(texts[2].ends_with(failed), "the correction, whole, though it resembles the first: {}", texts[2]);
+    assert!(texts[3].ends_with(passed), "the later repeat, kept as its own entry: {}", texts[3]);
 }
 
 // what this catches: loop-awareness — `note_action_fingerprint` counts repeats of the
@@ -281,17 +262,13 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         action_statements: Vec::new(),
         last_action: None,
         action_fps: Vec::new(),
+        recent_results: Vec::new(),
         next_action_seq: 1,
         saved_at_ms: 0, // pre-field snapshot: no save time guessed
         interrupted_dispatches: Vec::new(),
         build_sha: String::new(), // pre-field snapshot: no rebuild guessed either
         acting_card: None,
-        receipt_heads: Vec::new(),
-        receipt_head_rooms: Vec::new(), // pre-archive snapshot: ledger's counter-only arm covers it
-        recent_results: Vec::new(),
-        result_scopes: Default::default(),
         handoff: None,
-        evicted_pointers: Vec::new(),
         actions: Vec::new(),
         context_view: None,
         receipt_children: Default::default(),
