@@ -27,13 +27,20 @@ fn exhausted_pool_is_measured_but_failed_attempt_is_not_free_capacity() {
         previous.measured_at(
             previous.pool,
             previous.topology,
+            previous.source,
             previous.at,
             Duration::ZERO
         ),
         Ok(bytes)
     );
     assert_eq!(
-        failed.measured_at(failed.pool, failed.topology, failed.at, Duration::ZERO),
+        failed.measured_at(
+            failed.pool,
+            failed.topology,
+            failed.source,
+            failed.at,
+            Duration::ZERO
+        ),
         Err(ObservationRefusal::Unavailable(
             UnavailableReason::ProbeFailed
         ))
@@ -57,8 +64,19 @@ fn impossible_measurements_are_rejected_instead_of_saturated_to_empty_usage() {
 #[test]
 fn device_replacement_clock_restart_and_staleness_cannot_reuse_a_sample() {
     let sample = observation(Measurement::Unavailable(UnavailableReason::NotSampled));
-    let read =
-        |pool, topology, now| sample.measured_at(pool, topology, now, Duration::from_secs(1));
+    let read = |pool, topology, now| {
+        sample.measured_at(pool, topology, sample.source, now, Duration::from_secs(1))
+    };
+    assert_eq!(
+        sample.measured_at(
+            sample.pool,
+            sample.topology,
+            SourceId(9),
+            sample.at,
+            Duration::ZERO
+        ),
+        Err(ObservationRefusal::WrongSource)
+    );
     assert_eq!(
         read(PoolId(9), sample.topology, sample.at),
         Err(ObservationRefusal::WrongPool)

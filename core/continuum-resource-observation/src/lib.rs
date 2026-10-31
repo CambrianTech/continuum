@@ -95,6 +95,7 @@ pub struct PoolObservation {
 pub enum ObservationRefusal {
     WrongPool,
     WrongTopology,
+    WrongSource,
     DifferentClock,
     FutureObservation,
     Stale { age: Duration },
@@ -108,6 +109,7 @@ impl PoolObservation {
         self,
         pool: PoolId,
         topology: TopologyRevision,
+        source: SourceId,
         now: ObservationTime,
         max_age: Duration,
     ) -> Result<ByteMeasurement, ObservationRefusal> {
@@ -116,6 +118,9 @@ impl PoolObservation {
         }
         if self.topology != topology {
             return Err(ObservationRefusal::WrongTopology);
+        }
+        if self.source != source {
+            return Err(ObservationRefusal::WrongSource);
         }
         if self.at.clock != now.clock {
             return Err(ObservationRefusal::DifferentClock);
