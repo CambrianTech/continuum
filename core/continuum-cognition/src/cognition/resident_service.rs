@@ -35,6 +35,12 @@ pub fn note_settled(persona: Uuid, settled: &SettleOutcome, wall_ms: u64) {
     LEDGERS.entry(persona).or_default().note(turn);
 }
 
+/// One generation was served to `persona`, now. Counted where the response arrives, settled or
+/// not, so a long turn that keeps serving reads as progress in every window it spans.
+pub fn note_generation(persona: Uuid) {
+    LEDGERS.entry(persona).or_default().note_generation();
+}
+
 /// Her loop stopped with a capacity refusal still parked: she asks nothing now.
 pub fn unpark(persona: Uuid) {
     if let Some(mut ledger) = LEDGERS.get_mut(&persona) {
@@ -82,7 +88,6 @@ fn turn_of(
         })
         .collect();
     let completion = served.last().map(|model| Completion {
-        generations: saturating_u32(served.len()),
         acts: saturating_u32(acts),
         wall_ms,
         prompt_tokens: metrics.input_tokens,
@@ -139,7 +144,7 @@ mod tests {
         );
 
         let worked = turn_of(Some(&kimi), false, false, &[served("qwen3.6-35b-a3b")], &metrics, 2, 90_000);
-        assert_eq!(worked.completion.map(|c| (c.generations, c.acts, c.model)), Some((1, 2, "qwen3.6-35b-a3b".to_string())));
+        assert_eq!(worked.completion.map(|c| (c.acts, c.model)), Some((2, "qwen3.6-35b-a3b".to_string())));
         assert!(worked.refusal.is_some());
 
         let starved = turn_of(None, false, true, &[], &metrics, 0, 600_000);
