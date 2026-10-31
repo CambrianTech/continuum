@@ -388,6 +388,9 @@ pub struct Workspace {
     /// earned a place in the prompt is a judgement about relevance. Populated from
     /// the same `all_bids` full-competition set the capture sink records.
     pub receipts: Vec<crate::ai::provenance::GenerationReceipt>,
+    /// Submitted render facts from all bids, including bids omitted by attention.
+    /// The resident owner must persist consumption before retiring a task wake.
+    pub render_receipts: Vec<crate::cognition::render_receipt::RenderReceipt>,
     /// Is this a SELF-INITIATED turn — the never-stop heartbeat pursuing the
     /// persona's own thread with no inbound message — versus a turn driven by an
     /// arriving message or an examiner's question? Drives the `[Your own time]`
@@ -465,6 +468,7 @@ impl Workspace {
             broadcast: Vec::new(),
             attention: TurnAttention::Ambient,
             receipts: Vec::new(),
+            render_receipts: Vec::new(),
             self_initiated: false,
             workspace_deliverable: false,
             initiative: false,

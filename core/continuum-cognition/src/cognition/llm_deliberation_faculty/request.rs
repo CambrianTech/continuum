@@ -130,6 +130,7 @@ impl LlmDeliberationFaculty {
         // The allocation her prompt was fitted under: the receipt carries it with the capture.
         allocation: Option<crate::ai::provenance::AllocationReceipt>,
         receipts: &mut Vec<crate::ai::provenance::GenerationReceipt>,
+        rendered: &mut Vec<crate::cognition::render_receipt::RenderReceipt>,
     ) -> Option<Result<TextGenerationResponse, crate::ai::inference_error::InferenceError>> {
         // Identity belongs to the submitted adapter request. Provider response IDs
         // remain separate, and one workspace can issue several calls.
@@ -304,7 +305,7 @@ impl LlmDeliberationFaculty {
             if let (Some(view), false, Some(memory)) =
                 (submitted, self.forked, self.working_memory.as_ref())
             {
-                crate::cognition::render_receipt::deliver(crate::cognition::render_receipt::RenderReceipt {
+                rendered.push(crate::cognition::render_receipt::RenderReceipt {
                     owner: self.persona_id,
                     incarnation: memory.incarnation(),
                     request: receipted_request,

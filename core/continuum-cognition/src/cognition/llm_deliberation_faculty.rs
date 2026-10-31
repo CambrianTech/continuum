@@ -560,15 +560,17 @@ impl Faculty for LlmDeliberationFaculty {
 
     async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
         let mut receipts = Vec::new();
-        let contribution = self.contribute_with_receipts(ws, &mut receipts).await;
+        let mut rendered = Vec::new();
+        let contribution = self.contribute_with_receipts(ws, &mut receipts, &mut rendered).await;
         let mut contribution = match contribution {
             Some(contribution) => contribution,
-            None if receipts.is_empty() => return None,
+            None if receipts.is_empty() && rendered.is_empty() => return None,
             // A corrective retry may yield before dispatch. Keep its earlier
             // attempt's evidence without inventing a decision or another call.
             None => Contribution::context(FacultyId::Deliberation, "", 0.0, ""),
         };
         contribution.receipts = receipts;
+        contribution.render_receipts = rendered;
         Some(contribution)
     }
 }

@@ -238,6 +238,10 @@ impl WorkspaceCycle {
             .iter()
             .flat_map(|c| c.receipts.iter().cloned())
             .collect();
+        ws.render_receipts = all_bids
+            .iter()
+            .flat_map(|c| c.render_receipts.iter().cloned())
+            .collect();
         // WHERE THIS TICK'S LATENCY WENT, on the always-on probe stream.
         //
         // `timings` already holds per-faculty wall-clock for every faculty across

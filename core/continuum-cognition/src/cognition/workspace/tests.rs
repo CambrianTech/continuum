@@ -18,6 +18,15 @@
         loud.receipts = vec![GenerationReceipt::faulted("req-loud", "served after retry")];
         let mut quiet = Contribution::context(FacultyId::WorldModel, "quiet", 0.1, "loses attention");
         quiet.receipts = vec![GenerationReceipt::faulted("req-quiet", "lane refused the model")];
+        // A previous successful attempt can have rendered before this faculty's
+        // later attempt faulted. Neither fact may disappear with its losing bid.
+        let rendered = crate::cognition::render_receipt::RenderReceipt {
+            owner: uuid::Uuid::new_v4(),
+            incarnation: uuid::Uuid::new_v4(),
+            request: "req-quiet-earlier-served".to_owned(),
+            view: continuum_context::view::Receipt { epoch: 1, items: Vec::new() },
+        };
+        quiet.render_receipts.push(rendered.clone());
 
         let faculties: Vec<Arc<dyn Faculty>> = vec![
             Arc::new(FixedFaculty(loud)),
@@ -25,6 +34,7 @@
         ];
         // capacity 1 — one of the two bids MUST be truncated.
         let ws = cycle(faculties, 1).run("burst").await;
+        assert_eq!(ws.render_receipts, vec![rendered]);
 
         // POSITIVE CONTROL: the truncation really happened. Without this the receipt
         // assertion below would pass just as well on a cycle that kept both bids,

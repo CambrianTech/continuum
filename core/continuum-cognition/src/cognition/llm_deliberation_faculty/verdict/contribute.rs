@@ -5,6 +5,7 @@ impl LlmDeliberationFaculty {
         &self,
         ws: &Workspace,
         receipts: &mut Vec<crate::ai::provenance::GenerationReceipt>,
+        rendered: &mut Vec<crate::cognition::render_receipt::RenderReceipt>,
     ) -> Option<Contribution> {
         // ONE atomic snapshot of the model binding for the whole turn — the
         // adapter we generate through, the model we request, and the served window
@@ -307,7 +308,7 @@ impl LlmDeliberationFaculty {
             // previous value is also what keeps the initializer honest).
             sent_allowance = request.max_tokens.or(sent_allowance);
             let result = self
-                .generate_for_workspace(ws, &binding, fit_window, request, view.allocation.clone(), receipts)
+                .generate_for_workspace(ws, &binding, fit_window, request, view.allocation.clone(), receipts, rendered)
                 .await?;
             gen_await_ms = gen_await_ms.saturating_add(started.elapsed().as_millis() as u64);
             match result {
