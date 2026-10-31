@@ -116,3 +116,18 @@ fn consecutive_acts_share_the_whole_view_and_a_turnover_keeps_the_settled_front(
     // act the turnover collapsed, or the act the epoch had appended at its end).
     assert!(survived >= 2, "a turnover keeps the settled blocks and her actions' front: {survived}");
 }
+
+// what this catches: a view that fits turning over, cold, to raise a collapsed item a level
+// (the M5, 2026-10-31: 32 of 91 turnovers in 3 h, each 101-111 s of prefill instead of 6-8 s).
+// A restore is taken only on an act whose next append would turn the epoch over anyway, and
+// only then is a whole start priced; an overflow always turns over.
+#[test]
+fn a_fitting_view_restores_only_when_the_next_act_would_turn_it_over() {
+    let never = || -> Result<bool, ()> { panic!("a start is priced only when the next act would overflow") };
+    assert_eq!(turnover_due(21_000, 32_000, Some(5_000), never), Ok(Turnover::Keep), "room for the next act: keep appending");
+    assert_eq!(turnover_due(21_000, 32_000, None, never), Ok(Turnover::Keep), "nothing measured yet: keep appending");
+    assert_eq!(turnover_due(30_000, 32_000, Some(5_000), || Ok::<_, ()>(true)), Ok(Turnover::Restore), "the next act overflows: restore now");
+    assert_eq!(turnover_due(30_000, 32_000, Some(5_000), || Ok::<_, ()>(false)), Ok(Turnover::Keep), "nothing to restore: keep");
+    assert_eq!(turnover_due(33_000, 32_000, Some(5_000), never), Ok(Turnover::Overflow), "over its grant: turn over");
+    assert_eq!(turnover_due(30_000, 32_000, Some(5_000), || Err("mismatch")), Err("mismatch"), "a broken allocation refuses");
+}

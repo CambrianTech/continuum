@@ -124,20 +124,22 @@ impl LlmDeliberationFaculty {
         // versions it superseded, which no claim counts, so measured against its grants alone
         // it read as over with 74k of the window unallocated (Atlas, the M5, 2026-10-22).
         // What the epoch being replaced appended per act: the growth the next one reserves.
-        let appended_per_act = self.context_view.lock().as_ref().and_then(View::appended_per_act);
-        let fits = view_tokens <= granted + room;
-        // A view that fits still turns over when a start would give her back what a squeezed
-        // start collapsed: the epoch only appends, so it never would on its own.
-        if fits {
-            match self.view_would_restore(&prompt.streams, |claims: &[Claim]| start_grants(claims, plan, granted + room, appended_per_act)) {
-                Ok(true) => {}
-                Ok(false) => return Ok(()),
-                // An allocator that answered for the wrong number of sources refuses the turn:
-                // the held view stays as state, but a prompt built on a broken contract is never
-                // sent (Codex on #5564).
-                Err(mismatch) => return Err(mismatch),
-            }
+        let (appended_per_act, view_chars) = self
+            .context_view
+            .lock()
+            .as_ref()
+            .map_or((None, 0), |view| (view.appended_per_act(), view.chars())); // map_or: no view yet, nothing appended
+        // One act's measured appends, priced at this view's own tokens per character.
+        let next_act_tokens = appended_per_act.map(|chars| (chars as u64 * view_tokens as u64).div_ceil(view_chars.max(1) as u64) as usize);
+        // An allocator that answered for the wrong number of sources refuses the turn: the held
+        // view stays as state, but a prompt built on a broken contract is never sent (Codex on #5564).
+        let due = turnover_due(view_tokens, granted + room, next_act_tokens, || {
+            self.view_would_restore(&prompt.streams, |claims: &[Claim]| start_grants(claims, plan, granted + room, appended_per_act))
+        })?;
+        if due == Turnover::Keep {
+            return Ok(());
         }
+        let fits = due == Turnover::Restore;
         // Admission before a turnover: redo this act's append within what the act granted her
         // view, an arrival too large for it reduced to its outline or pointer
         // (`View::readmit`). An act that started the view has nothing to redo.
@@ -441,6 +443,43 @@ impl LlmDeliberationFaculty {
 /// minimum, which `flex_allocate` serves first in priority order, and the lowest priority
 /// shares what is left. The newest end is never cut: a source keeps its newest items whole
 /// and collapses its oldest first, at the start only ([`View::turn_over`]).
+/// What her view does this act.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in super::super) enum Turnover {
+    /// It fits and keeps appending.
+    Keep,
+    /// It fits, and a start would show her more than it holds, on an act whose next append
+    /// would turn the epoch over anyway.
+    Restore,
+    /// It outgrew what the window granted it.
+    Overflow,
+}
+
+/// PURE: whether a view of `view_tokens` within `allowed` (its grants plus the room no claim
+/// took) turns over this act. Over `allowed` it must. Within it, a turnover to give her back what
+/// a squeezed start collapsed (`would_restore`) re-prefills every token of her view cold (Aris,
+/// the M5, 2026-10-31 on 526bbe418: 101-111 s after a turnover vs 6-8 s warm; 32 of 91 turnovers
+/// in 3 h were restores of a view that fit), so it is taken only when it is free: the room left
+/// holds less than one act's measured appends (`next_act_tokens`), so the next act would turn
+/// the epoch over anyway. Otherwise her collapsed items come back at the turnover the epoch's
+/// growth forces, each reachable by its handle until then (goal 7). `would_restore` is asked
+/// only then, since it prices a whole start.
+pub(in super::super) fn turnover_due<E>(
+    view_tokens: usize,
+    allowed: usize,
+    next_act_tokens: Option<usize>,
+    would_restore: impl FnOnce() -> Result<bool, E>,
+) -> Result<Turnover, E> {
+    if view_tokens > allowed {
+        return Ok(Turnover::Overflow);
+    }
+    let room_left = allowed - view_tokens;
+    if next_act_tokens.is_none_or(|tokens| tokens <= room_left) {
+        return Ok(Turnover::Keep);
+    }
+    Ok(if would_restore()? { Turnover::Restore } else { Turnover::Keep })
+}
+
 #[cfg(test)]
 thread_local! {
     /// Set by a test: [`start_grants`] answers for one fewer source than it was asked.
