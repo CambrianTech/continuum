@@ -20,6 +20,7 @@ members = [
     "core/continuum-base",
     "core/continuum-git",
     "core/continuum-host",
+    "core/continuum-resource-observation",
     "core/continuum-context",
     "core/continuum-core",
     "core/continuum-sentinel",

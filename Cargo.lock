@@ -3387,6 +3387,7 @@ dependencies = [
  "continuum-client",
  "continuum-host",
  "continuum-orm-derive",
+ "continuum-resource-observation",
  "dashmap",
  "dirs 5.0.1",
  "ed25519-dalek",
@@ -3654,6 +3655,10 @@ dependencies = [
  "tracing",
  "uuid",
 ]
+
+[[package]]
+name = "continuum-resource-observation"
+version = "0.1.0"
 
 [[package]]
 name = "continuum-rooms"

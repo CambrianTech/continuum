@@ -22,13 +22,17 @@ pub(super) const ANOMALY_SAY_EVERY: Duration = Duration::from_secs(30 * 60);
 
 /// PURE: should this anomaly be said in the org room now? Yes the first time a process
 /// is named (`last_said` none), then once per [`ANOMALY_SAY_EVERY`].
-pub(super) fn anomaly_line_due(last_said: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+pub(super) fn anomaly_line_due(
+    last_said: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> bool {
     last_said.is_none_or(|at| now.saturating_duration_since(at) >= ANOMALY_SAY_EVERY)
 }
 
 /// Last time each named process was said, so a long episode is one line plus reminders.
-pub(super) static ANOMALY_SAID: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
-    std::sync::LazyLock::new(Default::default);
+pub(super) static ANOMALY_SAID: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+> = std::sync::LazyLock::new(Default::default);
 
 /// How the monitor reaches the org room. The room belongs to the grid module, which is above
 /// this kernel, so the grid registers its voice at boot (the way owners register what they
@@ -89,7 +93,11 @@ pub(super) fn say_anomaly(name: &str, pid: u32, rss_bytes: u64, total_bytes: u64
 
 /// PURE: is the anomaly scan due on this tick? Due on the first tick at High or above
 /// (`last_scan` none), and thereafter once per [`ANOMALY_SCAN_EVERY`]; never below High.
-pub(super) fn anomaly_scan_due(level: PressureLevel, last_scan: Option<Duration>, since_start: Duration) -> bool {
+pub(super) fn anomaly_scan_due(
+    level: PressureLevel,
+    last_scan: Option<Duration>,
+    since_start: Duration,
+) -> bool {
     if level.to_u8() < PressureLevel::High.to_u8() {
         return false;
     }
@@ -116,17 +124,35 @@ pub(super) static MEMORY_GATE_CLOSED: std::sync::atomic::AtomicBool =
 
 /// Global atomic pressure level — updated every 2s by the monitor loop.
 /// Any subsystem can read this lock-free to make graduated decisions.
-pub(super) static CURRENT_PRESSURE_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0); // 0=Normal
+pub(super) static CURRENT_PRESSURE_LEVEL: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0); // 0=Normal
 
-/// Global atomic free-physical-memory reading (bytes), updated every 2s by the
-/// monitor loop from `sysinfo::available_memory()` — the honest "how much can I
-/// allocate before the OS OOM-kills me" number. The pressure LEVEL is a ratio and
-/// macOS reports it Normal while counting compressible/cached pages as available;
-/// a subsystem about to allocate a KNOWN large footprint (e.g. standing up a second
-/// llama-server) must size against these real free bytes, not the level, or it gets
-/// jetsam-SIGKILLed on a memory-tight machine. 0 until the first monitor poll (then
-/// treat as "unknown — don't veto on it"). Lock-free read from anywhere.
-pub(super) static CURRENT_AVAILABLE_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Latest complete memory sampling attempt, published by the monitor only.
+static CURRENT_MEMORY: std::sync::LazyLock<
+    arc_swap::ArcSwap<continuum_resource_observation::Measurement>,
+> = std::sync::LazyLock::new(|| {
+    arc_swap::ArcSwap::from_pointee(continuum_resource_observation::Measurement::Unavailable(
+        continuum_resource_observation::UnavailableReason::NotSampled,
+    ))
+});
+
+/// One coherent attempt from the shared monitor. Measured exhaustion is a valid
+/// zero; it must not be confused with a monitor that has never published.
+pub fn current_memory_measurement() -> continuum_resource_observation::Measurement {
+    **CURRENT_MEMORY.load()
+}
+
+pub(super) fn publish_memory_measurement(total: u64, used: u64) {
+    use continuum_resource_observation::{ByteMeasurement, Measurement, UnavailableReason};
+    let measurement = match total.checked_sub(used) {
+        Some(available) if total > 0 => match ByteMeasurement::new(total, available) {
+            Ok(bytes) => Measurement::Measured(bytes),
+            Err(_) => Measurement::Unavailable(UnavailableReason::InvalidMeasurement),
+        },
+        _ => Measurement::Unavailable(UnavailableReason::InvalidMeasurement),
+    };
+    CURRENT_MEMORY.store(std::sync::Arc::new(measurement));
+}
 
 /// Check if the memory gate is closed (critical pressure sustained).
 /// Subsystems should refuse new allocations when this returns true.
@@ -134,42 +160,16 @@ pub fn is_memory_gate_closed() -> bool {
     MEMORY_GATE_CLOSED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The latest free physical memory (bytes) the monitor observed, or `None` before
-/// the first poll. This is the number to size a large elective allocation against —
-/// unlike [`MemoryPressureMonitor::current_level`], it does not lie when the OS
-/// counts compressible/cached pages as available.
-/// Free physical memory, derived as `total − used` rather than read from
-/// `sysinfo::available_memory()`.
-///
-/// # Why this exists — one call returns 0 and the other does not (2026-08-19)
-///
-/// Measured on this M5, same process, same `System`:
-///
-/// ```text
-/// System::new() + refresh_memory()  → total=68719476736  available_memory()=0
-/// System::new_all()                 → total=68719476736  available_memory()=0
-/// ```
-///
-/// `available_memory()` returns **zero** here while `total_memory()` and
-/// `used_memory()` both return real values. `SystemMonitor::read_memory` has always
-/// derived `total − used` and consequently reports correctly (10.5 GB available,
-/// 58.2 GB used, live); this monitor called `available_memory()` and therefore
-/// published a permanent 0 into `CURRENT_AVAILABLE_BYTES`.
-///
-/// The consequence was not local. That atomic is the "how much can I allocate before
-/// the OS kills me" number the doc above promises, and it read as "nothing is free"
-/// (or, once inverted by a consumer, "everything is free") for anyone who trusted it.
-/// A bogus `usable_gb=0` is exactly the shape of the #438 downshift incident.
-///
-/// ONE derivation, used by every reader, so the two can never disagree again.
+/// Pressure telemetry derives availability from the same OS total/used pair.
+/// Allocation readers consume current_memory_measurement instead of this scalar.
 pub fn available_from(sys: &sysinfo::System) -> u64 {
     sys.total_memory().saturating_sub(sys.used_memory())
 }
 
 pub fn current_available_bytes() -> Option<u64> {
-    match CURRENT_AVAILABLE_BYTES.load(std::sync::atomic::Ordering::Relaxed) {
-        0 => None,
-        n => Some(n),
+    match current_memory_measurement() {
+        continuum_resource_observation::Measurement::Measured(bytes) => Some(bytes.available()),
+        continuum_resource_observation::Measurement::Unavailable(_) => None,
     }
 }
 
@@ -268,7 +268,11 @@ impl PressureLevel {
 
     /// The worse of two readings — the level the node acts on.
     pub fn worse(a: Self, b: Self) -> Self {
-        if b.to_u8() > a.to_u8() { b } else { a }
+        if b.to_u8() > a.to_u8() {
+            b
+        } else {
+            a
+        }
     }
 
     pub(super) fn normalize(pressure: f64) -> f64 {

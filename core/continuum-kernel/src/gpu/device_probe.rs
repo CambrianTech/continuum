@@ -21,7 +21,7 @@
 //! |---|---|---|
 //! | How to ASK this device (Mach VM stats, `nvidia-smi` CSV, `VK_EXT_memory_budget`, MLX) | the backend's [`GpuDeviceProbe`] | genuinely differs per platform |
 //! | What a missing reading MEANS | [`GpuSample`] — `None`, never a substitute | one rule, enforced by the type |
-//! | Retaining the last good reading | [`MonitoredGpu`] | identical for every device |
+//! | Publishing the current memory attempt, including failure | [`MonitoredGpu`] | identical for every device |
 //! | The unknown-until-first-sample state | [`MonitoredGpu`] | identical for every device |
 //! | Tick cadence, panic isolation, publishing | [`MonitoredGpu`] via [`Daemon`] | identical for every device |
 //! | Deriving pressure from free/total | [`MonitoredGpu`] | identical for every device |
@@ -32,8 +32,10 @@
 
 use super::monitor::{GpuMonitor, MemoryMode};
 use crate::runtime::{spawn_daemon, Daemon, DaemonChannel};
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use continuum_resource_observation::{ByteMeasurement, Measurement, UnavailableReason};
+use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::watch;
 use tokio::time::Duration;
@@ -50,8 +52,8 @@ const DEFAULT_TICK: Duration = Duration::from_secs(1);
 /// **the platform did not report it this tick.** It never means zero, and it never
 /// licenses a stand-in. A backend that cannot read free bytes returns
 /// `free_bytes: None` — it does not return the total, the last value it remembers,
-/// or a guess. Remembering is [`MonitoredGpu`]'s job and it does it identically for
-/// everyone.
+/// or a guess. The memory publication replaces the preceding attempt, including
+/// when the current attempt failed.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct GpuSample {
     /// Free bytes on the device, system-wide (ours and every other process's).
@@ -113,19 +115,15 @@ pub trait GpuDeviceProbe: Send + Sync + 'static {
 /// landed". Distinct from a real 0°C / 0W.
 const NO_SENSOR: i32 = i32::MIN;
 
-/// The common half of every GPU monitor: last-good retention, the unknown state,
+/// The common half of every GPU monitor: memory-attempt publication, the unknown state,
 /// the tick, and the published pressure signal — written ONCE.
 ///
 /// Wraps any [`GpuDeviceProbe`] and implements [`GpuMonitor`] on its behalf.
 pub struct MonitoredGpu<P: GpuDeviceProbe> {
     probe: P,
-    /// Last MEASURED free bytes. Meaningless until `free_sampled`; never written
-    /// from a `None` sample term.
-    free_bytes: AtomicU64,
-    /// Has a real free-bytes reading ever landed? This is what makes "unknown"
-    /// representable, and its absence is what let a backend seed a fabricated
-    /// full-tank reading at construction.
-    free_sampled: AtomicBool,
+    /// A single published attempt: total and available never cross revisions.
+    /// Failure replaces success instead of silently retaining allocation input.
+    memory: ArcSwap<Measurement>,
     process_bytes: AtomicU64,
     /// Utilization × 1000 so it fits an atomic.
     utilization_x1000: AtomicU32,
@@ -149,8 +147,7 @@ impl<P: GpuDeviceProbe> MonitoredGpu<P> {
     pub fn spawn(probe: P) -> Arc<Self> {
         let monitor = Arc::new(Self {
             probe,
-            free_bytes: AtomicU64::new(0),
-            free_sampled: AtomicBool::new(false),
+            memory: ArcSwap::from_pointee(Measurement::Unavailable(UnavailableReason::NotSampled)),
             process_bytes: AtomicU64::new(0),
             utilization_x1000: AtomicU32::new(0),
             temperature_mc: AtomicI32::new(NO_SENSOR),
@@ -164,14 +161,17 @@ impl<P: GpuDeviceProbe> MonitoredGpu<P> {
         monitor
     }
 
-    /// Apply one sample: store the terms the device reported, leave the rest
-    /// standing. Split out from `tick` so the retention rule — the thing that was
-    /// wrong per-backend — is directly testable without a device.
+    /// Publish the complete memory attempt, including failure. Ancillary telemetry
+    /// still retains its readings; those fields are not memory capacity evidence.
     pub(crate) fn absorb(&self, sample: GpuSample) {
-        if let Some(free) = sample.free_bytes {
-            self.free_bytes.store(free, Ordering::Relaxed);
-            self.free_sampled.store(true, Ordering::Relaxed);
-        }
+        let memory = match sample.free_bytes {
+            Some(free) => match ByteMeasurement::new(self.probe.total_bytes(), free) {
+                Ok(bytes) => Measurement::Measured(bytes),
+                Err(_) => Measurement::Unavailable(UnavailableReason::InvalidMeasurement),
+            },
+            None => Measurement::Unavailable(UnavailableReason::ProbeFailed),
+        };
+        self.memory.store(Arc::new(memory));
         if let Some(proc_bytes) = sample.process_bytes {
             self.process_bytes.store(proc_bytes, Ordering::Relaxed);
         }
@@ -184,22 +184,21 @@ impl<P: GpuDeviceProbe> MonitoredGpu<P> {
                 .store((temp * 1000.0) as i32, Ordering::Relaxed);
         }
         if let Some(power) = sample.power_watts {
-            self.power_mw.store((power * 1000.0) as i32, Ordering::Relaxed);
+            self.power_mw
+                .store((power * 1000.0) as i32, Ordering::Relaxed);
         }
     }
 
-    /// Pressure from the last MEASURED free, or `None` while there is none.
-    ///
-    /// Clamped to [0,1]: on unified memory `free` can briefly exceed `total` when an
-    /// inactive→free transition races the read, and the clamp keeps the shape uniform
-    /// across backends.
+    /// Pressure from one valid memory attempt. Inconsistent total/available pairs
+    /// are unavailable, never clamped into an apparently idle device.
     pub(crate) fn derived_pressure(&self) -> Option<f32> {
-        let total = self.probe.total_bytes();
-        if total == 0 {
+        let Measurement::Measured(bytes) = self.memory_measurement() else {
+            return None;
+        };
+        if bytes.total() == 0 {
             return None;
         }
-        self.free_bytes()
-            .map(|free| 1.0 - (free as f32 / total as f32).clamp(0.0, 1.0))
+        Some(bytes.used() as f32 / bytes.total() as f32)
     }
 
     /// The wrapped backend, for tests and for callers that need the concrete probe.
@@ -252,10 +251,8 @@ impl<P: GpuDeviceProbe> GpuMonitor for MonitoredGpu<P> {
         self.probe.total_bytes()
     }
 
-    fn free_bytes(&self) -> Option<u64> {
-        self.free_sampled
-            .load(Ordering::Relaxed)
-            .then(|| self.free_bytes.load(Ordering::Relaxed))
+    fn memory_measurement(&self) -> Measurement {
+        **self.memory.load()
     }
 
     fn process_bytes(&self) -> u64 {
@@ -336,8 +333,7 @@ mod tests {
         // way.
         MonitoredGpu {
             probe: ScriptedProbe::new(total, script),
-            free_bytes: AtomicU64::new(0),
-            free_sampled: AtomicBool::new(false),
+            memory: ArcSwap::from_pointee(Measurement::Unavailable(UnavailableReason::NotSampled)),
             process_bytes: AtomicU64::new(0),
             utilization_x1000: AtomicU32::new(0),
             temperature_mc: AtomicI32::new(NO_SENSOR),
@@ -364,13 +360,10 @@ mod tests {
         assert_eq!(m.free_bytes(), Some(16));
     }
 
-    /// What this catches: a failed read overwriting a good reading — the second half
-    /// of the same bug. `unwrap_or(total)` did this on EVERY failed Mach call, not
-    /// just the first, so a mid-life sensor failure read as "the pool just emptied".
-    /// The rule is: a `None` term does not refresh, it does not clear, and it does
-    /// not substitute.
+    /// A successful memory sample cannot mask a later failed attempt. Failure
+    /// must remain distinct from both measured exhaustion and free capacity.
     #[test]
-    fn a_failed_read_leaves_the_last_measured_value_standing() {
+    fn a_failed_memory_read_replaces_the_previous_attempt() {
         let m = monitor_with(64, vec![]);
         m.absorb(GpuSample {
             free_bytes: Some(16),
@@ -381,8 +374,12 @@ mod tests {
 
         assert_eq!(
             m.free_bytes(),
-            Some(16),
-            "a failed sample must not fabricate, clear, or refresh"
+            None,
+            "a failed sample must not retain an allocation-authorizing reading"
+        );
+        assert_eq!(
+            m.memory_measurement(),
+            Measurement::Unavailable(UnavailableReason::ProbeFailed)
         );
         assert_eq!(m.process_bytes(), 8);
     }
@@ -406,18 +403,19 @@ mod tests {
         assert_eq!(m.power_watts(), Some(120.0));
     }
 
-    /// What this catches: pressure derived from a free reading that exceeds total —
-    /// real on unified memory, where an inactive→free transition can race the read.
-    /// Must clamp rather than produce a negative pressure the broker would compare
-    /// against thresholds.
+    /// A racing/inconsistent sample must not become an apparently idle device.
     #[test]
-    fn pressure_clamps_when_free_briefly_exceeds_total() {
+    fn inconsistent_memory_sample_cannot_report_no_pressure() {
         let m = monitor_with(100, vec![]);
         m.absorb(GpuSample {
             free_bytes: Some(120),
             ..Default::default()
         });
-        assert_eq!(m.derived_pressure(), Some(0.0));
+        assert_eq!(m.derived_pressure(), None);
+        assert_eq!(
+            m.memory_measurement(),
+            Measurement::Unavailable(UnavailableReason::InvalidMeasurement)
+        );
 
         m.absorb(GpuSample {
             free_bytes: Some(25),
