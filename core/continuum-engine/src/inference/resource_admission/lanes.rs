@@ -1,27 +1,8 @@
-//! Serving-lane admission: lane pools, ambient turn permits and directed-turn reservation.
+//! Serving-lane admission: lane pools and directed-turn reservation.
 
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-
-/// Try to claim an ambient-turn slot. `Some(permit)` → run the ambient turn (hold the
-/// permit for the turn's lifetime; it releases on drop). `None` → all ambient slots
-/// are busy; the caller yields this ambient turn. Non-blocking (never waits).
-pub fn try_hold_ambient_turn() -> Option<tokio::sync::OwnedSemaphorePermit> {
-    LANES.try_hold_ambient_turn()
-}
-
-/// Wait at most `within` for an ambient permit — the bounded wait the mind grants a
-/// starving citizen (`cognition::turn_ledger::hold_ambient_turn_for` decides who is
-/// starving; the pool stays the pool). `None` = the wait ran out.
-pub async fn wait_ambient_turn(within: std::time::Duration) -> Option<tokio::sync::OwnedSemaphorePermit> {
-    tokio::time::timeout(
-        within,
-        LANES.acquire_resized(&LANES.ambient_semaphore(), &LANES.ambient_installed, LaneBudget::NonDirected),
-    )
-    .await
-    .ok()
-}
 
 /// Whether a directed line is pending for any citizen on this node — the reserved lane's
 /// re-arm signal. Attention is the mind's, so the mind installs the reader at boot; the
@@ -89,8 +70,7 @@ fn directed_pending() -> bool {
 /// serializes THIS module, but a cross-module guard could bump it mid-loop". This file had
 /// already learned the lesson once and applied it to the in-flight Gauge, stating the
 /// principle outright: *the race is gone at the SOURCE, not merely serialized*. That cure
-/// reached one of three cases. This applies it to the other two, and to the sibling
-/// [`crate::inference::prefill_throttle`] the same day.
+/// reached one of three cases. This applies it to the other two.
 ///
 /// Lazy semaphores capture the latest lane count on first use. If first use precedes
 /// serving, a later publication collects surplus boot permits without interrupting
@@ -106,8 +86,6 @@ pub struct LaneAdmission {
     /// Serializes the rare live semaphore reconcile so two concurrent re-plans can't
     /// double-count a grow.
     pub(super) resize_lock: Mutex<()>,
-    pub(super) ambient: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>,
-    pub(super) ambient_installed: AtomicUsize,
     /// Held-work callers queued for the non-directed budget right now. While it is
     /// non-zero an AMBIENT caller (a mind with no card in hand) does not enter the
     /// queue — work first (2026-09-15, [`LanePriority`]).
@@ -133,9 +111,9 @@ pub(super) enum LaneBudget {
 ///
 /// - `Directed` — a human or a mention named her: the full pool, one lane always reserved.
 /// - `Work` — she holds a card in progress (`holds_live_work`): the non-directed budget,
-///   ahead of every ambient caller.
+///   ahead of ambient callers until their initial cohort has passed.
 /// - `Ambient` — an undirected turn with no card in hand (musing, wandering, a dream):
-///   the non-directed budget only while no `Work` caller is queued.
+///   the non-directed budget opportunistically, then by retained age ticket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LanePriority {
     Directed,
@@ -154,6 +132,14 @@ impl LanePriority {
 /// implementation of it. Tests build their own with [`LaneAdmission::new`].
 pub(super) static LANES: LaneAdmission = LaneAdmission::new();
 
+pub fn resident_seated(persona: uuid::Uuid) {
+    LANES.resident_seated(persona);
+}
+
+pub fn resident_departed(persona: uuid::Uuid) {
+    LANES.resident_departed(persona);
+}
+
 /// Physical decode lanes on the shared serving target — the LIVE served count when
 /// serving has come up, else the planner's `MAX_LANES` ceiling as the boot-time fallback.
 /// Floored at 1. Read live by the saturation gauge; captured at lazy-init by the lane
@@ -163,7 +149,7 @@ pub(super) static LANES: LaneAdmission = LaneAdmission::new();
 /// serving daemon calls this on every reconcile. Sizes the admission semaphores exactly:
 /// the lazy-init captures it at boot, and a LATER increase (roster grows, more personas
 /// demand lanes) grows the live semaphores via `add_permits`. Decreases collect idle
-/// permits immediately, as in `PrefillThrottle`; held permits become shrink debt.
+/// permits immediately, as a resized semaphore must; held permits become shrink debt.
 /// The serving daemon retries idle debt every tick; acquisition also retires debt
 /// before granting a transferred permit, so queued demand cannot defeat shrink.
 /// No running permit is revoked or awaited by the publisher.
@@ -173,7 +159,7 @@ pub fn set_served_lane_count(lanes: usize) {
 
 /// Reconcile installed permits without waiting for running calls. The difference
 /// between installed and a smaller target is debt retried on the next serving tick.
-/// Caller holds the owner resize lock, matching `PrefillThrottle`'s accounting.
+/// Caller holds the owner resize lock, the installed-permit accounting.
 pub(super) fn resize_semaphore_to(sem: &tokio::sync::Semaphore, installed: &AtomicUsize, target: usize) {
     let cur = installed.load(Ordering::Acquire);
     if target > cur {
@@ -272,8 +258,6 @@ impl LaneAdmission {
             serving_installed: AtomicUsize::new(0),
             nondirected_installed: AtomicUsize::new(0),
             resize_lock: Mutex::new(()),
-            ambient: std::sync::OnceLock::new(),
-            ambient_installed: AtomicUsize::new(0),
             work_waiting: AtomicUsize::new(0),
             released: tokio::sync::Notify::const_new(),
         }
@@ -305,7 +289,6 @@ impl LaneAdmission {
             self.served.load(Ordering::Acquire),
             self.serving_installed.load(Ordering::Acquire),
             self.nondirected_installed.load(Ordering::Acquire),
-            self.ambient_installed.load(Ordering::Acquire),
         );
         self.served.store(lanes, Ordering::Release);
         if let Some(sem) = self.serving.get() {
@@ -318,17 +301,10 @@ impl LaneAdmission {
                 lanes.saturating_sub(1).max(1),
             );
         }
-        // The ambient-turn pool rides the SAME budget, so it grows on the same signal.
-        // Missing this is how a pool installed at the boot floor would stay there for the
-        // process's life while serving grew underneath it.
-        if let Some(sem) = self.ambient.get() {
-            resize_semaphore_to(sem, &self.ambient_installed, lanes.saturating_sub(1).max(1));
-        }
         let after = (
             lanes,
             self.serving_installed.load(Ordering::Acquire),
             self.nondirected_installed.load(Ordering::Acquire),
-            self.ambient_installed.load(Ordering::Acquire),
         );
         drop(_guard);
         if after != before {
@@ -338,7 +314,6 @@ impl LaneAdmission {
                 installed = after.1 as u64,
                 debt = after.1.saturating_sub(lanes) as u64,
                 nondirected_installed = after.2 as u64,
-                ambient_installed = after.3 as u64,
                 "lane admission reconciled; installed includes held shrink debt, zero means uninitialized"
             );
         }
@@ -357,33 +332,6 @@ impl LaneAdmission {
             let n = self.nondirected_budget();
             self.nondirected_installed.store(n, Ordering::Release);
             std::sync::Arc::new(tokio::sync::Semaphore::new(n))
-        })
-    }
-
-    /// See [`try_hold_ambient_turn`]. Lazy like its siblings, and for the same load-bearing
-    /// reason: it must capture the budget at FIRST USE, once serving has published a real
-    /// lane count — never at construction, when only the boot ceiling is known.
-    /// The ambient pool itself, for a bounded wait (see `hold_ambient_turn_for`).
-    pub fn ambient_semaphore(&self) -> std::sync::Arc<tokio::sync::Semaphore> {
-        self.ambient
-            .get_or_init(|| {
-                let n = self.nondirected_budget();
-                self.ambient_installed.store(n, Ordering::Release);
-                std::sync::Arc::new(tokio::sync::Semaphore::new(n))
-            })
-            .clone()
-    }
-
-    pub fn try_hold_ambient_turn(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
-        self.try_acquire_resized(
-            &self.ambient_semaphore(),
-            &self.ambient_installed,
-            LaneBudget::NonDirected,
-        )
-        .or_else(|| {
-            // Count the miss. The permit is non-blocking, so a None here IS the yield.
-            AMBIENT_YIELDS.fetch_add(1, Ordering::Relaxed);
-            None
         })
     }
 
@@ -407,14 +355,14 @@ impl LaneAdmission {
         expected_occupancy: Option<std::time::Duration>,
     ) -> (super::LaneWait, impl std::future::Future<Output = ServingLanePermit> + Send) {
         let (observer, progress) = self.observe(persona, priority);
+        let aging = observer.clone();
         let acquire = async move {
         let queued_at = std::time::Instant::now();
         let directed = priority.is_directed();
         // Non-directed reserves within the (lanes-1) budget FIRST, so the physical-lane
         // acquire below can never let non-directed work starve a directed caller —
-        // EXCEPT a work call whose occupancy is bounded inside the directed wait budget
-        // while nothing directed is pending: it may be LENT the reserved lane, because the
-        // guarantee is the wait, not the lane (`reserve_lendable`). THE LOAN NEVER PARKS
+        // EXCEPT that while nothing directed is pending a work call is LENT the reserved
+        // lane (`reserve_lendable`): a slot never idles for a mention. THE LOAN NEVER PARKS
         // (Cormac's condition on #4250): it is a try-acquire on a physical lane that is
         // free RIGHT NOW — a lent call that had to wait on the FIFO physical semaphore
         // would put a later directed arrival behind its whole occupancy (2× the budget
@@ -424,18 +372,11 @@ impl LaneAdmission {
         let (nondirected, lent_lane) = match priority {
             LanePriority::Directed => (None, None),
             LanePriority::Work => {
-                let sem = self.nondirected_lanes().clone();
-                match self.try_acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected) {
+                match aging.try_budget(false) {
                     Some(p) => (Some(p), None),
                     None => {
                         let reserve_exists = self.nondirected_budget() < self.lane_count();
-                        let budget = crate::inference::prefill_rate::INTERACTIVE_TTFT;
-                        let lendable = reserve_exists
-                            && reserve_lendable(
-                                expected_occupancy,
-                                directed_pending(),
-                                budget,
-                            );
+                        let lendable = reserve_exists && reserve_lendable(directed_pending());
                         let lent = if lendable {
                             self.try_acquire_resized(
                                 self.serving_lanes(),
@@ -449,18 +390,17 @@ impl LaneAdmission {
                             Some(lane) => {
                                 continuum_base::probe!(
                                     class = "admission.lane.reserve_lent_to_work",
-                                    expected_ms = expected_occupancy.map(|d| d.as_millis() as u64).unwrap_or(0), // unwrap_or: lendable implies Some; 0 cannot occur
-                                    budget_ms = budget.as_millis() as u64,
-                                    "a free reserved lane is lent to a bounded work call, never parked for — a directed arrival waits at most the call's occupancy"
+                                    expected_ms = ?expected_occupancy.map(|d| d.as_millis()),
+                                    "the reserved lane is lent to work while nothing directed is pending: no slot idles for a mention; a directed arrival takes the next lane released"
                                 );
                                 (None, Some(lane))
                             }
-                            None => (Some(self.acquire_nondirected_as_work().await), None),
+                            None => (Some(self.acquire_ticketed_budget(&aging, false).await), None),
                         }
                     }
                 }
             }
-            LanePriority::Ambient => (Some(self.acquire_nondirected_as_ambient().await), None),
+            LanePriority::Ambient => (Some(self.acquire_aged_ambient(&aging).await), None),
         };
         progress.physical(nondirected.is_some());
         let lane = match lent_lane {
@@ -499,36 +439,26 @@ impl LaneAdmission {
         (observer, acquire)
     }
 
-    /// A held-work caller queues in the non-directed semaphore in arrival order, and
-    /// is COUNTED while it waits so ambient callers stand aside.
-    pub(super) async fn acquire_nondirected_as_work(&self) -> tokio::sync::OwnedSemaphorePermit {
-        let sem = self.nondirected_lanes().clone();
-        if let Some(p) =
-            self.try_acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected)
-        {
-            return p;
-        }
-        tracing::info!(
-            probe_class = "serving.lane.nondirected_waiting",
-            "held-work model call waiting — a lane is reserved for directed turns (#139)"
-        );
-        // COUNTED BY A GUARD, NOT BY HAND (2026-09-15, 20:35Z: sixteen minds idle for 50
-        // minutes with all seven lanes free). A parked work wait is CANCELLED whenever
-        // the turn's future is dropped — `delib.gate.yielded_to_directed` selects away
-        // from it, the settle deadline ends the drive, a despawn aborts the loop — and a
-        // by-hand `fetch_sub` after the await never ran, so `work_waiting` read 1 for
-        // the rest of the process and every ambient caller parked forever on a pool
-        // that was empty. Cancellation is a normal exit here; the guard makes it one.
+    /// Active work and aged residents compete by ticket; only the winner tries
+    /// the semaphore, so cancellation cannot leave an unobserved permit owner.
+    async fn acquire_ticketed_budget(&self, observer: &super::LaneWait, aged: bool) -> tokio::sync::OwnedSemaphorePermit {
         let _counted = WorkWaiting::enter(&self.work_waiting);
-        self.acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected)
-            .await
+        loop {
+            let notified = self.released.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(permit) = observer.try_budget(aged) { return permit; }
+            tokio::select! {
+                _ = notified => {},
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
+            }
+        }
     }
 
     /// An ambient caller never enters the semaphore's queue: it takes a permit only when
     /// one is free AND no held-work caller is waiting, otherwise it parks on the release
-    /// signal (a 1 s tick guards against a missed wake). Bounded fairness comes from the
-    /// work queue draining: every release re-checks, and work waiters are counted down
-    /// as they are served.
+    /// signal (a 1 s tick guards against a missed wake). This opportunistic path alone
+    /// can starve; acquire_aged_ambient promotes into ticket order after the initial cohort.
     pub(super) async fn acquire_nondirected_as_ambient(&self) -> tokio::sync::OwnedSemaphorePermit {
         let sem = self.nondirected_lanes().clone();
         let mut yielded = false;
@@ -552,6 +482,25 @@ impl LaneAdmission {
             let _ =
                 tokio::time::timeout(std::time::Duration::from_secs(1), self.released.notified())
                     .await;
+        }
+    }
+
+    /// Let the initial cohort go first, then retain a ticket rather than waiting for
+    /// an indefinitely replenished work queue to empty. Directed capacity is unchanged.
+    async fn acquire_aged_ambient(&self, observer: &super::LaneWait) -> tokio::sync::OwnedSemaphorePermit {
+        let cohort = self.work_waiting().saturating_add(self.nondirected_budget()).max(1) as u64;
+        let origin = observer.ambient_origin(cohort);
+        let opportunistic = self.acquire_nondirected_as_ambient();
+        tokio::pin!(opportunistic);
+        loop {
+            if observer.ambient_aged(origin) {
+                return self.acquire_ticketed_budget(observer, true).await;
+            }
+            tokio::select! {
+                permit = &mut opportunistic => return permit,
+                _ = self.released.notified() => {},
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
+            }
         }
     }
 

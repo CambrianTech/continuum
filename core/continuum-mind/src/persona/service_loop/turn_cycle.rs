@@ -114,12 +114,7 @@ pub(super) async fn run_turn_cycle(
             let attention = admitted_retry
                 .then(|| deferred_input.attention_for(msg))
                 .flatten()
-                .unwrap_or_else(|| { // A new message has no retained attention; derive it from its actual sender and mentions.
-                    crate::cognition::workspace::TurnAttention::for_message(
-                    ctx.identity.persona_identity().mentions(&msg.text),
-                    crate::cognition::room_directory::is_human_peer(msg.peer_id),
-                    )
-                });
+                .unwrap_or_else(|| new_message_attention(ctx, msg)); // A new message has no retained attention; derive it from its actual sender and mentions.
             if attention.requires_priority() {
                 // Focus = she is TAKING the turn on it; the heard receipt
                 // already fired at the drain (`wake_backlog::publish_heard`).
@@ -127,75 +122,12 @@ pub(super) async fn run_turn_cycle(
             }
             let framing = crate::cognition::workspace::TurnFraming::message(attention);
 
-            // ── Ambient-yield under lane saturation (#171 / #139) ───────────────
-            // The fan-out killer: a room burst wakes N peers, and each spends a full
-            // ~54s deliberation on the shared 2 lanes just to decide "not for me" —
-            // so the ONE directed question everyone's waiting on sits behind minutes
-            // of ambient chatter (glass-boxed: first-token up to 28 min). Ambient
-            // participation is the DEFAULT and stays that way — but it is the
-            // LOWEST-priority room work. So when every shared decode slot is busy,
-            // an ambient turn YIELDS: she participates ambiently when there's
-            // capacity (a later beat, lanes free — a self-tick re-perceives the room
-            // incl. this line), never at the cost of the addressed question. A
-            // priority turn (named or human opportunity) keeps its lane.
+            // Priority lives at the lane, per generation: an ambient turn's calls ask at
+            // `LanePriority::Ambient` and queue behind directed and held work there, for one
+            // generation at a time. No permit spans her turn, so her tool runs never hold
+            // capacity another mind needs (LOCKS-AND-FIFOS-AUDIT.md row 9; on the M5,
+            // 2026-10-31, the turn-long permit left the engine with two of three slots busy).
             //
-            // This is resource PRIORITY, the same admission doctrine as the idle
-            // self-tick, NOT a `will_respond` gate: the substrate never decides her
-            // output; it only declines to spend a saturated lane on unaddressed
-            // chatter. `high_water` is already advanced above, so a yielded message
-            // can't re-trigger. [[idle-is-self-directed-free-time]]
-            // [[never-thrash-sticky-hysteresis-on-every-lane]]
-            // [[conversational-latency-is-a-misdirection-budget]]
-            // #171: an ambient (non-directed) turn must claim one of a small number
-            // of ambient slots or YIELD — a PERMIT, not a gauge. The gauge-based
-            // first cut didn't fire: a simultaneous room-burst wakes N peers who all
-            // read inflight=0 (none had generated yet) and stampede. The permit is
-            // held across the whole turn, so ambient concurrency is bounded no matter
-            // when everyone woke. Priority turns bypass entirely, including a human
-            // speaking without a mention. Ambient turns defer to a later beat with free
-            // capacity (a self-tick re-perceives the room); high_water is pre-advanced
-            // so it can't re-trigger, and the durable transcript loses nothing.
-            // A CARD-HOLDER IS NOT A STAMPEDE RESPONSE (2026-09-20, the M5's first
-            // bounded hour: 4 minds on 2 lanes, ambient budget 1, 11 lane grants,
-            // writes 0). The #171 permit bounds the fan-out of minds deciding "not for
-            // me"; a mind holding a card is not deciding that — she is the mind the
-            // lane exists for. She goes straight to the lane gate, where the Work class
-            // (`LanePriority::Work`) still bounds her and ambient turns yield to her.
-            // Read off the board she already keeps; an unreadable board = no proof of
-            // held work = the ambient rule, as before.
-            let holds_work = match conversation.stream_citizen() {
-                Some(citizen) => citizen
-                    .active_claims()
-                    .await
-                    .map(|cards| cards.iter().any(crate::persona::act_question::card_is_held))
-                    .unwrap_or(false), // unwrap_or: an unreadable board proves nothing — the ambient rule stands
-                None => false,
-            };
-            if holds_work && !attention.requires_priority() {
-                continuum_base::probe!(
-                    class = "persona.turn.work_holder_bypasses_ambient_permit",
-                    persona = %ctx.identity.agent_name,
-                    "a mind holding a card goes straight to the lane gate — the ambient anti-stampede permit is for minds deciding whether a room line is theirs"
-                );
-            }
-            let _ambient_permit = if attention.requires_priority() || holds_work {
-                None
-            } else {
-                match crate::inference::resource_admission::try_hold_ambient_turn() {
-                    Some(permit) => Some(permit),
-                    None => {
-                        continuum_base::probe!(
-                            class = "persona.turn.ambient_yielded",
-                            persona = %ctx.identity.agent_name,
-                            lamport = msg.lamport,
-                            "ambient turn yielded — ambient slots busy; the addressed \
-                             question is served first (#171)"
-                        );
-                        outcome.turns_skipped += 1;
-                        return CycleVerdict::Skip;
-                    }
-                }
-            };
             // Directed vs ambient part ways HERE — the fix for the live/eval
             // convergence divergence the ACTING-ORGANISM comments flagged (eval
             // SPOKE 36/38; the live path single-stepped a DIRECT question, `Acted`
@@ -245,32 +177,21 @@ pub(super) async fn run_turn_cycle(
                 Some(turn_room.to_string()),
                 Some(ctx.identity.peer_id.to_string()),
             );
-            // A citizen holding a card works at that repo — in a ROOM turn too: the
-            // turn is bound to her card claim's hands, admitted here.
-            let held_card = crate::persona::card_hands::root_at_held_card(
-                &cycle,
-                ctx.identity.peer_id.as_uuid(),
-                conversation,
-            )
-            .await;
-            let mut credit_capture =
-                crate::persona::training_producer::TurnCreditCapture::for_turn(
+            let turn_act_count;
+            let (step, turn_metrics, settled_receipts, turn_credit) = {
+                // A citizen holding a card works at that repo, in a ROOM turn too: the turn
+                // is bound to her card claim's hands (card fc9e9fd7), its credit captured on
+                // her act, and its work synced to the card's branch, by the one owner her
+                // own-time turn uses as well (card 959f3d5c).
+                let (outcome, credit) = crate::persona::card_hands::drive_in_held_card(
+                    &cycle,
                     ctx.identity.peer_id.as_uuid(),
                     &ctx.identity.agent_name,
                     &msg.render_content(),
-                    held_card.credit.as_ref(),
-                );
-            let turn_act_count;
-            let (step, turn_metrics, settled_receipts) = {
-                let outcome = crate::cognition::act_observe::drive_to_settle_with_credit(
-                    &cycle,
-                    // The turn acts in the hands it was admitted to: her card claim's, or
-                    // her default ones (card fc9e9fd7).
-                    workspace_burst.in_hands(held_card.turn_hands()),
-                    LIVE_MAX_ACTS,
+                    workspace_burst,
                     framing,
+                    LIVE_MAX_ACTS,
                     conversation,
-                    credit_capture.as_mut().map(|c| c as &mut dyn crate::cognition::act_observe::TurnCredit),
                 )
                 .await;
                 // The lived-turn experience write (#319) is NOT here: it lives inside
@@ -280,17 +201,13 @@ pub(super) async fn run_turn_cycle(
                 // and got no record, so nothing on disk ever described a lived turn.
                 // The driver stays a driver: no learning policy at any call site.
                 turn_act_count = outcome.acts;
-                crate::cognition::act_observe::SettleStep::from_settled(outcome)
+                let (step, metrics, receipts) = crate::cognition::act_observe::SettleStep::from_settled(outcome);
+                (step, metrics, receipts, credit)
             };
-            // Captured HERE, where both facts still exist. The credit is read off
-            // her hands — NOT back out of `acting_card_of`, which is a mutable
-            // persona-global that a later focus rebind would re-attribute to the
-            // wrong card (card 0d51573a).
-            // From the CARD, not from her hands: a missing checkout or a failed
-            // rooting leaves `hands` None while the card stays known, and reading
-            // credit off the hands would turn that workspace failure into "ordinary
-            // conversation" and submit the turn immediately (Astra/S6 on 799b8fe9).
-            let turn_credit = held_card.credit.clone();
+            // The credit is the turn's held CARD, captured with it, NOT read back out of
+            // `acting_card_of`, a mutable persona-global that a later focus rebind would
+            // re-attribute to the wrong card (card 0d51573a); and not off her hands, which a
+            // failed rooting leaves None while the card stays known (Astra/S6 on 799b8fe9).
             let turn_generation_receipts = settled_receipts;
             continuum_base::probe!(
                 class = "training.hook.directed_turn",
@@ -302,11 +219,6 @@ pub(super) async fn run_turn_cycle(
             // Turn done: drop the cycle's sink so the forwarder's channel closes,
             // then join it (all `tok_tx` clones are gone once the turn's Workspaces
             // dropped inside `drive_to_settle`).
-            // The turn's work is synced to its card's branch; her hands stay where they
-            // are, because nothing moved them (card fc9e9fd7).
-            if let Some(hands) = &held_card.hands {
-                crate::persona::card_hands::end_card_turn(hands, turn_act_count).await;
-            }
             cycle.set_token_sink(None);
             let _ = forwarder.await;
             phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
@@ -327,6 +239,8 @@ pub(super) async fn run_turn_cycle(
                 );
             }
             deferred_input.settle(msg, wake_engram, attention, &step);
+            // The room that chose this turn's cycle above, so the notices it read are the ones answered.
+            deferred_input.notices_read(turn_room, &turn_generation_receipts);
             match step {
                 crate::cognition::act_observe::SettleStep::CapacityRefused { .. }
                 | crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch => {
@@ -398,7 +312,7 @@ pub(super) async fn run_turn_cycle(
                         lamport = msg.lamport,
                         reason = "workspace-pass",
                         gated = gated,
-                        pass_reason = %pass_detail.chars().take(240).collect::<String>(),
+                        pass_reason = %pass_detail,
                         "persona chose silence, or a gate converted her draft into a pass (gated) — pass_reason says which"
                     );
                     // THE ACT-QUESTION. Asked here on the PASS path and again after a spoken reply,
@@ -472,4 +386,16 @@ pub(super) async fn run_turn_cycle(
             return CycleVerdict::Skip;
         }
     }
+}
+
+/// The attention a NEW message earns from its actual sender and mentions: the one derivation,
+/// shared by the turn and by the loop when it must retain an input it cannot yet run.
+pub(super) fn new_message_attention(
+    ctx: &HostedPersona,
+    msg: &crate::cognition::conversation::IncomingMessage,
+) -> crate::cognition::workspace::TurnAttention {
+    crate::cognition::workspace::TurnAttention::for_message(
+        ctx.identity.persona_identity().mentions(&msg.text),
+        crate::cognition::room_directory::is_human_peer(msg.peer_id),
+    )
 }

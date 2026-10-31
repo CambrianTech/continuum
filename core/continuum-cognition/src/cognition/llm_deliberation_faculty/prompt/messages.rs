@@ -100,17 +100,47 @@ impl LlmDeliberationFaculty {
                 stimulus = Some(ChatMessage::text(role, line));
                 continue;
             }
-            let key = match turn.occurred_at_ms {
-                Some(ms) => format!("{ms}/{}", turn.author),
-                // An opaque stimulus has no time: its position among the turns is its identity.
-                None => format!("#{index}"),
+            // A room turn is its event (unique, and what her read receipt names); a turn without
+            // one keys by time and author, an opaque stimulus by its position.
+            let key = match (turn.source, turn.occurred_at_ms) {
+                (Some(source), _) => source.event.to_string(),
+                (None, Some(ms)) => format!("{ms}/{}", turn.author),
+                (None, None) => format!("#{index}"),
             };
             let role = if turn.is_self {
                 crate::cognition::context_streams::Role::Assistant
             } else {
                 crate::cognition::context_streams::Role::User
             };
-            turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line });
+            turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line, pointer: None });
+        }
+        // Messages that reached her room during this turn are conversation too, after the
+        // burst, keyed by their event: in her view they append like any turn, and one
+        // already in the burst keeps its place. They rode the fresh tail as required input
+        // under a quarter-of-the-window share (ROOM_UPDATE_SHARE_DENOM), a second budget.
+        for update in ws.room_updates.iter() {
+            let key = update.event_id.to_string();
+            if turns.iter().any(|turn| turn.key == key) {
+                continue;
+            }
+            let line = update.render_room_update();
+            turns.push(crate::cognition::context_streams::conversation::Turn { key, role: crate::cognition::context_streams::Role::User, line, pointer: None });
+        }
+        // One line after them that never collapses: how many arrived and where the rest
+        // are. An update her window cannot hold whole then leaves only this, never
+        // vanishes unknown; a handle per update would put every one in the conversation's
+        // floor and crowd out the newest (40 handles took its room in the busy-room test).
+        if let Some(newest) = ws.room_updates.last() {
+            let line = format!(
+                "[{} room message(s) arrived during this turn; any not shown above: reread with chat/history]",
+                ws.room_updates.len()
+            );
+            turns.push(crate::cognition::context_streams::conversation::Turn {
+                key: format!("room-updates/{}", newest.event_id),
+                role: crate::cognition::context_streams::Role::User,
+                pointer: Some(line.clone()),
+                line,
+            });
         }
         // What follows the view in this act's prompt: facts, the clock, demoted payloads.
         let mut messages: Vec<ChatMessage> = Vec::new();
@@ -183,8 +213,8 @@ impl LlmDeliberationFaculty {
         // today: the working-memory faculty).
         // PINNED just-executed result (#392, run-18057-f1). The full result of the act
         // she just ran is appended DIRECTLY from the shared working-memory buffer as the
-        // newest trailing turn — deliberately NOT routed as a faculty bid. As part of the
-        // working-memory contribution at `WORKING_MEMORY_SALIENCE` it competed in
+        // newest trailing turn — deliberately NOT routed as a faculty bid. As part of a
+        // working-memory faculty's bid (that faculty is deleted) it competed in
         // `arbiter.focus()` top-k and was evicted whole under capacity pressure, so the
         // persona generated blind to her own grep/read output (the 0-byte SWE-bench patch).
         // Reading it here puts no attention pass between the hands and the mind.
@@ -216,12 +246,11 @@ impl LlmDeliberationFaculty {
         // between acts (`deliberation_prompt::stable_prefix_order`). Outside the view a block
         // sat behind it, and every act's append landed before it and re-sent it: on the M5
         // (2026-10-21 19:56Z) Aris re-prefilled 49k chars from `[workspace-map]` on. Her
-        // working-memory bid is not one of them: her thoughts and actions are their own streams.
+        // thoughts and actions are not among them: they are their own streams in her view.
         let mut pieces: Vec<&Contribution> = ws
             .broadcast
             .iter()
             .filter(|c| c.decision.is_none() && c.fault.is_none() && c.trailing)
-            .filter(|c| c.faculty.as_str() != crate::cognition::working_memory::WM_FACULTY_ID)
             .filter(|c| !c.content.trim().is_empty())
             .collect();
         pieces.sort_by(|a, b| deliberation_prompt::stable_prefix_order(a.faculty.as_str(), b.faculty.as_str()));
@@ -238,7 +267,7 @@ impl LlmDeliberationFaculty {
                 };
                 let text = render(GroundingPiece::whole(c));
                 let minimum = if c.standing_grounding { render(GroundingPiece::minimum(c)) } else { text.clone() };
-                crate::cognition::context_streams::blocks::Grounding { faculty: c.faculty.as_str().to_owned(), text, minimum }
+                crate::cognition::context_streams::blocks::Grounding { persona: self.persona_id, faculty: c.faculty.as_str().to_owned(), text, minimum, units: std::sync::Arc::clone(&c.units) }
             })
             .collect();
         let result_pointers = Vec::new();
@@ -264,10 +293,10 @@ impl LlmDeliberationFaculty {
         // only a truncation notice. Oversized output paging belongs to the
         // existing spill/tool-output producer, never to a generic byte reducer.
         input.update(b"active_result");
-        let (latest_result, demoted_result) = match self.working_memory.as_ref() {
-            None => (Vec::new(), None),
+        let latest_result = match self.working_memory.as_ref() {
+            None => Vec::new(),
             Some(wm) => match wm.active_action_full() {
-                None => (Vec::new(), None),
+                None => Vec::new(),
                 Some((seq, full)) => {
                     let message = wm.full_result_message(seq, &full);
                     // Provenance remains part of request identity. Typed calls and
@@ -275,10 +304,11 @@ impl LlmDeliberationFaculty {
                     field(&mut input, message.as_bytes());
                     let observations = wm.active_action_observations(seq);
                     let calls = wm.active_action_native_calls(seq);
-                    let (mut group, tail) = if calls.is_empty() {
-                        // Legacy receipts have no native IDs to echo.
-                        let (head, tail) = self.split_action_result(message);
-                        (vec![head], tail)
+                    let mut group = if calls.is_empty() {
+                        // Legacy receipts have no native IDs to echo. Whole: the one allocation
+                        // reduces it by level when it alone exceeds her window
+                        // (`fit_newest_result`), never a head cut here (FOCUS-CONTRACT rule 4).
+                        vec![ChatMessage::text("user", message)]
                     } else {
                         let results: Vec<_> = observations.iter().map(|o| o.output.result.clone()).collect();
                         for observation in &observations {
@@ -299,7 +329,7 @@ impl LlmDeliberationFaculty {
                             parts.push(crate::ai::types::ContentPart::Text { text: wm.result_label(seq) });
                         }
                         // This entire required group survives fitting or faults together.
-                        (vec![calls, results], None)
+                        vec![calls, results]
                     };
                     if let Some(visual) = visual.filter(|v| v.seq == seq && !observations.is_empty()) {
                         // Legacy checkpoints can still own pixels without original
@@ -320,7 +350,7 @@ impl LlmDeliberationFaculty {
                             result.content = crate::ai::types::MessageContent::Parts(parts);
                         }
                     }
-                    (group, tail)
+                    group
                 }
             },
         };
@@ -337,17 +367,6 @@ impl LlmDeliberationFaculty {
             stimulus = Some(ChatMessage::text("user", ws.world_state.clone()));
         }
         input.update([(!latest_result.is_empty()) as u8]);
-        // Demoted room updates ride in ordinary history: still shown when the window
-        // has room, trimmed by the existing front-drop only under pressure. They are
-        // chronologically newer than prior history, so they append to its end.
-        let (room_updates, demoted_updates) = self.split_room_updates(ws);
-        let mut messages = messages;
-        // The action result's demoted TAIL rides the same way, and goes in FIRST: it is
-        // the outcome of the act that preceded these room updates, so appending it before
-        // them keeps history in the order it happened. Without this the tail would be
-        // silently dropped, which is the discarding this whole split exists to avoid.
-        messages.extend(demoted_result);
-        messages.extend(demoted_updates);
         let action_statement = self
             .working_memory
             .as_ref()
@@ -360,7 +379,7 @@ impl LlmDeliberationFaculty {
             input_identity: input.finalize().into(),
             history: messages,
             streams: super::types::Streams {
-                conversation: crate::cognition::context_streams::conversation::Conversation { turns },
+                conversation: crate::cognition::context_streams::conversation::Conversation { persona: self.persona_id, turns },
                 blocks,
             },
             result_pointers,
@@ -369,147 +388,6 @@ impl LlmDeliberationFaculty {
             stimulus,
             latest_result,
             action_statement,
-            room_updates,
         }
-    }
-
-    /// Split this turn's room updates into the part that is REQUIRED and the part
-    /// that merely wants to be there. Nothing is discarded.
-    ///
-    /// Room updates are required input — `required_tokens` counts them and
-    /// `fit_messages` never drops them — so an unbounded room is a citizen who can
-    /// no longer think. But simply CUTTING the excess would be worse than the bug:
-    /// a task, a correction, or an instruction that arrived earlier in the batch
-    /// would be deleted before she ever read it, and she would have no way to know
-    /// something was taken.
-    ///
-    /// So the overflow is DEMOTED, not dropped. The newest share stays required; the
-    /// older remainder is returned to be appended to ordinary history, where it is
-    /// still shown whenever the window has room and is trimmed by the existing
-    /// front-drop only under real pressure — the same treatment every other past
-    /// message gets. The information survives; only its claim on the required budget
-    /// does not.
-    ///
-    /// Returns `(required_newest, demoted_older)`, both chronological.
-    /// Split the action result into the REQUIRED head and a DEMOTED tail.
-    ///
-    /// The result of the citizen's last act is required input — she cannot reason about
-    /// what her hands just did if it is dropped — and it was also UNBOUNDED. A single
-    /// `code/read` or `code/shell` output therefore claimed the whole window as
-    /// irreducible payload, and `fit_messages` refused the turn, and she went mute while
-    /// holding her card.
-    ///
-    /// Measured 2026-09-10 on a 23,040-token lane: `required_payload = 18,629` against
-    /// `after_reserves = 15,688`, over by 2,941, with `grounding_tokens = 113` proving
-    /// grounding innocent and `received = 2` proving it was ONE enormous message. 836
-    /// consecutive refusals, zero acts, zero inference, for the whole of a benchmark
-    /// round. The build had already bounded room updates (#3947) and stopped grounding
-    /// vetoing the turn (#3954) — this was the same class, one field over.
-    ///
-    /// The code here used to say oversized output "belongs to the existing
-    /// spill/tool-output producer, never to a generic byte reducer". That is a good rule
-    /// about WHO SHOULD SHRINK IT, and it was enforced nowhere: nothing checked that the
-    /// producer had, so an unspilled result walked straight into required input.
-    ///
-    /// DEMOTED, never discarded (Joel, 2026-09-09: "maybe trim clipped or killed
-    /// important information the persona needed to complete things"). The head stays
-    /// required so the act's outcome — status, error, the first lines that say what
-    /// happened — is always in front of her; the tail becomes ordinary history, still
-    /// rendered whenever the window allows, and still re-readable through its spill
-    /// handle. A cut on a CHAR boundary would split a UTF-8 sequence, so the split walks
-    /// to a line boundary and says how much moved.
-    pub(in super::super) fn split_action_result(&self, message: String) -> (ChatMessage, Option<ChatMessage>) {
-        let window = self.binding.load().context_window as usize;
-        let cap = window / Self::RESULT_SHARE_DENOM as usize;
-        let whole = ChatMessage::text("user", message.clone());
-        if Self::messages_cost(std::slice::from_ref(&whole)) <= cap {
-            return (whole, None);
-        }
-        // WHICH HALF IS REQUIRED IS DECIDED BY WIRE ORDER, not by preference.
-        //
-        // History renders BEFORE the required slot (`prompt.history.extend(latest_result)`
-        // appends the required part last). So keeping the HEAD required would place the
-        // result's beginning AFTER its middle on the wire — she would read it backwards.
-        // Keeping the TAIL required puts the demoted beginning in history and the ending
-        // in the required slot, which is the original order, and it keeps the payload
-        // ending byte-for-byte where the existing wire test expects it.
-        //
-        // Walk lines from the END while the tail still fits its share.
-        let lines: Vec<&str> = message.split_inclusive('\n').collect();
-        let mut take = 0usize;
-        let mut tail = String::new();
-        for line in lines.iter().rev() {
-            let candidate = format!("{line}{tail}");
-            let cost = Self::messages_cost(std::slice::from_ref(&ChatMessage::text(
-                "user",
-                candidate.clone(),
-            )));
-            // The LAST line is always required even if it alone exceeds the share: a
-            // required slot holding none of her result tells her nothing about what her
-            // hands just did, and a genuinely impossible payload is the existing capacity
-            // fault's job to report honestly.
-            if take == 0 || cost <= cap {
-                tail = candidate;
-                take += 1;
-            } else {
-                break;
-            }
-        }
-        if take >= lines.len() {
-            return (whole, None);
-        }
-        let head: String = lines[..lines.len() - take].concat();
-        let head_msg = ChatMessage::text("user", head);
-        let tail_msg = ChatMessage::text("user", tail);
-        continuum_base::probe!(
-            class = "delib.action_result.demoted",
-            persona = %self.persona_name,
-            window = window,
-            cap = cap,
-            required_tokens = Self::messages_cost(std::slice::from_ref(&tail_msg)),
-            demoted_tokens = Self::messages_cost(std::slice::from_ref(&head_msg)),
-            "the action result exceeded its share of the window — its ending stays              REQUIRED and the earlier part was demoted to ordinary history, still rendered              when the window allows and still re-readable via its spill handle. Nothing              was discarded: an unbounded required result is what makes one big tool output              a mute citizen."
-        );
-        (tail_msg, Some(head_msg))
-    }
-
-    pub(in super::super) fn split_room_updates(&self, ws: &Workspace) -> (Vec<ChatMessage>, Vec<ChatMessage>) {
-        let window = self.binding.load().context_window as usize;
-        let cap = window / Self::ROOM_UPDATE_SHARE_DENOM as usize;
-        let mut required: Vec<ChatMessage> = Vec::new();
-        let mut demoted: Vec<ChatMessage> = Vec::new();
-        let mut used = 0usize;
-        // Newest first so the REQUIRED half is the freshest room state.
-        for message in ws.room_updates.iter().rev() {
-            let rendered = ChatMessage::text("user", message.render_room_update());
-            let cost = Self::messages_cost(std::slice::from_ref(&rendered));
-            // The newest update is always required, even if it alone exceeds the
-            // share: one oversized message must not silently demote the very
-            // stimulus the turn exists to answer. If it genuinely cannot fit, the
-            // existing capacity fault says so honestly.
-            if required.is_empty() || used.saturating_add(cost) <= cap {
-                used += cost;
-                required.push(rendered);
-            } else {
-                demoted.push(rendered);
-            }
-        }
-        required.reverse();
-        demoted.reverse();
-        if !demoted.is_empty() {
-            let demoted_tokens = Self::messages_cost(&demoted);
-            continuum_base::probe!(
-                class = "delib.room_updates.demoted",
-                persona = %self.persona_name,
-                window = window,
-                cap = cap,
-                required = required.len(),
-                required_tokens = used,
-                demoted = demoted.len(),
-                demoted_tokens = demoted_tokens,
-                "required room payload exceeded its share of the window — the newest                  stay REQUIRED and the older were demoted to ordinary history, which                  is still rendered when the window allows. Nothing was discarded: an                  unbounded required payload is what makes a busy room a mute citizen."
-            );
-        }
-        (required, demoted)
     }
 }

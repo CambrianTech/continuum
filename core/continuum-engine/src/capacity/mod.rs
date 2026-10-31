@@ -48,6 +48,7 @@ pub mod moe_arch_profile;
 pub mod moe_serving;
 pub mod pager_capture;
 pub mod placement;
+pub mod power_mode;
 pub mod plan_file;
 pub mod recursion_depth;
 pub mod residency_detect;

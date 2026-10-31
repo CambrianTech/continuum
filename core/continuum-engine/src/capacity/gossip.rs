@@ -141,6 +141,13 @@ pub struct CapacityOffer {
     /// core advertises nothing (serde default), which reads as "trains nothing", never "all".
     #[serde(default)]
     pub trainable_bases: Vec<String>,
+    /// THE MINDS HERE THAT ARE STUCK (card 1c157668): each resident this node judged stalled
+    /// (work asked, nothing completed) or regressed over its last service window, with the
+    /// refusal that explains it. Kimi was refused before inference for 17 hours on 2026-10-26
+    /// and no node said so; on the beacon, `grid/nodes` on any node names her. An older core
+    /// advertises none (serde default), which reads as "nothing judged", never "all healthy".
+    #[serde(default)]
+    pub resident_alarms: Vec<continuum_service::resident::ResidentAlarm>,
 }
 
 /// What a core knows how to do — the names a beacon may advertise in
@@ -169,6 +176,16 @@ pub enum CapabilityId {
     /// sends the cancel only to a seat advertising this; absence means it would be ignored,
     /// and a seat that never learned the command must not be sent one.
     RemoteGenerateCancel,
+    /// The node trains a LoRA job another node leases to it (`genome/lease/train`, with
+    /// `lease/status`, `lease/poll` and `lease/cancel`; cards cc34db0d, ec1d8b76) for a base it
+    /// lists in `trainable_bases`. A grid trainer leases only to a peer advertising this:
+    /// absence means a core that predates the lease verbs, which must never be sent one.
+    TrainingLease,
+    /// A leased job's trained adapter comes back to its origin (S3 of card 6f05b89d): the node
+    /// serves `genome/lease/artifact` ranges of a recorded manifest, and as an origin pulls,
+    /// verifies and places a returned adapter in its own job directory for adoption (card
+    /// 92cd2251). A grid trainer leases only when BOTH ends advertise this and `TrainingLease`.
+    TrainingLeaseReturn,
     /// Parse-only: a name THIS build does not know (a newer core advertising a capability we
     /// predate). It never grants — membership of this list is exact-name, so an unknown name
     /// cannot stand in for another — but its presence must not drop the rest of the beacon,
@@ -188,6 +205,8 @@ pub fn this_build_capabilities() -> Vec<CapabilityId> {
         CapabilityId::LaneWaitReporting,
         CapabilityId::PlacementReservationGrant,
         CapabilityId::RemoteGenerateCancel,
+        CapabilityId::TrainingLease,
+        CapabilityId::TrainingLeaseReturn,
     ]
 }
 
@@ -569,6 +588,7 @@ mod tests {
             // never as 'all' (card 8bd75362).
             capabilities: Vec::new(),
             trainable_bases: Vec::new(),
+            resident_alarms: Vec::new(),
         }
     }
     // what this catches (2026-09-19, the M5 spilled two minds to ITSELF): a node hears
@@ -878,7 +898,7 @@ mod tests {
         let wire = serde_json::to_string(&this_build_capabilities())?;
         assert_eq!(
             wire,
-            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\"]"
+            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\",\"training_lease\",\"training_lease_return\"]"
         );
         assert!(!this_build_capabilities().contains(&CapabilityId::Unknown), "emission never advertises Unknown");
 

@@ -100,7 +100,7 @@ impl TrainingRates {
         }
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?)?;
-        continuum_base::fs_portable::replace::replace_file(&tmp, &self.path)
+        continuum_host::durable::replace(&tmp, &self.path)
     }
 }
 

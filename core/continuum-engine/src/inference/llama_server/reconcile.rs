@@ -80,10 +80,30 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
     let outcome = serve_or_adopt(ctrl, target, force_probe, current).await;
     // Every adoption, whichever rail took it (an owned child, a decode-proven orphan, a busy
     // one), records the lane's placement when its record lacks one (card 22aa3379).
+    // Every adoption also follows the engine's log relay: a no-op for one already followed.
     if matches!(outcome, EnsureOutcome::AlreadyServing) {
         ctrl.record_observed_placement().await;
+        ctrl.follow_engine_log();
     }
     outcome
+}
+
+/// Engine replacement alone is not permission to apply a different geometry.
+/// Geometry changes are reconsidered separately after convergence, under the trade guards.
+pub(super) fn engine_convergence_target(
+    planned: &ServingTarget,
+    served_window: u32,
+    served_lanes: u32,
+) -> Result<ServingTarget, String> {
+    let mut selected = planned.clone();
+    {
+        if served_window == 0 || served_lanes == 0 {
+            return Err("engine convergence requires the incumbent's observed window and lane count; geometry is unknown".to_string());
+        }
+        selected.context_window = served_window;
+        selected.lanes = served_lanes;
+    }
+    Ok(selected)
 }
 
 async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
@@ -99,6 +119,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
     current: &ServingLifecycleCheck<'_>,
 ) -> EnsureOutcome {
     let mut convergence_pair = None;
+    let mut convergence_target = None;
     let active = match ctrl.active_model().await {
         Ok(active) => active,
         Err(LlamaServerError::Unreachable(_)) => None,
@@ -382,7 +403,11 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // neither the trade guard nor the memory gate applies: the relaunch is at the
             // same size, onto the binary already on disk.
             let installed_engine = installed_engine_commit();
-            let served_engine = match ctrl.served_engine_build().await {
+            let served_engine_probe = ctrl.served_engine_build().await;
+            // The same reading decides what this engine process can take (`tail_tools`); an
+            // error keeps the evidence only while the same incarnation serves (Codex on #5491).
+            observe_served_engine(ctrl.served_incarnation(), served_engine_probe.as_ref().map(Option::as_deref).map_err(|_| ()));
+            let served_engine = match served_engine_probe {
                 Ok(build) => build,
                 Err(_) => None, // a probe error is "engine OK", as for the window and lanes
             };
@@ -418,12 +443,22 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             };
             *ENGINE_STALE.lock() = (!engine_current).then(|| pair.clone());
             if !engine_ok {
+                let resize_admitted = false; // Engine convergence and geometry resize are separate lifecycle decisions.
+                match engine_convergence_target(target, served_window_n, served_lanes_n) {
+                    Ok(selected) => convergence_target = Some(selected),
+                    Err(reason) => return EnsureOutcome::Degraded { reason },
+                }
                 continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.engine.converged",
                     model = target.model_id(),
                     from = served_engine.as_deref().unwrap_or(""), // probe field: engine_ok=false implies both are known
                     to = installed_engine.as_deref().unwrap_or(""), // probe field: as above
+                    resize_admitted,
+                    incumbent_lanes = served_lanes_n,
+                    incumbent_window = served_window_n,
+                    plan_lanes = target.lanes,
+                    plan_window = target.context_window,
                     "the running lane is on an engine older than the installed one: relaunching \
-                     onto the installed binary (same size; a deploy converges the engine too)"
+                     onto the installed binary; preserve incumbent geometry unless a separate resize was admitted"
                 );
             }
             if !engine_ok
@@ -506,6 +541,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
 
     // Drop also runs on cancellation: only an actual launch-stage advance consumes
     // this pair. A refused checkpoint must remain eligible on the next tick.
+    let target = convergence_target.as_ref().unwrap_or(target); // unwrap_or: absent convergence retains the ordinary planned launch
     let _attempt = super::convergence_attempt::ConvergenceAttempt::new(ctrl, convergence_pair);
     match ctrl.serve_if_current(target, current).await {
         Ok(()) => {
@@ -520,11 +556,18 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // relaunched lane starts clean" — this is the site that makes it true.
             reset_real_decode_failures();
             mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
+            observe_launched_engine(ctrl).await;
             EnsureOutcome::Spawned {
                 model: target.model_id().to_string(),
             }
         }
         Err(LlamaServerError::Superseded) => EnsureOutcome::Superseded,
+        // The incumbent could not be retired safely and was not signalled (card 931cfd22):
+        // keep serving on it when it is the target model and still proves it decodes; never
+        // condemn a working engine because a replacement was refused.
+        Err(LlamaServerError::RetirementRefused(why)) => {
+            keep_incumbent(ctrl, target, active.as_deref() == Some(target.model_id()), &why).await
+        }
         // One relaunch onto the restored engine; the engine is resolved per launch, so this
         // `serve` takes the slot the rollback made current.
         Err(reason) if roll_back_engine_after_failed_launch(&reason) => {
@@ -532,6 +575,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                 Ok(()) => {
                     reset_real_decode_failures();
                     mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
+                    observe_launched_engine(ctrl).await;
                     EnsureOutcome::Spawned {
                         model: target.model_id().to_string(),
                     }
@@ -545,5 +589,60 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
         Err(reason) => EnsureOutcome::Degraded {
             reason: reason.to_string(),
         },
+    }
+}
+
+/// A lane this reconcile launched answered ready: read its own build now, not at the next
+/// reconcile that happens to pass the convergence check, so her tool head is decided by what the
+/// running engine says before her acts reach it.
+async fn observe_launched_engine<C: LlamaServerControl + ?Sized>(ctrl: &C) {
+    let probe = ctrl.served_engine_build().await;
+    observe_served_engine(ctrl.served_incarnation(), probe.as_ref().map(Option::as_deref).map_err(|_| ()));
+}
+
+/// The refusal last reported by [`keep_incumbent`], so an unchanged one is said once, not on
+/// every reconcile tick while the replacement keeps being wanted.
+static REPLACEMENT_REFUSED: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
+/// A replacement was refused before anything was signalled (card 931cfd22; enrico 2026-10-25:
+/// "adopted checkpoint requires a known pool" left a decoding engine unserved for 5 hours).
+/// The incumbent keeps serving only when it is exactly what the target asks for: the target
+/// model, the KNOWN loaded adapter set equal to the target's (an unreadable or different set
+/// never passes, so target genes are never published as loaded), and the decode proof
+/// adoption uses, on every refusal (`decode_smoke_ok`: its seat is the scratch slot, an empty
+/// engine, or the lane's own `/slots` account when every slot holds a mind, so it never decodes
+/// over a mind's KV, #5405). Anything else stays degraded: a condemned engine is never
+/// advertised ready. The probe below says each refusal once.
+async fn keep_incumbent<C: LlamaServerControl + ?Sized>(
+    ctrl: &C,
+    target: &ServingTarget,
+    serves_target: bool,
+    why: &str,
+) -> EnsureOutcome {
+    let genome_is_target = matches!(ctrl.active_adapters().await, Ok(active) if active == target.adapter_paths());
+    let decodes = serves_target && genome_is_target && ctrl.decode_smoke_ok().await;
+    if decodes {
+        if REPLACEMENT_REFUSED.lock().as_deref() != Some(why) {
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.replace.refused_kept_incumbent",
+                model = target.model_id(),
+                why,
+                "the incumbent engine could not be retired safely and was not signalled: it \
+                 keeps serving (the target model, the target genes, and it decodes); the \
+                 replacement waits until its custody can be satisfied"
+            );
+            *REPLACEMENT_REFUSED.lock() = Some(why.to_string());
+        }
+        return EnsureOutcome::AlreadyServing;
+    }
+    *REPLACEMENT_REFUSED.lock() = None;
+    let unfit = if !serves_target {
+        "it serves another model"
+    } else if !genome_is_target {
+        "its loaded genes are not known to be the target's"
+    } else {
+        "it failed its decode proof"
+    };
+    EnsureOutcome::Degraded {
+        reason: format!("retiring the incumbent was refused ({why}) and it cannot serve the target: {unfit}"),
     }
 }

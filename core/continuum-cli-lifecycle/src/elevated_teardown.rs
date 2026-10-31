@@ -52,6 +52,12 @@ pub struct TeardownPlan {
 /// does not know it exists.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct StopOptions {
+    /// `--engine`: stop the engine too. By default a stop ends the core only: the engine is its
+    /// own resource, and its loaded weights and every mind's KV stay up for the next core to
+    /// adopt (`start` and `reboot` adopt it), so a stop, build and start costs no model reload
+    /// and nobody's KV (Joel, 2026-10-29: "The engine is supposed to stay up"). `--engine` is
+    /// for when its memory is wanted back.
+    pub engine: bool,
     pub elevated: bool,
     pub plan: Option<String>,
     pub plan_sha: Option<String>,
@@ -63,6 +69,7 @@ impl StopOptions {
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
             match arg.as_str() {
+                "--engine" => options.engine = true,
                 "--elevated" => options.elevated = true,
                 "--plan" => options.plan = args.next(),
                 "--plan-sha" => options.plan_sha = args.next(),
@@ -79,6 +86,9 @@ impl StopOptions {
                  exactly one process, bound by its digest)"
                     .to_string(),
             );
+        }
+        if options.engine && options.elevated {
+            return Err("stop: --engine is an operator's stop; the consented child ends exactly one process".to_string());
         }
         Ok(options)
     }
@@ -282,6 +292,12 @@ mod tests {
             "there is no operator-facing escalate verb — `continuum install` is the one command",
         );
         assert!(unknown.contains("unknown option"), "{unknown}");
+
+        // what this catches: a plain stop taking the engine down. The engine stays unless asked.
+        assert!(!parse(&[]).expect("a plain stop").engine, "a plain stop keeps the engine");
+        let all = parse(&["--engine"]).expect("an operator's stop that ends the engine too");
+        assert!(all.engine && !all.elevated);
+        assert!(parse(&["--engine", "--elevated", "--plan", "p.json", "--plan-sha", "abc"]).is_err());
 
         let child = parse(&["--elevated", "--plan", "p.json", "--plan-sha", "abc"])
             .expect("the bound child parses");

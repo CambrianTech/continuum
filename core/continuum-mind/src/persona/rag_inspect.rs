@@ -30,6 +30,10 @@
 //! - [[substrate-is-a-good-citizen-on-the-host]] — when `trace_path`
 //!   is `None`, the sink is `NoopRagCaptureSink` (zero overhead). The
 //!   hot path doesn't pay for observability it didn't ask for.
+//! - Inspection is side-effect free: a source delivers everything it holds
+//!   and does not advance its read cursor on `deliver` (that is a separate
+//!   mark_read), and no budget is allocated here; her prompt view owns the
+//!   one allocation.
 //! - [[source-drain-is-the-universal-pattern]] — the inspection IS
 //!   the drain for in-flight RAG decisions. Without it those
 //!   decisions are sources without drains, which is the leak shape.
@@ -42,49 +46,21 @@ use uuid::Uuid;
 
 use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
 use crate::persona::airc_source::AircRagSource;
-use crate::cognition::rag_budget::{
-    BudgetAllocation, FlexboxRagBudgetAdapter, RagBudgetAdapter, RagContext, RagSource,
-    RagSourceBudget, ReservedTokens, ResolutionPreference,
-};
+use crate::cognition::rag_budget::{RagContext, RagSource};
 use crate::persona::rag_capture::{
     JsonlRagCaptureSink, NoopRagCaptureSink, RagCaptureEvent, RagCaptureSink, RecordingRagSource,
 };
 
-/// How many chars of an item's content to keep in the preview. Items
-/// with longer content still report full token cost; this only
-/// controls the human/AI-readable snippet returned in the inspection
-/// result. Replay against the trace gets the full content; the
-/// inspection result is for "look at what the persona would see right
-/// now" mechanic-shop summarization.
-// context-budget-exempt: preview width for the human-facing rag-inspect command output;
-// never text sent to a model
-pub const CONTENT_PREVIEW_CHARS: usize = 200;
 
-/// Assumed window for [`RagInspectionRequest::defaults_for`] — the
-/// DIAGNOSTIC path only, where no inference profile is in hand and the
-/// `persona/rag-inspect` caller can override `context_window` explicitly.
-/// This is NOT a serving decision and never reaches a live turn: live
-/// turns go through [`RagInspectionRequest::for_persona`] with the
-/// profile's real `context_length` (#46/#50 law — the window comes from
-/// the adapter, never a per-tier cap).
-// context-budget-exempt: inspection-command default only, caller-overridable;
-// live turns derive the window from the persona's inference profile
-pub const DEFAULT_INSPECT_WINDOW: u32 = 32_768;
 
-/// Tunable inputs for one inspection. Defaults via `defaults_for`
-/// match the `mid-local (32k)` profile the demo binary uses — a
-/// sensible "what would a typical local persona see right now" probe
-/// when the caller doesn't have stronger opinions.
+/// Tunable inputs for one inspection, built via `for_persona` (her profile's window) or
+/// `for_window` (the served window, or one the caller names).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RagInspectionRequest {
     pub persona_id: Uuid,
     pub persona_name: String,
+    /// Reported back in the inspection; nothing is allocated against it here.
     pub context_window: u32,
-    pub reserved: ReservedTokens,
-    pub airc_floor: u32,
-    pub airc_max: u32,
-    pub airc_priority: u8,
-    pub airc_required: bool,
     pub airc_fetch_limit: usize,
     /// Wall-clock "now" the inspection should reason against. Caller
     /// supplies this so the function stays pure-of-clock (testable +
@@ -97,21 +73,6 @@ pub struct RagInspectionRequest {
 }
 
 impl RagInspectionRequest {
-    /// Diagnostic defaults for "show me what this persona would see
-    /// right now" when NO inference profile is in hand — the
-    /// `persona/rag-inspect` command path, where the caller can
-    /// override `context_window` explicitly. Same derivation as
-    /// [`Self::for_persona`], seeded with [`DEFAULT_INSPECT_WINDOW`].
-    /// Prefer [`Self::for_persona`] when a profile IS in hand — that
-    /// path threads the profile's actual context_length through so
-    /// the RAG layer never asks for more tokens than the adapter
-    /// can decode. (TODO #46/#50 family: `PersonaResolution` should
-    /// carry the persona's live profile so the inspect command stops
-    /// needing an assumed window at all.)
-    pub fn defaults_for(persona_id: Uuid, persona_name: String, now_ms: u64) -> Self {
-        Self::for_window(persona_id, persona_name, now_ms, DEFAULT_INSPECT_WINDOW)
-    }
-
     /// Derive the inspection request from the persona's inference
     /// profile — the single source of truth for context budgets.
     /// `&PersonaInferenceProfile` is the substrate's persona-shape
@@ -132,47 +93,18 @@ impl RagInspectionRequest {
         Self::for_window(persona_id, persona_name, now_ms, profile.context_length)
     }
 
-    /// THE derivation both constructors share (#424 — `defaults_for`
-    /// previously hand-copied a flat `{system: 400, completion: 4_000,
-    /// airc_max: 20_000}` shape that had already drifted from this one).
-    ///
-    /// - reservation + headroom: [`ReservedTokens::scaled_for_window`].
-    /// - `airc_max` = at most 60% of the window, AND at most the
-    ///   post-reservation headroom.
-    /// - `airc_floor` clamps to `airc_max` so floor ≤ max always.
+    /// THE derivation both constructors share. The source delivers whole and her
+    /// prompt view owns the one allocation, so the window is only reported.
     pub fn for_window(
         persona_id: Uuid,
         persona_name: String,
         now_ms: u64,
         context_window: u32,
     ) -> Self {
-        let reserved = ReservedTokens::scaled_for_window(context_window);
-        let headroom = reserved.headroom_within(context_window);
-        // Default budget: ~60% of the context window for room
-        // history, clamped to headroom. This is a CONSERVATIVE
-        // FALLBACK — the substrate's real budgeter (TODO: routed
-        // through model characteristics on the Context per
-        // [[context-is-the-client-airc-token-is-identity]] and
-        // [[intent-driven-api-not-hot-patches]]) should derive
-        // this from `(prefill_tps, decode_tps, target_first_token_latency_ms)`
-        // so a 5090 + 200k-context frontier model can feed the
-        // whole history and a CPU + Qwen-0.5B can clamp itself.
-        // Both end up calling the SAME budget API; the answer
-        // differs because the model differs. Do NOT cap to a
-        // smaller percentage to make Intel Mac faster — that
-        // dumbs down every capable peer on the grid.
-        let airc_max = ((context_window as u64) * 6 / 10) as u32;
-        let airc_max = airc_max.min(headroom);
-        let airc_floor = 500_u32.min(airc_max);
         Self {
             persona_id,
             persona_name,
             context_window,
-            reserved,
-            airc_floor,
-            airc_max,
-            airc_priority: 10,
-            airc_required: true,
             airc_fetch_limit: 100,
             now_ms,
             trace_path: None,
@@ -195,8 +127,7 @@ impl RagInspectionRequest {
     }
 }
 
-/// The honest-look result. Carries the full allocation outcome PLUS
-/// per-source delivery details with the mechanic-grade rationale
+/// The honest-look result. Carries the per-source delivery details with the mechanic-grade rationale
 /// (score, lamport, peer-id-prefix, age, content preview).
 ///
 /// Specifically does NOT collapse layers — the future is multiple
@@ -208,7 +139,6 @@ pub struct RagInspection {
     pub persona_id: Uuid,
     pub persona_name: String,
     pub context_window: u32,
-    pub allocation: BudgetAllocation,
     pub deliveries: Vec<SourceDeliveryInspection>,
     /// Path to the JSONL trace if `trace_path` was set on the request,
     /// else `None`. Other AIs / mechanics resume replay against this.
@@ -255,12 +185,10 @@ pub struct ModelResponseInspection {
 }
 
 /// Per-source delivery, with the substrate-grade detail every
-/// inspection caller needs: requested budget, actual usage,
-/// continuation flag, and the full list of items packed.
+/// inspection caller needs: actual usage, continuation flag, and the full list of items packed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceDeliveryInspection {
     pub source_id: String,
-    pub budget_requested: u32,
     pub tokens_used: u32,
     pub has_continuation: bool,
     pub items: Vec<InspectedItem>,
@@ -273,10 +201,14 @@ pub struct InspectedItem {
     pub index: usize,
     pub tokens: u32,
     pub score: f64,
-    pub content_preview: String,
-    pub peer_id_prefix: String,
+    pub content: String,
+    pub peer_id_shown: String,
     pub lamport: u64,
     pub age_s: u64,
+    /// The item has a coarser summary level her view can fall back to.
+    pub has_summary: bool,
+    /// The item has a pointer level (what it is and how to reopen it).
+    pub has_pointer: bool,
     /// Full source-emitted metadata — sources may attach additional
     /// fields beyond the canonical ones above (e.g. event_id,
     /// room_id, admission_origin). Preserved verbatim for inspection
@@ -314,10 +246,10 @@ pub async fn inspect_persona_rag(
 ///   `model_response`. The prompt text + the actual response are
 ///   captured so an inspector can re-run the model with the same
 ///   prompt and compare.
-/// - "Which layer is broken?" — `allocation.allocations` + per-source
-///   deliveries (unchanged from the RAG-only path).
+/// - "Which layer is broken?" — per-source deliveries and each item's
+///   levels (whole, summary, pointer).
 /// - "Is this contextually relevant?" — per-item score + age +
-///   peer_id_prefix in the deliveries (unchanged).
+///   peer_id_shown in the deliveries (unchanged).
 ///
 /// Per [[inference-is-an-adapter-always-in-the-loop]], the inference
 /// goes through an `AIProviderAdapter` — the same trait the
@@ -353,43 +285,14 @@ pub async fn inspect_persona_rag_with_inference(
     let mut ctx = ctx_base.clone();
     ctx.substrate.turn_id = Some(turn_id);
 
-    let budgets = vec![RagSourceBudget {
-        source_id: "airc".to_string(),
-        priority: request.airc_priority,
-        floor_tokens: request.airc_floor,
-        min_tokens: request.airc_floor,
-        max_tokens: request.airc_max,
-        required: request.airc_required,
-    }];
-
     sink.record(RagCaptureEvent::TurnStart {
         captured_at_ms: request.now_ms,
         persona_id: request.persona_id,
         turn_id: Some(turn_id),
-        context_window: request.context_window,
-        reserved: request.reserved,
-        source_budgets: budgets.clone(),
         context: ctx.clone(),
     });
 
-    let adapter = FlexboxRagBudgetAdapter::new();
-    let allocation = adapter.allocate(&ctx, request.context_window, request.reserved, &budgets);
-
-    sink.record(RagCaptureEvent::BudgetAllocated {
-        captured_at_ms: request.now_ms,
-        persona_id: request.persona_id,
-        turn_id: Some(turn_id),
-        allocation: allocation.clone(),
-    });
-
-    let airc_alloc = allocation
-        .allocations
-        .first()
-        .ok_or_else(|| "allocator returned no source allocations".to_string())?;
-    let budget_requested = airc_alloc.allocated_tokens;
-    let delivery = recorded
-        .deliver(&ctx, budget_requested, ResolutionPreference::Raw)
-        .await;
+    let delivery = recorded.deliver(&ctx).await;
 
     sink.record(RagCaptureEvent::TurnEnd {
         captured_at_ms: request.now_ms,
@@ -412,11 +315,11 @@ pub async fn inspect_persona_rag_with_inference(
                 .get("lamport")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let peer_id_prefix = item
+            let peer_id_shown = item
                 .metadata
                 .get("peer_id")
                 .and_then(|v| v.as_str())
-                .map(|s| s.chars().take(8).collect::<String>())
+                .map(|s| uuid::Uuid::parse_str(s).map_or_else(|_| s.to_owned(), airc_core::shown_id::shown_form)) // map_or_else: a peer id that is not a uuid is shown whole
                 .unwrap_or_else(|| "????".to_string());
             let occurred_at_ms = item
                 .metadata
@@ -428,16 +331,17 @@ pub async fn inspect_persona_rag_with_inference(
             } else {
                 0
             };
-            let content_preview: String =
-                item.content.chars().take(CONTENT_PREVIEW_CHARS).collect();
+            let content = item.content.clone();
             InspectedItem {
                 index: idx,
                 tokens: item.tokens,
                 score,
-                content_preview,
-                peer_id_prefix,
+                content,
+                peer_id_shown,
                 lamport,
                 age_s,
+                has_summary: item.summary.is_some(),
+                has_pointer: item.pointer.is_some(),
                 metadata: item.metadata.clone(),
             }
         })
@@ -455,10 +359,8 @@ pub async fn inspect_persona_rag_with_inference(
         persona_id: request.persona_id,
         persona_name: request.persona_name.clone(),
         context_window: request.context_window,
-        allocation,
         deliveries: vec![SourceDeliveryInspection {
             source_id: delivery.source_id.clone(),
-            budget_requested,
             tokens_used: delivery.tokens_used,
             has_continuation: delivery.truncated,
             items,
@@ -551,6 +453,7 @@ async fn run_inference_probe(
         stop_sequences: None,
         tools: None,
         tail_tools: None,
+        view_messages: None,
         tool_choice: None,
         // The substrate's cognition contract: JSON-grammar-constrained
         // output. LlamaCpp wires this to GBNF grammar so the sampler
@@ -570,22 +473,19 @@ async fn run_inference_probe(
     let items_count = items.len();
     let total_item_tokens: u32 = items.iter().map(|i| i.tokens).sum();
     let prompt_chars = prompt_text.chars().count();
-    let last_item_preview: String = items
-        .last()
-        .map(|i| i.content.chars().take(160).collect())
-        .unwrap_or_else(|| "(no items — RAG delivered nothing)".to_string());
+    // Sizes, not a cut of the text: the items themselves are in the prompt capture.
+    let last_item_tokens = items.last().map_or(0, |i| i.tokens); // map_or: no items, nothing delivered
 
     tracing::info!(
         persona = %persona_name,
         items_count,
         total_item_tokens,
         prompt_chars,
-        last_item_preview = %last_item_preview,
+        last_item_tokens,
         "rag_inspect cognition turn — input shape before LLM call"
     );
 
     for (idx, item) in items.iter().enumerate() {
-        let snippet: String = item.content.chars().take(120).collect();
         // Per [[observability-is-half-the-architecture]] this is the
         // mechanic-grade rationale ("why this item, why not that
         // one") and stays callable. INFO would spam ~12 lines per
@@ -596,7 +496,7 @@ async fn run_inference_probe(
             persona = %persona_name,
             idx,
             tokens = item.tokens,
-            content = %snippet,
+            content = %item.content,
             "rag_inspect item delivered to LLM"
         );
     }

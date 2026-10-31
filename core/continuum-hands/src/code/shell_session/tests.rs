@@ -351,7 +351,7 @@
                     break pid;
                 }
                 assert!(std::time::Instant::now() < deadline, "the shell never started its grandchild");
-                std::thread::sleep(crate::inference::lane_process::KILL_POLL);
+                std::thread::sleep(continuum_process::KILL_POLL);
             };
             let identity = crate::system_resources::process_tree::ProcessIdentity {
                 pid: grandchild,
@@ -366,7 +366,7 @@
             while !state.lock().unwrap().process_ended {
                 assert!(state.lock().unwrap().process_end_error.is_none(), "the shell's reap succeeds");
                 assert!(std::time::Instant::now() < deadline, "the killed shell is reaped");
-                std::thread::sleep(crate::inference::lane_process::KILL_POLL);
+                std::thread::sleep(continuum_process::KILL_POLL);
             }
             // Regression for combined canary 8ea: direct-child reap does not imply that
             // every signalled descendant has already exited at end_tree's snapshot.
@@ -375,11 +375,11 @@
             let mut observed = state.lock().unwrap().unconfirmed_descendants.clone();
             observed.push(identity);
             loop {
-                let surviving = crate::inference::lane_process::still_present(&observed);
+                let surviving = continuum_process::still_present(&observed);
                 if surviving.is_empty() { break; }
                 assert!(std::time::Instant::now() < deadline,
                     "the grandchild and recorded descendants must die with their shell: {surviving:?}");
-                std::thread::sleep(crate::inference::lane_process::KILL_POLL);
+                std::thread::sleep(continuum_process::KILL_POLL);
             }
         }
     }

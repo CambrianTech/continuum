@@ -124,7 +124,8 @@ function settle({ root, prefix, matchedKey, cargoHome, crateDirs, log = console.
     return { settled: false };
   }
   const work = plan(entries, { kind: kindOf(root), crateDirs });
-  const count = settleTree(root, SETTLED, new Set(['.git', 'target']));
+  // The build lives outside the tree (CARGO_TARGET_DIR=/ci-target, rust-ci-setup).
+  const count = settleTree(root, SETTLED, new Set(['.git']));
   const touch = p => { const full = path.join(root, p); setTime(full, { isSymbolicLink: () => fs.lstatSync(full).isSymbolicLink() }, now); };
   work.files.forEach(touch);
   work.dirs.forEach(touch);
@@ -133,7 +134,7 @@ function settle({ root, prefix, matchedKey, cargoHome, crateDirs, log = console.
   for (const crate of work.crates) {
     walk(path.join(root, crate), (full, entry) => {
       if (!entry.isDirectory() && full.endsWith('.rs')) { setTime(full, entry, now); crateSources++; }
-    }, new Set(['target']));
+    });
   }
   log(`Cache commit ${commit}: settled ${count} workspace entries; ${entries.length} paths differ -> `
     + `${work.files.length} files, ${work.trees.length} submodules, ${work.dirs.length} directories of deletions, `

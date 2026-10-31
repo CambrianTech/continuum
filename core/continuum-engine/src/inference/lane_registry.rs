@@ -112,6 +112,12 @@ pub struct LaneRecord {
     /// configuration (Codex on #5264). `None` for lanes recorded before this field existed.
     #[serde(default)]
     pub placement: Option<crate::inference::llama_server::LanePlacement>,
+    /// The weights file the engine was launched on, stamped before spawn: what an adapter
+    /// trained in this lane names as its base (card 3fd98325). `None` for lanes recorded before
+    /// this field existed, or whose file could not be stamped; their adapters stay where they
+    /// were trained.
+    #[serde(default)]
+    pub weights: Option<crate::inference::weights_stamp::WeightsStamp>,
 }
 
 impl LaneRecord {
@@ -168,6 +174,18 @@ pub fn live_lane() -> Option<LaneRecord> {
     let body = std::fs::read_to_string(lanes_dir()?.join(format!("{pid}.lane"))).ok()?;
     let rec = serde_json::from_str::<LaneRecord>(&body).ok()?;
     (rec.role == LaneRole::Live && rec.pid == pid).then_some(rec)
+}
+
+/// The incarnation (pid + OS start time + port) of the LIVE lane the canonical pidfile names,
+/// from its registry record alone: two small file reads, no process-table probe, so the gateway
+/// reconcile can ask it every tick. Every live launch rewrites both files, so a replacement
+/// engine always reads as a different incarnation. `None` without a pidfile or a matching live
+/// record, or for a record without a start time, which names no one process.
+pub fn live_incarnation() -> Option<super::engine_residency::EngineIncarnation> {
+    let pid = lane_pidfile::read()?;
+    let body = std::fs::read_to_string(lanes_dir()?.join(format!("{pid}.lane"))).ok()?;
+    let rec = serde_json::from_str::<LaneRecord>(&body).ok()?;
+    (rec.role == LaneRole::Live && rec.pid == pid && rec.started_s != 0).then(|| rec.incarnation())
 }
 
 /// WHY a sweep is running — the one axis on which boot and shutdown differ.
@@ -284,7 +302,7 @@ async fn confirm_pending(
     within: std::time::Duration,
 ) -> Result<Vec<SweepOutcome>, String> {
     let identities = pending.iter().map(|(_, rec)| lane_identity(rec)).collect();
-    let survivors = lane_process::confirm_gone(identities, within).await;
+    let survivors = continuum_process::confirm_gone(identities, within).await;
     tokio::task::spawn_blocking(move || {
         for (path, rec) in pending {
             if survivors.contains(&lane_identity(&rec)) {
@@ -591,7 +609,7 @@ fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRe
             // legacy records cannot authorize termination of a recycled PID.
             let identified = rec.started_s != 0;
             let outcome = if identified {
-                finish_signal(&path, &rec, lane_process::signal_if_same(lane_identity(&rec)))
+                finish_signal(&path, &rec, continuum_process::signal_if_same(lane_identity(&rec)))
             } else {
                 // No stamped incarnation: retain evidence instead of signalling
                 // an unbound PID after the destructive stop has begun.

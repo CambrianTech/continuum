@@ -243,12 +243,12 @@ fn a_node_with_more_minds_than_lanes_borrows_a_peers_free_lanes() {
         PeerOffer { peer: Uuid::from_u128(3), served_model: Some("qwen-27b".into()), lanes: 8, residents: 0, beacon_age_ms: REMOTE_SEAT_FRESH_MS + 1, free_slots_live: 8, lane_wait_p50_ms: 0, lane_wait_samples: 0, served_context_window: None },
     ];
     let minds: Vec<(Uuid, u64)> = (1..=16u128).map(|i| (Uuid::from_u128(0x100 + i), 20 - (i as u64 % 5))).collect();
-    let moves = choose_offloads(LocalShape { resident: 16, lanes: 7, rank: 40, lane_wait_p50_ms: None, requirement: None }, &peers, &rank, &minds);
+    let moves = choose_offloads(LocalShape { resident: 16, lanes: 7, rank: 40, lane_wait_p50_ms: None }, &peers, &rank, &minds, &|_| None);
     assert_eq!(moves.len(), 2, "two free lanes on the only eligible peer: {moves:?}");
     assert!(moves.iter().all(|(_, p, m)| *p == gpu && m == "qwen-27b"));
     let least = minds.iter().min_by_key(|(_, g)| *g).map(|(m, _)| *m).expect("a mind");
     assert_eq!(moves[0].0, least, "the least-served mind goes first");
-    assert!(choose_offloads(LocalShape { resident: 5, lanes: 7, rank: 40, lane_wait_p50_ms: None, requirement: None }, &peers, &rank, &minds).is_empty());
+    assert!(choose_offloads(LocalShape { resident: 5, lanes: 7, rank: 40, lane_wait_p50_ms: None }, &peers, &rank, &minds, &|_| None).is_empty());
 }
 
 // what this catches (card 73eefbbb): which decided moves the workspace must be
@@ -282,7 +282,7 @@ fn offer(peer: u128, free: u32, wait_p50_ms: u64, wait_samples: u32) -> PeerOffe
     PeerOffer { peer: Uuid::from_u128(peer), served_model: Some("qwen-27b".into()), lanes: 4, residents: 4, beacon_age_ms: 5_000, free_slots_live: free, lane_wait_p50_ms: wait_p50_ms, lane_wait_samples: wait_samples, served_context_window: None }
 }
 fn local(resident: u32, lanes: u32, home_wait: Option<u64>) -> LocalShape {
-    LocalShape { resident, lanes, rank: 40, lane_wait_p50_ms: home_wait, requirement: None }
+    LocalShape { resident, lanes, rank: 40, lane_wait_p50_ms: home_wait }
 }
 fn rank27(m: &str) -> Option<u8> { (m == "qwen-27b").then_some(42) }
 fn minds(n: u128) -> Vec<(Uuid, u64)> { (1..=n).map(|i| (Uuid::from_u128(0x100 + i), i as u64)).collect() }
@@ -295,9 +295,35 @@ fn minds(n: u128) -> Vec<(Uuid, u64)> { (1..=n).map(|i| (Uuid::from_u128(0x100 +
 #[test]
 fn free_is_the_seats_live_grant_not_roster_arithmetic() {
     let peers = vec![offer(1, 2, 0, 0), PeerOffer { free_slots_live: 0, residents: 0, ..offer(2, 0, 0, 0) }];
-    let moves = choose_offloads(local(8, 2, None), &peers, &rank27, &minds(8));
+    let moves = choose_offloads(local(8, 2, None), &peers, &rank27, &minds(8), &|_| None);
     assert_eq!(moves.len(), 2, "{moves:?}");
     assert!(moves.iter().all(|(_, p, _)| *p == Uuid::from_u128(1)), "only the seat with live free slots: {moves:?}");
+}
+
+#[test]
+fn offloads_fit_each_mind_and_keep_unfitted_minds_for_wider_peers() {
+    let large = Uuid::from_u128(101);
+    let small = Uuid::from_u128(102);
+    let unmeasured = Uuid::from_u128(103);
+    let candidates = vec![(large, 0), (small, 1), (unmeasured, 2)];
+    let requirement = |mind| {
+        if mind == large { Some(70_071) }
+        else if mind == small { Some(20_000) }
+        else { None }
+    };
+    let narrow = PeerOffer { served_context_window: Some(32_768), ..offer(1, 2, 0, 0) };
+    let wide = PeerOffer { served_context_window: Some(131_072), ..offer(2, 1, 0, 0) };
+    let moves = choose_offloads(local(4, 1, None), &[narrow.clone(), wide.clone()], &rank27, &candidates, &requirement);
+    assert_eq!(moves.iter().map(|(m, p, _)| (*m, *p)).collect::<Vec<_>>(),
+        vec![(small, narrow.peer), (unmeasured, narrow.peer), (large, wide.peer)]);
+    // Peer order can change the assignment, but not admit the large mind to a
+    // narrow lane or spend a slot twice. Least-served eligible still goes first.
+    let reversed = choose_offloads(local(4, 1, None), &[wide.clone(), narrow.clone()], &rank27, &candidates, &requirement);
+    assert_eq!(reversed.iter().map(|(m, p, _)| (*m, *p)).collect::<Vec<_>>(),
+        vec![(large, wide.peer), (small, narrow.peer), (unmeasured, narrow.peer)]);
+    let narrow_only = choose_offloads(local(4, 1, None), &[narrow], &rank27, &candidates, &requirement);
+    assert_eq!(narrow_only.len(), 2);
+    assert!(narrow_only.iter().all(|(m, _, _)| *m != large));
 }
 
 // what this catches (S1b, Cormac's shape 3): a seat whose MEASURED queue is not under
@@ -361,8 +387,8 @@ fn a_seat_whose_window_cannot_hold_her_turn_is_no_seat() {
     let wide_seat = PeerOffer { served_context_window: Some(131_072), ..offer(2, 2, 0, 0) };
     let unknown = offer(3, 2, 0, 0);
     let go = |peers: &[PeerOffer]| -> Vec<Uuid> {
-        let shape = LocalShape { requirement: Some(70_071), ..local(8, 2, None) };
-        choose_offloads(shape, peers, &rank27, &minds(1)).into_iter().map(|(_, p, _)| p).collect()
+        let shape = local(8, 2, None);
+        choose_offloads(shape, peers, &rank27, &minds(1), &|_| Some(70_071)).into_iter().map(|(_, p, _)| p).collect()
     };
     assert!(go(&[narrow.clone()]).is_empty(), "a 2k seat is not capacity for a 70k turn");
     assert_eq!(go(&[narrow, wide_seat.clone()]), vec![wide_seat.peer]);
@@ -376,7 +402,7 @@ fn a_queued_seat_is_not_capacity_whatever_its_rank() {
     let quick = offer(2, 2, b / 4, 30);
     let unmeasured = offer(3, 2, 0, 0);
     let go = |home: Option<u64>, peers: &[PeerOffer]| -> Vec<Uuid> {
-        choose_offloads(local(8, 2, home), peers, &rank27, &minds(1)).into_iter().map(|(_, p, _)| p).collect()
+        choose_offloads(local(8, 2, home), peers, &rank27, &minds(1), &|_| None).into_iter().map(|(_, p, _)| p).collect()
     };
     // Home unmeasured: the budget is the bound.
     assert!(go(None, &[queued.clone()]).is_empty(), "past the budget: skipped");
@@ -737,4 +763,44 @@ async fn capacity_park_resumes_when_local_1_5b_routes_to_larger_remote_seat() {
     tokio::time::timeout(std::time::Duration::from_secs(1), waiting).await
         .expect("the actual forwarding target changed before the waiter was first polled");
     assert_eq!(binding.load().requested_model(), "local-1.5B");
+}
+
+// A home lane on the fork's gateway: it takes a learned tool head.
+struct TailLane;
+
+#[async_trait::async_trait]
+impl AIProviderAdapter for TailLane {
+    fn provider_id(&self) -> &str {
+        "tail-lane-fixture"
+    }
+    fn name(&self) -> &str {
+        "tail lane"
+    }
+    fn default_model(&self) -> &str {
+        "fixture"
+    }
+    fn accepts_tail_tools(&self, _model: &str) -> bool {
+        true
+    }
+    async fn generate_text(
+        &self,
+        _request: TextGenerationRequest,
+    ) -> Result<TextGenerationResponse, String> {
+        Err("capability fixture must not generate".into())
+    }
+}
+
+// what this catches: the switch every resident is bound through answering the trait default
+// (`false`) for `accepts_tail_tools`, so no resident's learned tool head is ever sent even
+// when her home lane takes it (M5 2026-10-27, after #5491 deployed). The answer must follow
+// the seat: true at a home lane that takes tails, false once she routes to a remote seat.
+#[tokio::test]
+async fn the_switch_asks_the_seat_she_routes_to_whether_it_takes_her_tool_head() {
+    let now = continuum_base::time::EpochMs::now().millis();
+    let home: Arc<dyn AIProviderAdapter> = Arc::new(TailLane);
+    let factory = Arc::new(ScriptedPersonaAdapterFactory::custom(move |_| Ok(home.clone())));
+    let route = Arc::new(switch(factory, remote()));
+    assert!(!route.accepts_tail_tools("fixture"), "routed to the remote seat, no tail");
+    route.apply(&PlacementMove::FallHome { reason: "tail fixture" }, now, SeatFit::default()).await;
+    assert!(route.accepts_tail_tools("fixture"), "her home lane takes the tail");
 }

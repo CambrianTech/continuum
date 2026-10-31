@@ -1,0 +1,12 @@
+[package]
+name = "continuum-text-analysis"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-compute text analysis (similarity, loop and garbage detection, mention detection, response cleaning, validation). A leaf crate: no continuum dependencies."
+
+[dependencies]
+serde = { workspace = true }
+ts-rs = { workspace = true }
+uuid = { workspace = true }
+dashmap = "6.1"
+regex = "1"

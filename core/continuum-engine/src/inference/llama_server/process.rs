@@ -28,6 +28,9 @@ pub struct LlamaServerProcess {
     pub(super) pending_resource_reservation: parking_lot::Mutex<Option<crate::resources::LeaseGuard>>,
     // Retains the exact startup generation even when readiness already retired it.
     pub(super) last_started: parking_lot::Mutex<Option<crate::inference::slots::EngineGeneration>>,
+    /// A launch whose readiness wait ended while its engine still loaded ([`super::late_ready`]):
+    /// the next launch finishes that engine instead of replacing it, when it is still the same.
+    pub(super) loading: parking_lot::Mutex<Option<super::late_ready::LoadingLaunch>>,
     /// A signalled adopted predecessor stays fenced across timeout/cancellation.
     pub(super) retiring_adopted: parking_lot::Mutex<Option<crate::inference::engine_residency::EngineIncarnation>>,
     /// The residents that predecessor loses unsaved, recorded only once its exit is observed
@@ -52,6 +55,10 @@ pub struct LlamaServerProcess {
     /// it would reap the living persona's own server. This boolean is the seam
     /// that keeps the reclaim machinery bound to exactly one process.
     pub(super) is_live_lane: bool,
+    /// Where a spawned candidate's `tail_tools` evidence is published ([`LaunchedEvidence`]):
+    /// the serving lane's cell for the live lane, none for an ephemeral lane, which serves no
+    /// resident's tool head.
+    pub(super) served_evidence: Option<&'static ServedEvidence>,
     /// Raised by this lane's stderr watcher when a slot reports impossible progress,
     /// polled by the serving daemon. Live lane only — an ephemeral lane has no daemon
     /// watching it and tears down its own process, so its watcher would report into a void.
@@ -135,6 +142,7 @@ impl LlamaServerProcess {
             child: Arc::new(StdMutex::new(None)),
             pending_resource_reservation: parking_lot::Mutex::new(None),
             last_started: parking_lot::Mutex::new(None),
+            loading: parking_lot::Mutex::new(None),
             retiring_adopted: parking_lot::Mutex::new(None),
             retiring_discard: parking_lot::Mutex::new(None),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
@@ -142,6 +150,7 @@ impl LlamaServerProcess {
             // THE host's live lane — pins the canonical port, owns the reclaim
             // pidfile. `new()`/`with_client()` are the live constructors.
             is_live_lane: true,
+            served_evidence: Some(serving_lane_evidence()),
             wedge: Some(crate::inference::wedge::WedgeFlag::new()),
             offload: crate::inference::placement_watch::OffloadReport::new(),
             smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
@@ -169,6 +178,7 @@ impl LlamaServerProcess {
             child: Arc::new(StdMutex::new(None)),
             pending_resource_reservation: parking_lot::Mutex::new(None),
             last_started: parking_lot::Mutex::new(None),
+            loading: parking_lot::Mutex::new(None),
             retiring_adopted: parking_lot::Mutex::new(None),
             retiring_discard: parking_lot::Mutex::new(None),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
@@ -176,6 +186,7 @@ impl LlamaServerProcess {
             // Ephemeral lane on its OWN scanned port: NOT the canonical live lane.
             // It must never write the canonical pidfile or reclaim the live port.
             is_live_lane: false,
+            served_evidence: None,
             // No serving daemon watches an ephemeral lane, and its owner tears the process
             // down when the eval ends — a wedge report would have no consumer.
             wedge: None,
@@ -329,19 +340,10 @@ impl LlamaServerProcess {
     /// a co-resident second Metal context that never acquired the device), distinct
     /// from a crash (which prints a banner + fault first).
     pub(super) fn stderr_log_tail(&self) -> String {
-        let Some(port) = self
-            .root
-            .rsplit(':')
-            .next()
-            .and_then(|p| p.parse::<u16>().ok())
-        else {
+        let Some(port) = super::port_of_base_url(&self.root) else {
             return "<lane port unparseable>".to_string();
         };
-        let Some(path) = dirs::home_dir().map(|h| {
-            h.join(".continuum")
-                .join("logs")
-                .join(format!("llama-server-{port}.log"))
-        }) else {
+        let Some(path) = crate::inference::child_log::llama_server_log(port) else {
             return "<no home dir>".to_string();
         };
         match std::fs::read_to_string(&path) {

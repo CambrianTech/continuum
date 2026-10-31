@@ -1,7 +1,7 @@
 //! `benchmark/*` — first-class benchmark collections, managed like the model catalog. A
 //! declarative catalog of known benchmarks (add one = one row, same as a `ModelSpec`) plus
-//! `benchmark/list` to see them and `benchmark/dispatch` to adapt one INTO the work board as
-//! claimable cards. There is no divergent "run a benchmark" verb: every benchmark goes through
+//! `benchmark/list` to see them and `benchmark/import` to adapt one INTO the work board as
+//! claimable cards (a `benchmark/round` activity runs it). There is no divergent "run a benchmark" verb: every benchmark goes through
 //! the natural kanban loop — citizens claim a card and solve it with their own hands, and the
 //! result is graded from the artifacts they produce. This lives in Rust, on the DynCommand
 //! registry, so it is
@@ -18,7 +18,6 @@ use ts_rs::TS;
 use crate::recipe::bench_title::dispatch_card_title;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
-pub(crate) mod credit_recovery;
 
 // ---------------------------------------------------------------------------------------
 // SWE-bench: the repo-test grader on the command surface.

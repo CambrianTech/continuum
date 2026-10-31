@@ -1,6 +1,9 @@
 //! Tests for resource admission.
 #![cfg(test)]
 
+#[path = "aging_tests.rs"]
+mod aging;
+
 
 // what this catches (card c84d885a, S1): a seat's queue measured where it forms, and
 // "unmeasured" never reading as "fast". The beacon carries (p50, samples); a spiller
@@ -123,180 +126,6 @@ fn inflight_gauge_counts_releases_and_saturates_at_serving_concurrency() {
     assert_eq!(gauge.inflight(), 0, "all guards released → baseline");
 }
 
-// what this catches (#171 fan-out): the ambient-turn permit bounds how many
-// NON-directed turns deliberate at once, no matter how the room burst wakes them.
-// The first cut gated on the in-flight gauge and did NOT fire live: a simultaneous
-// burst wakes every peer, they all read inflight=0 (none had generated yet) and
-// stampede past the check together. A permit has no such window — the slot is
-// claimed at the decision point and held for the turn, so the (N-1) peers that woke
-// in the same instant find it taken and yield. This is the only test that touches
-// the process-global ambient semaphore, so it starts with all slots free.
-#[test]
-fn ambient_permit_bounds_concurrency_and_releases_on_drop() {
-    // OUR OWN gate — no process-global, so no lock and no order dependence.
-    let gate = LaneAdmission::new();
-    // PREMISE CHANGE 2026-08-17: the pool used to be a bare `AMBIENT_TURN_CONCURRENCY
-    // = 1`; it is now the live `nondirected_budget()` (lanes − 1, floored at 1), the
-    // same budget the per-call lane reservation uses. Pin a real multi-lane machine so
-    // the burst has something to bound — at the old hardcoded 1 this test could not
-    // distinguish "correctly bounded" from "throttled below the hardware", which is
-    // exactly how the starvation ceiling stayed invisible.
-    gate.set_served_lane_count(4);
-    let budget = gate.nondirected_budget();
-    assert_eq!(
-        budget, 3,
-        "4 served lanes → 3 non-directed, 1 reserved directed"
-    );
-    // A simultaneous-wake burst: several ambient turns try to claim a slot at once.
-    // Exactly `budget` win; the rest get None and must yield.
-    let mut held: Vec<tokio::sync::OwnedSemaphorePermit> = Vec::new();
-    for _ in 0..budget {
-        held.push(
-            gate.try_hold_ambient_turn()
-                .expect("a free slot is grantable"),
-        );
-    }
-    // The next simultaneous ambient waker finds every slot taken → yields.
-    assert!(
-        gate.try_hold_ambient_turn().is_none(),
-        "over-capacity ambient turn must yield (the stampede the gauge let through)"
-    );
-
-    // The addressed persona never calls this — directed work is unthrottled. Model
-    // that by simply NOT touching the permit here; the held slots stay full and the
-    // assertion above already proved a concurrent ambient turn can't sneak a slot.
-
-    // A held ambient turn finishes → its permit drops → capacity frees for the next
-    // beat, so a yielded room re-perceives and contributes when there's headroom.
-    held.pop();
-    let reclaimed = gate
-        .try_hold_ambient_turn()
-        .expect("dropping a finished turn frees its slot for the next");
-    drop(reclaimed);
-    drop(held); // release the rest (nothing else can observe this gate anyway)
-}
-
-// what this catches: a starvation report that is either a firehose or silent. At 24
-// citizens on a 15s beat, per-yield rows would be ~92/min and would drown the stream the
-// way serving.plan did at 2.6 rows/s (#399) — but NO row made a starved roster
-// indistinguishable from a healthy one, which cost a manual /slots curl to resolve on
-// 2026-08-17. Both failure modes are pinned here.
-#[test]
-fn the_starvation_report_is_rate_limited_but_the_first_one_is_never_silent() {
-    // Never reported before (last_report_ms == 0) → fires immediately, however early.
-    assert_eq!(
-        ambient_yield_report_due(23, 0, 5, 0),
-        Some(23),
-        "the FIRST starvation must report even at t=5ms — it is the one that matters"
-    );
-    // Inside the gap → silent, no matter how many yields piled up.
-    assert_eq!(
-        ambient_yield_report_due(1_000, 23, 10_000, 9_000),
-        None,
-        "a second report inside the gap would be the firehose"
-    );
-    // Gap elapsed → reports only the DELTA, not the cumulative total.
-    assert_eq!(
-        ambient_yield_report_due(1_000, 23, 70_000, 9_000),
-        Some(977),
-        "reports yields in THIS window; a cumulative count cannot show a rate"
-    );
-    // No new yields → nothing to say, even after the gap. Contention ended.
-    assert_eq!(
-        ambient_yield_report_due(23, 23, 999_000, 9_000),
-        None,
-        "a quiet roster must not emit a row saying nothing happened"
-    );
-}
-
-// what this catches: THE BUG I SHIPPED, in the impure wrapper the table test could not
-// reach. `take_ambient_yield_report` passed a literal 0 for `yields_at_last_report`, so
-// every row reported the CUMULATIVE total under a field named `yields_since_last_report`.
-// Live rows on 2026-08-17 read 457==457, 392==392 while consecutive rows differed by ~65.
-// A pure rule with a correct test is worth nothing if its caller feeds it a wrong
-// argument — this asserts the SECOND window measures from the first, not from zero.
-#[test]
-fn consecutive_reports_measure_windows_not_running_totals() {
-    // Simulate two windows over the shared statics via the pure rule, which is what the
-    // wrapper now actually does (the wrapper itself touches process globals, so the
-    // contract that broke is pinned here at the argument boundary).
-    let first = ambient_yield_report_due(135, 0, 60_000, 0).expect("first window reports");
-    assert_eq!(
-        first, 135,
-        "first window is total-so-far — nothing preceded it"
-    );
-
-    // Second window: watermark advanced to 135, total climbed to 197.
-    let second =
-        ambient_yield_report_due(197, 135, 120_000, 60_000).expect("second window reports");
-    assert_eq!(
-        second, 62,
-        "the SECOND window must be the delta (197-135), not the cumulative 197 — \
-         passing 0 here is the bug that shipped"
-    );
-    assert_ne!(
-        second, 197,
-        "reporting cumulative under a per-window name is the lie"
-    );
-}
-
-// what this catches: the WEAK-BOX floor of the same change. Deriving the ambient pool
-// from lanes−1 must not regress a 1- or 2-lane machine below the behaviour it had
-// under the old hardcoded 1 — a single-lane host has nothing to reserve, so its
-// budget floors at 1 and it stays byte-identical. This is the half of the change that
-// could silently hurt the smallest supported hardware, so it gets its own row.
-#[test]
-fn a_one_lane_box_keeps_exactly_one_ambient_slot() {
-    for lanes in [1usize, 2] {
-        let gate = LaneAdmission::new();
-        gate.set_served_lane_count(lanes);
-        assert_eq!(
-            gate.nondirected_budget(),
-            1,
-            "{lanes}-lane box floors the non-directed budget at 1"
-        );
-        let held = gate
-            .try_hold_ambient_turn()
-            .expect("the one slot is grantable");
-        assert!(
-            gate.try_hold_ambient_turn().is_none(),
-            "a {lanes}-lane box admits exactly ONE ambient turn — unchanged from the \
-             pre-2026-08-17 hardcoded bound"
-        );
-        drop(held);
-    }
-}
-
-// what this catches: an ambient pool installed at the BOOT floor and then never grown.
-// The pool is lazy on purpose (capture the real lane count at first use), but that
-// makes "first use happened before serving published its count" a live possibility —
-// and without the grow-on-resize wiring the whole roster would stay pinned at the boot
-// budget for the life of the process while 3 lanes sat idle. Regression for the
-// starvation ceiling this change removes.
-#[test]
-fn the_ambient_pool_grows_when_serving_publishes_more_lanes() {
-    let gate = LaneAdmission::new();
-    gate.set_served_lane_count(1); // cold boot: one lane
-    let first = gate.try_hold_ambient_turn().expect("the one slot");
-    assert!(
-        gate.try_hold_ambient_turn().is_none(),
-        "1 lane → 1 ambient slot"
-    );
-
-    gate.set_served_lane_count(4); // serving warms up and reports its real width
-    let second = gate
-        .try_hold_ambient_turn()
-        .expect("growing to 4 lanes must open a second ambient slot");
-    let third = gate
-        .try_hold_ambient_turn()
-        .expect("…and a third (budget = lanes - 1)");
-    assert!(
-        gate.try_hold_ambient_turn().is_none(),
-        "still bounded at lanes-1 — growth must not remove the directed reservation"
-    );
-    drop((first, second, third));
-}
-
 // what this catches (#139 lane starvation): a directed (addressed) turn must never
 // queue behind non-directed model calls. Non-directed callers are capped at
 // (MAX_LANES-1) lanes, so a directed caller always finds a reserved lane — this is
@@ -346,19 +175,15 @@ async fn directed_turn_always_finds_a_reserved_lane() {
 }
 
 // what this catches: boot-created pools must shrink when the first real plan
-// serves one lane, including the ambient and non-directed reservations.
+// serves one lane, including the non-directed reservation.
 #[test]
 fn boot_ceiling_pools_shrink_to_the_first_served_count() {
     let gate = LaneAdmission::new();
     let serving = gate.serving_lanes();
     let nondirected = gate.nondirected_lanes();
-    drop(gate.try_hold_ambient_turn().expect("boot ambient permit"));
     gate.set_served_lane_count(1);
     assert_eq!(serving.available_permits(), 1);
     assert_eq!(nondirected.available_permits(), 1);
-    let ambient = gate.try_hold_ambient_turn().expect("one ambient permit");
-    assert!(gate.try_hold_ambient_turn().is_none());
-    drop(ambient);
 }
 
 // what this catches: shrink never revokes held permits; the unchanged-plan
@@ -374,15 +199,11 @@ fn held_shrink_debt_reconciles_to_the_latest_plan() {
     let nonheld = nondirected
         .try_acquire_many(3)
         .expect("three non-directed lanes");
-    let ambient: Vec<_> = (0..3)
-        .map(|_| gate.try_hold_ambient_turn().expect("ambient lane"))
-        .collect();
     gate.set_served_lane_count(1);
     assert_eq!(gate.serving_installed.load(Ordering::Acquire), 4);
     assert_eq!(serving.available_permits(), 0);
     drop(held);
     drop(nonheld);
-    drop(ambient);
     // This call is unconditional on every existing serving-daemon tick,
     // outside the plan-fingerprint/probe-change guard.
     gate.set_served_lane_count(1);
@@ -398,11 +219,6 @@ fn held_shrink_debt_reconciles_to_the_latest_plan() {
     assert_eq!(serving.available_permits(), 3);
     assert_eq!(gate.serving_installed.load(Ordering::Acquire), 3);
     assert_eq!(nondirected.available_permits(), 2);
-    let ambient: Vec<_> = (0..2)
-        .map(|_| gate.try_hold_ambient_turn().expect("latest ambient budget"))
-        .collect();
-    assert!(gate.try_hold_ambient_turn().is_none());
-    drop(ambient);
 }
 
 // what this catches: queued semaphore waiters receive released permits
@@ -410,7 +226,7 @@ fn held_shrink_debt_reconciles_to_the_latest_plan() {
 // Drive the production acquisition seam without sleeps or another tick.
 #[tokio::test]
 async fn queued_acquirers_retire_shrink_debt_before_granting() {
-    for pool in 0..3 {
+    for pool in 0..2 {
         let gate = LaneAdmission::new();
         gate.set_served_lane_count(4);
         let (sem, installed, budget) = match pool {
@@ -419,14 +235,9 @@ async fn queued_acquirers_retire_shrink_debt_before_granting() {
                 &gate.serving_installed,
                 LaneBudget::Physical,
             ),
-            1 => (
+            _ => (
                 gate.nondirected_lanes().clone(),
                 &gate.nondirected_installed,
-                LaneBudget::NonDirected,
-            ),
-            _ => (
-                gate.ambient_semaphore(),
-                &gate.ambient_installed,
                 LaneBudget::NonDirected,
             ),
         };
@@ -469,14 +280,14 @@ async fn queued_acquirers_retire_shrink_debt_before_granting() {
 // must not leave a phantom work count that permanently excludes ambient work.
 #[tokio::test]
 async fn cancelled_work_waiter_clears_its_priority_reservation() {
-    let gate = LaneAdmission::new();
+    let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
     gate.set_served_lane_count(2);
     let held = gate
         .nondirected_lanes()
         .clone()
         .try_acquire_owned()
         .unwrap();
-    let mut waiting = Box::pin(gate.acquire_nondirected_as_work());
+    let mut waiting = Box::pin(gate.acquire_serving_lane(None, LanePriority::Work, None));
     assert!(futures::poll!(waiting.as_mut()).is_pending());
     assert_eq!(gate.work_waiting(), 1);
     gate.set_served_lane_count(1);
@@ -712,22 +523,15 @@ fn the_queues_estimate_is_a_floor_under_her_own_measured_turn_never_a_ceiling() 
     assert!(act > bound, "the act must outlast the lane wait it contains");
 }
 
-// what this catches (the M5, 2026-09-20; Cormac's design word): the reserve is a WAIT
-// guarantee in seconds. A work call is lent the reserved lane only when its occupancy
-// is known and fits the directed budget and nothing directed is pending; an unknown
-// occupancy, a pending directed line, or an occupancy past the budget lends nothing.
-// (The loan itself is a try-acquire on a FREE physical lane — never a park; that lives
-// in `acquire_serving_lane`, where a parked loan would put a directed arrival behind
-// the whole occupancy.)
+// what this catches (the M5, 2026-10-28): a reserved lane idling for a mention while work
+// queues. Lent whenever nothing directed is pending, whatever the call's length (a 71 s
+// median act never fit the old budget, so the reserve was never lent); a pending directed
+// line re-arms it. (The loan itself is a try-acquire on a FREE physical lane, never a park;
+// that lives in `acquire_serving_lane`.)
 #[test]
-fn the_reserved_lane_is_lent_only_to_bounded_work_while_nothing_directed_is_pending() {
-    use std::time::Duration;
-    let budget = Duration::from_secs(60);
-    assert!(reserve_lendable(Some(Duration::from_secs(40)), false, budget));
-    assert!(!reserve_lendable(Some(Duration::from_secs(40)), true, budget), "a pending directed line re-arms the reserve");
-    assert!(!reserve_lendable(Some(Duration::from_secs(154)), false, budget), "a 154 s turn (the M5 tonight) may not take the reserve");
-    assert!(!reserve_lendable(None, false, budget), "unknown occupancy is not a number");
-    assert!(reserve_lendable(Some(budget), false, budget), "exactly the budget fits");
+fn the_reserved_lane_is_lent_to_work_whenever_nothing_directed_is_pending() {
+    assert!(reserve_lendable(false), "no slot idles for a mention that is not pending");
+    assert!(!reserve_lendable(true), "a pending directed line re-arms the reserve");
 }
 
 // what this catches: the health line's directed-wait numbers are nearest-rank

@@ -205,8 +205,8 @@ mod tests {
 
     /// What this catches: serde round-trip preserves the discriminant
     /// + payload fields. If `tag = "kind"` or `rename_all` drift, the
-    /// TS side that reads `probe.kind` breaks. Same shape rule as
-    /// AnalysisError (#1207) — typed errors at IPC boundaries.
+    /// TS side that reads `probe.kind` breaks. Typed errors at IPC
+    /// boundaries (#1207).
     #[test]
     fn detected_variant_serde_round_trip() {
         let original = DockerTierProbe::Detected {

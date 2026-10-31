@@ -40,6 +40,8 @@ pub(crate) fn install_kernel_extensions() {
     crate::runtime::dispatch_hook::install(Arc::new(crate::persona::cognition_pulse::CardWorkPulse));
     crate::runtime::extensions::install_command_name_resolver(crate::ai::tool_dialect::resolve_wire_name);
     crate::runtime::extensions::install_settle_before_stop(Arc::new(crate::cognition::turn_ingress::TurnsSettle));
+    // After the turns, so the page IO they started settles before the stop saves.
+    crate::runtime::extensions::install_settle_before_stop(Arc::new(crate::inference::slots::PageIoSettle));
     crate::runtime::extensions::install_turns_in_flight(crate::cognition::turn_ingress::in_flight);
     crate::persona::command_inbound_pump::install_command_handler(|airc, executor, grants| {
         crate::ipc::command_ingress::CommandRequestHandler::with_grant_authorizer(airc, executor, grants)
@@ -69,6 +71,7 @@ pub fn start_server(
     boot_mode: crate::runtime::BootMode,
 ) -> std::io::Result<()> {
     install_kernel_extensions();
+    continuum_base::probe!(class = "boot.step", step = "kernel_extensions_installed", "kernel extensions installed; the socket path and the model registry are next");
     let phase_started =
         model_registry_boot::prepare_socket_and_load_model_registry(socket_path, boot_mode)?;
 

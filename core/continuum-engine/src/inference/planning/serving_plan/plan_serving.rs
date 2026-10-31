@@ -228,6 +228,16 @@ pub fn plan_serving(
     } else {
         match crate::inference::planning::window_allocator::allocate(&demand.requirements, candidates, host, demand_lanes.max(1)) {
             Ok(a) => {
+                continuum_base::probe!(
+                    class = "serving.training_growth",
+                    model = %a.model_id,
+                    window = a.window as u64,
+                    lanes = a.lanes as u64,
+                    budget_bytes = host.usable_bytes,
+                    device_bytes = a.device_bytes,
+                    decision = ?a.training_growth,
+                    "shared-window growth reports unresolved training demand separately from conversational admission"
+                );
                 let chosen = candidates
                     .iter()
                     .find(|c| c.model_id == a.model_id)

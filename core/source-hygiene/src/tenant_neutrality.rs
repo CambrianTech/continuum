@@ -14,7 +14,7 @@
 //! URLs (the airc installer and the model-card attribution link), which name where
 //! the software comes from, not whose org is using it.
 
-use super::{split_code_and_comment, SourceFile, SourceRule, Violation};
+use super::{lexer::split_code_and_comment, SourceFile, SourceRule, Violation};
 
 /// The tenant identities that must never appear in production code. Lower-case;
 /// matched case-insensitively against CODE (string literals included — a URL is

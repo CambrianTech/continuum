@@ -36,12 +36,6 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-// The per-tool catalog-summary bound is a fraction of her LIVE window
-// (`ContextBudget::catalog_summary_chars`), never a constant: a catalog lists ~100 tools, so
-// an unbounded line re-creates the dump — but a roomy window can afford a fuller clause per
-// tool, and that is real PX. The full call format still arrives via `TOOL_HELP_NAME`.
-// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
-use crate::cognition::context_budget::ContextBudget;
 
 /// The persona's tool surface: every command it is AUTHORIZED to run at `trust`,
 /// projected to a tool spec. **Offer == authorized, by construction** — a persona
@@ -116,59 +110,6 @@ pub fn descriptor_to_tool_spec(d: &CommandDescriptor) -> NativeToolSpec {
 // runs — which is exactly what makes disclosure safe. The catalog is a pure,
 // data-driven projection of the registry (NOT output puppeteering): same single
 // source of truth as [`authorized_tool_specs`], just a leaner representation.
-
-/// One compact catalog line: a tool's name, a one-line summary, and the category
-/// it groups under (the first path segment, via [`extract_category`]).
-#[derive(Debug, Clone)]
-pub struct ToolCatalogEntry {
-    pub name: String,
-    pub summary: String,
-    pub category: String,
-}
-
-/// The persona's tool catalog at `trust`: the same authorized set as
-/// [`authorized_tool_specs`], projected to compact [`ToolCatalogEntry`] lines
-/// (name + one-line summary + category) instead of full schemas. This is what the
-/// persona browses; the full call format for any one tool comes from
-/// [`TOOL_HELP_NAME`] on demand.
-pub fn authorized_tool_catalog(trust: TrustLevel) -> Vec<ToolCatalogEntry> {
-    command_registry_live()
-        .iter()
-        .filter(|d| is_command_authorized(d.name, trust))
-        .map(|d| ToolCatalogEntry {
-            name: d.name.to_string(),
-            summary: tool_summary(d),
-            category: extract_category(d.name).to_string(),
-        })
-        .collect()
-}
-
-/// A tool's one-line summary for the catalog: the first sentence / first line of
-/// its declared description, bounded by the live window's catalog share. Falls back to the
-/// param-type handle when the command declares no description (same fallback as
-/// [`descriptor_to_tool_spec`], kept consistent).
-fn tool_summary(d: &CommandDescriptor) -> String {
-    let raw = if d.description.is_empty() {
-        format!("params: {}", d.params.name)
-    } else {
-        // First line, then first sentence within it — whichever ends sooner.
-        let first_line = d.description.lines().next().unwrap_or("").trim(); // unwrap_or: an empty description has no first line; the summary is empty
-        match first_line.find(". ") {
-            Some(i) => first_line[..i].to_string(),
-            None => first_line.trim_end_matches('.').to_string(),
-        }
-    };
-    let raw = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    // `live_or_floor`, not `live`: the catalog is assembled BEFORE the prompt guard, so an
-    // unbounded summary here yields a menu that cannot fit rather than one trimmed later.
-    let cap = ContextBudget::live_or_floor().catalog_summary_chars();
-    if raw.chars().count() <= cap {
-        raw
-    } else {
-        let truncated: String = raw.chars().take(cap.saturating_sub(1)).collect();
-        format!("{}…", truncated.trim_end())
-    }
-}
 
 /// Render the persona's tool surface as a NAMED CATALOG GROUPED BY CATEGORY — one
 /// line per category listing the verb of every tool it holds (`code: run, read,

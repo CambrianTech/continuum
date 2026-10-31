@@ -194,8 +194,8 @@ impl PersonaCognitionEngine {
     /// compare byte-for-byte (cannot false-match ASCII bytes — see
     /// [`u8::eq_ignore_ascii_case`]).
     fn is_mentioned(&self, content: &str) -> bool {
-        crate::cognition::text_analysis::ascii_case::contains_ascii_case_insensitive(content, &self.mention_marker)
-            || crate::cognition::text_analysis::ascii_case::contains_ascii_case_insensitive(content, &self.name_lower)
+        continuum_text_analysis::ascii_case::contains_ascii_case_insensitive(content, &self.mention_marker)
+            || continuum_text_analysis::ascii_case::contains_ascii_case_insensitive(content, &self.name_lower)
     }
 
     /// Fast-path decision: should we even consider responding?
@@ -419,7 +419,7 @@ mod tests {
     }
 
     // The contains_ascii_case_insensitive helper tests moved with the
-    // helper itself to cognition::text_analysis::ascii_case (see #1478 + the str_case
+    // helper itself to continuum_text_analysis::ascii_case (see #1478 + the str_case
     // promotion). The engine-level mention test below remains here
     // because it exercises the cached-state pipeline specifically.
 

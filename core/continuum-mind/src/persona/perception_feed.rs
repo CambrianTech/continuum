@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use airc_core::{PeerId, TranscriptEvent};
+use continuum_airc_protocol::ConversationEvent;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -115,6 +116,12 @@ pub fn awareness_of(persona: Uuid, now_ms: u64) -> Option<super::awareness::Awar
     Some(region.snapshot(now_ms))
 }
 
+/// When anything she perceives last moved (`PerceptionRegion::moved_at_ms`); `None` when
+/// nothing has, or no region is resident here.
+pub fn moved_at_ms(persona: Uuid) -> Option<u64> {
+    with_region(persona, |region| region.moved_at_ms()).flatten()
+}
+
 pub fn unregister(persona: Uuid) {
     registry().lock().unwrap_or_else(|p| p.into_inner()).remove(&persona);
 }
@@ -122,7 +129,7 @@ pub fn unregister(persona: Uuid) {
 /// Where her durable mind state lives: her peer dir beside the rest of what is hers.
 /// One definition, read by the region's boot and by her own writes to it.
 pub fn mind_dir(persona: Uuid) -> Option<std::path::PathBuf> {
-    crate::paths::home_dir().map(|home| home.join(".continuum/personas").join(persona.to_string()))
+    crate::paths::continuum_home().ok().map(|home| home.join("personas").join(persona.to_string()))
 }
 
 /// She took in `room` up to this line (a turn's trigger, or a line perceived mid-turn):
@@ -177,7 +184,14 @@ pub fn classify(event: &TranscriptEvent) -> Fed {
 /// Feed one room event to every resident persona who is in that room: her region
 /// (salience, the strip, a wake) and her conversation's admission pipeline (the
 /// turn input). Returns how many residents were fed (for the seam's probe).
-pub fn feed(event: &Arc<TranscriptEvent>, now_ms: u64) -> usize {
+///
+/// Takes a [`ConversationEvent`], which only the header classifier
+/// (`continuum_airc_protocol::classify_inbound`) constructs: a peer command or
+/// protocol frame is a different type and cannot reach a mind (2026-10-30: an
+/// untrusted peer's `persona/placement/reserve` requests in #general were fed to two
+/// residents as room speech).
+pub fn feed(conversation: &ConversationEvent, now_ms: u64) -> usize {
+    let event = conversation.event();
     let fed = classify(event);
     let room = event.room_id.as_uuid();
     let mut count = 0;
@@ -290,6 +304,14 @@ mod tests {
         serde_json::from_value(serde_json::json!({"hash": "b".repeat(64), "size_bytes": 12})).unwrap()
     }
 
+    /// A room event as the one feed receives it: classified by its headers.
+    fn heard(event: TranscriptEvent) -> ConversationEvent {
+        match continuum_airc_protocol::classify_inbound(Arc::new(event)) {
+            continuum_airc_protocol::InboundEvent::Conversation(conversation) => conversation,
+            other => panic!("a room line is conversation: {other:?}"),
+        }
+    }
+
     fn resident(dial: AttentionDial) -> (Arc<Mutex<PerceptionRegion>>, mpsc::Receiver<Wake>) {
         let dir = tempfile::tempdir().unwrap();
         let (mut region, _rx) = PerceptionRegion::boot(PeerId::from_uuid(KIMI), dir.path(), 1_000, 0);
@@ -312,10 +334,10 @@ mod tests {
     #[test]
     fn the_feed_reaches_only_her_rooms_and_typed_verdicts_wake_her() {
         let (_region, mut rx) = resident(AttentionDial::default());
-        assert_eq!(feed(&Arc::new(speech(ROOM_B, JOEL)), 10), 0, "not her room");
+        assert_eq!(feed(&heard(speech(ROOM_B, JOEL)), 10), 0, "not her room");
         assert!(rx.try_recv().is_err());
 
-        assert_eq!(feed(&Arc::new(speech(ROOM_A, JOEL)), 11), 1);
+        assert_eq!(feed(&heard(speech(ROOM_A, JOEL)), 11), 1);
         // (a human speaking is Addressed on its own; the mention case is below)
         match rx.try_recv() {
             Ok(Wake::Perceive { activity, salience }) => {
@@ -330,7 +352,7 @@ mod tests {
             classify(&reviewed(ROOM_A, reviewer)),
             Fed::Board(BoardChange::Reviewed { card_id: CARD, outcome: ObservedVerdict::Passed, reviewer: r, .. }) if r == reviewer
         ));
-        assert_eq!(feed(&Arc::new(reviewed(ROOM_A, reviewer)), 12), 1);
+        assert_eq!(feed(&heard(reviewed(ROOM_A, reviewer)), 12), 1);
         match rx.try_recv() {
             Ok(Wake::Perceive { activity, salience }) => {
                 assert_eq!(activity, ROOM_A);
@@ -339,7 +361,7 @@ mod tests {
             other => panic!("a typed verdict on her card wakes her: {other:?}"),
         }
 
-        assert_eq!(feed(&Arc::new(reviewed(ROOM_A, KIMI)), 13), 1, "fed, but her own echo");
+        assert_eq!(feed(&heard(reviewed(ROOM_A, KIMI)), 13), 1, "fed, but her own echo");
         assert!(rx.try_recv().is_err(), "her own review echo is not news");
 
         // Run 2 of the live acceptance: a PEER's line with "@Kimi" in the text and a
@@ -347,7 +369,7 @@ mod tests {
         let peer = Uuid::from_u128(0x2);
         let mut named = speech(ROOM_A, peer);
         named.body = Some(airc_core::Body::text("@Kimi your slice has a typed PASS on record"));
-        assert_eq!(feed(&Arc::new(named), 14), 1);
+        assert_eq!(feed(&heard(named), 14), 1);
         match rx.try_recv() {
             Ok(Wake::Perceive { salience, .. }) => {
                 assert_eq!(salience.level, SalienceLevel::Addressed);

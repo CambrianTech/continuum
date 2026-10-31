@@ -147,7 +147,6 @@ pub(super) enum PromptChurn {
 
 /// The churn class of a grounding block, by the source id it renders under.
 pub(super) fn churn_of(faculty: &str) -> PromptChurn {
-    use crate::cognition::working_memory::WM_FACULTY_ID;
     use crate::cognition::workspace::FacultyId;
     use crate::cognition::faculty_ids::{
         ACTIVE_WORK, AIRC, AWARENESS, ENGRAMS, MEDIA_PERCEPTION, MISSION, ROOM_BOARD,
@@ -166,7 +165,7 @@ pub(super) fn churn_of(faculty: &str) -> PromptChurn {
         | WALL
         | ACTIVE_WORK => PromptChurn::Board,
         ROOM_BOARD => PromptChurn::Claims,
-        ENGRAMS | AIRC | WM_FACULTY_ID => PromptChurn::Turn,
+        ENGRAMS | AIRC => PromptChurn::Turn,
         // The strip changes with every event in any of her rooms: turn churn, after the
         // standing and board blocks, so her awareness never displaces the cached prefix.
         AWARENESS => PromptChurn::Turn,
@@ -253,6 +252,52 @@ pub(super) fn compose_trailing(
         trailing.push_str(&block);
     }
     trailing
+}
+
+/// One standing contract in force on this turn: its header name and its body, rendered by her
+/// view as `[name]\nbody`, byte-identical to the framing block it came from.
+pub(super) struct Contract {
+    pub(super) name: &'static str,
+    pub(super) body: &'static str,
+}
+
+/// The contracts in force on this turn: own time on a self-initiated turn, and one presence
+/// contract (directed, working, or the conversational default). Their bodies are fixed text, so
+/// they enter her context view as standing blocks, once per epoch, instead of being re-sent in
+/// the fresh tail every act: on the M5's captures that repeated framing was most of the ~3.3k
+/// chars the context validator measured as 8.7% of each act's prefill (2026-10-25).
+pub(super) fn contracts_in_force(self_initiated: bool, directed: bool, holds_live_work: bool) -> Vec<Contract> {
+    let presence = if directed {
+        crate::cognition::prompt_assembly::DIRECTED_PRESENCE_BLOCK
+    } else if holds_live_work {
+        crate::cognition::prompt_assembly::WORKING_PRESENCE_BLOCK
+    } else {
+        SILENCE_AFFORDANCE_BLOCK
+    };
+    self_initiated.then_some(OWN_TIME_BLOCK).into_iter().chain([presence]).filter_map(contract_of).collect()
+}
+
+/// A framing block (`\n\n[Name]\nbody`) as its name and body.
+fn contract_of(block: &'static str) -> Option<Contract> {
+    let rest = block.trim_start().strip_prefix('[')?;
+    let (name, body) = rest.split_once("]\n")?;
+    Some(Contract { name, body })
+}
+
+/// The live framing that stays last, nearest generation: her clock and which standing contracts
+/// are in force now (their text is in her view). Short, so the ask stays the last thing she
+/// reads (the 2026-07-20 parrot fix) without re-sending the bodies every act.
+pub(super) fn compose_live_framing(now_ms: Option<u64>, contracts: &[Contract]) -> String {
+    let clock = volatile_blocks(now_ms, false, false, false).next().filter(|block| block.starts_with("[now "));
+    let mut live = clock.map(|block| block.into_owned()).unwrap_or_default(); // unwrap_or_default: no clock on an eval turn without a pinned epoch
+    if !contracts.is_empty() {
+        let names: Vec<&str> = contracts.iter().map(|contract| contract.name).collect();
+        if !live.is_empty() {
+            live.push('\n');
+        }
+        live.push_str(&format!("[In force this turn: {} (stated in your view)]", names.join("; ")));
+    }
+    live
 }
 
 /// Assemble the WHOLE system prompt as one string — `stable ++ trailing`, byte-identical
@@ -557,6 +602,24 @@ pub(super) const WORKING_CONTEXT_HEADER: &str = "\n\n[What you are working with 
 mod tests {
     use super::*;
 
+    // what this catches: a contract silently missing from her prompt. Every contract block must
+    // keep its `[Name]` header shape, or `contract_of` drops it (Cormac on #5434). Each turn kind
+    // yields exactly the contracts it should, by name.
+    #[test]
+    fn every_turn_kind_carries_its_contracts_by_name() {
+        let names = |self_initiated, directed, live| -> Vec<&'static str> {
+            contracts_in_force(self_initiated, directed, live).iter().map(|c| c.name).collect()
+        };
+        assert_eq!(names(false, false, false), ["Conversational Presence"]);
+        assert_eq!(names(false, true, false), ["Directed Presence"], "a directed turn has its own contract, so a flip never re-appends one key");
+        assert_eq!(names(false, false, true), ["Working Presence"]);
+        assert_eq!(names(true, false, false), ["Your own time", "Conversational Presence"]);
+        assert_eq!(names(true, false, true), ["Your own time", "Working Presence"]);
+        for (s_i, d, l) in [(false, false, false), (false, true, false), (false, false, true), (true, true, true)] {
+            assert!(contracts_in_force(s_i, d, l).iter().all(|c| !c.body.trim().is_empty()), "a contract body is empty");
+        }
+    }
+
     // what this catches: COMPOSER/GATE DRIFT. `framing_echo` gates the role preamble by
     // matching two sentences; this block is where those sentences are EMITTED. Until this
     // test, the gate's doc comment claimed the two "cannot drift" while the composer held
@@ -641,6 +704,7 @@ mod tests {
         // The hard-flipping framing carries NONE of its markers in the cacheable prefix…
         assert!(
             !baseline.contains("[Conversational Presence]")
+                && !baseline.contains("[Directed Presence]")
                 && !baseline.contains("[Your own time]"),
             "the per-turn framing must not sit in the cacheable prefix: {baseline}"
         );
@@ -889,7 +953,6 @@ mod tests {
         let mut live = vec!["room-kanban", "room-wall", "roster", "active-work"];
         live.sort_by(|a, b| stable_prefix_order(a, b));
         assert_eq!(live, ["active-work", "room-wall", "roster", "room-kanban"]);
-        assert_eq!(churn_of("working-memory"), PromptChurn::Turn);
         assert_eq!(churn_of("engrams"), PromptChurn::Turn);
         assert_eq!(churn_of("media-perception"), PromptChurn::Standing);
     }

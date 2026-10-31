@@ -7,7 +7,6 @@ use continuum_base::time::EpochMs;
 use uuid::Uuid;
 
 use crate::ai::types::{ToolCall, ToolResult};
-use crate::cognition::context_budget::ContextBudget;
 use crate::cognition::workspace::WorkspaceCycle;
 
 use super::observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
@@ -58,7 +57,7 @@ fn is_long_running(command: &str) -> bool {
 /// cross turns or rooms by construction — the wire is the scope, never an
 /// inference over timestamps.
 #[derive(Default)]
-pub struct ActChain(std::sync::Mutex<Option<Uuid>>);
+pub struct ActChain(std::sync::Mutex<Option<Uuid>>, Option<super::EffectGate>);
 
 impl ActChain {
     /// A chain with no recorded antecedent — its first act links to nothing.
@@ -80,7 +79,19 @@ impl ActChain {
     /// what counts as a root lives in ONE place (`Cause::root`) instead of at every
     /// driver that builds a chain.
     pub fn rooted_in(cause: &crate::cognition::workspace::Cause) -> Self {
-        Self(std::sync::Mutex::new(cause.root()))
+        Self(std::sync::Mutex::new(cause.root()), None)
+    }
+
+    /// The turn's pre-effect mark (stop-drain S2): held by the chain the turn owns, so it is
+    /// dropped when the turn settles and can never mark another turn's effects.
+    pub fn with_effects(mut self, gate: Option<super::EffectGate>) -> Self {
+        self.1 = gate;
+        self
+    }
+
+    /// Record `effect` before it happens, through this turn's mark when it has one.
+    pub async fn mark_before(&self, effect: &super::Effect) -> Result<(), String> {
+        super::EffectGate::before(self.1.as_ref(), effect).await
     }
 
     /// The CAUSE of whatever act comes next in this chain: the latest admitted act
@@ -132,25 +143,6 @@ pub async fn apply_act(
     // Call history is not a cache-validity proof. Reads can change, failures can
     // recover, and earlier results may no longer fit the prompt. Execute through
     // the owning command; authorization and operation-specific idempotency stay there.
-    // EVERY re-injection bound in this act comes from her LIVE served window, never a
-    // constant — an unknown window folds NOTHING rather than inventing a number
-    // ([[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]).
-    // WM clips inside its OWN record path (it owns its truncation), so it needs the live
-    // window too — pushed from here, the seam that has the cycle. Re-pushed every act so a
-    // lane relaunch at a different `-c` is picked up without a restart.
-    if let Some((_, w)) = cycle.model_loadout() {
-        body.working_memory.set_served_window(w);
-    }
-    // ONE budget for what an act's results may hold: working memory's own, which is the
-    // same for every turn of hers. Sized from the running turn's audience, a room turn
-    // (Interactive) cut a 440-line read at 12,960 chars while the ring the result joins next
-    // budgets ~26k (Benchy, the M5, 2026-10-17 23:06Z: "more than this window's 12960-char
-    // share", the same file re-read every turn, no write).
-    let budget = if cycle.model_loadout().is_some() {
-        body.working_memory.budget()
-    } else {
-        ContextBudget::unknown()
-    };
     let ctx = crate::cognition::tool_executor::ToolExecutionContext {
         persona_id: body.persona_id,
         persona_name: body.persona_name.clone(),
@@ -179,6 +171,44 @@ pub async fn apply_act(
     // pure-background batch (no foreground calls) can still emit a typed act, keeping
     // `produced_an_act()` true exactly as the old `Some(bg_notes)` return did.
     let mut dispatched_calls: Vec<ToolCall> = Vec::new();
+    // Stop-drain S2: the batch is recorded BEFORE anything is dispatched, foreground or
+    // background, so a turn the stop cuts after this point is known to have acted and is never
+    // re-run blindly. An unconfirmed mark refuses the whole batch: nothing runs unrecorded.
+    // A reported sentinel (`tools/<cut at the output limit>`, …) never runs, so it is no effect:
+    // a cut turn recorded as acting would read as uncertain and never be handed back (enrico,
+    // 2026-10-27 02:54Z: Eitan's only "call" was the cut-at-limit sentinel). A batch of only
+    // sentinels takes no mark.
+    let effect_calls: Vec<(String, String)> = calls
+        .iter()
+        .filter(|call| !crate::cognition::tool_executor::command_executor::is_reported_sentinel(&call.name))
+        .map(|call| (call.id.clone(), call.name.clone()))
+        .collect();
+    let marked = match effect_calls.is_empty() {
+        true => Ok(()),
+        false => chain.mark_before(&super::Effect::ToolBatch { calls: effect_calls }).await,
+    };
+    if let Err(refusal) = marked {
+        continuum_base::probe!(
+            class = "persona.act.effect_unmarked",
+            persona = %body.persona_name,
+            tools = calls.len(),
+            error = %refusal,
+            "the tool batch could not be recorded before it ran, so it did not run (fail closed)"
+        );
+        // She perceives it: an unfulfilled act otherwise drops its message.
+        body.working_memory.record_fact(&format!(
+            "[not run] my last {} tool call(s) did not run: the substrate could not record them \
+             before running them ({refusal})",
+            calls.len()
+        ));
+        return ActOutcome::ExecutorError {
+            calls: calls.to_vec(),
+            message: format!(
+                "this batch did not run: the substrate could not record it before running it, \
+                 so a restart could not tell whether it happened ({refusal})"
+            ),
+        };
+    }
     let fg_calls: Vec<ToolCall> = match executor.command_executor() {
         Some(exec) => {
             let mut fg = Vec::with_capacity(calls.len());
@@ -246,10 +276,14 @@ pub async fn apply_act(
     // Every result this batch saves stays live from before its file is written until working
     // memory has recorded the batch below (card 12b080c3).
     let pin = crate::cognition::tool_executor::spill::LivePin::new();
+    // Her reads with no range answer with their first page when the whole file is more than
+    // their share of her view's measured per-act headroom (plan S1): the tool answering a
+    // smaller question, never her view cutting a result. Only this dispatched copy carries it.
+    let dispatched = super::page_budget::with_page_budgets(&fg_calls, body.working_memory.view_headroom());
     let batch_result = tokio::time::timeout(
         TOOL_BATCH_CEILING,
         executor
-            .execute_native_batch_pinned(&fg_calls, &ctx, budget.latest_action_chars(), &pin),
+            .execute_native_batch_pinned(&dispatched, &ctx, &pin),
     )
     .await
     .unwrap_or_else(|_| { // timeout elapsed = the hang this bound exists to convert; the closure builds the honest error
@@ -355,14 +389,14 @@ pub async fn apply_act(
         // handle and the executor decodes it once from the full value.
         if verdict.running() {
             if let Some(handle) = projected.and_then(|v| v.dispatch_handle) {
+                // Her command whole, as she wrote it: this label is what her view shows for the
+                // handle, and a cut command reads as a different one.
                 let label: String = call
                     .input
                     .get("command")
                     .and_then(|v| v.as_str())
                     .unwrap_or(call.name.as_str()) // label only — the handle is the key
-                    .chars()
-                    .take(80)
-                    .collect();
+                    .to_owned();
                 body.working_memory.record_dispatch_event(
                     handle,
                     &format!("{}: {label}", call.name),
@@ -383,7 +417,7 @@ pub async fn apply_act(
             },
             status: ActStatus::Executed,
         };
-        observation.push_str(&obs.render_recency(intent, &budget));
+        observation.push_str(&obs.render_recency());
         recall_observation.push_str(&obs.render_recall(intent));
         // (The canvas feed publishes at the tool-executor seam, PRE-fold — a
         // flood-sized ObserveResult here is already a spilled preview that no
@@ -428,19 +462,7 @@ pub async fn apply_act(
             // The human OBJECT of the act: the first extracted path (reads,
             // writes, edits), else the shell command head, else empty —
             // honest-thin, never dumped raw JSON args.
-            let summary = obs
-                .output
-                .paths
-                .first()
-                .map(|p| p.display().to_string())
-                .or_else(|| {
-                    obs.call
-                        .input
-                        .get("command")
-                        .and_then(|c| c.as_str())
-                        .map(|c| c.chars().take(80).collect::<String>())
-                })
-                .unwrap_or_default();
+            let summary = act_object(obs);
             let update = crate::cognition::mind_events::PersonaActUpdate {
                 act_id: Uuid::new_v4(),
                 room_id,
@@ -489,19 +511,7 @@ pub async fn apply_act(
             lines.push(crate::cognition::presence_glyph::said_line(said.trim()));
         }
         lines.extend(acts.iter().map(|obs| {
-                let object = obs
-                    .output
-                    .paths
-                    .first()
-                    .map(|p| p.display().to_string())
-                    .or_else(|| {
-                        obs.call
-                            .input
-                            .get("command")
-                            .and_then(|c| c.as_str())
-                            .map(|c| c.chars().take(80).collect::<String>())
-                    })
-                    .unwrap_or_default();
+                let object = act_object(obs);
                 crate::cognition::presence_glyph::act_line(
                     &obs.call.name,
                     &object,
@@ -792,4 +802,16 @@ mod tests {
             "the wrong short name must NOT match"
         );
     }
+}
+
+/// The human object of an act, for the clients' act line and presence glyph: its first extracted
+/// path (a read, a write, an edit), else its shell command, else empty, never raw JSON arguments.
+/// Whole: how much of it a client shows is that client's rendering, not a cut made here.
+fn act_object(obs: &Observation) -> String {
+    obs.output
+        .paths
+        .first()
+        .map(|p| p.display().to_string())
+        .or_else(|| obs.call.input.get("command").and_then(|c| c.as_str()).map(str::to_owned))
+        .unwrap_or_default() // unwrap_or_default: an act with no path and no command has no object
 }

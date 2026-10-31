@@ -213,6 +213,7 @@ pub async fn advance_card_state_effective(
                             "reviewer's pass on a card with an open PR — it stays in Review for \
                              its merge, which moves it to Merged"
                         );
+                        close_superseded_reviews(airc, parent_id, card_id, via).await;
                         return Ok(CardState::Review);
                     }
                 }
@@ -230,7 +231,23 @@ pub async fn advance_card_state_effective(
                 "reviewer's verdict — a pass closes the parent (grade fires), a send-back \
                  returns it to in_progress"
             );
+            // The verdict is terminal for THIS review card: it closed above (line 179), the
+            // parent moves to its post-verdict state, and we return that effective state.
+            // Falling through would re-write this very card from Closed into the requested
+            // one — a send-back lands Blocked onto a closed card and returns Blocked,
+            // a pass can enter the generic gated-finisher branch below and reopen or
+            // recreate its own review (the reviewer's 99c64d55 send-back, blocking #1).
             raw_advance(airc, parent_id, next, via).await?;
+            // A PASS IS TERMINAL FOR EVERY PRIOR ROUND: other cards still sitting open on
+            // this parent may review artifacts that are now approved, and left alone they
+            // stay claimable P1s forever — the per-round cards outliving their parent's pass
+            // is exactly the stale accumulation this card exists to end. The sweep runs only
+            // AFTER the parent's own transition has landed: if that advance failed (`?`),
+            // nothing else on the board moves with it (blocking #2). A send-back keeps its
+            // rounds live too: the author may still be inside a round they are reviewing.
+            if passed {
+                close_superseded_reviews(airc, parent_id, card_id, via).await;
+            }
             return Ok(next);
         }
     }
@@ -256,8 +273,67 @@ pub async fn advance_card_state_effective(
         }
         return Ok(CardState::Review);
     }
+    // A RESIDENT'S FINISH NEVER STRANDS OR UNDOES A MERGE (card 4356a90f). On a card whose
+    // linked PR has not merged, her `closed` (or `merged`) lands in Review and the merge
+    // finishes it, as Merged: the twin of the reviewer's-pass rule above. Closing it made
+    // `airc work merge` refuse ("state is Closed, but merge requires Review"): Kimi closed
+    // 13d7e47a and then 1fc73f18 right after their passes (2026-10-24/25). A card already
+    // Merged keeps that terminal state: her close is acknowledged, never a downgrade to
+    // Closed that a later close would read as "PR linked, not merged" and reopen (Codex on
+    // #5399). The airc card's merge fact IS its Merged state (set by PullRequestMerged).
+    if finishing && via != VIA_VERDICT {
+        if let Some((_, card)) = card_in_subscribed_rooms(airc, card_id).await {
+            match resident_finish(actor, card.pull_request.is_some(), &card.state) {
+                ResidentFinish::AwaitMerge => {
+                    if card.state != CardState::Review {
+                        raw_advance(airc, card_id, CardState::Review, via).await?;
+                    }
+                    continuum_base::probe!(
+                        class = "work.state.close_awaits_merge",
+                        card = %short8(card_id.as_uuid()),
+                        asked = ?state,
+                        "a resident finished a card whose PR has not merged; it stays in Review \
+                         for its merge, which moves it to Merged"
+                    );
+                    return Ok(CardState::Review);
+                }
+                ResidentFinish::StayMerged => {
+                    continuum_base::probe!(
+                        class = "work.state.already_merged",
+                        card = %short8(card_id.as_uuid()),
+                        asked = ?state,
+                        "a resident finished a card that is already merged; it keeps Merged"
+                    );
+                    return Ok(CardState::Merged);
+                }
+                ResidentFinish::Proceed => {}
+            }
+        }
+    }
     raw_advance(airc, card_id, state, via).await?;
     Ok(state)
+}
+
+/// What a resident's finish does to a card, from its PR link and current state.
+#[derive(Debug, PartialEq, Eq)]
+enum ResidentFinish {
+    /// The linked PR has not merged: wait in Review for the merge.
+    AwaitMerge,
+    /// Already merged: keep the terminal state, never downgrade it.
+    StayMerged,
+    /// No PR, or the operator: the finish proceeds as asked.
+    Proceed,
+}
+
+/// PURE: the operator (no actor) is never held; a Merged card stays Merged; a card with a linked,
+/// unmerged PR waits for its merge.
+fn resident_finish(actor: Option<Uuid>, pr_linked: bool, current: &CardState) -> ResidentFinish {
+    match (actor, current) {
+        (None, _) => ResidentFinish::Proceed,
+        (Some(_), CardState::Merged) => ResidentFinish::StayMerged,
+        (Some(_), _) if pr_linked => ResidentFinish::AwaitMerge,
+        (Some(_), _) => ResidentFinish::Proceed,
+    }
 }
 
 /// Post the sibling review card for `parent` into the parent's own room, as the
@@ -407,3 +483,160 @@ pub async fn raw_advance(
     .await;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (card 4356a90f, Codex on #5399): a resident's `closed` after a pass
+    // stranded a green PR (airc work merge needs Review), and a close on an already-merged
+    // card must not downgrade it to Closed, where a repeated close would reopen it.
+    #[test]
+    fn a_residents_finish_waits_for_the_merge_and_never_undoes_it() {
+        use ResidentFinish::*;
+        let her = Some(Uuid::from_u128(7));
+        assert_eq!(resident_finish(her, true, &CardState::Review), AwaitMerge, "after a pass, her close waits");
+        assert_eq!(resident_finish(her, true, &CardState::InProgress), AwaitMerge);
+        assert_eq!(resident_finish(her, true, &CardState::Merged), StayMerged, "merged stays merged");
+        assert_eq!(resident_finish(her, false, &CardState::Merged), StayMerged);
+        assert_eq!(resident_finish(her, false, &CardState::Review), Proceed, "no PR: a close is a close");
+        assert_eq!(resident_finish(None, true, &CardState::Review), Proceed, "the operator is never held");
+        assert_eq!(resident_finish(None, true, &CardState::Merged), Proceed);
+    }
+}
+/// A PASS CLOSES EVERY OTHER ROUND ON THE SAME PARENT THAT IS SETTLED BY THE
+/// ACCEPTED SUBMISSION. Review cards are per round: a pass on one settles the artifact
+/// that round was reviewing (its typed binding — or, for a legacy unbound round, the
+/// newest submission in transcript order, which is exactly what such a round targets when
+/// it lands its own verdict), and any other open round on this parent whose candidate is at
+/// or behind that one reviews work that just got approved. Left alone they stay claimable
+/// P1s forever — the per-round cards outliving their parent's pass is exactly the stale
+/// accumulation this exists to end.
+/// The sweep closes ONLY what the accepted submission settles (the reviewer's 99c64d55
+/// send-back, blocking #3): a round whose bound candidate is NEWER than the accepted one
+/// reviews work that postdates the pass — closing it would discard a live judgment of newer
+/// work during concurrent resubmission — and any round whose candidate cannot be resolved
+/// (a board that will not read, a binding with no submission) stays open for a hand.
+/// A send-back never reaches here: its round may still be live for its reviewer, so only a
+/// `passed` verdict sweeps (both call sites are inside `if passed`). The sweep must not
+/// break the verdict path it serves — every failure is probed and swallowed; the parent's
+/// own advance stands either way.
+pub(crate) async fn close_superseded_reviews(
+    airc: &Arc<Airc>,
+    parent_id: WorkCardId,
+    current_review: WorkCardId,
+    via: &'static str,
+) {
+    let horizon = match super::horizon::board_horizon(airc).await {
+        Ok(horizon) => horizon,
+        Err(e) => {
+            continuum_base::probe!(
+                class = "work.review.superseded_sweep_failed",
+                parent = %short8(parent_id.as_uuid()),
+                error = %e,
+                "could not read the boards to sweep stale review cards — the verdict stands"
+            );
+            return;
+        }
+    };
+    let mut closed: u64 = 0;
+    for (room, board) in &horizon.boards {
+        // The parent's submissions are newest-first; a lower index is NEWER work.
+        let Some(parent) = board.card(parent_id) else {
+            continuum_base::probe!(
+                class = "work.review.superseded_sweep_failed",
+                parent = %short8(parent_id.as_uuid()),
+                room = %room.name,
+                "the parent card is not on this board — the sweep cannot resolve candidates here"
+            );
+            continue;
+        };
+        let submissions = &parent.submissions;
+        if submissions.is_empty() {
+            // No candidate to settle: nothing is provably superseded, so nothing closes.
+            continuum_base::probe!(
+                class = "work.review.superseded_sweep_failed",
+                parent = %short8(parent_id.as_uuid()),
+                room = %room.name,
+                "the parent has no submissions — the sweep cannot tie any round to an accepted candidate"
+            );
+            continue;
+        }
+        // THE ACCEPTED CANDIDATE: what this pass settled. A typed round names it; a legacy
+        // unbound round settles the newest submission in transcript order (the same target
+        // its own verdict would resolve, per the projection's candidate_for_review).
+        let accepted = board
+            .review_request(current_review)
+            .map(|r| r.submission_id)
+            .unwrap_or(submissions[0].submission_id); // unwrap_or: an unbound legacy round settles the newest submission; empty was guarded above
+        let Some(accepted_idx) = submissions.iter().position(|s| s.submission_id == accepted) else {
+            continuum_base::probe!(
+                class = "work.review.superseded_sweep_failed",
+                parent = %short8(parent_id.as_uuid()),
+                review = %short8(current_review.as_uuid()),
+                room = %room.name,
+                "the verdict's candidate is not on the board — the sweep cannot tie any round to it"
+            );
+            continue;
+        };
+        for card in &board.snapshot().cards {
+            if card.card_id == current_review || card.reviews != Some(parent_id) {
+                continue; // not a review of this parent, or the verdict landing right now
+            }
+            if matches!(card.state, CardState::Closed | CardState::Merged) {
+                continue; // already terminal — nothing to sweep
+            }
+            // THE ROUND'S OWN CANDIDATE: its typed binding, or — for a legacy unbound round —
+            // the newest submission in transcript order, which is what it would review when
+            // it lands. A bound candidate missing from the parent is a broken link:
+            // fail closed and leave the round open.
+            let candidate = board
+                .review_request(card.card_id)
+                .map(|r| r.submission_id)
+                .unwrap_or(submissions[0].submission_id); // unwrap_or: an unbound legacy round targets the newest submission in transcript order; nonempty guarded above
+            let Some(candidate_idx) = submissions.iter().position(|s| s.submission_id == candidate)
+            else {
+                continuum_base::probe!(
+                    class = "work.review.superseded_close_failed",
+                    review = %short8(card.card_id.as_uuid()),
+                    parent = %short8(parent_id.as_uuid()),
+                    room = %room.name,
+                    "a round's bound candidate is not on the board — it stays open for a hand"
+                );
+                continue;
+            };
+            if candidate_idx < accepted_idx {
+                // Newer than what just passed: this pass settled nothing about that work.
+                continuum_base::probe!(
+                    class = "work.review.superseded_left_open",
+                    review = %short8(card.card_id.as_uuid()),
+                    parent = %short8(parent_id.as_uuid()),
+                    room = %room.name,
+                    "a round reviews a candidate newer than the accepted one — left open"
+                );
+                continue;
+            }
+            match raw_advance(airc, card.card_id, CardState::Closed, via).await {
+                Ok(()) => closed += 1,
+                Err(e) => continuum_base::probe!(
+                    class = "work.review.superseded_close_failed",
+                    review = %short8(card.card_id.as_uuid()),
+                    parent = %short8(parent_id.as_uuid()),
+                    room = %room.name,
+                    error = %e,
+                    "a stale per-round review card refused to close — it stays open for a hand"
+                ),
+            }
+        }
+    }
+    if closed > 0 {
+        continuum_base::probe!(
+            class = "work.review.superseded_swept",
+            parent = %short8(parent_id.as_uuid()),
+            review = %short8(current_review.as_uuid()),
+            closed,
+            "a pass landed — the other open rounds settled by its accepted candidate are closed; no stale claimable P1s"
+        );
+    }
+}
+

@@ -8,7 +8,7 @@
  * never a blank ([[fallbacks-are-illegal-fail-loud]]).
  */
 
-import { html, type TemplateResult } from 'lit';
+import { html, nothing, type TemplateResult } from 'lit';
 import {
   ARENA_PURPOSE,
   CANVAS_PURPOSE,
@@ -47,10 +47,18 @@ function chatContent(body: ChatContentBody): TemplateResult {
   return body.isEmpty
     ? html`<div class="empty">No messages yet — say hello.</div>`
     : html`<ul class="messages">
+        ${body.spacers ? transcriptSpacer(body.spacers.abovePx) : nothing}
         ${body.transcript.map((row) =>
           row.row === 'acts' ? actGroupRow(row) : messageRow(row),
         )}
+        ${body.spacers ? transcriptSpacer(body.spacers.belowPx) : nothing}
       </ul>`;
+}
+
+/** Stands in for transcript rows outside the rendered window, at their height, so
+ *  the scrollbar keeps the transcript's full length. */
+function transcriptSpacer(px: number): TemplateResult {
+  return html`<li class="transcript-spacer" aria-hidden="true" style="height: ${px}px"></li>`;
 }
 
 /** The foundry activity's center: the model catalogue, drawn through the SAME

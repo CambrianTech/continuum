@@ -283,46 +283,19 @@ pub(crate) struct StreamOutcome {
 /// Consume `response`'s SSE stream to completion (or a watchdog failure).
 /// The longest a stalled stream waits on a lane that is working for others: the act's own
 /// ceiling, so a caller without an act bound above it (a probe, an eval) still ends.
-const STARVED_WAIT_CEILING: std::time::Duration = crate::inference::turn_bound::ACT_CEILING;
+const STARVED_WAIT_CEILING: std::time::Duration = crate::inference::llama_server::UNMOVED_CEILING;
 
 /// Whether a stream that has been silent (or stalled) for `idle` sits on a lane that did real
 /// work, prefill or decode, for ANYONE within that window, and has been open less than the
 /// ceiling. Busy, not dead: the bound becomes a checkpoint (card 115f9a14).
 fn lane_class(idle: std::time::Duration, model: Option<&str>) -> crate::inference::llama_server::NeverStartedClass {
-    // The SERVER-TOTAL prefill rate (#4489's serving_rates, measured over busy windows) is the
-    // steady input; the per-request rate reads as low as 1.4 tok/s under contention, which
-    // would stretch the window toward the ceiling (Cormac on #4506). It is the fallback only.
-    let rate = model.and_then(|m| {
-        crate::inference::serving_rates::rates_for(m)
-            .prefill_tps
-            .or_else(|| crate::inference::prefill_rate::measured_rate_for(m).tps)
-    });
-    let window = work_window(idle, rate);
+    // The one no-movement window (`llama_server::unmoved_window`): two batches at the
+    // measured prefill rate, never less than `idle`.
+    let window = crate::inference::llama_server::unmoved_window(idle, model);
     crate::inference::llama_server::classify_never_started_timeout(
         crate::inference::llama_server::ms_since_real_work(),
         window.as_millis() as u64,
     )
-}
-
-/// PURE: how far back the lane's last real work may be and still prove it working. Its
-/// `/slots` prefill counters advance a whole ubatch at a time, so a lane prefilling one chunk
-/// every ~176 s (the IntelMac at 11.6 tok/s) shows no work for most of a 90 s window while it
-/// is plainly busy (Codex on #4506). The window is the idle bound or TWO ubatches at the lane's
-/// measured prefill rate, whichever is longer: one chunk's time is the mean, and the IntelMac's
-/// measured chunk gaps ran 124 / 168 / 214 / 171 s at 11-13 tok/s (Cormac), so one chunk alone
-/// would miss the slow ones. With no rate measured it is the idle bound.
-/// The per-request rate reads low under contention, which only widens the window, and the
-/// ceiling still bounds the wait.
-fn work_window(idle: std::time::Duration, prefill_tps: Option<f64>) -> std::time::Duration {
-    prefill_tps
-        .filter(|r| r.is_finite() && *r > 0.0)
-        // try_: a vanishing rate would overflow Duration and panic (Codex on #4506); anything
-        // past the ceiling is the ceiling, which `waits_on` bounds the wait by anyway
-        .map(|r| {
-            std::time::Duration::try_from_secs_f64(2.0 * f64::from(crate::inference::lane_args::UBATCH_TOKENS) / r)
-                .map_or(STARVED_WAIT_CEILING, |d| d.min(STARVED_WAIT_CEILING))
-        })
-        .map_or(idle, |chunk| idle.max(chunk))
 }
 
 /// PURE: whether a stalled stream waits on, from the ONE classification of the lane taken at
@@ -944,20 +917,5 @@ mod tests {
         assert!(!waits_on(classify_never_started_timeout(Some(200_000), 90_000), open), "nothing for anyone in the window: ends");
         assert!(!waits_on(classify_never_started_timeout(None, 90_000), open), "never any work observed: ends");
         assert!(!waits_on(working, STARVED_WAIT_CEILING), "past the ceiling: ends, bounded");
-    }
-
-    // what this catches (Codex and Cormac on #4506): a lane that prefills one 2,048-token chunk
-    // every ~176 s, with measured gaps up to 214 s, shows no counter move for most of a 90 s
-    // window while it is busy. The window stretches to TWO ubatches at the measured rate; a
-    // fast lane keeps the idle bound; no rate measured keeps the idle bound.
-    #[test]
-    fn the_work_window_is_two_ubatches_at_the_measured_prefill_rate() {
-        let idle = Duration::from_secs(90);
-        let slow = work_window(idle, Some(11.6));
-        assert!(slow > Duration::from_secs(214), "covers the slowest measured chunk gap (214 s): {slow:?}");
-        assert!(slow < Duration::from_secs(360), "two chunks, not an open wait: {slow:?}");
-        assert_eq!(work_window(idle, Some(2_000.0)), idle, "a fast lane keeps the idle bound");
-        assert_eq!(work_window(idle, None), idle, "no rate measured keeps the idle bound");
-        assert_eq!(work_window(idle, Some(1e-300)), STARVED_WAIT_CEILING, "a vanishing rate is capped, never a Duration overflow panic");
     }
 }

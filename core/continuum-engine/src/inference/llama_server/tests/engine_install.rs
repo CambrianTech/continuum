@@ -106,3 +106,24 @@ fn a_debug_build_is_refused_at_the_door_and_a_release_build_passes() {
     assert!(super::is_debug_build("warning: DEBUG BUILD (asserts enabled) -- performance numbers from this process are not valid\nversion: 10229 (a28ee566c)"));
     assert!(!super::is_debug_build("version: 0.3.0-dev (build 10751, commit 0a637ba22)\nbuilt with AppleClang 21.0.0.21000101 for Darwin arm64"));
 }
+
+// The engine-only M5 convergence must preserve the incumbent's actual launch geometry.
+#[test]
+fn engine_only_convergence_preserves_incumbent_launch_arguments() {
+    for (lanes, window, planned_window) in [(2, 187136, 187136), (3, 76032, 76800)] {
+        let mut planned = target("convergence-fixture");
+        planned.lanes = 1;
+        planned.context_window = planned_window;
+        let selected = super::super::reconcile::engine_convergence_target(&planned, window, lanes).unwrap();
+        let invocation = crate::inference::lane_args::base_invocation(
+            Path::new("fixture.gguf"), selected.model_id(), "127.0.0.1", 1,
+            selected.parallel_lanes(), selected.served_total_ctx(),
+            selected.host_prompt_cache_mib, Path::new("pages"),
+        );
+        assert_eq!(invocation.value_of("--parallel"), Some(lanes.to_string().as_str()));
+        assert_eq!(invocation.value_of("-c"), Some((lanes * window).to_string().as_str()));
+    }
+    let planned = target("convergence-fixture");
+    assert!(super::super::reconcile::engine_convergence_target(&planned, 0, 2).is_err());
+    assert!(super::super::reconcile::engine_convergence_target(&planned, 76032, 0).is_err());
+}

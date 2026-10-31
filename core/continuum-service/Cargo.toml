@@ -1,0 +1,13 @@
+[package]
+name = "continuum-service"
+version = "0.1.0"
+edition = "2021"
+description = "What a node's minds measure of their own service (card 1c157668): the versioned sample, its baseline per configuration and workload, the detector that says healthy, regressed, stalled or not enough evidence, and each resident's window of turns with the alarm it raises. Pure: serde only, no I/O, no global state; the caller owns the state and feeds it samples."
+
+[dependencies]
+serde.workspace = true
+uuid.workspace = true
+ts-rs.workspace = true  # the resident alarm rides the grid beacon, and grid/nodes exports it to TypeScript
+
+[dev-dependencies]
+serde_json.workspace = true

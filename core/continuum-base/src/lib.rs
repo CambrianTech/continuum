@@ -4,10 +4,12 @@
 
 pub mod audio_constants;
 pub mod config_env;
-pub mod fs_portable;
+pub mod home;
 pub mod id_resolve;
 pub mod probe;
+pub mod repo_id;
 pub mod secrets;
 pub mod shell_portable;
 pub mod time;
 pub mod token_estimate;
+pub mod tool_effect;

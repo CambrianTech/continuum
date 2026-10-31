@@ -7,19 +7,25 @@
 //! shelter: Anwen parked fabricated receipts in one within minutes), or acts happened whose
 //! details aged out (denying her own work is the inverse failure, 2026-07-13: Asha).
 
-use continuum_context::source::{Item, Source};
+use continuum_context::cause::{Cause, Content, Origin};
+use continuum_context::source::{Item, Source, StoredWhole};
 
-use super::{priority, ContextMessage};
+use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::working_memory::WorkingMemory;
 
 pub(crate) struct Actions<'a> {
     pub memory: &'a WorkingMemory,
+    /// Whose spill directory a stored whole is read from (`load`).
+    pub persona: uuid::Uuid,
 }
 
 impl Actions<'_> {
-    fn standing(key: &str, text: String) -> Item<ContextMessage> {
-        let message = ContextMessage::user(text);
-        Item { key: key.to_owned(), full: message.clone(), pointer: Some(message) }
+    fn standing(&self, key: &str, text: String) -> Item<ContextMessage> {
+        super::standing(self.persona, "actions", key, ContextMessage::user(text))
+    }
+
+    fn act(&self, seq: u64) -> continuum_context::cause::ElementId {
+        element(self.persona, Producer::Act, &seq.to_be_bytes())
     }
 }
 
@@ -33,7 +39,7 @@ impl Source<ContextMessage> for Actions<'_> {
     }
 
     fn items(&self) -> Vec<Item<ContextMessage>> {
-        let banner = Self::standing(
+        let banner = self.standing(
             "banner",
             "[actions] What I have done this session, oldest first: each #n is one act; a \
              collapsed one names the handle that reopens it."
@@ -61,15 +67,64 @@ impl Source<ContextMessage> for Actions<'_> {
                     if taken == 1 { "" } else { "s" }
                 )
             };
-            return vec![banner, Self::standing("none", none)];
+            return vec![banner, self.standing("none", none)];
         }
         let mut items = vec![banner];
-        items.extend(acts.into_iter().map(|(seq, full, pointer)| Item {
-            key: seq.to_string(),
-            full: ContextMessage::user(full),
-            pointer: Some(ContextMessage::user(pointer)),
-        }));
+        // Her acts in one room are one chain: each follows the act before it there; the first is
+        // where that activity's chain starts.
+        let mut last_in_room: std::collections::HashMap<Option<uuid::Uuid>, u64> = std::collections::HashMap::new();
+        for act in acts {
+            let cause = last_in_room.insert(act.room, act.seq).map_or(Cause::Root(Origin::ActivityStart), |prev| Cause::Of(self.act(prev)));
+            let stored = act.stored.map(|(chars, handle)| StoredWhole { chars, handle, content: Content::Absent });
+            let item = Item::rendered(self.act(act.seq), cause, act.seq.to_string(), ContextMessage::user(act.full), act.content)
+                .with_summary(act.summary.map(ContextMessage::user))
+                .with_pointer(ContextMessage::user(act.pointer))
+                .with_stored(stored);
+            items.push(match act.act {
+                Some(identity) => item.with_act(identity),
+                None => item,
+            });
+        }
         items
+    }
+
+    /// A whole her working memory evicted from RAM (storage, never visibility: FOCUS-CONTRACT
+    /// rule 7), read back from its spill file when her view grants it whole, labelled as it
+    /// read resident. `None` (the resident pointer renders) when the file is gone or unreadable.
+    fn load(&self, item: &Item<ContextMessage>) -> Option<ContextMessage> {
+        let stored = item.stored()?;
+        let seq: u64 = item.key().parse().ok()?;
+        let label = self.memory.action_whole_label(seq)?;
+        let body = crate::cognition::tool_executor::spill::saved_whole(self.persona, &stored.handle).ok()?;
+        Some(ContextMessage::user(format!("{label}{body}")))
+    }
+
+    /// Her oldest acts as one line: the first and last `#n`, how many, and how one reopens
+    /// (`tool/output` with `act`), so her floor is one block however many acts she has taken
+    /// (Aris, the M5, 2026-10-29: 95 pointers at ~190 chars before anything whole fit). Reads
+    /// only the run's ends: the banner, when it is in the run, is its first item and folds
+    /// with it. `None` for a run with no act in it (the banner alone): nothing to name.
+    fn fold(&self, folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
+        // The banner stands as itself ahead of the run (the view never folds a standing head),
+        // so the run is her acts alone, keyed by their #n.
+        let first: u64 = folded.first()?.key().parse().ok()?;
+        let last: u64 = folded.last()?.key().parse().ok()?;
+        let count = folded.len();
+        Some(ContextMessage::user(format!(
+            "[actions #{first}-#{last}: {count} earlier acts folded; reopen one with tool/output act=<n>]"
+        )))
+    }
+
+    /// An act the view found repeats an earlier one whose whole she has in front of her (the same
+    /// request to a command that only observes, the same outcome): one line naming it and how to
+    /// reopen it, never a second copy of the whole (MIND-CONTEXT invariant 4).
+    fn repeat(&self, item: &Item<ContextMessage>, ancestor: &Item<ContextMessage>) -> Option<ContextMessage> {
+        Some(ContextMessage::user(format!(
+            "[result #{}: repeat of #{}, outcome unchanged; reopen with tool/output act={}]",
+            item.key(),
+            ancestor.key(),
+            ancestor.key()
+        )))
     }
 
     /// Once she has acted, the void said earlier in this epoch is superseded, never edited:
@@ -79,6 +134,6 @@ impl Source<ContextMessage> for Actions<'_> {
         if acts.is_empty() && !in_flight {
             return Vec::new();
         }
-        vec![Self::standing("none", "(that was before my first act; my acts follow)".to_owned())]
+        vec![self.standing("none", "(that was before my first act; my acts follow)".to_owned())]
     }
 }

@@ -77,53 +77,35 @@ pub(super) fn humanize_result_content(raw: &str) -> String {
     }
 }
 
-/// Collapse tool ARGS for the RECENCY channel (working memory).
-///
-/// The recall path has collapsed big args since it was written — `summarize_args_for_recall`
-/// turns a whole-file `content` into `content: N chars`, because re-showing that file every
-/// future turn is measured dead weight. The recency path rendered
-/// `serde_json::to_string(&call.input)` RAW, unbounded, and the result's producer fitted only
-/// the RESULT. So one code path had the rule and its sibling didn't.
-///
-/// What that costs, glass-boxed on sympy-21379: her single `code/edit` of the run passed
-/// `sympy/core/basic.py` as whole-file `content` — thousands of lines. That entire paste went
-/// into working memory as ARGS, ahead of the `EDIT REFUSED` result carrying the diagnostic she
-/// needed. On a 16k-token lane there is no room left for the diagnosis to survive.
-///
-/// Deliberately MUCH more generous than the recall bound (600 vs 80 chars): recency is shown
-/// once and she may genuinely need to see the edit she just issued. Only a pathological
-/// whole-file paste collapses.
-///
-/// `budget` is `None` when the live window is UNKNOWN (no model binding). Then nothing folds.
-/// An unknown window must never become an invented one — that is how a guess turns into a
-/// clamp that outlives the guess.
-pub(super) fn summarize_args_for_recency(
-    args: &serde_json::Value,
-    budget: Option<usize>,
-) -> String {
-    let fold_at = budget.unwrap_or(usize::MAX);
+/// How her tool call's arguments appear in its result's header: a SHAPE rule, never a size (one
+/// budget: no reader decides its own length). A single-line value (a path, an id, a flag) names
+/// WHICH call this was and is shown whole. A multi-line value (a file's content, a patch) is a body
+/// she wrote in the call itself, already in her view as her own tool call, so the header names it by
+/// its shape and hash instead of repeating it: repeating it put a whole-file paste ahead of the
+/// result she had to read (sympy-21379: all of basic.py ahead of the `EDIT REFUSED` diagnostic).
+pub(super) fn render_call_args(args: &serde_json::Value) -> String {
     match args {
         serde_json::Value::Object(map) => map
             .iter()
             .map(|(k, v)| match v {
-                serde_json::Value::String(s) if s.chars().count() > fold_at => {
-                    // Distinguish large argument values in the human-readable receipt.
-                    // This rendering is not a cache key or execution-admission signal.
-                    use std::hash::{Hash, Hasher};
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    s.hash(&mut h);
-                    format!(
-                        "{k}: <{} chars, #{:x} — not echoed back; you wrote it>",
-                        s.chars().count(),
-                        h.finish()
-                    )
-                }
-                other => format!("{k}={}", other.to_string().trim_matches('"').to_string()),
+                serde_json::Value::String(s) if s.contains('\n') => format!("{k}: {}", body_reference(s)),
+                serde_json::Value::String(s) => format!("{k}={s}"),
+                other => format!("{k}={other}"),
             })
             .collect::<Vec<_>>()
             .join(", "),
-        other => truncate_chars(&other.to_string(), fold_at.min(4096)),
+        serde_json::Value::String(s) if s.contains('\n') => body_reference(s),
+        other => other.to_string(),
     }
+}
+
+/// A body named by its shape and a hash, so two different bodies never read the same. The hash is
+/// a label in a human-readable receipt, never a cache key or an admission signal.
+fn body_reference(body: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    body.hash(&mut h);
+    format!("<{} lines, {} chars, #{:x}: in your call>", body.lines().count(), body.chars().count(), h.finish())
 }
 
 /// Collapse tool ARGS for the recall channel: a large string value (e.g. a whole file
@@ -211,7 +193,6 @@ pub(super) fn render_act_for_recall(
 
 #[cfg(test)]
 mod tests {
-    use crate::cognition::context_budget::ContextBudget;
     use crate::sdk_codegen::{ActVerdict, ToolVerdict};
     /// The two pre-#4352 states this file used to take as a bare bool.
     const OK_V: ActVerdict = ActVerdict::Declared(ToolVerdict::Succeeded);
@@ -372,38 +353,17 @@ mod tests {
     fn a_whole_file_arg_is_not_echoed_back_ahead_of_the_result() {
         let whole_file = "x = 1\n".repeat(4000); // ~24k chars, a real source file
         let args = serde_json::json!({ "file_path": "sympy/core/basic.py", "content": whole_file });
-        let rendered = summarize_args_for_recency(
-            &args,
-            Some(ContextBudget::from_window(16_384).echoed_arg_chars()),
-        );
-        assert!(
-            rendered.chars().count() < 400,
-            "a whole-file arg must collapse, not flood: {} chars",
-            rendered.chars().count()
-        );
-        assert!(
-            rendered.contains("chars"),
-            "says how big it was: {rendered}"
-        );
-        assert!(
-            rendered.contains("sympy/core/basic.py"),
-            "the SMALL args stay whole — she still sees WHICH file: {rendered}"
-        );
+        let rendered = render_call_args(&args);
+        assert!(rendered.contains("file_path=sympy/core/basic.py"), "the identifier is shown whole: {rendered}");
+        assert!(rendered.contains("4000 lines, 24000 chars"), "the body is named by its shape: {rendered}");
+        assert!(!rendered.contains("x = 1"), "the body she wrote is never repeated: {rendered}");
 
-        // A realistic targeted edit is NOT collapsed — recency is shown once, and she may
-        // genuinely need to see the change she just issued.
-        let small = serde_json::json!({
-            "file_path": "a.py",
-            "new_content": "def f():\n    return refine_arg(x)\n"
-        });
-        let kept = summarize_args_for_recency(
-            &small,
-            Some(ContextBudget::from_window(16_384).echoed_arg_chars()),
-        );
-        assert!(
-            kept.contains("refine_arg"),
-            "an ordinary edit stays visible verbatim: {kept}"
-        );
+        // The rule is shape, never size: a short multi-line edit is a body too (it is in her
+        // call), and a long single-line value is an identifier, shown whole.
+        let small = serde_json::json!({ "file_path": "a.py", "new_content": "def f():\n    return refine_arg(x)\n" });
+        assert!(render_call_args(&small).contains("new_content: <2 lines"));
+        let long_id = "p".repeat(5_000);
+        assert!(render_call_args(&serde_json::json!({ "query": long_id })).contains(&long_id));
     }
 
     /// what this catches (Astra on #4352): the COLLAPSE branch saying "ok" for work

@@ -109,10 +109,15 @@ pub(super) fn register_ai_provider_and_genome_modules(
             ),
         );
 
-        runtime.register(Arc::new(
-            crate::modules::genome::GenomeModule::new(ft_registry)
-                .with_teacher_serving(serving_daemon.clone()),
+        let genome = crate::modules::genome::GenomeModule::new(ft_registry.clone())
+            .with_teacher_serving(Arc::new(crate::modules::serving_daemon::academy_batch::ServingTeacher(serving_daemon.clone())));
+        // The grid-peer trainer (card e53bb821): leases a LoRA job to one fresh peer that
+        // advertises the base, training_lease and training_lease_return, and pulls its adapter
+        // back into this node's job directory for adoption (card 92cd2251).
+        ft_registry.register(Arc::new(
+            crate::commands::genome::grid_peer_adapter::GridPeerAdapter::on_grid(genome.lease_executor()),
         ));
+        runtime.register(Arc::new(genome));
 
         // Port leases for citizen services (card 0c42c0bf): a dev server or database a citizen
         // runs gets a port clear of every other citizen's and of Continuum's own.
@@ -161,7 +166,8 @@ pub(super) fn register_ai_provider_and_genome_modules(
         // `[[no-fallbacks-ever]]`, dispatch failure preserves bucket
         // contents — curated examples never silently disappear.
         runtime.register(Arc::new(
-            crate::modules::training_trigger::TrainingTriggerModule::new(),
+            crate::modules::training_trigger::TrainingTriggerModule::new()
+                .with_serving_changes(serving_daemon.subscribe_serving()),
         ));
         log_info!(
             "ipc",

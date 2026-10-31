@@ -180,6 +180,17 @@
                 .acquire_guarded(&req("eval-lane", 6_000, 60_000, ReclaimPolicy::Pinned))
                 .expect("6GB fits under the 10GB ceiling");
             assert_eq!(guard.bytes(), 6_000, "guard reports the held bytes");
+            // What this catches: a planner must not pair a post-release budget
+            // with a pre-release lease and omit the same reservation twice.
+            let (budget, charged) = daemon.replacement_budget_snapshot("serving", ResourceKind::Vram);
+            assert_eq!(budget, 4_000);
+            assert_eq!(charged.len(), 1);
+            assert_eq!(charged[0].consumer_id, "eval-lane");
+            assert_eq!(charged[0].bytes, 6_000);
+            let (_, own) = daemon.replacement_budget_snapshot("eval-lane", ResourceKind::Vram);
+            assert!(own.is_empty(), "replacement's own lease is not another consumer");
+            let (_, wrong_pool) = daemon.replacement_budget_snapshot("serving", ResourceKind::Ram);
+            assert!(wrong_pool.is_empty(), "only this memory pool's leases are charged");
             assert_eq!(
                 daemon.board().leases.len(),
                 1,

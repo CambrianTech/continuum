@@ -8,7 +8,8 @@
 //!                     # refuses while training (mlx_lm) is live — `--force` overrides
 //! continuum reboot --prebuilt <path> # validate that core first, then hand off without rebuilding
 //!                     # Windows: --service hands off to the installer's prepared task
-//! continuum stop             # stop the running core
+//! continuum stop             # stop the core; the engine (weights + every mind's KV) stays for the next core to adopt
+//! continuum stop --engine    # stop the core and the engine
 //! continuum ping             # dispatch a command to the running core
 //! continuum ping '{"message":"hi"}'
 //! continuum data/list '{"collection":"users"}'
@@ -120,6 +121,9 @@ use launch::*;
 #[path = "continuum/processes.rs"]
 mod processes;
 use processes::*;
+#[path = "continuum/handoff_admission.rs"]
+mod handoff_admission;
+use handoff_admission::*;
 #[path = "continuum/reboot.rs"]
 mod reboot;
 use reboot::*;

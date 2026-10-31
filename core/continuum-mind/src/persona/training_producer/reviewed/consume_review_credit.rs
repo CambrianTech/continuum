@@ -87,6 +87,26 @@ pub(super) async fn consume_review_credit<T: Transport>(
     if result.state != ReviewedCreditState::AwaitingAcceptance {
         return Ok(result);
     }
+    settle_passed(conn, persona_name, persona_id, id, &binding, review, review_id, result).await
+}
+
+/// The settlement of a credit whose review lets it pass, from its immutable binding: the
+/// bound snapshot's provenance, its lived calls, the reservation, the one decision, then the
+/// training submit and its acceptance (or the refusal kept, card 99b2773a). Shared by a
+/// review's consumption and the retry of a decided credit ([`retry_decided`]), so the two
+/// cannot drift.
+#[allow(clippy::too_many_arguments)] // each is one fact the settlement checks; a struct would only rename them
+pub(super) async fn settle_passed<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    persona_id: Uuid,
+    id: Uuid,
+    binding: &WorkCreditBinding,
+    review: &airc_work::WorkSubmissionReview,
+    review_id: airc_work::WorkReviewId,
+    mut result: ReviewedCredit,
+) -> Result<ReviewedCredit, CreditBindingError> {
+    let selection = &binding.selection;
     let intent = read_one::<_, CreditTransferIntent>(
         conn,
         persona_name,
@@ -118,7 +138,10 @@ pub(super) async fn consume_review_credit<T: Transport>(
         result.state = ReviewedCreditState::ProvenanceHeld;
         return Ok(result);
     }
-    let mut params = match staged_submission_params(persona_id, persona_name, row, true) {
+    // The snapshot stays the bound evidence; only the params read back calls a capture
+    // completed after staging.
+    let resolved = with_lived(persona_id, persona_name, row).await;
+    let mut params = match staged_submission_params(persona_id, persona_name, &*resolved, true) {
         Ok(params) => params,
         Err(reason) => {
             // This path ALREADY named its state (`IneligibleEvidence`), so it was
@@ -170,6 +193,26 @@ pub(super) async fn consume_review_credit<T: Transport>(
         .as_ref()
         .is_none_or(|accepted| accepted.submission_id != row.id)
     {
+        // Kept, so her status names why the credit waits; the credit-acceptance region settles it again
+        // (card 99b2773a); a refusal that cannot be kept is said, and the decision stands.
+        continuum_base::probe!(
+            class = "training.credit.submit_refused",
+            persona = %persona_name,
+            submission = %id,
+            revision = %row.id,
+            error_kind = ?receipt.error_kind,
+            error = ?receipt.error,
+            "the training trigger answered a reviewed credit without accepting it: kept, and settled again by the credit-acceptance region"
+        );
+        if let Err(error) = record_refusal(conn, persona_name, id, &receipt).await {
+            continuum_base::probe!(
+                class = "training.credit.submit_refusal_unkept",
+                persona = %persona_name,
+                submission = %id,
+                error = %error,
+                "a refused reviewed credit could not be kept: the credit-acceptance region still finds it by its decision"
+            );
+        }
         result.destination = Some(receipt);
         return Ok(result);
     }
@@ -180,7 +223,7 @@ pub(super) async fn consume_review_credit<T: Transport>(
         receipt,
     };
     if let Err(error) =
-        write_batch(conn, persona_name, vec![create(id.to_string(), &accepted)?]).await
+        write_batch(conn, persona_name, vec![create(id.to_string(), &accepted)?, clear_refusal(id)]).await
     {
         let prior =
             read_one::<_, CreditReviewAcceptance>(conn, persona_name, &id.to_string()).await?;
@@ -214,6 +257,11 @@ pub async fn credit_status<T: Transport>(
     };
     let decision = read_one::<_, CreditReviewDecision>(conn, persona_name, &id).await?;
     let accepted = read_one::<_, CreditReviewAcceptance>(conn, persona_name, &id).await?;
+    // A decided credit the trigger refused names the refusal as its destination (card 99b2773a).
+    let refused = match (&accepted, &decision) {
+        (None, Some(_)) => read_one::<_, CreditSubmitRefusal>(conn, persona_name, &id).await?.map(|r| r.receipt),
+        _ => None,
+    };
     if accepted.as_ref().is_some_and(|accepted| {
         accepted.decision_id != submission_id
             || decision.as_ref().is_none_or(|decision| {
@@ -240,7 +288,7 @@ pub async fn credit_status<T: Transport>(
         },
         staged_revision_id: Some(binding.selection.staged_revision_id),
         decision_review_id: decision.map(|d| d.review.review_id.as_uuid()),
-        destination: accepted.map(|a| a.receipt),
+        destination: accepted.map(|a| a.receipt).or(refused),
     })
 }
 

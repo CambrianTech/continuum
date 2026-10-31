@@ -1,5 +1,9 @@
 # PERSONA COGNITION PIPELINE — READ THIS BEFORE TOUCHING THE BRAIN
 
+**Focus and budgeting:** [Focus contract](FOCUS-CONTRACT.md) is the canonical
+single-allocation, adaptive-attention and all-node compliance contract. Local
+prompt-sizing recipes must comply with it; implementation status requires receipts.
+
 **Stop. Read this doc end-to-end before editing any of:**
 
 - `core/continuum-core/src/persona/service_loop.rs`
@@ -181,7 +185,7 @@ still exists and still has files in it, which reads as "working".
   `expand_command`, or `tool_executor::spill`), keeping the newest interaction whole and the full
   result reachable through its handle. One source that
   shrinks itself by its own number breaks the budget for every other source. Guarded by
-  `source-hygiene::head_cuts`; a cut that never reaches a prompt says `head-cut-ok: <why>`.
+  `source-hygiene` `self_sized` (ONE-BUDGET.md); there is no exemption comment.
 - **DO NOT** silently substitute defaults when something fails. Surface typed errors. The operator decides policy. ([[no-fallbacks-ever]])
 
 ---
@@ -272,6 +276,7 @@ The persona that talks to her host in three months and recalls things from today
 | RAG sources | implement `cognition::rag_budget::RagSource` | `engram_source`, `airc_source`, future `code_source`, `tool_source`, `identity_source`. Bound on the brain at boot. |
 | Budgeter | `cognition/rag_budget.rs::FlexboxRagBudgetAdapter` | The only budgeter. Used by `compose_for_turn`. |
 | Her genome on a turn | `genome/gene_trial.rs` (today: per-card arm, being retired) → per-turn selection by signature distance (`GENE-REUSE-FORK-MINT.md` §3d) | Genes follow her mind, never her workload: every turn pages the genes whose region her perception is inside (automatic floor, several at once), each turn's probe names why, and fitness is the world's surprise on the turns a gene ran plus an offline gene-off replay of the same turns. Never a card, room or randomized arm deciding what she thinks with. Never per call: the genome never changes beneath a request. |
+| Admitted-turn obligations (durable custody) | `persona/obligation.rs` (`PersonaObligation`, `Obligations`) | The durable half of `wake_backlog::PendingInput`: one row per admitted turn, recorded before her context is composed and closed when the turn ends. Not a second recovery manager; re-admission goes back through `PendingInput`'s retry path (card 920619c5). |
 | Privacy of thought (her mind room) | `persona/mind_room.rs` (`mind_room_id`, `is_private_room`, `note_withheld`) | A turn is private because of the room it runs in: her mind room, a local id derived from her identity, never an airc channel. Every capture sink asks the ONE predicate at its own seam and writes nothing for a private turn (`docs/architecture/PRIVACY-OF-THOUGHT.md` §4). A new sink asks it too. |
 | Prompt order (stable prefix first) | `cognition/deliberation_prompt.rs::stable_prefix_order` (+ `PromptScope`, `PromptChurn`) | The ONE rule every grounding renderer lays blocks down by: churn class, then name — never salience, never arrival. The prompt cache reuses only a common prefix; a block that moves forfeits everything behind it. Card c119ace7. |
 
@@ -468,6 +473,44 @@ New arrivals remain in the existing conversation inbox and can be perceived duri
 the retry. A completed decision or prior dispatched work does not replay the input;
 ambient input keeps its existing transcript/re-perception policy. This custody is
 local to the running loop, not a claim of durable restart recovery.
+
+### Admitted-turn obligations (920619c5)
+
+The durable half of that custody is `persona/obligation.rs`: one `persona_obligation`
+row per admitted turn, written after `admit_trigger` and before `compose_turn` (which
+marks the trigger read), and deleted when the turn ends. An input `PendingInput` still
+retains (a capacity refusal, a deferral) keeps its row, and its retry continues it.
+A row still open at the loop's next start names a turn a stop or crash cut; the start
+reports it once (`persona.obligation.interrupted`) and stamps it.
+
+Effects are marked before they happen (S2, card 68811445). A turn runs only on a
+CONFIRMED obligation: a write whose reply was lost is read back by its id before the
+turn is refused, since "the write failed" is not "no row". Each effect is recorded on
+the row first: the tool batch before `apply_act` dispatches anything (foreground or
+background, with its call ids) and her reply before `publish_own_speech`. The live
+typing preview is visible but is not a durable post, so it is not a boundary. The mark
+rides the turn (`Burst::effects` into its `ActChain`), so it can never mark another
+turn's effects. A mark that cannot be confirmed refuses the effect: a tool batch does
+not run and she is told why in working memory; a reply is not posted and its row stays
+open. Store failures back off (doubling, capped) and raise
+`persona.obligation.unconfirmed`, so a failing store slows her loudly and never spins.
+
+Recovery at start (S3, card afaa0a3e, `obligation/recover.rs`): every open row gets a
+notice in her existing notices stream (`pin_fact("obligation:<row>")`, rendered from the
+row's fields, so a second start re-pins the same notice rather than adding one; closing
+the row unpins it). A row with no recorded effect is handed back through
+`PendingInput::readmit` with its original engram and row id, so it is retried on the
+capacity-retry path and reconciles its own row; its attention is derived again from the
+stored trigger by the same function, never stored twice. A row that recorded an effect
+is never retried: the notice names what was begun (her reply, or each tool with its call
+id), `persona.obligation.uncertain` is raised, and `PendingInput` holds the row until a
+turn on the cycle that carries the notice (her mind cycle in her private room, her live
+cycle elsewhere) SERVES a generation: the notice is required prompt input there, so a
+served receipt is the evidence she read it; a failed inference or a pass that served
+nothing answers nothing. Then the row closes. Writes
+use the substrate connection: her own identity is Trusted, and Trusted may not update
+or delete. The supervisor builds the store from the executor boot wired and hands it to
+the loop as a required argument, so a loop that records nothing cannot be constructed.
 
 ### Generation admission ownership (6780e79b)
 

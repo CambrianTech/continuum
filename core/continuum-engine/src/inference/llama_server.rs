@@ -61,11 +61,12 @@ pub(crate) use reconcile::{grow_refused_by_memory_gate, lane_grow_would_narrow_t
 
 mod smoke;
 use smoke::{
-    smoke_attempt, smoke_verdict, SmokeVerdict, QUICK_SMOKE_BUDGET, THINKING_SMOKE_BUDGET,
+    scratch_slot_for, smoke_attempt, smoke_seat, smoke_verdict, SmokeSeat, SmokeVerdict,
+    QUICK_SMOKE_BUDGET, THINKING_SMOKE_BUDGET,
 };
 mod target;
 pub use target::{
-    cold_expert_offload_ot, main_lane_placement, placement_from_config, AdapterEntry,
+    cold_expert_offload_ot, main_lane_placement, placement_from_config, serving_pool_kind, AdapterEntry,
     LanePlacement, ServingTarget,
 };
 mod kv_support;
@@ -84,6 +85,9 @@ pub(crate) use genome::gene_stage_name;
 pub use genome::{engine_accepts_train_dir, engine_train_dir, GenomeInPlace};
 use genome::{engine_help_lists_train_dir, ENGINE_TRAIN_DIR};
 mod engine_install;
+mod engine_features;
+pub use engine_features::serving_engine_takes_tail_tools;
+use engine_features::{observe_served_engine, serving_lane_evidence, LaunchedEvidence, ServedEvidence};
 #[cfg(windows)]
 pub(crate) use engine_install::engine_override;
 pub(crate) use engine_install::{installed_engine_commit, lane_runs_installed_engine};
@@ -93,6 +97,7 @@ use engine_install::{
     ENGINE_STALE,
 };
 mod snapshot;
+pub mod serving_hold;
 use snapshot::SERVING_STATE;
 pub use snapshot::{
     await_ready_serving, await_snapshot_resettle, current_serving, has_reconciled,
@@ -107,13 +112,18 @@ pub use external::{external_serving_pin, probe_external_serving, wait_for_servin
 
 mod progress;
 pub(crate) use progress::{
-    engine_probe, engine_props, restore_probe, wait_while_engine_progresses, EngineProbe,
+    engine_probe, engine_props, restore_probe, unmoved_window, wait_while_engine_progresses, EngineProbe,
+    WaitBounds, UNMOVED_CEILING,
 };
 #[cfg(test)]
-pub(crate) use progress::{engine_probe_within, slots_progress, EngineProgress};
+pub(crate) use progress::{engine_probe_within, slots_progress, window_at_rate, window_rate, EngineProgress};
 
 mod slot_work;
-pub use progress::engine_condemned;
+pub use progress::{condemn, condemnations, engine_condemned, note_serving_ready, until_condemned};
+#[cfg(test)]
+pub(crate) use progress::Condemnations;
+#[cfg(test)]
+pub(crate) use progress::until_condemned_on;
 pub use slot_work::{in_flight_slot, slot_advanced, slot_work, InFlightSlot, SlotWork};
 pub(crate) use slot_work::InFlightSlotGuard;
 #[cfg(test)]
@@ -138,6 +148,9 @@ pub use ephemeral::{
 
 mod control_impl;
 mod launch;
+mod ready_tail;
+mod late_ready;
+mod stderr_sink;
 mod adopted_retirement;
 mod placement_stamp;
 mod prepare;

@@ -30,6 +30,9 @@
 //!   which she acted or spoke is engagement (the engaged beat); a pass is not, so the
 //!   beat backs off toward rest exactly as a fruitless musing did. A message turn never
 //!   offers it: the message snaps her beat to engaged, and that beat offers it.
+//! - ASKED AGAIN ONLY ON SOMETHING NEW: after a pass, the next offer waits until something
+//!   she perceives has moved ([`Initiative::on_beat`]); on unchanged perception her prompt
+//!   is the same and so is the question.
 //!
 //! The earlier attempt this must not repeat (card_holder.rs, Kimi 2026-10-06): a gate
 //! that could not see a followed claim read `no_held_work` and she created a new review
@@ -49,14 +52,31 @@ pub enum Initiative {
     NotOffered,
 }
 
+impl Initiative {
+    /// Her heartbeat's offer. After she passes, the next offer waits until something she
+    /// perceives has moved: with her perception unchanged her prompt is byte-identical, so
+    /// asking again only spends the engine on the same question (the M5, 2026-10-27: Aiko
+    /// was asked five times on the same 102,073 tokens, 25-88 s of engine each, card
+    /// d0cf9473). A line, a board change or a view update in any of her activities moves
+    /// it; her beat still rests through the quiet ticks between. Pure.
+    pub(crate) fn on_beat(passed_at_ms: Option<u64>, perception_moved_at_ms: Option<u64>) -> Self {
+        match passed_at_ms {
+            None => Self::Offered,
+            Some(passed) if perception_moved_at_ms.is_some_and(|moved| moved > passed) => Self::Offered,
+            Some(_) => Self::NotOffered,
+        }
+    }
+}
+
 /// The line her initiative turn opens with. A statement of her situation, never an
 /// instruction: what she may do is named once, in `OWN_TIME_BLOCK`, beside it.
 pub(crate) const INITIATIVE_MOMENT: &str = "[initiative] Nothing is assigned to you and no \
      one is waiting on you. This moment and your hands are yours: what you do with them, \
      or whether you do anything, is your choice.";
 
-/// Drive her initiative turn in `turn_room` with her default hands. Reports `drove`
-/// always, and `engaged` only when she acted or spoke, so her beat rests after a pass.
+/// Drive her initiative turn in `turn_room`: in her held card's hands when she holds one, her
+/// default hands otherwise. Reports `drove` always, and `engaged` only when she acted or spoke,
+/// so her beat rests after a pass.
 pub(crate) async fn drive_initiative_turn(
     ctx: &HostedPersona,
     cycle: &crate::cognition::workspace::WorkspaceCycle,
@@ -80,11 +100,20 @@ pub(crate) async fn drive_initiative_turn(
         Some(continuum_base::time::EpochMs::now().millis()),
         crate::cognition::workspace::Cause::Ambient,
     );
-    let settled = crate::cognition::act_observe::drive_to_settle_with_input(
+    // HER OWN TIME CAN BE CARD WORK, and card work is credit-bearing (card 959f3d5c). Driven
+    // without a credit capture, Sahar's own-time submit (2026-10-25, act 0 of an initiative
+    // turn) was never staged: its issuing generation was never indexed, so its review held
+    // forever. Her held card's turn, exactly as a room turn drives it; with no card held this
+    // is her default hands and no capture, as before. Bookkeeping on her own act: it changes
+    // neither her framing nor what she is told.
+    let (settled, _) = crate::persona::card_hands::drive_in_held_card(
         cycle,
+        ctx.identity.peer_id.as_uuid(),
+        &ctx.identity.agent_name,
+        INITIATIVE_MOMENT,
         burst,
-        LIVE_MAX_ACTS,
         crate::cognition::workspace::TurnFraming::initiative(),
+        LIVE_MAX_ACTS,
         conversation,
     )
     .await;
@@ -170,6 +199,16 @@ mod tests {
             assert!(own_time.contains(means), "own time names {means:?} among her means");
             assert!(!INITIATIVE_MOMENT.contains(means), "the opening line is not a menu: {means:?}");
         }
+    }
+
+    // what this catches: re-asking a mind that passed on a prompt that cannot have changed
+    // (card d0cf9473), and the opposite failure, never asking again once her world moves.
+    #[test]
+    fn after_a_pass_only_a_moved_perception_offers_her_initiative_again() {
+        assert_eq!(Initiative::on_beat(None, None), Initiative::Offered, "never passed: offered");
+        assert_eq!(Initiative::on_beat(Some(1_000), None), Initiative::NotOffered, "nothing ever moved");
+        assert_eq!(Initiative::on_beat(Some(1_000), Some(1_000)), Initiative::NotOffered, "moved before the pass");
+        assert_eq!(Initiative::on_beat(Some(1_000), Some(1_001)), Initiative::Offered, "moved since the pass");
     }
 
     // what this catches: the initiative framing losing its act shape or gaining a

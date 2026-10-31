@@ -17,17 +17,15 @@ impl WorkingMemory {
         }
         let scope = self.scope.lock().clone();
         let mut entries = self.entries.lock();
-        entries.push_back(WmEntry {
+        self.push_entry(&mut entries, WmEntry {
             disk_change: Default::default(),
             kind: WmKind::ActionStatement { room },
             text: text.to_owned(),
             acts: Vec::new(),
             native_calls: calls.to_vec(),
             scope,
+            occurrence: 0,
         });
-        while entries.len() > self.capacity {
-            entries.pop_front();
-        }
     }
 
     /// The latest authored decision in this exact activity/root, until settlement.
@@ -55,8 +53,8 @@ impl WorkingMemory {
             pinned: Mutex::new(Vec::new()),
             ended_pins: Mutex::new(Vec::new()),
             restored_acting_card: Mutex::new(None),
-            served_window: AtomicU32::new(0),
             entries: Mutex::new(VecDeque::new()),
+            next_entry_seq: AtomicU64::new(1),
             scope: Mutex::new(None),
             pending_emissions: Mutex::new(Vec::new()),
             last_action: Mutex::new(None),
@@ -98,26 +96,6 @@ impl WorkingMemory {
         self.pending_emissions.lock().iter()
             .filter(|e| e.room == room && e.scope == scope)
             .map(|e| e.peak_tokens).max().unwrap_or(0)
-    }
-
-    /// Adopt the LIVE served context window (tokens) as the basis for every re-injection
-    /// bound. Pushed from the act→observe seam (`act_observe/apply.rs`) off the workspace
-    /// cycle's model binding, every act. Before the first act, or when the cycle carries
-    /// no loadout, [`Self::budget`] reads the serving truth instead of answering "no bound".
-    pub fn set_served_window(&self, tokens: u32) {
-        self.served_window.store(tokens, Ordering::Relaxed);
-    }
-
-    /// The re-injection budget for this mind right now. Unknown window ⇒ no bounds.
-    pub fn budget(&self) -> ContextBudget {
-        match self.served_window.load(Ordering::Relaxed) {
-            // No pin yet (before the first act, or a cycle with no loadout): the serving
-            // truth, never "no bound". This arm was `ContextBudget::unknown()`.
-            0 => ContextBudget::live(),
-            // The ring is STATE, not this turn's prompt: one audience for every turn, so its
-            // share is stable and it collapses only in bursts (see `from_window_for`).
-            w => ContextBudget::from_window_for(w, crate::inference::prefill_rate::Audience::Unattended),
-        }
     }
 
     /// Record a fingerprint (tool name + args) of the action the hands just took, and return
@@ -189,23 +167,31 @@ impl WorkingMemory {
 
     /// Record the reasoning the persona just produced. Blank/empty is ignored
     /// (suppressed-thinking turns record nothing). Oldest ages out past capacity.
+    /// Record `entry` in her ring: stamped with the next occurrence (the one owner of entry
+    /// identity), the oldest leaving past capacity.
+    pub(super) fn push_entry(&self, entries: &mut VecDeque<WmEntry>, mut entry: WmEntry) {
+        entry.occurrence = self.next_entry_seq.fetch_add(1, Ordering::Relaxed);
+        entries.push_back(entry);
+        while entries.len() > self.capacity {
+            entries.pop_front();
+        }
+    }
+
     pub fn record(&self, reasoning: &str) {
         let r = reasoning.trim();
         if r.is_empty() {
             return;
         }
         let mut e = self.entries.lock();
-        e.push_back(WmEntry {
+        self.push_entry(&mut e, WmEntry {
             disk_change: Default::default(),
             kind: WmKind::Thought,
             text: r.to_string(),
             acts: Vec::new(),
             native_calls: Vec::new(),
             scope: None,
+            occurrence: 0,
         });
-        while e.len() > self.capacity {
-            e.pop_front();
-        }
     }
 
     /// Record an ACTION the persona's hands just took (a tool call + its result
@@ -243,14 +229,14 @@ impl WorkingMemory {
     }
 
     /// Attach her stated reasoning for the act just recorded to the open views it touched,
-    /// so each view carries what she understood, not only how far she read. Clipped to the
-    /// window-relative echo budget her other stated reasoning uses.
+    /// so each view carries what she intended, not only how far she read. Whole, never a first
+    /// line: it is an optional level of the open-views source, which her view sizes and drops
+    /// before the cursor (`planning_detail_yields_to_cursor_and_returns_when_granted`).
     pub fn annotate_open_views(&self, intent: &str) {
         let Some(seq) = self.next_action_seq.load(Ordering::Relaxed).checked_sub(1) else {
             return;
         };
-        let max_chars = self.budget().echoed_arg_chars();
-        self.open_views.lock().annotate(seq, intent, max_chars);
+        self.open_views.lock().annotate(seq, intent);
     }
 
     pub(crate) fn record_receipt_measured(
@@ -296,8 +282,8 @@ impl WorkingMemory {
         // wall_source.rs 25+ times in four hours and landed no edit because every earlier
         // read reached her next turn as its last ~2,100 chars (Joel: "the clipping I've
         // yelled about for months"). The producer already fitted it (whole, or its
-        // handle: `spill::LivePin::whole_or_handle`); the budget decides how many of these units
-        // fit (`recent_results_chars`) and the rest collapse to pointers at settlement.
+        // handle: `spill::LivePin::whole_or_handle`); her view decides how much of each she
+        // sees, and the memory owner's shed alone moves a body to its handle (`residency`).
         {
             let tail = a.to_string();
             // A receipt can contain several operations. Retain their typed names
@@ -321,7 +307,6 @@ impl WorkingMemory {
             }
             // The record and the active slot publish together, so a concurrent publisher
             // cannot prune a not-yet-visible receipt.
-            let budget = self.budget();
             let mut actions = self.actions.lock();
             *self.last_action.lock() = Some((seq, a.to_string()));
             actions.push(
@@ -330,30 +315,24 @@ impl WorkingMemory {
                     room,
                     scope: scope.clone(),
                     operation: label,
-                    head: Some(archive_head(seq, a, &acts, budget.trail_head_chars())),
+                    head: Some(ledger_line(seq, a, &acts)),
+                    summary: result_summary(&tail, &acts),
                     result: Some(tail),
                     handle,
-                    written_pointer: None,
+                    stored_chars: None,
+                    received_ms: Some(continuum_base::time::EpochMs::now().millis()),
+                    act: act_identity(&acts),
                 },
-                budget.receipt_archive_chars(),
             );
         }
-        // The ring's share is enforced HERE, at every receipt, with hysteresis: nothing
-        // moves until the share is exceeded, then the oldest collapse to pointers down to
-        // half of it, so the prefix ahead of the newest entries is byte-stable for the whole
-        // run between two bursts. History: eviction on every act past ~3 (2026-08-24) rotated
-        // the head each act, and on a KV that cannot shift (`kv_shiftable = Some(false)`,
-        // "cache_reuse is not supported by this context") re-prefilled everything after it;
-        // the cap was then moved to settlement only. A coding turn is 100+ acts between
-        // settlements: on the M5 (2026-10-16) the rings persisted at 213 results / 686k
-        // chars, 155 / 1.09M, 123 / 442k, 49 / 138k, and fit_messages was the only bound.
-        self.collapse_results_over_cap();
-        // Head into the rolling recency trail: proprioception ("I did #n X") + the
-        // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
-        // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the
+        // No size cap here: the body stays in RAM until the one memory owner sheds
+        // (`residency`). A cap at receipt was a hand-rigged number (`RESULTS_RESIDENT_CHARS`,
+        // 1 << 20 chars) deciding what RAM could hold; the pressure monitor measures it.
+        // Into the rolling recency trail: proprioception ("I did #n X") + the repeat-break
+        // signal, as the act's ledger line, never a cut of its result (goal 7: the result stays
+        // whole in its record and her view levels it). Append-only + `#seq`-stamped keeps the
         // trail's KV-cache prefix byte-stable across a settle-act.
-        let head: String = a.chars().take(self.budget().trail_head_chars()).collect();
-        let text = format!("[action #{seq}] {head}");
+        let text = ledger_line(seq, a, &acts);
         // Her tool head learns from every call, and a verb she found is loaded into the tail.
         let verbs: Vec<String> = acts.iter().map(|act| act.call.name.clone()).collect();
         let found = super::super::tool_head::found_by_finder(acts.iter().map(|act| &act.call));
@@ -365,17 +344,15 @@ impl WorkingMemory {
         let native_calls = e.iter_mut().rev()
             .find(|entry| entry.scope == scope && matches!(entry.kind, WmKind::ActionStatement { room: r } if Some(r) == room))
             .map(|entry| std::mem::take(&mut entry.native_calls)).unwrap_or_default();
-        e.push_back(WmEntry {
+        self.push_entry(&mut e, WmEntry {
             disk_change,
             kind: WmKind::Receipt { n: seq },
             text,
             acts,
             native_calls,
             scope,
+            occurrence: 0,
         });
-        while e.len() > self.capacity {
-            e.pop_front();
-        }
         drop(e);
         // After BOTH the ring and the entry carrying this batch's acts: the set published
         // here names the receipt's handle and each call's, which is what lets the act seam
@@ -390,11 +367,6 @@ impl WorkingMemory {
     /// Process-unique construction ordinal — see the field doc. Diagnostic only.
     pub fn instance_id(&self) -> u64 {
         self.instance
-    }
-
-    pub fn receipt_archive(&self) -> Vec<(Option<Uuid>, String)> {
-        let archive_chars = self.budget().receipt_archive_chars();
-        self.actions.lock().archive(archive_chars).into_iter().map(|(record, head)| (record.room, head.to_owned())).collect()
     }
 
     /// The TYPED acts still in the recency window, oldest → newest — the parallel
@@ -429,43 +401,68 @@ impl WorkingMemory {
 
 }
 
-/// An act's ledger line, `[action #n] ...`. COMPACT from the TYPED channel when there is one
-/// (CAUSAL-MEMORY-GRAPH.md slice B): `name(args)` per call, never the receipt's first line,
-/// which drags the full `because <reasoning>` clause (~250 chars) and starved a 1,808-act
-/// citizen down to 1-2 visible acts (measured live 2026-08-15). The reasoning lives in the
-/// act's engram, reachable through the CausedBy edge. A legacy text receipt (no typed acts)
-/// keeps its first line, cut to the trail head's share.
-fn archive_head(seq: u64, result: &str, acts: &[Observation], trail_head_chars: usize) -> String {
+/// An act's ledger line, `[action #n] ...`, one rendering for her trail and her record. COMPACT
+/// from the TYPED channel when there is one (CAUSAL-MEMORY-GRAPH.md slice B): `name(args)` per
+/// call, never the receipt's first line, which drags the full `because <reasoning>` clause (~250
+/// chars) and starved a 1,808-act citizen down to 1-2 visible acts (measured live 2026-08-15). Its
+/// arguments render by shape, never by size (`Observation::call_line`): a single-line value
+/// whole, a body by its reference, so a value she reads is exactly what she sent or plainly not it
+/// (card d624a9a1). A text receipt with no typed call renders whole: nothing here cuts.
+fn ledger_line(seq: u64, result: &str, acts: &[Observation]) -> String {
     if acts.is_empty() {
-        let head: String = result.lines().take(1).flat_map(str::chars).take(trail_head_chars).collect();
-        return format!("[action #{seq}] {head}");
+        return format!("[action #{seq}] {}", result.trim());
     }
     let calls: Vec<String> = acts
         .iter()
-        .map(|o| format!("{}({})", o.call.name, call_args(&o.call.input, trail_head_chars)))
+        .map(Observation::call_line)
         .collect();
     format!("[action #{seq}] {}", calls.join("; "))
 }
 
-/// One call's arguments for its ledger line, with no value ever cut (card d624a9a1). The line
-/// cut the JSON at 48 chars, so `{"file_path":"/home/resident/.continuum/citizens/pe` read as a
-/// real path: a 1.5B resident copied it, was refused three times, and looped (IntelMac,
-/// 2026-10-22; goal 7). A string value longer than `value_chars`, or spanning lines (a write's
-/// body), becomes an explicit `<N chars>` marker; every other value renders whole. So a value
-/// she reads is either exactly what she sent or plainly not it, never a plausible prefix.
-pub(super) fn call_args(input: &serde_json::Value, value_chars: usize) -> String {
-    fn shown(value: &serde_json::Value, value_chars: usize) -> serde_json::Value {
-        use serde_json::Value;
-        match value {
-            Value::String(text) if text.contains('\n') || text.chars().count() > value_chars => {
-                Value::String(format!("<{} chars>", text.chars().count()))
-            }
-            Value::Array(items) => Value::Array(items.iter().map(|item| shown(item, value_chars)).collect()),
-            Value::Object(fields) => {
-                Value::Object(fields.iter().map(|(key, item)| (key.clone(), shown(item, value_chars))).collect())
-            }
-            other => other.clone(),
+/// One operation's summary level by its typed verb (`continuum_context::levels`): a read's
+/// outline, else (and for any other output) its head and tail. `None` when the text is its own
+/// best summary. The one owner of that choice, for a receipt in the ring and for the newest
+/// result her view cannot hold whole (`prompt/newest_result.rs`).
+pub(crate) fn operation_level(text: &str, act: Option<&Observation>) -> Option<String> {
+    use continuum_context::levels::{summarize, Shape};
+    let read = act.is_some_and(|act| act.output.verb == crate::cognition::act_observe::ToolVerb::Read);
+    let code = read.then(|| summarize(text, Shape::Code(&crate::code::file_engine::gutter_split))).flatten();
+    code.or_else(|| summarize(text, Shape::Output))
+}
+
+/// A receipt's summary level, built per OPERATION by its typed verb (`continuum_context::levels`):
+/// a read's outline (else its ends), any other output's head and tail. A receipt of several
+/// operations summarizes each under its call's name, a part with no smaller level kept whole, so
+/// an error or a second file after a long read is never lost: one code outline over the whole
+/// batch dropped every unnumbered line after the first numbered one (Codex on #5422). `None` when
+/// the result is its own best summary (more than a quarter of it).
+fn result_summary(result: &str, acts: &[Observation]) -> Option<String> {
+    use continuum_context::levels::LEVEL_RATIO;
+    let level = operation_level;
+    match acts {
+        [] => level(result, None),
+        [one] => level(result, Some(one)),
+        many => {
+            // Each part is the act as the receipt shows it (its header over its humanized body),
+            // at its own level: the same seam the single-act branch reads through `result`.
+            let parts: String = many.iter().map(|act| act.render_summary_part(|body| level(body, Some(act)))).collect();
+            (parts.chars().count() * LEVEL_RATIO <= result.chars().count()).then_some(parts)
         }
     }
-    shown(input, value_chars).to_string()
+}
+
+/// An act's invariant-4 identity, from her calls as she made them (never the dispatched copy that
+/// carries a page budget): each call resolved through the dispatch seam to the command that runs,
+/// fingerprinted with its canonical arguments, and given that command's declared effect. `None`
+/// for an act with no typed call.
+fn act_identity(acts: &[crate::cognition::act_observe::Observation]) -> Option<continuum_context::cause::Act> {
+    let calls: Vec<(String, Vec<u8>)> = acts
+        .iter()
+        .map(|act| (crate::ai::tool_dialect::resolve_wire_name(&act.call.name), act.call.canonical_input()))
+        .collect();
+    let effect = continuum_base::tool_effect::ToolEffect::of_calls(
+        calls.iter().map(|(command, _)| crate::sdk_codegen::ext::effect_of(command)),
+    )?;
+    let fingerprint = continuum_context::cause::Fingerprint::of(calls.iter().map(|(command, input)| (command.as_str(), input.as_slice())));
+    Some(continuum_context::cause::Act { fingerprint, effect })
 }

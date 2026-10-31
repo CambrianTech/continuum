@@ -3,88 +3,6 @@
 use super::*;
 use continuum_airc_protocol::DEFAULT_COMMAND_DEADLINE;
 
-// what this catches: an observed correlation is not authorization to answer
-// for another peer; recovery must enforce the same boundary as live replies.
-fn chunk_event(stream_id: &str, kind: &str, text: &str, is_final: bool) -> TranscriptEvent {
-    let mut headers = airc_core::Headers::from([
-        (airc_lib::HEADER_STREAM_ID.to_string(), stream_id.to_string()),
-        (airc_lib::HEADER_STREAM_SEQ.to_string(), "3".to_string()),
-        (airc_lib::HEADER_STREAM_KIND.to_string(), kind.to_string()),
-    ]);
-    if is_final {
-        headers.insert(airc_lib::HEADER_STREAM_FINAL.to_string(), "true".to_string());
-    }
-    TranscriptEvent {
-        event_id: airc_core::EventId::new(),
-        room_id: airc_core::RoomId::new(),
-        peer_id: PeerId(Uuid::new_v4()),
-        client_id: airc_core::ClientId::new(),
-        kind: airc_core::TranscriptKind::Message,
-        occurred_at_ms: 0,
-        lamport: 0,
-        target: MentionTarget::All,
-        headers,
-        body: Some(Body::text(text.to_string())),
-        attachment: None,
-        receipt: None,
-        metadata: serde_json::Value::Null,
-    }
-}
-
-// what this catches (2026-09-17): a remote answer's chunks reach the requester's
-// sink AS THEY ARRIVE, demuxed on the stream id — another stream's chunk and a
-// plain message are ignored, reasoning and prefill keep their own variants (no
-// chain-of-thought leaks into the answer), and the final marker is reported so
-// the idle clock stops. Inference is a stream, not a promise.
-#[test]
-fn wire_chunks_of_this_stream_reach_the_sink_typed_and_others_are_ignored() {
-    use crate::ai::adapter::GenerationChunk;
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let id = Uuid::new_v4().to_string();
-    assert_eq!(
-        forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "fn ", false), &id, &tx),
-        Some(false)
-    );
-    assert_eq!(
-        forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_REASONING, "hmm", false), &id, &tx),
-        Some(false)
-    );
-    assert_eq!(
-        forward_stream_chunk(
-            &chunk_event(&id, crate::routing::STREAM_KIND_PREFILL, r#"{"processed":10,"total":40,"cached":2}"#, false),
-            &id,
-            &tx
-        ),
-        Some(false)
-    );
-    assert_eq!(
-        forward_stream_chunk(&chunk_event("other-stream", airc_lib::STREAM_KIND_TEXT_TOKEN, "nope", false), &id, &tx),
-        None,
-        "another stream's chunk is not ours"
-    );
-    let mut plain = chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "x", false);
-    plain.headers = airc_core::Headers::new();
-    assert_eq!(forward_stream_chunk(&plain, &id, &tx), None, "a plain message is not a chunk");
-    assert_eq!(
-        forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "", true), &id, &tx),
-        Some(true),
-        "the final marker is reported"
-    );
-    drop(tx);
-    let mut got = Vec::new();
-    while let Ok(c) = rx.try_recv() {
-        got.push(c);
-    }
-    assert_eq!(
-        got,
-        vec![
-            GenerationChunk::Token("fn ".into()),
-            GenerationChunk::Reasoning("hmm".into()),
-            GenerationChunk::Prefill { processed: 10, total: 40, cached: 2 },
-        ]
-    );
-}
-
 // what this catches: a transport with no live wire still honours the streaming
 // contract — the whole answer arrives as one trailing chunk, never silence.
 #[tokio::test]
@@ -116,77 +34,16 @@ async fn a_transport_without_a_wire_emits_the_whole_answer_as_one_trailing_chunk
         messages: Vec::new(),
         ..Default::default()
     });
-    let out = stub.send_request_streaming(req, tx).await.expect("stub answers"); // JUSTIFIED: the invariant under test
+    let out = stub
+        .send_request_streaming(req, tx)
+        .await
+        .expect("stub answers"); // JUSTIFIED: the invariant under test
     assert_eq!(out.text_response.text, "whole answer");
-    assert_eq!(rx.try_recv().ok(), Some(GenerationChunk::Token("whole answer".into())));
-    assert!(rx.try_recv().is_err(), "exactly one trailing chunk");
-}
-
-#[test]
-fn reply_identity_room_address_and_framing_are_all_required() {
-    let expected = ReplyExpectation {
-        responder: PeerId(Uuid::new_v4()),
-        requester: PeerId(Uuid::new_v4()),
-        room: airc_core::RoomId::new(),
-        correlation: Uuid::new_v4().to_string(),
-    };
-    let mut event = TranscriptEvent {
-        event_id: airc_core::EventId::new(),
-        room_id: expected.room,
-        peer_id: expected.responder,
-        client_id: airc_core::ClientId::new(),
-        kind: airc_core::TranscriptKind::Message,
-        occurred_at_ms: 0,
-        lamport: 0,
-        target: MentionTarget::Peer(expected.requester),
-        headers: airc_core::Headers::from([
-            (
-                HEADER_AIRC_CORRELATION_ID.to_string(),
-                expected.correlation.clone(),
-            ),
-            (
-                HEADER_CONTINUUM_BODY_HINT.to_string(),
-                COMMAND_RESPONSE_BODY_HINT.to_string(),
-            ),
-        ]),
-        // No body required to reject an unrelated event: no payload decode.
-        body: None,
-        attachment: None,
-        receipt: None,
-        metadata: serde_json::Value::Null,
-    };
-    assert!(expected.matches(&event));
-    event.peer_id = PeerId(Uuid::new_v4());
-    assert!(!expected.matches(&event));
-    event.peer_id = expected.responder;
-    event.room_id = airc_core::RoomId::new();
-    assert!(!expected.matches(&event));
-    event.room_id = expected.room;
-    event.target = MentionTarget::All;
-    assert!(!expected.matches(&event));
-    event.target = MentionTarget::Peer(expected.requester);
-    event.headers.remove(HEADER_AIRC_CORRELATION_ID);
-    assert!(!expected.matches(&event));
-    event.headers.insert(
-        HEADER_AIRC_CORRELATION_ID.to_string(),
-        expected.correlation.clone(),
+    assert_eq!(
+        rx.try_recv().ok(),
+        Some(GenerationChunk::Token("whole answer".into()))
     );
-    event.headers.remove(HEADER_CONTINUUM_BODY_HINT);
-    assert!(!expected.matches(&event));
-}
-
-// what this catches: the two failures must stay distinguishable. A
-// CommandDeadline at 3 s under a 600 s deadline is a closed stream (recover
-// from the store); one at 599 s is the deadline itself (report a timeout).
-// Collapsing them either way reproduces tonight's class: nine false
-// timeouts in 200 s, or a ten-minute wait on a dead peer.
-#[test]
-fn an_early_command_deadline_is_a_closed_stream_a_late_one_is_the_deadline() {
-    let d = Duration::from_secs(600);
-    assert!(reply_stream_ended_early(Duration::from_secs(3), d));
-    assert!(reply_stream_ended_early(Duration::from_secs(500), d));
-    assert!(!reply_stream_ended_early(Duration::from_secs(599), d));
-    assert!(!reply_stream_ended_early(d, d));
+    assert!(rx.try_recv().is_err(), "exactly one trailing chunk");
 }
 
 // what this catches: a revert to the COMMAND deadline. A command answers
@@ -208,7 +65,10 @@ fn a_request_with_a_longer_measured_bound_raises_the_remote_deadline_never_lower
     use crate::inference::turn_bound::effective_bound;
     let long = Duration::from_secs(2_400);
     assert_eq!(effective_bound(REMOTE_INFERENCE_DEADLINE, Some(long)), long);
-    assert_eq!(effective_bound(REMOTE_INFERENCE_DEADLINE, None), REMOTE_INFERENCE_DEADLINE);
+    assert_eq!(
+        effective_bound(REMOTE_INFERENCE_DEADLINE, None),
+        REMOTE_INFERENCE_DEADLINE
+    );
     assert_eq!(
         effective_bound(REMOTE_INFERENCE_DEADLINE, Some(Duration::from_secs(30))),
         REMOTE_INFERENCE_DEADLINE
@@ -241,6 +101,7 @@ fn req(text: &str) -> RemoteInferenceRequest {
         stop_sequences: None,
         tools: None,
         tail_tools: None,
+        view_messages: None,
         tool_choice: None,
         response_format: None,
         active_adapters: None,
@@ -292,10 +153,9 @@ async fn stub_transport_returns_canned_response() {
 
 #[tokio::test]
 async fn stub_transport_can_return_typed_error() {
-    let transport =
-        StubInferenceTransport::always_failing(RemoteInferenceError::NoPeerReachable {
-            message: "test".to_string(),
-        });
+    let transport = StubInferenceTransport::always_failing(RemoteInferenceError::NoPeerReachable {
+        message: "test".to_string(),
+    });
     let result = transport.send_request(req("anything")).await;
     match result {
         Err(RemoteInferenceError::NoPeerReachable { message }) => {
@@ -400,8 +260,7 @@ async fn local_adapter_transport_preserves_correlation_id() {
 #[test]
 fn a_typed_overload_refusal_is_seat_overloaded_and_nothing_else_is() {
     use continuum_airc_protocol::GenerateRefusal;
-    let full =
-        AircCommandResponse::refused("seat overloaded: 2 of 2", GenerateRefusal::Overloaded);
+    let full = AircCommandResponse::refused("seat overloaded: 2 of 2", GenerateRefusal::Overloaded);
     assert!(matches!(
         reply_result(full),
         Err(RemoteInferenceError::SeatOverloaded { message }) if message.contains("2 of 2")
@@ -418,4 +277,26 @@ fn a_typed_overload_refusal_is_seat_overloaded_and_nothing_else_is() {
     let wire = serde_json::json!({"status": "error", "message": "old"});
     let old: AircCommandResponse = serde_json::from_value(wire).expect("decodes"); // boundary: an older seat's wire error
     assert_eq!(old.refusal(), None);
+}
+
+#[test]
+fn settled_failure_survives_partial_progress_but_success_requires_final() {
+    let mut progress = progress::Progress::default();
+    assert!(settle_response(AircCommandResponse::ok(serde_json::json!({})), &progress).is_err());
+    let headers = airc_core::Headers::from([
+        (airc_lib::HEADER_STREAM_ID.into(), "exchange".into()),
+        (airc_lib::HEADER_STREAM_SEQ.into(), "0".into()),
+        (
+            airc_lib::HEADER_STREAM_KIND.into(),
+            airc_lib::STREAM_KIND_TEXT_TOKEN.into(),
+        ),
+    ]);
+    progress
+        .forward(&headers, &Body::text("partial"), "exchange", None)
+        .expect("valid partial chunk");
+    let failure = settle_response(AircCommandResponse::error("seat stopped"), &progress);
+    assert!(
+        matches!(failure, Err(RemoteInferenceError::PeerAdapterFailed { message }) if message == "seat stopped")
+    );
+    assert!(settle_response(AircCommandResponse::ok(serde_json::json!({})), &progress).is_err());
 }

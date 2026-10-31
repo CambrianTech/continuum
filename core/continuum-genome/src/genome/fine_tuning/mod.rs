@@ -84,11 +84,13 @@
 //!   cloud, and cross-grid impls are peers, not a hierarchy.
 
 pub mod adapter;
+pub mod artifact_payload;
 pub mod byte_tokenizer;
 pub mod coordinator;
 pub mod job_actor;
 pub mod job_board;
 pub mod job_dir;
+pub mod training_demand;
 pub mod local_candle_adapter;
 pub mod lora_module;
 pub mod mlx_lora_adapter;
@@ -109,8 +111,8 @@ pub mod training_loop;
 pub mod types;
 
 pub use adapter::{
-    ArcFineTuningAdapter, FineTuningAdapter, FineTuningCapabilities, FineTuningError,
-    TrainerHardware,
+    ArcFineTuningAdapter, Destination, FineTuningAdapter, FineTuningCapabilities, FineTuningError,
+    JobBinding, TrainerHardware,
 };
 pub use byte_tokenizer::{ByteTokenizer, BYTE_PAD_ID, BYTE_VOCAB};
 pub use coordinator::{CoordinatorError, FineTuningCoordinator};

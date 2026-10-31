@@ -1,13 +1,13 @@
 //! `MediaPerceptionSource` — the live-call perception [`RagSource`].
 //!
 //! Wraps a [`PerceptionBuffer`] and delivers the room AS IT IS NOW — who is visible + a
-//! description of what they show — as budgeted [`RagItem`]s. Two disciplines, together:
+//! description of what they show — as one [`RagItem`] per participant. Two disciplines, together:
 //! - **NON-BLOCKING**: reads only the cells RESOLVED so far (`current_percepts` → the
 //!   `MediaFrame::*_if_ready` twins). A still-warming participant is simply absent this
 //!   delivery, present the next — the turn NEVER waits ([[command-async-shape-prefer-stream-never-block]]).
-//! - **BUDGETED**: perception must NOT dominate. It competes for context with
-//!   engram/airc/roster through the ONE flexbox allocator, stopping when its allotment is
-//!   spent ([[perception-feedback-must-not-blow-rag]], [[budget-at-assembly-not-clamp-the-prompt]]).
+//! - **LEVELLED, NEVER SIZED**: every resolved participant is delivered with a `summary`
+//!   and a `pointer`; the ONE allocation in the prompt view decides how much of each
+//!   survives ([[perception-feedback-must-not-blow-rag]], [[budget-at-assembly-not-clamp-the-prompt]]).
 //!
 //! Delivers the TEXT percept (description grounding, available to ANY model). The
 //! thumbnail image for a native-vision persona rides the separate render seam (#190) off
@@ -18,16 +18,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::cognition::rag_budget::{
-     RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
-};
-use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
+use crate::cognition::rag_budget::{RagContext, RagDelivery, RagItem, RagSource};
 use crate::media::{Percept, PerceptionBuffer};
 use crate::runtime::SharedCompute;
 
 use crate::cognition::faculty_ids::MEDIA_PERCEPTION;
 
-/// A persona's live-call visual perception, delivered as budgeted RAG grounding.
+/// The verb that looks at a participant again.
+const LOOK_COMMAND: &str = "perception/look";
+
+/// A persona's live-call visual perception, delivered as RAG grounding.
 pub struct MediaPerceptionSource {
     persona_id: uuid::Uuid,
     /// The room-as-now frame hold (one latest frame per airc participant).
@@ -64,15 +64,16 @@ impl MediaPerceptionSource {
             ),
             _ => return None,
         };
-        let tokens = estimate_tokens(&content);
-        Some(RagItem {
-            content,
-            tokens,
-            metadata: serde_json::json!({
-                "participant": p.participant,
-                "content_hash": p.content_hash,
-            }),
-        })
+        let metadata = serde_json::json!({
+            "participant": p.participant,
+            "content_hash": p.content_hash,
+        });
+        // Coarser level: who is on the call, without the description. Pointer: how to look again.
+        Some(
+            RagItem::whole(p.participant.clone(), content, metadata)
+                .with_summary(format!("[seeing {}] visible on the call", short(&p.participant)))
+                .with_pointer(format!("[{} on the call — {LOOK_COMMAND}]", short(&p.participant))),
+        )
     }
 }
 
@@ -82,16 +83,6 @@ fn short(id: &str) -> &str {
     &id[..8.min(id.len())]
 }
 
-fn empty_delivery() -> RagDelivery {
-    RagDelivery {
-        source_id: MEDIA_PERCEPTION.to_string(),
-        items: Vec::new(),
-        tokens_used: 0,
-        truncated: false,
-        resolution_used: ResolutionPreference::Placeholder,
-    }
-}
-
 #[async_trait]
 impl RagSource for MediaPerceptionSource {
     fn source_id(&self) -> &'static str {
@@ -99,54 +90,26 @@ impl RagSource for MediaPerceptionSource {
     }
 
     fn expand_command(&self) -> Option<&'static str> {
-        Some("perception/look")
+        Some(LOOK_COMMAND)
     }
 
-    /// One resolved perception cell — who is visible / what is shown. A single
-    /// cell is a complete visual fact.
-    fn floor_tokens(&self) -> u32 {
-        48
-    }
-
-    async fn deliver(
-        &self,
-        ctx: &RagContext,
-        budget: u32,
-        resolution: ResolutionPreference,
-    ) -> RagDelivery {
+    async fn deliver(&self, ctx: &RagContext) -> RagDelivery {
         // Persona-scoped: a cross-persona ctx gets nothing (defense in depth, same shape as
         // the roster/airc sources).
         if ctx.persona_id != self.persona_id {
-            return empty_delivery();
+            return RagDelivery::empty(MEDIA_PERCEPTION);
         }
 
         // NON-BLOCKING read of the room as it is NOW — only cells resolved this tick.
-        let percepts = self.buffer.current_percepts(&self.compute);
-        let mut items: Vec<RagItem> = Vec::new();
-        let mut tokens_used: u32 = 0;
-        for p in &percepts {
-            let Some(item) = Self::make_item(p) else {
-                continue;
-            };
-            // BUDGET: perception must NOT dominate — stop when the allotment is spent.
-            // A truncated view is still truthful for the participants it names.
-            if tokens_used.saturating_add(item.tokens) > budget {
-                break;
-            }
-            tokens_used += item.tokens;
-            items.push(item);
-        }
-
-        RagDelivery {
-            source_id: MEDIA_PERCEPTION.to_string(),
-            items,
-            tokens_used,
-            // Room-as-now, not a paginated history.
-            truncated: false,
-            resolution_used: resolution,
-        }
+        let items = self
+            .buffer
+            .current_percepts(&self.compute)
+            .iter()
+            .filter_map(Self::make_item)
+            .collect();
+        // Room-as-now, not a paginated history.
+        RagDelivery::of(MEDIA_PERCEPTION, items, false)
     }
-
 }
 
 #[cfg(test)]
@@ -212,39 +175,31 @@ mod tests {
         )
     }
 
-    // what this catches: a resolved percept becomes a budgeted "[seeing …] <desc>" grounding
-    // item; wrong persona gets nothing; a zero budget yields nothing (perception must not
-    // dominate). The core deliver contract.
+    // what this catches: a resolved percept becomes one "[seeing …] <desc>" item keyed by
+    // participant with a summary and a pointer; wrong persona gets nothing. The core
+    // deliver contract.
     #[tokio::test]
-    async fn delivers_resolved_percepts_as_budgeted_grounding() {
+    async fn delivers_resolved_percepts_as_levelled_grounding() {
         let pid = Uuid::new_v4();
         let (src, _compute) = source_with_resolved_alice(pid).await;
         let ctx = RagContext::for_persona(pid, 0);
 
-        let d = src.deliver(&ctx, 10_000, ResolutionPreference::Raw).await;
+        let d = src.deliver(&ctx).await;
         assert_eq!(d.items.len(), 1, "one resolved participant → one item");
         assert!(
             d.items[0].content.contains("seeing"),
             "grounds who is seen: {}",
             d.items[0].content
         );
+        assert_eq!(d.items[0].key, "alice-peer");
+        assert!(d.items[0].summary.as_deref().is_some_and(|s| s.contains("visible on the call")));
+        assert!(d.items[0].pointer.as_deref().is_some_and(|p| p.contains("perception/look")));
         assert!(d.tokens_used > 0);
         assert!(!d.truncated, "room-as-now, never paginated");
 
         // Cross-persona → empty (defense in depth).
         let other = RagContext::for_persona(Uuid::new_v4(), 0);
-        assert!(src
-            .deliver(&other, 10_000, ResolutionPreference::Raw)
-            .await
-            .items
-            .is_empty());
-
-        // Zero budget → nothing (must NOT dominate context).
-        assert!(src
-            .deliver(&ctx, 0, ResolutionPreference::Raw)
-            .await
-            .items
-            .is_empty());
+        assert!(src.deliver(&other).await.items.is_empty());
     }
 
     // what this catches: NON-BLOCKING — a participant whose cells haven't resolved yet is
@@ -267,7 +222,7 @@ mod tests {
         // (observe spawns a warm task, but we don't await it — read immediately.)
         let src = MediaPerceptionSource::new(pid, buffer, compute);
         let ctx = RagContext::for_persona(pid, 0);
-        let d = src.deliver(&ctx, 10_000, ResolutionPreference::Raw).await;
+        let d = src.deliver(&ctx).await;
         assert!(
             d.items.is_empty(),
             "unresolved participant is absent this tick, not awaited"

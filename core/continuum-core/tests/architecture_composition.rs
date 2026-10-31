@@ -220,7 +220,7 @@ fn invariants_hold_across_all_phase_1_primitives() {
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_persona_pipelines_do_not_contend() {
     use continuum_core::cognition::response_validator::clean_and_validate;
-    use continuum_core::cognition::text_analysis::LoopDetector;
+    use continuum_text_analysis::LoopDetector;
     use std::sync::Arc;
     use std::time::Instant;
 

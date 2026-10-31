@@ -82,7 +82,7 @@
             reason: "test".to_string(),
             exclusive: true,
         };
-        let operator = OperatorRoster { hold: Some(hold), resting: Vec::new() };
+        let operator = OperatorRoster { hold: Some(hold), resting: Vec::new(), dormant: Default::default() };
         let intents = draw_intents(&mut provider, &plan, &operator, 0).await.expect("draw");
         let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
         assert_eq!(names, vec!["Alpha", "Delta", "Foxtrot"]);
@@ -123,11 +123,13 @@
         spawner.serving_base_model = Some("some/model".to_string());
         spawner.serving_lanes = 2;
         assert_eq!(spawner.seats(), 12.min(2 * per), "nothing published: the warm-slot prior");
-        spawner.set_grid_roster(Some(GridRoster { seated: 4, open: 4 }));
+        spawner.set_grid_roster(Some(GridRoster { seated: 4, open: 4, resuming: 0 }));
         assert_eq!(spawner.seats(), 8, "the allocation counts eight seats here");
-        spawner.set_grid_roster(Some(GridRoster { seated: 1, open: 0 }));
+        spawner.set_grid_roster(Some(GridRoster { seated: 1, open: 0, resuming: 0 }));
         assert_eq!(spawner.seats(), 1, "a held or full grid seats one");
-        spawner.set_grid_roster(Some(GridRoster { seated: 10, open: 10 }));
+        spawner.set_grid_roster(Some(GridRoster { seated: 2, open: 0, resuming: 2 }));
+        assert_eq!(spawner.seats(), 4, "held minds can resume before they have live runtime ids");
+        spawner.set_grid_roster(Some(GridRoster { seated: 10, open: 10, resuming: 0 }));
         assert_eq!(spawner.seats(), 12, "never past what the provider can yield");
         spawner.set_grid_roster(None);
         assert_eq!(spawner.seats(), 12.min(2 * per), "unpublished again: the prior");
@@ -386,6 +388,7 @@
                     since_ms: 0,
                     build: String::new(),
                 }],
+                dormant: Default::default(),
             }
         }
         let held = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat)
@@ -429,6 +432,96 @@
         let top_up: Vec<DesiredRole> = plan[..2].to_vec();
         let drawn = draw_intents(&mut empty, &top_up, &OperatorRoster::default(), 6).await.expect("a top-up that draws nothing is a partial roster");
         assert!(drawn.is_empty(), "nothing to seat, nothing failed");
+    }
+
+    // what this catches (the M5, 2026-10-27 00:16Z): the four-name hold expired and the
+    // reconciler resumed every home from disk, ten minds on two lanes. A dormant home is
+    // never drawn on boot (the seat goes to the next awake one) and never counted as a
+    // seat, with or without the hold: twelve dormant of sixteen seat four either way.
+    #[tokio::test]
+    async fn a_dormant_home_is_not_resumed_on_boot_with_or_without_the_hold() {
+        struct Yield(std::collections::VecDeque<&'static str>);
+        #[async_trait::async_trait]
+        impl crate::persona::identity_provider::PersonaIdentityProvider for Yield {
+            fn name(&self) -> &'static str {
+                "yield"
+            }
+            async fn next_persona(
+                &mut self,
+            ) -> Result<Option<PersonaIdentityIntent>, crate::persona::identity_provider::PersonaIdentityError> {
+                Ok(self.0.pop_front().map(|n| PersonaIdentityIntent {
+                    persona_id: uuid::Uuid::new_v4(),
+                    agent_name: n.to_string(),
+                    source: crate::persona::identity_provider::PersonaIdentitySource::ResumedFromDisk,
+                }))
+            }
+        }
+        fn dormant(name: &str) -> crate::persona::dormancy::PersonaWakefulness {
+            crate::persona::dormancy::PersonaWakefulness {
+                id: crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4()),
+                agent_name: name.to_string(),
+                state: crate::persona::dormancy::Wakefulness::Dormant { since_ms: 1, reason: "population".into(), by: "test".into() },
+                changed_at_ms: 1,
+            }
+        }
+        let operator = OperatorRoster { hold: None, resting: Vec::new(), dormant: crate::persona::dormancy::DormantSet::Known(vec![dormant("Bravo")]) };
+        let mut provider = Yield(["Alpha", "Bravo", "Charlie"].into_iter().collect());
+        let plan: Vec<DesiredRole> = (0..3).map(|_| DesiredRole { role: RoleId::Helper, model_id: "m".to_string(), lanes: 1, served_context_window: 4096 }).collect();
+        let drawn = draw_intents(&mut provider, &plan, &operator, 0).await.expect("a partial roster"); // test: a failure here is the assertion failing loudly
+        let names: Vec<&str> = drawn.iter().map(|i| i.agent_name.as_str()).collect();
+        assert_eq!(names, vec!["Alpha", "Charlie"], "the dormant home is skipped, the awake ones seat");
+
+        fn twelve_dormant(hold: bool) -> OperatorRoster {
+            let names = ["Aiko", "Aris", "Atlas", "Benchy"];
+            OperatorRoster {
+                hold: hold.then(|| crate::persona::roster_hold::RosterHold {
+                    only: names.iter().map(|s| s.to_string()).collect(),
+                    until_ms: u64::MAX,
+                    reason: "population".into(),
+                    exclusive: true,
+                }),
+                resting: Vec::new(),
+                dormant: crate::persona::dormancy::DormantSet::Known((0..12).map(|i| dormant(&format!("Dormant{i}"))).collect()),
+            }
+        }
+        let seats = |roster: fn() -> OperatorRoster| {
+            PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat)
+                .with_population(16)
+                .with_operator_roster(roster)
+                .seats()
+        };
+        assert_eq!(seats(|| twelve_dormant(true)), 4, "under the hold: the four it names");
+        assert_eq!(seats(|| twelve_dormant(false)), 4, "after the hold lapses: still four, the dormant stay down");
+    }
+
+    // what this catches: a wakefulness store that failed to open read as "nobody dormant",
+    // which resumes every home from disk (tonight's incident, replayed). Unavailable fails
+    // closed: no resumed home is drawn; a freshly minted birth still is.
+    #[tokio::test]
+    async fn an_unavailable_ledger_resumes_no_home_from_disk() {
+        use crate::persona::identity_provider::PersonaIdentitySource;
+        struct Yield(std::collections::VecDeque<(&'static str, PersonaIdentitySource)>);
+        #[async_trait::async_trait]
+        impl crate::persona::identity_provider::PersonaIdentityProvider for Yield {
+            fn name(&self) -> &'static str {
+                "yield"
+            }
+            async fn next_persona(
+                &mut self,
+            ) -> Result<Option<PersonaIdentityIntent>, crate::persona::identity_provider::PersonaIdentityError> {
+                Ok(self.0.pop_front().map(|(n, source)| PersonaIdentityIntent { persona_id: uuid::Uuid::new_v4(), agent_name: n.to_string(), source }))
+            }
+        }
+        let operator = OperatorRoster { hold: None, resting: Vec::new(), dormant: crate::persona::dormancy::DormantSet::Unavailable };
+        let mut provider = Yield(
+            [("Aiko", PersonaIdentitySource::ResumedFromDisk), ("Idris", PersonaIdentitySource::ResumedFromDisk), ("Newborn", PersonaIdentitySource::FreshlyMinted)]
+                .into_iter()
+                .collect(),
+        );
+        let plan: Vec<DesiredRole> = (0..3).map(|_| DesiredRole { role: RoleId::Helper, model_id: "m".to_string(), lanes: 1, served_context_window: 4096 }).collect();
+        let drawn = draw_intents(&mut provider, &plan, &operator, 0).await.expect("a partial roster"); // test: a failure here is the assertion failing loudly
+        let names: Vec<&str> = drawn.iter().map(|i| i.agent_name.as_str()).collect();
+        assert_eq!(names, vec!["Newborn"], "no home from disk while the ledger is unavailable; a birth still seats");
     }
 
     // what this catches (2026-09-14): a working round's team hold shrinking the roster —

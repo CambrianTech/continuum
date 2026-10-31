@@ -41,6 +41,10 @@ struct FakeControl {
     in_place: GenomeInPlace,
     /// How many times the reconcile asked this lane to record its observed placement.
     placements_recorded: AtomicUsize,
+    /// `serve` refuses to retire the incumbent and signals nothing (card 931cfd22).
+    retirement_refused: bool,
+    /// The loaded adapter set cannot be read (an unknown genome).
+    adapters_unreadable: bool,
 }
 
 impl FakeControl {
@@ -59,7 +63,20 @@ impl FakeControl {
             served_window: 32768,
             in_place: GenomeInPlace::Unsupported,
             placements_recorded: AtomicUsize::new(0),
+            retirement_refused: false,
+            adapters_unreadable: false,
         }
+    }
+    /// Model an engine whose loaded adapter set cannot be read.
+    fn adapters_unreadable(mut self) -> Self {
+        self.adapters_unreadable = true;
+        self
+    }
+    /// Model a replacement whose incumbent cannot be retired safely: `serve` refuses before
+    /// signalling it, as `retire_adopted` does when checkpoint custody refuses.
+    fn retirement_refused(mut self) -> Self {
+        self.retirement_refused = true;
+        self
     }
     fn with_in_place(mut self, outcome: GenomeInPlace) -> Self {
         self.in_place = outcome;
@@ -138,6 +155,9 @@ impl LlamaServerControl for FakeControl {
         }
     }
     async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
+        if self.adapters_unreadable {
+            return Err(LlamaServerError::Unreachable("adapter set unreadable".into()));
+        }
         Ok(self.active_adapters.clone())
     }
     async fn adopt_genome_in_place(
@@ -148,6 +168,9 @@ impl LlamaServerControl for FakeControl {
     }
     async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
         self.serves.fetch_add(1, Ordering::SeqCst);
+        if self.retirement_refused {
+            return Err(LlamaServerError::RetirementRefused("adopted checkpoint requires a known pool".into()));
+        }
         if self.serve_ok {
             Ok(())
         } else {

@@ -165,11 +165,19 @@ pub struct AdmissionPatience {
 }
 
 impl AdmissionPatience {
-    pub fn for_turn(bound: Option<std::time::Duration>, elapsed: std::time::Duration) -> Self {
+    /// A generation occupancy estimate is not an admission expiry. Healthy queue
+    /// and paging work stays owned until admitted or the requester cancels.
+    pub fn for_turn() -> Self {
         Self {
             readiness: crate::inference::slots::EndpointSlots::TURN_READINESS_PATIENCE,
-            deadline: bound.map(|bound| tokio::time::Instant::now() + bound.saturating_sub(elapsed)),
+            deadline: None,
         }
+    }
+
+    /// An explicit caller expiry, already expressed on the monotonic clock.
+    /// Do not derive this from predicted generation occupancy.
+    pub fn until(deadline: tokio::time::Instant) -> Self {
+        Self { deadline: Some(deadline), ..Self::for_turn() }
     }
 }
 
@@ -193,8 +201,9 @@ impl From<std::time::Duration> for AdmissionPatience {
 /// `patience` is how long the turn holds through a CLOSED endpoint (an engine still
 /// loading, a transition in flight) before it is refused — the caller's bound, since
 /// only the caller knows what its request can afford: the persona adapter passes
-/// `AdmissionPatience::for_turn(turn_bound, elapsed)`. Readiness time is cumulative
-/// across retries; healthy slot and adapter waits spend only the request deadline.
+/// `AdmissionPatience::for_turn()`. Readiness time is cumulative across retries;
+/// healthy slot and adapter waits end only on cancellation or an explicit caller
+/// expiry supplied with `AdmissionPatience::until`.
 /// A test that asserts immediate readiness refusal passes zero. See `EndpointSlots::admit_when_ready`
 /// for the boot window that cost Kimi 16 turns.
 pub async fn admit_turn(
@@ -384,6 +393,10 @@ async fn admit(
                 admission.released = Some(pool.released());
                 admission._slot_permit = Some(pool.acquire_slot(slot).await?);
                 admission._endpoint.check_ready()?;
+                // Before the plan moves the slot's attribution: once a stop has closed page IO,
+                // nothing pages a resident out (card 47151d36, `slots::page_io`).
+                let page_io = crate::inference::slots::admit_page_io(crate::inference::slots::page_io::gate())
+                    .map_err(|closed| closed.to_string())?;
                 let pg = pool.plan_paging(slot, k);
                 admission.page_confirmed = pg.already_resident;
                 if pg.already_resident {
@@ -422,6 +435,8 @@ async fn admit(
                     let client = client.clone();
                     let paging_root = root.to_owned();
                     admission = admission.retain_paging(root, move |mut admission, interested| async move {
+                        // Held until this task's ledger updates: the stop waits for it.
+                        let _page_io = page_io;
                         // 3. The context switch onto a now-free slot: page the evictee out,
                         //    page this activity in. Lands immediately (no defer) because the slot
                         //    is not decoding.
@@ -482,7 +497,9 @@ async fn admit(
             // BEFORE the await so cancellation cannot leave the next page treating
             // transient KV as its own warm tail.
             let slot = pool.transient_slot();
-            admission = admission.borrow_slot_for_transient(pool, slot, client, root).await?;
+            admission = admission
+                .borrow_slot_for_transient(pool, slot, client, root, crate::inference::slots::page_io::gate())
+                .await?;
         } else if let (Some(pool), Some(scratch)) = (pool.as_ref(), admission.scratch) {
             // Anonymous traffic lands on the SCRATCH slot, and takes its operation permit
             // like every other slot user. Before this, every non-turn call wrote the
@@ -508,15 +525,21 @@ impl TurnAdmission {
     /// operation permit (event-driven, behind any live decode), detach its resident and
     /// SAVE the resident's page so its warmth survives, and leave the slot unattributed
     /// so no page later mistakes this traffic's KV for its own.
+    ///
+    /// The `page_io` permit is taken before the resident is detached, as on the keyed
+    /// path: once a stop has closed page IO, a borrow neither detaches a resident nor
+    /// starts a save, and a save it started holds the stop until its ledger update.
     async fn borrow_slot_for_transient(
         mut self,
         pool: &Arc<KvSlotPool>,
         slot: u32,
         client: &reqwest::Client,
         root: &str,
+        page_io: &'static crate::runtime::admission_gate::AdmissionGate,
     ) -> Result<Self, String> {
         self._slot_permit = Some(pool.acquire_slot(slot).await?);
         self._endpoint.check_ready()?;
+        let page_io = crate::inference::slots::admit_page_io(page_io).map_err(|closed| closed.to_string())?;
         let (previous, pin) = pool.take_resident(slot);
         self._pin = pin;
         if let Some(previous) = previous {
@@ -524,6 +547,8 @@ impl TurnAdmission {
             let client = client.clone();
             let paging_root = root.to_owned();
             self = self.retain_paging(root, move |mut admission, _interested| async move {
+                // Held until this save's ledger update: the stop waits for it.
+                let _page_io = page_io;
                 pool.note_page_lost(&previous);
                 if admission.page_action(&client, &paging_root, slot, &previous, "save").await? {
                     pool.note_saved(previous);
@@ -558,6 +583,16 @@ pub async fn admit_transient(
     root: &str,
     slot: Option<u32>,
 ) -> Result<TurnAdmission, String> {
+    admit_transient_through(client, root, slot, crate::inference::slots::page_io::gate()).await
+}
+
+/// [`admit_transient`] through the page-IO gate `page_io`.
+async fn admit_transient_through(
+    client: &reqwest::Client,
+    root: &str,
+    slot: Option<u32>,
+    page_io: &'static crate::runtime::admission_gate::AdmissionGate,
+) -> Result<TurnAdmission, String> {
     let endpoint = crate::inference::slots::directory()
         .endpoint(root)
         .admit()
@@ -590,7 +625,7 @@ pub async fn admit_transient(
             pool.n_slots()
         ));
     }
-    admission = admission.borrow_slot_for_transient(&pool, slot, client, root).await?;
+    admission = admission.borrow_slot_for_transient(&pool, slot, client, root, page_io).await?;
     Ok(admission)
 }
 
@@ -600,16 +635,22 @@ pub async fn admit_transient(
 static KV_PAGE_SWITCH_MS: crate::inference::resource_admission::WaitRing =
     crate::inference::resource_admission::WaitRing::new();
 
-/// How many of a slot's NEWEST context checkpoints a saved page carries, beside its oldest
-/// (the head of the first user turn, which the engine always keeps). A restore resumes from
-/// the newest checkpoint at or before where the next prompt diverges. Measured on the M5
-/// (engine log 2026-10-20..23, 804 resumes right after a page restore): 61% chose a
-/// checkpoint in the head (<16k), 22% one within 8k of the slot's end, 17% one in between.
-/// Since the epoch view went live (05:09Z 10-23), 5 of 5 chose the head or one at most
-/// 10.3k behind the end, which at the M5's spacing (window / 32, ~4k at 130k) is the third
-/// newest. A 27-checkpoint page measured 11.4 GB of sidecar (~424 MB each) beside a 2.2 GB
-/// state, and its save took 66-100 s. An engine without the subset ignores the field.
-pub(crate) const PAGE_CHECKPOINTS_NEWEST: u32 = 4;
+/// The page body for `filename` that names which context checkpoints a saved page carries;
+/// the quote (`save-size`) and the write send the same one, or the admitted bytes lie. A
+/// restore resumes from the newest checkpoint at or before where her next prompt diverges,
+/// and that is the end of her view: the next act resends it and rebuilds the tail after it.
+/// So the page keeps its head (the shared head of the first user turn), the newest checkpoint
+/// at or before the view end (the engine makes one there, from the request's
+/// `view_messages`), and those the engine made for her last prompt's end (an act that resends
+/// that prompt whole: 54 of 161 page-ins). Positions, not a count: on the M5 (engine log
+/// 2026-10-26, 161 page-ins) the newest four sat inside the closing block, past where her
+/// next prompt diverged, and 107 page-ins resumed from the ~11k head with 33-89k matched.
+///
+/// `keep_newest_checkpoints: 0` is for an engine that predates `keep_view_checkpoints`: it
+/// saves the head alone, never all of them (27 measured 11.4 GB of sidecar and a 66-100 s save).
+pub(crate) fn page_body(filename: &str) -> serde_json::Value {
+    json!({ "filename": filename, "keep_view_checkpoints": true, "keep_newest_checkpoints": 0 })
+}
 
 /// Below this a switch is never called a wedge, whatever the ring says — the floor the
 /// first switch on a box is judged by (the UMA case lands in ~0.1 s; the floor is 100×).
@@ -649,7 +690,7 @@ const QUIET_ENGINE_CHECKPOINTS: u32 = 8;
 /// quiet engine here is working the switch itself.
 async fn wait_while_engine_progresses<T, W, P, PF>(
     work: W,
-    bound: std::time::Duration,
+    bounds: impl Into<crate::inference::llama_server::WaitBounds>,
     progress: P,
     on_busy: impl FnMut(u64),
 ) -> Option<T>
@@ -658,7 +699,7 @@ where
     P: FnMut() -> PF,
     PF: std::future::Future<Output = EngineProbe>,
 {
-    crate::inference::llama_server::wait_while_engine_progresses(work, bound, QUIET_ENGINE_CHECKPOINTS, progress, on_busy).await
+    crate::inference::llama_server::wait_while_engine_progresses(work, bounds, QUIET_ENGINE_CHECKPOINTS, progress, on_busy).await
 }
 
 /// Execute one page action through the shared turn/warm-ahead boundary. The
@@ -700,7 +741,7 @@ pub(crate) async fn kv_page_action(
 // or the concurrently updated switch-cost distribution.
 async fn bounded_page_receipt<P, PF>(
     request: reqwest::RequestBuilder,
-    bound: std::time::Duration,
+    bounds: impl Into<crate::inference::llama_server::WaitBounds>,
     progress: P,
     on_busy: impl FnMut(u64),
 ) -> Option<Result<(u16, Option<serde_json::Value>), reqwest::Error>>
@@ -714,7 +755,65 @@ where
         let body = response.json::<serde_json::Value>().await.ok();
         Ok((status, body))
     };
-    wait_while_engine_progresses(receipt, bound, progress, on_busy).await
+    wait_while_engine_progresses(receipt, bounds, progress, on_busy).await
+}
+
+/// Why a page save's size quote gave no size: each a different fault, so the refusal names which
+/// (card 8fa1c147; enrico 2026-10-25/26: 11 refusals and 13 cold turns read only "quote
+/// unavailable", and nothing said whether the engine refused, answered for another slot, or was
+/// still busy with a prefill when the bound passed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum QuoteMiss {
+    /// The request did not reach the engine or its reply did not arrive.
+    Unsent(String),
+    /// The engine answered with a non-success status.
+    Status(u16),
+    /// The engine answered for another slot or another file.
+    Mismatch,
+    /// The answer named no positive size.
+    NoSize,
+    /// The engine stopped making progress (or stopped answering) before it quoted.
+    EngineStopped,
+}
+
+impl std::fmt::Display for QuoteMiss {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsent(error) => write!(f, "request not delivered: {error}"),
+            Self::Status(status) => write!(f, "engine answered HTTP {status}"),
+            Self::Mismatch => f.write_str("engine answered for another slot or file"),
+            Self::NoSize => f.write_str("engine named no positive size"),
+            Self::EngineStopped => f.write_str("engine stopped progressing before it quoted"),
+        }
+    }
+}
+
+/// Ask the engine what a save of `slot` into `filename` would write. The quote names the same
+/// checkpoint subset as the write, or the admitted bytes lie. A non-success status returns before
+/// its body is read, so an engine that refuses and then stalls its error body is a `Status` miss
+/// at once, never a wait that a stall watchdog could report as `EngineStopped` (Codex on #5441).
+pub(crate) async fn request_quote(client: &reqwest::Client, root: &str, slot: u32, filename: &str) -> Result<u64, QuoteMiss> {
+    let response = client.post(format!("{}/slots/{slot}?action=save-size", root.trim_end_matches('/')))
+        .json(&page_body(filename)).send().await
+        .map_err(|error| QuoteMiss::Unsent(error.to_string()))?;
+    let status = response.status().as_u16();
+    if !response.status().is_success() {
+        return Err(QuoteMiss::Status(status));
+    }
+    let body = response.json::<serde_json::Value>().await.ok();
+    read_quote(status, body.as_ref(), slot, filename)
+}
+
+/// PURE: the size an engine's `save-size` reply quotes for exactly this slot and file.
+pub(crate) fn read_quote(status: u16, body: Option<&serde_json::Value>, slot: u32, filename: &str) -> Result<u64, QuoteMiss> {
+    if !(200..300).contains(&status) {
+        return Err(QuoteMiss::Status(status));
+    }
+    let body = body.ok_or(QuoteMiss::NoSize)?;
+    if body["id_slot"].as_u64() != Some(u64::from(slot)) || body["filename"].as_str() != Some(filename) {
+        return Err(QuoteMiss::Mismatch);
+    }
+    body["projected_bytes"].as_u64().filter(|bytes| *bytes > 0).ok_or(QuoteMiss::NoSize)
 }
 
 // The page-action boundary accepts capacity evidence from its existing owner;
@@ -733,6 +832,11 @@ async fn kv_page_action_with_capacity(
     let operation = (action == "restore").then(uuid::Uuid::new_v4);
     let (p50_ms, p90_ms, measured) = KV_PAGE_SWITCH_MS.p50_p90();
     let bound = kv_page_wedge_bound(p90_ms);
+    // Another slot may be mid-batch: its counters move once per batch, so an engine that is
+    // processing and unmoved is judged over the measured batch window, never one checkpoint
+    // (card 0b52b957: 3 of 3 saves refused 15-17 s into a ~190 s batch on enrico).
+    let model = crate::inference::slots::directory().endpoint(root).launched_model();
+    let bounds = crate::inference::llama_server::WaitBounds::for_model(bound, model.as_deref());
     let started = std::time::Instant::now();
     // BUSY IS NOT DEAD. The bound is a checkpoint, never a verdict: llama-server runs
     // slot save/restore on its task queue BETWEEN decode batches, so under a full set
@@ -744,39 +848,27 @@ async fn kv_page_action_with_capacity(
     // queue this switch sits in is moving and the switch keeps waiting. A queue that
     // stops moving, or an engine that stops answering, turns the switch uncertain at
     // that checkpoint, and a dead engine ends it sooner when its socket drops.
-    let mut payload = json!({ "filename": filename });
-    if action == "save" {
-        payload["keep_newest_checkpoints"] = json!(PAGE_CHECKPOINTS_NEWEST);
-    }
+    let mut payload = if action == "save" { page_body(&filename) } else { json!({ "filename": filename }) };
     if let Some(operation) = operation {
         payload["operation_id"] = json!(operation);
     }
     if action == "save" && governed {
         // A separate action is required: older engines must not mistake a quote for a write.
-        let quote = async {
-            // The quote names the same checkpoint subset as the write, or the admitted bytes lie.
-            let response = client.post(format!("{}/slots/{slot}?action=save-size", root.trim_end_matches('/')))
-                .json(&json!({ "filename": filename, "keep_newest_checkpoints": PAGE_CHECKPOINTS_NEWEST })).send().await.ok()?;
-            if !response.status().is_success() {
-                return None;
-            }
-            let body = response.json::<serde_json::Value>().await.ok()?;
-            (body["id_slot"].as_u64() == Some(slot as u64)
-                && body["filename"].as_str() == Some(filename.as_str()))
-                .then(|| body["projected_bytes"].as_u64()).flatten().filter(|bytes| *bytes > 0)
-        };
         let projected = wait_while_engine_progresses(
-            quote, bound,
+            request_quote(client, root, slot, &filename), bounds,
             || crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client),
             |_| {},
-        ).await.flatten();
-        let admission = projected.ok_or_else(|| "exact page file quote unavailable; no write requested".to_string())
+        ).await.unwrap_or(Err(QuoteMiss::EngineStopped)); // unwrap_or: the wait gives up only when the engine stopped progressing or answering
+        let admission = projected.map_err(|miss| format!("exact page file quote unavailable ({miss}); no write requested"))
             .and_then(|bytes| { admit_bytes(bytes)?; Ok(bytes) });
         match admission {
             Ok(bytes) => payload["admitted_bytes"] = json!(bytes),
             Err(reason) => {
                 continuum_base::probe!(class = "inference.kv_page.admission_refused", slot = slot as u64,
-                    reason = %reason, "page save refused before any checkpoint file write");
+                    reason = %reason, unmoved_ms = bounds.unmoved.as_millis() as u64,
+                    unmoved_rate_tps = bounds.unmoved_rate.unwrap_or(0.0), // unwrap_or: 0 = no rate measured, named by the source field
+                    unmoved_rate_source = bounds.unmoved_rate_source,
+                    "page save refused before any checkpoint file write");
                 return PageOutcome::Rejected;
             }
         }
@@ -784,7 +876,7 @@ async fn kv_page_action_with_capacity(
     // The same progress bound covers the complete receipt, not just headers.
     let resp = bounded_page_receipt(
         client.post(&url).json(&payload),
-        bound,
+        bounds,
         || async {
             match operation {
                 Some(operation) => crate::inference::llama_server::restore_probe(root.trim_end_matches('/'), client, operation, slot).await,
@@ -798,6 +890,8 @@ async fn kv_page_action_with_capacity(
                 slot = slot as u64,
                 waited_ms = started.elapsed().as_millis() as u64,
                 bound_ms = bound.as_millis() as u64,
+                unmoved_ms = bounds.unmoved.as_millis() as u64,
+                unmoved_rate_source = bounds.unmoved_rate_source,
                 busy_checkpoints,
                 "a page switch outlived its bound while the engine's queue kept moving \
                  — waiting on it, not replacing the engine",
@@ -840,6 +934,20 @@ async fn kv_page_action_with_capacity(
         }
         _ => PageOutcome::Uncertain,
     };
+    // An uncertain receipt quarantines this engine: what it was doing is taken now, while it
+    // is still the engine that did not answer (card 3913621a).
+    if outcome == PageOutcome::Uncertain {
+        let evidence = crate::inference::engine_stall::capture(root).await;
+        continuum_base::probe!(
+            class = "inference.kv_page.stall_evidence",
+            action = %action,
+            slot = slot as u64,
+            status = status as u64,
+            silent_ms = %evidence.silent_ms.map_or_else(|| "unknown".to_string(), |ms| ms.to_string()),
+            sample = %evidence.sample.as_ref().map_or_else(|why| format!("none: {why}"), |path| path.display().to_string()),
+            "the engine did not complete a page switch: its stack and how long its log was silent, taken before it is replaced"
+        );
+    }
     let ok = outcome == PageOutcome::Completed;
     let ms = started.elapsed().as_millis() as u64;
     if ok {

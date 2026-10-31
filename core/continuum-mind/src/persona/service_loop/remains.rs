@@ -198,8 +198,8 @@ pub struct ServeOutcome {
     /// Time spent in `cognition.compose_for_turn` (the RAG flexbox
     /// composer + multi-source delivery). Holds the cognition mutex.
     pub compose_latency: LatencyAggregate,
-    /// Time spent in `persona::response::respond` (the cognition
-    /// cycle including the LLM call). Does NOT hold the cognition
+    /// Time spent in the turn's cognition cycle (including the LLM
+    /// call). Does NOT hold the cognition
     /// mutex — the substrate stays responsive while the model
     /// decodes. This is typically the dominant cost and the
     /// primary target of subsequent optimization slices.
@@ -231,12 +231,13 @@ pub async fn serve_persona_loop(
     ctx: &HostedPersona,
     conversation: &mut dyn CitizenConversation,
     opts: ServeOptions,
+    obligations: crate::persona::obligation::Obligations,
 ) -> Result<ServeOutcome, String> {
     use tracing::Instrument;
     // Her presence reads THIS: "ready" means a loop is running, not merely that her airc
     // runtime is up (card 7524aa5b). Held for the loop's whole life, released on any exit.
     let _live = crate::persona::cognition_pulse::enter_loop(ctx.identity.peer_id.as_uuid());
-    serve_persona_loop_inner(ctx, conversation, opts)
+    serve_persona_loop_inner(ctx, conversation, opts, obligations)
         .instrument(ctx.span())
         .await
 }

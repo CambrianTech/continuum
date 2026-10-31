@@ -300,7 +300,7 @@ impl AircEventTransport {
             .await
             .map_err(|e| format!("AircEventTransport: subscribe await_reply failed: {e}"))?;
 
-        let ack = Self::decode_subscribe_ack(reply.body)?;
+        let ack = Self::decode_subscribe_ack(Some(reply.body().clone()))?;
         let subscription_id = ack.subscription_id;
         let publisher_peer_id = target_peer;
 
@@ -392,7 +392,7 @@ impl AircEventTransport {
             .await
             .map_err(|e| format!("AircEventTransport: unsubscribe await_reply failed: {e}"))?;
 
-        let ack = Self::decode_unsubscribe_ack(reply.body)?;
+        let ack = Self::decode_unsubscribe_ack(Some(reply.body().clone()))?;
         Ok(ack.closed)
     }
 }

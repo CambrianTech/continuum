@@ -16,6 +16,73 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+// what this catches (stop-drain S2, Codex): a tool batch running unrecorded. When the turn's
+// pre-effect mark cannot be confirmed, nothing is dispatched (the executor is never called),
+// the act is unfulfilled, and she is told why in working memory instead of losing it silently.
+#[tokio::test]
+async fn a_batch_whose_effect_mark_is_refused_never_reaches_the_executor() {
+    struct Refused;
+    #[async_trait]
+    impl crate::cognition::act_observe::EffectMark for Refused {
+        fn turn(&self) -> Uuid {
+            Uuid::nil()
+        }
+        async fn before(&self, _effect: &crate::cognition::act_observe::Effect) -> Result<(), String> {
+            Err("obligation store unreachable".into())
+        }
+    }
+    let exec = Arc::new(RecordingExecutor {
+        seen_context: Arc::new(Mutex::new(None)),
+        result_content: "4\n".into(),
+    });
+    let adm = admission();
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
+        .with_acting(body(exec.clone(), adm.clone()));
+    let chain = ActChain::new().with_effects(Some(crate::cognition::act_observe::EffectGate(Arc::new(Refused))));
+    let outcome = apply_act(&cycle, &[tool_call()], "check the math", Uuid::new_v4(), &chain, None, None).await;
+    assert!(!outcome.produced_an_act(), "a refused mark is an unfulfilled act: {outcome:?}");
+    assert!(exec.seen_context.lock().unwrap().is_none(), "the executor was never called"); // unwrap: test lock
+    let told = cycle.acting().expect("the test cycle has hands").working_memory.recent_entries(); // expect: built with_acting above
+    assert!(
+        told.iter().any(|entry| entry.text.contains("[not run]") && entry.text.contains("obligation store unreachable")),
+        "she perceives why her batch did not run"
+    );
+}
+
+// what this catches (card 286af878; enrico 2026-10-27 02:54Z): a reported-only sentinel call
+// recorded as an effect. Eitan's cut turn carried only `tools/<cut at the output limit>`, which never
+// runs, yet S2 marked it, so the restart read the turn as uncertain and never handed it back. A
+// sentinel-only batch takes no mark: even a gate that refuses every mark does not stop it.
+#[tokio::test]
+async fn a_sentinel_only_batch_is_no_effect_and_takes_no_mark() {
+    struct Refused;
+    #[async_trait]
+    impl crate::cognition::act_observe::EffectMark for Refused {
+        fn turn(&self) -> Uuid {
+            Uuid::nil()
+        }
+        async fn before(&self, _effect: &crate::cognition::act_observe::Effect) -> Result<(), String> {
+            Err("a sentinel must never be marked".into())
+        }
+    }
+    let exec = Arc::new(RecordingExecutor {
+        seen_context: Arc::new(Mutex::new(None)),
+        result_content: "reported".into(),
+    });
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
+        .with_acting(body(exec.clone(), admission()));
+    let chain = ActChain::new().with_effects(Some(crate::cognition::act_observe::EffectGate(Arc::new(Refused))));
+    let cut = ToolCall {
+        id: "tool-attempt-cut-at-limit".into(),
+        name: crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL.into(),
+        input: serde_json::json!({}),
+    };
+    apply_act(&cycle, &[cut], "composing a long reply", Uuid::new_v4(), &chain, None, None).await;
+    assert!(exec.seen_context.lock().unwrap().is_some(), "the sentinel batch was not refused by the mark"); // unwrap: test lock
+    let told = cycle.acting().expect("the test cycle has hands").working_memory.recent_entries(); // expect: built with_acting above
+    assert!(!told.iter().any(|entry| entry.text.contains("[not run]")), "no 'not run' notice for a sentinel");
+}
+
 // what this catches: an act is scoped to the room it is FOR (one mind is in
 // many rooms — the body is room-agnostic, `room_id` flows per-call), the
 // observation correlates each call to its result in first person, and the
@@ -28,7 +95,7 @@ async fn apply_act_scopes_to_the_room_and_observes_the_result() {
         result_content: "4\n".into(),
     });
     let adm = admission();
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), adm.clone()));
 
     let room = Uuid::new_v4();
@@ -99,7 +166,6 @@ impl ToolExecutor for FoldedRunningExecutor {
         &self,
         calls: &[ToolCall],
         _context: &ToolExecutionContext,
-        _max_result_chars: usize,
     ) -> Result<NativeBatchOutcome, ToolError> {
         let results = calls
             .iter()
@@ -169,7 +235,7 @@ async fn a_folded_running_alias_still_registers_its_dispatch_handle() {
     let exec = Arc::new(FoldedRunningExecutor { handle });
     let the_body = body(exec.clone(), admission());
     let wm = the_body.working_memory.clone();
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(the_body);
 
     let call = ToolCall {
@@ -226,7 +292,7 @@ async fn a_folded_running_alias_still_registers_its_dispatch_handle() {
 // live in the faculty now lives here (the faculty only emits the Act verdict).
 #[tokio::test]
 async fn apply_act_without_hands_abstains() {
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8);
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter));
     assert!(
         matches!(
             apply_act(
@@ -251,7 +317,7 @@ async fn apply_act_without_hands_abstains() {
 #[tokio::test]
 async fn apply_act_abstains_when_the_hand_fails() {
     let adm = admission();
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(Arc::new(FailingExecutor), adm.clone()));
     assert!(
         matches!(
@@ -292,7 +358,6 @@ async fn an_acts_calls_carry_the_generation_that_issued_them() {
             &self,
             calls: &[ToolCall],
             _context: &ToolExecutionContext,
-            _max_result_chars: usize,
         ) -> Result<NativeBatchOutcome, ToolError> {
             if let Ok(mut seen) = self.seen.lock() {
                 seen.extend(calls.iter().map(|_| self.issued.clone()));
@@ -329,21 +394,21 @@ async fn an_acts_calls_carry_the_generation_that_issued_them() {
     ];
 
     let exec = StampingExecutor { issued: None, seen: Arc::new(Mutex::new(Vec::new())) };
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(Arc::new(exec.clone()), admission()));
     let stamped = apply_act(&cycle, &two_submits, "submit both", Uuid::new_v4(), &ActChain::new(), None, Some("gen-1".into())).await;
     assert!(matches!(stamped, ActOutcome::Acted { .. }), "{stamped:?}");
     assert_eq!(seen_of(&exec), vec![Some("gen-1".to_string()); 2], "one act, one issuing generation, every call");
 
     let exec = StampingExecutor { issued: None, seen: Arc::new(Mutex::new(Vec::new())) };
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(Arc::new(exec.clone()), admission()));
     let unstamped = apply_act(&cycle, &[tool_call()], "no generation", Uuid::new_v4(), &ActChain::new(), None, None).await;
     assert!(matches!(unstamped, ActOutcome::Acted { .. }), "{unstamped:?}");
     assert_eq!(seen_of(&exec), vec![None], "no generation, no stamp");
 
     let plain = Arc::new(RecordingExecutor { seen_context: Arc::new(Mutex::new(None)), result_content: "ok".into() });
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8).with_acting(body(plain, admission()));
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter)).with_acting(body(plain, admission()));
     let acted = apply_act(&cycle, &[tool_call()], "cannot stamp", Uuid::new_v4(), &ActChain::new(), None, Some("gen-2".into())).await;
     assert!(matches!(acted, ActOutcome::Acted { .. }), "hands that cannot stamp still act: {acted:?}");
 }

@@ -48,9 +48,8 @@ use crate::cognition::admission_state::AdmissionState;
 use crate::cognition::engram::{Engram, EngramOrigin};
 
 /// Hard safety ceiling on memories surfaced per tick, regardless of model size —
-/// the [`RecallBudget`] picks the ACTUAL count (smaller) within this. `with_limit`
-/// can lower it for tests/bench. Generous: the budget, not this, is the real
-/// limiter on a live persona.
+/// [`recall_count_for_window`] picks the ACTUAL count (smaller) within this.
+/// `with_limit` can lower it for tests/bench.
 const DEFAULT_RECALL_LIMIT: usize = 16;
 
 /// How many consecutive turns the sticky recall rendering may hold its bytes
@@ -86,46 +85,6 @@ fn recall_count_for_window(context_window: u32) -> usize {
         32_768..=131_071 => 8, // large local (e.g. 14B @ 32k+)
         _ => 12,               // cloud-class windows
     }
-}
-
-/// The per-tick recall budget: how many memories may surface, the closest-match
-/// floor below which a candidate is dropped as topically-irrelevant noise, and the
-/// token ceiling recall may not exceed in the served window. Derived from the
-/// model's served capability — a small model is not buried under memory it cannot
-/// hold, and recall never eats the window. See [`recall_count_for_window`],
-/// [`RECALL_RELEVANCE_FLOOR`], [`ContextBudget::recall_tokens`].
-struct RecallBudget {
-    max_count: usize,
-    token_ceiling: usize,
-}
-
-impl RecallBudget {
-    fn for_window(context_window: u32) -> Self {
-        let token_ceiling = if context_window == 0 {
-            usize::MAX // window unknown → don't token-gate (count + floor still apply)
-        } else {
-            crate::cognition::context_budget::ContextBudget::from_window(context_window)
-                .recall_tokens()
-                .max(MIN_RECALL_TOKENS)
-        };
-        Self {
-            max_count: recall_count_for_window(context_window),
-            token_ceiling,
-        }
-    }
-}
-
-/// Floor on the recall token ceiling so even a tiny served window fits at least a
-/// memory or two — below this, recall would be silently empty.
-// context-budget-exempt: a FLOOR under the recall allocation — it only ever raises a budget, never caps one, so a big window is never clamped by it
-const MIN_RECALL_TOKENS: usize = 256;
-
-/// Cheap token estimate for one surfaced memory: the body plus the `- …\n` list
-/// framing (padded generously — the score annotation it once covered is no longer
-/// model-visible), at the ~4-chars-per-token rule of thumb. Used only to keep
-/// recall within its window budget — an estimate, not a tokenizer.
-fn estimate_recall_tokens(content: &str) -> usize {
-    continuum_base::token_estimate::estimate_prompt_tokens(content) as usize + 6
 }
 
 /// When relevance re-ranking is active, over-fetch this many × the surface limit
@@ -240,7 +199,7 @@ pub struct RecallFaculty {
     /// the rent ledger attributed warm KV breaks to, with staleness bounded at
     /// [`RECALL_STICKY_TURNS`] turns and a new TOP memory always fresh. Tiny:
     /// N-rooms entries of a few KB each, per persona.
-    sticky: parking_lot::Mutex<std::collections::HashMap<Uuid, (Vec<Uuid>, String, u8)>>,
+    sticky: parking_lot::Mutex<std::collections::HashMap<Uuid, (Vec<Uuid>, String, std::sync::Arc<[crate::cognition::rag_budget::RagItem]>, u8)>>,
 }
 
 impl RecallFaculty {
@@ -388,8 +347,10 @@ impl Faculty for RecallFaculty {
         // (context window). Computed BEFORE the fetch so the over-fetch covers the
         // budget's count, not a flat constant — a cloud-class window can surface
         // more than the historical 5, a tight 4B fewer.
-        let budget = RecallBudget::for_window(self.context_window);
-        let surface_count = budget.max_count.min(self.limit);
+        // How many memories, by the served model's capability (its cognitive load, measured);
+        // never how many tokens: her view's one allocation prices the block and picks its
+        // level (FLOW-IMPLEMENTATION-PLAN §2d), where a window share cut it before.
+        let surface_count = recall_count_for_window(self.context_window).min(self.limit);
 
         // Fetch candidates WITHOUT recording hits — we record the hit on what we
         // actually SURFACE (below), not on candidates that lose the re-rank.
@@ -505,7 +466,6 @@ impl Faculty for RecallFaculty {
         // high-salience nag can rank above a genuinely relevant memory under the
         // blend, and we want to skip the nag and keep scanning for the relevant one.
         let mut surfaced: Vec<(f32, Engram, f32, f32)> = Vec::with_capacity(surface_count);
-        let mut used_tokens = 0usize;
         for (blended, engram, salience, passes_gate, attention_bid) in scored.into_iter() {
             if surfaced.len() >= surface_count {
                 break;
@@ -526,13 +486,6 @@ impl Faculty for RecallFaculty {
             {
                 continue;
             }
-            let est = estimate_recall_tokens(&engram.content);
-            // Always admit the first qualifying memory (don't starve recall on a
-            // tiny window); after that, stop before the token ceiling is breached.
-            if !surfaced.is_empty() && used_tokens + est > budget.token_ceiling {
-                break;
-            }
-            used_tokens += est;
             surfaced.push((blended, engram, salience, attention_bid));
         }
 
@@ -690,7 +643,7 @@ impl Faculty for RecallFaculty {
         // tunable ("tune it as we go").
         {
             let mut sticky = self.sticky.lock();
-            if let Some((prev_ids, prev_content, remaining)) = sticky.get_mut(&ws.room_id) {
+            if let Some((prev_ids, prev_content, prev_units, remaining)) = sticky.get_mut(&ws.room_id) {
                 let set_equal = *prev_ids == surfaced_ids;
                 let top_already_cached = surfaced_ids
                     .first()
@@ -714,17 +667,25 @@ impl Faculty for RecallFaculty {
                             top_salience,
                             reasoning,
                         )
+                        .with_units(prev_units.to_vec())
                         .trailing(),
                     );
                 }
             }
         }
         let now_ms = (self.clock)();
-        let lines = scored
+        let rendered: Vec<(&Engram, String)> = scored
             .iter()
-            .map(|(_, engram, _, _)| render_memory_line(engram, self.persona_id, now_ms))
-            .collect::<Vec<_>>()
-            .join("\n");
+            .map(|(_, engram, _, _)| (engram, render_memory_line(engram, self.persona_id, now_ms)))
+            .collect();
+        let lines = rendered.iter().map(|(_, line)| line.as_str()).collect::<Vec<_>>().join("\n");
+        // Each memory a unit at its levels, so her view can show the block at gists or
+        // handles when it cannot hold every memory whole; the frame stays whole.
+        let units: Vec<crate::cognition::rag_budget::RagItem> = std::iter::once(
+            crate::cognition::rag_budget::RagItem::whole("frame", RECALL_MEMORY_FRAME, serde_json::Value::Null),
+        )
+        .chain(rendered.iter().map(|(engram, line)| memory_unit(engram, line)))
+        .collect();
         // Label the section AS memory, inline, so a transcript-trained model reads the
         // lines below as RECOLLECTION — "I remember/recall that …" — not as statements
         // about the present. Glass-boxed 2026-07-14 (Joel, "in prose/rag form engrams
@@ -734,9 +695,10 @@ impl Faculty for RecallFaculty {
         // prefix per line already marks WHO/WHEN; this frames the whole block so the
         // pastness is unmissable. Not a directive about what to do — just what this IS.
         let content = format!("{RECALL_MEMORY_FRAME}\n{lines}");
+        let units: std::sync::Arc<[crate::cognition::rag_budget::RagItem]> = units.into();
         self.sticky.lock().insert(
             ws.room_id,
-            (surfaced_ids, content.clone(), RECALL_STICKY_TURNS),
+            (surfaced_ids, content.clone(), std::sync::Arc::clone(&units), RECALL_STICKY_TURNS),
         );
         let reasoning = format!(
             "recalled {} memor{} ({}) — salience-uplifted, loop closed",
@@ -751,6 +713,7 @@ impl Faculty for RecallFaculty {
 
         Some(
             Contribution::context(FacultyId::Recall, content, top_salience, reasoning)
+                .with_units(units.to_vec())
                 // TRAILING, not stable: recall is re-scored EVERY turn (salience ×
                 // recency, new engrams admitted between turns), so its block churns
                 // mid-list — measured 2026-09-01 as the system prompt mutating at
@@ -823,6 +786,18 @@ fn provenance_prefix(engram: &Engram, persona_id: Uuid, now_ms: u64) -> String {
 /// peer's first-person message verbatim as her own. Quote marks are the
 /// strongest structural signal a transcript-trained model has that words belong
 /// to someone else.
+/// One memory as a unit: its rendered line whole, its first sentence when shorter, and a
+/// handle she reopens through `cognition/recall`.
+fn memory_unit(engram: &Engram, line: &str) -> crate::cognition::rag_budget::RagItem {
+    let id = engram.id.to_string();
+    let unit = crate::cognition::rag_budget::RagItem::whole(id.clone(), line, serde_json::json!({ "engram_id": id }))
+        .with_pointer(format!("- [memory {} — cognition/recall]", airc_core::shown_id::shown_form(engram.id)));
+    match line.find(". ").map(|end| &line[..=end]) {
+        Some(gist) if gist.len() < line.len() => unit.with_summary(gist),
+        _ => unit,
+    }
+}
+
 fn render_memory_line(engram: &Engram, persona_id: Uuid, now_ms: u64) -> String {
     let prefix = provenance_prefix(engram, persona_id, now_ms);
     let heard = matches!(

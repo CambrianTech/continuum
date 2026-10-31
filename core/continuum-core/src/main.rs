@@ -83,7 +83,7 @@ fn install_shutdown_handlers() {
                 // modules), then the fast _exit that skips llama.cpp's
                 // double-free-prone static destructors (note above).
                 continuum_core::runtime::run_signal_shutdown().await;
-                continuum_core::modules::sentinel::shutdown_all_sentinels();
+                continuum_sentinel::shutdown_all_sentinels();
                 unsafe { libc::_exit(0) };
             }
         });
@@ -96,7 +96,7 @@ fn install_shutdown_handlers() {
                 sig.recv().await;
                 eprintln!("[continuum-core] SIGINT — save-and-join broadcast, then exit");
                 continuum_core::runtime::run_signal_shutdown().await;
-                continuum_core::modules::sentinel::shutdown_all_sentinels();
+                continuum_sentinel::shutdown_all_sentinels();
                 unsafe { libc::_exit(0) };
             }
         });
@@ -153,7 +153,7 @@ fn install_shutdown_handlers() {
             // are killed after (they are children, not modules), then the fast `_exit`
             // that skips llama.cpp's double-free-prone static destructors.
             continuum_core::runtime::run_signal_shutdown().await;
-            continuum_core::modules::sentinel::shutdown_all_sentinels();
+            continuum_sentinel::shutdown_all_sentinels();
             unsafe { libc::_exit(0) };
         });
     }
@@ -232,6 +232,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    // An engine's log relay (card 1d7d6d4c): spawned by the core in the engine's process group,
+    // it outlives the core, so it starts nothing a core starts.
+    {
+        use continuum_core::inference::stderr_relay::process as relay;
+        if probe_args.get(1).is_some_and(|arg| arg == relay::FLAG) {
+            relay::main(relay::parse(&probe_args[2..])?)?;
+            return Ok(());
+        }
+    }
     if probe_args
         .get(1)
         .is_some_and(|arg| arg == continuum_cli_lifecycle::prebuilt_validation::EMBEDDING_FLAG)
@@ -253,13 +262,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if applied > 0 {
         eprintln!("continuum-core: applied {applied} assignment(s) from config.env");
     }
+    // The one continuum home, resolved once config.env has had its say and before anything
+    // reads it. A retired $CONTINUUM_ROOT, or no home at all, refuses the boot here with the
+    // reason, instead of each later `continuum_home().ok()` quietly switching its feature off
+    // (card e7c258a5).
+    let home = continuum_core::paths::continuum_home()
+        .map_err(|error| format!("continuum-core: {error}"))?;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(async_main())
+        .block_on(async_main(home))
 }
 
-async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let boot_entry = std::time::Instant::now();
     continuum_core::runtime::boot_clock::mark();
     // Raise our own fd ceiling BEFORE opening any socket or file sink. The core is the
@@ -306,16 +321,27 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|s| s.to_string())
                 .or_else(|| info.payload().downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "<non-string panic payload>".to_string()); // panic hook display path; payload downcast miss keeps the hook alive
-            let bt = std::backtrace::Backtrace::force_capture();
+            // WHERE and WHAT first, the backtrace last (card 90642123). Windows 6133 hung its IPC
+            // thread before the bind three times (2026-10-27) and left no panic line anywhere:
+            // this hook used to capture and FORMAT a backtrace before writing a byte, and dbghelp
+            // symbolizing a large binary can sit for minutes, while the boot deadline ends in
+            // `_exit(1)`, which never flushes the async tracing appender. So the default hook's
+            // raw stderr line goes first (it prints the thread, location and payload, and a
+            // backtrace only when RUST_BACKTRACE asks), then the probe line, then the backtrace.
+            default_hook(info);
             tracing::error!(
                 probe_class = "panic.caught",
                 location = %loc,
                 payload = %msg,
-                backtrace = %bt,
                 "PANIC at {loc}: {msg}"
             );
-            // Keep the default behaviour too (stderr line), so nothing regresses.
-            default_hook(info);
+            let bt = std::backtrace::Backtrace::force_capture();
+            tracing::error!(
+                probe_class = "panic.backtrace",
+                location = %loc,
+                backtrace = %bt,
+                "backtrace of the panic at {loc}"
+            );
         }));
     }
 
@@ -488,16 +514,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     // Own background task, snapshot on a slow cadence, best-effort (a lost snapshot
     // just re-embeds). Off the boot critical path — the load is a fast file read,
     // no gateway/GPU probe.
-    if let Some(home) = dirs::home_dir() {
-        let cache_path = home
-            .join(".continuum")
-            .join("cache")
-            .join("embedding-cache.bin");
-        continuum_core::ai::embedding::spawn_embedding_cache_persistence(
-            continuum_core::ai::embedding::global_embedding_cache(),
-            cache_path,
-        );
-    }
+    continuum_core::ai::embedding::spawn_embedding_cache_persistence(
+        continuum_core::ai::embedding::global_embedding_cache(),
+        home.join("cache").join("embedding-cache.bin"),
+    );
 
     // Capture tokio runtime handle for async operations from IPC thread
     let rt_handle = tokio::runtime::Handle::current();
@@ -524,18 +544,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     // known cache class now reports through a TrackedDir fed by the
     // DiskUsageScanner daemon (one slow walker; reporters read atomics
     // within the 100 ms budget).
-    // The continuum classes follow the one resolved continuum home (card 4dedb177): with none,
-    // nothing is tracked and it is said, rather than tracking a fabricated `/.continuum`.
-    let tracked_dirs = match continuum_core::paths::continuum_home() {
-        Ok(continuum) => continuum_core::system_resources::standard_tracked_dirs(
-            &dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")), // JUSTIFIED unwrap_or_else: unchanged here; with no resolvable home airc's classes point at /.airc, which nothing writes
-            &continuum,
-        ),
-        Err(error) => {
-            tracing::warn!(probe_class = "disk.tracked_dirs", %error, "no continuum home: no cache class is tracked this boot");
-            Vec::new()
-        }
-    };
+    // The continuum classes follow the one resolved continuum home (card 4dedb177).
+    let tracked_dirs = continuum_core::system_resources::standard_tracked_dirs(
+        &dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")), // JUSTIFIED unwrap_or_else: unchanged here; with no resolvable home airc's classes point at /.airc, which nothing writes
+        &home,
+    );
     // Process-wide registry: the IPC thread's broker block fetches the
     // SAME TrackedDir instances to build eviction pools over (one
     // measurement per cache class, shared by reporter + pool).
@@ -548,6 +561,24 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Configured Cargo root could not be registered: {error}");
         },
         Err(error) => eprintln!("Configured Cargo root could not be registered: {error}"),
+    }
+    // Build trees agents named for themselves under the cache (`CARGO_TARGET_DIR` per session):
+    // found by what cargo wrote, never by name, and registered with the same owner so pressure
+    // can evict them (the M5, 2026-10-26: ~110 GB of unnamed build caches, KV page saves refused).
+    // The listing reads the filesystem: off the async runtime (Cormac on #5439).
+    let cache = home.join("cache");
+    // A panicked or cancelled listing discovers nothing; the named classes stand.
+    let discovered = match tokio::task::spawn_blocking(move || continuum_core::system_resources::cargo_discovery::cargo_targets_under(&cache)).await {
+        Ok(found) => found,
+        Err(error) => {
+            eprintln!("Cargo build-tree discovery did not finish: {error}");
+            Vec::new()
+        }
+    };
+    for target in discovered {
+        if let Err(error) = continuum_core::system_resources::disk_reporters::register_cargo_target(&target).await {
+            eprintln!("Discovered Cargo root {} could not be registered: {error}", target.display());
+        }
     }
     let _disk_usage_scanner =
         continuum_core::system_resources::DiskUsageScanner::start(tracked_dirs.clone());
@@ -576,6 +607,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         "everything main did before starting the IPC thread"
     );
     let ipc_handle = std::thread::spawn(move || {
+        // Pre-bind boot steps are marked one by one (card d97d3681): Windows hung here for 300 s
+        // with nothing after `main_to_ipc_thread` and no stack sampler on that host, so each step
+        // says it finished and a stall names the step that did not.
+        continuum_base::probe!(class = "boot.step", step = "ipc_thread_started", "the IPC thread runs; start_server begins");
         if let Err(e) = start_server(
             &socket_path,
             ipc_livekit_manager,

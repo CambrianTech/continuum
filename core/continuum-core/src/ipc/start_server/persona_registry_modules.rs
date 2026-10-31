@@ -51,7 +51,7 @@ pub(super) fn register_persona_registry_modules(
     // the SAME registry (cheap Clone over an inner Arc) so a work command can
     // resolve the calling persona's live airc runtime. Registered before the
     // executor is built so its typed commands land on the one registry.
-    runtime.register(Arc::new(crate::modules::work::WorkModule::new(
+    runtime.register(Arc::new(crate::modules::work_seams::work_module(
         registry.clone(),
         memory_manager.embedding_provider(),
     )));
@@ -98,6 +98,12 @@ pub(super) fn register_persona_registry_modules(
             crate::cognition::channel_substrate::global_channel_digest_buffer(),
         ),
     );
+    // Every mind's resident result bodies answer to the one memory owner: they stay in RAM
+    // until the monitor sheds, never a size cap of ours (Joel, 2026-10-29).
+    pressure_monitor.add_reporter(Arc::new(crate::cognition::persona_workspace::MindResultsReporter::new(
+        crate::cognition::persona_workspace::global(),
+        pressure_monitor.subscribe(),
+    )));
     // The dream/consolidation region goes LIVE (#145 slice B): per live persona,
     // on a material-driven cadence (dreams only when undigested episodic
     // experience accrues, `CadenceHint::Sleep` otherwise), it distills episodic
@@ -123,8 +129,18 @@ pub(super) fn register_persona_registry_modules(
     // → budget None → behavior is identical to the uncapped default the digest
     // region runs under today (the digest runs no inference; the consolidation
     // region is the first InferenceHeavy tenant under this floor).
+    // A reviewed credit the training trigger has not accepted is settled again by this region,
+    // per resident, whether or not she acts (card 99b2773a): its store is hers, as her identity.
+    let credit_registry = registry.clone();
+    let credit_region: Arc<dyn crate::runtime::BrainRegion> = Arc::new(
+        crate::persona::training_producer::CreditAcceptanceRegion::new(Arc::new(move |persona| {
+            let name = credit_registry.get(persona)?.agent_name().to_string();
+            let conn = crate::persona::training_producer::reviewed::credit_connection(persona).ok()?;
+            Some((name, conn))
+        })),
+    );
     runtime.register(Arc::new(
-        crate::persona::substrate_governor::SubstrateGovernor::new(vec![digest_region, dream_region], registry.clone())
+        crate::persona::substrate_governor::SubstrateGovernor::new(vec![digest_region, dream_region, credit_region], registry.clone())
             .with_pressure_gate(pressure_monitor.subscribe()),
     ));
     let instance_manager = Arc::new(

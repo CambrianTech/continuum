@@ -17,6 +17,7 @@ build = "../continuum-core/build.rs"
 [dependencies]
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }
+continuum-service = { path = "../continuum-service" }  # each resident's turns become her service window (card 1c157668)
 continuum-hands = { path = "../continuum-hands" }
 continuum-live = { path = "../continuum-live" }
 continuum-memory = { path = "../continuum-memory" }
@@ -28,13 +29,21 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" }
 continuum-context = { path = "../continuum-context" }
+continuum-rooms = { path = "../continuum-rooms" }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
+continuum-vitals = { path = "../continuum-vitals" }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
+continuum-prompt = { path = "../continuum-prompt" }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
+continuum-grounding = { path = "../continuum-grounding" }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
+continuum-engram = { path = "../continuum-engram" }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
+continuum-capture = { path = "../continuum-capture" }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
 tool-working-set = { path = "../tool-working-set" }  # the learned tool head: pure policy, no core dependency
 schemars = { version = "0.8", features = ["uuid1"] }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 continuum-positron = { path = "../continuum-positron" }
+continuum-text-analysis = { path = "../continuum-text-analysis" }
 continuum-client = { path = "../../client/continuum-client" }
-reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
 inventory = "0.3"
@@ -68,10 +77,12 @@ regex = "1"
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
-continuum-base = { path = "../continuum-base", features = ["test-fixtures"] }
+continuum-host = { path = "../continuum-host", features = ["test-fixtures"] }
 continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }
 continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
 continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
+continuum-vitals = { path = "../continuum-vitals", features = ["test-fixtures"] }
+continuum-rooms = { path = "../continuum-rooms", features = ["test-fixtures"] }
 continuum-experience = { path = "../continuum-experience", features = ["test-fixtures"] }
 
 [features]
@@ -84,4 +95,4 @@ vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan", "continuum-genom
 stress-tests = ["continuum-kernel/stress-tests"]
 # Test-only code (fixtures shared with core's integration tests, the heuristic adapter it
 # drives); production binaries never build with it.
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "continuum-genome/test-fixtures", "continuum-experience/test-fixtures"]
+test-fixtures = ["continuum-host/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "continuum-genome/test-fixtures", "continuum-experience/test-fixtures"]

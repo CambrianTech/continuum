@@ -56,6 +56,79 @@ pub fn default_job_dir(
     ))
 }
 
+/// Publish `bytes` as `dir/name` exactly once: written, synced and placed whole, never replacing
+/// a file already there (`continuum_host::durable::publish_new`). `Ok(None)` when this call
+/// placed it; `Ok(Some(existing))` with what is already there, for the caller to compare. A
+/// leased job's binding, request and manifest are each one such file (card 92cd2251): a retry
+/// can confirm them, never rewrite them.
+pub fn publish_job_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let (staged, placed) = (dir.join(format!(".{name}.{}.partial", Uuid::new_v4())), dir.join(name));
+    let written = std::fs::File::create(&staged).and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()));
+    let outcome = written.and_then(|()| continuum_host::durable::publish_new(&staged, &placed));
+    let _ = std::fs::remove_file(&staged); // the staging name is never the record: gone whether the publish moved it or not
+    match outcome {
+        Ok(()) => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::read(&placed).map(Some).map_err(|e| format!("{}: {e}", placed.display()))
+        }
+        Err(e) => Err(format!("{}: {e}", placed.display())),
+    }
+}
+
+/// The directory of job `local_id` under `root`, found by the file `anchor` it holds: the lookup
+/// for an owner that keeps only the job's id (a leased job's handle names its attempt, not its
+/// persona or trait). `Ok(None)` when no `<persona>/<trait>/<local_id>/` holds it; an error when
+/// two do, since which one is meant cannot be told.
+pub fn find_job_dir_under(root: &Path, local_id: Uuid, anchor: &str) -> Result<Option<PathBuf>, String> {
+    let id = local_id.to_string();
+    let Ok(personas) = std::fs::read_dir(root) else { return Ok(None) };
+    let mut found: Vec<PathBuf> = personas
+        .flatten()
+        .filter_map(|persona| std::fs::read_dir(persona.path()).ok())
+        .flat_map(|traits| traits.flatten().map(|trait_dir| trait_dir.path().join(&id)))
+        .filter(|dir| dir.join(anchor).is_file())
+        .collect();
+    match found.len() {
+        0 | 1 => Ok(found.pop()),
+        _ => Err(format!("job {local_id} has {} directories holding {anchor}: {found:?}", found.len())),
+    }
+}
+
+/// Every directory job `local_id` can have under `root`, by the layout [`job_dir_under`] writes
+/// (`<root>/<persona>/<trait>/<local_id>/`) and a request's own artifact root
+/// (`<root>/<local_id>/`), each that EXISTS. Unlike [`find_job_dir_under`], which a caller uses
+/// to find one directory and reads an unreadable branch as no match, every listing or check that
+/// errs is an `Err` here: a caller deciding from "no record exists" must not decide from a read
+/// that failed (Codex on #5548). A root or a branch that is absent, or an entry that is not a
+/// directory, is not an error.
+pub fn job_dirs_strict(root: &Path, local_id: Uuid) -> Result<Vec<PathBuf>, String> {
+    let absent = |e: &std::io::Error| matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory);
+    let list = |dir: &Path| -> Result<Vec<PathBuf>, String> {
+        match std::fs::read_dir(dir) {
+            Ok(entries) => entries.map(|entry| entry.map(|e| e.path()).map_err(|e| format!("{}: {e}", dir.display()))).collect(),
+            Err(e) if absent(&e) => Ok(Vec::new()),
+            Err(e) => Err(format!("{}: {e}", dir.display())),
+        }
+    };
+    let exists = |dir: PathBuf| -> Result<Option<PathBuf>, String> {
+        match std::fs::metadata(&dir) {
+            Ok(meta) => Ok(meta.is_dir().then_some(dir)),
+            Err(e) if absent(&e) => Ok(None),
+            Err(e) => Err(format!("{}: {e}", dir.display())),
+        }
+    };
+    let id = local_id.to_string();
+    let mut found: Vec<PathBuf> = exists(root.join(&id))?.into_iter().collect();
+    for persona in list(root)? {
+        for trait_dir in list(&persona)? {
+            found.extend(exists(trait_dir.join(&id))?);
+        }
+    }
+    Ok(found)
+}
+
 /// A job's own request, read from its directory as the trigger first sent it. THE one
 /// reader of a job's `request.json` (the resume and `genome/training-trigger/return`).
 pub fn read_job_request(dir: &Path) -> Result<TrainingJobRequest, String> {
@@ -127,5 +200,26 @@ mod tests {
             job_dir_under(root, "Kimi", "code/owner", id),
             root.join("Kimi").join("code_owner").join(id.to_string())
         );
+    }
+
+    // what this catches (card 92cd2251, Codex on #5419): a leased job's record rewritten by a
+    // retry, half-written, or found ambiguously. A file publishes once and reads back whole; a
+    // second publish leaves it and returns it for comparison; the job's directory is found by its
+    // anchor, and two directories of one id are an error, never enumeration order.
+    #[test]
+    fn a_job_file_publishes_once_and_a_job_is_found_by_its_id() {
+        let root = tempfile::tempdir().expect("root"); // JUSTIFIED: test fixture
+        let id = Uuid::new_v4();
+        let dir = job_dir_under(root.path(), "kimi", "code-review", id);
+        assert_eq!(find_job_dir_under(root.path(), id, "lease.json"), Ok(None));
+        assert_eq!(publish_job_file(&dir, "lease.json", b"first"), Ok(None));
+        assert_eq!(publish_job_file(&dir, "lease.json", b"second"), Ok(Some(b"first".to_vec())), "never rewritten");
+        assert_eq!(std::fs::read(dir.join("lease.json")).expect("read"), b"first"); // JUSTIFIED: test asserts the bytes
+        assert!(std::fs::read_dir(&dir).expect("dir").flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".partial")), "nothing staged is left");
+        assert_eq!(find_job_dir_under(root.path(), id, "lease.json"), Ok(Some(dir.clone())));
+        assert_eq!(find_job_dir_under(root.path(), Uuid::new_v4(), "lease.json"), Ok(None));
+        let other = job_dir_under(root.path(), "sahar", "code-review", id);
+        assert_eq!(publish_job_file(&other, "lease.json", b"first"), Ok(None));
+        assert!(find_job_dir_under(root.path(), id, "lease.json").is_err(), "two directories of one id are ambiguous");
     }
 }

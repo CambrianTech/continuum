@@ -58,34 +58,8 @@ pub(super) fn publish_restoring(
         .map_err(|e| e.to_string())?;
     drop(staged);
     drop(old_pin);
-    // Lifecycle cannot depend on core's fs_portable owner. Use its same
-    // Windows write-through replacement contract at this journal boundary.
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-    let wide = |path: &Path| {
-        path.as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>()
-    };
-    let from = wide(&temporary);
-    let to = wide(journal);
-    // SAFETY: NUL-terminated UTF-16 buffers outlive the synchronous OS call.
-    if unsafe {
-        MoveFileExW(
-            from.as_ptr(),
-            to.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        return Err(format!(
-            "cannot publish restoration phase: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
+    continuum_host::durable::replace(&temporary, journal)
+        .map_err(|e| format!("cannot publish restoration phase: {e}"))?;
     let (pin, actual) = read_snapshot(journal.parent().ok_or("journal root absent")?)?;
     let actual_bytes = serde_json::to_vec(&actual).map_err(|e| e.to_string())?; // Compare exact committed phase payload.
     if actual_bytes != bytes {

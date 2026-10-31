@@ -9,7 +9,7 @@
 # continuum-owned path. ONE llama.cpp source of truth for both the lib and the
 # server; no external dependency.
 #
-# Idempotent: if the installed binary's stamp matches the submodule HEAD + the
+# Idempotent: if the installed binary's stamp matches the tracked gitlink + the
 # detected backend, it's a no-op. Pass --force to rebuild regardless.
 #
 # Backend is detected the same way core/llama/build.rs gates the FFI build:
@@ -62,7 +62,13 @@ if [ ! -f "$SUBMODULE/tools/server/CMakeLists.txt" ]; then
   exit 1
 fi
 
-SUBMODULE_HEAD="$(git -C "$SUBMODULE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# The superproject names the required engine, even when the submodule checkout drifted.
+ENGINE_PIN="$(git -C "$REPO_ROOT" rev-parse HEAD:core/vendor/llama.cpp)" || exit 1
+if [[ ! "$ENGINE_PIN" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "FATAL: cannot resolve the tracked llama.cpp gitlink" >&2
+  exit 1
+fi
+SUBMODULE_HEAD="$(git -C "$REPO_ROOT" rev-parse --short "$ENGINE_PIN")" || exit 1
 
 # ── backend detection (mirrors core/llama/build.rs) ──────────────────
 OS="$(uname -s)"
@@ -274,6 +280,15 @@ if [ "$FORCE" -eq 0 ] && [ -x "$INSTALL_BIN" ] && [ -f "$STAMP_FILE" ] \
 fi
 
 # ── build ────────────────────────────────────────────────────────────
+# Reusing a verified slot at the pin needs no source checkout mutation. A new build,
+# however, must never stamp another commit (or dirty tracked source) as that pin.
+ACTUAL_ENGINE_HEAD="$(git -C "$SUBMODULE" rev-parse HEAD)" || exit 1
+ENGINE_SOURCE_STATUS="$(git -C "$SUBMODULE" status --porcelain --untracked-files=no)" || exit 1
+if [ "$ACTUAL_ENGINE_HEAD" != "$ENGINE_PIN" ] || \
+   [ -n "$ENGINE_SOURCE_STATUS" ]; then
+  echo "FATAL: llama.cpp source differs from tracked pin $ENGINE_PIN; preserve local work and align the submodule before building" >&2
+  exit 1
+fi
 echo "→ building llama-server ($BACKEND, llama.cpp@$SUBMODULE_HEAD) from $SUBMODULE" >&2
 mkdir -p "$BUILD_DIR" "$INSTALL_DIR"
 
@@ -311,6 +326,9 @@ declare -a CMAKE_ARGS=(
   -DLLAMA_BUILD_TESTS=OFF
   -DLLAMA_BUILD_EXAMPLES=OFF
   -DLLAMA_CURL=OFF
+  # No TLS in the engine: it listens on localhost and loads local GGUF paths, so
+  # cpp-httplib needs no OpenSSL (LLAMA_OPENSSL defaults ON and finds whatever is installed).
+  -DLLAMA_OPENSSL=OFF
   "${BACKEND_DEFS[@]}"
 )
 
@@ -437,7 +455,7 @@ if [ -n "$EXE" ]; then
     cp -f "$_dll" "$INSTALL_DIR/" || {
       echo "✗ FATAL: could not install $(basename "$_dll") into $INSTALL_DIR." >&2
       echo "  On Windows this usually means a running llama-server holds it open." >&2
-      echo "  Stop the core (\`continuum stop\`) and rerun; do NOT ship a partial set." >&2
+      echo "  Stop the core and its engine (\`continuum stop --engine\`) and rerun; do NOT ship a partial set." >&2
       exit 1
     }
   done

@@ -512,12 +512,9 @@ pub(super) fn run_train_native_mlx(
     // --- adapter output dir ---
     let adapter_out = match &p.adapter_out {
         Some(a) => PathBuf::from(crate::model_registry::expand_user_path(Path::new(a))),
-        None => {
-            let home = std::env::var("HOME").map_err(|_| "HOME unset".to_string())?;
-            PathBuf::from(home)
-                .join(".continuum/forge/lora")
-                .join(&p.adapter_name)
-        }
+        None => crate::paths::continuum_home()?
+            .join("forge/lora")
+            .join(&p.adapter_name),
     };
 
     // mlx scale == alpha/rank (lora_convert reads scale → alpha = rank*scale).

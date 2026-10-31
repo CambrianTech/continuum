@@ -108,8 +108,8 @@ pub fn classify_real_decode(
     match finish_reason {
         // The cap ended it: the lane generated, the allowance ran out. Healthy hardware.
         FinishReason::Length => RealDecodeOutcome::CappedBeforeOutput,
-        // Stop / ToolUse-with-no-call / Error, all empty: nothing was produced at all.
-        FinishReason::Stop | FinishReason::ToolUse | FinishReason::Error => {
+        // Stop / ToolUse-with-no-call / Error / an unreported end, all empty: nothing was produced.
+        FinishReason::Stop | FinishReason::ToolUse | FinishReason::Error | FinishReason::Unreported => {
             RealDecodeOutcome::DeliveredNothing
         }
     }

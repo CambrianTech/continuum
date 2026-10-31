@@ -1,9 +1,7 @@
 //! Why a server has no KV slot pool for a request (card 394017ed, f3ba3b56 item 5).
 //!
-//! Every miss sends the request unpinned: the engine picks the slot, and a Turn keeps its
-//! warm prefix only if the engine happens to reuse one there (not measured here; a full
-//! re-prefill is 30-300 s on the M5's 27B). `OpenAICompatibleAdapter::ensure_slot_pool`
-//! returns the miss instead of a bare `None`, and its one caller probes it, so no miss is silent.
+//! Discovery is required before a llama-server request can enter admission. A miss
+//! refuses generation rather than letting the engine select an unowned slot.
 
 /// The cause, one variant per way discovery can come back without a pool.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,14 +58,14 @@ impl SlotDiscoveryMiss {
                 root = root,
                 cause = self.as_str(),
                 detail = %detail,
-                "props endpoint absent — slot affinity latched OFF for this server; its requests run unpinned"
+                "props endpoint absent — generation refused; this server cannot supply slot admission"
             ),
             _ => continuum_base::probe!(
                 class = "inference.slot_affinity.deferred",
                 root = root,
                 cause = self.as_str(),
                 detail = %detail,
-                "no slot pool for this request — it runs unpinned (a Turn keeps its prefix only if the engine reuses one); re-probed on the next request"
+                "no slot pool for this request — generation refused; re-probed on the next request"
             ),
         }
     }

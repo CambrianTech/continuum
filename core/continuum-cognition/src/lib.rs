@@ -12,3 +12,4 @@ pub use continuum_experience::{experience, recipe};
 pub use continuum_perception::{perception, rag};
 
 pub mod cognition;
+pub mod commands;

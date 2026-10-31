@@ -155,7 +155,9 @@ pub struct StagedCredit {
     /// hours and a card can settle days later. `None` when no call could be read back
     /// (no capture installed, or the read failed, which is probed at stage time), and
     /// cleared once the destination durably accepts the transfer, so a settled row
-    /// does not keep a second copy of what the trainer already holds.
+    /// does not keep a second copy of what the trainer already holds. A row staged
+    /// `None` never trains as flat text: settlement re-reads its own receipts' cursors
+    /// and holds it, named, until the record is complete.
     #[entity(json)]
     #[serde(default)]
     pub lived: Option<Vec<crate::genome::fine_tuning::LivedCall>>,
@@ -352,6 +354,13 @@ impl TurnCreditCapture {
                 "pending submissions on this card could not be read after staging: a held review waits for the next review event or registration"
             ),
         }
+    }
+
+    /// Opens a capture for each claim a [`super::ClaimFollowingCapture`] follows, on the live
+    /// executor, for this turn's persona and prompt.
+    pub fn opener(persona_id: Uuid, persona_name: &str, prompt: &str) -> super::OpenCapture {
+        let (persona_name, prompt) = (persona_name.to_owned(), prompt.to_owned());
+        Box::new(move |credit| Self::for_turn(persona_id, &persona_name, &prompt, Some(credit)))
     }
 
     pub(crate) fn for_turn(

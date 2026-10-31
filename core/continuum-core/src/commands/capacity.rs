@@ -197,7 +197,7 @@ fn probe(
                         x ^= x >> 7;
                         x ^= x << 17;
                         let rec = x % bank_records;
-                        if continuum_base::fs_portable::read_exact_at(&f, &mut buf, rec * record_bytes)
+                        if continuum_host::positioned::read_exact_at(&f, &mut buf, rec * record_bytes)
                             .is_ok()
                         {
                             done.fetch_add(record_bytes, Ordering::Relaxed);

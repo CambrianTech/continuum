@@ -190,14 +190,14 @@ use super::*;
         // of a mind with no live working memory still protects it (Astra on acdfb010a).
         {
             let memory = WorkingMemory::new(8);
-            memory.set_served_window(16_384);
-            let cap = memory.budget().recent_results_chars();
+            let cap = 8_192; // a test body size; a shed below it collapses the older ones
             let saved = |handle: &str| crate::ai::types::ResultCustody::Whole { handle: handle.into() };
             memory.record_receipt_typed(&[], &"c".repeat(cap / 2), None, saved("c011a75ed0000001"));
             for _ in 0..4 {
                 memory.record_receipt_typed(&[], &"s".repeat(cap / 2), None, saved("5000000000000002"));
             }
             memory.record_settlement("done", None);
+            memory.evict_resident_results_over(0, &|_, _| true);
             let persisted = PersistedVolatile {
                 wm: memory.snapshot(),
                 own_speech: OwnSpeechPersisted::ByRoom(Vec::new()),

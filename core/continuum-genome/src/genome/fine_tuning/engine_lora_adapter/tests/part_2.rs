@@ -17,7 +17,7 @@ use super::*;
             let footprints = jobs.path().join("footprints.json");
             Footprints::at(footprints.clone())
                 .for_engine(measured_on.map(str::to_owned))
-                .record_with(&fam(bound_at), 2 * gib, false, Uuid::nil())
+                .record_with(&fam(bound_at), 2 * gib, false, None, Uuid::nil())
                 .expect("test: graph-only refusal");
             let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, gib);
             t.lane = Box::new(move |_: &str| Some(LaneChoice { build: lane_build.map(str::to_owned), ..LaneChoice::at(url.clone(), 61_696) }));
@@ -105,6 +105,31 @@ use super::*;
             }
             server.abort();
         }
+    }
+
+    // what this catches (the 5090 2026-10-28 20:16Z, job c9e5b989): a dispatch 2 ms after a
+    // handoff met "503 Loading model" at /train/measure and FAILED its job with no partition, so
+    // the examples it had just been returned belonged to no one. An engine still loading creates
+    // nothing and refuses as certain (TrainerUnavailable: the trigger retries the batch).
+    #[tokio::test]
+    pub(super) async fn an_engine_still_loading_creates_no_job_and_the_dispatch_retries() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "loading").await;
+        let t = {
+            let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
+            t.lane = Box::new(move |_: &str| Some(LaneChoice::at(url.clone(), 2048)));
+            t
+        };
+        let artifacts = tempfile::tempdir().expect("test: dir");
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(artifacts.path().to_path_buf());
+        let refused = t.create_job(r).await;
+        assert!(matches!(&refused, Err(FineTuningError::TrainerUnavailable(why)) if why.contains("503")), "{refused:?}");
+        assert!(seen.lock().unwrap().is_none(), "no run was posted");
+        let created: Vec<_> = std::fs::read_dir(artifacts.path()).expect("test: dir").flatten().map(|e| e.file_name()).collect();
+        assert!(created.is_empty(), "no job directory, request or partition exists: {created:?}");
+        server.abort();
     }
 
     // what this catches (Codex on #4498): a footprint filed under the window SENT when the
@@ -263,6 +288,8 @@ use super::*;
             model_id: format!("{PROVIDER_ID}:code:{job}"),
             corpus_chars: 0,
             walk: None,
+            trained_on: None,
+            demand_store: None,
             shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false },
         };
         let bound = crate::inference::engine_residency::ResidentWork {
@@ -320,6 +347,8 @@ use super::*;
             model_id: format!("{PROVIDER_ID}:code:{job}"),
             corpus_chars: 0,
             walk: None,
+            trained_on: None,
+            demand_store: None,
             shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false },
         };
         let work = crate::inference::engine_residency::ResidentWork {
@@ -611,11 +640,82 @@ use super::*;
         let dir = tempfile::tempdir().expect("test: dir");
         let f = Footprints::at(dir.path().join("f.json"));
         let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false };
-        f.record_with(&s, 900, true, Uuid::nil()).unwrap();
-        f.record_with(&s, 700, true, Uuid::nil()).unwrap();
+        f.record_with(&s, 900, true, None, Uuid::nil()).unwrap();
+        f.record_with(&s, 700, true, None, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(900));
-        f.record_with(&s, 1200, true, Uuid::nil()).unwrap();
+        f.record_with(&s, 1200, true, None, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(1200));
+    }
+
+    // what this catches (Codex on #5548 at 2950139e9): one row per shape made a refusal and a run
+    // fight. The windows 5090's row for 598e183c (window 45,056, chunk 64) is a refusal filed as a
+    // whole run before refusals had their own kind: it trained the fit, nothing could disqualify
+    // it, and a kept row hid every newer block count, so depth could never be stepped. Now: a
+    // legacy row its own job recorded as an engine refusal of exactly its size leaves the fit; a
+    // refusal and a run of one shape coexist, neither replacing nor hiding the other; and the
+    // engine's block count lands on every write, an equal or smaller run's included.
+    #[test]
+    pub(super) fn a_refusal_never_trains_the_fit_or_hides_a_run_and_the_block_count_always_lands() {
+        let gib = 1024u64 * 1024 * 1024;
+        let home = tempfile::tempdir().expect("test: dir");
+        let path = home.path().join("engine-footprints.json");
+        let refused = Shape { model: "m".into(), window: 45_056, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK_MIN, recompute: true };
+        let (job, graph) = (Uuid::from_u128(0x598e), 4_164_829_568u64);
+        // the legacy row as 2950139e9's predecessor wrote it: whole, no block count, no provenance
+        std::fs::write(&path, serde_json::to_vec(&serde_json::json!({ refused.key(): { "bytes": graph, "measuredAtMs": 1, "job": job.to_string(), "includesContext": true } })).unwrap()).unwrap();
+        // and its own job's record of the refusal, where `job_dir_for` puts it
+        let jd = home.path().join("Kimi").join("code_owner").join(job.to_string());
+        write_returnable(&jd, &Returnable::EngineRefused(Refusal { window: 45_056, chunk: 64, depth: None, layers: None, graph_bytes: graph, error: "the training graph did not fit".into() })).unwrap();
+        let f = Footprints::at(path.clone());
+        assert_eq!(f.get(&refused), Some(graph), "before classifying, the legacy row reads as a run");
+        // Codex on #5548: evidence that cannot be read never stamps a refusal as a run
+        let record = jd.join(RETURNABLE_FILE);
+        let good = std::fs::read(&record).unwrap();
+        std::fs::write(&record, b"{ torn").unwrap();
+        let unread = f.classify_legacy(&[home.path().to_path_buf()]).unwrap();
+        assert_eq!((unread.refusals, unread.unknown.len()), (0, 1), "an unreadable record is unknown: {unread:?}");
+        assert_eq!(f.read_all()[&refused.key()].provenance, None, "and the row stays unclassified, to be tried again");
+        std::fs::write(&record, good).unwrap();
+        assert_eq!(f.classify_legacy(&[home.path().to_path_buf()]).unwrap().refusals, 1, "its own job proves it a refusal");
+        assert_eq!(f.get(&refused), None, "a refusal leases nothing");
+        assert!(f.rows_like(&refused).is_empty(), "and never trains the fit");
+        assert_eq!(f.bound(&refused), Some(graph), "it still rules the shape out");
+        assert_eq!(f.bound_rows_like(&refused), vec![(45_056, TRAINING_CHUNK_MIN, graph)], "and caps the window");
+        assert_eq!(f.classify_legacy(&[home.path().to_path_buf()]).unwrap(), Classified::default(), "classified once");
+        assert_eq!(f.layers("m"), None);
+        f.record_refusal(&refused, graph, Some(64), job).unwrap();
+        assert_eq!(f.layers("m"), Some(64), "a fresh refusal of the same size attaches the engine's block count");
+        // a run of the same shape beside its refusal: neither replaces nor hides the other
+        f.record_with(&refused, 3 * gib, true, Some(64), Uuid::nil()).unwrap();
+        assert_eq!(f.get(&refused), Some(3 * gib), "the run is leased by its own number");
+        assert_eq!(f.bound(&refused), Some(graph), "the larger refusal still bounds it");
+        // an equal or smaller run on a kept larger one still lands its block count
+        let other = Shape { window: 3_072, ..refused.clone() };
+        f.record_with(&other, 2 * gib, true, None, Uuid::nil()).unwrap();
+        f.record_with(&other, gib, true, Some(48), Uuid::nil()).unwrap();
+        assert_eq!(f.get(&other), Some(2 * gib), "the larger observation stands");
+        assert_eq!(f.read_all()[&other.key()].layers, Some(48), "and the newer block count lands on it");
+        // a legacy whole row its job never refused is a run, stamped so
+        let unproven = Shape { window: 6_144, ..refused.clone() };
+        let mut all = f.read_all();
+        all.insert(unproven.key(), FootprintRow { engine: None, bytes: 5 * gib, measured_at_ms: 2, job: Uuid::from_u128(7).to_string(), whole_run: true, layers: None, provenance: None });
+        std::fs::write(&path, serde_json::to_vec(&all).unwrap()).unwrap();
+        // a branch of the job layout that cannot be listed is unknown too, never "no record"
+        // (Codex on #5548 at a7bb4b919)
+        let locked = home.path().join("Other");
+        std::fs::create_dir_all(locked.join("code")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let unread = f.classify_legacy(&[home.path().to_path_buf()]).unwrap();
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(unread.unknown.len(), 1, "an unlistable persona directory is unknown: {unread:?}");
+            assert_eq!(f.read_all()[&unproven.key()].provenance, None, "so the row is not stamped a run");
+        }
+        assert_eq!(f.classify_legacy(&[home.path().to_path_buf()]).unwrap(), Classified::default());
+        assert_eq!(f.get(&unproven), Some(5 * gib), "nothing on disk says it was refused: it stays a run");
+        assert_eq!(f.read_all()[&unproven.key()].provenance, Some(Provenance::Run));
     }
 
     // what this catches (fork #27, Codex's cases): a footprint leased at the wrong depth. The
@@ -639,7 +739,7 @@ use super::*;
         let f = Footprints::at(path.clone());
         assert_eq!(f.get(&full), Some(41_500), "the legacy row is full depth");
         assert_eq!(f.get(&top8), None, "a reduced-depth lookup never falls back to the legacy row");
-        f.record_with(&top8, 5_200, true, Uuid::nil()).unwrap();
+        f.record_with(&top8, 5_200, true, None, Uuid::nil()).unwrap();
         let reloaded = Footprints::at(path);
         assert_eq!(reloaded.get(&top8), Some(5_200));
         assert_eq!(reloaded.get(&full), Some(41_500), "the reduced row never answers for full depth");
@@ -764,6 +864,7 @@ use super::*;
             lanes: 2,
             page_dir: None,
             engine_bin: None,
+            weights: None,
             started_s: 1_700_000_000,
             placement: None,
         };
@@ -795,6 +896,7 @@ use super::*;
             lanes: 2,
             page_dir: None,
             engine_bin: None,
+            weights: None,
             started_s: 1_700_000_000,
             placement,
         };

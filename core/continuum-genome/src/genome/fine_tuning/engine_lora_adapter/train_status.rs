@@ -222,13 +222,16 @@ pub(super) struct LaneChoice {
     /// The governed pool its bytes live in (`Vram` for a GPU-placed lane, `Ram` for a
     /// CPU-placed one): what a run in it leases and fits its chunk against.
     pub(super) memory: crate::resources::ResourceKind,
+    /// The weights file the lane's engine was launched on (its record's stamp): what an adapter
+    /// trained in it names as its base (card 3fd98325). `None` for a lane recorded without one.
+    pub(super) weights: Option<crate::inference::weights_stamp::WeightsStamp>,
 }
 
 /// A test's lane at `url` with a `window`: no engine, no build, on the card.
 #[cfg(test)]
 impl LaneChoice {
     pub(super) fn at(url: String, window: u32) -> Self {
-        Self { url, window, engine: None, build: None, memory: crate::resources::ResourceKind::Vram }
+        Self { url, window, engine: None, build: None, memory: crate::resources::ResourceKind::Vram, weights: None }
     }
 }
 
@@ -244,6 +247,14 @@ pub(super) fn incarnation_of(rec: &crate::inference::lane_registry::LaneRecord) 
 
 pub(super) fn live_lane_for(base: &str) -> Option<LaneChoice> {
     lane_choice(crate::inference::lane_registry::live_lane()?, base)
+}
+
+/// The per-slot window the live lane serving `base` ADOPTED (its launch record, not a plan that
+/// may not have landed): what a training partition on this node is measured at, so the trigger
+/// asks the same number before returning parked examples (card 565b3b64). `None`: no live lane
+/// serves `base` here, so nothing of it can train now.
+pub fn served_window_for(base: &str) -> Option<u32> {
+    live_lane_for(base).map(|lane| lane.window)
 }
 
 /// The lane `rec` names as a place to train `base`, priced in the pool its recorded placement
@@ -268,6 +279,7 @@ pub(super) fn lane_choice(rec: crate::inference::lane_registry::LaneRecord, base
         engine: incarnation_of(&rec),
         build: rec.engine_bin.as_deref().and_then(crate::inference::engine_slots::stamp_of_bin),
         memory,
+        weights: rec.weights.clone(),
     })
 }
 
@@ -297,6 +309,9 @@ pub struct EngineLoraFineTuner {
     /// Where a run's binding to its engine incarnation is recorded (`None`: no home, or a
     /// test with no engine; an ungoverned run binds nothing).
     pub(super) residency_store: Option<PathBuf>,
+    /// Where each persona's outstanding training demand is recorded for serving to read
+    /// ([`crate::genome::fine_tuning::training_demand`]; `None`: no home, nothing recorded).
+    pub(super) demand_store: Option<PathBuf>,
     /// Leases re-taken at boot for runs a previous core bound to a still-live engine
     /// ([`Self::reclaim_resident_leases`]), held here until `reattach` hands each to its run or
     /// the binding is released. The lease was in the dead core's memory; the engine's
@@ -345,6 +360,9 @@ impl EngineLoraFineTuner {
             residency_store: crate::paths::continuum_home()
                 .ok()
                 .map(|home| crate::inference::engine_residency::store_path(&home)),
+            demand_store: crate::paths::ContinuumLayout::home()
+                .ok()
+                .map(|layout| crate::genome::fine_tuning::training_demand::TrainingDemand::store_dir(&layout.genome())),
             resident_leases: Arc::new(Mutex::new(BTreeMap::new())),
             post_wait_floor: POST_WAIT_FLOOR,
         }
@@ -383,6 +401,7 @@ impl EngineLoraFineTuner {
             holds: TrainingHolds::new(),
             hold_store: None,
             residency_store: None,
+            demand_store: None,
             resident_leases: Arc::new(Mutex::new(BTreeMap::new())),
             post_wait_floor: Duration::from_secs(1),
         }
@@ -828,10 +847,12 @@ impl EngineRun {
                     if grown > 0 {
                         let ran_window = s.window.unwrap_or(self.shape.window); // unwrap_or: an engine that reports no window ran the one asked
                         let ran_chunk = s.chunk.unwrap_or_else(|| train_chunk_for(ran_window, self.shape.chunk)); // unwrap_or_else: an engine that reports no chunk ran the mirrored rule
-                        let refused = Shape { window: ran_window, chunk: ran_chunk, ..self.shape.clone() };
+                        // the depth the engine adapted (it reports it before the preflight), as a finish files it
+                        let depth = effective_depth(s.layers_adapted, s.n_layer);
+                        let refused = Shape { window: ran_window, chunk: ran_chunk, depth, ..self.shape.clone() };
                         // The job's examples belong back in her bucket so the next dispatch can
                         // step down; the trigger reads this to decide (card 2dfce676).
-                        if let Err(e) = write_returnable(&self.job_dir, &Returnable::EngineRefused(Refusal { window: ran_window, chunk: ran_chunk, graph_bytes: grown, error: why.to_string() })) {
+                        if let Err(e) = write_returnable(&self.job_dir, &Returnable::EngineRefused(Refusal { window: ran_window, chunk: ran_chunk, depth, layers: s.n_layer, graph_bytes: grown, error: why.to_string() })) {
                             continuum_base::probe!(
                                 class = "training.job.refusal_unrecorded",
                                 job = %self.job,
@@ -842,8 +863,11 @@ impl EngineRun {
                         // file I/O that may wait out a Windows sharing violation: off the runtime
                         let store = self.footprints.clone();
                         let (shape, job) = (refused.clone(), self.job);
-                        let whole = s.context_mib.is_some();
-                        let recorded = tokio::task::spawn_blocking(move || store.record_with(&shape, grown, whole, job))
+                        // A LOWER BOUND under its own key: the preflight sized a graph that never ran,
+                        // so it rules this shape out, never trains the fit, and never replaces or hides
+                        // a run's row (card 0d21e644)
+                        let layers = s.n_layer;
+                        let recorded = tokio::task::spawn_blocking(move || store.record_refusal(&shape, grown, layers, job))
                             .await
                             .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
                         match recorded {
@@ -854,7 +878,7 @@ impl EngineRun {
                                 chunk = ran_chunk as u64,
                                 exact = refused.exact,
                                 graph_bytes = grown,
-                                "the engine refused this shape's graph; its measured size is filed so the next dispatch chooses a smaller chunk"
+                                "the engine refused this shape's graph; its size is filed as a lower bound so the next dispatch steps a rung down (chunk, then depth, then window)"
                             ),
                             Err(e) => continuum_base::probe!(
                                 class = "training.job.footprint_unrecorded",

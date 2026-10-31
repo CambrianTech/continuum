@@ -187,8 +187,10 @@ pub fn dedup_loop_filler(deliveries: &[RagDelivery]) -> Vec<RagDelivery> {
             }
             kept.push(item.clone());
         }
+        let tokens_used = kept.iter().fold(0u32, |sum, item| sum.saturating_add(item.tokens));
         out.push(RagDelivery {
             items: kept,
+            tokens_used,
             ..delivery.clone()
         });
     }
@@ -248,11 +250,14 @@ pub fn defer_as_loop_filler(incoming: &str, recent: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
+    use crate::cognition::rag_budget::{RagDelivery, RagItem};
     use serde_json::json;
 
     fn airc_item(content: &str, peer: &str) -> RagItem {
         RagItem {
+            key: String::new(),
+            summary: None,
+            pointer: None,
             content: content.to_string(),
             tokens: 1,
             metadata: json!({ "peer_id": peer }),
@@ -265,7 +270,6 @@ mod tests {
             items,
             tokens_used: 0,
             truncated: false,
-            resolution_used: ResolutionPreference::Placeholder,
         }
     }
 
@@ -365,11 +369,17 @@ mod tests {
         d.source_id = "room-doctrine".to_string();
         d.items = vec![
             RagItem {
+                key: String::new(),
+                summary: None,
+                pointer: None,
                 content: repeated.to_string(),
                 tokens: 1,
                 metadata: json!({}),
             },
             RagItem {
+                key: String::new(),
+                summary: None,
+                pointer: None,
                 content: repeated.to_string(),
                 tokens: 1,
                 metadata: json!({}),

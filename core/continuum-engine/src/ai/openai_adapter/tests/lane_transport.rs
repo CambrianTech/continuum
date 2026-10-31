@@ -48,7 +48,7 @@ fn unparseable_tool_arguments_are_marked_malformed_never_silently_wrapped() {
 }
 
 // what this catches (card 394017ed, f3ba3b56 item 5): a /props transport failure left
-// the request unpinned with only a debug! line. It is now a typed miss the caller probes,
+// the request unpinned with only a debug! line. It is now a typed miss the caller refuses,
 // never a latch: the next request probes again.
 #[tokio::test]
 async fn a_props_transport_failure_is_a_named_miss_and_never_latches() {
@@ -59,6 +59,52 @@ async fn a_props_transport_failure_is_a_named_miss_and_never_latches() {
     let Err(miss) = adapter.ensure_slot_pool(&adapter.endpoints()).await else { panic!("test: nothing listens, yet a pool came back") };
     assert_eq!(miss.as_str(), "transport", "{miss:?}");
     assert!(crate::inference::slots::directory().get(adapter.endpoints().root()).is_none(), "a transport error never latches");
+}
+
+// Exercise the generation boundary, not just discovery: no miss may turn into
+// permit-only admission and an HTTP generation on an unowned slot.
+#[tokio::test]
+async fn slot_discovery_failure_refuses_generation_before_http_dispatch() {
+    use axum::{http::StatusCode, routing::{get, post}, Router};
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+    for (status, body, cause) in [
+        (StatusCode::SERVICE_UNAVAILABLE, "loading", "not_ready"),
+        (StatusCode::NOT_FOUND, "absent", "endpoint_absent"),
+        (StatusCode::OK, "not json", "body_unparsed"),
+        (StatusCode::OK, "{}", "no_geometry"),
+    ] {
+        let generations = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&generations);
+        let app = Router::new()
+            .route("/props", get(move || async move { (status, body) }))
+            .route("/v1/chat/completions", post(move || {
+                let counted = Arc::clone(&counted);
+                async move {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::INTERNAL_SERVER_ERROR, "generation must not be reached")
+                }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture bind");
+        let address = listener.local_addr().expect("fixture address");
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let mut adapter = test_adapter();
+        adapter.config.base_url = format!("http://{address}");
+        adapter.config.llamacpp_sampling_extensions = true;
+        let request = TextGenerationRequest {
+            messages: vec![ChatMessage::text("user", "act")],
+            purpose: Some("turn".into()),
+            ..Default::default()
+        };
+        let (sink, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5), adapter.generate_stream_checked(request, sink),
+        ).await.expect("bounded fixture").expect_err("discovery must refuse");
+        assert!(matches!(error, crate::ai::inference_error::InferenceError::Unavailable(_)), "{error}");
+        assert!(error.to_string().contains(cause), "{error}");
+        assert_eq!(generations.load(Ordering::SeqCst), 0, "{cause}");
+        server.abort();
+    }
 }
 
 

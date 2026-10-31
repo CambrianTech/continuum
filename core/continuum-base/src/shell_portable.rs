@@ -1,4 +1,4 @@
-//! Portable resolution of a POSIX shell — sibling of [`crate::fs_portable`].
+//! Portable resolution of a POSIX shell — sibling of `continuum_host`'s capabilities.
 //!
 //! ONE definition of "which bash do we exec", because this bug has now been
 //! found twice in two call sites that could not see each other.

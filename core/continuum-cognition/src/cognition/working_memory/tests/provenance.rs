@@ -41,9 +41,10 @@ fn typed_receipt_threads_the_act_by_field_and_keeps_text_byte_stable() {
     legacy.record_receipt(rendered);
     assert_eq!(
         typed.recent(),
-        legacy.recent(),
-        "the rendered receipt text is byte-identical to the legacy string path (#205)"
+        ["[action #1] code/search(query=needle)"],
+        "the trail line is the act's call, stable however its result reads (#205)"
     );
+    assert_eq!(typed.last_action_full().map(|(_, full)| full), Some(rendered.trim().to_owned()), "the result is whole in its record");
 
     let active = typed
         .active_act()
@@ -146,7 +147,6 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
         status: ActStatus::Executed,
     };
     let wm = WorkingMemory::new(8);
-    wm.set_served_window(16_384);
     let room_a = Uuid::new_v4();
     let room_b = Uuid::new_v4();
     wm.record_receipt_typed(
@@ -185,16 +185,7 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
     );
 
     let encoded = serde_json::to_value(wm.snapshot()).expect("test: snapshot serializes");
-    assert_eq!(
-        encoded["recent_results"][0]
-            .as_array()
-            .expect("test: persisted result tuple")
-            .len(),
-        5,
-        "the existing checkpoint tuple format must remain compatible"
-    );
     let restored = WorkingMemory::new(8);
-    restored.set_served_window(16_384);
     restored.restore(serde_json::from_value(encoded).expect("test: recorded snapshot decodes"));
     assert_eq!(restored.recent_results_messages(), messages);
     assert_eq!(
@@ -202,12 +193,13 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
         wm.full_result_message(seq, &full)
     );
 
-    // Actual settlement collapses old results; its pointers must still tell
+    // A shed collapses old results; its pointers must still tell
     // the mind which activity and operation the retained handle belongs to.
     for _ in 0..4 {
-        record_saved(&restored, &"x".repeat(restored.budget().recent_results_chars()));
+        record_saved(&restored, &"x".repeat(BODY));
     }
     restored.record_settlement("reported", None);
+    shed(&restored, 0);
     assert!(restored.recent_results_messages().join("\n").contains(
         &format!("[result #1; room {room_a}; operation code/search, code/read; output handle: tool/output search-output — collapsed]")
     ));
@@ -219,7 +211,6 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
         .map(|line| format!("{line}: complete source line with enough context to exceed the old per-entry share\n"))
         .collect::<String>();
     let memory = WorkingMemory::new(8);
-    memory.set_served_window(16_384);
     let mut read_observation = observation("read-274", "code/read", Some("read-274-output"));
     read_observation.output.result.content = read.clone();
     memory.record_receipt_typed(&[read_observation], &read, Some(room_a), saved("read-274-output"));
@@ -244,28 +235,8 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
     memory.record_settlement("work remains on this card", None);
     assert_whole_or_handle(&memory);
     let restarted = WorkingMemory::new(8);
-    restarted.set_served_window(16_384);
     restarted.restore(memory.snapshot());
     assert_whole_or_handle(&restarted);
-}
-
-// e731: pre-result-ring snapshots have a full body but no room/operation
-// attribution. Rendering must expose that absence instead of inventing it.
-#[test]
-fn legacy_full_result_without_metadata_stays_explicitly_unattributed() {
-    let wm = WorkingMemory::new(8);
-    wm.record_receipt("legacy body");
-    let mut snapshot = wm.snapshot();
-    snapshot.recent_results.clear();
-    let restored = WorkingMemory::new(8);
-    restored.restore(snapshot);
-    let (seq, full) = restored
-        .active_action_full()
-        .expect("test: legacy body restored");
-    assert_eq!(
-        restored.full_result_message(seq, &full),
-        "Full result of your most recent action (#1; room unrecorded; operation unrecorded):\nlegacy body"
-    );
 }
 
 // what this catches (Step 3 back-compat): an OLD volatile.json — written before
@@ -273,48 +244,30 @@ fn legacy_full_result_without_metadata_stays_explicitly_unattributed() {
 // to empty via `#[serde(default)]` (the same contract as saved_at_ms/build_sha).
 // A grid-sync peer or a pre-deploy snapshot must never wedge the mind on restore.
 #[test]
-// what this catches: the #414 deprivation regressing — receipts must survive
-// the shared ring's churn via the receipts-only archive, the archive must stay
-// within its window-derived CHAR share (never a bare count, never unbounded),
-// and it must round-trip the volatile snapshot exactly as the ring does. The
-// measured failure: a 2,863-act citizen whose window showed ONE act read her
-// own starved history as "I have nothing to contribute".
-fn receipt_archive_survives_ring_churn_and_roundtrips_the_snapshot() {
+// what this catches: the #414 deprivation regressing — her acts must survive the shared ring's
+// churn, every one of them kept in her record (no character share cuts the oldest: what of
+// their bodies stays in RAM is the one memory owner's to shed), and the record must round-trip
+// the volatile snapshot. The measured failure: a 2,863-act citizen whose window showed ONE act
+// read her own starved history as "I have nothing to contribute".
+fn her_acts_survive_ring_churn_and_roundtrip_the_snapshot() {
     let wm = WorkingMemory::new(2);
-    wm.set_served_window(16_384);
+    let lines = |wm: &WorkingMemory| -> Vec<String> { wm.actions.lock().records().filter_map(|record| record.head.clone()).collect() };
     wm.record_receipt("I ran code/shell(ls) Result: ok");
     for i in 0..10 {
         wm.record_fact(&format!("chatty fact {i}"));
     }
-    assert!(
-        !wm.has_receipt(),
-        "precondition: the ring entry must age out under churn"
-    );
-    let archive = wm.receipt_archive();
-    assert_eq!(archive.len(), 1, "the archive must survive the churn");
-    assert!(archive[0].1.contains("code/shell(ls)"));
-
-    // Char-bound eviction: flood with receipts; the archive keeps its
-    // NEWEST within the share and never grows unbounded.
+    assert!(!wm.has_receipt(), "precondition: the ring entry must age out under churn");
+    assert_eq!(lines(&wm).len(), 1, "her act survives the churn");
+    assert!(lines(&wm)[0].contains("code/shell(ls)"));
     for i in 0..2000 {
         wm.record_receipt(&format!("I ran code/read(f{i}) Result: ok"));
     }
-    let archive = wm.receipt_archive();
-    let cap = wm.budget().receipt_archive_chars();
-    let total: usize = archive.iter().map(|(_, h)| h.chars().count() + 1).sum();
-    assert!(total <= cap, "archive exceeded its share: {total} > {cap}");
-    assert!(
-        archive.last().unwrap().1.contains("f1999"),
-        "eviction must drop oldest, keep newest: {:?}",
-        archive.last()
-    );
-
-    // Snapshot round-trip: the archive persists like the ring.
-    let snap = wm.snapshot();
+    let kept = lines(&wm);
+    assert_eq!(kept.len(), 2001, "every act is kept, oldest first");
+    assert!(kept.last().is_some_and(|line| line.contains("f1999")), "{:?}", kept.last());
     let fresh = WorkingMemory::new(2);
-    fresh.set_served_window(16_384);
-    fresh.restore(snap);
-    assert_eq!(fresh.receipt_archive(), archive);
+    fresh.restore(wm.snapshot());
+    assert_eq!(lines(&fresh), kept);
 }
 
 #[test]

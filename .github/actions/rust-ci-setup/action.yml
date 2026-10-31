@@ -23,6 +23,44 @@ outputs:
 runs:
   using: composite
   steps:
+    # The 26.04 image has ONE disk: 87G free at setup and 62G after the cache unpacks (#5661's
+    # notices on run 41233178745, c59624407, 2026-10-31), and one crate's test build filled the
+    # rest; the worker then died writing its own log on / (canary 107e10ddc, #5673), and those
+    # jobs keep no annotation at all. The image's preinstalled toolchains are ~25-30 GB that no
+    # Rust job here reads (Android SDK, .NET, GHC, Boost, CodeQL): removed in the background, so
+    # the deletion overlaps the cache restore instead of adding to the job's wall clock.
+    - name: Free the runner's preinstalled toolchains
+      shell: bash
+      run: |
+        df -h /
+        sudo nohup rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+          /usr/local/share/boost /opt/hostedtoolcache/CodeQL > /dev/null 2>&1 &
+
+    # The shared target is 24 GB unpacked (warm run 41193606500 at f0f786d19, 2026-10-31: 24G
+    # after pruning 5.79 GB of test executables), restored beside its 5 GiB download, and a crate
+    # job builds its tests on top. Two runner images are in rotation while ubuntu-latest moves to
+    # 26.04 (from 2026-10-19). The 24.04 image's root disk ran out mid-setup and mid-build on
+    # 10-31 (#5638, #5649 twice, #5641: "No space left on device"); it has a separate scratch disk
+    # at /mnt. The 26.04 image has one disk: 145G, 87G free (measured on #5650's run). The build
+    # goes on whichever disk has more room, at ONE path, so the cache restores and saves the same
+    # way on both images.
+    - name: Build where the runner has room
+      shell: bash
+      run: |
+        sudo install -d -o "$(id -u)" -g "$(id -g)" /ci-target
+        root_free=$(df --output=avail -B1 / | tail -1)
+        if mountpoint -q /mnt && [ "$(df --output=avail -B1 /mnt | tail -1)" -gt "$root_free" ]; then
+          sudo install -d -o "$(id -u)" -g "$(id -g)" /mnt/ci-target
+          sudo mount --bind /mnt/ci-target /ci-target
+        fi
+        echo "CARGO_TARGET_DIR=/ci-target" >> "$GITHUB_ENV"
+        df -h / /ci-target
+        # The runner image and the room the build starts with. A job whose worker dies writing its
+        # log on a full disk keeps NO annotation, this one included (run 41233178745's failed jobs,
+        # 2026-10-31), so a disk-full is read from a sibling job's notices on the same image.
+        target_dev=$(df --output=source /ci-target | tail -1)
+        echo "::notice title=runner disk::${ImageOS:-unknown} ${ImageVersion:-unknown}; / free $(df -h --output=avail / | tail -1 | tr -d ' '); /ci-target on ${target_dev} free $(df -h --output=avail /ci-target | tail -1 | tr -d ' ')"
+
     - name: Install Rust toolchain from rust-toolchain.toml
       shell: bash
       run: |
@@ -95,7 +133,7 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: |
-          target
+          /ci-target
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db
@@ -112,3 +150,6 @@ runs:
         # Unpack every dependency source first, so its mtimes are settled with the workspace's.
         cargo fetch --target x86_64-unknown-linux-gnu
         node tools/scripts/ci-cargo-freshness.cjs settle --prefix "$PREFIX" --matched-key "$MATCHED_KEY"
+        # Beside the setup notice: the room left after the cache unpacked. The drop between the two
+        # free figures is the cache's size, with no walk of the tree (Fable on #5661).
+        echo "::notice title=runner disk after cache::/ci-target free $(df -h --output=avail /ci-target | tail -1 | tr -d ' ')"

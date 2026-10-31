@@ -56,6 +56,8 @@ use run_pass::*;
 mod eval_settle;
 use eval_settle::*;
 mod teacher_synthesis;
+mod teacher_serving;
+pub use teacher_serving::{TeacherBatchRequest, TeacherServing};
 mod warm_gate;
 use warm_gate::*;
 mod gene_exam;

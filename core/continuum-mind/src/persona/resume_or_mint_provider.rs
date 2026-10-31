@@ -100,13 +100,8 @@ impl ResumeOrMintProvider {
         // self-determination (a persona's identity.key + engrams.sqlite were on
         // disk but unseen). `citizens_kind_dir` is the single source of truth, so
         // the read path can't drift from the write path again.
-        let personas_dir = crate::identity::citizen_path::citizens_kind_dir(
-            continuum_root,
-            crate::identity::IdentityKind::Persona,
-        );
-        let resumed = scan_personas_dir(&personas_dir).await?;
+        let resumed = scan_homes(continuum_root).await?;
         tracing::info!(
-            personas_dir = %personas_dir.display(),
             resumed_count = resumed.len(),
             min_personas,
             "ResumeOrMintProvider: scan complete"
@@ -200,13 +195,16 @@ impl ResumeOrMintProvider {
     }
 
     /// Publish how many minds this draw has not reached and could still seat: queued
-    /// returns plus the names past the cursor that are NOT resting (the draw skips a
-    /// resting one, so counting her would rotate a resident out only to redraw her —
+    /// returns plus the names past the cursor that are NOT resting or dormant (the draw
+    /// skips both, so counting her would rotate a resident out only to redraw her —
     /// Cormac on #4450).
     fn publish_waiting(&self) {
         let beyond = self.resumed[self.resumed_cursor.min(self.resumed.len())..]
             .iter()
-            .filter(|i| !crate::persona::resting_seat::is_resting(&i.agent_name))
+            .filter(|i| {
+                !crate::persona::resting_seat::is_resting(&i.agent_name)
+                    && !crate::persona::dormancy::is_dormant(&i.agent_name)
+            })
             .count();
         crate::persona::resting_seat::set_waiting(self.returning.len() + beyond);
     }
@@ -279,6 +277,14 @@ impl PersonaIdentityProvider for ResumeOrMintProvider {
         self.publish_waiting();
         Ok(None)
     }
+}
+
+/// Every home on this node with a readable seed, in directory order: the identities the
+/// provider resumes, and the homes durable dormancy is decided over.
+pub async fn scan_homes(continuum_root: &Path) -> Result<Vec<PersonaIdentityIntent>, PersonaIdentityError> {
+    let personas_dir =
+        crate::identity::citizen_path::citizens_kind_dir(continuum_root, crate::identity::IdentityKind::Persona);
+    scan_personas_dir(&personas_dir).await
 }
 
 /// Generate a fresh persona intent — UUIDv4 seed + derived name.

@@ -6,7 +6,6 @@ pub(super) enum GenerationAdmission {
     AdapterOwned,
     SharedLocal {
         _lane: crate::inference::resource_admission::ServingLanePermit,
-        _prefill: tokio::sync::OwnedSemaphorePermit,
     },
 }
 
@@ -170,20 +169,10 @@ impl LlmDeliberationFaculty {
         continuum_base::probe!(
             class = "delib.gate.lane_acquired",
             persona = %self.persona_name,
-            "lane admission granted — prefill slot next"
+            "lane admission granted — issuing the model call"
         );
         crate::cognition::health_ledger::note_lane_granted_to(self.persona_id);
-        // #56 prefill throttle: under live external GPU pressure (a game, the browser)
-        // fewer than the served lane count may PREFILL concurrently — the instant valve
-        // for the 2026-07-16 compute-buffer OOM. Same fit rule the capacity sim proves;
-        // no pressure → target == lanes → this never waits. Released with the block.
-        let _prefill = crate::inference::prefill_throttle::acquire_prefill_slot().await;
-        continuum_base::probe!(
-            class = "delib.gate.prefill_acquired",
-            persona = %self.persona_name,
-            "prefill slot granted — issuing the model call"
-        );
-        Some(GenerationAdmission::SharedLocal { _lane, _prefill })
+        Some(GenerationAdmission::SharedLocal { _lane })
     }
 }
 

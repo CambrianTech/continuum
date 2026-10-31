@@ -38,7 +38,7 @@ async fn pin_from_live_runtime(uuid: uuid::Uuid) -> Option<String> {
 /// so scan the durable persona seeds and match by persona_id. The pin survives on
 /// disk, so a cold render is still correct — no re-derivation, no thrash.
 async fn pin_from_seed_scan(uuid: uuid::Uuid) -> Option<String> {
-    let root = dirs::home_dir()?.join(".continuum");
+    let root = crate::paths::continuum_home().ok()?;
     let dir = crate::identity::citizen_path::citizens_kind_dir(
         &root,
         crate::identity::IdentityKind::Persona,
@@ -131,13 +131,8 @@ crate::action_command! {
         let pose = p.pose;
         let mouth = p.mouth;
 
-        let avatar_dir = dirs::home_dir()
-            .ok_or_else(|| {
-                crate::sdk_codegen::CommandError::Internal(
-                    "Cannot determine home directory".to_string(),
-                )
-            })?
-            .join(".continuum")
+        let avatar_dir = crate::paths::continuum_home()
+            .map_err(|e| crate::sdk_codegen::CommandError::Internal(format!("no continuum home for avatars: {e}")))?
             .join("avatars");
 
         // State-suffixed filename so an expression/pose caches independently of the

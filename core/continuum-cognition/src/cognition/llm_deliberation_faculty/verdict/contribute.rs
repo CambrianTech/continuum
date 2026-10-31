@@ -121,6 +121,12 @@ impl LlmDeliberationFaculty {
         let mut rejected_prompt_tokens = None;
         let mut rejected_measured_tokens = None;
         let mut request_template: Option<TextGenerationRequest> = None;
+        // Her destination refused the tail her learned head promised: rebuilt once on the
+        // activity's own surface, so she is never offered a verb she cannot call.
+        let mut tail_refused = false;
+        // Her newest result was refit once at a refusal's measured density
+        // (`verdict/newest_refit.rs`): a second refusal parks, never resends.
+        let mut newest_refit_sent = false;
         let mut view =
             self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
         let mut gen_await_ms = 0u64;
@@ -138,6 +144,23 @@ impl LlmDeliberationFaculty {
                 return Some(Contribution::deliberation_fault(fault.clone()));
             }
             if let Some(error) = view.capacity_error {
+                // Required input past the WORKING window is served from the whole slot, once,
+                // never refused while the slot has room (`ContextBudget::working_window`).
+                let (served_fit, served_calibration) = self.prompt_fit_served(&binding);
+                if served_fit > fit_window {
+                    continuum_base::probe!(
+                        class = "delib.prompt.working_window_exceeded",
+                        persona = %self.persona_name,
+                        required_tokens = error.required_tokens,
+                        working_window = fit_window,
+                        served_window = served_fit,
+                        "required input exceeds the working window: this act is fitted to the served window instead"
+                    );
+                    fit_window = served_fit;
+                    calibration = served_calibration;
+                    view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
+                    continue;
+                }
                 continuum_base::probe!(
                     class = "delib.prompt.capacity",
                     persona = %self.persona_name,
@@ -200,14 +223,19 @@ impl LlmDeliberationFaculty {
             // the structured-turns refactor that fixes the echo loop.
             // A verb not on her native surface still DISPATCHES: `act_observe` resolves any
             // call by name, and the system prompt's menu plus `commands/help` reach it.
-            // WHICH surface she is offered is a question about her ACTIVITY and the served
-            // window, never about this turn: the schemas sit right after the system prompt,
-            // so a surface that moves between acts re-prefills everything after it (goal 10;
-            // `cognition::tool_surface` has the measurement). The decision lives in
-            // [`Self::select_tool_surface`] so the budget in `prompt_view_within` reaches the
-            // SAME answer (card dec1a7ff).
+            // The view retains the tool level bought by the shared allocation for this epoch.
+            // Send that same selection so accounting, wire bytes and prefix reuse agree.
             if request_template.is_none() {
-                let mut selected = self.select_tool_surface(ws);
+                // What her view's allocation bought; a server that refuses `tail_tools` gets the
+                // activity surface at the same grant, without her learned head.
+                let mut selected = if tail_refused {
+                    match self.surface.select_granted(&ws.room_affordances, view.tools_grant) {
+                        Ok(activity) => activity.into_owned(),
+                        Err(_) => view.tools.clone(), // unreachable in practice: the view ran this same activity selection at this grant and it succeeded
+                    }
+                } else {
+                    view.tools.clone()
+                };
                 // Verbs she loaded into the tail ride beside the head, callable natively.
                 let tail = std::mem::take(&mut selected.tail);
                 if selected.reason == SurfaceReason::CoreHandsForWindow {
@@ -222,11 +250,10 @@ impl LlmDeliberationFaculty {
                         hands = self.surface.hands().len() as u64,
                         surface_tokens = selected.tokens as u64,
                         withheld_tokens = selected.demand_tokens().saturating_sub(selected.tokens) as u64,
-                        budget_tokens = super::super::super::context_budget::ContextBudget::from_window_unbounded(served)
-                            .tool_surface_tokens() as u64,
+                        budget_tokens = view.tools_grant as u64,
                         context_window = served,
-                        "her extended hands exceed the served window's tool share: \
-                         offering her core hands; the discovery pair still reaches the rest"
+                        "her one allocation granted her core hands, not her extended ones: \
+                         the discovery pair still reaches the rest"
                     );
                 }
                 // Selection and budget accounting borrow the cached schemas. Only the
@@ -258,6 +285,9 @@ impl LlmDeliberationFaculty {
             }
             let mut request = request_template.as_ref().expect("initial request assembled").clone();
             request.messages = view.messages.clone();
+            // Where her view ends in THIS view's messages: the engine checkpoints there and
+            // her page keeps it, so the next act resumes past everything she already read.
+            request.view_messages = u32::try_from(view.refit.grounding_at).ok().filter(|len| *len > 0);
             // The allowance belongs to THIS view, refreshed on every refit: the template
             // is built once, and a template's `max_tokens` from an earlier plan would
             // bound the reply to a window the prompt no longer leaves.
@@ -277,7 +307,7 @@ impl LlmDeliberationFaculty {
             // previous value is also what keeps the initializer honest).
             sent_allowance = request.max_tokens.or(sent_allowance);
             let result = self
-                .generate_for_workspace(ws, &binding, fit_window, request, receipts)
+                .generate_for_workspace(ws, &binding, fit_window, request, view.allocation.clone(), receipts)
                 .await?;
             gen_await_ms = gen_await_ms.saturating_add(started.elapsed().as_millis() as u64);
             match result {
@@ -314,6 +344,23 @@ impl LlmDeliberationFaculty {
                         corrective_replay_used = rejected_prompt_tokens.is_some(),
                         "provider capacity refusal: retained measured token density for prompt fitting"
                     );
+                    if newest_refit_sent {
+                        let error = self.newest_refit_refused(requested, available, view.completion_reserve);
+                        return Some(
+                            Contribution::prompt_capacity_refused(error).with_capacity_readiness(Arc::new(
+                                capacity_readiness.as_ref().clone().with_fit_window(fit_window),
+                            )),
+                        );
+                    }
+                    if let Some(refit) = self.refit_newest_after_refusal(
+                        ws, fit_window, calibration, visual.as_ref(), &view, requested, available,
+                    ) {
+                        newest_refit_sent = true;
+                        rejected_prompt_tokens = Some(estimated_prompt_tokens);
+                        rejected_measured_tokens = Some(requested);
+                        view = refit;
+                        continue;
+                    }
                     if rejected_measured_tokens.is_some_and(|previous| requested >= previous) {
                         return Some(Contribution::deliberation_fault(
                             "exact prompt correction made no measured progress; refusing further admission replay",
@@ -335,6 +382,17 @@ impl LlmDeliberationFaculty {
                         }
                     };
                 }
+                Err(crate::ai::inference_error::InferenceError::TailToolsUnreachable { model }) if !tail_refused => {
+                    continuum_base::probe!(
+                        class = "delib.tool_head.tail_refused",
+                        persona = %self.persona_name,
+                        model = %model,
+                        "the engine her request reaches cannot take her tail verbs now: rebuilding \
+                         on the activity's surface, never sending a head missing verbs she was offered"
+                    );
+                    tail_refused = true;
+                    request_template = None;
+                }
                 Err(error) => {
                     return Some(Contribution::deliberation_fault(error.to_string()));
                 }
@@ -354,6 +412,49 @@ impl LlmDeliberationFaculty {
                 }
             }
         };
+        // The channel split the NEXT turn's allowance is sized from: the server's
+        // count apportioned by the bytes the adapter separated into `reasoning`
+        // and `text` (a think-only turn is all reasoning; a native call all answer).
+        // The answer share is the rest of the output count; whether she answered at all
+        // is presence, never this split (`EmissionStop::classify`).
+        let (reasoning_tokens, _) = reasoning_answer_split(
+            resp.usage.output_tokens,
+            resp.reasoning.as_ref().map_or(0, |r| r.len()),
+            answer_payload_bytes(&resp.text, resp.content.as_deref()),
+        );
+        // WHERE the cap fell decides what the cut measures: inside the answer, the
+        // answer channel grows (a write cut mid-payload gets its room); inside the
+        // think, nothing was said and the need ring does not take it — a thinking
+        // model fills any allowance, and doubling that walked her to the deadline
+        // (`EmissionStop`). The cut itself is the fault paths' business below.
+        // A deliberation's think that stopped AT its budget is censored, not measured
+        // (Cormac on #4409): the classifier records it at the allowance so the need ring
+        // never learns the budget and contracts the next allowance geometrically.
+        let allowance = sent_allowance.unwrap_or(view.completion_reserve); // unwrap_or: a request built with no max_tokens was bounded by the reserve alone
+        let reasoning_budget = match self.turn_kind(ws) {
+            TurnKind::Pass => crate::inference::request_body::deliberation_reasoning_budget(
+                u64::from(allowance),
+            )
+            .map(|b| b as u32),
+            TurnKind::Act => None,
+        };
+        // The one classification, from what the response carries (an answer is text or a call;
+        // a stream may not report usage), counted here before any await after the generation: a
+        // cancellation at the read receipt below must not lose the stop of a generation that
+        // already completed (Codex on #5616).
+        let answered = answer_payload_bytes(resp.text.trim(), resp.content.as_deref()) > 0
+            || resp.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty());
+        let reasoned = resp.reasoning.as_deref().is_some_and(|r| !r.trim().is_empty());
+        let stop = super::super::super::working_set::EmissionStop::classify_with_budget(
+            matches!(resp.finish_reason, FinishReason::Length),
+            answered,
+            reasoning_tokens,
+            reasoning_budget,
+            allowance,
+        );
+        crate::cognition::health_ledger::note_stop(stop.counted(answered, reasoned));
+        // Sent and answered: she read what this prompt rendered (read_receipt.rs), never before.
+        self.send_read_receipt(ws).await;
         let messages = &view.messages;
         let lifecycle_recorded = self
             .prompt_capture
@@ -377,38 +478,12 @@ impl LlmDeliberationFaculty {
         // a need sample.
         // This is the seam that turns the reserve from a `window/2` prior into a
         // measurement.
-        if let Some(reg) = &self.working_set {
-            // The channel split the NEXT turn's allowance is sized from: the server's
-            // count apportioned by the bytes the adapter separated into `reasoning`
-            // and `text` (a think-only turn is all reasoning; a native call all answer).
-            let (reasoning_tokens, answer_tokens) = reasoning_answer_split(
-                resp.usage.output_tokens,
-                resp.reasoning.as_ref().map_or(0, |r| r.len()),
-                answer_payload_bytes(&resp.text, resp.content.as_deref()),
-            );
-            // WHERE the cap fell decides what the cut measures: inside the answer, the
-            // answer channel grows (a write cut mid-payload gets its room); inside the
-            // think, nothing was said and the need ring does not take it — a thinking
-            // model fills any allowance, and doubling that walked her to the deadline
-            // (`EmissionStop`). The cut itself is the fault paths' business below.
-            // A deliberation's think that stopped AT its budget is censored, not measured
-            // (Cormac on #4409): the classifier records it at the allowance so the need ring
-            // never learns the budget and contracts the next allowance geometrically.
-            let allowance = sent_allowance.unwrap_or(view.completion_reserve); // unwrap_or: a request built with no max_tokens was bounded by the reserve alone
-            let reasoning_budget = match self.turn_kind(ws) {
-                TurnKind::Pass => crate::inference::request_body::deliberation_reasoning_budget(
-                    u64::from(allowance),
-                )
-                .map(|b| b as u32),
-                TurnKind::Act => None,
-            };
-            let stop = super::super::super::working_set::EmissionStop::classify_with_budget(
-                matches!(resp.finish_reason, FinishReason::Length),
-                answer_tokens,
-                reasoning_tokens,
-                reasoning_budget,
-                allowance,
-            );
+        //
+        // Classified once, for every completed generation, before anything branches on it:
+        // the hour line counts the stop here and nowhere else, so a cut that a fault path
+        // handles below is still counted exactly once (Aris's three cuts inside thinking read
+        // "think-only 0" while the count sat in one branch, the M5 2026-10-30).
+        {
             if let super::super::super::working_set::EmissionStop::ThinkBudgetHit { allowance } = stop {
                 continuum_base::probe!(
                     class = "delib.emission.think_budget_hit",
@@ -427,14 +502,26 @@ impl LlmDeliberationFaculty {
                     "think-only cut at the allowance — the peak holds, the need ring does not take it"
                 );
             }
-            let measured = reg.record_emission(
-                self.persona_id,
-                resp.usage.output_tokens,
-                reasoning_tokens,
-                stop,
-                ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
-            );
+            let measured = self.working_set.as_ref().and_then(|reg| {
+                reg.record_emission(
+                    self.persona_id,
+                    resp.usage.output_tokens,
+                    reasoning_tokens,
+                    stop,
+                    ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
+                )
+            });
             if stop == super::super::super::working_set::EmissionStop::CutMidAnswer {
+                // The cost of claiming her measured need (ONE-BUDGET slice 6): a write larger than any
+                // she has measured is cut once, then grows the next claim. Counted, so a live read sees it.
+                continuum_base::probe!(
+                    class = "delib.emission.cut_mid_answer",
+                    persona = %self.persona_name,
+                    allowance,
+                    output_tokens = resp.usage.output_tokens,
+                    peak = measured.as_ref().map_or(0, |m| m.peak_tokens), // map_or: an unrecorded emission has no peak to report
+                    "an answer cut at its measured grant: recorded at double, the next claim grows"
+                );
                 if let (Some(wm), Some(measured)) = (&self.working_memory, measured) {
                     wm.retain_truncated_emission(ws.activity_room_id, measured.peak_tokens);
                 }
@@ -657,9 +744,11 @@ impl LlmDeliberationFaculty {
                 };
                 return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
             }
-            let head: String = resp.text.chars().take(200).collect();
+            // Its ends at the codec's Output level (head and tail, never a head cut), else whole.
+            use continuum_context::levels::{summarize, Shape};
+            let cut = summarize(&resp.text, Shape::Output).unwrap_or_else(|| resp.text.clone()); // unwrap_or_else: no smaller level means the text is its own summary
             return Some(Contribution::deliberation_fault(format!(
-                "the model hit the output limit mid-thought with no committed action                  (finish_reason Length, {} chars) — a cut thought is not an answer.                  It began: {head}",
+                "the model hit the output limit mid-thought with no committed action                  (finish_reason Length, {} chars) — a cut thought is not an answer.                  It read: {cut}",
                 resp.text.len()
             )));
         }
@@ -812,9 +901,6 @@ impl LlmDeliberationFaculty {
                             reasoning_len = reasoning.len(),
                             "generation ended inside the reasoning channel — no answer, no act; routing the think-only teacher"
                         );
-                        // The hour's receipt counts it (`[health] … think-only N`): two of
-                        // these in an hour on the M5 were the whole story of #4194.
-                        crate::cognition::health_ledger::note_think_only();
                         let call = crate::ai::types::ToolCall {
                             id: "tool-attempt-think-only".to_string(),
                             name: crate::cognition::tool_executor::command_executor::THINK_ONLY_SENTINEL

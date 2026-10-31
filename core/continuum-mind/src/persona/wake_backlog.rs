@@ -27,10 +27,20 @@ pub(crate) struct PendingInput {
     inputs: VecDeque<RetainedInput>,
     self_refusals: HashMap<Uuid, Option<crate::cognition::workspace::CapacityRefusal>>,
     work_witnesses: VecDeque<(Uuid, crate::cognition::conversation::room_event::RoomWork)>,
+    /// Interrupted turns that recorded an effect (stop-drain S3): never retried, owed one
+    /// completed turn on the cycle that carries their notice, then closed. `(row, room)`.
+    uncertain: Vec<(Uuid, Uuid)>,
+    /// Uncertain rows a completed turn has answered: the loop closes them.
+    answered: Vec<Uuid>,
+    /// When she last passed her initiative turn; engagement forgets it (card d0cf9473).
+    initiative_passed_at_ms: Option<u64>,
 }
+mod recovered;
 struct RetainedInput {
     message: IncomingMessage,
     engram: Option<Uuid>,
+    /// Its durable row (`persona::obligation`, card 920619c5), kept open while retained.
+    obligation: Option<Uuid>,
     attention: TurnAttention,
     capacity: Option<crate::cognition::workspace::CapacityRefusal>,
 }
@@ -78,6 +88,25 @@ impl PendingInput {
             .iter()
             .find(|input| input.message == *message)
             .and_then(|input| input.engram)
+    }
+    /// The durable row of a retained input, so its retry continues the same obligation.
+    pub(crate) fn obligation_for(&self, message: &IncomingMessage) -> Option<Uuid> {
+        self.inputs
+            .iter()
+            .find(|input| input.message == *message)
+            .and_then(|input| input.obligation)
+    }
+    /// After a turn that settled without finishing: when the input is still retained (a
+    /// capacity refusal or a deferral), it keeps `obligation` and the row stays open; returns
+    /// whether it did. A `false` means the input is done and its row may close.
+    pub(crate) fn keep_obligation(&mut self, message: &IncomingMessage, obligation: Option<Uuid>) -> bool {
+        match self.inputs.iter_mut().find(|input| input.message == *message) {
+            Some(input) => {
+                input.obligation = obligation.or(input.obligation);
+                true
+            }
+            None => false,
+        }
     }
     pub(crate) fn attention_for(&self, message: &IncomingMessage) -> Option<TurnAttention> {
         self.inputs
@@ -171,6 +200,21 @@ impl PendingInput {
             }
         }
     }
+    /// Her initiative turn's outcome on the self-cycle that began at `cycle_ms`: a pass is
+    /// remembered so the next beat waits for her perception to move
+    /// ([`Initiative::on_beat`](crate::persona::initiative_turn::Initiative::on_beat));
+    /// engagement forgets it. The cycle's start, not its end: a line that arrived while
+    /// she deliberated may not be in what she passed on, so it still moves her.
+    pub(crate) fn note_initiative(&mut self, work: &crate::persona::act_question::WorkQuestionOutcome, cycle_ms: u64) {
+        if work.engaged {
+            self.initiative_passed_at_ms = None;
+        } else if work.drove {
+            self.initiative_passed_at_ms = Some(cycle_ms);
+        }
+    }
+    pub(crate) fn initiative_passed_at_ms(&self) -> Option<u64> {
+        self.initiative_passed_at_ms
+    }
     pub(crate) fn settle_self(
         &mut self,
         room: Uuid,
@@ -218,6 +262,8 @@ impl PendingInput {
         step: &crate::cognition::act_observe::SettleStep,
     ) {
         use crate::cognition::act_observe::SettleStep;
+        // A re-retained input keeps its durable row: a second refusal is the same obligation.
+        let obligation = self.obligation_for(message);
         self.inputs.retain(|input| input.message != *message);
         let capacity = match step {
             SettleStep::CapacityRefused {
@@ -242,6 +288,7 @@ impl PendingInput {
         self.inputs.push_back(RetainedInput {
             message: message.clone(),
             engram: wake_engram,
+            obligation,
             attention,
             capacity,
         });
@@ -485,6 +532,28 @@ mod tests {
         );
     }
 
+    // what this catches (Codex on #5480): a deferred input's durable obligation closing while
+    // the input is still owed. The retained input keeps the row across another refusal, its
+    // retry reads the same row back, and only a terminal settle releases it.
+    #[test]
+    fn a_retained_input_keeps_its_obligation_until_a_terminal_settle() {
+        use crate::cognition::act_observe::SettleStep;
+        let original = line(1, 1, "original directed request");
+        let row = Some(Uuid::new_v4());
+        let mut pending = PendingInput::default();
+        assert!(!pending.keep_obligation(&original, row), "nothing retained: the row may close");
+        let deferred = SettleStep::DeferredBeforeDispatch;
+        pending.settle(&original, None, TurnAttention::HumanOpportunity, &deferred);
+        assert!(pending.keep_obligation(&original, row), "retained: the row stays open");
+        assert_eq!(pending.obligation_for(&original), row, "its retry continues the same row");
+        pending.settle(&original, None, TurnAttention::HumanOpportunity, &deferred);
+        assert!(pending.keep_obligation(&original, None), "another refusal is not completion");
+        assert_eq!(pending.obligation_for(&original), row, "a refusal never forgets the row");
+        let pass = SettleStep::Passed { reason: Some("chosen silence".into()) };
+        pending.settle(&original, None, TurnAttention::HumanOpportunity, &pass);
+        assert!(!pending.keep_obligation(&original, row), "a terminal settle releases it to close");
+    }
+
     // what this catches (2026-09-13): a teammate's 💭/⚙ receipt admitting a turn — every
     // holder in a five-coder room took a lane per teammate trace and re-oriented instead
     // of working. A citizen's plain line still wakes; a human's line always does.
@@ -557,28 +626,26 @@ mod tests {
     async fn starved_priority_input_survives_until_dispatch_without_replaying_actions() {
         use crate::cognition::act_observe::test_support::{admission, body_with_wm, ActThenSpeak, RecordingExecutor};
         use crate::cognition::act_observe::{drive_to_settle_with_input, SettleStep};
-        use crate::cognition::working_memory::{WorkingMemory, WorkingMemoryFaculty};
-        use crate::cognition::workspace::{Burst, Faculty, SalienceArbiter, TurnAttention, TurnFraming, WorkspaceCycle};
+        use crate::cognition::working_memory::WorkingMemory;
+        use crate::cognition::workspace::{Burst, SalienceArbiter, TurnAttention, TurnFraming, WorkspaceCycle};
         use std::sync::{Arc, Mutex};
         use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
         use crate::cognition::conversation::{IncomingMessage, PersonaConversation};
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let gate = Arc::new(AtomicBool::new(false));
-        let mut faculty = ActThenSpeak::new();
+        let wm = Arc::new(WorkingMemory::new(8));
+        let mut faculty = ActThenSpeak::new().with_memory(Arc::clone(&wm));
         faculty.admission_open = Some(Arc::clone(&gate));
         let exec = Arc::new(RecordingExecutor {
             seen_context: Arc::new(Mutex::new(None)),
             result_content: "4".into(),
         });
-        let wm = Arc::new(WorkingMemory::new(8));
         let cycle = WorkspaceCycle::new(
             vec![
-                Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
                 Arc::new(faculty),
             ],
             Arc::new(SalienceArbiter),
-            8,
         )
         .with_acting(body_with_wm(exec.clone(), admission(), wm));
         let original = IncomingMessage {

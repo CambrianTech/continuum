@@ -1,6 +1,5 @@
 use crate::code::{FileEngine, ShellSession};
 use crate::gpu::GpuMemoryManager;
-use crate::modules::agent::AgentModule;
 use crate::modules::ai_provider::AIProviderModule;
 use crate::modules::airc::AircModule;
 use crate::modules::airc_bridge_directive::AircBridgeDirectiveModule;
@@ -10,7 +9,6 @@ use continuum_live::consumers::avatar::AvatarModule;
 use crate::modules::channel::{ChannelModule, ChannelState};
 use crate::modules::code::{CodeModule, CodeState};
 use crate::modules::cognition::{CognitionModule, CognitionState};
-use crate::modules::data::DataModule;
 use crate::modules::dataset::DatasetModule;
 use crate::modules::embedding::EmbeddingModule;
 use crate::modules::events::EventsModule;
@@ -25,7 +23,7 @@ use crate::modules::memory::{MemoryModule, MemoryState};
 use crate::modules::models::ModelsModule;
 use crate::modules::persona_allocator::PersonaAllocatorModule;
 use crate::modules::rag::{RagModule, RagState};
-use crate::modules::sentinel::SentinelModule;
+use continuum_sentinel::SentinelModule;
 use crate::modules::system_resources::SystemResourceModule;
 use crate::modules::vision::VisionModule;
 /// IPC server for continuum-core
@@ -107,7 +105,7 @@ pub mod ws;
 
 use diagnostics::{current_rss_mb, dump_memory_report, log_command_rss_delta};
 
-pub use protocol::InboxMessageRequest;
+pub use continuum_mind::commands::cognition::inbox_message_request::InboxMessageRequest;
 
 use protocol::Response;
 

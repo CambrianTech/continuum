@@ -38,12 +38,25 @@ fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
     // WorkingMemory (this harness faculty has none), so no ledger
     // message here — the ledger-specific behavior is pinned in
     // steps_ledger_renders_receipts_and_explicit_zero_case below.
-    // …plus the volatile presence-framing turn (2026-09-01: it rides the
-    // facts phase instead of churning the system prefix), still ask-last.
+    // …plus the presence contract, which now stands in her view as its own
+    // block (cached once per epoch, not re-sent each act), and the short live
+    // line naming it, still ask-last (the 2026-10-25 framing split).
     assert_eq!(
         roles,
-        vec!["user", "assistant", "user", "user", "user"],
+        vec!["user", "assistant", "user", "user", "user", "user"],
         "view: {view:?}"
+    );
+    let text_of = |m: &crate::ai::types::ChatMessage| match &m.content {
+        crate::ai::types::MessageContent::Text(t) => t.clone(),
+        _ => String::new(),
+    };
+    assert!(
+        view.messages.iter().any(|m| text_of(m).starts_with("[Conversational Presence]\n")),
+        "the presence contract stands in her view as its block"
+    );
+    assert!(
+        view.messages.iter().any(|m| text_of(m).contains("[In force this turn: Conversational Presence")),
+        "the live line names the contract in force"
     );
     assert!(
         view.messages
@@ -71,12 +84,13 @@ fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
     // Perception facts are GROUNDING inserted BEFORE the final ask (the last user
     // turn), so the ask stays LAST where the model answers it — not the bracketed
     // meta, which it would otherwise parrot (2026-07-20 humaneval parrot fix). Here
-    // the layout is [Joel, Asha(assistant), [context]-fact, Joel-ask]: the grounding
-    // sits at [2], the ask is last.
+    // the layout is [Joel, Asha(assistant), [Conversational Presence] (the standing
+    // contract, in her view), [context]-fact, the live line, Joel-ask]: the grounding
+    // sits at [3], after her view and before the ask, and the ask is last.
     assert!(
-        view.messages[2].content_text().starts_with("[context]"),
-        "grounding fact sits just before the ask: {:?}",
-        view.messages[2]
+        view.messages[3].content_text().starts_with("[context]"),
+        "grounding fact sits after her view and before the ask: {:?}",
+        view.messages[3]
     );
     assert!(
         view.messages
@@ -109,7 +123,6 @@ fn fit_receipt_names_what_it_dropped_and_when_it_emptied_the_history() {
         history,
         stimulus: Some(stimulus.clone()),
         latest_result: Vec::new(), action_statement: None,
-        room_updates: Vec::new(),
     };
     let required = prompt(Vec::new()).required_tokens();
     let total: usize = history.iter().map(LlmDeliberationFaculty::message_cost).sum();
@@ -172,7 +185,6 @@ fn fit_front_advances_in_quanta_not_per_act() {
                     history: msgs[..n].to_vec(),
                     stimulus: None,
                     latest_result: Vec::new(), action_statement: None,
-                    room_updates: Vec::new(),
                 },
                 budget,
             )
@@ -224,7 +236,6 @@ fn fit_front_advances_in_quanta_not_per_act() {
                 history: clustered,
                 stimulus: None,
                 latest_result: Vec::new(), action_statement: None,
-                room_updates: Vec::new(),
             },
             budget,
         )
@@ -255,7 +266,6 @@ fn fit_front_advances_in_quanta_not_per_act() {
         ],
         stimulus: None,
         latest_result: Vec::new(), action_statement: None,
-        room_updates: Vec::new(),
     };
     let ambient_cost =
         LlmDeliberationFaculty::message_cost(ambient().history.last().unwrap());
@@ -282,18 +292,17 @@ fn the_pinned_result_rides_last_and_nothing_rides_after_the_ask() {
         history: vec![ChatMessage::text("user", "[work turn] fix the bug")],
         stimulus: Some(ChatMessage::text("user", "the ask")),
         latest_result: result.then(|| ChatMessage::text("user", "Full result of your most recent action")).into_iter().collect(), action_statement: None,
-        room_updates: vec![ChatMessage::text("user", "[Room message received during this turn] hi")],
     };
     let order = |result: bool| -> Vec<String> {
         faculty.fit_messages(prompt(result), 100_000).expect("test: fits").messages.iter()
             .map(|m| m.content_text().lines().next().unwrap_or("").to_string()).collect()
     };
     assert_eq!(order(true), vec![
-        "[work turn] fix the bug", "the ask", "[Room message received during this turn] hi",
+        "[work turn] fix the bug", "the ask",
         "Full result of your most recent action",
     ]);
     assert_eq!(order(false), vec![
-        "[work turn] fix the bug", "the ask", "[Room message received during this turn] hi",
+        "[work turn] fix the bug", "the ask",
     ]);
 }
 
@@ -311,7 +320,7 @@ fn continuity_followup_keeps_completed_action_evidence() {
         streams: Default::default(),
         result_pointers: Vec::new(),
         input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
-        history, stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(),
+        history, stimulus: None, latest_result: Vec::new(), action_statement: None,
     };
     assert!(prompt.recent_move_evidence().tokens >= expected,
         "a new follow-up cannot make the preceding action and result disposable");
@@ -331,7 +340,7 @@ fn continuity_insufficient_capacity_refuses_instead_of_dropping_evidence() {
             ChatMessage::text("assistant", "calling code/write: completed.py ".repeat(30)),
             ChatMessage::text("user", "Full result of code/write: file written successfully."),
         ],
-        stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(),
+        stimulus: None, latest_result: Vec::new(), action_statement: None,
     };
     let insufficient = prompt.recent_move_evidence().tokens - 1;
     assert!(faculty.fit_messages(prompt, insufficient).is_err(),
@@ -349,4 +358,156 @@ fn a_binding_without_a_model_name_carries_the_adapters_served_model() {
     let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
     assert_eq!(faculty.binding.load().model.as_deref(), Some(served.as_str()),
         "a bound faculty always names the model it is bound to");
+}
+
+// what this catches: her hands re-sized every act (a surface that moves mid-epoch rewrites the
+// whole prompt after the system text), or sized outside the one allocation. Her first view
+// buys her whole hands from an ample grant; the next act's claim keeps that level as its
+// target with her core hands as the only floor, and the request carries exactly the
+// selection the allocation bought.
+/// Asha with tools assigned. Her surface is built from the live native registry
+/// (`rebuild_tool_surface`), not these specs, whose role is only to give her a tool set; her
+/// core hands are smaller than her whole hands there.
+fn asha_with_hands() -> LlmDeliberationFaculty {
+    let raw: Vec<NativeToolSpec> = ["code/read", "work/state", "chat/send", "commands/list", "room/join", "code/git/status", "work/submit", "web/fetch"]
+        .iter()
+        .map(|n| NativeToolSpec {
+            name: (*n).to_string(),
+            description: format!("{n}: does what its name says"),
+            input_schema: crate::ai::types::ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: serde_json::json!({}),
+                required: None,
+                definitions: None,
+            },
+        })
+        .collect();
+    let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+    LlmDeliberationFaculty::new(Uuid::new_v4(), "Asha", "You are Asha.", adapter).with_tools(raw)
+}
+
+/// The schemas a surface puts on the wire, as bytes.
+fn wire(tools: &crate::cognition::tool_surface::SelectedSurface<'_>) -> String {
+    serde_json::to_string(&tools.specs).expect("schemas")
+}
+
+/// A workspace whose activity declares ONE verb of her hands (not the discovery pair or a focus
+/// verb): its offer is that verb plus `commands/` and `focus/`, a strict subset of her hands, so it
+/// fits any grant that held her hands and selects a different set. Taken from the built surface,
+/// which is the live native registry, so the fixture tracks the registry's names.
+fn declaring_one_hand(faculty: &LlmDeliberationFaculty) -> Workspace {
+    let surface = faculty.tool_surface();
+    let verb = surface
+        .names()
+        .iter()
+        .zip(surface.registry())
+        .find(|(name, spec)| {
+            !name.starts_with("commands/") && !name.starts_with("focus/") && surface.hands().iter().any(|hand| hand.name == spec.name)
+        })
+        .map(|(name, _)| name.clone())
+        .expect("her hands hold a verb besides the discovery pair and focus");
+    Workspace::new("what changed on the board?").room_affordances(vec![verb])
+}
+
+fn view_epoch(faculty: &LlmDeliberationFaculty) -> Option<u64> {
+    faculty.context_view.lock().as_ref().map(|view| view.epoch_id())
+}
+
+#[test]
+fn an_epoch_keeps_the_tool_level_its_allocation_bought() {
+    let faculty = asha_with_hands();
+    let ws = Workspace::new("what changed on the board?");
+    let first = faculty.prompt_view_within(&ws, 200_000);
+    assert!(first.capacity_error.is_none(), "{:?}", first.capacity_error);
+    let claim = faculty.tools_claim(&ws);
+    assert!(claim.floor < claim.want, "core hands are smaller than her whole hands: {claim:?}");
+    assert_eq!(first.tools.tokens, claim.want, "an ample grant buys her whole surface");
+    assert_eq!(claim.level, first.tools.tokens, "the epoch keeps the level it chose as its target");
+    assert!(first.tools_grant >= first.tools.tokens, "the selection stays within its grant");
+    let second = faculty.prompt_view_within(&ws, 200_000);
+    assert_eq!(
+        serde_json::to_string(&second.tools.specs).expect("schemas"),
+        serde_json::to_string(&first.tools.specs).expect("schemas"),
+        "the same epoch sends byte-identical schemas"
+    );
+}
+
+// what this catches: the set re-selected every act from that act's affordances while only the
+// level was retained (Aiko on the M5, 2026-10-29: 19 of 89 requests changed the head, all in the
+// tool list, as `git_diff` and `get_task` flipped in and out). Acts of one epoch whose room
+// affordances differ send byte-identical tool lists.
+#[test]
+fn an_epoch_sends_one_tool_set_whatever_its_acts_affordances() {
+    let faculty = asha_with_hands();
+    let ws = Workspace::new("what changed on the board?");
+    let declared = declaring_one_hand(&faculty);
+    let first = faculty.prompt_view_within(&ws, 200_000);
+    assert!(first.capacity_error.is_none(), "{:?}", first.capacity_error);
+    let epoch = view_epoch(&faculty);
+    let alone = faculty
+        .tool_surface()
+        .select_granted(&declared.room_affordances, first.tools_grant)
+        .expect("precondition: the declared verb's offer fits the epoch's grant");
+    assert_ne!(wire(&alone), wire(&first.tools), "precondition: these affordances alone choose another set");
+    let second = faculty.prompt_view_within(&declared, 200_000);
+    let third = faculty.prompt_view_within(&ws, 200_000);
+    assert_eq!(view_epoch(&faculty), epoch, "precondition: no act turned the view over");
+    assert_eq!(wire(&second.tools), wire(&first.tools), "an affordance that changes mid-epoch waits for the next start");
+    assert_eq!(wire(&third.tools), wire(&first.tools), "the epoch's set holds across every act");
+}
+
+// what this catches: a view turnover that re-selects her tools (the M5, 2026-10-31 on 526bbe418:
+// Aris's set flipped between 38 and 23 verbs at turnovers in one room, and all 13 cold prefills in
+// two hours followed a head change). A turnover re-renders only what follows the head, so her set
+// outlives it: the turnover act and the acts after it send the set she held, whatever their
+// affordances choose.
+#[test]
+fn a_view_turnover_keeps_her_tool_set() {
+    use continuum_context::source::Source;
+    let faculty = asha_with_hands();
+    let ws = Workspace::new("what changed on the board?");
+    let declared = declaring_one_hand(&faculty);
+    let first = faculty.prompt_view_within(&ws, 200_000);
+    let grant = first.tools_grant;
+    let alone = faculty
+        .tool_surface()
+        .select_granted(&declared.room_affordances, grant)
+        .expect("precondition: the declared verb's offer fits the grant");
+    assert_ne!(wire(&alone), wire(&first.tools), "precondition: these affordances alone choose another set");
+    let (choice, refused) = faculty.granted_tools(&declared, faculty.tools_claim(&declared), grant);
+    assert!(refused.is_none());
+    // The fit turns her view over in this act (what `fit_view` does when it outgrows its grant).
+    let none: [&dyn Source<crate::cognition::context_streams::ContextMessage>; 0] = [];
+    faculty.context_view.lock().as_mut().expect("a view").turn_over(Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
+    let sent = faculty.retain_tools(choice, false);
+    assert_eq!(wire(&sent), wire(&first.tools), "the turnover act sends the set she held");
+    let next = faculty.prompt_view_within(&declared, 200_000);
+    assert_eq!(wire(&next.tools), wire(&first.tools), "and so does every act after it");
+}
+
+// what this catches: a held set sent past a window that can no longer hold it (an over-budget
+// prompt the server refuses), the loss taken quietly, or a fallback that never recovers (every
+// downward move needs its upward one). A grant below her level drops the set on the probed path
+// (`delib.tools.epoch_level_lost`), sends what the grant buys and holds it; a window that holds
+// her whole hands again restores them once (`delib.tools.head_restored`).
+#[test]
+fn a_window_that_cannot_hold_the_epochs_set_reselects_loudly() {
+    use crate::cognition::tool_surface::SurfaceReason;
+    let faculty = asha_with_hands();
+    let ws = Workspace::new("what changed on the board?");
+    let first = faculty.prompt_view_within(&ws, 200_000);
+    let claim = faculty.tools_claim(&ws);
+    assert_eq!(claim.level, first.tools.tokens, "precondition: the epoch holds her whole hands");
+    assert!(claim.floor < claim.level, "precondition: core hands are smaller");
+    let (choice, refused) = faculty.granted_tools(&ws, claim, claim.floor);
+    assert!(refused.is_none(), "core hands fit their own floor");
+    assert_eq!((choice.sent.reason, choice.sent.tokens), (SurfaceReason::CoreHandsForWindow, claim.floor));
+    let sent = faculty.retain_tools(choice, false);
+    assert_ne!(wire(&sent), wire(&first.tools), "the lost set is not sent");
+    assert_eq!(faculty.tools_claim(&ws).level, claim.floor, "she holds the set the window could hold");
+    // Up, once: a window that holds her whole hands again restores them, and they then hold.
+    let restored = faculty.prompt_view_within(&ws, 200_000);
+    assert_eq!(wire(&restored.tools), wire(&first.tools), "the core-hands fallback gives way to her whole hands");
+    let after = faculty.prompt_view_within(&ws, 200_000);
+    assert_eq!(wire(&after.tools), wire(&first.tools), "and the restored set holds");
 }

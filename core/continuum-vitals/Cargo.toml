@@ -1,0 +1,22 @@
+[package]
+name = "continuum-vitals"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "A mind's vitals: the health and turn ledgers, turn ingress, grid allocation, the vitals pulse, the activity gate, directed pending and mind events. A leaf of the cognition crate tree (docs/architecture/COGNITION-CRATE-TREE.md)."
+
+[features]
+# Test-only helpers other crates' tests use (CLAUDE.md: fixtures behind test-fixtures, never in a production link).
+test-fixtures = []
+
+[dependencies]
+continuum-base = { path = "../continuum-base" }
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-engine = { path = "../continuum-engine" }
+continuum-experience = { path = "../continuum-experience" }
+dashmap = "6.1"  # same pin as continuum-cognition
+parking_lot.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true  # continuum_base::probe! expands to tracing::event
+uuid.workspace = true

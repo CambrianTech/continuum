@@ -1,7 +1,6 @@
 use super::*;
 
 impl PersonaAircRuntime {
-
     /// [`Self::bootstrap`] generalized over the citizen KIND — the operator
     /// self-peer (#27) boots the SAME runtime as a persona (identity keypair,
     /// daemon attach, transcript/roster readers) homed under its own kind dir
@@ -23,11 +22,18 @@ impl PersonaAircRuntime {
         // Slice 4 of #142: symmetric citizens/<kind>/<label>/airc/
         // layout. Use the shared helper so every actor kind shares
         // the same path schema.
-        let home = crate::identity::citizen_path::citizen_home_path(continuum_root, kind, provider, &agent_name);
+        let home = crate::identity::citizen_path::citizen_home_path(
+            continuum_root,
+            kind,
+            provider,
+            &agent_name,
+        );
 
         // Migration: refuse to use the pre-Slice-4 layout. Hard-error
         // with the exact `mv` command per [[no-fallbacks-ever]].
-        if let Some(legacy) = crate::identity::citizen_path::legacy_home_path(continuum_root, kind, &agent_name) {
+        if let Some(legacy) =
+            crate::identity::citizen_path::legacy_home_path(continuum_root, kind, &agent_name)
+        {
             if tokio::fs::try_exists(&legacy).await.unwrap_or(false) {
                 let new_parent = home
                     .parent()
@@ -282,10 +288,8 @@ impl PersonaAircRuntime {
             let hb_name = agent_name.clone();
             // What she held before this core: the record beside her scope, so a followed
             // claim is renewed inside its first lease-length after a restart (2d9df546).
-            let recorded = crate::persona::held_claims::load(
-                hb_airc.peer_id().as_uuid(),
-                hb_airc.home(),
-            );
+            let recorded =
+                crate::persona::held_claims::load(hb_airc.peer_id().as_uuid(), hb_airc.home());
             if recorded > 0 {
                 continuum_base::probe!(
                     class = "persona.claim.record_loaded",
@@ -313,9 +317,9 @@ impl PersonaAircRuntime {
                 // pulse — roster liveness IS a fast question. A 30-minute claim
                 // lease does not: renewing it every presence tick emitted ~30× the
                 // events one lease needs, and that churn crossed the wire to EVERY
-                // subscriber on every node. Renew at TTL/3 — derived from the one
-                // lease constant, never a second magic number — which still gives a
-                // healthy citizen three renewal opportunities per lease. The stamp
+                // subscriber on every node. Renew at TTL/6 — derived from the one
+                // lease constant, never a second magic number — which gives a
+                // healthy citizen six renewal opportunities per lease. The stamp
                 // is only advanced on a fully-clean pass, so any roster-read or
                 // per-card failure falls back to retrying on the NEXT 60s tick
                 // (exactly the old cadence) until clean — degraded mode is the old
@@ -333,6 +337,18 @@ impl PersonaAircRuntime {
                 // when renewals resume; the standing state stays queryable via
                 // the work board's lease column.
                 let mut renewal_denied = false;
+                // Lapse-time observability (card 13d7e47a, gaps C/D of 1fc73f18): one
+                // probe row per lapse episode — WHY the renewal was denied plus the
+                // on-disk evidence re-check. Keyed by (card_id, lease expiry), so the
+                // same lapsed lease seen across several denial ticks records once and
+                // a card that lapses again under a new claim generation records again.
+                let mut recorded_lapses: std::collections::HashSet<(uuid::Uuid, u64)> =
+                    std::collections::HashSet::new();
+                // What the next denial tick owes for lapse scanning (see
+                // `lapse_scan::LapseScanSchedule`): due now on first denial; while
+                // denied her holds only change by lapsing — no turns, no claims — so
+                // one board fetch per expiry crossing, none in quiescence.
+                let mut lapse_schedule = super::lapse_scan::LapseScanSchedule::DueNow;
                 loop {
                     ticker.tick().await;
                     let serving = crate::inference::llama_server::current_serving();
@@ -451,10 +467,34 @@ impl PersonaAircRuntime {
                                      lapse naturally so the work can be recovered"
                                 );
                             }
+                            // LAPSE-TIME OBSERVABILITY (card 13d7e47a, gaps C/D of
+                            // 1fc73f18): denial is what lapses her holds — record WHY at
+                            // the moment a hold has in fact lapsed. The pulse says idle;
+                            // disk may disagree (a restart wipes the stamp), so each
+                            // lapsed checkout gets an on-disk re-check and its evidence
+                            // rides the row: one per lapse episode, keyed by lease
+                            // generation. Fetch discipline (one board read per expiry
+                            // crossing, none in quiescence) lives with the scan itself.
+                            if lapse_schedule.is_due(now_ms) {
+                                lapse_schedule = super::lapse_scan::record_lapsed_holds(
+                                    &hb_airc,
+                                    hb_persona,
+                                    &hb_name,
+                                    idle,
+                                    now_ms,
+                                    &mut recorded_lapses,
+                                )
+                                .await;
+                            }
                             continue;
                         }
                         if renewal_denied {
                             renewal_denied = false;
+                            // Do NOT clear the episode keys on resume: while a lapsed
+                            // board row persists, the same stale (card, expiry) could be
+                            // recorded again at the next denial. Keys are pruned per scan,
+                            // dropping only what the authoritative holds say has ended.
+                            lapse_schedule = super::lapse_scan::LapseScanSchedule::DueNow; // re-establish from a fresh scan on the next denial
                             continuum_base::probe!(
                                 class = "persona.claim.renewal_resumed",
                                 persona_id = %hb_persona,
@@ -492,14 +532,13 @@ impl PersonaAircRuntime {
                                 .iter()
                                 .filter(|c| {
                                     crate::persona::cognition_pulse::renewal_earned(
-                                            crate::persona::cognition_pulse::work_idle_ms(
-                                                hb_persona,
-                                                Some(c.card_id.as_uuid()),
-                                                now_ms,
-                                            ),
-                                            crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
-                                        )
-                                        && c.owner == Some(me)
+                                        crate::persona::cognition_pulse::work_idle_ms(
+                                            hb_persona,
+                                            Some(c.card_id.as_uuid()),
+                                            now_ms,
+                                        ),
+                                        crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
+                                    ) && c.owner == Some(me)
                                         && c.claim_expires_at_ms.is_some_and(|e| e <= now_ms)
                                         && crate::cognition::bench_round::card_round_is_working(
                                             c.card_id.as_uuid(),
@@ -510,21 +549,31 @@ impl PersonaAircRuntime {
                                                 | airc_work::model::CardState::InProgress
                                         )
                                 })
-                                .max_by_key(|c| (
-                                    crate::persona::work_focus::explicit_choice_key(c.card_id.as_uuid(), c.claim_provenance.as_ref()),
-                                    c.updated_at_ms,
-                                ))
-                                .filter(|candidate| crate::persona::work_focus::recovery_preferred_over_live(
-                                    candidate,
-                                    snapshot.cards.iter().filter(|c| c.owner == Some(me)
-                                        && c.claim_expires_at_ms.is_some_and(|e| e > now_ms)),
-                                ));
+                                .max_by_key(|c| {
+                                    (
+                                        crate::persona::work_focus::explicit_choice_key(
+                                            c.card_id.as_uuid(),
+                                            c.claim_provenance.as_ref(),
+                                        ),
+                                        c.updated_at_ms,
+                                    )
+                                })
+                                .filter(|candidate| {
+                                    crate::persona::work_focus::recovery_preferred_over_live(
+                                        candidate,
+                                        snapshot.cards.iter().filter(|c| {
+                                            c.owner == Some(me)
+                                                && c.claim_expires_at_ms.is_some_and(|e| e > now_ms)
+                                        }),
+                                    )
+                                });
                             if let Some(card) = recoverable {
                                 match hb_airc
                                     .claim_work_card_with_provenance(
                                         airc_lib::ClaimWorkCard {
                                             card_id: card.card_id,
-                                            ttl_ms: crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
+                                            ttl_ms:
+                                                crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                                         },
                                         card.claim_provenance
                                             .as_ref()
@@ -578,7 +627,8 @@ impl PersonaAircRuntime {
                                         airc_lib::HeartbeatWorkClaim {
                                             card_id: card.card_id,
                                             claim_id,
-                                            ttl_ms: crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
+                                            ttl_ms:
+                                                crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                                         },
                                     )
                                     .await
@@ -656,7 +706,8 @@ impl PersonaAircRuntime {
                                         airc_lib::HeartbeatWorkClaim {
                                             card_id: airc_lib::WorkCardId::from_uuid(h.card_id),
                                             claim_id: airc_lib::ClaimId::from_uuid(h.claim_id),
-                                            ttl_ms: crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
+                                            ttl_ms:
+                                                crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                                         },
                                     )
                                     .await
@@ -699,7 +750,7 @@ impl PersonaAircRuntime {
                                     renewed = renewed,
                                     held = mine.len(),
                                     ttl_ms = crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
-                                    "held work-card claims renewed on the claim cadence (TTL/3)"
+                                    "held work-card claims renewed on the claim cadence (TTL/6)"
                                 );
                             }
                             // Only a fully-clean pass earns the slow cadence; any

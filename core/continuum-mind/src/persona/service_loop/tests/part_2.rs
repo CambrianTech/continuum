@@ -11,7 +11,7 @@
     pub(super) mod workspace_burst_names {
         use super::super::super::build_workspace_turns;
         use crate::cognition::workspace::Burst;
-        use crate::cognition::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
+        use crate::cognition::rag_budget::{RagDelivery, RagItem};
         use serde_json::json;
 
         fn delivery(source_id: &str, items: Vec<RagItem>) -> RagDelivery {
@@ -20,11 +20,13 @@
                 items,
                 tokens_used: 0,
                 truncated: false,
-                resolution_used: ResolutionPreference::Raw,
             }
         }
         fn chat(peer_id: &str, content: &str) -> RagItem {
             RagItem {
+                key: String::new(),
+                summary: None,
+                pointer: None,
                 content: content.to_string(),
                 tokens: 0,
                 metadata: json!({ "peer_id": peer_id, "occurred_at_ms": 1u64 }),
@@ -32,6 +34,9 @@
         }
         fn roster(peer_id: &str, name: &str) -> RagItem {
             RagItem {
+                key: String::new(),
+                summary: None,
+                pointer: None,
                 content: format!("{name} [claude]"),
                 tokens: 0,
                 metadata: json!({ "peer_id": peer_id, "display_name": name }),
@@ -126,6 +131,9 @@
             // the anchor parses — carries the serde encoding.
             let shown = format!("{state:?}");
             RagItem {
+                key: String::new(),
+                summary: None,
+                pointer: None,
                 content: format!("card {id8} [{shown}] \"{title}\" (P2, {owner_txt})"),
                 tokens: 0,
                 metadata: json!({
@@ -642,6 +650,7 @@
                 peer_id: joel,
                 content: "run commands/list and tell me the count",
                 occurred_at_ms: 0,
+                source: None,
             };
             let turns = build_workspace_turns(&deliveries, me, "Asha", Some(trigger));
 
@@ -685,6 +694,7 @@
                 peer_id: joel,
                 content: question,
                 occurred_at_ms: 0,
+                source: None,
             };
             let turns = build_workspace_turns(&deliveries, me, "Asha", Some(trigger));
             assert_eq!(

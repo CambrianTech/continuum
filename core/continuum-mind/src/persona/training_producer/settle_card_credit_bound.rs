@@ -204,6 +204,14 @@ pub(super) fn staged_submission_params(
     let served = served_provenance(&row.receipts)
         .filter(|served| !served.model.trim().is_empty() && !served.provider.trim().is_empty())
         .ok_or("no served provenance (model+provider) in this row's receipts")?;
+    // Her examples are the calls she lived, never the flat prompt and completion: a row
+    // whose capture is incomplete stays staged and named until a read completes it
+    // (card ad107e18; Codex's audit, which found the flat path training silently).
+    let lived = row
+        .lived
+        .as_deref()
+        .filter(|calls| !calls.is_empty())
+        .ok_or("no complete lived record of this turn's calls: it waits for one, never trains as flat text")?;
     let stamp = OutcomeStamp {
         card_id: row.card_id,
         role: eligible_role,
@@ -223,10 +231,7 @@ pub(super) fn staged_submission_params(
         &plan,
         "card-credit",
     );
-    if let Some(calls) = row.lived.as_deref().filter(|calls| !calls.is_empty()) {
-        let examples = lived_examples(&plan, calls);
-        params["examples"] = serde_json::to_value(&examples).map_err(|_| "lived examples could not be serialized")?; // training-trigger submit boundary: the params ARE the command's wire payload
-    }
+    params["examples"] = serde_json::to_value(lived_examples(&plan, lived)).map_err(|_| "lived examples could not be serialized")?; // training-trigger submit boundary: the params ARE the command's wire payload
     params["submissionId"] = json!(row.id);
     crate::cognition::held_out::stamp_examples(&mut params, row.task.as_ref());
     if verdict == CardVerdict::Corrected {
@@ -237,6 +242,27 @@ pub(super) fn staged_submission_params(
         params["minExamples"] = json!(1);
     }
     Ok(params)
+}
+
+/// The row with the calls she lived. A row staged while its capture was incomplete
+/// reads them again from its own receipts' cursors, so a capture that has since landed
+/// completes it; a read that is still incomplete leaves the row as it was, and the
+/// lived rule in [`staged_submission_params`] names it.
+pub(super) async fn with_lived<'a>(
+    persona_id: Uuid,
+    persona_name: &str,
+    row: &'a StagedCredit,
+) -> std::borrow::Cow<'a, StagedCredit> {
+    if row.lived.as_deref().is_some_and(|calls| !calls.is_empty()) {
+        return std::borrow::Cow::Borrowed(row);
+    }
+    match super::speech_discipline_trait::read_lived(persona_id, persona_name, &row.receipts, Vec::new()).await {
+        (calls, true) => std::borrow::Cow::Owned(StagedCredit {
+            lived: Some(calls),
+            ..row.clone()
+        }),
+        (_, false) => std::borrow::Cow::Borrowed(row),
+    }
 }
 
 /// One example per call she lived (card ad107e18). Each carries its call whole, so a
@@ -312,7 +338,8 @@ pub(super) fn not_a_loop(calls: &[crate::genome::fine_tuning::LivedCall]) -> Vec
 /// no-action turns collapses whatever their wording, while a single spoken turn (a
 /// deliverable written as speech) stays, and so does a re-read after an edit (the
 /// verify step): only CONSECUTIVE repeats are the loop (Cormac on #4452). A turn with no
-/// lived record cannot be judged; it settles as before and breaks the run.
+/// lived record cannot be judged; it breaks the run, and settlement holds it until a read
+/// completes its record.
 pub(super) fn across_turns(rows: &[StagedCredit]) -> Vec<(&StagedCredit, Option<&'static str>)> {
     let mut previous: Option<Vec<(String, String)>> = None;
     rows.iter()
@@ -341,7 +368,16 @@ pub async fn settle_staged_row<T: Transport, S: Transport>(
     row: &StagedCredit,
     verdict: impl Into<CardVerdict>,
 ) -> Result<bool, ClientError> {
-    let params = match staged_submission_params(persona_id, persona_name, row, verdict) {
+    // An accepted transfer is done: its lived copy may already be shed, and it needs no
+    // params, so it never reaches the lived rule below as a false "incomplete".
+    if reviewed::transfer_accepted(conn, persona_name, row.id).await? {
+        clear_lived(substrate, persona_name, row).await;
+        return Ok(false);
+    }
+    // The params take the calls she lived; the reservation below snapshots the row as
+    // stored, so its digest still matches what a binding recorded.
+    let resolved = with_lived(persona_id, persona_name, row).await;
+    let params = match staged_submission_params(persona_id, persona_name, &*resolved, verdict) {
         Ok(params) => params,
         Err(reason) => {
             // SAY IT. A staged credit that can never settle is a citizen's work
@@ -372,10 +408,6 @@ pub async fn settle_staged_row<T: Transport, S: Transport>(
             );
             return Ok(false);
         }
-    }
-    if reviewed::transfer_accepted(conn, persona_name, row.id).await? {
-        clear_lived(substrate, persona_name, row).await;
-        return Ok(false);
     }
     let receipt = submit_training(conn, params).await?;
     if receipt

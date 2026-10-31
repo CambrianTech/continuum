@@ -1,10 +1,5 @@
 use super::*;
 
-/// Default bounded workspace capacity — the finite attention "spotlight". Enough
-/// for recall + world-model + affect + roster context to coexist; the arbiter
-/// keeps it bounded so cost stays O(capacity) no matter how many faculties bid.
-pub const DEFAULT_WORKSPACE_CAPACITY: usize = 6;
-
 /// Everything needed to assemble one persona's continuous mind. The `admission`
 /// is the persona's UNIFIED hippocampus (shared with the admission pipeline and
 /// spanning all the persona's rooms); the `adapter` is the shared model backend,
@@ -22,8 +17,6 @@ pub struct PersonaBrainConfig {
     pub system_prompt: String,
     pub admission: Arc<AdmissionState>,
     pub adapter: Arc<dyn AIProviderAdapter>,
-    /// Bounded workspace capacity; `None` → [`DEFAULT_WORKSPACE_CAPACITY`].
-    pub capacity: Option<usize>,
     /// Grounding RagSources lifted into perception-tier faculties via
     /// [`RagSourceFaculty`] (the migration bridge — see its module doc). Each is
     /// paired with a [`SaliencePolicy`]: roster + doctrine are `StandingFraming`
@@ -110,6 +103,10 @@ pub struct PersonaBrainConfig {
     /// page per room and never queue behind the living mind's act, since it acts beside
     /// her (`slots::PageKey::Fork`). `false` for every resident.
     pub forked: bool,
+    /// Where her sent prompts' read receipts go: her airc source, which advances her room
+    /// cursor through what each sent prompt rendered. `None` (a fork, an eval, a harness)
+    /// marks nothing read.
+    pub read_receipt: Option<Arc<dyn super::super::llm_deliberation_faculty::ReadReceipt>>,
 }
 
 /// Whether a grounding source must run synchronously on the inference loop, or
@@ -304,16 +301,17 @@ pub(super) fn assemble_workspace_cycle(
     });
     // Working memory: the persona's recent chain-of-thought AND the head of what its
     // hands just did, carried forward across turns. The deliberator WRITES its
-    // reasoning here after each verdict; the perception-tier `WorkingMemoryFaculty`
-    // (pushed below) READS it into the next tick — so the persona resumes its train of
+    // reasoning here after each verdict; her view's thoughts and actions sources READ it
+    // into the next tick — so the persona resumes its train of
     // thought instead of re-deriving it cold. Volatile scratchpad, distinct from the
     // long-term engram store; self-activates only when thinking is enabled (suppressed
     // turns record nothing). Built HERE (before recall) so recall can share it in and
     // suppress an engram the recency channel already carries — see below.
     // Depth comes from the BUDGET, never a constant: the count sibling of the per-step size
-    // bound, off the same live window. See `ContextBudget::working_memory_steps`.
+    // bound, a ratio of two window fractions and so the same on every window: no live window is
+    // read to build it. See `ContextBudget::WORKING_MEMORY_STEPS`.
     let working_memory = Arc::new(WorkingMemory::new(
-        crate::cognition::context_budget::ContextBudget::live_or_floor().working_memory_steps(),
+        crate::cognition::context_budget::ContextBudget::WORKING_MEMORY_STEPS,
     ));
     // Persistence belongs to resident registration, independently of whether
     // recall runs inline or deferred. Constructing a fork grants no disk access.
@@ -325,6 +323,13 @@ pub(super) fn assemble_workspace_cycle(
         // only a real failure (BigMama's live receipt on the 5090, card df0035bf). The pin
         // holds them live until `restore` below publishes the memory's own set.
         let restore_pin = persisted.wm.retain_handleless(cfg.persona_id);
+        // Results the old window share evicted carry no stored size: price each from its saved
+        // output, so her view can show it whole again (FOCUS-CONTRACT rule 7).
+        let persona = cfg.persona_id;
+        persisted.wm.price_evicted_wholes(|handle| {
+            let path = crate::cognition::tool_executor::spill::resolve(persona, handle).ok()?;
+            std::fs::read_to_string(path).ok().map(|body| body.trim().chars().count())
+        });
         // The previous life's handoff re-seeds this one: her ledger and card are known at
         // the NEXT seam too, without a wall read (card 49b5e806).
         if let Some(handoff) = persisted.wm.handoff.as_ref() {
@@ -415,13 +420,6 @@ pub(super) fn assemble_workspace_cycle(
         faculties.push(Arc::new(recall));
     }
 
-    // The perception-tier reader of the working memory built above: each tick it bids
-    // the recent reasoning + act heads into the workspace so the deliberator conditions
-    // on them. (The buffer itself is created before recall so recall can share it in.)
-    faculties.push(Arc::new(WorkingMemoryFaculty::new(Arc::clone(
-        &working_memory,
-    ))));
-
     // Bridge each grounding source into a perception-tier faculty under its
     // salience policy. Standing-framing (roster, doctrine) bids at a high floor so
     // the top-k arbiter never evicts the room's rules under attention pressure.
@@ -433,15 +431,10 @@ pub(super) fn assemble_workspace_cycle(
     // synchronous so it's never `None` on the first tick. Eval/harness keep
     // everything synchronous (`defer_grounding == false`) — their tight settle-loops
     // never yield to the worker, so deferral there would measure a starved mind.
-    // Per-source grounding ceiling scales with the LIVE served window (task #50's
-    // single-sourced `cfg.context_window`), exactly like recall's budget above —
-    // never a baked constant (task #124). A 128k model lets each source hold its
-    // full board/map/roster; a tight window shrinks them honestly; the packer keeps
-    // the total ≤ window.
-    let grounding_budget = super::super::rag_source_faculty::grounding_budget_for(cfg.context_window);
+    // No per-source ceiling: each source delivers every item at its levels and her prompt
+    // view's one allocation decides what she sees (FLOW-IMPLEMENTATION-PLAN §2d).
     for g in cfg.grounding_sources {
         let faculty = RagSourceFaculty::new(cfg.persona_id, g.source, g.policy)
-            .with_budget(grounding_budget)
             .with_volatile_content(g.volatile_content)
             // Deferrability is also a LOUDNESS contract, not only a scheduling one
             // (#3873). ColdStartCritical means "absent here is a wrong turn", so a
@@ -509,6 +502,10 @@ pub(super) fn assemble_workspace_cycle(
                 ws
             });
     let mut deliberation = if cfg.forked { deliberation.forked() } else { deliberation };
+    // A fork copies the living config but never marks her rooms read: it acts beside her.
+    if let Some(receipt) = cfg.read_receipt.clone().filter(|_| !cfg.forked) {
+        deliberation = deliberation.with_read_receipt(receipt);
+    }
     if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the
@@ -550,13 +547,9 @@ pub(super) fn assemble_workspace_cycle(
 
     let cycle = WorkspaceCycle::new(
         faculties,
-        // Situation-aware focuser: on every act→observe re-perception (`PostAction`)
-        // it drops the standing SOCIAL re-grounding so the tool result + working
-        // memory + recall own the window — the persona goes lean and code-first while
-        // heads-down, and fuller-grounded on a fresh ask. This is the wire behind
-        // "straightforward for whatever their current state requires."
+        // Situation-aware focuser: every bid is forwarded, ordered by salience; how much
+        // of each she sees is her view's one allocation.
         Arc::new(SituationFocusArbiter::new()),
-        cfg.capacity.unwrap_or(DEFAULT_WORKSPACE_CAPACITY),
     )
     .with_genome(genome)
     .with_decoding(decoding)
@@ -580,7 +573,7 @@ pub(super) fn assemble_workspace_cycle(
             persona_name: persona_name_for_body,
             executor,
             admission: admission_for_body,
-            // Same buffer the perception-tier WorkingMemoryFaculty reads — the
+            // Same buffer her view's sources read — the
             // organism records each act here so the mind perceives its own hands
             // next tick (proprioception), even when the result is a dedup no-op in
             // long-term memory and thinking is suppressed.
@@ -642,8 +635,9 @@ pub struct PersonaWorkspaceRegistry {
     /// crosses between her public and private turns except what she publishes. It is never in
     /// `cycles`, so the volatile checkpoint never writes it to disk in plaintext (until her
     /// sealed store exists, a restart forgets her private scratchpad, which is the honest cost).
-    /// Lock order: `cycles`, then `templates`, then `mind_cycles`.
-    pub(super) mind_cycles: Mutex<HashMap<Uuid, Arc<WorkspaceCycle>>>,
+    /// Lock order: `cycles`, then `templates`, then `mind_cycles`. Its working memory is held
+    /// beside it so the memory owner accounts and sheds her private results too.
+    pub(super) mind_cycles: Mutex<HashMap<Uuid, ResidentWorkspace>>,
 }
 
 pub(super) struct ResidentWorkspace {

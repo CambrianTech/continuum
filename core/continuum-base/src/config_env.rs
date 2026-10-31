@@ -26,9 +26,13 @@ use std::sync::OnceLock;
 /// margin). A dedicated deep-learning FOUNDRY appliance overrides to 1.0.
 const DEFAULT_HEADROOM: f64 = 0.8;
 
-/// Path to `~/.continuum/config.env` (mirrors [`crate::secrets`]).
+/// `config.env` in the continuum home ([`crate::home`]): `$CONTINUUM_HOME/config.env`, else
+/// `~/.continuum/config.env`. It was built by hand from the user's home, so a process with
+/// `$CONTINUUM_HOME` set read (and applied, and took secrets from) another tree's file (card
+/// f04a437f). With no home, or a refused one, there is no file to read; the core's boot then
+/// refuses with the reason.
 pub fn config_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".continuum").join("config.env"))
+    crate::home::continuum_home().ok().map(|home| home.join("config.env"))
 }
 
 /// Read one key's value, fresh from disk. `None` if the file or key is absent.

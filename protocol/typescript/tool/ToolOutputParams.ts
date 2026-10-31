@@ -2,15 +2,20 @@
 import type { OutputFilter } from "./OutputFilter";
 
 /**
- * Inputs to `tool/output`. `outputId` is required (from the preview); everything
- * else selects WHAT to pull back.
+ * Inputs to `tool/output`. Exactly one of `outputId` (from the preview) or `act` (one of
+ * her act numbers); everything else selects WHAT to pull back.
  */
 export type ToolOutputParams = { 
 /**
  * The output id from the elision marker (e.g. `"deadbeefcafe0001"`). This is
  * the spill the preview told you was saved.
  */
-outputId: string, 
+outputId?: string, 
+/**
+ * One of your act numbers (the `#n` your actions name, folded ones included), in
+ * place of `outputId`: reopens that act's saved output. Give exactly one of the two.
+ */
+act?: number, 
 /**
  * A PREBUILT filter — the easy path, no regex needed: `errors` (what broke?),
  * `warnings`, `failures` (which tests failed?), or `summary` (how did it end?).

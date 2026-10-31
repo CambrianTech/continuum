@@ -112,6 +112,7 @@ impl Burst {
             cause,
             room_updates: Arc::default(),
             hands: None,
+            effects: None,
         }
     }
 
@@ -121,6 +122,13 @@ impl Burst {
         context: Option<crate::identity::hands_context::HandsContext>,
     ) -> Self {
         self.hands = context;
+        self
+    }
+
+    /// This turn's pre-effect mark (stop-drain S2): set by the loop when the turn has a
+    /// confirmed obligation, so each tool batch and her reply are recorded before they happen.
+    pub fn with_effects(mut self, gate: Option<crate::cognition::act_observe::EffectGate>) -> Self {
+        self.effects = gate;
         self
     }
 
@@ -136,6 +144,7 @@ impl Burst {
             cause: Cause::Synthetic,
             room_updates: Arc::default(),
             hands: None,
+            effects: None,
         }
     }
 }
@@ -157,6 +166,7 @@ impl From<String> for Burst {
             cause: Cause::Synthetic,
             room_updates: Arc::default(),
             hands: None,
+            effects: None,
         }
     }
 }
@@ -545,7 +555,7 @@ impl Workspace {
     /// every context contribution that won attention this tick, newline-joined.
     /// This is where the persona reads what its perception faculties surfaced —
     /// roster/doctrine grounding, recall hits, and (the proprioception channel)
-    /// the `WorkingMemoryFaculty`'s render of its own recent acts. A deliberation
+    /// her view's render of its own recent acts. A deliberation
     /// faculty scans THIS, not the raw `world_state` burst — the burst is the
     /// stimulus, the broadcast is what the mind actually knows going into the
     /// decision. (Replaces the deleted eval-only `[you just acted]` world-state

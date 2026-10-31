@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+continuum-process = { path = "../continuum-process" }
 tempfile = { version = "3", optional = true }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-tool-protocol = { path = "../continuum-tool-protocol" }
@@ -14,9 +15,11 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
+continuum-service = { path = "../continuum-service" }  # the resident alarm a node beacons (card 1c157668)
+continuum-host = { path = "../continuum-host" }
 schemars = { version = "0.8", features = ["uuid1"] }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
-reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
 inventory = "0.3"
@@ -71,5 +74,5 @@ metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "l
 mlx = []
 openvino = ["ort/openvino"]
 rocm = ["ort/rocm"]
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "dep:tempfile"]
+test-fixtures = ["continuum-kernel/test-fixtures", "dep:tempfile"]
 vulkan = ["llama/vulkan", "continuum-kernel/vulkan"]

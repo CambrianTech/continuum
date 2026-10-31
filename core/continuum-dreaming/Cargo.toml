@@ -1,0 +1,58 @@
+[package]
+name = "continuum-dreaming"
+version = "0.1.0"
+edition = "2021"
+publish = false
+repository = "https://github.com/CambrianTech/continuum"
+# The moved teach bridge stamps what it produces with the build it ran on (CONTINUUM_BUILD_GIT_SHA):
+# core's build script is the one owner of that identity, as for cognition.
+build = "../continuum-core/build.rs"
+
+# Dreaming (MODULE-ARCHITECTURE.md section 9.2): gene training on the served weights, as one domain with
+# its commands (Joel: a domain's service and its commands are ONE crate). The training trigger, the
+# genome module and genome/* commands, recall, sharing (push stays with core's forge), datasets, the
+# gene examiner and the fitness sentinel, cut out of continuum-core (card 2a69e6ba). It sits above the
+# mind (it reads the persona roster, training producer and perception feed) and below core, which
+# re-exports every moved module under its old path.
+
+[dependencies]
+continuum-mind = { path = "../continuum-mind" }
+continuum-academy = { path = "../continuum-academy" }
+continuum-genome = { path = "../continuum-genome" }
+continuum-engine = { path = "../continuum-engine" }
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" }
+continuum-client = { path = "../../client/continuum-client" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+candle-core.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+schemars = { version = "0.8", features = ["uuid1"] }
+dashmap = "6.1"
+base64 = "0.22"
+sha2 = "0.10"
+csv = "1"
+inventory = "0.3"
+
+[dev-dependencies]
+continuum-mind = { path = "../continuum-mind", features = ["test-fixtures"] }
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
+continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
+continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }
+airc-core.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
+
+[features]
+default = []
+metal = ["continuum-mind/metal"]
+cuda = ["continuum-mind/cuda"]
+vulkan = ["continuum-mind/vulkan"]
+stress-tests = ["continuum-mind/stress-tests"]
+test-fixtures = ["continuum-mind/test-fixtures", "continuum-kernel/test-fixtures", "continuum-genome/test-fixtures"]

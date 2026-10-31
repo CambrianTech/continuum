@@ -184,6 +184,7 @@ mod tests {
             stop_sequences: None,
             tools: None,
             tail_tools: None,
+            view_messages: None,
             tool_choice: None,
             response_format: None,
             active_adapters: None,

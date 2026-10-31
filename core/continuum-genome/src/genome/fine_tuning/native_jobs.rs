@@ -238,7 +238,7 @@ impl NativeJobs {
                 }
             };
             // finish moves the adapter and records its footprint: file I/O, and a footprint rename
-            // may wait out a Windows sharing violation (fs_portable::replace), so off the runtime
+            // may wait out a Windows sharing violation (continuum_host::durable::replace), so off the runtime
             let wall_clock_ms = started.elapsed().as_millis() as u64;
             let artifact = match ended {
                 Ok(()) => tokio::task::spawn_blocking(move || finish(wall_clock_ms))

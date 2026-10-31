@@ -1,8 +1,8 @@
 //! Tool-output spill: durable recovery for flood-sized tool results.
 //!
-//! [`whole_or_handle`] is THE decision for how a tool result reaches a mind: WHOLE when the
-//! window's share for one result holds it, otherwise saved whole here and handed back as a
-//! pointer naming its `handle`, never as a fragment. A head, a tail, or a head+tail of a
+//! [`whole_or_handle`] is THE custody of a tool result at execution: STORAGE ONLY. Every result
+//! is saved whole here and handed back whole with its `handle`; what she sees of it is decided
+//! later by her view's levels, never by a cut at execution. A head, a tail, or a head+tail of a
 //! source file, a JSON document or a build log is broken, not short (Joel, 2026-10-12: "the
 //! clipping I've yelled about for months"; Kimi read one file 25+ times and landed no edit
 //! because each read reached her later as its last ~2,100 chars). She opens what she needs
@@ -84,18 +84,15 @@ impl LivePin {
         LivePin(LiveHolder::Pin(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
     }
 
-    /// Whole, or saved whole and pointed at: the one place a tool result is fitted to a mind's
-    /// window. `share` is the window's share for one result
-    /// ([`crate::cognition::context_budget::ContextBudget::latest_action_chars`]), the same share
-    /// working memory shows it at, so nothing reaches working memory too big for its view without
-    /// a handle. EVERY result is saved, not only the oversized ones: a result that fits now still
-    /// leaves view later (a settlement collapse, a restore into a smaller window), and the pointer
-    /// it leaves must resolve (Astra on #4963). Saves are content-addressed, so a repeated read
-    /// reuses its file, and the directory is evicted under disk pressure like every spill.
-    pub fn whole_or_handle(&self, full: String, share: usize, persona_id: Uuid) -> Fitted {
+    /// Save the result whole and hand it back whole with its handle: custody only, no size
+    /// decision. EVERY result is saved, because a result leaves view later (a settlement
+    /// collapse, a restore into a smaller window) and the pointer it leaves must resolve
+    /// (Astra on #4963). Saves are content-addressed, so a repeated read reuses its file, and
+    /// the directory is evicted under disk pressure like every spill.
+    pub fn whole_or_handle(&self, full: String, persona_id: Uuid) -> Fitted {
         match spill_root() {
-            Ok(root) => whole_or_handle_in(&root, full, share, persona_id, self),
-            Err(e) => unsaved_whole(full, share, &e),
+            Ok(root) => whole_or_handle_in(&root, full, persona_id, self),
+            Err(e) => unsaved_whole(full, &e),
         }
     }
 
@@ -279,16 +276,14 @@ pub fn spill_root() -> std::io::Result<PathBuf> {
     Ok(home.join(".continuum").join("tool-output"))
 }
 
-/// How a tool result reached a mind: the three custody states, and the only text a mind is
-/// ever shown for one. A consumer renders these; it never invents a recovery from a raw string.
+/// How a tool result reached a mind: the two custody states, and the only text it is handed at
+/// execution. A consumer renders these; it never invents a recovery from a raw string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fitted {
-    /// Within the window's share for one result: the result itself, also saved under
-    /// `handle` so it stays reachable after it leaves view (a settlement collapse or a
-    /// restore leaves a pointer that resolves, never "re-run if needed").
+    /// Saved whole under `handle` and handed back whole, so it stays reachable after it leaves
+    /// view (a settlement collapse or a restore leaves a pointer that resolves, never
+    /// "re-run if needed"). What she sees of it is her view's levels, not this seam.
     Complete { text: String, handle: String },
-    /// Over the share and saved whole under `handle`: `shown` is the pointer to it.
-    Stored { shown: String, handle: String },
     /// The save failed: `shown` says so and then carries the WHOLE result, whatever its size.
     /// Nothing else holds those bytes, and re-running a tool to recover them is not a recovery
     /// (Astra, 2026-10-12). A failure to save, never a failure of the action; once it leaves
@@ -297,11 +292,10 @@ pub enum Fitted {
 }
 
 impl Fitted {
-    /// The text the mind is shown, and its typed custody.
+    /// The text handed back, and its typed custody.
     pub fn into_parts(self) -> (String, ResultCustody) {
         match self {
             Fitted::Complete { text, handle } => (text, ResultCustody::Whole { handle }),
-            Fitted::Stored { shown, handle } => (shown, ResultCustody::Pointer { handle }),
             Fitted::RetentionFailed { shown } => (shown, ResultCustody::Unsaved),
         }
     }
@@ -330,6 +324,21 @@ fn unretained(content: &str, error: &std::io::Error) -> ResultCustody {
 /// touch a path outside the persona's own spill directory.
 pub fn resolve(persona_id: Uuid, handle: &str) -> std::io::Result<PathBuf> {
     resolve_in(&spill_root()?, persona_id, handle)
+}
+
+/// THE read of a saved result as her view loads it back: the saved output, trimmed as the
+/// record keeps its result (`record_receipt_inner`). Her view's `load` and the memory owner's
+/// proof ([`reproduces`]) both read through here, so "verified" means "loads back to this text".
+pub fn saved_whole(persona_id: Uuid, handle: &str) -> std::io::Result<String> {
+    let text = fs::read_to_string(resolve(persona_id, handle)?)?;
+    Ok(text.trim().to_owned())
+}
+
+/// Whether `persona_id`'s saved output for `handle` loads back ([`saved_whole`]) to exactly
+/// `body`: the proof that the copy can stand in for a body leaving RAM. `Err` when it cannot be
+/// read back at all.
+pub fn reproduces(persona_id: Uuid, handle: &str, body: &str) -> std::io::Result<bool> {
+    Ok(saved_whole(persona_id, handle)? == body)
 }
 
 // ── root-injected cores (the filesystem seam; unit-tested against a tempdir so
@@ -372,7 +381,7 @@ fn write_in(
         file.write_all(content.as_bytes())?;
         file.sync_all()?;
         drop(file);
-        continuum_base::fs_portable::durable_publish_new(&staging, &path)
+        continuum_host::durable::publish_new(&staging, &path)
     };
     if let Err(error) = publish() {
         let _ = fs::remove_file(&staging);
@@ -436,48 +445,13 @@ fn existing_matches(path: &Path, expected: &[u8]) -> std::io::Result<bool> {
     if offset != expected.len() {
         return Err(mismatch());
     }
-    continuum_base::fs_portable::sync_publication(reader.get_ref(), path)?;
+    continuum_host::durable::fence(reader.get_ref(), path)?;
     Ok(true)
 }
-fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid, pin: &LivePin) -> Fitted {
-    let chars = full.chars().count();
+fn whole_or_handle_in(root: &Path, full: String, persona_id: Uuid, pin: &LivePin) -> Fitted {
     match pin.save_in(root, persona_id, &full) {
-        Ok(r) if chars <= share => Fitted::Complete {
-            text: full,
-            handle: r.handle,
-        },
-        Ok(r) => {
-            // The head rides with the pointer, named as a head. A pointer alone sent a citizen
-            // back to re-read the same file in slices for hours (Benchy, the M5, 2026-10-16: a
-            // 578-line lib.rs read at 27,454 chars against a 26,176-char share came back as
-            // "a single 27454-character line (or the result has been truncated)", 121 acts
-            // without a write). What a person gets from `head` she gets here: the first lines,
-            // the line count, and the handle for the rest. Never passed off as the whole.
-            let (head, head_lines) = head_of(&full, share / HEAD_SHARE_DENOM);
-            continuum_base::probe!(
-                class = "tool.output.spilled",
-                handle = %r.handle,
-                chars = %chars,
-                share = %share,
-                head_lines = %head_lines,
-                "a tool result was larger than the window's share for one result: saved \
-                 whole and handed to the mind as its head and handle"
-            );
-            Fitted::Stored {
-                shown: format!(
-                    "[this result is {} lines ({chars} chars), more than this window's \
-                     {share}-char share for one result: lines 1-{head_lines} are shown below and \
-                     the WHOLE result is saved as output `{}`. Open the rest with `tool/output`: \
-                     a line range with `startLine`/`endLine`, a `\"pattern\":\"<regex>\"` hunt, or \
-                     `{{\"outputId\":\"{}\",\"filter\":\"errors\"}}` (or `warnings`/`failures`/`summary`). \
-                     For a file, a `code/read` with `start_line`/`end_line` reads a range directly]\n{head}\n\
-                     [lines {}-{} of {} are not shown: open them as above]",
-                    r.lines, r.handle, r.handle, head_lines + 1, r.lines, r.lines,
-                ),
-                handle: r.handle,
-            }
-        }
-        Err(e) => unsaved_whole(full, share, &e),
+        Ok(r) => Fitted::Complete { text: full, handle: r.handle },
+        Err(e) => unsaved_whole(full, &e),
     }
 }
 
@@ -520,8 +494,8 @@ pub fn result_text(value: &serde_json::Value) -> String {
 
 /// The scalar fields [`result_text`] put on a result's first line (a file read's
 /// `file_path`, `total_lines`, `start_line`…), read back from the text a mind was shown.
-/// When the result was stored, that text opens with the one-line pointer and the head
-/// follows it, so the header is the first or second line. `None` for a result that went
+/// A result is handed back whole, so the header is its first line; text shown before the
+/// head cut was removed opened with a one-line pointer, so the second line is read too. `None` for a result that went
 /// on as something other than one JSON object line (pretty-printed, or not an object).
 pub fn result_scalars(shown: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
     shown.lines().take(2).find_map(|line| {
@@ -541,52 +515,18 @@ pub fn result_scalars(shown: &str) -> Option<serde_json::Map<String, serde_json:
 // couple of thousand chars is one unreadable line at any window
 const PRETTY_JSON_OVER_CHARS: usize = 2_000;
 
-/// A spilled result's shown head takes this fraction of the one-result share: the share
-/// itself is what the mind's view holds for a result, and the pointer plus a quarter of it
-/// leaves the view room for the next result beside it.
-const HEAD_SHARE_DENOM: usize = 4;
-
-/// The first whole lines of `full` that fit in `max_chars`, and how many lines that is
-/// (at least one line, cut at `max_chars` if even the first line is longer).
-fn head_of(full: &str, max_chars: usize) -> (String, usize) {
-    let mut out = String::new();
-    let mut lines = 0usize;
-    for line in full.lines() {
-        if lines > 0 && out.len() + line.len() + 1 > max_chars {
-            break;
-        }
-        if lines > 0 {
-            out.push('\n');
-        }
-        if lines == 0 && line.len() > max_chars {
-            out.push_str(&line.chars().take(max_chars).collect::<String>());
-            lines = 1;
-            break;
-        }
-        out.push_str(line);
-        lines += 1;
-    }
-    (out, lines)
-}
-
 /// [`Fitted::RetentionFailed`]: the failure said first, then the whole result.
-fn unsaved_whole(full: String, share: usize, error: &std::io::Error) -> Fitted {
+fn unsaved_whole(full: String, error: &std::io::Error) -> Fitted {
     let chars = full.chars().count();
     continuum_base::probe!(
         class = "tool.output.unsaved",
         chars = %chars,
-        share = %share,
         error = %error,
         "a tool result could not be saved; it goes on whole and cannot be reopened later"
     );
-    let over = if chars > share {
-        format!(", over this window's {share}-char share for one result")
-    } else {
-        String::new()
-    };
     Fitted::RetentionFailed {
         shown: format!(
-            "[saving this {chars}-char result failed ({error}): it is shown whole{over}, and \
+            "[saving this {chars}-char result failed ({error}): it is shown whole, and \
              once it leaves view it cannot be reopened]\n{full}"
         ),
     }
@@ -656,7 +596,7 @@ pub fn read_extent(
         .min(capacity)
         .min((total_bytes - offset).min(usize::MAX as u64) as usize);
     let mut bytes = vec![0; len];
-    continuum_base::fs_portable::read_exact_at(&file, &mut bytes, offset)
+    continuum_host::positioned::read_exact_at(&file, &mut bytes, offset)
         .map_err(|e| format!("read saved extent at {offset}: {e}"))?;
     let end = offset + len as u64;
     let (content, encoding) = match String::from_utf8(bytes) {
@@ -734,7 +674,7 @@ impl std::io::Read for ExtentReader<'_> {
         let n = buf
             .len()
             .min(self.end.saturating_sub(self.offset).min(usize::MAX as u64) as usize);
-        continuum_base::fs_portable::read_exact_at(self.file, &mut buf[..n], self.offset)?;
+        continuum_host::positioned::read_exact_at(self.file, &mut buf[..n], self.offset)?;
         self.offset += n as u64;
         Ok(n)
     }

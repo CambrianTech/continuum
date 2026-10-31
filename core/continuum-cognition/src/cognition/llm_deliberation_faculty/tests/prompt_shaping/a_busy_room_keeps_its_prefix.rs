@@ -27,7 +27,11 @@ impl Source<String> for Stream {
     fn items(&self) -> Vec<Item<String>> {
         self.items
             .iter()
-            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), pointer: Some(format!("[{key} collapsed]")) })
+            .map(|(key, text)| {
+                // A fixture turn: its id from its key, its cause unrecorded (this test is about starts).
+                let id = crate::cognition::context_streams::element(uuid::Uuid::nil(), crate::cognition::context_streams::Producer::Turn, key.as_bytes());
+                Item::whole(id, continuum_context::cause::Cause::Unrecorded, key.clone(), text.clone()).with_pointer(format!("[{key} collapsed]"))
+            })
             .collect()
     }
 }
@@ -53,8 +57,8 @@ fn window_plan(claims: &[Claim], window: u32) -> FlexAllocation {
         .map(|claim| RagSourceBudget {
             source_id: format!("view/{}", claim.source),
             priority: claim.priority,
-            floor_tokens: claim.pointer_chars as u32,
-            min_tokens: claim.pointer_chars as u32,
+            floor_tokens: claim.floor_chars as u32,
+            min_tokens: claim.floor_chars as u32,
             max_tokens: claim.full_chars as u32,
             required: false,
         })
@@ -146,4 +150,28 @@ fn a_turnover_keeps_grounding_whole_and_takes_the_reserve_from_the_conversation(
     let per_act = (available - 6_000) * 3 / 4;
     let grants = start_grants(&claimed, &plan, available, Some(per_act));
     assert!(grants[1] <= (available - 6_000).saturating_sub(per_act), "the reserve holds one act's appends: {grants:?}");
+}
+
+// what this catches: a start held below the derivation's bound by a share constant. A
+// quarter, replayed on one machine's captures, kept one file read whole on the M5
+// (2026-10-30: Benchy granted 21,346 tokens, 16,565 appended per act): every act turned over
+// and collapsed what she had just read, so she read it again (75 reads, 2 edits in an hour).
+// The start is the derived bound on every machine: half of what grounding leaves, or less
+// only when one act's appends need the room.
+#[test]
+fn a_start_keeps_the_derived_half_of_what_she_read() {
+    let grounding = Stream { name: "identity", priority: GROUNDING, items: vec![("block".into(), "g".repeat(6_000))] };
+    let conversation = Stream { name: "conversation", priority: CONVERSATION, items: (0..TURNS_SHOWN).map(turn).collect() };
+    let sources = [&grounding as &dyn Source<String>, &conversation];
+    let claimed = claims(&sources);
+    let available = 6_000 + TURNS_SHOWN * turn_chars();
+    let plan = window_plan(&claimed, available as u32);
+    let growable = available - 6_000;
+
+    let grants = start_grants(&claimed, &plan, available, None);
+    assert!(grants[1] + turn_chars() >= growable / 2, "unmeasured, the start is the half bound: {grants:?}");
+
+    let per_act = growable / 8;
+    let grants = start_grants(&claimed, &plan, available, Some(per_act));
+    assert!(grants[1] + turn_chars() >= growable / 2, "a small append leaves the half bound standing: {grants:?}");
 }

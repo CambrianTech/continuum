@@ -211,7 +211,7 @@ fn src_root() -> PathBuf {
 /// - `modules/embedding.rs::{MODEL_CACHE, EMBEDDING_GPU_MANAGER, EMBEDDING_POOL}`
 /// - `modules/sentinel/mod.rs::GLOBAL_SENTINEL` (read by signal handlers
 ///   — the trickiest one; needs a different shutdown plumbing)
-const GRANDFATHERED_VIOLATIONS: usize = 12;
+const GRANDFATHERED_VIOLATIONS: usize = 2;
 
 // proves: localized state per citizen (no NEW static singleton substrate
 // state; grandfathered count ratchets only down)
@@ -265,6 +265,50 @@ fn static_singleton_state_ratchet() {
     }
 }
 
+/// The kernel is scanned by the same walk. Its current hits are an explicit baseline, each
+/// with the reason it stands; a NEW kernel static fails, and a baseline entry that no longer
+/// matches must be deleted from this list (the list only shrinks). (file suffix, static name)
+const KERNEL_BASELINE: &[(&str, &str, &str)] = &[
+    ("runtime/runtime/service_profile.rs", "SIGNAL_RUNTIME", "read by the OS signal handler, which has no instance to reach (same shutdown-plumbing problem as GLOBAL_SENTINEL)"),
+    ("runtime/shared_compute.rs", "GLOBAL", "the one process-wide compute pool accessor; per-citizen sharing is its purpose, owner Codex (concurrency)"),
+    ("system_resources/disk_eviction/cargo_target_pool.rs", "SERVING_ACTIVE_ARTIFACTS", "the serving process's set of artifacts the disk evictor must not delete; owner: disk eviction, to move onto the pool struct"),
+];
+
+fn kernel_src_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("continuum-kernel").join("src")
+}
+
+// proves: localized state per citizen (the kernel obeys the same ratchet; the acting
+// provider global that slipped past it is gone, and a new kernel static fails here)
+#[test]
+fn kernel_static_singletons_match_the_explicit_baseline() {
+    let found = scan_for_singletons(&kernel_src_root());
+    let is_baselined = |v: &Violation| {
+        KERNEL_BASELINE.iter().any(|(file, name, _)| {
+            v.file.to_string_lossy().ends_with(file) && v.line.contains(&format!("static {name}:"))
+        })
+    };
+    let new: Vec<String> = found
+        .iter()
+        .filter(|v| !is_baselined(v))
+        .map(|v| format!("  {}:{} {}", v.file.display(), v.line_num, v.line.trim()))
+        .collect();
+    assert!(
+        new.is_empty(),
+        "NEW static singleton state in continuum-kernel (hand the dependency to its consumer at \
+         construction, as `CodeState.acting` does):\n{}",
+        new.join("\n")
+    );
+    let gone: Vec<&str> = KERNEL_BASELINE
+        .iter()
+        .filter(|(file, name, _)| {
+            !found.iter().any(|v| v.file.to_string_lossy().ends_with(file) && v.line.contains(&format!("static {name}:")))
+        })
+        .map(|(_, name, _)| *name)
+        .collect();
+    assert!(gone.is_empty(), "kernel baseline entries no longer present, delete them from KERNEL_BASELINE: {gone:?}");
+}
+
 // proves: localized state per citizen (positive — LateBound<T> remains
 // the canonical install-once primitive at its known location)
 #[test]
@@ -273,8 +317,8 @@ fn late_bound_remains_the_canonical_primitive() {
     // catch consumers reaching past the runtime root. But the primitive
     // ITSELF must exist somewhere — pin its location so a rename or
     // accidental deletion is loud, not silent.
-    let root = src_root();
-    let late_bound = root.join("runtime").join("late_bound.rs");
+    // the primitive moved with the runtime into continuum-kernel
+    let late_bound = kernel_src_root().join("runtime").join("late_bound.rs");
     assert!(
         late_bound.is_file(),
         "test prerequisite: `runtime/late_bound.rs` must exist as the \

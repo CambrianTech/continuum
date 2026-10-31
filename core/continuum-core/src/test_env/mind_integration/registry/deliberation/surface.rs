@@ -34,7 +34,7 @@ async fn consecutive_acts_in_one_activity_send_byte_identical_tool_schemas() {
     let mut held_review = Workspace::new("review card deec4ac2: is the fix right?");
     held_review.workspace_deliverable = true;
     let wire = |ws: &Workspace| {
-        let selected = faculty.select_tool_surface(ws);
+        let selected = faculty.prompt_view(ws).tools;
         (selected.reason, serde_json::to_string(&selected.specs).expect("specs serialize"))
     };
     let first = wire(&message);
@@ -64,7 +64,7 @@ fn a_room_that_declares_affordances_selects_exactly_those_plus_the_discovery_pai
     let mut ws = Workspace::new("find the docs for this API");
     ws.room_affordances = vec!["web/fetch".to_string(), "web/search".to_string()];
 
-    let selected = faculty.select_tool_surface(&ws);
+    let selected = faculty.prompt_view(&ws).tools;
     assert_eq!(selected.reason, SurfaceReason::RoomAffordances);
     let offered = selected.specs.as_deref().expect("a surface was offered");
     let surface = faculty.tool_surface();
@@ -102,7 +102,7 @@ fn a_room_that_declares_nothing_offers_her_hands_on_every_turn() {
     work.workspace_deliverable = true;
     for ws in [Workspace::new("anything open?"), work] {
         assert!(ws.room_affordances.is_empty(), "the ordinary room declares none");
-        let selected = faculty.select_tool_surface(&ws);
+        let selected = faculty.prompt_view(&ws).tools;
         assert_eq!(selected.reason, SurfaceReason::Hands);
         assert_eq!(selected.specs.as_deref(), Some(faculty.tool_surface().hands()));
     }
@@ -142,7 +142,7 @@ fn a_room_whose_affordances_match_no_native_verb_falls_back_never_to_nothing() {
     let faculty = faculty_on(65_536);
     let mut ws = Workspace::new("chase the recruiter");
     ws.room_affordances = vec!["mail/send".to_string()];
-    let selected = faculty.select_tool_surface(&ws);
+    let selected = faculty.prompt_view(&ws).tools;
     assert_eq!(selected.reason, SurfaceReason::Hands, "fell through to her hands");
     assert_eq!(selected.specs.as_deref(), Some(faculty.tool_surface().hands()));
 }

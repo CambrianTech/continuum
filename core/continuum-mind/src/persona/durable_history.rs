@@ -69,18 +69,38 @@ pub struct RoomRow {
     pub media: Vec<crate::cognition::conversation::channel_items::MediaItemRequest>,
 }
 
-/// The newest `limit` rows of a room's conversation from the core's OWN chat
+/// Which page of a room's conversation to read. A cursor names a message the
+/// reader holds; the page is the `limit` rows adjacent to it, keyed by
+/// `(timestamp, id)` so pages neither overlap nor skip (chat/poll).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomPage {
+    /// The newest rows.
+    Newest,
+    /// The rows just older than this message: scroll-back.
+    Before(Uuid),
+    /// The rows just newer than this message: paging back down toward the present.
+    After(Uuid),
+}
+
+/// The rows of a room's conversation on `page`, from the core's OWN chat
 /// store — the durable truth the digest's history top-up and the humans read.
 /// Live 2026-09-04: the daemon's page for the busiest room came back EMPTY
 /// for every citizen (its ring was flooded by board System events, none of
 /// which pass the conversation-kind filter), so the store-backed catch-up
 /// forwarded nothing for the room they were working in.
-pub async fn room_rows(room: Uuid, limit: usize) -> Result<Vec<RoomRow>, String> {
+pub async fn room_rows(room: Uuid, page: RoomPage, limit: usize) -> Result<Vec<RoomRow>, String> {
     let Some(executor) = EXECUTOR.cloned() else {
         return Err("durable_history: executor not yet installed (early boot)".to_string());
     };
     let result = executor
-        .execute_json("chat/poll", json!({ "roomId": room.to_string(), "limit": limit }))
+        .execute_json(
+            "chat/poll",
+            match page {
+                RoomPage::Newest => json!({ "roomId": room, "limit": limit }),
+                RoomPage::Before(anchor) => json!({ "roomId": room, "beforeMessageId": anchor, "limit": limit }),
+                RoomPage::After(anchor) => json!({ "roomId": room, "afterMessageId": anchor, "limit": limit }),
+            },
+        )
         .await
         .map_err(|e| format!("durable_history: chat/poll failed: {e}"))?;
     let messages = result
@@ -121,7 +141,7 @@ pub struct ChatStoreHistory;
 #[async_trait]
 impl DurableRoomHistory for ChatStoreHistory {
     async fn room_tail(&self, room: Uuid, limit: usize) -> Result<Vec<HydratedLine>, String> {
-        Ok(room_rows(room, limit).await?.into_iter().map(|row| HydratedLine {
+        Ok(room_rows(room, RoomPage::Newest, limit).await?.into_iter().map(|row| HydratedLine {
             message_id: row.id.to_string(), sender_id: row.sender.to_string(),
             occurred_at_ms: row.occurred_at_ms, text: row.text, media: row.media,
         }).collect())

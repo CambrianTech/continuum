@@ -113,7 +113,10 @@
             tokio::runtime::Handle::current(),
         );
 
-        let summary = supervisor.host_unattended(None).await;
+        // A real executor over an empty registry: the host requires one (card 920619c5), and
+        // nothing here dispatches through it.
+        let executor = Arc::new(crate::runtime::CommandExecutor::new(Arc::new(crate::runtime::ModuleRegistry::new())));
+        let summary = supervisor.host_unattended(executor).await;
         assert_eq!(summary.hosted, 0, "nothing to host → nothing hosted");
         assert!(
             summary.failures.is_empty(),

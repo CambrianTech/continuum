@@ -107,7 +107,7 @@ jobs:
       - name: Build AIRC CLI
         run: |
           set -euo pipefail
-          cargo build --manifest-path .airc-src/Cargo.toml -p airc-cli --bin airc
+          cargo build --locked --manifest-path .airc-src/Cargo.toml -p airc-cli --bin airc
 
       - name: Close the queue cards this PR merged
         env:

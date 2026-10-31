@@ -1,0 +1,44 @@
+[package]
+name = "continuum-store"
+version = "0.1.0"
+edition = "2021"
+publish = false
+repository = "https://github.com/CambrianTech/continuum"
+
+# Store (MODULE-ARCHITECTURE.md section 9.2: "ORM, engrams, blobs, vector search | where the disk is"):
+# the data layer as one domain with its commands (Joel: a domain's service and its commands are ONE
+# crate). DataModule and DataState, and the data/*, vector/*, adapter/* and migration/* commands that
+# DataModule builds, cut out of continuum-core (card 2709ec6d). It sits on the kernel (ORM, runtime) and
+# the embedding domain, below the mind; the substrate entities the layers above own are registered
+# through the boot's `SubstrateEntities`, never imported. Core re-exports every moved module under
+# its old path.
+
+[dependencies]
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-embedding = { path = "../continuum-embedding" }
+continuum-base = { path = "../continuum-base" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+rayon.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+schemars = { version = "0.8", features = ["uuid1"] }
+dashmap = "6.1"
+dirs = "5.0"
+futures = "0.3"
+inventory = "0.3"  # the action_command! / register_command! expansions submit descriptors
+
+[dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build gets the per-process continuum home (card d11d9827)
+continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }  # the recall collections the tests clear
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
+
+[features]
+default = []
+stress-tests = ["continuum-kernel/stress-tests"]
+test-fixtures = ["continuum-kernel/test-fixtures"]

@@ -1,6 +1,16 @@
 #![cfg(test)]
 use super::*;
 
+/// A loop needs its obligation store (cards 920619c5, 68811445), and a turn runs only on a
+/// CONFIRMED obligation, so these tests write through the real store's data module.
+fn test_obligations(hosted: &HostedPersona) -> crate::persona::obligation::Obligations {
+    crate::persona::obligation::Obligations::new(
+        &crate::persona::obligation::test_store_executor(),
+        hosted.identity.peer_id.as_uuid(),
+        &hosted.identity.agent_name,
+    )
+}
+
     // Bespoke `StubConversation` / `CannedAdapter` / `EmptyReader` /
     // `fake_hosted` / `fake_hosted_with_delay` deleted per
     // [[test-fixtures-are-system-primitives]]. The substrate's
@@ -127,7 +137,7 @@ use super::*;
             ..Default::default()
         };
 
-        let outcome = serve_persona_loop(&hosted, &mut conversation, opts)
+        let outcome = serve_persona_loop(&hosted, &mut conversation, opts, test_obligations(&hosted))
             .await
             .expect("loop completes");
 
@@ -221,7 +231,7 @@ use super::*;
             ..Default::default()
         };
 
-        let outcome = serve_persona_loop(&hosted, &mut conversation, opts)
+        let outcome = serve_persona_loop(&hosted, &mut conversation, opts, test_obligations(&hosted))
             .await
             .expect("loop completes");
 
@@ -536,7 +546,7 @@ use super::*;
                 rag_fetch_limit: 10,
                 now_ms: fixed_now,
                 ..Default::default()
-            },
+            }, test_obligations(&hosted)
         )
         .await
         .expect("loop completes (each next_message err counts as turn_errored)");
@@ -578,7 +588,7 @@ use super::*;
                 rag_fetch_limit: 10,
                 now_ms: fixed_now,
                 ..Default::default()
-            },
+            }, test_obligations(&hosted)
         )
         .await
         .expect("loop completes");
@@ -640,7 +650,7 @@ use super::*;
                 rag_fetch_limit: 10,
                 now_ms: fixed_now,
                 ..Default::default()
-            },
+            }, test_obligations(&hosted)
         )
         .await
         .expect("loop completes");
@@ -690,7 +700,7 @@ use super::*;
                 rag_fetch_limit: 10,
                 now_ms: fixed_now,
                 ..Default::default()
-            },
+            }, test_obligations(&hosted)
         )
         .await
         .expect("loop completes despite transient error");

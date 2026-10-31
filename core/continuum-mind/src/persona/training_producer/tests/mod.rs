@@ -157,6 +157,30 @@
             );
         }
 
+        /// what this catches (card ad107e18, Codex's audit): a turn whose capture is
+        /// incomplete training as its flat prompt and completion. It must refuse by name and
+        /// stay staged; the same row with the calls she lived submits them as its examples.
+        #[test]
+        fn a_row_without_its_lived_calls_waits_and_never_trains_flat() {
+            let me = Uuid::new_v4();
+            let mut r = row(Some(Uuid::new_v4()), Some(me), Some(CreditRole::Owner));
+            r.receipts = vec![served_receipt("unread-request", "served-model")];
+            r.prompt = "The parser drops the last token when the input ends without a newline.".into();
+            r.completion = "Fixed: the tokenizer now flushes its pending token at end of input, and a \
+                            regression test feeds it a file with no trailing newline."
+                .into();
+            let why = staged_submission_params(me, "Kimi", &r, true)
+                .expect_err("no lived record submits nothing"); // JUSTIFIED: asserting the Err arm
+            assert!(why.contains("lived"), "the wait names itself: {why}");
+            r.lived = Some(Vec::new());
+            assert_eq!(staged_submission_params(me, "Kimi", &r, true).err(), Some(why), "an empty record is no record");
+            r.lived = Some(r.receipts.iter().map(crate::persona::training_producer::test_support::lived_call).collect());
+            let params = staged_submission_params(me, "Kimi", &r, true).expect("the lived row submits"); // JUSTIFIED: the test asserts the Ok arm
+            let examples: Vec<TrainingExample> =
+                serde_json::from_value(params["examples"].clone()).expect("the wire examples are training examples"); // JUSTIFIED: test fixture
+            assert!(!examples.is_empty() && examples.iter().all(|e| e.lived.is_some()), "every example is a call she lived");
+        }
+
         /// what this catches (goal 8, card 67af4fca): the task captured with the card must
         /// reach the examples a settled row becomes. Dropped on the way, every example reads
         /// as unknown to `cognition::held_out::trained`, and no gene is ever judged on a
@@ -166,6 +190,7 @@
             let me = Uuid::new_v4();
             let mut r = row(Some(Uuid::new_v4()), Some(me), Some(CreditRole::Owner));
             r.receipts = vec![served_receipt("settled-request", "served-model")];
+            r.lived = Some(r.receipts.iter().map(crate::persona::training_producer::test_support::lived_call).collect());
             r.prompt = "The parser drops the last token when the input ends without a newline.".into();
             r.completion = "Fixed: the tokenizer now flushes its pending token at end of input, and a \
                             regression test feeds it a file with no trailing newline."

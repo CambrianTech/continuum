@@ -16,6 +16,7 @@
     use uuid::Uuid;
 
     mod one_act_per_mind;
+    mod lifecycle;
 
     // what this catches (M5, 2026-09-25 and 2026-09-26): a slow switch on a moving engine
     // must wait; a save on a QUIET engine (no slot processing, so no counter moves) must
@@ -130,7 +131,8 @@
     // every turn while Kimi reused 44,950 on the other slot.
     // what this catches: on a pool with no scratch slot, transient traffic borrows a
     // citizen slot THROUGH the pool — the cheapest resident is saved and detached first
-    // and the admission carries that slot pinned — the single-slot rule generalised.
+    // and the admission carries that slot pinned — the single-slot rule generalised. And a
+    // quote that names another checkpoint subset than its write (card 3512f496).
     #[tokio::test]
     async fn on_a_server_with_no_scratch_slot_transient_traffic_borrows_the_cheapest_citizen_slot_and_saves_its_resident() {
         use axum::{
@@ -140,14 +142,18 @@
             Json, Router,
         };
         let saves = Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+        let subsets = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
         let app = Router::new().route(
             "/slots/{slot}",
             post({
-                let saves = saves.clone();
+                let (saves, subsets) = (saves.clone(), subsets.clone());
                 move |Path(slot): Path<u32>, Query(query): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>| {
-                    let saves = saves.clone();
+                    let (saves, subsets) = (saves.clone(), subsets.clone());
                     async move {
                         let action = query.get("action").cloned().unwrap_or_default(); // unwrap_or_default: a fixture request with no action is a restore
+                        if action.starts_with("save") {
+                            subsets.lock().expect("test: fixture mutex").push(json!([body["keep_view_checkpoints"], body["keep_newest_checkpoints"]]));
+                        }
                         if action == "save-size" {
                             return (StatusCode::OK, Json(json!({"id_slot": slot, "filename": body["filename"], "projected_bytes": 100})));
                         }
@@ -186,6 +192,9 @@
         }).await, PageOutcome::Completed);
         assert_eq!(saves.lock().unwrap().as_slice(), &[0]);
         saves.lock().unwrap().clear();
+        let subsets = std::mem::take(&mut *subsets.lock().unwrap());
+        assert_eq!(subsets.len(), 3, "two quotes and one write");
+        assert!(subsets.iter().all(|subset| *subset == json!([true, 0])), "{subsets:?}");
         // Two residents warm their slots: a large working set and a small one. Each
         // turn COMPLETES (a dropped, uncommitted turn forgets its attribution — the
         // cancellation rule — and would leave both slots reading as free).
@@ -214,6 +223,47 @@
             "the resident was saved first, and only that one"
         );
         drop(transient);
+        server.abort();
+    }
+
+    // what this catches (card 8fa1c147): a refused page save that cannot say why. Each way a
+    // save-size reply fails to quote reads as its own miss, so the refusal probe names it.
+    #[test]
+    fn a_page_quote_names_how_it_failed() {
+        let ok = json!({"id_slot": 1, "filename": "mind-a.bin", "projected_bytes": 4096});
+        assert_eq!(read_quote(200, Some(&ok), 1, "mind-a.bin"), Ok(4096));
+        assert_eq!(read_quote(501, Some(&ok), 1, "mind-a.bin"), Err(QuoteMiss::Status(501)));
+        assert_eq!(read_quote(200, Some(&ok), 0, "mind-a.bin"), Err(QuoteMiss::Mismatch), "another slot");
+        assert_eq!(read_quote(200, Some(&ok), 1, "mind-b.bin"), Err(QuoteMiss::Mismatch), "another file");
+        let zero = json!({"id_slot": 1, "filename": "mind-a.bin", "projected_bytes": 0});
+        assert_eq!(read_quote(200, Some(&zero), 1, "mind-a.bin"), Err(QuoteMiss::NoSize));
+        assert_eq!(read_quote(200, None, 1, "mind-a.bin"), Err(QuoteMiss::NoSize), "an unreadable body");
+        assert!(QuoteMiss::EngineStopped.to_string().contains("stopped progressing"));
+    }
+
+    // what this catches (Codex on #5441): an engine that answers 501 and then stalls its error
+    // body. The status must return before the body is read, as a Status miss, not hang the quote
+    // until a watchdog calls the engine stopped.
+    #[tokio::test]
+    async fn a_refused_quote_returns_its_status_without_waiting_for_a_stalled_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+        let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("test: accept");
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            // Headers promise a body that never arrives.
+            socket.write_all(b"HTTP/1.1 501 Not Implemented\r\ncontent-type: application/json\r\ncontent-length: 64\r\n\r\n{").await.expect("test: write");
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        let quoted = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            request_quote(&reqwest::Client::new(), &root, 0, "mind-a.bin"),
+        )
+        .await
+        .expect("the status returns without reading the stalled body"); // expect: test-only bound
+        assert_eq!(quoted, Err(QuoteMiss::Status(501)));
         server.abort();
     }
 
@@ -445,7 +495,7 @@
         let first = admit_turn(&sem, Some(first_key), Some(old_pool.clone()), &client, &root,
             100, std::time::Duration::ZERO).await?;
         let mut waiting = Box::pin(admit_turn(&sem, Some(waiting_key), Some(old_pool.clone()),
-            &client, &root, 100, AdmissionPatience::for_turn(None, std::time::Duration::ZERO)));
+            &client, &root, 100, AdmissionPatience::for_turn()));
         assert!(futures::poll!(&mut waiting).is_pending());
         // Healthy slot contention outlasts the 240s readiness allowance without
         // spending it. A later engine replacement still gets its readiness hold.
@@ -529,8 +579,7 @@
                 100, std::time::Duration::ZERO).await?;
             let started = tokio::time::Instant::now();
             let waiting = admit_turn(&sem, Some(next_key), Some(pool), &client, &root, 100,
-                AdmissionPatience::for_turn(Some(std::time::Duration::from_secs(10)),
-                    std::time::Duration::from_secs(2)));
+                AdmissionPatience::until(started + std::time::Duration::from_secs(8)));
             assert!(waiting.await.is_err());
             assert_eq!(started.elapsed(), std::time::Duration::from_secs(8));
             assert_eq!(sem.available_permits(), permits - 1);

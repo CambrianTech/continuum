@@ -239,6 +239,13 @@ impl LlamaServerProcess {
                  VL candidate is on this node — the only eyes here beat cache_reuse \
                  (multimodal disables it); pull a *-VL-* row to restore the split"
             ),
+            MainLaneMmproj::WearReuseInert => continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.vision.mmproj_on_main_lane_reuse_inert",
+                model = %target.model.id,
+                "mmproj goes on the MAIN lane: this model's memory cannot shift \
+                 (recurrent layers), so cache_reuse never runs on it and withholding \
+                 the projector would only blind the node; prefix reuse and context \
+                 checkpoints are unchanged"
+            ),
             MainLaneMmproj::Wear | MainLaneMmproj::NoneResolved => {}
         }
         if resolved_mmproj.is_none() && target

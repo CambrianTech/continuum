@@ -126,7 +126,7 @@ const GOVERNOR_TICK: Duration = Duration::from_millis(1000);
 /// Safety ceiling on a single region tick. A region that exceeds this is timed
 /// out (its work resumes next tick from fresh state) — the governor never blocks
 /// indefinitely on one region (RTOS rule: handlers never hang the scheduler).
-const REGION_TICK_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const REGION_TICK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Observable snapshot of the governor's last scheduling pass — what `governor/status`
 /// returns and what the `watch` channel publishes lock-free to any consumer.

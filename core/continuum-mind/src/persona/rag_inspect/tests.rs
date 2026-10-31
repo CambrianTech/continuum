@@ -63,18 +63,7 @@ fn make_event(text: Option<&str>, lamport: u64, occurred_at_ms: u64) -> Transcri
 }
 
 fn request(now_ms: u64) -> RagInspectionRequest {
-    let mut req =
-        RagInspectionRequest::defaults_for(persona(), "TestPersona".to_string(), now_ms);
-    // Tiny-local profile from the demo binary — reserves stay
-    // small so the tests assert behavior against a 4k context.
-    req.context_window = 4_096;
-    req.reserved = ReservedTokens {
-        system: 200,
-        completion: 800,
-    };
-    req.airc_floor = 100;
-    req.airc_max = 2_000;
-    req
+    RagInspectionRequest::for_window(persona(), "TestPersona".to_string(), now_ms, 4_096)
 }
 
 // ---- TDD tests ----
@@ -96,19 +85,7 @@ async fn empty_transcript_yields_empty_delivery() {
     assert!(!d.has_continuation);
 }
 
-#[tokio::test]
-async fn allocation_reports_satisfied_state_for_required_source_with_room() {
-    let reader = Arc::new(StubReader::new(vec![]));
-    let result = inspect_persona_rag(&request(1_000_000), reader)
-        .await
-        .unwrap();
-    // 4096 - 200 system - 800 completion = 3096 available; airc gets max=2000 → Satisfied
-    assert!(!result.allocation.escalation_needed);
-    let airc_a = &result.allocation.allocations[0];
-    assert_eq!(airc_a.source_id, "airc");
-    assert_eq!(airc_a.allocated_tokens, 2_000);
-}
-
+// what this catches: the glass box loses the per-item fields (score, age, peer, levels) a mechanic reads.
 #[tokio::test]
 async fn inspected_items_carry_score_age_and_peer_prefix() {
     let now_ms = 2_000_000u64;
@@ -123,7 +100,7 @@ async fn inspected_items_carry_score_age_and_peer_prefix() {
     assert_eq!(items.len(), 1);
     let it = &items[0];
     assert_eq!(it.index, 0);
-    assert_eq!(it.content_preview, "hello world");
+    assert_eq!(it.content, "hello world");
     assert!(
         (it.score - 1.0).abs() < 1e-9,
         "first item scores 1.0, got {}",
@@ -131,20 +108,21 @@ async fn inspected_items_carry_score_age_and_peer_prefix() {
     );
     assert_eq!(it.lamport, 42);
     assert_eq!(it.age_s, 5);
-    assert_eq!(it.peer_id_prefix.len(), 8);
+    assert_eq!(it.peer_id_shown.len(), 8);
     assert!(it.metadata.get("event_id").is_some());
+    // levels are reported, whatever the source set
+    let _ = (it.has_summary, it.has_pointer);
 }
 
 #[tokio::test]
-async fn long_content_is_truncated_in_preview_but_tokens_remain_accurate() {
-    // 1000-char message → preview is CONTENT_PREVIEW_CHARS chars; tokens are full message
+async fn long_content_arrives_whole_and_tokens_are_accurate() {
+    // what this catches: a preview cut standing in for the content a mechanic is inspecting.
     let msg: String = "x".repeat(1_000);
     let reader = Arc::new(StubReader::new(vec![make_event(Some(&msg), 1, 1_000_000)]));
-    let mut req = request(1_000_000);
-    req.airc_max = 10_000; // ample budget
+    let req = request(1_000_000);
     let result = inspect_persona_rag(&req, reader).await.unwrap();
     let it = &result.deliveries[0].items[0];
-    assert_eq!(it.content_preview.chars().count(), CONTENT_PREVIEW_CHARS);
+    assert_eq!(it.content.chars().count(), 1_000, "the content is whole");
     assert!(
         it.tokens >= 250,
         "1000 chars should cost ~250 tokens, got {}",
@@ -152,28 +130,22 @@ async fn long_content_is_truncated_in_preview_but_tokens_remain_accurate() {
     );
 }
 
-// what this catches: under the slice-2 #43 digest contract the window is
-// bounded by budget alone — pack_digest walks newest-first and TRUNCATES
-// when the budget is exhausted; there is NO continuation cursor (the digest
-// IS the window — more history is a scrollback command, not a budget page).
-// A regression that re-introduced a continuation cursor, or that stopped
-// truncating, would break this.
+// what this catches: the inspect view sizing the conversation (FLOW plan §2d). The digest
+// is delivered whole (there is no budget), with NO continuation cursor (more history is a
+// scrollback command); her view, not the source, decides what of it she sees.
 #[tokio::test]
-async fn tight_budget_truncates_the_window_with_no_continuation_cursor() {
-    // 4 items × ~2 tokens each ("ddddd" = 5 chars → chars/4 + 1 = 2 tokens),
-    // budget of 4 tokens fits only the 2 newest.
+async fn delivers_the_whole_window_with_no_continuation_cursor() {
     let reader = Arc::new(StubReader::new(vec![
         make_event(Some("aaaaa"), 1, 1_000_000),
         make_event(Some("bbbbb"), 2, 1_000_000),
         make_event(Some("ccccc"), 3, 1_000_000),
         make_event(Some("ddddd"), 4, 1_000_000),
     ]));
-    let mut req = request(1_000_000);
-    req.airc_floor = 4;
-    req.airc_max = 4;
-    let result = inspect_persona_rag(&req, reader).await.unwrap();
+    let result = inspect_persona_rag(&request(1_000_000), reader)
+        .await
+        .unwrap();
     let d = &result.deliveries[0];
-    assert!(d.items.len() < 4, "tight budget truncates the window");
+    assert_eq!(d.items.len(), 4, "the source delivers every staged turn");
     assert!(
         !d.has_continuation,
         "the digest carries no continuation cursor by design"
@@ -195,6 +167,7 @@ async fn reader_failure_surfaces_as_empty_delivery_not_panic() {
     // No panic — substrate-is-a-good-citizen
 }
 
+// what this catches: the trace must be exactly the budget-free turn (start, delivered, end); a revived allocation event would break replay.
 #[tokio::test]
 async fn trace_path_writes_jsonl_lines() {
     let dir = tempfile::tempdir().unwrap();
@@ -209,14 +182,14 @@ async fn trace_path_writes_jsonl_lines() {
     let result = inspect_persona_rag(&req, reader).await.unwrap();
     assert_eq!(result.trace_path.as_deref(), Some(trace.as_path()));
     let body = std::fs::read_to_string(&trace).unwrap();
-    // Expect at least TurnStart, BudgetAllocated, SourceDelivered, TurnEnd
+    // Expect TurnStart, SourceDelivered, TurnEnd
     let line_count = body.lines().count();
     assert!(
-        line_count >= 4,
-        "expected ≥4 capture events, got {line_count}"
+        line_count >= 3,
+        "expected ≥3 capture events, got {line_count}"
     );
     assert!(body.contains("turn_start"));
-    assert!(body.contains("budget_allocated"));
+    assert!(!body.contains("budget_allocated"));
     assert!(body.contains("source_delivered"));
     assert!(body.contains("turn_end"));
 }

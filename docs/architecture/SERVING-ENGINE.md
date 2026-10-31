@@ -108,6 +108,70 @@ Step 1 exposes them over today's llama-server HTTP, which is option C, so the ga
 
 Lever 1, the [actions] move, runs in parallel on the mind side under line 2 (Fable + Codex).
 
+### S2 in detail: `reconfigure`, grow or shrink live (Joel, 2026-10-30: "a truly dynamic llama.cpp that can reduce OR EXPAND slots is crucial"; "make it organized, not some mess")
+
+**Why:** a user starts a game or Photoshop and the engine must give memory back; they quit and it takes it
+again (ONE-BUDGET.md, acceptance: the user's own load). The fork today can only do it by relaunch: its sleep
+path calls `destroy()` then `load_model()` (server-context.cpp:978-993), which frees and reloads the weights.
+
+**Shape.** Our code in the fork is held to our rules: the logic lives once, in its own module, and the
+6,495-line `server-context.cpp` gains only a hook.
+- `server-reconfigure.{h,cpp}`: one entry, `reconfigure(const Geometry & target) -> ReconfigureOutcome`.
+  - `struct Geometry { int32_t n_ctx; int32_t n_seq; }` in;
+  - `ReconfigureOutcome` out: `Applied { Geometry live; }`, or `Refused { std::vector<SlotRefusal> }` where
+    `SlotRefusal { int32_t slot; int32_t tokens_held; int32_t tokens_fit; }` names each slot whose state the
+    target cannot hold. Typed in the core path; JSON only at the HTTP edge (`POST /reconfigure`).
+- `server-slot-page.{h,cpp}`: the one state mover. `SlotPage page_out(slot)` (target, draft and checkpoints via
+  `llama_state_seq_get_data`) and `page_in(slot, const SlotPage &)`. The existing `/slots?action=save|restore`
+  become callers of it (disk is a `SlotPage` written to a file), so there is one copy of the mover, not two.
+- Weights and contexts are separate lifetimes, today fused in three places: `common_init_result` owns the target
+  model and context together (`common.cpp:1404`); `common_speculative_init_result` both loads the draft model and
+  creates the draft/MTP context (`speculative.cpp`); `load_model` builds weights, contexts, slots and batch in one
+  pass (server-context.cpp:1030-1300). The split: `load_weights()` (target model, draft model, mmproj: these
+  survive) and `build_contexts(Geometry)` (target and draft contexts, speculative state, slots, batch: these are
+  rebuilt). `load_model` = `load_weights` + `build_contexts`; `destroy` = `destroy_contexts` + `free_weights`;
+  `reconfigure` = page out, `destroy_contexts`, `build_contexts(target)`, page in. The two common-side owners
+  split the same way, so the context is created in exactly one function per kind.
+- The slot page reuses what exists: `server_prompt_cache_state` (prompt tokens with their host-memory
+  checkpoints, `{main, drft}` state bytes, adapter set) is the page. Its capture (`server_slot::prompt_save`,
+  server-context.cpp:276-300) and restore (`server_prompt_cache::load`, server-task.cpp:1895-1930) become
+  `page_out` and `page_in` over an exact slot, and the prompt cache calls them. Checkpoints are host memory
+  already, so they survive a rebuild untouched.
+- The hook: a `SERVER_TASK_TYPE_RECONFIGURE` handled in the task phase, the safe point the fork already argues for
+  `SLOT_SAVE` (server-context.cpp:2685): no `llama_decode` in flight, every sequence's KV at a consistent
+  inter-batch boundary. The safe point is between BATCHED decode steps, never "between generations": every
+  slot is paged out including unfinished generations, the contexts are rebuilt, everything is paged in, and
+  each generation continues from its next token with its host-side sampling state. Waiting for generations to
+  end would let four busy writers, or one ten-minute generation, hold the person's game hostage (Cormac on
+  #5607). Drafting restarts on the rebuilt speculative object. Slot save and restore serialize through the
+  same safe point. New work waits in the queue; nothing is
+  cancelled. Slot ids stay stable: a smaller `n_seq` removes the highest ids, and a slot among them, busy or
+  not, is paged out now with its unfinished generation (contract 2), named in the outcome; it continues when
+  residency places it again.
+
+**Contract.**
+1. The model and its mmap are never freed; only contexts are (sequence in section 3, "a relaunch is a pause").
+2. Shrink never truncates. A slot whose state does not fit the target (a smaller `n_ctx`, or an id past a
+   smaller `n_seq`) is paged out now, through the same mover (RAM, then disk by temperature), never cut. The
+   outcome's `SlotRefusal` names it so the core knows; residency (L4) then chooses by temperature between
+   keeping it paged until room returns and shrinking that mind's view at her next epoch start (Cormac on
+   #5607). Nothing waits for an epoch to free the person's memory.
+3. Grow and shrink are the same path.
+4. Each reconfigure reports its cost: pause seconds against tokens held, per backend, which L4 and L6 price.
+   Footprint is measured as `phys_footprint` on Metal and device memory on CUDA.
+5. The applied geometry is reported (`/props`, the `CapacityReport` of S3), so serving and every mind's
+   binding read the live window; the core never infers it.
+6. A KV type change is not a reconfigure; it is the intentional cold start (#5188).
+
+**Validator (seconds, small hybrid GGUF, no residents):** four generations in progress across a reconfigure
+finish token-identical to an unreconfigured control; and 100 cycles alternating grow and shrink with four
+sequences holding state: footprint flat (phys_footprint before and after within the measured noise), weights
+never reloaded (load counter), every sequence's state byte-identical across the round trip (its next token
+matches an unreconfigured control), a shrink below a held state pages that slot out and names it, and no request
+lost (queued requests all complete). **Core (S4, Codex):** the relaunch call sites (`reconcile.rs` re-home,
+`launch.rs:221`) call `reconfigure`; a plan below the live geometry now reconfigures too, which is what
+gives memory back to the user's app.
+
 ## 6. Risks
 
 - **Metal and unified memory.** RAM pages, checkpoints, KV and weights all draw on one physical pool, under macOS's GPU wired limit. If the budget is not one pool, the machine swaps and everything stalls. `get_data` has to synchronize the context first. `LLAMA_STATE_SEQ_FLAGS_ON_DEVICE` (llama.h:1024) suits speculative checkpoints only.

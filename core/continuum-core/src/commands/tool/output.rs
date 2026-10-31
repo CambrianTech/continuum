@@ -71,8 +71,8 @@ impl OutputFilter {
     }
 }
 
-/// Inputs to `tool/output`. `outputId` is required (from the preview); everything
-/// else selects WHAT to pull back.
+/// Inputs to `tool/output`. Exactly one of `outputId` (from the preview) or `act` (one of
+/// her act numbers); everything else selects WHAT to pull back.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
@@ -87,7 +87,13 @@ pub struct ToolOutputParams {
     // name and refuses a string for it (`expected struct HandleRef`) — so the call the
     // spill-recovery hint told every citizen to make could not be made (card ea28d2f6).
     #[serde(rename = "outputId")]
-    pub handle: String,
+    #[ts(optional)]
+    pub handle: Option<String>,
+    /// One of your act numbers (the `#n` your actions name, folded ones included), in
+    /// place of `outputId`: reopens that act's saved output. Give exactly one of the two.
+    #[ts(optional)]
+    #[ts(type = "number")]
+    pub act: Option<u64>,
     /// A PREBUILT filter — the easy path, no regex needed: `errors` (what broke?),
     /// `warnings`, `failures` (which tests failed?), or `summary` (how did it end?).
     /// Start here on a flooded build/test log. Overridden by an explicit `pattern`.
@@ -189,7 +195,8 @@ impl ActionCommand for ToolOutput {
         &["read_output", "grep_output", "tail_output", "search_output"];
     const DESCRIPTION: &'static str =
         "Page or grep a large tool result that was saved to disk because it was too big \
-         to show in full. Pass the `outputId` from the elision marker. EASIEST: set \
+         to show in full. Pass the `outputId` from the elision marker, OR `act` with one of \
+         your act numbers (the #n your actions name, folded ones included). EASIEST: set \
          `filter` to a prebuilt preset — `errors` (what broke?), `warnings`, `failures` \
          (which tests failed?), or `summary` (how did it end?) — no regex needed. For a \
          specific hunt use `pattern` (a regex, e.g. \"error\\[E0308\\]\"). Or read an \
@@ -204,7 +211,7 @@ impl ActionCommand for ToolOutput {
     async fn run(
         &self,
         ctx: &Ctx,
-        params: ToolOutputParams,
+        mut params: ToolOutputParams,
     ) -> Result<ToolOutputResult, CommandError> {
         // WHO is asking — a spilled output belongs to the persona that produced
         // it, and the directory layout enforces that. No caller = no scope.
@@ -218,7 +225,10 @@ impl ActionCommand for ToolOutput {
                 )
             })?;
 
-        let path = spill::resolve(persona_id, &params.handle)
+        let act_handle =
+            |act| crate::cognition::persona_workspace::global().act_output_handle(persona_id, act);
+        let handle = named_output(params.handle.take(), params.act, act_handle)?;
+        let path = spill::resolve(persona_id, &handle)
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
         let range = match (params.start_line, params.end_line) {
             (Some(s), Some(e)) => Some((s, e)),
@@ -250,7 +260,7 @@ impl ActionCommand for ToolOutput {
         }
         // Disk scanning belongs off the async executor. The same spill owner handles
         // both views; no second content registry or private whole-file retrieval path.
-        tokio::task::spawn_blocking(move || read_saved(&path, params, range, budget))
+        tokio::task::spawn_blocking(move || read_saved(&path, handle, params, range, budget))
             .await
             .map_err(|e| CommandError::Invalid(format!("saved output reader failed: {e}")))?
             .map_err(CommandError::Invalid)
@@ -258,8 +268,29 @@ impl ActionCommand for ToolOutput {
 }
 crate::register_stateless_command!(ToolOutput);
 
+/// The saved output a call names: its `outputId`, or her act number resolved by `act_handle`
+/// (her working memory's record). Exactly one; an act that does not resolve is its typed
+/// refusal, never another output.
+fn named_output(
+    handle: Option<String>,
+    act: Option<u64>,
+    act_handle: impl FnOnce(u64) -> Result<String, crate::cognition::working_memory::ActOutputRefusal>,
+) -> Result<String, CommandError> {
+    match (handle, act) {
+        (Some(handle), None) => Ok(handle),
+        (None, Some(act)) => {
+            act_handle(act).map_err(|refusal| CommandError::Invalid(refusal.to_string()))
+        }
+        _ => Err(CommandError::Invalid(
+            "give exactly one of outputId (from the preview) or act (one of your act numbers)"
+                .into(),
+        )),
+    }
+}
+
 fn read_saved(
     path: &std::path::Path,
+    handle: String,
     params: ToolOutputParams,
     range: Option<(usize, usize)>,
     budget: usize,
@@ -267,7 +298,7 @@ fn read_saved(
     if let Some(offset) = params.byte_offset {
         let extent = spill::read_extent(&path, offset, params.byte_length, budget)?;
         return Ok(ToolOutputResult {
-            handle: params.handle,
+            handle,
             total_lines: None,
             total_bytes: usize::try_from(extent.total_bytes)
                 .map_err(|_| "saved output length exceeds this platform")?,
@@ -293,7 +324,7 @@ fn read_saved(
         budget,
     )?;
     Ok(ToolOutputResult {
-        handle: params.handle,
+        handle,
         total_lines: Some(inv.total_lines),
         total_bytes: inv.total_bytes,
         total_matches: Some(inv.total_matches),
@@ -356,13 +387,80 @@ mod tests {
             .run(
                 &Ctx::default(),
                 ToolOutputParams {
-                    handle: "deadbeefcafe0001".into(),
+                    handle: Some("deadbeefcafe0001".into()),
                     ..Default::default()
                 },
             )
             .await
             .expect_err("must refuse");
         assert!(matches!(err, CommandError::Invalid(_)));
+    }
+
+    // what this catches: a folded act she cannot reopen. Her folded acts name only "#a-#b", so
+    // `act` must reach exactly the output its handle does (resolved through her working memory's
+    // record), and an act with no record or no saved output is a typed refusal naming the act,
+    // never some other output.
+    #[test]
+    fn an_act_number_reopens_what_its_handle_does_and_an_unknown_or_unsaved_act_refuses() {
+        use crate::ai::types::ResultCustody;
+        use crate::cognition::working_memory::WorkingMemory;
+        let memory = WorkingMemory::new(8);
+        memory.record_receipt_typed(
+            &[],
+            "saved result",
+            None,
+            ResultCustody::Whole {
+                handle: "h1".into(),
+            },
+        );
+        memory.record_receipt_typed(&[], "unsaved result", None, ResultCustody::Unsaved);
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("a temp dir for the saved output")
+        };
+        let path = dir.path().join("h1");
+        assert!(std::fs::write(&path, "line one\nerror here\nline three\n").is_ok());
+        let Ok(by_act) = named_output(None, Some(1), |act| memory.saved_handle(act)) else {
+            panic!("act #1 was saved")
+        };
+        let Ok(by_handle) = named_output(Some("h1".into()), None, |act| memory.saved_handle(act))
+        else {
+            panic!("a handle names itself")
+        };
+        assert_eq!(by_act, by_handle);
+        let read =
+            |handle: String| read_saved(&path, handle, ToolOutputParams::default(), None, 4_096);
+        let (Ok(act_read), Ok(handle_read)) = (read(by_act), read(by_handle)) else {
+            panic!("the saved output reads back")
+        };
+        assert_eq!(
+            (act_read.content, act_read.handle),
+            (handle_read.content, handle_read.handle)
+        );
+        for (act, says) in [
+            (2, "act #2 has no saved output"),
+            (99, "act #99 is not on your record"),
+        ] {
+            match named_output(None, Some(act), |act| memory.saved_handle(act)) {
+                Err(CommandError::Invalid(refusal)) => {
+                    assert!(refusal.starts_with(says), "{refusal}")
+                }
+                other => panic!("act #{act} must refuse, got {other:?}"),
+            }
+        }
+        assert!(
+            matches!(
+                named_output(Some("h1".into()), Some(1), |act| memory.saved_handle(act)),
+                Err(CommandError::Invalid(_))
+            ),
+            "both: refused"
+        );
+        assert!(
+            matches!(
+                named_output(None, None, |act| memory.saved_handle(act)),
+                Err(CommandError::Invalid(_))
+            ),
+            "neither: refused"
+        );
     }
 
     // what this catches: the real command projection preserves exact byte continuation,
@@ -379,8 +477,8 @@ mod tests {
         loop {
             let result = read_saved(
                 &path,
+                "id".into(),
                 ToolOutputParams {
-                    handle: "id".into(),
                     byte_offset: Some(offset),
                     byte_length: Some(2),
                     ..Default::default()
@@ -413,8 +511,8 @@ mod tests {
         assert_eq!(actual, body.as_bytes());
         let result = read_saved(
             &path,
+            "id".into(),
             ToolOutputParams {
-                handle: "id".into(),
                 pattern: Some("error".into()),
                 context_lines: Some(0),
                 max_matches: Some(1),
@@ -436,8 +534,8 @@ mod tests {
         std::fs::write(&path, "x".repeat(257)).unwrap();
         let error = read_saved(
             &path,
+            "id".into(),
             ToolOutputParams {
-                handle: "id".into(),
                 pattern: Some("never".into()),
                 ..Default::default()
             },

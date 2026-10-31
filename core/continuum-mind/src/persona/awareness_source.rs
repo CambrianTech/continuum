@@ -7,8 +7,7 @@
 use std::sync::Arc;
 
 use crate::persona::active_work_source::AircWorkReader;
-use crate::cognition::rag_budget::{ RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
-use crate::persona::viewstate_rag::estimate_tokens;
+use crate::cognition::rag_budget::{RagContext, RagDelivery, RagItem, RagSource};
 
 use crate::cognition::faculty_ids::AWARENESS;
 
@@ -18,7 +17,7 @@ const HEADING: &str = "Across your activities (loudest first):";
 pub struct AwarenessRagSource {
     persona_id: uuid::Uuid,
     /// Her own airc handle, for the one fact the strip needs that her region does not
-    /// hold: whether she holds work. `None` in tests of the fit alone.
+    /// hold: whether she holds work. `None` when the offer cannot be computed.
     claims: Option<Arc<dyn AircWorkReader>>,
 }
 
@@ -38,14 +37,23 @@ impl AwarenessRagSource {
         Self { persona_id, claims }
     }
 
-    /// Lines for the turn: the offer first when it applies (her continuation leads the
-    /// strip when she has one; the offer stands in its place when she has none).
-    async fn lines_for_turn(&self, snapshot: &crate::persona::awareness::AwarenessSnapshot, room: Option<uuid::Uuid>) -> Vec<String> {
-        let mut lines = snapshot.render_lines_in(self.persona_id, room);
+    /// Keyed lines for the turn: the offer first when it applies (her continuation leads
+    /// the strip when she has one; the offer stands in its place when she has none). A
+    /// key is the identity of what the line describes, so the view re-appends a line only
+    /// when its activity's line changes.
+    async fn lines_for_turn(&self, snapshot: &crate::persona::awareness::AwarenessSnapshot, room: Option<uuid::Uuid>) -> Vec<(String, String)> {
+        // `render_lines_in` emits the continuation (if any) then one line per visible activity.
+        let mut keys: Vec<String> = Vec::new();
+        if snapshot.continuation.is_some() {
+            keys.push("continuation".to_owned());
+        }
+        keys.extend(snapshot.visible().iter().map(|l| l.activity.to_string()));
+        let mut lines: Vec<(String, String)> =
+            keys.into_iter().zip(snapshot.render_lines_in(self.persona_id, room)).collect();
         if snapshot.continuation.is_none() {
             if let Some(reader) = &self.claims {
                 match reader.active_claims().await {
-                    Ok(claims) if !claims.is_empty() => lines.insert(0, offer_line(claims.len())),
+                    Ok(claims) if !claims.is_empty() => lines.insert(0, ("offer".to_owned(), offer_line(claims.len()))),
                     Ok(_) => {}
                     Err(e) => continuum_base::probe!(
                         class = "mind.strip.claims_unreadable",
@@ -58,34 +66,6 @@ impl AwarenessRagSource {
         }
         lines
     }
-
-    /// The block, fitted to `budget`: the strip is loudest first, so dropping lines
-    /// from the END keeps what matters most. `None` = not even the heading and the
-    /// loudest line fit.
-    fn fit(lines: &[String], budget: u32) -> Option<String> {
-        let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
-        for line in lines {
-            kept.push(line);
-            let text = Self::render(&kept);
-            if estimate_tokens(&text) > budget {
-                kept.pop();
-                break;
-            }
-        }
-        if kept.is_empty() {
-            return None;
-        }
-        Some(Self::render(&kept))
-    }
-
-    fn render(lines: &[&str]) -> String {
-        let mut out = String::from(HEADING);
-        for line in lines {
-            out.push('\n');
-            out.push_str(line);
-        }
-        out
-    }
 }
 
 #[async_trait::async_trait]
@@ -94,98 +74,46 @@ impl RagSource for AwarenessRagSource {
         AWARENESS
     }
 
-    fn budget_claim(&self, window: u32, headroom: u32) -> crate::cognition::rag_budget::RagSourceBudget {
-        // Existing strip allowance: one short line per activity, window / 48.
-        crate::cognition::rag_budget::RagSourceBudget::floorless_share(
-            self.source_id(),
-            window,
-            headroom,
-            std::num::NonZeroU32::new(48).expect("existing nonzero source share"),
-        )
-    }
-
     fn expand_command(&self) -> Option<&'static str> {
         // The strip is already her whole awareness, reduced; nothing fuller to expand to.
         None
     }
 
-    fn floor_tokens(&self) -> u32 {
-        0
-    }
-
-    async fn deliver(&self, ctx: &RagContext, budget: u32, resolution: ResolutionPreference) -> RagDelivery {
-        let empty = |res| RagDelivery {
-            source_id: AWARENESS.to_string(),
-            items: Vec::new(),
-            tokens_used: 0,
-            truncated: false,
-            resolution_used: res,
-        };
+    async fn deliver(&self, ctx: &RagContext) -> RagDelivery {
         if ctx.persona_id != self.persona_id {
-            return empty(ResolutionPreference::Placeholder);
+            return RagDelivery::empty(AWARENESS);
         }
         let Some(snapshot) = crate::persona::perception_feed::awareness_of(self.persona_id, ctx.now_ms) else {
-            return empty(resolution);
+            return RagDelivery::empty(AWARENESS);
         };
         let lines = self.lines_for_turn(&snapshot, ctx.airc_room.map(|r| r.as_uuid())).await;
         if lines.is_empty() {
-            return empty(resolution);
+            return RagDelivery::empty(AWARENESS);
         }
-        let Some(content) = Self::fit(&lines, budget) else {
-            continuum_base::probe!(
-                class = "mind.strip.unfit",
-                persona = %self.persona_id,
-                budget,
-                lines = lines.len() as u64,
-                "the strip's loudest line did not fit the grounding budget — she turns without her awareness"
-            );
-            return empty(resolution);
-        };
-        let tokens = estimate_tokens(&content);
+        // The heading is its own first item: the lines read as nothing without it. Each
+        // line follows, loudest first, as its own unit for the view to level.
+        let meta = serde_json::json!({
+            "live_activities": snapshot.load.live_activities,
+            "unread_total": snapshot.load.unread_total,
+        });
+        let mut items = Vec::with_capacity(lines.len() + 1);
+        items.push(RagItem::whole("heading", HEADING, meta.clone()));
+        items.extend(lines.iter().map(|(key, line)| RagItem::whole(key.clone(), line.clone(), meta.clone())));
+        let delivery = RagDelivery::of(AWARENESS, items, false);
         continuum_base::probe!(
             class = "mind.strip.delivered",
             persona = %self.persona_id,
             lines_total = lines.len() as u64,
-            lines_shown = content.lines().count().saturating_sub(1) as u64,
-            tokens,
-            budget,
+            tokens = delivery.tokens_used,
             "her awareness strip is in this turn's grounding"
         );
-        RagDelivery {
-            source_id: AWARENESS.to_string(),
-            items: vec![RagItem {
-                content,
-                tokens,
-                metadata: serde_json::json!({
-                    "lines_total": lines.len(),
-                    "live_activities": snapshot.load.live_activities,
-                    "unread_total": snapshot.load.unread_total,
-                }),
-            }],
-            tokens_used: tokens,
-            truncated: false,
-            resolution_used: resolution,
-        }
+        delivery
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // what this catches: the strip is loudest first, so a budget that holds only part of
-    // it keeps the HEAD and drops the tail; a budget that holds not even the loudest line
-    // delivers nothing rather than a torn line.
-    #[test]
-    fn a_tight_budget_keeps_the_loudest_lines_and_never_tears_one() {
-        let lines: Vec<String> = (0..6).map(|i| format!("[line {i}] something that happened in activity {i}")).collect();
-        let full = AwarenessRagSource::fit(&lines, 10_000).expect("fits");
-        assert_eq!(full.lines().count(), 7, "heading + six lines");
-        let some = AwarenessRagSource::fit(&lines, estimate_tokens(&full) - 12).expect("fits a prefix");
-        assert!(some.lines().count() < 7 && some.lines().nth(1) == Some(&lines[0][..]), "keeps the head: {some}");
-        assert!(AwarenessRagSource::fit(&lines, 1).is_none(), "not even the loudest line: nothing, never a torn line");
-    }
 
     // what this catches: the offer names the verb and the count, and is an offer (the
     // word "writes one" — it never claims to have written anything).

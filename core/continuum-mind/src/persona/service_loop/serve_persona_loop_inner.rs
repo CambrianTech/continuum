@@ -4,6 +4,7 @@ pub(super) async fn serve_persona_loop_inner(
     ctx: &HostedPersona,
     conversation: &mut dyn CitizenConversation,
     opts: ServeOptions,
+    obligations: crate::persona::obligation::Obligations,
 ) -> Result<ServeOutcome, String> {
     // PRECONDITION: caller MUST have called `conversation.prime()`
     // before entering this loop. The supervisor's `spawn_persona_service`
@@ -25,13 +26,19 @@ pub(super) async fn serve_persona_loop_inner(
     // Admitted triggers remain owned while capacity is unavailable. New inbox
     // input and Stop stay reachable without replacing an older trigger's custody.
     let mut deferred_input = crate::persona::wake_backlog::PendingInput::for_persona(ctx.identity.peer_id.as_uuid());
+    // Its durable half (card 920619c5): each admitted turn is a row until it ends, so the
+    // turns the last stop cut are named here, at the start, instead of vanishing. Stop-drain
+    // S3: each gets a notice; an untouched one is handed back, one that began an effect never is.
+    obligations
+        .recover((opts.now_ms)(), &mut deferred_input, |trigger| new_message_attention(ctx, trigger))
+        .await;
 
     // The persona's adapter (`ctx.adapter`) is reached by the
     // cognition layer through the global provider registry — slice
     // 1D / task #161 registers it at supervisor boot so
     // `evaluate_response` finds it by model_id. The loop itself does
-    // not invoke inference directly; `persona::response::respond`
-    // owns the agent contract per the cognition pipeline doc.
+    // not invoke inference directly; the workspace cycle owns the
+    // agent contract per the cognition pipeline doc.
     let mut outcome = ServeOutcome::default();
 
     // Never-stop heartbeat: a persona is not a request→response handler that goes
@@ -89,6 +96,10 @@ pub(super) async fn serve_persona_loop_inner(
     // their recheck so a line her inbox takes never also starts a self-turn.
     let mut mind = MindWakeState::default();
     loop {
+        // An interrupted turn that began an effect closes after a completed turn read its notice.
+        for answered in deferred_input.take_answered() {
+            obligations.close(Some(answered)).await;
+        }
         let (wake, pending_before_wake) = await_wake(
             ctx,
             conversation,
@@ -253,9 +264,8 @@ pub(super) async fn serve_persona_loop_inner(
         // RTOS-debugger breakpoint: turn entry at the service-loop
         // level. Pair with `persona.turn.spoke` /
         // `persona.turn.silent` / `persona.turn.error` (same lamport)
-        // for the complete per-turn record. The `respond_inner`-level
-        // probes (`persona.response.enter` etc.) live INSIDE the
-        // cognition; this one names the airc-boundary turn.
+        // for the complete per-turn record. This one names the
+        // airc-boundary turn.
         // Cognition pulse: this stamp is what EARNS her claim renewals
         // (cognition_pulse.rs) — a turn starting, even one that later defers
         // on serving pressure, is proof she is working her holds.
@@ -278,12 +288,6 @@ pub(super) async fn serve_persona_loop_inner(
         // admit → build_workspace_turns → Burst → workspace cycle
         // (RecallFaculty feeds the prompt, deliberation decides,
         // act→observe drives to settle). That is the live path below.
-        //
-        // NOT `persona::response::respond(RespondInput)` — that verb
-        // only has one caller, PersonaServiceModule, which the module
-        // audit declares UNWIRED ("shadowed", runtime/registry.rs) so
-        // the respond path is dead code, kept only until the verbs it
-        // owns are dismantled or re-homed.
         //
         // See docs/architecture/PERSONA-COGNITION-PIPELINE.md for the
         // full pipeline.
@@ -308,6 +312,34 @@ pub(super) async fn serve_persona_loop_inner(
                 .flatten(),
         )
         .await;
+        // Recorded BEFORE the turn can mark its trigger read (the read receipt of its sent
+        // prompt): from here until the turn ends, a stop that cuts it leaves this row behind.
+        // A retry reconciles the id its first attempt minted (confirmed or not); only a new input
+        // mints one. Only a CONFIRMED row lets the turn run (stop-drain S2): an unknown row could be
+        // re-run by a later start after this turn acted. Unconfirmed, the input is retained WITH its
+        // candidate id (Codex on #5492: a create may have committed unseen), and the turn stops
+        // here, before any prompt could mark the trigger read.
+        let candidate = admitted_retry.then(|| deferred_input.obligation_for(&msg)).flatten();
+        let obligation = match obligations.admit(turn_room, &msg, wake_engram, now_ms, candidate).await {
+            crate::persona::obligation::Admission::Confirmed(turn) => turn,
+            crate::persona::obligation::Admission::Unconfirmed(candidate) => {
+                deferred_input.settle(
+                    &msg,
+                    wake_engram,
+                    new_message_attention(ctx, &msg),
+                    &crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch,
+                );
+                if !deferred_input.keep_obligation(&msg, Some(candidate)) {
+                    // Not retained (ambient input keeps its re-perception policy): a row that
+                    // committed unseen must not outlive it, so close it best-effort.
+                    obligations.close(Some(candidate)).await;
+                }
+                continue;
+            }
+        };
+        // This turn's pre-effect mark, carried in its burst and to its reply: built from its
+        // confirmed obligation, dropped with the turn.
+        let effects = obligations.gate_for(obligation);
         // 2. Compose the turn's RAG context (budget + multi-source composition); inference
         //    runs WITHOUT holding the cognition mutex.
         let composed = compose_turn(
@@ -318,7 +350,7 @@ pub(super) async fn serve_persona_loop_inner(
             &mut roster_names,
         )
         .await;
-        let workspace_burst = build_turn_burst(ctx, &composed, trigger, now_ms, wake_engram);
+        let workspace_burst = build_turn_burst(ctx, &composed, trigger, now_ms, wake_engram).with_effects(Some(effects.clone()));
         // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
         // re-run the same burst (the message path and the self-tick share the gate;
         // own chat is excluded so this reply can't re-trigger a self-tick, while her
@@ -374,9 +406,17 @@ pub(super) async fn serve_persona_loop_inner(
         .await
         {
             CycleVerdict::Spoke(spoken) => spoken,
-            CycleVerdict::Skip => continue,
+            CycleVerdict::Skip => {
+                // A refused or deferred input is still owed: PendingInput retains it for a
+                // retry, so its row stays open with it (Codex on #5480). Only a finished
+                // skip closes.
+                if !deferred_input.keep_obligation(&msg, Some(obligation)) {
+                    obligations.close(Some(obligation)).await;
+                }
+                continue;
+            }
         };
-        finish_spoken_turn(
+        let speech = finish_spoken_turn(
             ctx,
             conversation,
             &mut outcome,
@@ -385,8 +425,13 @@ pub(super) async fn serve_persona_loop_inner(
             phase_timings,
             turn_started,
             &mut deferred_input,
+            &effects,
         )
         .await;
+        // A refused reply mark recorded nothing and posted nothing: the row stays open.
+        if matches!(speech, SpeechMark::Done) {
+            obligations.close(Some(obligation)).await;
+        }
     }
 
     deferred_input.stop();

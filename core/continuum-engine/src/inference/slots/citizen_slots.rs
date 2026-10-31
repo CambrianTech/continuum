@@ -23,7 +23,7 @@ pub type SlotPin = PinHandle<PageKey, std::sync::Arc<KvSlotLease>>;
 /// saves its resident before lending that slot transiently; a two-slot server
 /// without scratch stays unpinned. Both use `cache_prompt: false`. The
 /// measured defect this closes: the small sidecar calls (`should_respond`,
-/// `check_redundancy`, `generate_response`) pinned the SAME slot as the turn
+/// `generate_response`) pinned the SAME slot as the turn
 /// and truncated the citizen's ~30k warm tail to their tiny common head —
 /// breaking KV reuse even for a SOLO citizen — while the smoke probe and the
 /// unpinned producers were free to LCP-steal any warm slot.
@@ -67,7 +67,6 @@ pub fn class_for(purpose: Option<&str>) -> SlotClass {
         | Some("persona-respond")
         | Some("persona_decide_and_respond") => SlotClass::Turn,
         Some("cognition/should-respond")
-        | Some("cognition/check-redundancy")
         | Some("cognition/generate-response")
         | Some("cognition/validate-response-decision")
         | Some("resolution-draft")
@@ -231,17 +230,6 @@ pub fn note_page_dir(dir: &std::path::Path) {
     *PAGE_DIR.lock() = Some(dir.to_path_buf());
 }
 
-/// The one disk read in flight, and the dir it reads. ONE: every page dir is under one store on one
-/// volume, so a second concurrent read only adds a second stuck thread when that volume stops
-/// answering, and a plan whose geometry churns could otherwise start one per window (root on
-/// #5060). The read is its own task: it lands its samples and clears this slot whether or not
-/// anyone is still waiting on it.
-pub(super) static SEEDING: parking_lot::Mutex<Option<(std::path::PathBuf, futures::future::Shared<futures::future::BoxFuture<'static, ()>>)>> =
-    parking_lot::Mutex::new(None);
-
-#[cfg(test)]
-pub(super) static SEED_READS: parking_lot::Mutex<Vec<std::path::PathBuf>> = parking_lot::Mutex::new(Vec::new());
-
 /// A restarted core starts with no state samples while the pages it would measure sit on disk
 /// (IntelMac, 2026-10-11 02:46Z: derived 1,792 MiB beside states up to 865 MB). Seed the EXACT page
 /// dir a sizing is about to read from its newest pages, before it reads: they are exactly the saves
@@ -251,7 +239,7 @@ pub(super) static SEED_READS: parking_lot::Mutex<Vec<std::path::PathBuf>> = park
 /// 9,477 MiB; card 37eb1925).
 ///
 /// The sample cache is the readiness authority: a dir it knows (measured, or read and empty) is not
-/// read again, and a dir it evicted is unknown again. One read is in flight at a time ([`SEEDING`]);
+/// read again, and a dir it evicted is unknown again. One read is in flight at a time (owned by the sampler);
 /// while another dir's read is still running, this dir stays unknown and its sizing uses the
 /// estimate, and the next ask reads it. The read runs on the blocking pool, never on a worker (root
 /// on #5060), and each asker waits at most the disk reporters'
@@ -259,91 +247,7 @@ pub(super) static SEED_READS: parking_lot::Mutex<Vec<std::path::PathBuf>> = park
 /// disk leaves one read in flight and the sizing on its estimate, and never holds serving. A read
 /// that fails leaves the dir unknown (probed), so the next ask reads again.
 pub async fn seed_state_samples(dir: &std::path::Path) {
-    seed_state_samples_with(dir, |dir| newest_page_states(dir, STATE_SAMPLES)).await;
-}
-
-pub(super) async fn seed_state_samples_with(
-    dir: &std::path::Path,
-    read: impl FnOnce(&std::path::Path) -> Result<Vec<u64>, String> + Send + 'static,
-) {
-    use crate::runtime::daemon::{guarded, Guarded};
-    let reading = {
-        let mut seeding = SEEDING.lock();
-        if state_dir_known_in(&RECENT_STATE_BYTES.lock(), dir) {
-            return;
-        }
-        match &*seeding {
-            Some((reading, read)) if reading == dir => read.clone(),
-            Some((reading, _)) => {
-                continuum_base::probe!(
-                    class = "inference.kv_page.seed_busy",
-                    dir = %dir.display(),
-                    reading = %reading.display(),
-                    "another page dir is still being read; this sizing uses the estimate, the next ask reads this one",
-                );
-                return;
-            }
-            None => {
-                let landed = spawn_state_read(dir.to_path_buf(), read);
-                *seeding = Some((dir.to_path_buf(), landed.clone()));
-                landed
-            }
-        }
-    };
-    if let Guarded::TimedOut = guarded(crate::system_resources::disk_pressure::REPORTER_TIMEOUT, reading).await {
-        continuum_base::probe!(
-            class = "inference.kv_page.seed_pending",
-            dir = %dir.display(),
-            "the saved pages are still being read; this sizing uses the estimate, the next one the pages",
-        );
-    }
-}
-
-/// Start the read of `dir` as its own task and return its completion for askers to wait on. The
-/// task lands the samples (a live sample already there outranks them), THEN clears [`SEEDING`], so
-/// no asker between the two starts a second read; it never holds both locks.
-pub(super) fn spawn_state_read(
-    dir: std::path::PathBuf,
-    read: impl FnOnce(&std::path::Path) -> Result<Vec<u64>, String> + Send + 'static,
-) -> futures::future::Shared<futures::future::BoxFuture<'static, ()>> {
-    use futures::FutureExt;
-    #[cfg(test)]
-    SEED_READS.lock().push(dir.clone());
-    let released = dir.clone();
-    let task = tokio::spawn(async move {
-        let path = dir.clone();
-        match tokio::task::spawn_blocking(move || read(&path))
-            .await
-            .map_err(|error| error.to_string())
-            .and_then(|states| states)
-        {
-            Ok(states) => seed_dir_in(&mut RECENT_STATE_BYTES.lock(), &dir, states),
-            Err(error) => continuum_base::probe!(
-                class = "inference.kv_page.seed_failed",
-                dir = %dir.display(),
-                error = %error,
-                "reading the saved pages on disk failed; left unmeasured, the next ask reads again",
-            ),
-        }
-        let mut seeding = SEEDING.lock();
-        if seeding.as_ref().is_some_and(|(reading, _)| reading == &dir) {
-            *seeding = None;
-        }
-    });
-    async move {
-        // The read's own failures (the reader, the blocking pool) release the slot inside the
-        // task. Only a panic of the task itself skips that, and then the slot is released here,
-        // when an asker next waits on it: waiter-dependent, and with no reachable panic in the
-        // task body, not relied on (root on #5060).
-        if task.await.is_err() {
-            let mut seeding = SEEDING.lock();
-            if seeding.as_ref().is_some_and(|(reading, _)| reading == &released) {
-                *seeding = None;
-            }
-        }
-    }
-    .boxed()
-    .shared()
+    super::state_sampler::STATE_SAMPLER.seed(dir).await;
 }
 
 /// The engine's sidecars beside each page, saved and restored with it: the context checkpoints
@@ -446,13 +350,8 @@ pub(super) const STATE_DIRS: usize = 8;
 /// node is never sized by another model's states (Fable on #4930).
 pub(super) type StateSamples = std::collections::VecDeque<(std::path::PathBuf, std::collections::VecDeque<u64>)>;
 
-pub(super) static RECENT_STATE_BYTES: parking_lot::Mutex<StateSamples> = parking_lot::Mutex::new(std::collections::VecDeque::new());
-
 pub(crate) fn note_state_bytes(dir: &std::path::Path, bytes: u64) {
-    if bytes == 0 {
-        return;
-    }
-    note_state_bytes_in(&mut RECENT_STATE_BYTES.lock(), dir, bytes);
+    super::state_sampler::STATE_SAMPLER.note(dir, bytes);
 }
 
 /// PURE: record `bytes` under `dir`, bounded by [`STATE_SAMPLES`] per dir and [`STATE_DIRS`] dirs.
@@ -501,7 +400,7 @@ pub(super) fn measured_state_bytes_in(samples: &StateSamples, dir: &std::path::P
 /// so 104 states were skipped and 220 evicted, and two minds on one slot found nothing.
 /// The largest, not a median: the engine refuses any state over the limit outright.
 pub fn measured_state_bytes(page_dir: &std::path::Path) -> Option<u64> {
-    measured_state_bytes_in(&RECENT_STATE_BYTES.lock(), page_dir)
+    super::state_sampler::STATE_SAMPLER.measured(page_dir)
 }
 
 /// Pure trim: pages (`a-*.bin`) with their sidecars ([`PAGE_SIDECARS`]), oldest mtime first,

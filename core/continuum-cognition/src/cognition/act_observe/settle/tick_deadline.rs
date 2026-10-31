@@ -20,16 +20,36 @@ pub(super) const ACT_EXTENSIONS: u32 = 2;
 /// slot while relevant grants or blocking holders advance at each act-bound
 /// checkpoint. A stalled/unknown queue ends the act. On grant the unspent budget
 /// resumes; no other await gets this exemption.
+///
+/// `Err` says whether the step's generation was already dispatched: a step ended after
+/// that point dropped a generation in flight and must never be counted as a lane wait.
+///
+/// A condemned engine ends the step AT ONCE, not at its next checkpoint: the relaunch's
+/// drain waits for this step's guard, so every second held here is the whole node dark
+/// (card 4d2a64a2: 23 minutes on enrico, 2026-10-26). Condemned means the daemon decided to
+/// replace the engine (`llama_server::condemn`), never a transient not-ready snapshot.
 pub(super) async fn until_act_stalls<F: std::future::Future>(
     deadline: tokio::time::Instant,
     bound: std::time::Duration,
     persona: Option<uuid::Uuid>,
     step: F,
-) -> Result<F::Output, ()> {
+) -> Result<F::Output, Abandoned> {
+    until_act_stalls_or(deadline, bound, persona, step, crate::inference::llama_server::until_condemned()).await
+}
+
+/// [`until_act_stalls`] with the condemnation it listens for given, so a test can raise it.
+pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::Future<Output = ()>>(
+    deadline: tokio::time::Instant,
+    bound: std::time::Duration,
+    persona: Option<uuid::Uuid>,
+    step: F,
+    condemned: C,
+) -> Result<F::Output, Abandoned> {
     use crate::cognition::llm_deliberation_faculty::admission_clock;
     let (queue_tx, mut queue_rx) = tokio::sync::watch::channel(admission_clock::QueueTime::new(deadline, bound));
     let step = admission_clock::scope(queue_tx.clone(), step);
     tokio::pin!(step);
+    tokio::pin!(condemned);
     let mut extensions = 0u32;
     let mut previous = None;
     loop {
@@ -39,13 +59,23 @@ pub(super) async fn until_act_stalls<F: std::future::Future>(
             biased;
             out = &mut step => return Ok(out),
             _ = queue_rx.changed() => continue,
+            () = &mut condemned => {
+                let abandoned = Abandoned::at(&queue_rx);
+                continuum_base::probe!(
+                    class = "settle.tick.condemned",
+                    dispatched = abandoned.dispatched,
+                    extensions = extensions as u64,
+                    "the engine was condemned mid-act: ending the act now, so the relaunch's drain is not held to its next checkpoint"
+                );
+                return Err(abandoned);
+            }
             _ = async {
                 match due {
                     Some(at) => tokio::time::sleep_until(at).await,
                     None => std::future::pending::<()>().await,
                 }
             } => {
-                if state.stalled { return Err(()); }
+                if state.stalled { return Err(Abandoned::at(&queue_rx)); }
                 let pinned = persona.and_then(crate::inference::llama_server::in_flight_slot);
                 let now = match &pinned {
                     Some(p) => crate::inference::llama_server::slot_work(&p.root, p.slot, act_probe_client()).await,
@@ -57,7 +87,7 @@ pub(super) async fn until_act_stalls<F: std::future::Future>(
                     || crate::inference::llama_server::engine_condemned()
                     || !crate::inference::llama_server::slot_advanced(previous, now)
                 {
-                    return Err(());
+                    return Err(Abandoned::at(&queue_rx));
                 }
                 extensions += 1;
                 previous = now;
@@ -71,6 +101,18 @@ pub(super) async fn until_act_stalls<F: std::future::Future>(
                 );
             }
         }
+    }
+}
+
+/// A step its deadline ended, and whether its generation had been dispatched by then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Abandoned {
+    pub(super) dispatched: bool,
+}
+
+impl Abandoned {
+    fn at(clock: &tokio::sync::watch::Receiver<crate::cognition::llm_deliberation_faculty::admission_clock::QueueTime>) -> Self {
+        Self { dispatched: clock.borrow().dispatched }
     }
 }
 
@@ -242,6 +284,7 @@ pub(super) async fn drive_with_input<'c>(
     mut credit: Option<&mut (dyn TurnCredit + 'c)>,
 ) -> SettleOutcome {
     let turn_room = burst.room.as_uuid();
+    let started = std::time::Instant::now();
     let settled = settle_to_outcome(
         cycle,
         burst,
@@ -251,6 +294,12 @@ pub(super) async fn drive_with_input<'c>(
         credit.as_deref_mut(),
     )
     .await;
+    // Her service ledger counts EVERY turn, refusals included, before any early return: a
+    // mind refused before inference is the stall this exists to see (card 1c157668).
+    if let Some(body) = cycle.acting() {
+        let wall_ms = u64::try_from(started.elapsed().as_millis()).map_or(u64::MAX, |ms| ms); // past u64::MAX ms saturates; no turn reaches it
+        crate::cognition::resident_service::note_settled(body.persona_id, &settled, wall_ms);
+    }
     // Admission refusal is not a lived/completed turn or training credit.
     if settled.deferred_before_dispatch {
         return settled;

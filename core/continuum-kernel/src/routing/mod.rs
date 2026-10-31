@@ -23,6 +23,7 @@
 //! `probe!`/`time!`/`stack!` macros, and the env registry +
 //! `Context::environment()` accessor.
 
+pub mod addressed_inbox;
 pub mod airc_command_protocol;
 pub mod airc_event_adapters;
 pub mod airc_event_protocol;
@@ -30,8 +31,8 @@ pub mod airc_event_publisher;
 pub mod airc_event_transport;
 pub mod airc_realtime;
 pub mod airc_realtime_wire;
-pub mod airc_transport;
 pub mod airc_subscription;
+pub mod airc_transport;
 pub mod auth_policy;
 pub mod capped_appender;
 pub mod command_acl;
@@ -48,15 +49,14 @@ pub mod probe_router;
 pub(crate) mod probe_span_meta;
 pub mod route_decision;
 pub mod tracing_init;
-pub mod trust_level;
 pub mod transport;
+pub mod trust_level;
 pub mod uri_layer;
 pub mod verdict;
 
 pub use airc_command_protocol::{
-    AircCommandRequest, AircCommandResponse, COMMAND_REQUEST_BODY_HINT, COMMAND_RESPONSE_BODY_HINT,
-    HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH, HEADER_COMMAND_STATUS,
-    HEADER_CONTINUUM_BODY_HINT, STREAM_KIND_PREFILL,
+    AircCommandRequest, AircCommandResponse, HEADER_COMMAND_ENV, HEADER_COMMAND_KIND,
+    HEADER_COMMAND_PATH, HEADER_COMMAND_STATUS, HEADER_CONTINUUM_BODY_HINT, STREAM_KIND_PREFILL,
 };
 pub use airc_event_adapters::{
     EventPublishAdapter, EventSubscribeAdapter, EventUnsubscribeAdapter, PUBLISH_ADAPTER_NAME,
@@ -71,9 +71,8 @@ pub use airc_event_protocol::{
 };
 pub use airc_event_publisher::{
     build_deliver_frame, build_publish_ack, build_subscribe_ack, build_unsubscribe_ack,
-    matches_filter, parse_publish_envelope, parse_subscribe_envelope, parse_unsubscribe_envelope,
-    ActiveSubscription, AircEventPublisher, EventPublisherState, MatchedSubscription,
-    ParsedPublish, ParsedSubscribe, ParsedUnsubscribe,
+    matches_filter, ActiveSubscription, AircEventPublisher, EventPublisherState,
+    MatchedSubscription, ParsedPublish, ParsedSubscribe, ParsedUnsubscribe,
 };
 pub use airc_event_transport::{
     AircEventTransport, EventSubscription, DEFAULT_DELIVERY_QUEUE_CAPACITY, DEFAULT_EVENT_DEADLINE,

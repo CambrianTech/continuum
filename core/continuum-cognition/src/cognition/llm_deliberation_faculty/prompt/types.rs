@@ -111,7 +111,6 @@ pub struct PromptMessages {
     pub latest_result: Vec<ChatMessage>,
     /// Public action text retains assistant provenance and required-input pricing.
     pub(in super::super) action_statement: Option<ChatMessage>,
-    pub(in super::super) room_updates: Vec<ChatMessage>,
 }
 
 /// Her OWN most recent move and its outcome, priced — the SUFFIX of the optional history
@@ -288,18 +287,44 @@ impl PromptMessages {
     }
 
     pub fn required_tokens(&self) -> usize {
-        self.stimulus
-            .iter()
-            .chain(self.room_updates.iter())
-            .chain(self.action_statement.iter())
-            .chain(self.latest_result.iter())
-            .map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message)))
-            .sum::<usize>()
-            + self.grounding_tokens
+        self.required_parts().total()
+    }
+
+    /// The irreducible payload by part, so a turn over its window can say WHICH part is too
+    /// large (Aris on the M5, 2026-10-26: on resume after a restart her required payload was
+    /// 105k tokens on a 58,880 window, and her loop spun 25 over-window refusals in one second
+    /// before it cleared; nothing said what the 105k was).
+    pub fn required_parts(&self) -> RequiredParts {
+        let cost = |messages: &mut dyn Iterator<Item = &ChatMessage>| -> usize {
+            messages.map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message))).sum()
+        };
+        RequiredParts {
+            stimulus: cost(&mut self.stimulus.iter()),
+            action_statement: cost(&mut self.action_statement.iter()),
+            latest_result: cost(&mut self.latest_result.iter()),
+            latest_result_count: self.latest_result.len(),
+            grounding: self.grounding_tokens,
+        }
     }
 
     pub fn tokens(&self) -> usize {
         LlmDeliberationFaculty::messages_cost(&self.history) + self.required_tokens()
+    }
+}
+
+/// The irreducible payload's parts, in tokens.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RequiredParts {
+    pub stimulus: usize,
+    pub action_statement: usize,
+    pub latest_result: usize,
+    pub latest_result_count: usize,
+    pub grounding: usize,
+}
+
+impl RequiredParts {
+    pub fn total(&self) -> usize {
+        self.stimulus + self.action_statement + self.latest_result + self.grounding
     }
 }
 
@@ -363,9 +388,9 @@ pub struct DeliberationPromptView {
     pub input_identity: [u8; 32],
     /// Cached pre-calibration cost, including selected schemas and framing.
     pub estimated_prompt_tokens: usize,
-    /// The reply's allowance this plan granted (its flex grant plus what no other claim
-    /// took, under its runaway bound) — charged against the window here, and carried
-    /// verbatim as the wire request's `max_tokens`.
+    /// Her reply's grant in the one allocation: her measured need (no cap). Charged against the
+    /// window here and carried verbatim as the wire request's `max_tokens`; a turn cut at it
+    /// records its cut channel at double, so the next claim grows from the evidence.
     pub completion_reserve: u32,
     pub capacity_error: Option<PromptCapacityError>,
     /// The assembled prompt broke the one budget (`prompt/budget.rs`): the act fails and
@@ -386,6 +411,22 @@ pub struct DeliberationPromptView {
     /// Estimated tokens (chars/4 class), so attribution is segment-scale
     /// (thousands of tokens), never byte-exact — which is all promotion needs.
     pub segments: Vec<(&'static str, u32)>,
+    /// Her newest result is shown smaller than whole in this view, at its summary or pointer
+    /// with its handle (`fit_newest_result`). A refusal of a view where it was whole may be
+    /// the one her measured density shrinks (`verdict/newest_refit.rs`).
+    pub newest_result_reduced: bool,
+    /// Her newest result's estimated tokens as this view carries it (`RequiredParts::latest_result`):
+    /// what a refusal's excess is charged to when it refits her (`verdict/newest_refit.rs`).
+    pub newest_result_tokens: usize,
+    /// The one allocation this view was fitted under, for the call's capture (FOCUS-CONTRACT
+    /// rule 8). `None` when no allocation ran (a fault before the plan).
+    pub allocation: Option<crate::ai::provenance::AllocationReceipt>,
+    /// Her hands as the one allocation bought them (`tools_epoch.rs`): the request sends
+    /// exactly this, never a second selection.
+    pub tools: crate::cognition::tool_surface::SelectedSurface<'static>,
+    /// The raw tokens the allocation granted her hands: a retry on a server that refuses
+    /// `tail_tools` re-selects at this grant, without her learned head.
+    pub tools_grant: usize,
 }
 
 impl DeliberationPromptView {

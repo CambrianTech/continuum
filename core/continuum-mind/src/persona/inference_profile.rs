@@ -89,36 +89,16 @@ pub struct SamplingProfile {
     /// sequence frequency, catching gap-separated loops the windowed
     /// penalty misses (#181). 0.0 = off. llama.cpp-family gateways only.
     pub frequency_penalty: f32,
-    /// Maximum tokens to generate per response. Derived from role's
-    /// `max_response_chars` divided by approximate chars-per-token
-    /// (typically 4 for English).
-    pub max_new_tokens: u32,
-}
-
-/// Response-length fallback (tokens) when the role doesn't specify a budget. A ROLE concern,
-/// not a model fact — so it lives here, not on `ModelSampling`.
-///
-/// DERIVED from the live served window (an eighth of it), never a constant. This was
-/// `pub const DEFAULT_MAX_NEW_TOKENS: u32 = 512` — inert today (role-budget wiring is still
-/// reserved, see `profile_builder`) but it is the value that gets wired, and 512 tokens
-/// truncates a real answer on ANY model. The whole point of a misfit grid is that the machine
-/// decides how much room there is, not a literal.
-/// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
-pub fn default_max_new_tokens() -> u32 {
-    crate::cognition::context_budget::ContextBudget::live_or_floor().default_response_tokens()
 }
 
 impl SamplingProfile {
-    /// Project a persona sampling profile from the model's row-level decode
-    /// defaults (#76) plus the role's response budget. This is the ONE seam
-    /// that combines the two sources: model-level knobs (temperature, top-k/p,
-    /// the #181 anti-loop pair) come from [`ModelSampling`] on the `Model` row;
-    /// `max_new_tokens` is the role's length budget. Blessed/tuned models carry
-    /// their own `ModelSampling`; unblessed rows carry the floor.
-    pub fn from_model(
-        m: &crate::model_registry::types::ModelSampling,
-        max_new_tokens: u32,
-    ) -> Self {
+    /// Project a persona sampling profile from the model's row-level decode defaults (#76):
+    /// temperature, top-k/p and the #181 anti-loop pair, from [`ModelSampling`] on the `Model`
+    /// row. Blessed/tuned models carry their own `ModelSampling`; unblessed rows carry the
+    /// floor. Reply length is not here: it is the reply's claim in her prompt's one
+    /// allocation (FLOW-IMPLEMENTATION-PLAN §2d); a window-derived default sat here, read
+    /// by nothing.
+    pub fn from_model(m: &crate::model_registry::types::ModelSampling) -> Self {
         Self {
             temperature: m.temperature,
             top_k: m.top_k,
@@ -126,7 +106,6 @@ impl SamplingProfile {
             repeat_penalty: m.repeat_penalty,
             repeat_last_n: m.repeat_last_n,
             frequency_penalty: m.frequency_penalty,
-            max_new_tokens,
         }
     }
 
@@ -135,10 +114,7 @@ impl SamplingProfile {
     /// pair) live in exactly ONE place and can never drift from the Model row's
     /// default. Suitable when there is no model row (tests, scripted adapters).
     pub fn chat_defaults() -> Self {
-        Self::from_model(
-            &crate::model_registry::types::ModelSampling::default(),
-            default_max_new_tokens(),
-        )
+        Self::from_model(&crate::model_registry::types::ModelSampling::default())
     }
 }
 
@@ -336,9 +312,6 @@ mod tests {
         assert_eq!(s.top_k, 40);
         assert_eq!(s.top_p, 0.95);
         assert_eq!(s.repeat_penalty, 1.1);
-        // Derived from the live window now (see `default_max_new_tokens`), so assert the
-        // relationship rather than a literal that would re-pin the clamp this removed.
-        assert_eq!(s.max_new_tokens, default_max_new_tokens());
     }
 
     /// Round-trips through serde without dropping fields. camelCase on

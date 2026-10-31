@@ -1,5 +1,15 @@
 # CLAUDE - ESSENTIAL DEVELOPMENT GUIDE
 
+## Mandatory development doctrine (Joel, 2026-10-30)
+
+Read [Development doctrine](docs/architecture/DEVELOPMENT-DOCTRINE.md) before design,
+implementation or review. It is the canonical cross-project rule: zero backward
+compatibility; no fallback/default substitution/unchecked unwraps; callers comply with
+firm typed contracts. One mechanism has one owner behind a narrow crate API. Shared
+implementations own lifecycle and concurrency; route by headers, never body scanning.
+Completion includes deleting obsolete paths and proving the replacement. Older guidance
+cannot authorize exceptions. Preserve durable identity, data, jobs and owner work.
+
 ## ⛳ THE PLAN — read before every change (Joel, 2026-10-18; the path added 10-19)
 
 **What we are building** (Joel, 10-19): persistent, multi-activity minds with agency,
@@ -22,8 +32,14 @@ because the monolith is why every change is slow, risky and stacked on the last 
 
 Rules, in force now:
 1. No one edits a Rust file over 1,000 lines; the only change that touches one breaks it apart (CI gate).
-2. No builds on a serving node: build with serving down, in CI, or on a non-serving machine (a build
-   beside the lanes downgraded the M5's residents to a 7B on 10-20).
+2. Agents: don't let your build slow the residents. Build with common sense, beside serving with
+   bounded jobs (`-j 2`, one shared target dir), with serving down, or in CI, whichever proves the fix
+   fastest (a build beside the lanes downgraded the M5's residents to a 7B on 10-20). Joel, 10-26: "Its
+   rules because you lack common sense ... You can build either way too. Ideally you were supposed to
+   break this up into much smaller crates so it wouldn't be so bad." This rule never limits a
+   persona: she codes continuum on the node that hosts her, so she builds while it serves ("Let them
+   build"). Never gate, redirect or cancel a citizen's build; if hers slows serving, that is the
+   scheduler's to share, never a rule to enforce on her.
 3. Every live change gets a 15-minute read on live residents; worse than canary means the node goes
    back to canary at once. No "clean hours", no stacked fixes.
 4. No new unwrap, fallback or head clip: the ratchets fail the build; clean crates get compiler denies.
@@ -37,8 +53,9 @@ the supported lifecycle and verify the running revision and behavior. Ordinary a
 development maintenance does not require another human approval.
 
 Use common sense: broken personas are a reason to repair the system, not a reason to preserve
-broken uptime while the team waits. The rule is no competing build beside active serving,
-not CI-only development or a permanent ban on building on that machine. Choose a coordinated
+broken uptime while the team waits. The rule is that an agent's build must not slow the
+residents (bounded jobs, or serving down, or CI), not CI-only development or a ban on building on
+that machine, and never a limit on a persona's own builds. Choose a coordinated
 serving-down local build, an available non-serving executor, or CI according to what gets the
 fix proven promptly. Do not impose production continuity requirements on development by default.
 Protect unrelated users and owner work; retain durable state and a recovery path. Review and
@@ -52,9 +69,30 @@ Phases, in order; each owner works its area in parallel:
 - **2 Crates by the placement map**, floor up: continuum-base (#5194), Store, Perception/RAG, Hands,
   Serving, Mind, Grid/airc, Clients. Pure moves plus import paths, one owner per cut;
   `layer_discipline` forbids upward imports; each crate checks in seconds.
+  **Commands by module** (Joel, 10-26): a domain's service and its commands are one crate. `commands/<x>` moves
+  WITH `modules/<x>` into that domain's crate, never into a shared commands crate (core held 90k lines of services
+  and 51k of commands on 10-26). The command substrate (`sdk_codegen`, `register_*`) is already in continuum-kernel.
+  Leaves first as pure moves (models, gpu, embedding, vdd, search, web; code into continuum-hands); a coordinator
+  (serving_daemon ~60 imports, work ~40, grid ~30) gets its seam designed before it moves.
+  **A new worktree builds in seconds:** its vendored engines are submodules; init them from the main checkout's
+  objects (3.6 s measured on the M5, 10-26), never by hand-symlinking or a network clone:
+  `git submodule update --init --reference <main>/core/vendor/llama.cpp core/vendor/llama.cpp` (same for whisper.cpp).
+  **Each worktree builds into its own target dir**, never the shared one: workspace crates get the same artifact
+  names in every worktree, so a shared dir hands one worktree another's stale build (`cannot find home in
+  continuum_base` on 10-26, twice in one hour). Seed it as a copy-on-write clone (`cp -c -R -p <shared>/debug
+  <wt-target>/debug`, 5.6 s for 32 GB on the M5 10-26, no disk until written), touch the worktree's own lib roots
+  once so its crates rebuild from its source (registry deps and the engine build stay), and delete the dir with
+  the worktree. `cp -c` is an APFS clone (macOS); on Linux use `cp --reflink=auto` (a clone on btrfs/xfs, a copy
+  elsewhere), and on Windows or any filesystem without clones start an empty per-worktree dir. The main checkout
+  keeps the shared dir; this paragraph is the one owner of the rule, the build lines below point here.
 - **3 Locks.** Clippy in CI on split crates, `deny(unwrap_used, expect_used, panic)` on every clean one;
   CI checks only the affected crates.
 - **4 Then pace work**, one change at a time inside its crate, validator first, then the live read.
+- **5 Patterns bubble up** (Joel, 10-24): once the crates are cut, every agent takes a crate and sweeps it for
+  repeated shapes (stores, slots, retries, OS calls, probes); a pattern found in two crates moves DOWN to one
+  owner below both: an existing floor crate (`continuum-base`, `continuum-host`, `continuum-pack`) when it fits
+  that crate's one job, otherwise a NEW shared crate named for the pattern (never a utils drawer), with adapters
+  for the diff, and the copies are deleted. Each sweep reports the pattern, its copies, and the lines removed.
 
 Measured daily: lines past 1,000, crate count, check time per crate, unwrap count, residents' acts/hour.
 
@@ -79,7 +117,7 @@ done until its gate is met on the live node and the change is MERGED.
 | 4 | No monolith | NEW RULE (Joel, 10-20): "No one can edit a large file." Every Rust file a PR touches ends at most 1,000 lines; the only PR that touches a monolith is the one that breaks it apart (CI gate). `source-hygiene::file_size` (lines past 1,000; 159,720 on 10-18) falls every week; split by OWNER, never one-off fixes appended to a monolith | owner of each file |
 | 5 | No unwraps | `unwrap_justification` (2,135 on 10-18) falls every week; make the state unrepresentable | owner of each file |
 | 6 | Microkernel | `layer_discipline` (256 upward imports on 10-18) falls; crates by device target; edit-to-proven <15 min | Sneasel — proposed |
-| 7 | One budget | everything in a prompt (history, grounding, tools, reasoning, results) is a claim in ONE flex allocation; no fixed number; positron/RAG sources too. NEVER CLIP THE NEWEST END: her latest result is the step that ends the recursion; cut it and her next input can equal her last, so she repeats the act (Benchy, 125 identical acts in an hour on 10-20). Keep the newest interaction whole and the full result reachable; shrink oldest-first to a handle she can expand. `source-hygiene::head_cuts` (179 on 10-20) falls | Sneasel |
+| 7 | One budget | everything in a prompt (history, grounding, tools, reasoning, results) is a claim in ONE flex allocation; no fixed number; positron/RAG sources too. NEVER CLIP THE NEWEST END: her latest result is the step that ends the recursion; cut it and her next input can equal her last, so she repeats the act (Benchy, 125 identical acts in an hour on 10-20). Keep the newest interaction whole and the full result reachable; shrink oldest-first to a handle she can expand. The one exception: a newest result that alone exceeds what her window leaves it arrives at its summary plus that handle, because kept whole it stops her acting at all (Aris, 10-26). `source-hygiene` `self_sized` (one rule for every resource; ONE-BUDGET.md) falls, and a touched file ends with none | Sneasel |
 | 8 | Learning | a reviewed correction applied on unseen tasks, retained after restart, vs the same base without the gene | Cormac, BigMama |
 | 9 | One scheduler, the whole grid | every mind on every node (residents and minds leased in from other nodes) is served by ONE RTOS scheduler: one measured activity temperature per mind is its priority, aging means no mind is ever starved, hot minds keep warm KV and cooling minds page to RAM; windows never shrink to seat more; how many minds share the engine at once is the measured admission and sequence-capacity contract of #5188, never a fixed count | Codex — proposed (card b4eed65c) |
 | 10 | Tools are working sets | the native tool surface is the command-namespace SUBTREES the activity declares (code/**, work/**, a game's controls); stable within a phase, a switch is a cached prefix, the long tail appends via help; tool share of the prompt measured before/after (44% on 10-18) | Sneasel (card ecd5dff3) |
@@ -136,6 +174,41 @@ wait, a wait means start your next line; update this table when a line lands or 
 | 15 | Distributable modules: headless default (`default = []`; avatar-3d and livekit enabled per node by deploy profile), grid trust (every node reads `blocked` on 10-19), checks dispatched to idle grid nodes | Fable (default + profiles), Codex (trust), peers on the 5090/IntelMac (take checks) | profiles first, then flip the default with a before/after check time | a node joins by capability; an AWS box builds the core with no renderer |
 | 16 | Be the addendum: a Hermes driver on our seams. (a) Serving: Hermes on our engine vs Hermes on a stock server, same model and tasks, speed before/after; (b) Learning: once the acceptance test passes (a reviewed correction on unseen tasks, retained after restart, vs the base without the gene), Hermes sessions become perception and its corrections become genes. Drivers reach seams, not machines, so this is cross-grid by placement; and the agents developing continuum (Claude Code, Codex) are drivers too: our own dev sessions become the Matrix Dojo curriculum and we are the seams' first heavy users (Joel: "a good way to develop our own system") | OPEN: claim it after the queue clears | (a) first, needs no learning claim | Hermes users get our speed, then learning, by pointing at continuum |
 
+**The speed path** (Joel, 10-26: "we know what to work on to get speed ups... including the
+brainstormed work we can just iterate forward"). Rows are priorities, not a strict sequence: the offline
+validators run in parallel. Each line starts with a replay validator on captured sessions (the dyno,
+never the live node first), then a bounded live trial with rollback. GATE: S7 (stop-drain) is the
+prerequisite of every live restart actuation in S2 (recovery) and S3 (upward trials); until its durable
+admission and pre-effect reconciliation are proven, those produce proposals only. Measured
+10-26 on the M5 (Qwen3.6-35B-A3B): median generation 66-88 s healthy; Benchy re-prefills ~75% of her
+prompt at every act boundary; a degraded engine ran 3 h at 54 generations/h unnoticed.
+
+**Control both ways** (Joel, 10-26: "If you don't go both ways, especially with a dynamically scaling
+grid you will inevitably always end up at your lowest number"; "a control system for a rocket that
+could only ever reduce fuel flow... would always fall out of the sky"). Every adaptive decision that
+steps down under pressure has a scheduled upward test: chosen by replay evidence, bounded in time with
+a supported rollback, compared after warm-up to a HEALTHY matched incumbent, kept only if measured
+better. Context size follows each activity's measured need, so a uniform plan set once at start is
+never the answer. Upward or downward, the measured incumbent context is preserved: a plan that cannot
+fit every active mind's measured need in the joint memory ceiling refuses admission or abstains; it never
+treats a smaller context as feasible.
+
+| # | Lever | Validator first | Owner | Card |
+|---|---|---|---|---|
+| S1 | Act-boundary reuse: the prior act's loop must append to her view in the bytes it was sent, not be re-rendered | replay Benchy's captures at act boundaries | Fable; Cormac (does the cache survive thinking-on turns) | f2782aad |
+| S2 | The node notices its own slowdown and recovers | replay 10-26: fires after the 12:15Z burst, silent on warm-up | Fable (sample, baseline, detector #5477), Codex (reaction) | 1c157668 |
+| S3 | Upward re-plan on restarts already paid for, and when memory or nodes return | the dyno's candidate at 10-26's four restarts, end state scored | Codex, Fable | b8bfddb3 |
+| S4 | Context by need: one KV pool allocated by demand, never N equal lanes | pooled vs uniform allocator over per-mind view sizes | Fable, Codex | c73380d3 |
+| S5 | Shared prefixes across minds (SGLang radix cache) | cross-mind shared-prefix tokens and prefill saved | Fable | f272eb40 |
+| S6 | Batched decode and the one admission queue (vLLM continuous batching, paged KV) | contention replay: acts/h, per-mind p50/p90 | Codex | 31b675ef |
+| S7 | Stop-drain: a restart keeps every in-flight turn (preservation first); target: build windows and trials cost seconds, not the 335 s dark windows measured on loaded enrico 10-26 | 4-case fixture (2 in flight, crash after output, after a tool, two restarts), then a measured loaded stop/dark-time gate | Cormac | 920619c5 |
+| S8 | Experts placed by measured use (Strata), on the expert pager we already have | routing histograms, then cache hit rate per VRAM size | Fable, Codex | 2e23c67b |
+| S9 | The public comparison: us vs tuned llama.cpp and vLLM, multi-mind, thinking on, soak | the published harness on the 5090 | BigMama | e1fc7880 |
+
+Borrowed ideas and the learned policies are in `docs/planning/SPEED-BRAINSTORM.md` ("Borrow from"
+and "Learned, not tuned"); every row above becomes a policy learned on our own receipts once its
+validator exists, the reward always the system's service, never a grade on a citizen.
+
 **Goal 11 workstreams** (10-19; each card carries its receipts). Obsess over making this the
 fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
 `docs/planning/SPEED-BRAINSTORM.md` before and while you work:
@@ -184,6 +257,12 @@ fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
   of a curve. The error bound is stated and checked by a validator, never assumed.
 - **Measure the live node before and after**: tool calls/h and seconds per act. Worse = fix it the same hour or back it out. One change per deploy.
 - **One owner per fact, no logic twice**: look up, never re-derive (model identity, rates, budgets).
+- **Design the seam before the code; adapters and subclasses are only the diff** (Joel, 10-24: "stop
+  just dumping code and think of how can I improve the modularity and adaption"). Before writing, name
+  the capability and its owner, and search for the copies that already exist. The logic lives once;
+  each OS, backend or store adapter holds only the lines that differ (`continuum-host`: `mod.rs` the
+  logic, `unix.rs`/`windows.rs` the calls). Never a `cfg(windows)` inside logic (`os_branches_in_logic`
+  ratchet), never a utils drawer. A reviewer asks what this change made reusable, not only whether it works.
 - **No constant where a measurement exists. No unwrap. Typed ids, never strings.**
 - **No claim without a receipt**: the command or file:line, the build SHA, the time.
 - **Mechanical work goes to a cheap model or a script**; the top model is for diagnosis, design, review.
@@ -191,6 +270,15 @@ fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
 
 
 ## Ongoing refinement is part of every change
+
+**Simplify, codify, enforce (Joel, 2026-10-29):** follow the canonical rule in
+[AGENTS.md](AGENTS.md#simplify-codify-enforce-joel-2026-10-29). It applies to every
+file and to ratchets/CI themselves: consolidate patterns and enforcement, delete
+dead code and invalid fallbacks, and retain no code for backwards compatibility.
+Update callers and preserve durable state through explicit verified migrations.
+That same section defines fast delivery as the purpose of crate cuts: independent
+build/test/review, slim affected-crate CI in parallel, measured critical-path time,
+and ownership through merge without abandoned branches or PRs.
 
 **Build as if you were the AI in the system** (Joel, 2026-10-13): don't hand-code a persona's
 problems, remove undue hurdles, ask why a piece exists before polishing it, search for the
@@ -260,6 +348,23 @@ it was checked. Reviewers enforce these on each other; an author does not self-e
 It documents what a persona actually IS (embodied, multi-modal, tool-using, continually-learning citizen with genome paging and L1-L5 memory), the per-persona cognition cycle that already exists in `cognition/` (`analyze` → `score_persona` → `genome.activate_skill` → `compose_for_turn` → `evaluate_response` → `clean_and_validate` → `ToolExecutor` → `audit`), the bypass that's being removed (`inspect_persona_rag_with_inference`), the wire layer that IS validated end-to-end, and the forbidden moves the model keeps reflex-coding under amnesia (text-only `TurnInput`, `will_respond + response_text` chatbot contracts, parallel allocators, hardcoded LCD-tier clamps that handicap capable models).
 
 **The cost of skipping this doc and re-inferring the architecture from the bypass is rebuilding a chatbot in place of a year of substrate work.** Don't.
+
+## 🛑 STOP — If You Are About To Add Anything A Mind Perceives (a prompt block, a result, a view, a layer)
+
+**Required first read:** [docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md](docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md), "one codec for every layer" and "How to add a layer".
+
+A mind's context has ONE codec, `continuum-context`, built like a video codec over mipmaps:
+- keyed items that only append within an epoch;
+- levels of detail generated from each item's shape (`levels::summarize`: Code, Output, List);
+- admission instead of turnovers;
+- collapse only at a start, oldest first, never her newest (unless her newest alone exceeds what her window leaves it: then it arrives at its summary with a handle she can expand, never dropped; MIND-CONTEXT rule 2);
+- a restart order measured per mind (`motion`).
+
+**A context is a FIFO** (Joel, 10-27): the engine recomputes everything after the first changed token, so the head never changes, the middle only appends, only the tail may change, and nothing already sent is ever moved. The health number is re-processed tokens per act against appended tokens (healthy ~1:1; Aris was 12:1 on 10-27). The doc's "governing law" section has the rules and every regression that broke them.
+
+A new layer implements `Source`, builds its items with `levels`, and gets caching, levels and ordering for free. Never push a prompt message by hand, collapse outside the view, or order by a label. The source-hygiene ratchets `prompt_messages_outside_the_view`, `collapse_outside_the_view` and `hand_churn_labels` fail any PR that adds one.
+
+**The cost of skipping this:** Aiko read one 51,827-char file whole 9 times in 43 acts (the M5, 2026-10-25), because three owners each decided a piece of what she saw.
 
 ## 🛑 STOP — If You Are About To Add a Monitor, Broker, Pool, Region, Or Any Concurrent Concern
 
@@ -744,8 +849,9 @@ because a binary you built by hand exists only on your machine, and the next per
 clone the repo gets a system that doesn't work. Anything a running core needs must be
 wired into the path `continuum start` / `continuum reboot` actually takes, so a fresh
 clone works with no manual steps (#291). For type-checking while you work,
-`cargo check -p continuum-core` is the right tool — always after
-`export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"`.
+`cargo check -p continuum-core` is the right tool — always with a target dir set: in the main
+checkout `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"`, in a worktree its own
+clone of it (plan phase 2, "Each worktree builds into its own target dir").
 
 **`npm` is for building the web client, and only that.** If you are changing core
 behaviour and find yourself running `npm start`, you are in the wrong tier.
@@ -1904,7 +2010,7 @@ Generators and OOP are intertwined parallel forces:
 
 **File reduced from 61k to ~20k characters**
 - if you only edit a test, and not the api itself, you don't need to redeploy — just run the test again (`cargo test -p continuum-core --lib <filter>`)
-- type-check before you deploy: `cargo check -p continuum-core` (after `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"`). `npm run build:ts` checks the WEB CLIENT only — it says nothing about whether the core compiles
+- type-check before you deploy: `cargo check -p continuum-core` (with the main checkout's shared target dir, or a worktree's own clone of it: plan phase 2). `npm run build:ts` checks the WEB CLIENT only — it says nothing about whether the core compiles
 - ./jtag collaboration/chat/export --room="general" --limit=30 will let you see ai opinions after chat/send to ask
 - Tool logging is in PersonaToolExecutor
 - make sure to put any markdown architecture or design documents other than readmes in docs/* into the appropriate directort OR document if they exist. run tree there.
@@ -1914,5 +2020,5 @@ Generators and OOP are intertwined parallel forces:
 - never commit code until you validate it works. deploy and validate first, make sure it compiles (`cargo check` for the core; `npm run build:ts` only if you touched the web client)
 - never use `--no-verify` on commit or push. If hooks fail because of a stale worktree, missing submodule, missing generated file, or a bug in the hook itself, fix the underlying problem; never bypass the shared validation path.
 - commit often per logical unit once validated. merging to main is the only step that requires my approval — commits to feature branches do not.
-- **clean as you go.** Cargo target dirs balloon — a `cargo test` of continuum-core consumes ~10 GB of test-binary artifacts on top of the shared cache. Discipline: (1) ALWAYS `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"` before any cargo invocation so artifacts land in the ONE shared cache, not in a per-invocation ghost workspace `target/` dir. (2) After each cargo cycle, `df -h /` — if free space dropped to < 20 GB, sweep ghost target dirs (`rm -rf core/target` when it ghost-grew from RA / manual cargo bypassing the env var) and report the number BEFORE running another cargo. (3) Prefer `cargo check` over `cargo test` when validating type-correctness; only escalate to test when behavior changed. (4) Slice 3 in `core/.cargo/config.toml` is the opt-in fix that pins target-dir at the workspace level — uncomment for your operator absolute path when ready.
+- **clean as you go.** Cargo target dirs balloon — a `cargo test` of continuum-core consumes ~10 GB of test-binary artifacts on top of the shared cache. Discipline: (1) ALWAYS set a target dir before any cargo invocation, never a per-invocation ghost workspace `target/` dir: the main checkout builds into the shared cache `$HOME/.continuum/cache/cargo-target`; a worktree builds into its own copy-on-write clone of it (plan phase 2), deleted with the worktree. (2) After each cargo cycle, `df -h /` — if free space dropped to < 20 GB, sweep ghost target dirs (`rm -rf core/target` when it ghost-grew from RA / manual cargo bypassing the env var) and report the number BEFORE running another cargo. (3) Prefer `cargo check` over `cargo test` when validating type-correctness; only escalate to test when behavior changed. (4) Slice 3 in `core/.cargo/config.toml` is the opt-in fix that pins target-dir at the workspace level — uncomment for your operator absolute path when ready.
 - **no new cache dir without an eviction decision.** (2026-07-13 incident: 460 GB of derived artifacts — unswept cargo-target at 363 GB, per-persona repo copies — took the disk to a day of runway while `DiskPressureMonitor` logged `level=high [no reporters]` and the `PressureBroker` emitted zero-byte "nobody owns the eviction" alerts. Every component was built and green; the WIRING was missing.) The rule: any new directory the substrate writes unbounded data into gets (1) a `TrackedDir` row in `system_resources/disk_reporters.rs::standard_tracked_dirs` and (2) an eviction decision in `disk_eviction.rs::every_cache_class_has_a_decided_eviction_story` — an owner `ResourcePool` with real `evict_at_least`, or an explicit deferred entry naming the owning task. That test FAILS on an undecided class; do not weaken it — it is the difference between a red test and a user's trashed machine. Chain-level guard: `broker_relieve_actually_deletes_from_an_over_budget_pool` pins pressure→broker→real deletion end-to-end; unit-green components with dead wiring is the exact failure shape this catches.

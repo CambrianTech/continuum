@@ -189,6 +189,7 @@ impl PersonaAircRuntimeRegistry {
             role: OnceLock::new(),
         });
         self.inner.insert(persona_id, slot);
+        continuum_engine::inference::resource_admission::resident_seated(persona_id);
         tracing::info!(
             persona_id = %persona_id,
             agent_name = %agent_name,
@@ -556,6 +557,7 @@ impl PersonaAircRuntimeRegistry {
             let _ = handle.await;
         }
         let (_, slot_owned) = self.inner.remove(&persona_id)?;
+        continuum_engine::inference::resource_admission::resident_departed(persona_id);
         let agent_name = slot_owned.runtime.agent_name().to_string();
         tracing::info!(
             persona_id = %persona_id,
@@ -573,6 +575,7 @@ impl PersonaAircRuntimeRegistry {
     /// instead per the doc-comment on the registry.
     pub fn remove(&self, persona_id: Uuid) -> Option<Arc<PersonaAircRuntime>> {
         self.inner.remove(&persona_id).map(|(_, slot)| {
+            continuum_engine::inference::resource_admission::resident_departed(persona_id);
             tracing::info!(
                 persona_id = %persona_id,
                 agent_name = %slot.runtime.agent_name(),

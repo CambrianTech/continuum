@@ -263,6 +263,14 @@ pub struct TextGenerationRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tail_tools: Option<Vec<NativeToolSpec>>,
+    /// How many leading `messages` are her view: the epoch's append-only part, which her next
+    /// act sends again unchanged, before this act's fresh tail. A llama.cpp-family engine
+    /// checkpoints her recurrent state exactly there, and a saved page keeps that checkpoint,
+    /// so a page-in resumes at the end of her view rather than at the shared head (card
+    /// 3512f496). `None` when the prompt has no view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub view_messages: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tool_choice: Option<ToolChoice>,
@@ -440,6 +448,10 @@ pub enum FinishReason {
     Length,
     ToolUse,
     Error,
+    /// The stream ended without the backend saying why (no `finish_reason` arrived). Not a
+    /// stop: a receipt must never claim an explicit stop it did not see (Codex, 2026-10-31:
+    /// Kimi's reasoning-only completions read `stop` because an absent marker defaulted to it).
+    Unreported,
 }
 
 impl std::fmt::Display for FinishReason {
@@ -449,6 +461,7 @@ impl std::fmt::Display for FinishReason {
             FinishReason::Length => write!(f, "length"),
             FinishReason::ToolUse => write!(f, "tool_use"),
             FinishReason::Error => write!(f, "error"),
+            FinishReason::Unreported => write!(f, "unreported"),
         }
     }
 }

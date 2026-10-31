@@ -1,0 +1,31 @@
+[package]
+name = "continuum-sentinel"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Sentinels: concurrent, fault-tolerant pipeline execution (the sentinel/* ServiceModule), extracted from continuum-core. Depends only on continuum-kernel, continuum-engine and continuum-base."
+
+[dependencies]
+continuum-process = { path = "../continuum-process" }
+continuum-base = { path = "../continuum-base" }
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-engine = { path = "../continuum-engine" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ts-rs = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+once_cell = { workspace = true }
+futures-util = { workspace = true }
+futures = "0.3"
+dashmap = "6.1"
+regex = "1"
+sysinfo = "0.33"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

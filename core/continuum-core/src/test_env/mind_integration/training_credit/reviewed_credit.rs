@@ -283,7 +283,7 @@ use super::*;
         );
         assert_eq!(pending.decision_review_id, Some(review_id));
         let mut later = receipts;
-        later.push(served_receipt("later-request", "actual-model"));
+        later.push(captured(persona, served_receipt("later-request", "actual-model")));
         assert!(
             capture
                 .record(&settlement_acts(8), &later, None, true)
@@ -524,7 +524,8 @@ use super::*;
         let name = "immutable-work-binding";
         let receipts = vec![served_receipt("generation-a", "model-a")];
         let (mut capture, selected) =
-            stage_settlement_fixture(executor.clone(), persona, name, card, receipts.clone()).await;
+            stage_settlement_fixture(executor.clone(), persona, name, card, receipts).await;
+        let receipts = selected.receipts.clone();
         let data = conn_as(executor.clone(), persona);
         let selection = SubmissionSelection {
             submission_id: Uuid::new_v4(),
@@ -544,7 +545,7 @@ use super::*;
             .unwrap();
         assert_eq!(binding.transfer_intent_id, selected.id);
         let mut later = receipts;
-        later.push(served_receipt("generation-b", "model-a"));
+        later.push(captured(persona, served_receipt("generation-b", "model-a")));
         assert!(
             capture
                 .record(

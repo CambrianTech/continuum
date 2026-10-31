@@ -1,5 +1,15 @@
 # AGENTS.md — entry point for Codex and other agent runtimes
 
+## Mandatory development doctrine (Joel, 2026-10-30)
+
+Read [Development doctrine](docs/architecture/DEVELOPMENT-DOCTRINE.md) before design,
+implementation or review. It is the canonical cross-project rule: zero backward
+compatibility; no fallback/default substitution/unchecked unwraps; callers comply with
+firm typed contracts. One mechanism has one owner behind a narrow crate API. Shared
+implementations own lifecycle and concurrency; route by headers, never body scanning.
+Completion includes deleting obsolete paths and proving the replacement. Older guidance
+cannot authorize exceptions. Preserve durable identity, data, jobs and owner work.
+
 ## ⛳ THE PLAN — read before every change (Joel, 2026-10-18; the path added 10-19)
 
 **What we are building** (Joel, 10-19): persistent, multi-activity minds with agency,
@@ -22,8 +32,14 @@ because the monolith is why every change is slow, risky and stacked on the last 
 
 Rules, in force now:
 1. No one edits a Rust file over 1,000 lines; the only change that touches one breaks it apart (CI gate).
-2. No builds on a serving node: build with serving down, in CI, or on a non-serving machine (a build
-   beside the lanes downgraded the M5's residents to a 7B on 10-20).
+2. Agents: don't let your build slow the residents. Build with common sense, beside serving with
+   bounded jobs (`-j 2`, one shared target dir), with serving down, or in CI, whichever proves the fix
+   fastest (a build beside the lanes downgraded the M5's residents to a 7B on 10-20). Joel, 10-26: "Its
+   rules because you lack common sense ... You can build either way too. Ideally you were supposed to
+   break this up into much smaller crates so it wouldn't be so bad." This rule never limits a
+   persona: she codes continuum on the node that hosts her, so she builds while it serves ("Let them
+   build"). Never gate, redirect or cancel a citizen's build; if hers slows serving, that is the
+   scheduler's to share, never a rule to enforce on her.
 3. Every live change gets a 15-minute read on live residents; worse than canary means the node goes
    back to canary at once. No "clean hours", no stacked fixes.
 4. No new unwrap, fallback or head clip: the ratchets fail the build; clean crates get compiler denies.
@@ -37,8 +53,9 @@ the supported lifecycle and verify the running revision and behavior. Ordinary a
 development maintenance does not require another human approval.
 
 Use common sense: broken personas are a reason to repair the system, not a reason to preserve
-broken uptime while the team waits. The rule is no competing build beside active serving,
-not CI-only development or a permanent ban on building on that machine. Choose a coordinated
+broken uptime while the team waits. The rule is that an agent's build must not slow the
+residents (bounded jobs, or serving down, or CI), not CI-only development or a ban on building on
+that machine, and never a limit on a persona's own builds. Choose a coordinated
 serving-down local build, an available non-serving executor, or CI according to what gets the
 fix proven promptly. Do not impose production continuity requirements on development by default.
 Protect unrelated users and owner work; retain durable state and a recovery path. Review and
@@ -79,7 +96,7 @@ done until its gate is met on the live node and the change is MERGED.
 | 4 | No monolith | NEW RULE (Joel, 10-20): "No one can edit a large file." Every Rust file a PR touches ends at most 1,000 lines; the only PR that touches a monolith is the one that breaks it apart (CI gate). `source-hygiene::file_size` (lines past 1,000; 159,720 on 10-18) falls every week; split by OWNER, never one-off fixes appended to a monolith | owner of each file |
 | 5 | No unwraps | `unwrap_justification` (2,135 on 10-18) falls every week; make the state unrepresentable | owner of each file |
 | 6 | Microkernel | `layer_discipline` (256 upward imports on 10-18) falls; crates by device target; edit-to-proven <15 min | Sneasel — proposed |
-| 7 | One budget | everything in a prompt (history, grounding, tools, reasoning, results) is a claim in ONE flex allocation; no fixed number; positron/RAG sources too. NEVER CLIP THE NEWEST END: her latest result is the step that ends the recursion; cut it and her next input can equal her last, so she repeats the act (Benchy, 125 identical acts in an hour on 10-20). Keep the newest interaction whole and the full result reachable; shrink oldest-first to a handle she can expand. `source-hygiene::head_cuts` (179 on 10-20) falls | Sneasel |
+| 7 | One budget | everything in a prompt (history, grounding, tools, reasoning, results) is a claim in ONE flex allocation; no fixed number; positron/RAG sources too. NEVER CLIP THE NEWEST END: her latest result is the step that ends the recursion; cut it and her next input can equal her last, so she repeats the act (Benchy, 125 identical acts in an hour on 10-20). Keep the newest interaction whole and the full result reachable; shrink oldest-first to a handle she can expand. `source-hygiene` `self_sized` (one rule for every resource; ONE-BUDGET.md) falls, and a touched file ends with none | Sneasel |
 | 8 | Learning | a reviewed correction applied on unseen tasks, retained after restart, vs the same base without the gene | Cormac, BigMama |
 | 9 | One scheduler, the whole grid | every mind on every node (residents and minds leased in from other nodes) is served by ONE RTOS scheduler: one measured activity temperature per mind is its priority, aging means no mind is ever starved, hot minds keep warm KV and cooling minds page to RAM; windows never shrink to seat more; how many minds share the engine at once is the measured admission and sequence-capacity contract of #5188, never a fixed count | Codex — proposed (card b4eed65c) |
 | 10 | Tools are working sets | the native tool surface is the command-namespace SUBTREES the activity declares (code/**, work/**, a game's controls); stable within a phase, a switch is a cached prefix, the long tail appends via help; tool share of the prompt measured before/after (44% on 10-18) | Sneasel (card ecd5dff3) |
@@ -219,11 +236,15 @@ single source of truth and this file must not drift from it.
 
 ## Machine-level conventions you cannot infer from the code
 
-**Cargo target dir — always export it first.**
+**Cargo target dir — always set it first.** In the main checkout:
 
 ```bash
 export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"
 ```
+
+In a worktree, build into its own copy-on-write clone of that dir instead (CLAUDE.md plan
+phase 2, "Each worktree builds into its own target dir"): a shared dir hands one worktree
+another's stale workspace-crate build.
 
 Without it cargo writes a ghost `target/` per invocation. A `cargo test` of
 continuum-core is ~10 GB of artifacts; this project has hit a day of disk runway from
@@ -302,6 +323,53 @@ approval; **merging to `main` does**. Validate before you commit — deploy and 
 the change through a command, and read the receipt rather than the exit code.
 
 ## Continual refinement of tests and CI (Joel, 2026-10-02)
+
+### Simplify, codify, enforce (Joel, 2026-10-29)
+
+Apply this discipline continuously across every file, including tests, CI workflows,
+ratchets, scripts and dependencies. Track the files actually reviewed; a clean check
+does not establish that the repository has been audited.
+
+- Find the shared pattern, simplify it under one responsible owner, migrate its
+  callers and delete the duplicate implementations. Codify the resulting invariant
+  in types, interfaces or a shared implementation, then enforce it with a focused
+  regression test, compiler rule or existing ratchet.
+- Audit dead code and fallback paths as part of the change. Assume a fallback is
+  invalid until its current product contract justifies it; missing state or failure
+  must not silently select an obsolete path or fabricate success.
+- Backwards compatibility is not a requirement or a reason to retain code. Remove
+  compatibility shims, aliases and legacy branches; update all affected callers in
+  the same change. Preserve durable identity, trust, data and jobs through explicit,
+  verified migrations where needed, not permanent dual implementations.
+- Ratchets and CI are code subject to the same review. Consolidate scattered checks
+  around the shared invariant and its owner. Replace duplicate gates with coherent
+  enforcement that retains their defect coverage, including proof that violations
+  fail. Delete superseded checks; do not weaken assertions or expand exemptions to
+  get green CI. Aggregate checks must point to the originating failure.
+- Review the whole touched file and the affected shared path, not only added lines.
+  Report removed code, the canonical pattern, retained coverage and remaining audit
+  scope. Continue the file-by-file sweep with the current owners as work advances.
+
+**Fast delivery is the purpose of the crate cuts (Joel, 2026-10-29).** Each crate
+must be independently buildable, runnable, testable and reviewable through its
+typed seam. Measure edit-to-proven and edit-to-merged time; moving files without
+reducing that cost is unfinished architecture work.
+
+- Keep build, run, commit, PR review and slim CI moving concurrently wherever their
+  dependencies permit. Start independent checks in parallel; serialize only real
+  dependencies, shared mutable resources and coordinated deployment ownership.
+- Select CI from the affected crates and their contract consumers. Test shared
+  contracts once, with separate coverage for actual platform differences. Avoid
+  repository-wide rebuilds for isolated changes; validate the selector so omitted
+  consumers cannot silently escape checks.
+- Reuse artifacts only for matching source, configuration and environment. Measure
+  queue, setup, build, test and critical-path time, and remove redundant work and
+  unnecessary gate dependencies. Keep required correctness checks effective and fast.
+- Own delivery through merge. Keep branches and PRs small, resolve reviews and red
+  checks promptly, and merge validated work as soon as its real gates pass. Do not
+  leave completed work parked on branches or in PRs. Every unresolved item has an
+  owner, a concrete blocker and a next action; superseded work is reconciled and
+  closed with its changes accounted for. Preserve unfinished work during cleanup.
 
 This is an ongoing engineering obligation for both AIRC and Continuum, not a one-time optimization. Whenever changing tests, CI, or implementation, look for repeated behavior and setup patterns and consolidate them into shared functions, adapters, fixtures, and coherent scenarios.
 

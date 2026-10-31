@@ -56,7 +56,7 @@ impl SourceFile {
         if self.is_test_file() {
             return String::new();
         }
-        source_hygiene::production_half(&self.text)
+        source_hygiene::lexer::production_half(&self.text)
             .lines()
             .map(code_only)
             .collect::<Vec<_>>()
@@ -93,16 +93,16 @@ impl SourceFile {
 /// nor trip a guard. Source-hygiene's splitter, which knows string literals: one
 /// comment rule for the ratchets and these guards.
 pub(crate) fn code_only(line: &str) -> &str {
-    source_hygiene::split_code_and_comment(line).0
+    source_hygiene::lexer::split_code_and_comment(line).0
 }
 
 /// The crates cut out of continuum-core whose modules core re-exports under their old
 /// paths (`crate::runtime`, `crate::inference`, `crate::code`…). Their sources keep those
 /// relative paths here, so every guard that walks the tree still sees them. One owner:
 /// source-hygiene's list, which the ratchets audit the same way (card 03e2a1c8).
-use source_hygiene::MODULE_CRATES as CUT_CRATES;
+use source_hygiene::module_crates;
 
-/// Every `.rs` file under this crate's `src/` and each [`CUT_CRATES`] `src/` (their own
+/// Every `.rs` file under this crate's `src/` and each cut-crate `src/` (their own
 /// `lib.rs` files are crate roots, not modules core has, so they are left out).
 pub(crate) fn crate_sources() -> Vec<SourceFile> {
     fn walk(dir: &Path, root: &Path, out: &mut Vec<SourceFile>) {
@@ -128,7 +128,8 @@ pub(crate) fn crate_sources() -> Vec<SourceFile> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut out = Vec::new();
     walk(&manifest.join("src"), &manifest.join("src"), &mut out);
-    for cut in CUT_CRATES {
+    let cut_crates = module_crates().unwrap_or_else(|e| panic!("cut crates cannot be derived: {e}")); // test harness: a loud stop beats an empty scan
+    for cut in &cut_crates {
         let root = manifest.join("..").join(cut).join("src");
         let before = out.len();
         walk(&root, &root, &mut out);

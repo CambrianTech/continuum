@@ -6,7 +6,7 @@
 //! drifted. `tts/audio_utils.rs` re-implemented `utils/audio`'s `f32_to_i16` and kept
 //! its own resampler beside a broken one. `grid/helpers.rs` held a hand-written trust-level
 //! parser (now `FromStr for TrustLevel`) and a clock-hashed "unique" id. Each file
-//! moved to its owner: PCM to `live::audio::pcm`, file replacement to `fs_portable`,
+//! moved to its owner: PCM to `live::audio::pcm`, file replacement to `continuum_host::durable`,
 //! JSON params to `runtime`, ports to `system_resources`, ASCII case to persona's
 //! text analysis, and log previews to `logging`.
 //!

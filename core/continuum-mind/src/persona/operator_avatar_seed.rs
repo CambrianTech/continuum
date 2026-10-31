@@ -20,7 +20,7 @@ const PROBE_BOUND: Duration = Duration::from_secs(5);
 
 /// Where the roster looks for a member's picture.
 pub fn avatar_png_path(peer_id: Uuid) -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".continuum").join("avatars").join(format!("{peer_id}.png")))
+    crate::paths::continuum_home().ok().map(|h| h.join("avatars").join(format!("{peer_id}.png")))
 }
 
 /// Spawn the seed; returns immediately. Idempotent: an existing picture is

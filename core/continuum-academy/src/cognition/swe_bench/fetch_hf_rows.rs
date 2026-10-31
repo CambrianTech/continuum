@@ -321,20 +321,20 @@ pub(crate) async fn run_env(
         cmd.env(k, v);
     }
     // #381: pytest spawns grandchildren (sympy's own runner, plugins) that survived a
-    // parent-only kill and orphaned to launchd. The run is OWNED (lane_process::run_owned):
+    // parent-only kill and orphaned to launchd. The run is OWNED (continuum_process::run_owned):
     // past the ceiling, or when this future is dropped (a core reboot cancels it mid-await),
     // the child and everything it started are ended deepest first, and what isn't confirmed
     // gone is named. It stays in the core's process group, so a stop ends it too.
-    let out = crate::inference::lane_process::run_owned(cmd, Some(SUBPROCESS_CEILING), "grader", std::sync::Arc::default())
+    let out = continuum_process::run_owned(cmd, Some(SUBPROCESS_CEILING), "grader", std::sync::Arc::default())
         .await
         .map_err(|e| format!("could not run `{program}`: {e}"))?;
-    if let (crate::inference::lane_process::Ended::Exited(_), Some(note)) = (&out.ended, out.capture_note()) {
+    if let (continuum_process::Ended::Exited(_), Some(note)) = (&out.ended, out.capture_note()) {
         // a test run whose output isn't whole can't be graded on it: an environment fault, never a verdict
         return Err(format!("`{program}` exited but {note} — an environment fault, never a verdict"));
     }
     match out.ended {
-        crate::inference::lane_process::Ended::Exited(status) => Ok(std::process::Output { status, stdout: out.stdout.bytes, stderr: out.stderr.bytes }),
-        crate::inference::lane_process::Ended::TimedOut { unconfirmed } => {
+        continuum_process::Ended::Exited(status) => Ok(std::process::Output { status, stdout: out.stdout.bytes, stderr: out.stderr.bytes }),
+        continuum_process::Ended::TimedOut { unconfirmed } => {
             continuum_base::probe!(
                 class = "benchmark.subprocess.ceiling",
                 program = %program,
@@ -465,13 +465,16 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
     // The protocol needs two trees per instance — the one she works in and a pristine one to
     // score in — and a sweep re-grades the same repo across many instances. Cloning from
     // GitHub each time was ~240 MB of network AND disk per tree: a 300-instance Lite sweep
-    // would have been ~140 GB and hours of fetch. A local mirror plus `--shared` clones makes
-    // every tree after the first nearly free (objects are borrowed, not copied) and costs one
-    // fetch per repo for the whole sweep.
+    // would have been ~140 GB and hours of fetch. A local mirror makes every tree after the
+    // first nearly free and costs one fetch per repo for the whole sweep.
     //
-    // `--shared` is safe precisely because these trees are DISPOSABLE: nothing here is ever
-    // pushed, and the mirror is only ever fast-forwarded. The usual caveat — pruning the parent
-    // can corrupt a borrower — does not apply to a cache we recreate from scratch.
+    // Each tree is a plain local clone of the mirror: git HARD-LINKS the mirror's objects
+    // (same filesystem), so the tree costs about what a `--shared` borrow did and never
+    // depends on the mirror surviving. These trees are not disposable: they become a
+    // resident's working checkout, with her uncommitted work in it. Borrowed through
+    // `--shared`, every one of them broke when the mirrors were wiped (the M5, 2026-10-24: 243
+    // of 262 checkouts, `unable to normalize alternate object path`, her work reading as no
+    // candidate 238 times).
     let mirror = swe_cache_dir()
         .join("mirrors")
         .join(instance.repo.replace('/', "__"));
@@ -535,7 +538,7 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
         &[
             "clone",
             "--quiet",
-            "--shared",
+            "--local",
             &mirror.to_string_lossy(),
             &staging.to_string_lossy(),
         ],

@@ -3,7 +3,7 @@
 //! Shells out to `git` CLI for operations. This keeps the implementation
 //! simple and avoids pulling in libgit2 as a dependency.
 //!
-//! Every git child runs OWNED (card bfa87dd5): through `lane_process::run_owned_with_input`, so a
+//! Every git child runs OWNED (card bfa87dd5): through `continuum_process::run_owned_with_input`, so a
 //! cancelled command or an expired deadline ends the git and everything it started, its output
 //! is read whole or named as not whole, and it holds the hands' admission until it has ended.
 //! A caller with a deadline runs its git calls [`within`] it: ONE absolute deadline across all
@@ -538,12 +538,12 @@ impl From<GitError> for String {
 }
 
 /// The ONE git runner: [`run_git`] with optional stdin `input` (a patch for `git apply`). Owned
-/// through `lane_process::run_owned_with_input`, within the task's [`deadline`] when one is set.
+/// through `continuum_process::run_owned_with_input`, within the task's [`deadline`] when one is set.
 /// An exit that isn't success is an `Err` with git's stderr; so is an output that wasn't read
 /// whole or an input that wasn't delivered; a deadline that ended it says its effect is UNKNOWN
 /// (a push may have landed), never that nothing happened.
 pub async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &str)], input: Option<Vec<u8>>) -> Result<String, GitError> {
-    use crate::inference::lane_process::{run_owned_with_input, Answer, Why};
+    use continuum_process::{run_owned_with_input, Answer, Why};
     let bound = match deadline() {
         Some(at) => {
             let left = at.saturating_duration_since(tokio::time::Instant::now());
@@ -554,6 +554,9 @@ pub async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &
         }
         None => None,
     };
+    // A dead git's index.lock blocks every write in this tree until it is removed (card
+    // d7765b90: 6 residents on enrico could not commit for ~10 days). One stat on a clean tree.
+    settle_index_lock(workspace_root, continuum_git::index_lock::STALE_INDEX_LOCK).await;
     let mut cmd = tokio::process::Command::new("git");
     cmd.args(args)
         .current_dir(workspace_root)
@@ -597,19 +600,57 @@ pub async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &
         // the runner's errors aren't all before the spawn (a failed wait, an end that couldn't
         // run): what the git did is unknown, never "it never ran" (Codex reviewer on #5037)
         .map_err(|e| GitError { end: GitEnd::Unknown, message: format!("Failed to run git: {e}") })?;
-    // the shared projection (lane_process::OwnedOutput::answer): a non-zero exit is git's own
+    // the shared projection (continuum_process::OwnedOutput::answer): a non-zero exit is git's own
     // failure, with its stderr, and any delivery note beside it; a deadline that ended it says
     // its effect is unknown
     if let Answer::Not(unanswered) = out.answer() {
         let (end, at_deadline) = match unanswered.why {
             Why::Exited(_) => (GitEnd::Refused, String::new()),
             Why::NotWhole => (GitEnd::Unknown, String::new()),
-            Why::TimedOut { .. } => (GitEnd::Unknown, format!(" {INTERRUPTED}")),
+            Why::TimedOut { .. } => {
+                // this process just ended that git: its lock is that git's, unless another git
+                // now works in the tree, so it goes now rather than in ten minutes
+                settle_index_lock(workspace_root, std::time::Duration::ZERO).await;
+                (GitEnd::Unknown, format!(" {INTERRUPTED}"))
+            }
         };
         return Err(GitError { end, message: format!("git {}{at_deadline}: {unanswered}", args.join(" ")) });
     }
     // it exited 0 with everything read whole, but what it said isn't text: what it did is unknown
     String::from_utf8(out.stdout.bytes).map_err(|e| GitError { end: GitEnd::Unknown, message: format!("git {}: invalid UTF-8 in its output: {e}", args.join(" ")) })
+}
+
+/// [`continuum_git::index_lock::settle`] for a citizen's workspace, off the async threads (its
+/// process scan blocks), with the outcome probed: a lock left in place or removed is named with
+/// its path and age, never silent.
+async fn settle_index_lock(workspace_root: &Path, stale_after: std::time::Duration) {
+    use continuum_git::index_lock::{settle, Settled};
+    let root = workspace_root.to_path_buf();
+    let settled = match tokio::task::spawn_blocking(move || settle(&root, stale_after)).await {
+        Ok(settled) => settled,
+        Err(error) => {
+            continuum_base::probe!(class = "hands.git.index_lock_unjudged", root = %workspace_root.display(),
+                error = %error, "the index-lock check did not finish; this git runs without it");
+            return;
+        }
+    };
+    match settled {
+        Settled::Absent => {}
+        Settled::Held { lock, age } => continuum_base::probe!(
+            class = "hands.git.index_lock_held", lock = %lock.display(), age_s = age.as_secs(),
+            stale_after_s = stale_after.as_secs(),
+            "a git index.lock a live git may hold — left in place; this git may fail on it"
+        ),
+        Settled::Cleared { lock, age } => continuum_base::probe!(
+            class = "hands.git.index_lock_cleared", lock = %lock.display(), age_s = age.as_secs(),
+            stale_after_s = stale_after.as_secs(),
+            "removed a dead git's index.lock (no git running in the tree)"
+        ),
+        Settled::Failed { lock, age, error } => continuum_base::probe!(
+            class = "hands.git.index_lock_unremovable", lock = %lock.display(), age_s = age.as_secs(),
+            error = %error, "a dead git's index.lock could not be removed; this git will fail on it"
+        ),
+    }
 }
 
 #[cfg(test)]

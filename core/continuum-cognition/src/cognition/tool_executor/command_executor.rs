@@ -243,6 +243,13 @@ pub(crate) const CUT_AT_LIMIT_SENTINEL: &str = "tools/<cut at the output limit>"
 /// never executed; her thinking is already in working memory, and she decides.
 pub(crate) const THOUGHT_CUT_SENTINEL: &str = "tools/<thought cut at the output limit>";
 
+/// A reserved `tools/<…>` pseudo-call: the substrate REPORTING a turn's shape (no name given, a
+/// think-only turn, a cut at the output limit), never a command that runs. The one owner of
+/// that test: the refusal probe skips them, and stop-drain S2 never records one as an effect.
+pub(crate) fn is_reported_sentinel(name: &str) -> bool {
+    name.starts_with("tools/<")
+}
+
 pub fn persona_tool_error(attempted: &str, raw: String) -> String {
     // The MISSING-name case, which is not the wrong-name case and must not borrow its
     // sentence. Rendering "`X` is not a tool you can call" here would be actively
@@ -317,10 +324,7 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
     // remain discoverable; preserve the actual refusal (or transport failure) so
     // a legitimate reviewer can recover, alongside purpose/own-work guidance.
     if let Some(withheld) = crate::ai::tool_dialect::withheld_from_hands(&normalized) {
-        return format!(
-            "`{normalized}` failed: {raw}\n{}\n{}",
-            withheld.why, withheld.instead
-        );
+        return format!("{raw}\n{}\n{}", withheld.why, withheld.instead); // the status line already says it was refused
     }
 
     // The exact how-to-call manual for a command SHE can run, rendered inline so the
@@ -518,17 +522,15 @@ impl ToolExecutor for CommandToolExecutor {
         &self,
         calls: &[NativeToolCall],
         ctx: &ToolExecutionContext,
-        max_result_chars: usize,
     ) -> Result<NativeBatchOutcome, ToolError> {
         // No memory records this batch's handles, so its saves are pinned only while it runs.
-        self.execute_native_batch_pinned(calls, ctx, max_result_chars, &spill::LivePin::new()).await
+        self.execute_native_batch_pinned(calls, ctx, &spill::LivePin::new()).await
     }
 
     async fn execute_native_batch_pinned(
         &self,
         calls: &[NativeToolCall],
         ctx: &ToolExecutionContext,
-        max_result_chars: usize,
         pin: &spill::LivePin,
     ) -> Result<NativeBatchOutcome, ToolError> {
         // Scope the persona's connection to THIS turn's room (the third ID tier);
@@ -608,8 +610,9 @@ impl ToolExecutor for CommandToolExecutor {
         let results = join_all(dispatches)
             .await
             .into_iter()
-            .enumerate()
-            .map(|(i, (tool_use_id, outcome))| match outcome {
+            // Each result is its call's: zipped, never indexed, so a result can never lack one.
+            .zip(calls.iter())
+            .map(|((tool_use_id, outcome), call)| match outcome {
                 Ok(mut value) => {
                     // THE TOOL'S OWN VERDICT, derived HERE — before the fold, from
                     // the FULL value. Ordering is the contract, not an accident: the
@@ -628,7 +631,7 @@ impl ToolExecutor for CommandToolExecutor {
                     // longer decodes projects `Undecodable` — schema drift, a defect,
                     // and never silently a success (Astra, #4352 review).
                     let canonical =
-                        crate::ai::tool_dialect::resolve_wire_name(&calls[i].name);
+                        crate::ai::tool_dialect::resolve_wire_name(&call.name);
                     let (verdict, dispatch_handle) =
                         crate::sdk_codegen::project_result(&canonical, &value);
                     if verdict == ActVerdict::Undecodable {
@@ -668,14 +671,25 @@ impl ToolExecutor for CommandToolExecutor {
                     // so its newlines were `\n` sequences, the spill counted it as ONE line,
                     // and the line-range way into it was meaningless (Benchy, the M5,
                     // 2026-10-16: a 248-line read arrived as "1 lines (13449 chars)").
-                    let full = crate::cognition::tool_executor::spill::result_text(&value);
+                    let status = super::answer::Status::of(verdict);
+                    let cause = (status == super::answer::Status::Failed).then(|| super::answer::exit_cause(&value)).flatten();
+                    super::answer::without_empty_fields(&mut value);
+                    let task = dispatch_handle.filter(|_| status == super::answer::Status::Running).map(|h| h.to_string());
+                    let full = super::answer::render(
+                        status,
+                        &call.name,
+                        &call.input,
+                        cause.as_deref(),
+                        &crate::cognition::tool_executor::spill::result_text(&value),
+                        task.as_deref(),
+                    );
                     {
-                        // Whole, or saved whole and handed back as its handle: never a
+                        // Saved whole and handed back whole with its handle: never a
                         // fragment. The HANDLE rides the result type-level so working
                         // memory can leave a queryable pointer when this result is later
                         // evicted (collapse, never delete — 2026-08-24).
                         let (content, custody) =
-                            pin.whole_or_handle(full, max_result_chars, ctx.persona_id).into_parts();
+                            pin.whole_or_handle(full, ctx.persona_id).into_parts();
                         NativeToolResult {
                             tool_use_id,
                             content,
@@ -695,7 +709,7 @@ impl ToolExecutor for CommandToolExecutor {
                     };
                     // Index back to the call that failed (the OK path never pays
                     // this — names are only needed to build recovery guidance).
-                    let attempted = calls.get(i).map(|c| c.name.as_str()).unwrap_or("");
+                    let attempted = call.name.as_str();
                     // A refusal is a wall in her hands; it must reach the probe stream,
                     // not only her. Kimi's own ledger showed work/create ✗×6 on
                     // 2026-10-05 and nothing on our side could say why without opening
@@ -704,12 +718,12 @@ impl ToolExecutor for CommandToolExecutor {
                     // cut at the output limit) are not commands refusing her: they are the
                     // substrate reporting a turn's shape, counted on their own path. Probed
                     // here they read as walls (Kimi's 05:17Z think-only turn did).
-                    if !attempted.starts_with("tools/<") {
+                    if !is_reported_sentinel(attempted) {
                         continuum_base::probe!(
                             class = "persona.act.refused",
                             persona = %ctx.persona_id,
                             command = attempted,
-                            reason = %raw.chars().take(240).collect::<String>(),
+                            reason = %raw,
                             "a command refused her act"
                         );
                     }
@@ -723,13 +737,18 @@ impl ToolExecutor for CommandToolExecutor {
                         verdict: ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed),
                         dispatch_handle: None,
                     });
-                    // The same one decision as a success: whole, or saved and handed back.
-                    let (content, custody) = pin.whole_or_handle(
-                        persona_tool_error(attempted, raw),
-                        max_result_chars,
-                        ctx.persona_id,
-                    )
-                    .into_parts();
+                    // The same custody as a success: saved whole, handed back whole.
+                    // No cause on line 1 yet: a refusal's kind arrives typed with the command's
+                    // refusal enum (HER-TOOLS, the verb macro), never scanned out of its message.
+                    let rendered = super::answer::render(
+                        super::answer::Status::Refused,
+                        attempted,
+                        &call.input,
+                        None,
+                        &persona_tool_error(attempted, raw),
+                        None,
+                    );
+                    let (content, custody) = pin.whole_or_handle(rendered, ctx.persona_id).into_parts();
                     NativeToolResult {
                         tool_use_id,
                         content,
@@ -833,7 +852,7 @@ pub mod test_support {
             input,
         }];
         let out = exec
-            .execute_native_batch(&calls, &ctx(), 8000)
+            .execute_native_batch(&calls, &ctx())
             .await
             .expect("batch itself succeeds — a failed CALL is a result, not a batch error");
         let r = &out.results[0];

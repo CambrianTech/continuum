@@ -1,6 +1,6 @@
 #![cfg(test)]
     use super::*;
-    use crate::cognition::rag_budget::{ RagDelivery, RagItem, ResolutionPreference};
+    use crate::cognition::rag_budget::{RagDelivery, RagItem};
     use std::sync::Mutex;
 
     fn persona() -> Uuid {
@@ -14,7 +14,6 @@
         items: Vec<RagItem>,
         seen_persona: Mutex<Option<Uuid>>,
         seen_room: Mutex<Option<Uuid>>,
-        seen_budget: Mutex<Option<u32>>,
     }
 
     impl StubSource {
@@ -22,6 +21,9 @@
             let items = contents
                 .iter()
                 .map(|c| RagItem {
+                    key: String::new(),
+                    summary: None,
+                    pointer: None,
                     content: c.to_string(),
                     tokens: continuum_base::token_estimate::estimate_prompt_tokens(c),
                     metadata: serde_json::json!({}),
@@ -32,7 +34,6 @@
                 items,
                 seen_persona: Mutex::new(None),
                 seen_room: Mutex::new(None),
-                seen_budget: Mutex::new(None),
             }
         }
     }
@@ -48,17 +49,8 @@
             None
         }
 
-        /// Test/stub source — floorless, so it never encodes a production floor.
-        fn floor_tokens(&self) -> u32 {
-            0
-        }
-        async fn deliver(
-            &self,
-            ctx: &RagContext,
-            budget: u32,
-            resolution: ResolutionPreference,
-        ) -> RagDelivery {
-            *self.seen_budget.lock().unwrap() = Some(budget);
+        /// Test/stub source.
+        async fn deliver(&self, ctx: &RagContext) -> RagDelivery {
             *self.seen_persona.lock().unwrap() = Some(ctx.persona_id);
             *self.seen_room.lock().unwrap() = ctx.airc_room.map(|room| room.as_uuid());
             let tokens_used = self.items.iter().map(|i| i.tokens).sum();
@@ -67,7 +59,6 @@
                 items: self.items.clone(),
                 tokens_used,
                 truncated: false,
-                resolution_used: resolution,
             }
         }
     }
@@ -523,7 +514,7 @@
             ),
             Arc::new(SeesDoctrine),
         ];
-        let ws = WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter), 6)
+        let ws = WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter))
             .run("is anyone going to merge this?")
             .await;
 
@@ -538,13 +529,9 @@
 
     // what this catches: the salience POLICY — standing framing (roster/doctrine)
     // bids HIGHER than retrieved grounding, so the floor exists. This is the
-    // ordering is a preference, not required placement. Card 2bbee27a also pins
-    // the production budget bridge at tiny/zero windows and explicit overrides.
+    // ordering is a preference, not required placement.
     #[tokio::test]
     async fn standing_framing_outbids_retrieved() {
-        assert_eq!(grounding_budget_for(0), 0);
-        let small = grounding_budget_for(256);
-        assert_eq!(small, 64, "a serving floor must not enlarge a known tiny window");
         let framing_source = Arc::new(StubSource::new("room-doctrine", &["respond sparingly"]));
         let retrieved_source = Arc::new(StubSource::new("conversation", &["someone said hi"]));
         let framing = RagSourceFaculty::new(
@@ -552,20 +539,16 @@
             framing_source.clone(),
             SaliencePolicy::StandingFraming,
         )
-        .with_budget(small)
         .with_clock(Arc::new(|| 1));
         let retrieved = RagSourceFaculty::new(
             persona(),
             retrieved_source.clone(),
             SaliencePolicy::Retrieved,
         )
-        .with_budget(small / 2)
         .with_clock(Arc::new(|| 1));
 
         let f = framing.contribute(&Workspace::new("q")).await.unwrap();
         let r = retrieved.contribute(&Workspace::new("q")).await.unwrap();
-        assert_eq!(*framing_source.seen_budget.lock().unwrap(), Some(small));
-        assert_eq!(*retrieved_source.seen_budget.lock().unwrap(), Some(small / 2));
         assert!(
             f.salience > r.salience,
             "standing framing must out-bid retrieved (floor): framing={} retrieved={}",
@@ -638,7 +621,6 @@
         let _ = WorkspaceCycle::new(
             faculties,
             Arc::new(SalienceArbiter),
-            DEFAULT_CAPACITY_FOR_TEST,
         )
         .with_capture(sink.clone())
         .run("anything urgent?")
@@ -654,6 +636,3 @@
         );
     }
 
-    /// The production default capacity (mirror of persona_workspace's constant) so
-    /// the canary tests the realistic configuration, not a contrived one.
-    const DEFAULT_CAPACITY_FOR_TEST: usize = 6;

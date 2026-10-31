@@ -125,13 +125,11 @@ impl LiveTurnReplayWriter {
         Self { root: root.into() }
     }
 
-    /// Production default — writes under `~/.continuum/vdd`.
-    /// Matches `ArtifactWriter::continuum_default()` so both
-    /// writers share the same artifact root.
+    /// Production default: `vdd/` under the one continuum home (`paths::continuum_home`), the
+    /// same root as `ArtifactWriter::continuum_default()` and core's VDD reader.
     pub fn continuum_default() -> Result<Self, String> {
-        let home = dirs::home_dir()
-            .ok_or_else(|| "no home directory: cannot place VDD turn-replay artifacts".to_string())?;
-        Ok(Self::new(home.join(".continuum").join("vdd")))
+        let home = crate::paths::continuum_home().map_err(|e| format!("no continuum home: cannot place VDD turn-replay artifacts ({e})"))?;
+        Ok(Self::new(home.join("vdd")))
     }
 
     /// Write a fixture to its on-disk path. `turn_id` is the

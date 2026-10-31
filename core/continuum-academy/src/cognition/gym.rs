@@ -109,6 +109,13 @@ const EMBEDDED_GYMS: &[(&str, &str)] = &[
         "lc-unrelated.jsonl",
         include_str!("../../../../docs/genome/lc-unrelated.jsonl"),
     ),
+    // lc-parent-scope: the held-out family of Kimi's canonical correction (card 2de02f40, bound
+    // in docs/genome/correction-families.json): each task asks for an adjacent feature; its
+    // held-out check is that a marker on the enclosing class/module/base/group governs members.
+    (
+        "lc-parent-scope.jsonl",
+        include_str!("../../../../docs/genome/lc-parent-scope.jsonl"),
+    ),
     (
         "humaneval-rs.jsonl",
         include_str!("../../../../docs/genome/humaneval-rs.jsonl"),
@@ -182,6 +189,13 @@ fn embedded_for(reference: &str) -> Option<(&'static str, &'static str)> {
         .iter()
         .find(|(name, _)| *name == base)
         .copied()
+}
+
+/// The reference of the gym committed under `set` (`<set>.jsonl`, baked into the binary), if
+/// one is: a committed set is named by a card title the way a catalog suite is.
+pub fn committed_gym(set: &str) -> Option<String> {
+    let reference = format!("{set}.jsonl");
+    embedded_for(&reference).map(|_| reference)
 }
 
 /// Comma-joined list of every embedded gym basename, for fail-loud diagnostics.
@@ -400,18 +414,18 @@ fn resolve_gym_in(reference: &str, cache: &Path) -> Result<(String, String), Str
         ));
     }
     // (3a) SIGNPOST, not a dead-end: a SWE-class benchmark reached the GYM resolver means
-    // the caller used the wrong verb — SWE does NOT run through `benchmark/round`/the gym
-    // eval path, it runs through the kanban adapter `benchmark/dispatch`. The old error
-    // ("not a committed gym. Committed gyms: <rust list>") sent every driver — human and
-    // Opus — into days of archaeology looking for a SWE gym that does not exist. Point at
-    // the right verb instead (measured 2026-08-25: this refusal, verbatim, cost a session).
+    // the caller asked for a gym file by a SWE name. SWE has no gym file: its tasks come from
+    // the dataset through `benchmark/import`, and it runs as a `benchmark/round` activity like
+    // every other suite. The old error ("not a committed gym. Committed gyms: <rust list>")
+    // sent every driver, human and Opus, into days of archaeology looking for a SWE gym that
+    // does not exist (measured 2026-08-25: this refusal, verbatim, cost a session).
     if reference.contains("swe-bench") || reference.contains("swe-rebench") {
         return Err(format!(
-            "'{reference}' is a SWE-bench benchmark — it does NOT run through the gym path \
-             (benchmark/round resolves GYMS only). SWE runs through the kanban adapter:\n  \
-             continuum benchmark/dispatch --name {reference} \
-             --instances '[\"<instance_id>\", ...]' --assignees '[\"<persona>\"]' \
-             --drive detached_solve --force\n\
+            "'{reference}' is a SWE-bench benchmark, not a gym file. Its tasks come from the \
+             dataset; preview them with `continuum benchmark/import --suite {reference}` and run \
+             them as a round:\n  \
+             continuum activity/spawn --name <room> --recipe benchmark/round \
+             --params '{{\"suite\":\"{reference}\",\"repo\":\"<owner/name>\",\"team\":[\"<persona>\"]}}'\n\
              Step-by-step + failure modes: benchmarks/swe/RUNBOOK.md"
         ));
     }
@@ -419,7 +433,7 @@ fn resolve_gym_in(reference: &str, cache: &Path) -> Result<(String, String), Str
     Err(format!(
         "eval_set '{reference}' could not be resolved: no such file on disk \
          (cwd={cwd}), and it is not a committed gym. Committed gyms: {names}. \
-         (A SWE-bench collection? Use `benchmark/dispatch`, not the gym path — \
+         (A SWE-bench collection? It is not a gym file: run it as a `benchmark/round` activity — \
          see benchmarks/swe/RUNBOOK.md.)",
         cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
@@ -660,18 +674,19 @@ mod tests {
         );
     }
 
-    // what this catches: a SWE-bench benchmark reaching the GYM resolver (the wrong verb —
-    // benchmark/round instead of benchmark/dispatch) is a SIGNPOST, not a dead-end. The old
-    // "not a committed gym. Committed gyms: <rust list>" sent every driver into days of
-    // archaeology (measured 2026-08-25). The error must name benchmark/dispatch + the runbook.
+    // what this catches: a SWE-bench name reaching the GYM resolver is a SIGNPOST, not a
+    // dead-end. The old "not a committed gym. Committed gyms: <rust list>" sent every driver
+    // into days of archaeology (measured 2026-08-25), and its successor named the deleted
+    // `benchmark/dispatch` runner. The error must name the live round path + the runbook.
     #[test]
-    fn swe_benchmark_name_points_at_dispatch_not_a_dead_end() {
+    fn swe_benchmark_name_points_at_the_round_not_a_dead_end() {
         for name in ["swe-bench-verified", "swe-bench-lite", "swe-rebench"] {
             let err = resolve_gym(name).expect_err("SWE is not a gym — must fail loud");
             assert!(
-                err.contains("benchmark/dispatch"),
-                "{name}: points at the right verb: {err}"
+                err.contains("--recipe benchmark/round") && err.contains("benchmark/import"),
+                "{name}: points at the live round path: {err}"
             );
+            assert!(!err.contains("benchmark/dispatch"), "{name}: names no deleted runner: {err}");
             assert!(
                 err.contains("RUNBOOK"),
                 "{name}: points at the runbook: {err}"

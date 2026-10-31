@@ -22,11 +22,10 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::ai::types::{ToolCall, ToolResult};
-use crate::cognition::context_budget::ContextBudget;
 
 use super::recency::{
     humanize_result_content, render_act_for_recall,
-    summarize_args_for_recency,
+    render_call_args,
 };
 
 /// Semantic class of a tool verb. Produced ONCE from `ToolCall.name` at the act
@@ -227,6 +226,14 @@ impl ActOutcome {
     }
 }
 
+/// A call's arguments as she reads them, by shape and never by size: a single-line value whole,
+/// a multi-line value (a file's body, a heredoc) by its reference, so one line stays one line.
+/// The one argument renderer (`Observation::call_line`, and a result's status line in
+/// `tool_executor::answer`).
+pub(crate) fn call_args(input: &serde_json::Value) -> String {
+    render_call_args(input)
+}
+
 impl Observation {
     /// Execution alone is not success: projected running/failed/undecodable
     /// results do not establish an effect. Legacy unprojected commands retain
@@ -258,37 +265,31 @@ impl Observation {
         self.output.verdict.failed() || self.output.result.is_error == Some(true)
     }
 
-    /// The RECENCY-channel rendering: the FULL trace working memory keeps so the
-    /// mind can act on what it just fetched. Byte-identical to the old inline
-    /// `apply.rs` block (`{name}({args}){because}\nResult:\n{bounded}\n\n`) — the
-    /// #205 KV-stability invariant. `intent` is batch-level (one per `apply_act`
-    /// call, shared by every act in the batch), so it is passed rather than
-    /// stored per-`Observation`.
-    pub fn render_recency(&self, intent: &str, budget: &ContextBudget) -> String {
-        Self::render_recency_impl(self, intent, budget)
+    /// The call as she made it, `name(args)`: its arguments by shape, never by size
+    /// (`render_call_args`). The one rendering of a call, for its recency trace, its summary part
+    /// and its ledger line.
+    pub(crate) fn call_line(&self) -> String {
+        format!("{}({})", self.call.name, call_args(&self.call.input))
     }
 
-    fn render_recency_impl(&self, intent: &str, budget: &ContextBudget) -> String {
-        let fold = Some(budget.echoed_arg_chars());
-        let args = summarize_args_for_recency(&self.call.input, fold);
-        // The intent rides the result as a ONE-LINE reason, clipped to the same
-        // window-relative echo budget the args get — never the whole monologue.
-        // Measured 2026-09-04: one result header carried 2,902 chars of intent
-        // ("Let me get oriented…") ahead of 790 chars of actual output; across a
-        // turn, 6.1k of 20.6k result chars were intent echo. The output is what
-        // she must read; the reason is a label.
-        let because = if intent.trim().is_empty() {
-            String::new()
-        } else {
-            format!(" because {}", clip_intent(intent, budget.echoed_arg_chars()))
-        };
-        format!(
-            "{}({}){}\nResult:\n{}\n\n",
-            self.call.name,
-            args,
-            because,
-            self.body_text().trim(),
-        )
+    /// The RECENCY-channel rendering: the FULL trace working memory keeps so the mind can act on
+    /// what it just fetched, `{call}\nResult:\n{body}\n\n`, stable across acts (the #205
+    /// KV-stability invariant).
+    pub fn render_recency(&self) -> String {
+        // No reason clause: her intent reaches her whole as her own thought, and #5611's causes
+        // link each result to its act, so a result carries its call and its output only.
+        format!("{}\nResult:\n{}\n\n", self.call_line(), self.body_text().trim())
+    }
+
+    /// This act as one part of a batch receipt's summary level: the recency header (its name and
+    /// args, the same fold) over its HUMANIZED body at `level` (its summary, else whole), so a
+    /// summary reads what the receipt shows her, never the executor's serialized JSON, where a
+    /// read's numbered lines are escaped and no code level is found (Codex on #5424).
+    pub(crate) fn render_summary_part(&self, level: impl Fn(&str) -> Option<String>) -> String {
+        let body = self.body_text();
+        let body = body.trim();
+        let shown = level(body).unwrap_or_else(|| body.to_owned()); // unwrap_or: a body with no smaller level is its own summary
+        format!("{}\nResult:\n{}\n\n", self.call_line(), shown)
     }
 
     /// The RECALL-channel rendering: the COLLAPSED reference the Episodic engram
@@ -345,34 +346,9 @@ pub fn extract_paths(input: &serde_json::Value) -> Vec<PathBuf> {
     out
 }
 
-/// Clip an act's intent to a one-line reason of at most `max_chars` characters
-/// (first line, head-trimmed with an ellipsis). Pure; used by the recency render.
-pub(super) fn clip_intent(intent: &str, max_chars: usize) -> String {
-    let first = intent.trim().lines().next().unwrap_or("").trim(); // unwrap_or: an empty intent clips to nothing
-    let max = max_chars.max(24);
-    if first.chars().count() <= max {
-        first.to_string()
-    } else {
-        let head: String = first.chars().take(max.saturating_sub(1)).collect();
-        format!("{}…", head.trim_end())
-    }
-}
-
 #[cfg(test)]
 mod tests {
 
-    // what this catches: the intent rides a tool result as a ONE-LINE label clipped to
-    // the echo budget — never the monologue (2,902 chars ahead of 790 chars of output,
-    // measured 2026-09-04). A short intent passes through untouched.
-    #[test]
-    fn intent_on_a_result_is_a_clipped_one_liner() {
-        let long = "Let me get oriented properly this time. I've been confusing myself with stale context and the board says otherwise.\nSecond line never rides.";
-        let clipped = super::clip_intent(long, 40);
-        assert!(clipped.chars().count() <= 40, "{clipped:?}");
-        assert!(clipped.ends_with('…') && !clipped.contains("Second line"), "{clipped:?}");
-        assert_eq!(super::clip_intent("read the card", 40), "read the card");
-        assert_eq!(super::clip_intent("   ", 40), "");
-    }
 
     use super::*;
 

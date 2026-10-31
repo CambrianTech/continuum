@@ -43,7 +43,7 @@ earshot = "0.1"  # Fast VAD (WebRTC-style)
 tracing.workspace = true
 rand.workspace = true  # For test audio generation
 ts-rs.workspace = true  # TypeScript type generation
-livekit = { version = "0.7", features = ["native-tls"], optional = true }
+livekit = { workspace = true, optional = true }
 continuum-bridge-protocol = { path = "../livekit-protocol" }
 bevy = { version = "0.18", optional = true, default-features = false, features = [
     "bevy_render",

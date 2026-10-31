@@ -26,8 +26,8 @@ kind: string,
  */
 online: boolean, 
 /**
- * Resident on THIS node (live service loop) — the `persona/roster` signal,
- * folded in so one read answers the panel.
+ * Resident on THIS node (live service loop), folded in so one read answers
+ * the panel.
  */
 resident: boolean, 
 /**

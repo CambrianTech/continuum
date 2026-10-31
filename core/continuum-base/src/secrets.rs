@@ -1,12 +1,12 @@
-//! Secrets - Load API keys from ~/.continuum/config.env
+//! Secrets - Load API keys from the continuum home's config.env
 //!
 //! Single source of truth for secrets in Rust, mirrors TypeScript's SecretManager.
 //! Reads from:
-//! 1. ~/.continuum/config.env (primary)
+//! 1. `config.env` in the continuum home ([`crate::config_env::config_path`]), through the one
+//!    parser for that file (primary)
 //! 2. Environment variables (fallback)
 
 use std::collections::HashMap;
-use std::fs;
 use std::sync::OnceLock;
 
 static SECRETS: OnceLock<Secrets> = OnceLock::new();
@@ -21,31 +21,11 @@ impl Secrets {
     fn load() -> Self {
         let mut secrets = HashMap::new();
 
-        // 1. Load from ~/.continuum/config.env
-        if let Some(home) = dirs::home_dir() {
-            let config_path = home.join(".continuum").join("config.env");
-            if config_path.exists() {
-                if let Ok(content) = fs::read_to_string(&config_path) {
-                    for line in content.lines() {
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() || trimmed.starts_with('#') {
-                            continue;
-                        }
-                        if let Some((key, value)) = trimmed.split_once('=') {
-                            let key = key.trim();
-                            let mut value = value.trim().to_string();
-
-                            // Expand tilde
-                            if value.starts_with("~/") {
-                                if let Some(home) = dirs::home_dir() {
-                                    value = home.join(&value[2..]).to_string_lossy().to_string();
-                                }
-                            }
-
-                            secrets.insert(key.to_string(), normalize_env_value(&value));
-                        }
-                    }
-                }
+        // 1. config.env in the continuum home, read by config_env's parser (one parser for the
+        // file; this one used to parse it a second time from a hand-built ~/.continuum).
+        if let Some(path) = crate::config_env::config_path() {
+            for (key, value) in crate::config_env::read_all_from(&path) {
+                secrets.insert(key, normalize_env_value(&expand_tilde(value)));
             }
         }
 
@@ -92,6 +72,14 @@ impl Secrets {
         self.get(key).is_some()
     }
 
+}
+
+/// A value starting `~/` names a path under the user's home, as the shell would expand it.
+fn expand_tilde(value: String) -> String {
+    match (value.strip_prefix("~/"), dirs::home_dir()) {
+        (Some(rest), Some(home)) => home.join(rest).to_string_lossy().into_owned(),
+        _ => value,
+    }
 }
 
 fn normalize_env_value(raw: &str) -> String {

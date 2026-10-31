@@ -15,6 +15,7 @@ pub mod awareness;
 pub mod awareness_source;
 pub mod airc_admission;
 pub mod airc_citizen;
+pub mod citizen_dir;
 pub mod airc_persona_conversation;
 pub mod airc_runtime;
 pub mod operator_avatar_seed;
@@ -44,12 +45,10 @@ pub mod channel_view;
 pub mod claim_rejections;
 pub mod cognition;
 pub mod cognition_extensions;
-pub mod cognition_io;
 pub mod cognition_pulse;
 pub mod substrate_governor;
 pub mod domain_classifier;
 pub mod durable_history;
-pub mod engram_source;
 pub mod evaluator;
 pub mod host;
 pub mod hw_tier_descriptor;
@@ -79,6 +78,7 @@ pub mod rag_inspect;
 pub mod recorder;
 pub mod response;
 pub mod resume_or_mint_provider;
+pub mod dormancy;
 pub mod resting_seat;
 pub mod roster_hold;
 pub mod role_template;
@@ -99,13 +99,14 @@ pub mod act_question;
 pub mod initiative_turn;
 pub mod service_loop;
 pub mod wake_backlog;
+/// The durable half of `wake_backlog::PendingInput`: one row per admitted, unfinished turn (card 920619c5).
+pub mod obligation;
 pub mod work_board;
 pub mod work_burst;
 pub mod instance_env_fact;
 pub mod work_focus;
 pub mod staged_workspace;
 pub mod workspace_transfer;
-pub mod service_module;
 pub mod spawner;
 pub mod spawner_module;
 pub mod supervisor;
@@ -188,8 +189,10 @@ pub const SUBSTRATE_ORM_COLLECTIONS: &[&str] = &[
     <training_producer::reviewed::CreditGenerationReservation as crate::orm::OrmEntity>::COLLECTION,
     <training_producer::reviewed::CreditReviewDecision as crate::orm::OrmEntity>::COLLECTION,
     <training_producer::reviewed::CreditReviewAcceptance as crate::orm::OrmEntity>::COLLECTION,
+    <training_producer::reviewed::CreditSubmitRefusal as crate::orm::OrmEntity>::COLLECTION,
     <training_producer::reviewed::boundaries::ProcessedReviewBoundary as crate::orm::OrmEntity>::COLLECTION,
     <training_producer::reviewed::CreditTransferAcceptance as crate::orm::OrmEntity>::COLLECTION,
+    <obligation::PersonaObligation as crate::orm::OrmEntity>::COLLECTION,
 ];
 
 pub fn register_substrate_orm_entities(
@@ -216,8 +219,10 @@ pub fn register_substrate_orm_entities(
     registry.register::<training_producer::reviewed::CreditGenerationReservation>()?;
     registry.register::<training_producer::reviewed::CreditReviewDecision>()?;
     registry.register::<training_producer::reviewed::CreditReviewAcceptance>()?;
+    registry.register::<training_producer::reviewed::CreditSubmitRefusal>()?;
     registry.register::<training_producer::reviewed::boundaries::ProcessedReviewBoundary>()?;
     registry.register::<training_producer::reviewed::CreditTransferAcceptance>()?;
+    registry.register::<obligation::PersonaObligation>()?;
     Ok(())
 }
 

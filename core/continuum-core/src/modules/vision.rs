@@ -739,6 +739,7 @@ mod tests {
             Arc::new(dashmap::DashMap::new()),
             Arc::new(dashmap::DashMap::new()),
             tokio::runtime::Handle::current(),
+            Arc::new(crate::modules::acting_provider::CoreActing),
         )));
         let err = module
             .handle_command("vision/cache-stats", json!({}))

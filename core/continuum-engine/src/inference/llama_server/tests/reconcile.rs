@@ -518,3 +518,49 @@ async fn serve_failure_degrades_with_reason() {
         other => panic!("expected Degraded, got {other:?}"),
     }
 }
+
+// what this catches (card 931cfd22; enrico 2026-10-25, 5 hours empty): a refused ELECTIVE
+// replacement condemning a working engine. The incumbent serves the target and decodes; its
+// retirement is refused before anything is signalled ("adopted checkpoint requires a known
+// pool"): it keeps serving. A condemned incumbent (fails its decode proof) and an incumbent on
+// another model stay degraded, so neither is ever advertised ready for the target.
+#[tokio::test]
+async fn a_refused_replacement_keeps_a_verified_incumbent_and_only_that() {
+    let healthy = FakeControl::probe(Ok(Some("coder-14b".into())))
+        .with_served_window(2048)
+        .retirement_refused();
+    assert_eq!(ensure_model_serving(&healthy, &target("coder-14b"), false).await, EnsureOutcome::AlreadyServing);
+    assert_eq!(healthy.serves.load(Ordering::SeqCst), 1, "the replacement was attempted, and refused");
+
+    let condemned = FakeControl::probe(Ok(Some("coder-14b".into())))
+        .decode_wedged()
+        .retirement_refused();
+    assert!(
+        matches!(ensure_model_serving(&condemned, &target("coder-14b"), false).await, EnsureOutcome::Degraded { .. }),
+        "a wedged incumbent is never kept as ready"
+    );
+
+    let other_model = FakeControl::probe(Ok(Some("other-model".into()))).retirement_refused();
+    assert!(
+        matches!(ensure_model_serving(&other_model, &target("coder-14b"), false).await, EnsureOutcome::Degraded { .. }),
+        "another model is never reported as the target"
+    );
+
+    // Codex on #5413: a replacement wanted for the GENOME. Keeping the incumbent would publish
+    // the target's genes as loaded; a different or unreadable set stays degraded.
+    let other_genes = FakeControl::probe(Ok(Some("coder-14b".into())))
+        .with_active_adapters(vec!["/genes/old.gguf".into()])
+        .retirement_refused();
+    assert!(
+        matches!(ensure_model_serving(&other_genes, &target("coder-14b"), false).await, EnsureOutcome::Degraded { .. }),
+        "the target's genes are never reported as loaded on an incumbent that holds others"
+    );
+    let unknown_genes = FakeControl::probe(Ok(Some("coder-14b".into())))
+        .adapters_unreadable()
+        .retirement_refused();
+    assert!(
+        matches!(ensure_model_serving(&unknown_genes, &target("coder-14b"), false).await, EnsureOutcome::Degraded { .. }),
+        "an unknown gene set is never assumed to be the target's"
+    );
+}
+

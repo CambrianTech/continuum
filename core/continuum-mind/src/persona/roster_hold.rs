@@ -57,12 +57,32 @@ impl RosterHold {
 }
 
 fn hold_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".continuum").join("roster-hold.json"))
+    crate::paths::continuum_home().ok().map(|h| h.join("roster-hold.json"))
 }
 
-/// The active hold, or `None` when absent, expired, or unreadable. An expired
-/// or corrupt file is REMOVED on read — the hold is self-cleaning, so a stale
-/// file can never quietly gate next week's boot.
+/// Where a lapsed hold is kept: no longer gating anything, but the decision it encoded
+/// (who sat, who did not) is what durable dormancy migrates from (Cormac on #5509: a
+/// boot after the lapse must not lose the population decision).
+fn lapsed_path_for(active: &std::path::Path) -> PathBuf {
+    active.with_file_name("roster-hold.lapsed.json")
+}
+
+/// The last hold this node recorded, standing or lapsed. `None` = no hold was ever
+/// recorded here (or the record is unreadable).
+pub fn last_recorded() -> Option<RosterHold> {
+    hold_path().and_then(|p| last_recorded_at(&p))
+}
+
+/// Testable core of [`last_recorded`]: the active file (even past its expiry), else the
+/// lapsed record beside it.
+pub fn last_recorded_at(active: &std::path::Path) -> Option<RosterHold> {
+    let read = |p: &std::path::Path| std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<RosterHold>(&b).ok());
+    read(active).or_else(|| read(&lapsed_path_for(active)))
+}
+
+/// The active hold, or `None` when absent, expired, or unreadable. An expired file
+/// moves to the lapsed record on read and a corrupt one is removed, so a stale file can
+/// never quietly gate next week's boot.
 /// The hold that stands right now: the OPERATOR's (a persisted, expiring allow-list),
 /// or none. A benchmark round no longer decides who is resident (HER-LOOP row C, Joel
 /// 2026-10-04): a round's team seating itself is how the node's residency followed
@@ -119,7 +139,11 @@ pub fn active_at(path: &std::path::Path, now_ms: u64) -> Option<RosterHold> {
     match serde_json::from_slice::<RosterHold>(&bytes) {
         Ok(hold) if !hold.expired(now_ms) => Some(hold),
         Ok(_) => {
-            let _ = std::fs::remove_file(path); // lapsed — self-clean
+            // Lapsed: it no longer gates, so it leaves the active path; it is KEPT as the
+            // last recorded hold for durable dormancy's migration.
+            if std::fs::rename(path, lapsed_path_for(path)).is_err() {
+                let _ = std::fs::remove_file(path); // a lapsed hold that cannot be kept must still stop gating
+            }
             None
         }
         Err(e) => {
@@ -188,7 +212,8 @@ mod tests {
     }
 
     // what this catches: the whole contract in one pass — a hold gates by name
-    // (case-insensitive), lapses at until_ms with self-cleaning, and a corrupt
+    // (case-insensitive), lapses at until_ms with self-cleaning (kept as the last
+    // recorded hold, which durable dormancy migrates from), and a corrupt
     // file fails OPEN (removed, fleet hosts) rather than becoming a standing
     // silent outage. Regression for the 2026-08-23 despawn≠quiesce arc.
     #[test]
@@ -210,6 +235,8 @@ mod tests {
 
         assert!(active_at(&path, 10_000).is_none(), "hold lapses AT until_ms");
         assert!(!path.exists(), "a lapsed hold self-cleans");
+        let kept = last_recorded_at(&path).expect("the lapsed hold is kept as the last record");
+        assert_eq!(kept.only, vec!["Atlas".to_string()], "its allow-list survives the lapse");
 
         std::fs::write(&path, b"{not json").expect("write corrupt");
         assert!(active_at(&path, 0).is_none(), "corrupt hold fails OPEN");

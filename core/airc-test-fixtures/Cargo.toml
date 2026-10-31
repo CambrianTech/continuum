@@ -12,6 +12,8 @@ continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 # The actual airc-lib + airc-core types the fixture spawns/wraps.
 airc-lib = { workspace = true }
 airc-core = { workspace = true }
+# Fixture construction enrolls both peers for the real ingress contract.
+airc-trust = { workspace = true }
 
 # Async + utility deps.
 tokio = { workspace = true }

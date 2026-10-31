@@ -324,5 +324,7 @@ fn transcript_kind_for_frame(kind: FrameKind) -> TranscriptKind {
         FrameKind::Message => TranscriptKind::Message,
         FrameKind::Event => TranscriptKind::Presence,
         FrameKind::Control => TranscriptKind::SessionControl,
+        FrameKind::Command => TranscriptKind::Command,
+        FrameKind::CommandResult => TranscriptKind::CommandResult,
     }
 }

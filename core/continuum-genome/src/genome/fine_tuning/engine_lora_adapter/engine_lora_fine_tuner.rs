@@ -20,6 +20,9 @@ impl FineTuningAdapter for EngineLoraFineTuner {
     }
 
     async fn create_job(&self, mut request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
+        // The request as it arrived, before the provider's defaults fill it in: what the job's
+        // provenance records (card 04679d57), so defaults never read back as the producer's policy.
+        let received = request.clone();
         let schedule = request.schedule.get_or_insert_with(default_schedule).clone();
         let lora = request.lora.get_or_insert_with(default_lora).clone();
         if request.dataset.examples.is_empty()
@@ -39,7 +42,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let targets = gguf_targets(&lora.target_modules).map_err(FineTuningError::InvalidRequest)?;
         let LaneLease { choice, hold: lane_hold, still_bound } =
             self.lane.acquire(&request.base_model).await?;
-        let LaneChoice { url: lane, window: served_window, engine, build, memory } = choice;
+        let LaneChoice { url: lane, window: served_window, engine, build, memory, weights } = choice;
         let train_dir = self
             .train_dir
             .clone()
@@ -146,6 +149,35 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // Evidence about THIS lane's engine only (Codex on #4988): a bound another engine measured
         // must not park her on this one, or a fixed engine could never wake her.
         let footprints = self.footprints.for_engine(build.clone());
+        // rows filed before refusals had their own key are classified once, by the refusal their
+        // own job recorded, so a refusal filed as a whole run leaves the fit (Codex on #5548).
+        // File I/O that may wait out a Windows sharing violation: off the runtime.
+        {
+            let (store, roots) = (footprints.clone(), [request.local_artifact_dir.clone(), crate::genome::fine_tuning::job_dir::genome_root()]);
+            let roots: Vec<PathBuf> = roots.into_iter().flatten().collect();
+            let classified = tokio::task::spawn_blocking(move || store.classify_legacy(&roots))
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.map_err(|e| e.to_string()));
+            match classified {
+                Ok(done) => {
+                    if done.refusals > 0 {
+                        continuum_base::probe!(
+                            class = "training.footprints.legacy_refusals",
+                            job = %id,
+                            refusals = done.refusals as u64,
+                            "footprint rows filed as whole runs were refusals by their own job's record: moved to their refusal keys, out of the fit"
+                        );
+                    }
+                    if !done.unknown.is_empty() {
+                        continuum_base::probe!(class = "training.footprints.legacy_unclassified", job = %id, rows = done.unknown.len() as u64, error = %done.unknown.join("; "),
+                            "rows from before provenance whose job record could not be read stay unclassified; they are tried again on the next dispatch");
+                    }
+                }
+                Err(e) => continuum_base::probe!(class = "training.footprints.legacy_unclassified", job = %id, error = %e,
+                    "rows from before provenance could not be classified; they stay as they were and are classified on the next dispatch"),
+            }
+        }
         let mut rows = footprints.rows_like(&family);
         let mut model = GraphModel::fit(&rows);
         // THE WINDOW THE DATA NEEDS: every example measured at the served window by the engine's
@@ -159,6 +191,14 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // before it answers, so the POST's wait is sized by it (post_wait_for; Cormac on #4946)
         let measure_started = std::time::Instant::now();
         let at_served = measure_examples(&self.http, &lane, &body.examples, body.fit, served_sent).await;
+        // AN ENGINE STILL LOADING DECIDES NOTHING: nothing of this job exists yet (no request.json,
+        // no run, no partition), so the dispatch refuses as certain and retries the batch once the
+        // engine serves, rather than failing a job whose examples then belong to no one.
+        if let Err(MeasureError::NotReady(why)) = &at_served {
+            return Err(FineTuningError::TrainerUnavailable(format!(
+                "job {id}: the engine is not ready to measure her examples ({why}); nothing was created, and the dispatch retries once it serves"
+            )));
+        }
         let render_per_example = measure_started.elapsed().div_f64(body.examples.len().max(1) as f64);
         let need = at_served.as_ref().map_or(served_sent, |rows| window_for_need(rows, served_sent));
         // THE WALK THE WINDOW ALLOWS (Cormac, (iii)): the exact walk carries its gradient across
@@ -183,8 +223,28 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             rows = footprints.rows_like(&family);
             model = GraphModel::fit(&rows);
         }
-        let bounds = footprints.bound_rows_like(&family);
-        let plan = choose_window(need, governed_free, &rows, &bounds);
+        // CHUNK, THEN DEPTH, THEN WINDOW (card 0d21e644; Kimi's job 598e183c, refused at window
+        // 45,056 with only a smaller window left, which parks her longest turns): each depth's
+        // plan reads its own rows, so a depth is chosen by what was measured there, or calibrates
+        let (stepped, plan) = choose_depth(family.depth, footprints.layers(&family.model), need, |depth| {
+            let at = Shape { depth, ..family.clone() };
+            choose_window(need, governed_free, &footprints.rows_like(&at), &footprints.bound_rows_like(&at))
+        });
+        if stepped != family.depth {
+            continuum_base::probe!(
+                class = "training.job.depth_stepped",
+                job = %id,
+                needed = u64::from(need),
+                asked = family.depth.map_or(0, u64::from), // probe field: 0 = every block
+                depth = stepped.map_or(0, u64::from), // probe field: 0 = every block
+                governed_free = governed_free,
+                "the asked depth cannot hold the window her examples need even at the smallest chunk; a shallower one can (or is unmeasured, and this run measures it), so every example trains whole"
+            );
+            family.depth = stepped;
+            body.top_layers = stepped;
+            rows = footprints.rows_like(&family);
+            model = GraphModel::fit(&rows);
+        }
         let window = plan.window;
         // ONE evaluation, ONE probe (Cormac on #4972): a predicted no-fit floor is reported as the
         // prediction it is, and never as window_calculated's "what trains her examples whole". The window is set
@@ -290,6 +350,25 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let base_model = request.base_model.clone();
         let governed = matches!(self.admission, Admission::Governed);
         let job_dir = job_dir_for(&request, id);
+        // THE REQUEST BEFORE THE RUN (card 04679d57): the examiner learns what a gene trained on
+        // from its job's request (`job_dir::read_job_request`), and proves the unseen tasks from it.
+        // This trainer never wrote one, so every in-engine gene was unexaminable by construction
+        // (the windows 5090: both of Kimi's exam receipts, 2026-10-24, "no training job recorded").
+        // Published once, before anything can train; a job whose provenance cannot be written is
+        // not started, since its gene could never be examined.
+        let request_bytes = serde_json::to_vec(&received) // disk boundary: the job dir's request.json, read back by the examiner and a legacy return
+            .map_err(|e| FineTuningError::InvalidRequest(format!("the training request does not serialize: {e}")))?;
+        match crate::genome::fine_tuning::job_dir::publish_job_file(&job_dir, "request.json", &request_bytes) {
+            Ok(None) => {}
+            Ok(Some(existing)) if existing == request_bytes => {}
+            Ok(Some(_)) => {
+                return Err(FineTuningError::InvalidRequest(format!(
+                    "{} already holds another training request than job {id}'s",
+                    job_dir.join("request.json").display()
+                )))
+            }
+            Err(e) => return Err(FineTuningError::Transient(format!("job {id}'s training request could not be recorded before its run: {e}"))),
+        }
         let mut corpus_chars = 0;
         let model_id = format!("{PROVIDER_ID}:{}:{id}", request.trait_kind);
         let epochs = schedule.epochs;
@@ -333,6 +412,50 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     "the examples this window can train are sent; the rest are parked in the job's directory until a window of at least shortest_parked tokens can be planned. \
                      A small window trains her SHORTEST turns only: the gene is biased toward short-context Kimi"
                 );
+                // HER LEARNING'S DEMAND ON SERVING (card ea157b1a): each parked example records
+                // the window that trains it whole (the planner's own window_for_need, unclamped),
+                // each sent one clears; the largest is priced by THIS shape's footprints at that
+                // window (measured, a lower bound, or the fit's prediction, labeled; unknown when
+                // none), and the serving requirement reads it as her target and reservation.
+                use crate::genome::fine_tuning::training_demand::{Reservation, TrainingDemand};
+                use crate::inference::planning::window_allocator::TrainingPrice;
+                let demand = TrainingDemand::in_dir(self.demand_store.as_deref(), request.persona_id);
+                let key = |i: usize| TrainingDemand::key_of(&request.dataset.examples[i]);
+                let parked_needs: Vec<(String, u32)> = partition
+                    .rows
+                    .iter()
+                    .filter(|r| r.fit != ExampleFit::Kept)
+                    .map(|r| (key(r.index), window_for_need(std::slice::from_ref(r), u32::MAX)))
+                    .collect();
+                // priced only from THIS shape's footprints at that window, and bound to the model
+                // and shape it was priced for (Codex on #5557); sent examples clear nothing here:
+                // only a run that trains them does, at its finish
+                let reservation = parked_needs.iter().map(|(_, w)| *w).max().map(|largest| {
+                    let at = Shape { window: largest, chunk: TRAINING_CHUNK_MIN, ..family.clone() };
+                    let priced = footprints.need(&at, model.map(|m| m.bytes(largest, TRAINING_CHUNK_MIN)));
+                    let price = priced.map(|n| TrainingPrice { bytes: n.bytes, source: n.source, model: at.model.clone(), shape: at.key() });
+                    Reservation { window: largest, price, job: id }
+                });
+                let reserve_receipt = reservation.as_ref().and_then(|r| r.price.as_ref()).map(|p| (p.bytes, p.source));
+                if let Err(e) = demand.record(&parked_needs, &[], reservation) {
+                    continuum_base::probe!(class = "training.demand.unrecorded", job = %id, error = %e,
+                        "her parked examples' window demand could not be recorded; serving sizes her lane without it until the next partition");
+                }
+                if let Some(requested) = parked_needs.iter().map(|(_, w)| *w).max() {
+                    continuum_base::probe!(
+                        class = "training.demand.unresolved",
+                        job = %id,
+                        persona = %request.persona_id,
+                        requested_window = u64::from(requested),
+                        served_window = u64::from(served_sent),
+                        planned_window = u64::from(window),
+                        parked = parked_needs.len() as u64,
+                        outstanding = demand.waiting() as u64,
+                        reserve_bytes = reserve_receipt.map_or(0, |(bytes, _)| bytes), // probe field: 0 = unpriced, see reserve_source
+                        reserve_source = ?reserve_receipt.map(|(_, source)| source),
+                        "lived examples wait for a window her lane does not serve: the serving plan reads this as her target; it is unmet until a partition sends them (the serving plan's own receipt says why its window is smaller)"
+                    );
+                }
                 let sent: Vec<EngineExample> = partition.sent.iter().map(|&i| body.examples[i].clone()).collect();
                 let written = write_partition(&job_dir, &partition);
                 match written {
@@ -359,6 +482,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             shape: shape.clone(),
             corpus_chars,
             walk: Some(walk),
+            trained_on: weights,
+            demand_store: self.demand_store.clone(),
         };
         Ok(self.jobs.prepare(id, move |progress| async move {
             if let Some(why) = unrunnable {
@@ -497,6 +622,25 @@ impl FineTuningAdapter for EngineLoraFineTuner {
     }
 }
 
+/// Her demand for the examples this finished run TRAINED is met (card ea157b1a): the partition as
+/// amended with what the run skipped, against the request it was cut from. Only a finish clears,
+/// so a run that fails or is cancelled after being sent leaves her demand as it was.
+fn clear_trained_demand(job: Uuid, spec: &EngineRunSpec) {
+    use crate::genome::fine_tuning::training_demand::TrainingDemand;
+    let Some(store) = spec.demand_store.as_deref() else { return };
+    let cleared = crate::genome::fine_tuning::job_dir::read_job_request(&spec.job_dir).and_then(|request| {
+        let partition = read_partition(&spec.job_dir)?.ok_or("the job recorded no partition")?;
+        let trained = TrainingDemand::trained(&request.dataset.examples, &partition);
+        TrainingDemand::in_dir(Some(store), request.persona_id).record(&[], &trained, None).map_err(|e| e.to_string())?;
+        Ok(trained.len())
+    });
+    match cleared {
+        Ok(n) => continuum_base::probe!(class = "training.demand.trained", job = %job, cleared = n as u64, "the examples this run trained owe serving nothing more"),
+        Err(e) => continuum_base::probe!(class = "training.demand.uncleared", job = %job, error = %e,
+            "the trained examples' demand could not be cleared: her lane may hold a window for examples already trained until the next partition re-records her demand"),
+    }
+}
+
 /// A run's finish: collect its adapter into the job directory, read the engine's receipts, and
 /// file the footprint under the geometry that ran. ONE body for a run this core started and one
 /// it re-attached to (step 3), because both finish from the same [`EngineRunSpec`].
@@ -549,6 +693,7 @@ pub(super) fn finish_run(
                 Err(e) => continuum_base::probe!(class = "training.job.partition_unamended", job = %job, error = %e, "the partition could not be read, so the run's skipped examples could not be parked; they remain in the job's request"),
             }
         }
+        clear_trained_demand(job, &spec);
         let adapted = effective_depth(status.layers_adapted, status.n_layer);
         if adapted != spec.shape.depth {
             continuum_base::probe!(
@@ -585,9 +730,9 @@ pub(super) fn finish_run(
             if asked_full {
                 // the asked depth, at the window that ran
                 let asked_ran = Shape { window: ran_window, chunk: ran_chunk, ..spec.shape.clone() };
-                let _ = store.record_with(&asked_ran, grown, status.context_mib.is_some(), job); // best effort: the full-depth row below is the one that matters
+                let _ = store.record_with(&asked_ran, grown, status.context_mib.is_some(), status.n_layer, job); // best effort: the full-depth row below is the one that matters
             }
-            if let Err(e) = store.record_with(&measured_shape, grown, status.context_mib.is_some(), job) {
+            if let Err(e) = store.record_with(&measured_shape, grown, status.context_mib.is_some(), status.n_layer, job) {
                 continuum_base::probe!(
                     class = "training.job.footprint_unrecorded",
                     job = %job,
@@ -614,6 +759,7 @@ pub(super) fn finish_run(
                 final_validation_loss,
                 wall_clock_ms,
                 layers_adapted: status.layers_adapted.or(status.n_layer),
+                trained_on: spec.trained_on.clone(),
                 ..Default::default()
             },
         })

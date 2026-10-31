@@ -37,6 +37,12 @@ jobs:
           # The oversized-edit gate diffs against the PR's base.
           fetch-depth: 0
 
+      # crate_wiring runs tools/scripts/ci-change-scope.cjs through node to check that the selector
+      # and this crate derive the same crate sets; the guard fails when node is missing.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       # NEW RULE (Joel, 2026-10-20): "No one can edit a large file." Every Rust file a PR adds or
       # modifies is at most 1,000 lines at the PR's head: the only PR that touches a monolith is
       # the one that breaks it apart. The PR's final state is judged, so its commits may split
@@ -80,4 +86,4 @@ jobs:
               base="origin/canary"
             fi
           fi
-          cargo run -q -p source-hygiene --bin ratchets -- "$base"
+          cargo run --locked -q -p source-hygiene --bin ratchets -- "$base"

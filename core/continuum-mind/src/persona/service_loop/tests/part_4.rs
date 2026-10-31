@@ -1,27 +1,14 @@
 #![cfg(test)]
 use super::*;
 
-    // what this catches: the STARVATION RATCHET — a yield being charged the rest
-    // backoff it did not earn. Regression for the live 2026-08-17 measurement (24
-    // hosted citizens, ambient pool of 1, ONE self-tick in 40 minutes on a
-    // healthy decoding lane). If `YieldedNoSlot` ever compounds again, contention
-    // silently becomes permanent slowness and the whole roster degrades as it grows.
+    // what this catches: a fruitless cycle that never rests, or a rest that never ends: a
+    // musing that found nothing backs off to the cap and saturates there, and finding
+    // something new snaps her back to the engaged beat.
     #[test]
-    pub(super) fn a_yield_never_costs_her_cadence_but_a_fruitless_cycle_still_rests() {
+    pub(super) fn a_fruitless_cycle_rests_to_the_cap_and_news_wakes_her() {
         use std::time::Duration;
         let engaged = Duration::from_millis(SELF_TICK_MS);
         let cap = Duration::from_millis(SELF_TICK_REST_CAP_MS);
-
-        // A yield leaves the beat EXACTLY where it was — she never ran.
-        let mut beat = engaged;
-        for _ in 0..50 {
-            beat = next_beat_after(BeatOutcome::YieldedNoSlot, beat, engaged, cap);
-        }
-        assert_eq!(
-            beat, engaged,
-            "50 yields must not slow her by a single millisecond — she never ran, \
-             so there is nothing to rest on (the ratchet that pinned 24 citizens at the cap)"
-        );
 
         // A cycle that found nothing DOES rest deeper, and saturates at the cap.
         let mut beat = engaged;
@@ -105,7 +92,6 @@ use super::*;
             system_prompt: "You are Paige.".to_string(),
             admission,
             adapter: Arc::new(HeuristicInferenceAdapter::new().with_canned_response("PASS: done")),
-            capacity: None,
             grounding_sources: Vec::new(),
             embedder: None,
             tool_executor: None,
@@ -115,6 +101,7 @@ use super::*;
             defer_grounding: false,
             suppress_recall: false,
             forked: false,
+            read_receipt: None,
         };
         crate::cognition::persona_workspace::global()
             .register_from_cfg(cfg)
@@ -204,7 +191,6 @@ use super::*;
                     HeuristicInferenceAdapter::new()
                         .with_canned_response("The tests failed after the latest change."),
                 ),
-                capacity: None,
                 grounding_sources: Vec::new(),
                 embedder: None,
                 tool_executor: None,
@@ -214,6 +200,7 @@ use super::*;
                 defer_grounding: false,
                 suppress_recall: false,
                 forked: false,
+                read_receipt: None,
             };
             crate::cognition::persona_workspace::global()
                 .register_from_cfg(cfg)
@@ -302,7 +289,6 @@ use super::*;
         let cycle = crate::cognition::workspace::WorkspaceCycle::new(
             vec![],
             Arc::new(crate::cognition::workspace::SalienceArbiter),
-            4,
         );
         let mut unavailable = current.clone();
         unavailable.card_id = airc_lib::WorkCardId::new();
@@ -506,7 +492,6 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
         adapter: Arc::new(
             HeuristicInferenceAdapter::new().with_canned_response("PASS: nothing calls me right now"),
         ),
-        capacity: None,
         grounding_sources: Vec::new(),
         embedder: None,
         // Her hands: an initiative turn is offered only to a mind that can act.
@@ -520,6 +505,7 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
         defer_grounding: false,
         suppress_recall: false,
         forked: false,
+        read_receipt: None,
     };
     crate::cognition::persona_workspace::global()
         .register_from_cfg(cfg)
@@ -549,83 +535,52 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
 }
 
     // what this catches: THE personaRag convergence seam, end to end through real
-    // code (not hand-authored roster strings). A present airc `RoomMember` flows:
-    //   RoomRosterSource.deliver  (the ONE shared `roster_slot_from_member` projection
-    //                              both the WS widget and this grounding rail use)
+    // code (not hand-authored roster strings). A roster member in the room's ViewState
+    // flows:
+    //   ViewStateRagSource::<RosterViewState>.deliver  (the SAME RosterViewState the web
+    //                              roster renders; one projection for screen and mind)
     //     → project_room_roster    (the heartbeat loop's own delivery fold, extracted)
     //       → prompt_assembly       (the [Present in this room] block)
-    // and lands with the converged line INCLUDING availability — the field the widget
-    // rail used to silently drop before the convergence (#8/#13). Connects the three
-    // separately-unit-tested halves via the exact path the live turn runs; the live
-    // core proves the plumbing, this proves it deterministically without airc presence.
+    // and lands with the member's line. Connects the separately-unit-tested halves via
+    // the exact path the live turn runs, deterministically and without airc presence.
     #[tokio::test]
     async fn present_member_reaches_present_in_room_block_end_to_end() {
         use crate::cognition::prompt_assembly::{assemble, HistoryMessage, PromptAssemblyInput};
-        use crate::cognition::rag_budget::{RagContext, RagSource, ResolutionPreference};
+        use crate::cognition::rag_budget::{RagContext, RagSource};
         use crate::model_registry::types::MultiPartyChatStrategy;
-        use crate::persona::room_roster_source::{AircRosterReader, RoomRosterSource};
+        use crate::persona::viewstate_rag::ViewStateRagSource;
         use crate::cognition::conversation::workspace_turns::project_room_roster;
-        use airc_core::PeerId;
-        use airc_lib::{AgentAvailabilityState, AircError, RoomMember};
-        use async_trait::async_trait;
+        use continuum_positron::scoping::PerRoomSubstrates;
+        use continuum_positron::{RosterViewState, SenderKind, StateBuilder};
         use std::sync::Arc;
-        use std::time::Duration;
 
-        // One present peer, self-reported Busy — the airc upstream both rails read.
-        struct OnePresentPeer {
-            me: PeerId,
-            other: PeerId,
-        }
-        #[async_trait]
-        impl AircRosterReader for OnePresentPeer {
-            fn self_peer_id(&self) -> PeerId {
-                self.me
-            }
-            async fn room_roster(
-                &self,
-                _within: Duration,
-                _window: usize,
-                _room: Option<uuid::Uuid>,
-            ) -> Result<Vec<RoomMember>, AircError> {
-                Ok(vec![RoomMember {
-                    peer_id: self.other,
-                    display_name: Some("win-claude".to_string()),
-                    runtime: "claude".to_string(),
-                    availability: Some(AgentAvailabilityState::Busy),
-                    last_seen_ms: 1_700_000_000_000,
-                }])
-            }
-        }
-
+        // One present peer in the room's OWN substrate, the shape production uses.
         let persona = uuid::Uuid::new_v4();
-        let source = RoomRosterSource::new(
-            persona,
-            Arc::new(OnePresentPeer {
-                me: PeerId::new(),
-                other: PeerId::new(),
-            }),
+        let room = uuid::Uuid::new_v4();
+        let mut slot = continuum_positron::chat::test_roster_slot(
+            uuid::Uuid::new_v4(),
+            "win-claude",
+            SenderKind::Agent,
         );
+        slot.role_label = Some("claude".to_string());
+        let rooms = Arc::new(PerRoomSubstrates::new());
+        rooms.for_room(room).store(StateBuilder::standalone().session(RosterViewState {
+            room_id: room,
+            roster: vec![slot],
+        }));
+        let source = ViewStateRagSource::<RosterViewState>::per_room(rooms);
 
         // 1. Real delivery from the shared roster projection.
-        let ctx = RagContext::for_persona(persona, 1_000_000);
-        let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
+        let ctx = RagContext::for_persona_in_room(persona, 1_000_000, room);
+        let delivery = source.deliver(&ctx).await;
 
-        // 2. Real loop fold: delivery → grounding consumers (the converged line +
+        // 2. Real loop fold: delivery → grounding consumers (the member line +
         //    the bare name), via the exact fn the heartbeat loop calls.
         let proj = project_room_roster(std::slice::from_ref(&delivery));
-        // Agent-only roster ⇒ the no-human authority fact (#2113) rides FIRST in
-        // the grounding lines — it reaches the prompt through the same block —
-        // while other_persona_names stays peer-only (the fact has no
-        // display_name, so it can NEVER become a phantom "peer" name).
-        assert_eq!(proj.room_roster.len(), 2);
-        assert!(
-            proj.room_roster[0].contains("No human is present"),
-            "authority fact first: {}",
-            proj.room_roster[0]
-        );
+        assert_eq!(proj.room_roster.len(), 1);
         assert_eq!(
-            proj.room_roster[1], "win-claude [claude] — busy",
-            "converged line (availability = airc's neutral 'busy', not Debug 'Busy')"
+            proj.room_roster[0], "win-claude (Agent) — claude",
+            "the member's line (kind and role; no liveness flag in the mind's copy)"
         );
         assert_eq!(proj.other_persona_names, vec!["win-claude".to_string()]);
 
@@ -658,8 +613,8 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
         assert!(
             assembled
                 .system_message
-                .contains("win-claude [claude] — busy"),
-            "converged roster line (with availability) did not reach the prompt:\n{}",
+                .contains("win-claude (Agent) — claude"),
+            "roster line did not reach the prompt:\n{}",
             assembled.system_message
         );
     }

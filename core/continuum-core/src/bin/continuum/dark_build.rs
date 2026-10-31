@@ -77,6 +77,7 @@ pub(super) async fn restore_or_report(previous: Option<PreviousCore>, failed: Pu
         PublishedCoreError::SourcePending(_) => PublishedCoreError::SourcePending(report),
         PublishedCoreError::CapabilityDeferred(_) => PublishedCoreError::CapabilityDeferred(report),
         PublishedCoreError::OperationalBlocked(_) => PublishedCoreError::OperationalBlocked(report),
+        PublishedCoreError::Held(_) => PublishedCoreError::Held(report),
         PublishedCoreError::ResourceDeferred(deferral) => PublishedCoreError::ResourceDeferred(
             continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral { reason: report, ..deferral },
         ),

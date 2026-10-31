@@ -35,7 +35,8 @@ fn vision_capable_model_gets_raw_image_content_parts() {
         None,
         true,
         false,
-    );
+        None,
+    ).0;
     assert_eq!(wire.len(), 1);
     let content = wire[0]["content"].as_array().expect("multimodal array");
     assert_eq!(content.len(), 2, "text part + image part");
@@ -54,15 +55,15 @@ fn vision_capable_model_gets_raw_image_content_parts() {
         url: None, base64: Some("AAAA".into()), mime_type: Some("video/mp4".into()),
     }});
     let native = crate::inference::request_body::format_messages(
-        &test_adapter().config, &mixed, None, true, true,
-    );
+        &test_adapter().config, &mixed, None, true, true, None,
+    ).0;
     assert_eq!(native[0]["content"][2], json!({
         "type":"input_audio", "input_audio":{"data":"UklGRg==", "format":"wav"}
     }));
     assert!(native[0]["content"][3]["text"].as_str().unwrap().contains("Video was not attached"));
     let unsupported = crate::inference::request_body::format_messages(
-        &test_adapter().config, &mixed, None, true, false,
-    );
+        &test_adapter().config, &mixed, None, true, false, None,
+    ).0;
     assert!(unsupported[0]["content"][2]["text"].as_str().unwrap().contains("AudioInput"));
 }
 
@@ -79,7 +80,8 @@ fn non_vision_model_has_image_parts_dropped_and_keeps_bridge_text() {
         None,
         false,
         false,
-    );
+        None,
+    ).0;
     assert_eq!(wire.len(), 1);
     let content = wire[0]["content"].as_array().expect("content array");
     assert_eq!(

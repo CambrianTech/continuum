@@ -91,10 +91,14 @@ pub async fn materialize_adapters(
         }
 
         // Reconcile the persona's effective context window to the TRUTH the
-        // running gateway serves. `build_adapter` just awaited a READY serving
-        // snapshot, so `current_serving()` now carries the real per-slot window
-        // the daemon read from llama-server's own `/props` — the authoritative
-        // model metadata. The profile's window was provisionally set at spawn-plan
+        // running gateway serves. When the snapshot is ready, `current_serving()`
+        // carries the real per-slot window the daemon read from llama-server's own
+        // `/props` — the authoritative model metadata. It need NOT be ready here (a
+        // persona materialized while the engine is still loading after a deploy):
+        // she is then bound at the provisional window, and the served-model re-home
+        // reconciler (`ipc/start_server/rehome_reconciler.rs`) rebinds her to the
+        // served window on the first ready snapshot. That reconciler owns the
+        // correction; this pin only spares the first turns a wrong window. The profile's window was provisionally set at spawn-plan
         // time from the planner's `served_context_window`, which the daemon
         // RE-computes every tick against live memory and which drifts ABOVE the
         // running server's frozen, 256-padded slot. Budgeting a prompt to that
@@ -157,7 +161,8 @@ pub async fn materialize_adapters(
             let snap = crate::inference::llama_server::current_serving();
             // A ready snapshot always carries a real window (the daemon refuses to
             // publish ready with 0). Guard on both so a not-yet-ready/empty
-            // snapshot never clobbers the provisional window with 0.
+            // snapshot never clobbers the provisional window with 0; the re-home
+            // reconciler corrects the binding once serving is ready.
             if snap.ready && snap.served_context_window > 0 {
                 if snap.served_context_window != profile.context_length {
                     continuum_base::probe!(
@@ -197,12 +202,10 @@ pub async fn materialize_adapters(
             identity.agent_name.clone(),
             rag_engine,
         );
-        let airc_source: Arc<dyn crate::cognition::rag_budget::RagSource> =
-            Arc::new(crate::persona::airc_source::AircRagSource::new(
-                identity.peer_id.as_uuid(),
-                runtime.clone(),
-            ));
-        cognition.set_airc_source(airc_source);
+        // One airc source: it delivers her rooms to cognition and takes the read receipt
+        // of every sent prompt (her cursor moves through what she was shown, never at delivery).
+        let airc = Arc::new(crate::persona::airc_source::AircRagSource::new(identity.peer_id.as_uuid(), runtime.clone()));
+        cognition.set_airc_source(Arc::clone(&airc) as Arc<dyn crate::cognition::rag_budget::RagSource>);
 
         // WHO IS PRESENT, read from the SAME `RosterViewState` the browser renders
         // (#408 + the RenderTarget pattern). Her room's OWN store, so a citizen in
@@ -231,16 +234,17 @@ pub async fn materialize_adapters(
         cognition.set_roster_source(roster_source.clone());
 
 
-        // Her awareness across ALL her activities (EVENT-MIND §6, the strip): one block,
-        // loudest first, with her continuation and her dial, read from her perception
-        // region by persona. The region boots when her conversation attaches; until then
-        // the source delivers nothing, which is the truth.
+        // Her awareness across ALL her activities (EVENT-MIND §6, the strip): a line per
+        // activity, loudest first, with her continuation and her dial, read from her
+        // perception region by persona. The region boots when her conversation attaches;
+        // until then the source delivers nothing, which is the truth. A grounding faculty
+        // below: it was bound only to compose_for_turn, whose delivery of it nothing read,
+        // so the strip never reached her prompt.
         let awareness_source: Arc<dyn crate::cognition::rag_budget::RagSource> =
             Arc::new(crate::persona::awareness_source::AwarenessRagSource::new(
                 identity.peer_id.as_uuid(),
                 Some(runtime.clone()),
             ));
-        cognition.set_awareness_source(awareness_source);
 
         // Bind the room-doctrine source from the same runtime (upcasts to
         // `AircDoctrineReader`). Grounds the persona in the room's nature
@@ -375,8 +379,6 @@ pub async fn materialize_adapters(
                 (raw_doctrine, raw_wall)
             }
         };
-        // Same dual-wire as the roster: one Arc, legacy path + brain faculty.
-        cognition.set_doctrine_source(doctrine_source.clone());
 
         // Room-board source: grounds the persona in the CURRENT ROOM's WHOLE
         // work board — every card, its column, priority, and owner — read live
@@ -466,7 +468,6 @@ pub async fn materialize_adapters(
             system_prompt: system_prompt.to_string(),
             admission: cognition.admission.clone(),
             adapter: adapter.clone(),
-            capacity: None,
             // S1: the node's recipe registry, so this citizen's tool surface follows
             // the room she acts in (its recipe's affordances), not a global list.
             experience: crate::experience::source::node_experience_source(),
@@ -505,6 +506,10 @@ pub async fn materialize_adapters(
                 // The persona's own live work across rooms — enriching framing so
                 // it knows what it's working on (cross-activity, dynamic, no
                 // hardcoded card state). Defer-tolerant.
+                // Where else she is needed while she works here: it changes every turn.
+                crate::cognition::persona_workspace::GroundingSource::framing(awareness_source)
+                    .defer_tolerant()
+                    .volatile_content(),
                 crate::cognition::persona_workspace::GroundingSource::framing(active_work_source)
                     .defer_tolerant()
                     // Claim states flap per turn — floor stays, stable-tier
@@ -583,6 +588,7 @@ pub async fn materialize_adapters(
             // benchmark-reproducibility knob, never a life-path setting (#207).
             suppress_recall: false,
             forked: false,
+            read_receipt: Some(Arc::clone(&airc) as Arc<dyn crate::cognition::llm_deliberation_faculty::ReadReceipt>),
         };
         // A checkpoint can be locked by offline adoption. Waiting and reading
         // belong off the async runtime workers; registration publishes nothing

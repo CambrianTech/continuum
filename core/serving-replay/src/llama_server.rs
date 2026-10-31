@@ -1,16 +1,20 @@
 //! Today's engine behind the seam: llama-server over its HTTP API. An act renders with
 //! the engine's own chat template (`/apply-template`) and runs as `/completion` pinned to
 //! the mind's slot with `cache_prompt`; paging is `/slots/{id}?action=save|restore`, with
-//! the checkpoint subset the live core saves (continuum-engine `turn_admission.rs`,
-//! `PAGE_CHECKPOINTS_NEWEST`).
+//! the checkpoint subset the live core saves (continuum-engine `turn_admission::page_body`).
 
 use crate::engine_process::EngineProcess;
 use crate::http::Endpoint;
 use crate::seated::{RestoredPage, SavedPage, SlotEngine};
 use crate::target::{ActOutcome, ActRequest, EngineStats, TargetError};
 
-/// The live core's page checkpoint subset, so a replayed page costs what a live one does.
-pub const PAGE_CHECKPOINTS_NEWEST: u32 = 4;
+/// The live core's page body (continuum-engine `turn_admission::page_body`), so a replayed page
+/// costs what a live one does: the head, the checkpoint at the view end and those made for the
+/// prompt's end. A replayed act names no view end (`/completion` takes a rendered prompt, not
+/// messages), so its page carries the head and the prompt-end checkpoints.
+fn page_body(page: &str) -> serde_json::Value {
+    serde_json::json!({"filename": page, "keep_view_checkpoints": true, "keep_newest_checkpoints": 0})
+}
 
 pub struct LlamaServer {
     endpoint: Endpoint,
@@ -73,8 +77,7 @@ impl SlotEngine for LlamaServer {
     }
 
     fn save(&mut self, seat: u32, page: &str) -> Result<SavedPage, TargetError> {
-        let body = serde_json::json!({"filename": page, "keep_newest_checkpoints": PAGE_CHECKPOINTS_NEWEST});
-        let r = self.endpoint.post_ok(&format!("/slots/{seat}?action=save"), &body)?;
+        let r = self.endpoint.post_ok(&format!("/slots/{seat}?action=save"), &page_body(page))?;
         Ok(SavedPage {
             tokens: number(&r["n_saved"], "n_saved")? as u64,
             bytes: number(&r["n_written"], "n_written")? as u64,

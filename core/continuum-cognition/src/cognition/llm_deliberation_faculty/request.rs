@@ -127,6 +127,8 @@ impl LlmDeliberationFaculty {
         binding: &ModelBinding,
         context_window: u32,
         mut request: TextGenerationRequest,
+        // The allocation her prompt was fitted under: the receipt carries it with the capture.
+        allocation: Option<crate::ai::provenance::AllocationReceipt>,
         receipts: &mut Vec<crate::ai::provenance::GenerationReceipt>,
     ) -> Option<Result<TextGenerationResponse, crate::ai::inference_error::InferenceError>> {
         // Identity belongs to the submitted adapter request. Provider response IDs
@@ -286,18 +288,20 @@ impl LlmDeliberationFaculty {
                 .and_then(|r| r.timing.as_ref())
                 .map(|t| (t.cached_tokens, t.prefill_tokens)),
         );
+        let receipt = match &gen_result {
+            Ok(response) => crate::ai::provenance::GenerationReceipt::from_response(request_id, response),
+            Err(error) => crate::ai::provenance::GenerationReceipt::faulted(request_id, error.to_string()),
+        };
+        // Counted where the served receipt is made, the one producer of the facts her service
+        // window reads: in the window it was served in, whether or not her turn settles soon.
+        if matches!(receipt.outcome, crate::ai::provenance::GenerationOutcome::Served { .. }) {
+            crate::cognition::resident_service::note_generation(self.persona_id);
+        }
         receipts.push(
-            match &gen_result {
-                Ok(response) => {
-                    crate::ai::provenance::GenerationReceipt::from_response(request_id, response)
-                }
-                Err(error) => crate::ai::provenance::GenerationReceipt::faulted(
-                    request_id,
-                    error.to_string(),
-                ),
-            }
+            receipt
             .with_capture(completed.as_deref())
-            .with_genes(genes),
+            .with_genes(genes)
+            .with_allocation(allocation),
         );
         Some(gen_result)
     }
@@ -305,7 +309,7 @@ impl LlmDeliberationFaculty {
     pub fn build_request_within(
         &self,
         binding: &ModelBinding,
-        // The reply's allowance as the prompt plan granted it
+        // The reply's grant as the prompt plan granted it
         // (`DeliberationPromptView::completion_reserve`): carried as `max_tokens`
         // verbatim, never re-derived here — the prompt was fitted to leave exactly it.
         allowance: u32,
@@ -388,6 +392,7 @@ impl LlmDeliberationFaculty {
             stop_sequences,
             tools,
             tail_tools: None,
+            view_messages: None,
             tool_choice: None,
             response_format: None,
             // Page in the persona's current genome (wait-free read). Empty → None,

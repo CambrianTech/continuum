@@ -47,7 +47,7 @@ pub fn current_build() -> &'static str {
 }
 
 fn path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".continuum").join("state").join("resting-seats.json"))
+    crate::paths::continuum_home().ok().map(|h| h.join("state").join("resting-seats.json"))
 }
 
 /// The resting list as this process holds it — read from disk once, then held here and
@@ -118,9 +118,15 @@ pub fn wake(agent_name: &str) -> bool {
     let woke = wake_at(&p, agent_name);
     drop_held();
     if woke {
-        RETURNING.lock().push(agent_name.to_string());
+        return_to_draw(agent_name);
     }
     woke
+}
+
+/// Hand a woken mind back to the identity provider's next draw (a resting seat here, a
+/// dormant home from `persona::dormancy`): she takes the next free seat, ahead of the cursor.
+pub fn return_to_draw(agent_name: &str) {
+    RETURNING.lock().push(agent_name.to_string());
 }
 
 /// Names woken since the identity provider last drew: the RETURN PATH (card ef25bf6c).

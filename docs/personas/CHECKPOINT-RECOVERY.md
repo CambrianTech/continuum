@@ -22,8 +22,9 @@ home correction did not change that database's resident path:
 <continuum-root>/citizens/personas/<name>/airc/engrams.sqlite
 ```
 
-The resident root comes from `CONTINUUM_ROOT` when set, otherwise
-`dirs::home_dir()/.continuum`. The existing
+The resident root is the one continuum home (`paths::continuum_home`):
+`CONTINUUM_HOME` when set, otherwise `dirs::home_dir()/.continuum`. (`CONTINUUM_ROOT` is
+retired: set to another tree, the core refuses to start rather than open a new one.) The existing
 [`citizen_home_path`](../../core/continuum-kernel/src/identity/citizen_path.rs)
 resolves the citizen's `airc` directory;
 [`PersonaInstanceInfo::from_runtime`](../../core/continuum-core/src/modules/persona_instance_manager.rs)
@@ -41,8 +42,9 @@ continuum persona/instances/get --persona_id <persona-uuid>
 
 Record its returned `home`, stored name/peer binding, and existing engram
 database. Preserve the same
-`CONTINUUM_ROOT` override or native user root and identity binding for the new
-launch. After restart, verify that the resident opens that same database and
+`CONTINUUM_HOME` override or native user root and identity binding for the new
+launch. A tree that was run under `CONTINUUM_ROOT=<path>` is kept by setting
+`CONTINUUM_HOME=<path>`; nothing moves. After restart, verify that the resident opens that same database and
 that previously persisted engrams remain available. A file's presence alone is
 insufficient: a different, empty home can initialize a new database successfully.
 

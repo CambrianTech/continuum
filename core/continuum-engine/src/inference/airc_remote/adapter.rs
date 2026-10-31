@@ -293,10 +293,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
-        // The drain over the stream (the trait's own definition of this method).
-        let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
-        drop(_rx);
-        self.generate_stream(request, sink).await
+        crate::ai::stream_sinks::drain_generation(|sink| self.generate_stream(request, sink)).await
     }
 
     /// The streaming primitive on the remote lane: every chunk the peer publishes

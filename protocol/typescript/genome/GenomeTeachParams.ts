@@ -38,7 +38,8 @@ fromExperience?: string,
  */
 teacherModel?: string, 
 /**
- * Max fix attempts per task before it's dropped as unsolved. Default 4.
+ * A cap on fix attempts per task, if you want one. Without it, each task runs while the
+ * grader shows progress and stops when it does not (the reason is in its outcome).
  */
 maxFixIters?: number, 
 /**

@@ -64,46 +64,11 @@ pub(super) fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> S
         return StorageResult::err(format!("Create table failed: {}", e));
     }
 
-    // Create single-field indexes from schema. Skip BaseEntity
-    // columns: `id` is the PRIMARY KEY (implicitly indexed); the
-    // timestamp/version columns don't have schema-declared indexes
-    // that adapter code uses, and creating one on a non-existent
-    // column name would error.
-    for field in &schema.fields {
-        if field.indexed {
-            let col_name = naming::to_snake_case(&field.name);
-            if super::super::entity::is_base_entity_column(&col_name) {
-                continue;
-            }
-            let idx_name = format!("idx_{}_{}", table, col_name);
-            let idx_sql = format!(
-                "CREATE INDEX IF NOT EXISTS {} ON {} ({})",
-                idx_name, table, col_name
-            );
-            if let Err(e) = conn.execute(&idx_sql, []) {
-                return StorageResult::err(format!("Create index failed: {}", e));
-            }
-        }
-    }
-
-    // Create composite indexes from schema
-    for index in &schema.indexes {
-        let cols: Vec<String> = index
-            .fields
-            .iter()
-            .map(|f| naming::to_snake_case(f))
-            .collect();
-        let unique = if index.unique { "UNIQUE " } else { "" };
-        let idx_sql = format!(
-            "CREATE {}INDEX IF NOT EXISTS {} ON {} ({})",
-            unique,
-            naming::to_snake_case(&index.name),
-            table,
-            cols.join(", ")
-        );
-        if let Err(e) = conn.execute(&idx_sql, []) {
-            return StorageResult::err(format!("Create composite index failed: {}", e));
-        }
+    // The declared indexes, from their one owner (`ensure_indexes`). An explicit
+    // ensure-schema still reports an index the database refused, as it always did.
+    let pass = super::ensure_indexes::do_ensure_indexes(conn, &schema);
+    if let Some(f) = pass.failed.first() {
+        return StorageResult::err(format!("Create index {} on {} failed: {}", f.index, f.collection, f.error));
     }
 
     StorageResult::ok(true)

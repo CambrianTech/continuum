@@ -1,0 +1,48 @@
+[package]
+name = "continuum-grid"
+version = "0.1.0"
+edition = "2021"
+publish = false
+repository = "https://github.com/CambrianTech/continuum"
+
+# Grid (MODULE-ARCHITECTURE.md section 9.2, "discovery, trust, routing, on every node"): the grid
+# module with its commands, GridTrustAuthPolicy (the executor's trust policy), the interceptor and the
+# grid allocator daemon, cut out of continuum-core. Its reach into the mind (placement and the
+# allocator read persona and cognition state) is packaging, not independence: see the PR's seam map.
+
+[dependencies]
+continuum-process = { path = "../continuum-process" }
+continuum-base = { path = "../continuum-base" }
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-engine = { path = "../continuum-engine" }
+continuum-service = { path = "../continuum-service" }  # the resident alarms grid/nodes shows (card 1c157668)
+continuum-mind = { path = "../continuum-mind" }
+continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+airc-core.workspace = true
+dashmap = "6.1"
+futures = "0.3"
+rand.workspace = true
+reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
+sysinfo = "0.33"
+thiserror.workspace = true
+libc = "0.2"
+
+[dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build gets the per-process continuum home (card d11d9827)
+tokio = { workspace = true, features = ["test-util"] }
+
+[features]
+default = []
+# The GPU backends are the engine's; the grid forwards them through the mind so it builds and
+# tests on its own with the same flags core takes.
+metal = ["continuum-mind/metal"]
+cuda = ["continuum-mind/cuda"]
+vulkan = ["continuum-mind/vulkan"]
+test-fixtures = ["continuum-kernel/test-fixtures", "continuum-mind/test-fixtures"]

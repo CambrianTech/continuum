@@ -13,3 +13,4 @@
 pub use continuum_cognition::*;
 
 pub mod cognition;
+pub mod hf;

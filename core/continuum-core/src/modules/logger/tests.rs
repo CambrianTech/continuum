@@ -84,7 +84,7 @@
             let landed = write_and_latch(
                 &payload,
                 &blocked.to_string_lossy(),
-                &tmp.path().to_string_lossy(),
+                tmp.path(),
                 &cache,
                 &headers,
                 &failures,
@@ -107,7 +107,7 @@
             let good = write_and_latch(
                 &payload,
                 &ok_dir.to_string_lossy(),
-                &tmp.path().to_string_lossy(),
+                tmp.path(),
                 &cache,
                 &headers,
                 &failures,

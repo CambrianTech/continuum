@@ -190,7 +190,7 @@ fn keep_tail_of_oversized(path: &Path, max_bytes: u64) -> io::Result<()> {
     std::fs::write(&staged, &tail[start..])?;
     // the shared replace, with its bounded retries on a Windows sharing violation (a reader such
     // as a tail or an indexer holding the file): a failed rename would leave the bound undone
-    continuum_base::fs_portable::replace::replace_file(&staged, path)
+    continuum_host::durable::replace(&staged, path)
 }
 
 impl Write for CappedAppender {

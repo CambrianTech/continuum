@@ -128,6 +128,35 @@ pub(super) async fn verify_registered_consumer(root: &Path) -> Result<continuum_
 /// as `cancelled`; #4729 keeps cancel-in-progress PR-only). Waiting for an artifact that
 /// will never exist held the M5 at a stale core for two hours on 2026-10-04 while three
 /// built tips went by. A pass that finds its request superseded starts over on the new one.
+/// How a refused handoff is charged to its build.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum HandoffRefusal {
+    /// A destination resource condition, kept durably until its explicit retry.
+    Deferred(continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral),
+    /// Rechecked on the next pass: no attempt charged, nothing kept. A training hold (card
+    /// 9beab2da) releases on its own, so it is never a failure or a durable deferral.
+    Blocked(String),
+    /// A handoff failure, charged to the build (three give up on it).
+    Failed(String),
+}
+
+/// PURE: how `error`, refusing the handoff of the core at `preparation`, is charged.
+pub(super) fn handoff_refusal(error: PublishedCoreError, preparation: PathBuf) -> HandoffRefusal {
+    match error {
+        PublishedCoreError::OperationalBlocked(reason) | PublishedCoreError::CapabilityDeferred(reason) => {
+            HandoffRefusal::Deferred(continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral {
+                condition: continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::OperationalUncertainty,
+                path: preparation,
+                projected_bytes: 0,
+                reason,
+            })
+        }
+        PublishedCoreError::ResourceDeferred(deferral) => HandoffRefusal::Deferred(deferral),
+        PublishedCoreError::SourcePending(reason) | PublishedCoreError::Held(reason) => HandoffRefusal::Blocked(reason),
+        PublishedCoreError::Artifact(reason) => HandoffRefusal::Failed(reason),
+    }
+}
+
 pub(super) async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
     if options.protocol {
         println!("{}", continuum_cli_lifecycle::prebuilt_artifact::CONSUMER_LEASE_PROTOCOL); // boundary: read-only CLI capability wire for retry rollout admission
@@ -193,10 +222,9 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
     let tip = read_deploy_request_tip(&request_path);
     let running = running_build_sha().await;
     let repo = tracked_repo_dir()?;
-    // Submodule pointers are not an operator's work here: aligning them to the tip's gitlinks
-    // is this consumer's own job (below), and counting a stale one as dirt wedged the node
-    // after the first pin bump (2026-09-27: every later tip refused as "uncommitted work").
-    let dirty = !git_in(&repo, &["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all"])?.is_empty();
+    // An operator's work, judged by the one predicate the tracker reads too: a moved submodule
+    // pointer is this consumer's to align (below), a change inside one is not (card a1e1af51).
+    let dirty = continuum_git::submodules::has_operator_work(&git_in(&repo, &continuum_git::submodules::STATUS_ARGS)?);
     // The deploy claim is the tracker's own input (`deploy_claim::in_flight`). A LIVE owner
     // excludes this consumer whether or not its claim expired: its checkout is its own, and
     // checking out a new tip under it dooms its build (card 634f644d). Only a dead owner's
@@ -304,12 +332,10 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 let _claim = DeployClaimGuard::take(&tip);
                 git_in(&repo, &["fetch", "--quiet", "origin"])?;
                 git_in(&repo, &["checkout", "--quiet", "--detach", &tip])?;
-                // A checkout moves gitlinks, not submodule trees. Without this the llama.cpp
-                // pin moved in the index while the engine source stayed at the old commit
-                // (2026-09-27, #4437: the core deployed, core/vendor/llama.cpp stayed at
-                // 965d38a90). Initialized submodules only, so a deploy never starts a fresh
-                // clone; a submodule with local changes fails this loudly instead of losing them.
-                git_in(&repo, &["submodule", "update", "--quiet", "--recursive"])?;
+                // A checkout moves gitlinks, not submodule trees: every present submodule
+                // checkout follows the tip's pin, registered or not, and none is cloned
+                // (2026-09-27 #4437; card a1e1af51, enrico's unregistered engine checkout).
+                continuum_git::submodules::align(&repo, &|args| git_in(&repo, args))?;
                 // The dark build locates tools/scripts/start-server.sh by walking UP FROM
                 // THE CWD, and a scheduled task starts in System32 — the same wall the
                 // Macs' launchd tracker hit ("under launchd the cwd is /; continuum reboot
@@ -345,7 +371,7 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                             // the reboot's build-sha check and deploy-verify compare like with
                             // like. The next pass moves on toward the tip.
                             git_in(&repo, &["checkout", "--quiet", "--detach", &key])?;
-                            git_in(&repo, &["submodule", "update", "--quiet", "--recursive"])?;
+                            continuum_git::submodules::align(&repo, &|args| git_in(&repo, args))?;
                             deploy_note(&format!(
                                 "deploy-consume: {key} is the newest core CI has published (the request is {tip}); deploying it now"
                             ));
@@ -374,16 +400,9 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                     Ok(()) => reboot(RebootOptions { service, prebuilt: Some(prebuilt), stage_prebuilt, cli_installed, ..Default::default() }).await,
                     Err(error) => Err(error),
                 };
-                let preparation = preparation.map_err(|error| match error {
-                    PublishedCoreError::OperationalBlocked(reason) | PublishedCoreError::CapabilityDeferred(reason) => PublishedCoreError::ResourceDeferred(continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral {
-                        condition: continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::OperationalUncertainty,
-                        path: preparation_path, projected_bytes: 0, reason,
-                    }),
-                    other => other,
-                });
-                match preparation {
+                match preparation.map_err(|error| handoff_refusal(error, preparation_path)) {
                     Ok(()) => {}
-                    Err(PublishedCoreError::ResourceDeferred(condition)) => {
+                    Err(HandoffRefusal::Deferred(condition)) => {
                         let digest = match ConsumeLedger::condition_digest(&condition) {
                             Ok(digest) => digest,
                             Err(reason) => return Ok(PassEnd::ResourceBlocked(reason)),
@@ -393,8 +412,8 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                         if let Err(reason) = ledger.save(&attempts_path) { return Ok(PassEnd::ResourceBlocked(reason)); }
                         return Ok(PassEnd::ResourceBlocked(reason));
                     }
-                    Err(PublishedCoreError::SourcePending(reason) | PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => return Ok(PassEnd::ResourceBlocked(reason)),
-                    Err(PublishedCoreError::Artifact(reason)) => return Err(reason),
+                    Err(HandoffRefusal::Blocked(reason)) => return Ok(PassEnd::ResourceBlocked(reason)),
+                    Err(HandoffRefusal::Failed(reason)) => return Err(reason),
                 }
                 Ok(PassEnd::Done)
             }
@@ -521,7 +540,7 @@ pub(super) async fn ci_core_for(repo: &Path, candidates: &[String], request_path
                             if let Err(error) = ledger.save(ledger_path) { return CiCore::ResourceBlocked(error); }
                             MissingArtifact::AdmissionWait(why)
                         },
-                        Err(PublishedCoreError::CapabilityDeferred(why) | PublishedCoreError::OperationalBlocked(why)) => return CiCore::ResourceBlocked(why),
+                        Err(PublishedCoreError::CapabilityDeferred(why) | PublishedCoreError::OperationalBlocked(why) | PublishedCoreError::Held(why)) => return CiCore::ResourceBlocked(why),
                         Err(PublishedCoreError::Artifact(why)) if key == newest.as_str() => MissingArtifact::Refuse(format!(
                             "the CI build for {key} was refused: {why}; repair the prebuilt artifact before retrying; running core preserved"
                         )),

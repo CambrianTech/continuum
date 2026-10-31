@@ -7,13 +7,11 @@ use super::*;
 // replaces the prior. This is why a persona reading a 130-line file can now answer about
 // the whole file instead of looping on the doc-comment head.
 #[tokio::test]
-async fn latest_action_returns_full_result_trail_keeps_head() {
+async fn latest_action_returns_full_result_trail_keeps_its_call_line() {
     let wm = Arc::new(WorkingMemory::new(8));
-    // Truncation bounds are fractions of a LIVE window now; an unknown-window memory
-    // is unbounded by contract, so a clipping test must declare the window it measures.
-    wm.set_served_window(16_384);
-    let big = format!("line0\n{}", "x".repeat(5_000)); // > WM_ACTION_HEAD_CHARS
-    wm.record_receipt(&big);
+    let big = format!("line0\n{}", "x".repeat(5_000));
+    let read = crate::cognition::act_observe::test_support::act("code/read", Some("src/a.rs"));
+    wm.record_receipt_typed(&[read], &big, None, crate::ai::types::ResultCustody::Unsaved);
 
     // The full result is available whole.
     let (seq, full) = wm.last_action_full().expect("latest act kept");
@@ -23,14 +21,10 @@ async fn latest_action_returns_full_result_trail_keeps_head() {
         "the mind gets the WHOLE result, not a truncated stub"
     );
 
-    // The rolling trail carries only the head (KV-stable proprioception).
+    // The rolling trail carries the act's call line, never a cut of its result: what she did,
+    // stable across acts (KV-stable proprioception); the result is whole in its record.
     let trail = wm.recent();
-    assert_eq!(trail.len(), 1);
-    assert!(trail[0].starts_with("[action #1]"));
-    assert!(
-        trail[0].chars().count() < big.chars().count(),
-        "trail entry is head-truncated, not the whole result"
-    );
+    assert_eq!(trail, ["[action #1] code/read(file_path=src/a.rs)"]);
 
     // The full result is PINNED by the message builder (#392) as its own durable
     // trailing block — it is no longer part of the evictable faculty bid.
@@ -38,7 +32,7 @@ async fn latest_action_returns_full_result_trail_keeps_head() {
         .pinned_active_result_block()
         .expect("the whole result is pinned for the mind");
     assert!(
-        pinned.contains("Full result of your most recent action (#1; room unrecorded; operation unrecorded):"),
+        pinned.contains("Full result of your most recent action (#1; room unrecorded; operation code/read):"),
         "the whole result reaches the mind"
     );
     assert!(
@@ -59,8 +53,8 @@ async fn latest_action_returns_full_result_trail_keeps_head() {
 #[tokio::test]
 async fn the_pinned_result_is_what_the_producer_handed_over_never_re_cut() {
     let wm = Arc::new(WorkingMemory::new(8));
-    wm.set_served_window(16_384);
-    let over_share = "z".repeat(wm.budget().latest_action_chars() + 4_000);
+    // Larger than any share of any served window a working memory used to cut to.
+    let over_share = "z".repeat(1 << 20);
     wm.record_receipt(&over_share);
     let pinned = wm
         .pinned_active_result_block()
@@ -78,20 +72,12 @@ async fn full_result_drops_out_after_the_persona_settles_but_a_new_act_reactivat
     let wm = Arc::new(WorkingMemory::new(8));
     // Truncation bounds are fractions of a LIVE window now; an unknown-window memory
     // is unbounded by contract, so a clipping test must declare the window it measures.
-    wm.set_served_window(16_384);
     let dump = format!("code/tree result\n{}", "n".repeat(3_000)); // > WM_ACTION_HEAD_CHARS
     wm.record_receipt(&dump);
 
-    // The proprioceptive trail head lives in the faculty contribution; the FULL result
-    // is the PINNED block the message builder appends (#392). This test spans both.
-    let faculty_trail = |wm: Arc<WorkingMemory>| async move {
-        WorkingMemoryFaculty::new(wm)
-            .contribute(&Workspace::new("tick"))
-            .await
-            .expect("bids")
-            .content
-            .clone()
-    };
+    // The proprioceptive trail line lives in her trail; the FULL result is the PINNED block
+    // the message builder appends (#392). This test spans both.
+    let trail = |wm: &WorkingMemory| wm.recent().join("\n");
 
     // Active (acted, not yet spoken): the full result is present in the pinned block.
     assert!(
@@ -112,7 +98,7 @@ async fn full_result_drops_out_after_the_persona_settles_but_a_new_act_reactivat
         "after settling, the 2k-token dump stops riding along the prompt (#139/#165)"
     );
     assert!(
-        faculty_trail(wm.clone()).await.contains("[action #1]"),
+        trail(&wm).contains("[action #1]"),
         "but the proprioceptive trail head survives — the mind still knows it acted"
     );
 
@@ -175,25 +161,25 @@ async fn dispatched_commands_stream_back_by_handle() {
     assert_eq!(c.3, DispatchStatus::Done);
     assert_eq!(c.2, "0 errors, 0 warnings");
 
-    // The faculty surfaces both dispatched handles to the mind.
-    let rendered = WorkingMemoryFaculty::new(wm.clone())
-        .contribute(&Workspace::new("a fresh burst"))
-        .await
-        .expect("bids when dispatched work exists")
-        .content
-        .clone();
-    assert!(
-        rendered.contains("Commands you dispatched"),
-        "the mind sees its sentinels"
-    );
-    assert!(
-        rendered.contains("compile core [done]: 0 errors"),
-        "finished result shown"
-    );
-    assert!(
-        rendered.contains("research task [running]"),
-        "in-flight shown"
-    );
+    // Her view renders each as its own item (context_streams::tasks), tested there.
+}
+
+// what this catches: a finished background handle dropped before a submitted prompt showed her
+// its end. An act recorded later proves nothing about an optional source being allocated (Codex
+// on #5637), so nothing retires a handle until the render receipt acknowledges it: the old
+// 16-handle count evicted finished ends she may never have seen.
+#[test]
+fn a_finished_dispatch_stays_until_a_receipt_acknowledges_it() {
+    let wm = WorkingMemory::new(8);
+    let (compile, sentinel) = (Uuid::from_u128(1), Uuid::from_u128(2));
+    wm.record_dispatch_event(sentinel, "research task", "searching…", DispatchStatus::Running);
+    wm.record_dispatch_event(compile, "compile core", "0 errors", DispatchStatus::Done);
+    for _ in 0..20 {
+        wm.record_receipt("more acts");
+    }
+    let mut handles: Vec<Uuid> = wm.dispatched_snapshot().into_iter().map(|(h, ..)| h).collect();
+    handles.sort();
+    assert_eq!(handles, vec![compile, sentinel], "acts alone never retire a finished end, and a running one stays");
 }
 
 // what this catches: record/recent round-trips, blank reasoning is ignored, and
@@ -334,4 +320,100 @@ fn capacity_floored_at_one() {
     wm.record("a");
     wm.record("b");
     assert_eq!(wm.recent(), vec!["b"], "floor-1 buffer keeps the latest");
+}
+
+/// One typed act whose output is `content`, for a receipt that batches several.
+fn act(name: &str, input: serde_json::Value, content: String) -> crate::cognition::act_observe::Observation {
+    use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
+    Observation {
+        call: crate::ai::types::ToolCall { id: name.into(), name: name.into(), input },
+        output: ToolOutput {
+            image: None,
+            additional_images: None,
+            result: crate::ai::types::ToolResult { tool_use_id: name.into(), content, is_error: None, custody: Default::default() },
+            verb: ToolVerb::classify(name),
+            paths: Vec::new(),
+            verdict: Default::default(),
+        },
+        status: ActStatus::Executed,
+    }
+}
+
+/// A long file's `code/read` result exactly as the executor hands it back: the command's
+/// serialized `ReadResult`, its numbered lines escaped inside JSON (what `body_text` decodes).
+fn long_read(file: &str) -> String {
+    let body: String = (3..=400).map(|n| format!("{n:>6} |         let x{n} = {n};\n")).collect();
+    let content = format!("     1 | pub struct A;\n     2 | impl A {{\n{body}");
+    serde_json::to_string(&crate::code::types::ReadResult {
+        success: true,
+        content: Some(content),
+        file_path: file.into(),
+        total_lines: 400,
+        lines_returned: 400,
+        start_line: 1,
+        end_line: 400,
+        size_bytes: 14_000,
+        error: None,
+    })
+    .expect("test: encode") // JUSTIFIED: test fixture
+}
+
+// what this catches (Codex on #5422): one code outline over a whole batch receipt. The outline
+// dropped every unnumbered line after the first numbered one, so a long read followed by an
+// error, or by a second file, kept only the first read's declarations. Each operation is now
+// summarized by its own typed verb under its call's name: the error and the second file's
+// header both survive, and a lone non-read output never takes a code outline.
+#[test]
+fn a_batch_receipts_summary_keeps_every_operation() {
+    let summary_of = |acts: Vec<crate::cognition::act_observe::Observation>| {
+        let wm = WorkingMemory::new(8);
+        // The receipt as production renders it: each act's recency rendering, in order.
+        let rendered: String = acts.iter().map(|a| a.render_recency()).collect();
+        wm.record_receipt_typed(&acts, &rendered, None, Default::default());
+        let actions = wm.actions.lock();
+        actions.records().last().and_then(|record| record.summary.clone())
+    };
+
+    let error = "no such file: b.rs (did you mean src/b.rs?)";
+    let failed = serde_json::json!({ "success": false, "error": error }).to_string();
+    let read_then_error = summary_of(vec![act("code/read", serde_json::json!({ "file_path": "a.rs" }), long_read("a.rs")), act("code/read", serde_json::json!({ "file_path": "b.rs" }), failed)]).unwrap_or_default();
+    assert!(read_then_error.contains("     1 | pub struct A;"), "decoded, not escape-soup: {read_then_error}");
+    assert!(read_then_error.contains(error), "the later error survives: {read_then_error}");
+
+    let two_reads = summary_of(vec![act("code/read", serde_json::json!({ "file_path": "a.rs" }), long_read("a.rs")), act("code/read", serde_json::json!({ "file_path": "b.rs" }), long_read("b.rs"))]).unwrap_or_default();
+    // Each part keeps its own call's path (its typed args), so neither file's identity is lost.
+    assert!(two_reads.contains("a.rs") && two_reads.contains("b.rs"), "both files' paths survive: {two_reads}");
+    assert_eq!(two_reads.matches("     1 | pub struct A;").count(), 2, "each file keeps its own outline: {two_reads}");
+
+    let log: String = (0..400).map(|n| format!("step {n}\n")).collect::<String>() + "error[E0308]: mismatched types\n";
+    let shell = summary_of(vec![act("code/shell", serde_json::json!({ "command": "cargo build" }), serde_json::json!({ "success": false, "stdout": log }).to_string())]).unwrap_or_default();
+    assert!(shell.contains("error[E0308]: mismatched types") && !shell.contains("[outline"), "an output keeps its ends: {shell}");
+}
+
+// what this catches: an act's declared effects (`ActionRecord.act`, MIND-CONTEXT invariant 4) are
+// derived, like her view: a record written by a build whose `Act` had another shape must restore
+// with no act (that act is simply never a repeat), never refuse the checkpoint and the resident
+// with it (the 2026-10-31 M5 outage's shape, card c990acbe). A valid act stays whole, and a corrupt
+// AUTHORITATIVE field still refuses.
+#[test]
+fn an_act_from_an_older_build_is_dropped_and_its_record_survives() {
+    use crate::cognition::working_memory::action_log::ActionRecord;
+    let wm = WorkingMemory::new(8);
+    let listed = act("code/list", serde_json::json!({"path": "."}), "4 files".into());
+    wm.record_receipt_typed(&[listed], "I ran code/list Result: 4 files", None, Default::default());
+    let record = wm.snapshot().action_records().pop().expect("the act is on record");
+    assert!(record.act.is_some(), "a typed act records what it asked for");
+
+    let whole = serde_json::to_string(&record).expect("encode");
+    let decoded: ActionRecord = serde_json::from_str(&whole).expect("a current act decodes");
+    assert_eq!(decoded, record, "the derived decoder is lossless");
+
+    let mut stale = record.clone();
+    stale.act = None;
+    let older = serde_json::to_string(&stale).expect("encode").replacen('{', "{\"act\":\"an older shape\",", 1);
+    let restored: ActionRecord = serde_json::from_str(&older).expect("an older act never refuses its record");
+    assert_eq!(restored, stale, "only the act is dropped");
+
+    let corrupt = older.replacen("\"seq\":", "\"seq\":\"not a number\",\"_was\":", 1);
+    assert!(serde_json::from_str::<ActionRecord>(&corrupt).is_err(), "only the derived act is forgiven");
 }

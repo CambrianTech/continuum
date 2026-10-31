@@ -490,7 +490,7 @@
         // process is not synchronous, so the first check after it may still see the hook running
         // and report it "not confirmed gone" (the hands lease keeps it for release's recheck).
         // What must hold is that the tree ENDS: the hook it started is gone (a zombie is gone,
-        // the same rule as lane_process::still_present) well inside this test's own bound.
+        // the same rule as continuum_process::still_present) well inside this test's own bound.
         let hook = fs::read_to_string(&hook_pid).expect("the hook ran and recorded its pid");
         let hook = sysinfo::Pid::from_u32(hook.trim().parse().expect("the hook's pid"));
         let hooks = [hook];
@@ -532,7 +532,7 @@
             assert!(lingering.unknown.is_empty(), "no tree it started is unknown: {lingering:?}");
             let mut still = lingering.processes;
             while !still.is_empty() {
-                still = crate::inference::lane_process::recheck(&still);
+                still = continuum_process::recheck(&still);
                 crate::identity::hands_gate::retain_processes(context, still.clone());
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }

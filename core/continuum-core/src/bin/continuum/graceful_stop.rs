@@ -52,6 +52,15 @@ pub(super) enum GracefulStop {
     /// it, which is a fault. Collapsing them would make every first rollout look like a
     /// malfunction, and every malfunction look like a rollout.
     LegacyCore(String),
+    /// The running core HAS the rail but answered `system/shutdown` with an error and cannot
+    /// attest a final checkpoint — e.g. "checkpoint not found". That is a fault in a SUPPORTED
+    /// core, not evidence it predates the rail: it must not render as a first rollout.
+    ///
+    /// Fail-closed on purpose, like `LegacyCore`: a core that cannot attest a final checkpoint
+    /// must not be killed mid-upgrade, so `ensure_teardown_supported` refuses reboot for both.
+    /// Distinct from `NoAnswer`, which passes the guard — an error from a core that DID answer
+    /// is not "no core ever answered".
+    CannotAttest(String),
     /// Nothing was listening in the first place. Distinct from `NoAnswer` on purpose: a
     /// core that never ran lost nothing, so `stop` on an already-stopped node must exit 0
     /// rather than announce a data loss that did not happen. The sweep below still runs —
@@ -67,13 +76,16 @@ impl GracefulStop {
         }
     }
 
-    /// A legacy core cannot attest a final checkpoint. Keep it running until the
-    /// operator can stop it explicitly and preserve/adopt its selected checkpoint.
+    /// A core that cannot attest a final checkpoint — whether it predates the rail or is
+    /// failing inside it — must keep running until the operator can stop it explicitly and
+    /// preserve/adopt its selected checkpoint. Both fail-closed outcomes refuse reboot here;
+    /// `NoAnswer` deliberately does not (nothing ever answered, so nothing attested a save).
     pub(super) fn ensure_teardown_supported(&self, reboot: bool) -> Result<(), String> {
-        if let (true, Self::LegacyCore(reason)) = (reboot, self) {
+        if let (true, Self::LegacyCore(reason) | Self::CannotAttest(reason)) = (reboot, self) {
             return Err(format!(
-                "reboot refused before teardown: {reason}. The existing core is still running. \
-                 Use `continuum stop`, preserve the outgoing checkpoints, and use \
+                "keeping the engine refused before teardown (reboot, install handoff or \
+                 a plain `stop`): {reason}. The existing core is still running. Use \
+                 `continuum stop --engine`, preserve the outgoing checkpoints, and use \
                  `continuum checkpoint inspect` / `continuum checkpoint adopt` where recovery \
                  is needed before running `continuum reboot` again."
             ));
@@ -362,30 +374,79 @@ pub(super) async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> 
             }
         }
         Ok(Err(e)) => {
-            // A core that does not KNOW the verb is not a core that refused it. The
-            // command surface answers an unknown name with a "no handler"-shaped error,
-            // and during the first upgrade that is exactly what the outgoing core says —
-            // it was built before this rail existed.
-            let unknown = {
-                // `e` is a ClientError, not a String — formatted first so the match is on
-                // the rendered message the transport actually produced.
-                let m = format!("{e}").to_lowercase();
-                m.contains("unknown command")
-                    || m.contains("no handler")
-                    || m.contains("not found")
-                    || m.contains("unsupported")
-            };
-            if unknown {
-                GracefulStop::LegacyCore(format!(
-                    "the running core has no system/shutdown verb ({e}) — it predates this                      rail, so its modules were never going to save and this stop cannot be                      called durable"
-                ))
-            } else {
-                GracefulStop::NoAnswer(format!("the core refused the request: {e}"))
-            }
+            // The verdict must not depend on what the core said — see
+            // `classify_shutdown_error`: any error from a reachable core fails closed.
+            classify_shutdown_error(&format!("{e}"))
         }
         Err(_) => GracefulStop::NoAnswer(format!(
             "no answer within {}s",
             GRACEFUL_STOP_BUDGET.as_secs()
         )),
+    }
+}
+
+
+/// Turn an error answer to `system/shutdown` into a stop outcome — never `NoAnswer`.
+///
+/// The verdict must not depend on what the core said (#3940): any error from a reachable
+/// core fails closed, because such a core cannot attest a final checkpoint and therefore
+/// must not be killed mid-upgrade (`ensure_teardown_supported` refuses reboot for both
+/// fail-closed outcomes). What the phrasing may still decide is WHICH of them:
+/// phrasings that mean "this name is not in the command registry" are positive evidence
+/// the core predates the rail (`LegacyCore`, a first rollout); every other error is a fault
+/// inside a supported core (`CannotAttest`) and must not be rendered as one.
+/// `NoAnswer` keeps its meaning for paths where no core ever answered (pre-check failures
+/// and timeouts); an error from a core that DID answer can no longer masquerade as one.
+pub(super) fn classify_shutdown_error(rendered: &str) -> GracefulStop {
+    let m = rendered.to_lowercase();
+    // Recognition now only picks WHICH fail-closed outcome — never whether to fail closed.
+    // Only phrasings that specifically mean "this name is not in the command registry" earn
+    // the pre-rail label; the old list's weak markers ("not found", bare "unsupported") could
+    // mislabel an internal error like `checkpoint not found` as a core from before the rail.
+    let predates_rail = m.contains("unknown command") || m.contains("no handler");
+    if predates_rail {
+        GracefulStop::LegacyCore(format!(
+            "the running core has no system/shutdown verb ({rendered}) — it predates this \
+             rail, so its modules were never going to save and this stop cannot be called durable"
+        ))
+    } else {
+        // Fail closed (#3940): the old code fell through here to NoAnswer for any phrasing that
+        // matched no marker string — and NoAnswer passes the reboot guard, so an un-attested core
+        // could be killed mid-upgrade. Any error from a reachable core is now fail-closed, with its
+        // own text preserved so the operator can diagnose what it actually said; the outcome says
+        // this is a fault in a supported core, not evidence of a first rollout.
+        GracefulStop::CannotAttest(format!(
+            "the running core answered system/shutdown with an error and cannot attest a final \
+             checkpoint ({rendered})"
+        ))
+    }
+}
+
+/// What the operator sees for each outcome, and whether it goes to stderr. Extracted from
+/// `stop_with_authority` so a regression test can pin the wording: `CannotAttest` is a fault in a
+/// supported core and must never render as a first rollout — that label belongs only to
+/// `LegacyCore`, whose phrasing came from a core that positively predates this rail.
+pub(super) fn render_graceful_outcome(outcome: &GracefulStop) -> (bool, String) {
+    match outcome {
+        GracefulStop::Durable(summary) => (false, format!("core stopped gracefully — {summary}")),
+        GracefulStop::Incomplete(summary) => (
+            true,
+            format!("core stopped WITH UNSAVED STATE — {summary}"),
+        ),
+        GracefulStop::NoAnswer(why) => (
+            true,
+            format!("no graceful stop ({why}); forcing — modules did not save"),
+        ),
+        GracefulStop::NothingRunning => (false, "no core is listening; sweeping for survivors".into()),
+        GracefulStop::LegacyCore(why) => {
+            (true, format!("FIRST UPGRADE — {why}; forcing, and its volatile state is lost"))
+        }
+        GracefulStop::CannotAttest(why) => (
+            true,
+            format!(
+                "core answered but cannot attest a final checkpoint ({why}); forcing — \
+                 its volatile state is lost"
+            ),
+        )
     }
 }

@@ -399,6 +399,7 @@ pub(super) async fn run_adapter_inference(
         },
         tools: None,
         tail_tools: None,
+        view_messages: None,
         tool_choice: None,
         response_format: None,
         active_adapters: None,
@@ -477,6 +478,7 @@ fn translate_adapter_finish_reason(adapter_reason: &AdapterFinishReason) -> Fini
         AdapterFinishReason::Error => FinishReason::Error {
             reason: "adapter returned Error finish".to_string(),
         },
+        AdapterFinishReason::Unreported => FinishReason::Unreported,
     }
 }
 
@@ -937,6 +939,11 @@ mod tests {
             }
             other => panic!("Error should map to Error, got {other:?}"),
         }
+        assert_eq!(
+            super::translate_adapter_finish_reason(&AdapterFinishReason::Unreported),
+            FinishReason::Unreported,
+            "a stream with no finish marker is neither a stop nor an error on the wire clients read"
+        );
     }
 
     /// What this catches: with_adapter and with_bus_and_adapter

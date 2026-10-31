@@ -211,7 +211,7 @@ pub(super) async fn catch_up_from_store(
         // THE CORE'S OWN CHAT STORE is the durable page (see
         // `durable_history::room_rows`): the daemon's ring page was empty for
         // the busiest room on every citizen (2026-09-04, `catch_up_rooms`).
-        let mut events = match crate::persona::durable_history::room_rows(room, CATCH_UP_PAGE).await
+        let mut events = match crate::persona::durable_history::room_rows(room, crate::persona::durable_history::RoomPage::Newest, CATCH_UP_PAGE).await
         {
             Ok(rows) => rows
                 .into_iter()

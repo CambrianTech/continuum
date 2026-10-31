@@ -62,8 +62,15 @@ const OWN_SUITE_EVENTS: [&str; 3] = ["push", "pull_request", "workflow_dispatch"
 /// 2026-10-04 (no deploy landed between 01:36Z and 04:00Z). It judges nothing about the
 /// code; the deploy consumer waits for its artifact on its own budget (#4702), and a tip
 /// whose suites are green is deployable the moment they are.
-const NON_DEPLOY_WORKFLOW_PATHS: [&str; 2] =
-    [".github/workflows/promote-main.yml", ".github/workflows/core-binaries.yml"];
+/// `rust-warm-cache` (card 28463ba7) saves the shared Rust target cache on each canary push,
+/// one at a time; a newer push cancels the older one still queued. It gates nothing. As a job
+/// of Continuum Rust Tests its cancellation made that run conclude `cancelled`, read as Red, so
+/// no published build of the commit could deploy (enrico, 2026-10-27: 791328aab, 8d6656f11).
+const NON_DEPLOY_WORKFLOW_PATHS: [&str; 3] = [
+    ".github/workflows/promote-main.yml",
+    ".github/workflows/core-binaries.yml",
+    ".github/workflows/rust-warm-cache.yml",
+];
 
 /// The tip's verdict plus what the read excluded — the numbers a probe wants when a
 /// verdict surprises someone reading the tick.
@@ -373,16 +380,14 @@ impl DeployTrackerModule {
         let Some(dir) = checkout_now().ok().map(|p| p.to_string_lossy().into_owned()) else {
             return false;
         };
-        let out = crate::system_resources::bounded_command::probe(
-            "git",
-            // TRACKED changes only. An untracked file cannot change what a detached checkout
-            // of the tip builds, and the 5090's first unattended deploy sat at RefuseDirty
-            // behind a stale sock lock and five locally regenerated ts-rs bindings
-            // (2026-09-19 03:3xZ). Same rule the consumer applies before it checks the tip out.
-            &["-C", &dir, "status", "--porcelain", "--untracked-files=no"],
-            GIT_TIMEOUT,
-        );
-        out.stdout_if_ok().map(|s| !s.trim().is_empty()).unwrap_or(false) // unwrap_or: an unreadable git status = assume clean; a real dirty tree still refuses via the guard
+        // TRACKED changes only (an untracked file cannot change what a detached checkout of the
+        // tip builds: the 5090 sat at RefuseDirty behind regenerated ts-rs bindings, 2026-09-19),
+        // judged by the consumer's own predicate, so a moved submodule pointer the consumer
+        // aligns is never dirt here (enrico read RefuseDirty on one for hours, card a1e1af51).
+        let mut args = vec!["-C", dir.as_str()];
+        args.extend(continuum_git::submodules::STATUS_ARGS);
+        let out = crate::system_resources::bounded_command::probe("git", &args, GIT_TIMEOUT);
+        out.stdout_if_ok().map(|s| continuum_git::submodules::has_operator_work(&s)).unwrap_or(false) // unwrap_or: an unreadable git status = assume clean; a real dirty tree still refuses via the guard
     }
 }
 
@@ -771,5 +776,40 @@ mod tests {
         assert_eq!(verdict(cancelled, Some(runs)), Checks::Green, "a cancelled core-binaries run (the next push superseded it) is not a red tip");
         let only_binaries = r#"{"workflow_runs":[{"id":1,"event":"push","path":".github/workflows/core-binaries.yml","check_suite_id":31}]}"#;
         assert_eq!(verdict(in_flight, Some(only_binaries)), Checks::Unknown, "core-binaries as the only suite = no own suite = wait, never green by absence");
+    }
+
+    // what this catches (card 28463ba7, enrico 2026-10-27): the cache warm-up cancelled when a
+    // newer canary push queued behind it, read as a red commit, so a published build of it
+    // (791328aab, 8d6656f11) could never be authorized and the node ran stale code. The warm-up
+    // judges no code: a commit whose tests are green is green whether it is queued or cancelled.
+    #[test]
+    fn a_cancelled_cache_warm_up_is_never_the_tips_verdict() {
+        let runs = r#"{"workflow_runs":[
+            {"id":1,"event":"push","path":".github/workflows/rust-warm-cache.yml","check_suite_id":41},
+            {"id":2,"event":"push","path":".github/workflows/continuum-rust-tests.yml","check_suite_id":22}
+        ]}"#;
+        let cancelled = r#"{"check_runs":[
+            {"name":"Warm the shared Rust build cache","status":"completed","conclusion":"cancelled","check_suite":{"id":41}},
+            {"name":"cargo test -p continuum-core --lib","status":"completed","conclusion":"success","check_suite":{"id":22}}
+        ]}"#;
+        assert_eq!(
+            parse_tip_checks(cancelled, Some(runs)),
+            TipChecks { checks: Checks::Green, total: 2, excluded: 1, filtered: true },
+            "a superseded cache warm-up is not a red commit"
+        );
+        let queued = r#"{"check_runs":[
+            {"name":"Warm the shared Rust build cache","status":"queued","check_suite":{"id":41}},
+            {"name":"cargo test -p continuum-core --lib","status":"completed","conclusion":"success","check_suite":{"id":22}}
+        ]}"#;
+        assert_eq!(verdict(queued, Some(runs)), Checks::Green, "a queued cache warm-up is not a pending commit");
+        // The exclusion is the warm-up's own suite only: a REAL test cancelled still reads red.
+        let real_cancelled = r#"{"check_runs":[
+            {"name":"Warm the shared Rust build cache","status":"completed","conclusion":"success","check_suite":{"id":41}},
+            {"name":"cargo test -p continuum-core --lib","status":"completed","conclusion":"cancelled","check_suite":{"id":22}}
+        ]}"#;
+        assert_eq!(verdict(real_cancelled, Some(runs)), Checks::Red, "a cancelled real test is still a red commit");
+        // Nothing gating left once the warm-up is excluded: wait, never green by absence.
+        let warm_only = r#"{"workflow_runs":[{"id":1,"event":"push","path":".github/workflows/rust-warm-cache.yml","check_suite_id":41}]}"#;
+        assert_eq!(verdict(cancelled, Some(warm_only)), Checks::Unknown, "the warm-up as the only suite = unknown");
     }
 }

@@ -11,15 +11,17 @@ repository = "https://github.com/CambrianTech/continuum"
 # re-exports `genome` under its old path.
 
 [dependencies]
+continuum-process = { path = "../continuum-process" }
 continuum-kernel = { path = "../continuum-kernel" }  # the ORM derive names it (recall decisions)
 continuum-engine = { path = "../continuum-engine" }
 continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 schemars = { version = "0.8", features = ["uuid1"] }
-reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
 inventory = "0.3"  # recall decisions register their protected collection
@@ -37,7 +39,6 @@ tempfile = { version = "3", optional = true }  # test-fixtures: the job board's 
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 axum = "0.8"  # tests: a stand-in engine training endpoint
-continuum-base = { path = "../continuum-base", features = ["test-fixtures"] }
 # The lower layers' test helpers (test_home, CountingEmbedder, fresh_adapter, expert fixtures).
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
 continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }
@@ -51,4 +52,4 @@ cuda = ["continuum-kernel/cuda", "continuum-engine/cuda"]
 vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan"]
 # Test-only code (the recording adapter, the job board's test storage, gene-trial fixtures);
 # production binaries never build with it. The mind's test-fixtures forwards here.
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "dep:tempfile"]
+test-fixtures = ["continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "dep:tempfile"]

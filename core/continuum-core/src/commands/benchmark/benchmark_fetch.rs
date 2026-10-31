@@ -49,8 +49,8 @@ impl ActionCommand for BenchmarkFetch {
                 denominator_matches: count as u32 == spec.tasks,
                 tasks: Some(count),
                 adapter_note: Some(format!(
-                    "converted onto the gym rails at {} — dispatch with \
-                     `benchmark/dispatch --name super-masked`",
+                    "converted onto the gym rails at {} — run it as a round with \
+                     `activity/spawn --name <room> --recipe benchmark/round --params '{{\"suite\":\"super-masked\",\"repo\":\"<owner/name>\"}}'`",
                     path.display()
                 )),
             });
@@ -69,8 +69,8 @@ impl ActionCommand for BenchmarkFetch {
                 denominator_matches: count as u32 == spec.tasks,
                 tasks: Some(count),
                 adapter_note: Some(format!(
-                    "cloned + converted onto the gym rails at {} — dispatch with \
-                     `benchmark/dispatch --name algotune`",
+                    "cloned + converted onto the gym rails at {} — run it as a round with \
+                     `activity/spawn --name <room> --recipe benchmark/round --params '{{\"suite\":\"algotune\",\"repo\":\"<owner/name>\"}}'`",
                     path.display()
                 )),
             });
@@ -105,8 +105,8 @@ impl ActionCommand for BenchmarkFetch {
                 tasks: Some(outcome.converted),
                 adapter_note: Some(format!(
                     "cloned + converted onto the gym rails at {} — {} of {} registry tasks \
-                     converted; {} skipped by the declared Docker seam ({}). Dispatch with \
-                     `benchmark/dispatch --name terminal-bench`",
+                     converted; {} skipped by the declared Docker seam ({}). Run it as a round with \
+                     `activity/spawn --name <room> --recipe benchmark/round --params '{{\"suite\":\"terminal-bench\",\"repo\":\"<owner/name>\"}}'`",
                     outcome.path.display(),
                     outcome.converted,
                     outcome.converted + outcome.skipped.len(),
@@ -133,8 +133,8 @@ impl ActionCommand for BenchmarkFetch {
                     "cloned + converted onto the gym rails at {} — one task per public \
                      program, graded on the full recorded case set (visible + hidden \
                      duals) by exact output match; Rust-language variant, visible cases \
-                     staged WITH expected outputs — internal signal only; dispatch with \
-                     `benchmark/dispatch --name mirrorcode`",
+                     staged WITH expected outputs — internal signal only; run it as a round with \
+                     `activity/spawn --name <room> --recipe benchmark/round --params '{{\"suite\":\"mirrorcode\",\"repo\":\"<owner/name>\"}}'`",
                     path.display()
                 )),
             });
@@ -154,7 +154,7 @@ impl ActionCommand for BenchmarkFetch {
                 tasks: Some(count),
                 adapter_note: Some(format!(
                     "converted onto the gym rails at {} — every task carries the official \
-                     execution oracle as its dod; dispatch with `benchmark/dispatch --name ds-1000`",
+                     execution oracle as its dod; run it as a round with `activity/spawn --name <room> --recipe benchmark/round --params '{{\"suite\":\"ds-1000\",\"repo\":\"<owner/name>\"}}'`",
                     path.display()
                 )),
             });

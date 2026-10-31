@@ -36,9 +36,7 @@ use crate::cognition::channel_element::ChannelElement;
 use crate::cognition::channel_substrate::{
     global_channel_digest_buffer, global_channel_digest_builder,
 };
-use crate::cognition::rag_budget::{
-     RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
-};
+use crate::cognition::rag_budget::{RagContext, RagDelivery, RagItem, RagSource};
 use crate::runtime::ready_buffer::ReadyBuffer;
 use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
 
@@ -51,8 +49,6 @@ const FETCH_LIMIT: usize = 100;
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
 /// copy — converged.)
-use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
-use crate::cognition::token_budget::head_to_tokens;
 
 /// Persona-bound source delivering the consolidated channel digest.
 pub struct AircRagSource {
@@ -66,28 +62,10 @@ pub struct AircRagSource {
     /// persona's airc runtime log holds only events since ITS boot). `Some` in
     /// production (default); tests without a store see a loud-skip, not a panic.
     history: Option<Arc<dyn crate::persona::durable_history::DurableRoomHistory>>,
-    /// WHERE HER HISTORY STARTS, per room: the event the window's oldest kept line
-    /// belongs to. Kept across turns so the window's start holds still and jumps in
-    /// large steps ([`HISTORY_SLACK`]) instead of sliding one event per turn. Measured
-    /// on the 5090, 2026-10-05 (Cormac's trace): the newest-first fill dropped the
-    /// oldest line on every room event, so the FIRST history message changed every
-    /// turn; her hybrid base can only roll back to a saved checkpoint before the first
-    /// differing token, so each turn re-prefilled 39-59k tokens (20-75 s) and the
-    /// checkpoint cap then erased even the head's. One anchor per room, in memory.
-    anchors: std::sync::Mutex<std::collections::HashMap<uuid::Uuid, HistoryAnchor>>,
+    /// The digest last delivered per room: what `mark_read` resolves an event id against
+    /// (airc's cursor wants the event itself, not a bare id).
+    last_digest: std::sync::Mutex<std::collections::HashMap<uuid::Uuid, Arc<ChannelDigest>>>,
 }
-
-/// The oldest kept line of a room's window, as the event it came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct HistoryAnchor {
-    pub event: uuid::Uuid,
-}
-
-/// The share of the window budget left free when the start jumps, so the next turns'
-/// new events fit without moving it again. A quarter: the start moves once per ~quarter
-/// window of new traffic, and every turn in between extends the cached prefix instead
-/// of replacing it. A larger slack buys fewer jumps at the cost of history shown.
-pub(crate) const HISTORY_SLACK: f32 = 0.25;
 
 impl AircRagSource {
     /// Production constructor — shares the process-global digest substrate so every
@@ -101,28 +79,8 @@ impl AircRagSource {
             grounding: DEFAULT_GROUNDING,
             fetch_limit: FETCH_LIMIT,
             history: Some(Arc::new(crate::persona::durable_history::ChatStoreHistory)),
-            anchors: std::sync::Mutex::new(std::collections::HashMap::new()),
+            last_digest: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
-    }
-
-    /// Floor of tokens any packed turn can occupy (sender prefix + separators
-    /// alone — a physical minimum, not a policy). Used ONLY to size the
-    /// candidate window handed to the token packer: `budget / floor`
-    /// candidates can never under-supply it, so the TOKEN budget — never a
-    /// message count — is the binding constraint on what the persona sees.
-    /// The 2026-07-30 glass box: a 5-message grounding pre-trim starved
-    /// pack_digest into a 3–5-message world view while the L1 budget could
-    /// hold dozens — the persona then confabulated generic-assistant filler
-    /// because the actual conversation was invisible (#259).
-    // context-budget-exempt: a FLOOR under a per-turn allocation — it only ever raises, so a large window is never clamped by it
-    const MIN_TOKENS_PER_TURN: u32 = 8;
-
-    /// Turns-that-fit grounding: derive the digest's before-bookmark window
-    /// from the delivery budget. `recipe_floor` (the recipe-defined N, default
-    /// [`DEFAULT_GROUNDING`]) is the floor; the ceiling bounds the durable
-    /// top-up fetch, not what the packer may keep.
-    fn grounding_for_budget(budget: u32, recipe_floor: usize) -> usize {
-        ((budget / Self::MIN_TOKENS_PER_TURN) as usize).clamp(recipe_floor, 256)
     }
 
     /// Synthesize a grounding-only `TranscriptEvent` from a durable transcript
@@ -148,41 +106,13 @@ impl AircRagSource {
         self
     }
 
-    /// Format a digest into budget-packed `RagItem`s. Walks the window newest-first
-    /// accumulating tokens until budget, then emits chronological (oldest-first) so
-    /// the chat template reads turns in order. Each item is tagged `unread` vs
-    /// grounding so the prompt builder / glass box can tell them apart.
-    ///
-    /// BREADTH OVER VERBATIM DEPTH (#128/#146, measured 2026-07-13): the original
-    /// packer kept WHOLE messages newest-first, so a small budget in a verbose
-    /// four-persona room held ~2-3 turns TOTAL — the persona's entire perceivable
-    /// world. Any low-frequency speaker (the operator) was displaced within
-    /// seconds; the room degenerated into parallel monologues that only rapid-fire
-    /// exchange survived. A conversation is legible from turn HEADS; it is not
-    /// legible from two verbatim essays. So each turn now costs at most a
-    /// per-turn cap (a budget fraction, never a hardcoded model tier) and long
-    /// turns are head-trimmed with an explicit marker — the same
-    /// straddling-trim law the prompt fitter applies to messages, one level down.
-    /// The NEWEST turn is exempt (kept verbatim up to the whole budget): it is
-    /// what the persona is responding to.
-    /// Returns the packed items, the tokens they cost, and the READ-THROUGH
-    /// ELEMENT: the newest element that actually entered her prompt. That last
-    /// value is what advances her cursor — she is marked read for what she was
-    /// GIVEN, never for what was merely fetched and then dropped by the budget.
-    ///
-    /// The ELEMENT, not a lamport, because airc's `save_runtime_cursor_for_event`
-    /// wants the source event (it carries the room + kind and emits
-    /// `SubscriptionAdvanced`). Handing it a bare number would throw that away.
-    fn pack_digest(
-        digest: &ChannelDigest,
-        budget: u32,
-        working: bool,
-        anchor: Option<HistoryAnchor>,
-    ) -> (Vec<RagItem>, u32, Option<Arc<ChannelElement>>, Option<HistoryAnchor>) {
-        // Per-turn cap: budget/8 → a useful window holds ~8+ turns; clamped so
-        // tiny budgets still render a sentence and huge ones don't let one
-        // essay crowd the window.
-        let per_turn_cap = (budget / 8).clamp(48, 256);
+    /// Every unit of a digest, whole, oldest first: the source delivers levels, never a size
+    /// (FLOW-IMPLEMENTATION-PLAN §2d). Her one allocation in the prompt view decides which
+    /// turns she sees, and when a start moves. This replaced a per-turn cap, head cuts and an
+    /// anchored start that sized the conversation against a second budget (the 159k served
+    /// window) before the view sized it again against hers. Receipt runs still fold to one
+    /// line per author, and quarantined lines still never enter.
+    fn digest_items(digest: &ChannelDigest, working: bool) -> Vec<RagItem> {
         let (units, quarantined) = Self::collapse_work_receipts(digest, working);
         if quarantined > 0 {
             continuum_base::probe!(
@@ -192,116 +122,42 @@ impl AircRagSource {
                 "transcript lines the speak gate would refuse were kept out of her burst — the contagion carrier (card 169eb543)"
             );
         }
-        // Cost every unit once, newest-first (the newest is exempt from the per-turn
-        // cap: it is what she is responding to). `costed` is oldest-first after the
-        // reverse, parallel to `units`, with None for a unit that has no text.
-        let mut costed: Vec<Option<(u32, Option<String>)>> = Vec::with_capacity(units.len());
-        let mut newest_kept = true;
-        for unit in units.iter().rev() {
-            let idx = unit.last_idx;
-            let text: &str = match unit.collapsed.as_deref() {
-                Some(t) => t,
-                None => match digest.elements[idx].text() {
-                    Some(t) => t,
-                    None => {
-                        costed.push(None);
-                        continue;
-                    }
-                },
-            };
-            let full = estimate_tokens(text);
-            let cap = if newest_kept { budget } else { per_turn_cap };
-            let (cost, trimmed) = if full <= cap {
-                (full, unit.collapsed.clone())
-            } else {
-                let head = head_to_tokens(text, cap);
-                let head_cost = estimate_tokens(&head).saturating_add(2); // marker
-                // The marker SPELLING is shared with the tail-trim site so the two
-                // cannot drift apart again (card 3833b472). The +2 reserve above is
-                // left as it was on purpose: `trim_marker_tokens()` measures the real
-                // cost at 8, so this site under-reserves, but raising it changes how
-                // many turns fit in every prompt — a packing change that belongs in
-                // its own card with its own before/after, not smuggled into a
-                // disclosure fix.
-                (
-                    head_cost,
-                    Some(crate::cognition::token_budget::mark_head_kept(
-                        &head, full,
-                    )),
-                )
-            };
-            newest_kept = false;
-            costed.push(Some((cost, trimmed)));
-        }
-        costed.reverse();
-        // THE START HOLDS STILL. The window is the suffix of units from `start`; its
-        // cost is the sum from there to the newest. Where the fill would naturally
-        // begin (newest-first to the budget) is `natural`. The anchor from last turn
-        // is kept while the suffix from it still fits; when it no longer fits, the
-        // start jumps FORWARD past `natural` to leave HISTORY_SLACK of the budget
-        // free, so the next turns' new events fit without moving it again. Every
-        // turn in between then extends the prefix the engine already holds, instead
-        // of replacing its first message. The first fill in a room (no anchor yet)
-        // shows everything the budget holds; the room's second turn then pays one
-        // jump and holds from there. An anchored event that scrolled out of the
-        // digest is a jump too.
-        let suffix_cost = |start: usize| -> u32 {
-            costed[start..].iter().flatten().map(|(c, _)| *c).fold(0u32, |a, c| a.saturating_add(c))
-        };
-        let first_start_within = |limit: u32| -> usize {
-            // the smallest start whose suffix fits `limit`; units.len() = nothing fits
-            (0..=units.len()).find(|&start| suffix_cost(start) <= limit).unwrap_or(units.len()) // unwrap_or: the empty suffix always fits, so this is never reached
-        };
-        let natural = first_start_within(budget);
-        // The anchor is the event at the unit's ORDER position (a run's first receipt),
-        // never its newest: keyed on the newest, an open run at the window's start would
-        // look scrolled out on every receipt and jump each turn (Cormac on #4806).
-        let anchored = anchor.and_then(|a| {
-            units.iter().position(|u| digest.elements[u.order_idx].event_id() == a.event)
-        });
-        let slack_limit = ((budget as f32) * (1.0 - HISTORY_SLACK)) as u32;
-        let start = match (anchor, anchored) {
-            // the first fill in this room: everything the budget holds
-            (None, _) => natural,
-            // last turn's start still fits: hold it, even if more would fit now
-            (Some(_), Some(a)) if a >= natural => a,
-            // it no longer fits, or it scrolled out: jump forward with headroom; never
-            // past the newest unit, which is always shown
-            _ => first_start_within(slack_limit).min(units.len().saturating_sub(1)),
-        };
-        let mut keep: Vec<(usize, Option<String>)> = Vec::new();
-        let mut tokens_used: u32 = 0;
-        for (unit, c) in units[start..].iter().zip(&costed[start..]) {
-            if let Some((cost, trimmed)) = c {
-                tokens_used = tokens_used.saturating_add(*cost);
-                keep.push((unit.last_idx, trimmed.clone()));
-            }
-        }
-        let new_anchor = units.get(start).map(|u| HistoryAnchor { event: digest.elements[u.order_idx].event_id() });
-        if anchored.is_some_and(|a| a != start) || (anchored.is_none() && anchor.is_some()) {
+        units
+            .iter()
+            .filter(|unit| unit.collapsed.is_some() || digest.elements[unit.last_idx].text().is_some())
+            .map(|unit| Self::format_item(&digest.elements[unit.last_idx], unit.last_idx >= digest.unread_start, unit.collapsed.clone()))
+            .collect()
+    }
+
+    /// She read the room through `event`: advance her per-room cursor to it, exactly as the
+    /// human's UI does on mark-read. Called by the deliberation faculty after a prompt that
+    /// rendered `event` was sent (its read-receipt hook), never at delivery: delivery is not
+    /// reading, and only the view knows which turns she saw. Monotonic in airc, so a repeat
+    /// or a lower event never rewinds her.
+    pub async fn mark_read(&self, room_id: uuid::Uuid, event: uuid::Uuid) {
+        let element = self
+            .last_digest
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) // a poisoned map still answers, same policy as every lock in this crate
+            .get(&room_id)
+            .and_then(|digest| digest.elements.iter().find(|el| el.event().event_id.as_uuid() == event).cloned());
+        let Some(element) = element else {
             continuum_base::probe!(
-                class = "perception.history.anchor_moved",
-                room = %digest.room_id,
-                from_natural = natural as u64,
-                start = start as u64,
-                units = units.len() as u64,
-                tokens = tokens_used as u64,
-                budget = budget as u64,
-                "the start of her history in this room jumped: the prefix the engine held is replaced once, then holds again"
+                class = "perception.mark_read.unknown_event",
+                persona = %self.persona_id,
+                room = %room_id,
+                "a read receipt named an event the last digest of this room does not hold: the cursor stays"
+            );
+            return;
+        };
+        if let Err(err) = self.reader.advance_read_cursor(self.persona_id, room_id, element.event()).await {
+            tracing::warn!(
+                error = %err,
+                persona_id = %self.persona_id,
+                room = %room_id,
+                "airc rag: could not persist the read cursor — she will re-read this page next turn (bounded)"
             );
         }
-        // `keep` is oldest-first after the reverse, so its LAST entry is the newest
-        // element that actually fit — how far she genuinely read this turn.
-        // the newest element that entered her prompt, by the elements' own order (a run's
-        // line sits at its first receipt but reads through its newest)
-        let read_through = keep.iter().map(|(idx, _)| *idx).max().map(|idx| digest.elements[idx].clone());
-        let items = keep
-            .into_iter()
-            .map(|(idx, trimmed)| {
-                Self::format_item(&digest.elements[idx], idx >= digest.unread_start, trimmed)
-            })
-            .collect();
-        (items, tokens_used, read_through, new_anchor)
     }
 
     /// COLLAPSE, DON'T CLIP — work receipts. A working citizen radiates one
@@ -452,15 +308,14 @@ impl AircRagSource {
     fn format_item(
         element: &Arc<ChannelElement>,
         unread: bool,
-        trimmed: Option<String>,
+        collapsed: Option<String>,
     ) -> RagItem {
         let ev = element.event();
-        let text = trimmed.unwrap_or_else(|| element.text().unwrap_or_default().to_string());
-        let tokens = estimate_tokens(&text);
-        RagItem {
-            content: text,
-            tokens,
-            metadata: serde_json::json!({
+        let text = collapsed.unwrap_or_else(|| element.text().unwrap_or_default().to_string());
+        RagItem::whole(
+            ev.event_id.as_uuid().to_string(),
+            text,
+            serde_json::json!({
                 "event_id": ev.event_id.as_uuid().to_string(),
                 "room_id": ev.room_id.as_uuid().to_string(),
                 // The LOGICAL author: a chat/send line is attributed to the human/web
@@ -477,17 +332,7 @@ impl AircRagSource {
                 // as the item score; without it the inspect layer silently saw 0.0.
                 "score": if unread { 1.0 } else { 0.5 },
             }),
-        }
-    }
-
-    fn empty(resolution: ResolutionPreference) -> RagDelivery {
-        RagDelivery {
-            source_id: AIRC.to_string(),
-            items: Vec::new(),
-            tokens_used: 0,
-            truncated: false,
-            resolution_used: resolution,
-        }
+        )
     }
 }
 
@@ -527,22 +372,10 @@ impl RagSource for AircRagSource {
         Some("collaboration/chat/export")
     }
 
-    /// One conversation turn — a speaker and what they said. The recent-history
-    /// appetite is much larger and is expressed as `min`, not as this floor;
-    /// conflating the two is what made every source all-or-nothing.
-    fn floor_tokens(&self) -> u32 {
-        64
-    }
-
-    async fn deliver(
-        &self,
-        ctx: &RagContext,
-        budget: u32,
-        resolution: ResolutionPreference,
-    ) -> RagDelivery {
+    async fn deliver(&self, ctx: &RagContext) -> RagDelivery {
         // Defense in depth: never serve another persona's context.
         if ctx.persona_id != self.persona_id {
-            return Self::empty(ResolutionPreference::Placeholder);
+            return RagDelivery::empty(AIRC);
         }
         // Page the TURN's room when the RagContext carries it (#367). Before this,
         // page_recent always followed the persona's current-room POINTER (her
@@ -565,7 +398,7 @@ impl RagSource for AircRagSource {
                     persona_id = %self.persona_id,
                     "airc rag: page_recent failed — empty delivery, cognition stays up"
                 );
-                return Self::empty(ResolutionPreference::Placeholder);
+                return RagDelivery::empty(AIRC);
             }
         };
         let Some(room_id) = ctx
@@ -574,7 +407,7 @@ impl RagSource for AircRagSource {
             .or_else(|| events.last().map(|e| e.room_id.as_uuid()))
         else {
             // No room scope AND no transcript — genuinely nothing to digest.
-            return Self::empty(ResolutionPreference::Placeholder);
+            return RagDelivery::empty(AIRC);
         };
 
         // #249: when the LIVE window is shallower than the grounding target (the
@@ -585,10 +418,10 @@ impl RagSource for AircRagSource {
         // sender (the durable row id is the airc event id for persona lines, but
         // live events re-mint EventIds across runtimes — content identity is the
         // honest join). Fetch failure degrades to the shallow window, loudly.
-        // Turns-that-fit: the budget sizes the candidate window; the packer's
-        // token walk decides what survives. self.grounding stays only as the
-        // recipe floor (#259 — kills the 5-message world-view starvation).
-        let grounding = Self::grounding_for_budget(budget, self.grounding);
+        // How much history to stage: the recipe's grounding, at least the fetch window. What
+        // she then SEES of it is her view's decision (FLOW-IMPLEMENTATION-PLAN §2d), never a
+        // budget here (#259's starvation came from sizing this window by a budget).
+        let grounding = self.grounding.max(self.fetch_limit);
         let mut events = events;
         let live_in_room = events
             .iter()
@@ -647,10 +480,12 @@ impl RagSource for AircRagSource {
         // the pre-staged path is skipped when we hydrated (the staged digest was
         // built from the same shallow log); the built-once path below carries the
         // topped-up window. Region-side hydration is the follow-up slice.
+        // What a rebuild would hold: the room's events after any durable top-up, up to the
+        // staging depth. A staged digest is reused only when it holds at least that much, so a
+        // shallow stage (the region stages the recipe floor) or a top-up forces the rebuild.
+        let rebuild_holds = events.iter().filter(|e| e.room_id.as_uuid() == room_id).count().min(grounding);
         let digest = match self.buffer.peek(&(self.persona_id, room_id)) {
-            // The region pre-stages with the recipe floor; only reuse it when
-            // it already covers the budget-derived window — else rebuild wide.
-            Some(d) if live_in_room >= grounding && d.elements.len() >= grounding => d,
+            Some(d) if d.elements.len() >= rebuild_holds => d,
             _ => {
                 // The cursor is AIRC's, read per build. A read failure must not mute
                 // her — fall back to 0 (everything unread), which the FIRST_READ_PAGE
@@ -678,72 +513,31 @@ impl RagSource for AircRagSource {
             }
         };
 
-        let anchor = self.anchors.lock().unwrap_or_else(|p| p.into_inner()).get(&room_id).copied(); // a poisoned map still answers, same policy as every lock in this crate
-        let (items, tokens_used, read_through, new_anchor) =
-            Self::pack_digest(&digest, budget, crate::cognition::persona_workspace::acting_root_of(self.persona_id).is_some(), anchor);
-        if let Some(a) = new_anchor {
-            self.anchors.lock().unwrap_or_else(|p| p.into_inner()).insert(room_id, a); // a poisoned map still takes the anchor; losing it costs one re-prefill, never a panic
-        }
-        // SHE HAS NOW READ THE ROOM — advance her per-room cursor, exactly as the
-        // human's UI does on nav/mark-read and on navigating away from a room.
-        //
-        // THE BUG THIS FIXES: `ChannelBookmarks` is per-(persona, room) and has
-        // been correct since it was written — but the ONLY production callers of
-        // `advance` were in `modules/nav.rs`, both keyed on `ctx.user_id`, the
-        // authenticated HUMAN. A persona never navigates, so her `last_read` stayed
-        // at 0 forever, and `last_read`'s own doc spells out what 0 means:
-        // "never read (everything is unread)". Every turn therefore re-delivered
-        // the ENTIRE paged history as UNREAD, each item at attention score 1.0,
-        // with an EMPTY grounding split (unread_start == 0) — the digest's
-        // read/unread structure was built and then never used for a persona.
-        //
-        // That is the storm: with nothing ever marked read, no message is ever
-        // consumed, so two citizens in one room re-excite each other on a window
-        // that only grows. With the cursor advancing, a wake shows what is NEW
-        // plus N-before grounding, and a room with nothing new is quiet — the same
-        // contract every message client has had for thirty years.
-        //
-        // Mark-read on DELIVERY, not on reply, because delivery is when she saw
-        // it — `tip_lamport`'s own doc says "ignore/skip/respond all mark-read".
-        // Advancing to `read_through` (what was PACKED) rather than the digest tip
-        // keeps it honest under a tight budget: she is never marked read for a
-        // message the packer dropped. `advance` is monotonic, so a repeat delivery
-        // or a late lower lamport can never rewind her.
-        if let Some(element) = read_through.as_ref() {
-            if let Err(err) = self
-                .reader
-                .advance_read_cursor(self.persona_id, room_id, element.event())
-                .await
-            {
-                tracing::warn!(
-                    error = %err,
-                    persona_id = %self.persona_id,
-                    room = %room_id,
-                    "airc rag: could not persist the read cursor — she will re-read this \
-                     page next turn (bounded), never the whole transcript"
-                );
-            }
-        }
+        let items = Self::digest_items(&digest, crate::cognition::persona_workspace::acting_root_of(self.persona_id).is_some());
+        let tokens_used = items.iter().map(|item| item.tokens).fold(0u32, |a, t| a.saturating_add(t));
+        // Kept for `mark_read`: the faculty marks her read after a sent prompt rendered these
+        // turns, never here (delivery is not reading).
+        self.last_digest.lock().unwrap_or_else(|p| p.into_inner()).insert(room_id, Arc::clone(&digest)); // a poisoned map still takes the digest; losing it costs one unmarked turn, never a panic
         tracing::debug!(
             persona_id = %self.persona_id,
             room = %room_id,
             window = digest.elements.len(),
-            budget,
-            items_packed = items.len(),
+            items = items.len(),
             tokens_used,
-            "airc_rag: deliver (digest)"
+            "airc_rag: deliver (digest, every unit whole)"
         );
-        RagDelivery {
-            source_id: AIRC.to_string(),
-            items,
-            tokens_used,
-            // The digest IS the window. More history = a command (scrollback/search),
-            // not a budget continuation cursor.
-            truncated: false,
-            resolution_used: resolution,
-        }
+        // The digest IS the window. More history = a command (scrollback/search),
+        // not a budget continuation cursor.
+        RagDelivery::of(AIRC, items, false)
     }
 
+}
+
+#[async_trait::async_trait]
+impl crate::cognition::llm_deliberation_faculty::ReadReceipt for AircRagSource {
+    async fn read_through(&self, room: uuid::Uuid, event: uuid::Uuid) {
+        self.mark_read(room, event).await;
+    }
 }
 
 #[cfg(test)]

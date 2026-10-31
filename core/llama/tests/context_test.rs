@@ -212,7 +212,7 @@ fn sample_temperature_with_penalties() {
     ctx.decode(&Batch::for_tokens(tokens)).expect("decode");
 
     let mut sampler = Sampler::chain()
-        .penalties(64, 1.1, 0.0, 0.0)
+        .penalties(model.n_vocab(), 64, 1.1, 0.0, 0.0)
         .temp(0.8)
         .dist(42)
         .build();

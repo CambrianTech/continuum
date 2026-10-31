@@ -38,15 +38,19 @@ fn core_with_code() -> (Arc<CommandExecutor>, Arc<CodeState>) {
         Arc::new(DashMap::new()),
         Arc::new(DashMap::new()),
         tokio::runtime::Handle::current(),
+        Arc::new(crate::modules::acting_provider::CoreActing),
     ));
     registry.register(Arc::new(CodeModule::new(state.clone())));
     // The PRODUCTION authorization policy, not an AllowAll fixture: the fixture hid
     // code/release-hands being refused for a local persona (Astra's review of #5005).
     let executor = Arc::new(
-        CommandExecutor::new(registry)
+        CommandExecutor::new(registry.clone())
             .with_policy(Arc::new(GridTrustAuthPolicy::new()))
             .with_message_bus(Arc::new(crate::runtime::MessageBus::new())),
     );
+    // Bound as boot binds it: the code domain reads its callers' trust through this
+    // executor's policy, and unbound it would sandbox every resident (Cormac on #5455).
+    registry.install_executor_on_all(executor.clone());
     (executor, state)
 }
 
@@ -81,7 +85,7 @@ async fn listing(hands: &ActingHands) -> String {
     };
     let out = hands
         .executor
-        .execute_native_batch(std::slice::from_ref(&call), &ctx, 8000)
+        .execute_native_batch(std::slice::from_ref(&call), &ctx)
         .await
         .expect("code/list runs");
     out.results[0].content.clone()
@@ -175,6 +179,33 @@ async fn a_command_after_its_hands_were_released_is_refused_at_dispatch() {
     assert!(late.as_ref().is_err_and(|e| e.contains("released")), "a command after the release is refused at dispatch: {late:?}");
 }
 
+// what this catches (Cormac on #5455): the code domain reading trust through an
+// executor never bound to it. Unbound, every resident is the sandbox and every test
+// stays green; bound as boot binds it, under the production policy, a local persona's
+// file verbs reach the host (Joel: "don't restrict them").
+#[tokio::test]
+async fn a_resident_under_the_production_policy_reads_the_host_not_the_sandbox() {
+    let workspace = tempfile::TempDir::new().expect("her workspace");
+    let elsewhere = tempfile::TempDir::new().expect("a directory outside it");
+    let outside = elsewhere.path().join("OUTSIDE_her_workspace.md");
+    std::fs::write(&outside, "read from the host\n").unwrap();
+    let persona = Uuid::new_v4();
+    let (executor, _state) = core_with_code();
+    let resident = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))
+        .in_hands(crate::identity::hands_context::HandsContext::fresh());
+    executor
+        .execute_with_caller("code/create-workspace", serde_json::json!({"workspace_root": workspace.path().to_string_lossy()}), Some(resident.clone()))
+        .await
+        .expect("her hands are bound");
+    let read = executor
+        .execute_with_caller("code/read", serde_json::json!({"file_path": outside.to_string_lossy()}), Some(resident))
+        .await;
+    assert!(
+        read.as_ref().is_ok_and(|r| format!("{r:?}").contains("read from the host")),
+        "a resident reads outside her workspace, never the sandbox: {read:?}"
+    );
+}
+
 // what this catches (card fc9e9fd7; Kimi #11697, #312): one set of hands moved by
 // every turn and measurement that needed another root. A card claim's hands are their
 // own: rooted at the card, they never move her default hands, every turn of the claim
@@ -228,7 +259,7 @@ async fn a_claims_hands_are_its_own_and_her_default_hands_never_move() {
         card_staging::stage_for_card(home.path(), persona, &gym_card).await,
         card_staging::Staging::Ready { path: workspace.clone() },
     );
-    let cycle = WorkspaceCycle::new(vec![], Arc::new(crate::cognition::workspace::SalienceArbiter), 4)
+    let cycle = WorkspaceCycle::new(vec![], Arc::new(crate::cognition::workspace::SalienceArbiter))
         .with_acting(Arc::new(ActingBody {
             persona_id: persona, persona_name: live.persona_name.clone(),
             executor: live.executor.clone(), working_memory: live.working_memory.clone(),
@@ -265,7 +296,7 @@ async fn call(hands: &ActingHands, name: &str, input: serde_json::Value) -> (Str
         },
     };
     let call = crate::ai::types::ToolCall { id: name.to_string(), name: name.to_string(), input };
-    let out = hands.executor.execute_native_batch(std::slice::from_ref(&call), &ctx, 8000).await.expect("the call runs");
+    let out = hands.executor.execute_native_batch(std::slice::from_ref(&call), &ctx).await.expect("the call runs");
     (out.results[0].content.clone(), out.results[0].is_error.is_some())
 }
 
@@ -394,7 +425,7 @@ async fn a_cancelled_eval_keeps_its_world_until_its_forks_are_confirmed_ended() 
     // 10 s is this test's bound on a SIGKILLed `sleep` being reaped, not a product timeout.
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while world_dir.exists() || !state.file_engines.is_empty() || acting_root_in(persona, context).is_some() {
-            tokio::time::sleep(crate::inference::lane_process::KILL_POLL).await;
+            tokio::time::sleep(continuum_process::KILL_POLL).await;
         }
     })
     .await
@@ -409,7 +440,6 @@ fn a_handless_cycle_yields_no_hands() {
     let cycle = crate::cognition::workspace::WorkspaceCycle::new(
         vec![],
         Arc::new(crate::cognition::workspace::SalienceArbiter),
-        4,
     );
     assert!(ActingHands::of(&cycle).is_none());
 }

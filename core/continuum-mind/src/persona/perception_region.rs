@@ -433,6 +433,12 @@ impl PerceptionRegion {
     /// her dial, the load. The same fold `publish` sends on the watch; read directly by
     /// the turn's `awareness` grounding source, so the strip reaches her prompt without
     /// anyone holding the receiver.
+    /// When anything she perceives last moved: the newest line, board change or view
+    /// update across her activities. `None` before any activity has moved.
+    pub fn moved_at_ms(&self) -> Option<u64> {
+        self.views.values().filter_map(|v| v.last_activity_ms).max()
+    }
+
     pub fn snapshot(&self, now_ms: u64) -> AwarenessSnapshot {
         let lines = self
             .views

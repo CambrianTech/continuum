@@ -25,6 +25,16 @@ pub enum LlamaServerError {
     /// ([[fallbacks-are-illegal-fail-loud]]).
     #[error("LoRA adapter file not found: {0}")]
     AdapterNotFound(String),
+    /// The incumbent engine could not be retired safely, so it was not signalled and still
+    /// runs: its residents' checkpoint custody refused, or its identity could not be verified
+    /// (card 931cfd22). Never a spawn failure: it neither condemns the incumbent nor rolls the
+    /// engine binary back.
+    #[error("retiring the incumbent engine was refused, nothing was signalled: {0}")]
+    RetirementRefused(String),
+    /// Retirement has been signalled but exact-process exit is not yet proven.
+    /// Keep admission suspended and resume observation; never blame the candidate binary.
+    #[error("incumbent retirement remains unverified; endpoint suspended: {0}")]
+    RetirementPending(String),
 }
 
 
@@ -355,6 +365,16 @@ pub trait LlamaServerControl: Send + Sync {
         Ok(None)
     }
 
+    /// The engine process serving this endpoint now ([`EngineIncarnation`]: pid + OS start
+    /// time + port), owned or adopted, read from the lane pidfile and its registry record:
+    /// what a `/props` reading is evidence about. `None` = unknown (a fake or remote control,
+    /// no pidfile, a record without a start time): no reading outlives a probe error then.
+    ///
+    /// [`EngineIncarnation`]: crate::inference::engine_residency::EngineIncarnation
+    fn served_incarnation(&self) -> Option<crate::inference::engine_residency::EngineIncarnation> {
+        None
+    }
+
     /// The multimodal capabilities the running server ITSELF reports in `/props`
     /// (`modalities.vision` / `modalities.audio`) — the endpoint-side truth of
     /// whether the `--mmproj` projector actually loaded (#106). `Ok(None)` means
@@ -457,4 +477,9 @@ pub trait LlamaServerControl: Send + Sync {
     /// The reconcile calls it on every `AlreadyServing`. Default: nothing, for a control with
     /// no lane record to write (a fake or a remote control).
     async fn record_observed_placement(&self) {}
+
+    /// Follow the served engine's log relay, so an engine this core adopted has its lines watched
+    /// as a spawned one's are (card 1d7d6d4c). Default: a fake or remote control has no local
+    /// engine to follow.
+    fn follow_engine_log(&self) {}
 }

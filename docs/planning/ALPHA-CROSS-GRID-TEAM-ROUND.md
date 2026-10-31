@@ -31,7 +31,7 @@ Until (7) exists, "personas scale cross grid" is a sentence. With it, it is a ro
 
 | Piece | State | Where |
 |---|---|---|
-| Shared board across nodes | works (store sync; a 5090 citizen claims M5 cards) | airc work board; `AircCitizen::claimable_cards_in` |
+| Shared board across nodes | works (store sync; a 5090 citizen claims M5 cards) | airc work board (`work/list`, `work/claim`) |
 | Staging on the claimer's node | works (`on_claim` stages into HER workspace) | `modules/card_staging.rs::stage_for_claimer`, `stage_swe` (PR #3866: a settled instance restages pristine) |
 | A citizen's BRAIN off-box | works (Kira/Mathis on the 5090's 27B) | `persona/remote_lane_factory.rs` (`remote_peer`), `persona/reassign-model` |
 | A citizen HOSTED off-box in an M5 round | **missing** — dispatch seats only this machine's residents | `commands/benchmark.rs:1141-1145` (`resident_snapshot()` = "whoever THIS machine has in the room") |

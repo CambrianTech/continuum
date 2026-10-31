@@ -110,29 +110,8 @@ fn directory_handle(path: &Path) -> Result<File, String> {
     options.open(path).map_err(|e| e.to_string())
 }
 
-fn identity(file: &File) -> Result<(u64, u64), String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let meta = file.metadata().map_err(|e| e.to_string())?;
-        Ok((meta.dev(), meta.ino()))
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Storage::FileSystem::{
-            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-        };
-        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-        // Both handles remain owned while the native identity is compared.
-        if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-        Ok((
-            u64::from(info.dwVolumeSerialNumber),
-            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
-        ))
-    }
+fn identity(file: &File) -> Result<continuum_host::file_identity::FileIdentity, String> {
+    continuum_host::file_identity::of(file).map_err(|e| e.to_string())
 }
 
 fn retain_verified(root: &Path, files: &[Entry]) -> Result<HashMap<PathBuf, File>, String> {
@@ -343,7 +322,7 @@ fn prepare_owned<'a>(
         }
         copy_members(&staging, &placement.files, &mut source, true)?;
         verify_tree(&staging, &placement.files, false, true)?;
-        continuum_base::fs_portable::durable_rename(&staging, &destination).map_err(|e| e.to_string())?;
+        continuum_host::durable::replace(&staging, &destination).map_err(|e| e.to_string())?;
     }
     // Existing published destinations are verified completely and never repaired.
     let destination_directory = directory_handle(&destination)?;

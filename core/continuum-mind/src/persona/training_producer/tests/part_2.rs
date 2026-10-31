@@ -284,6 +284,7 @@ use super::*;
             capture: None,
             genes: Vec::new(),
             gene_scales: Vec::new(),
+            allocation: None,
         });
         receipts.push(receipt("failed-after-serving"));
         let homogeneous = served_provenance(&receipts).unwrap();
@@ -299,6 +300,7 @@ use super::*;
             capture: None,
             genes: Vec::new(),
             gene_scales: Vec::new(),
+            allocation: None,
         });
         assert!(served_provenance(&receipts).is_none());
         let last = receipts.last_mut().unwrap();
@@ -405,7 +407,7 @@ use super::*;
             row(3, Some(vec![call(None)])),            // a spoken turn: kept
             row(4, Some(vec![call(None)])),            // a no-action run collapses
             row(5, Some(vec![call(None)])),
-            row(6, None),                              // unjudgeable: settles, breaks the run
+            row(6, None),                              // unjudgeable: breaks the run
             row(7, Some(vec![read(), edit()])),
             row(8, Some(vec![read()])),                // the verify re-read after the edit: kept
         ];

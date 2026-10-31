@@ -147,7 +147,7 @@
         let mut reader = StubReader::new(vec![ledger(live), ledger(merged)]);
         reader.board = Some(board);
         let delivery = WallSource::new(persona(), Arc::new(reader))
-            .deliver(&ctx(), 10_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         let text = delivery.items.iter().map(|i| i.content.as_str()).collect::<Vec<_>>().join("\n");
         let live8 = live.simple().to_string();
@@ -206,7 +206,7 @@
             ])),
         );
         let delivery = source
-            .deliver(&ctx(), 10_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         assert_eq!(delivery.items.len(), 2);
         let text = delivery
@@ -239,11 +239,7 @@
         assert_ne!(bound, turn, "fixture is degenerate if these match");
         let source = WallSource::new(persona(), reader.clone()).for_room(bound);
         let delivery = source
-            .deliver(
-                &RagContext::for_persona_in_room(persona(), 1_000_000, turn),
-                1_000,
-                ResolutionPreference::Raw,
-            )
+            .deliver(&RagContext::for_persona_in_room(persona(), 1_000_000, turn))
             .await;
         assert_eq!(
             // safe: test-local Mutex, single-threaded here.
@@ -268,11 +264,7 @@
         let bound = Uuid::parse_str("00000000-0000-0000-0000-0000000000cc").unwrap();
         let source = WallSource::new(persona(), reader.clone()).for_room(bound);
         let delivery = source
-            .deliver(
-                &RagContext::for_persona_in_room(persona(), 1_000_000, Uuid::nil()),
-                1_000,
-                ResolutionPreference::Raw,
-            )
+            .deliver(&RagContext::for_persona_in_room(persona(), 1_000_000, Uuid::nil()))
             .await;
         assert!(delivery.items.is_empty(), "a nil room must render no wall");
         assert_eq!(
@@ -293,7 +285,7 @@
         ]));
         let source = WallSource::new(persona(), reader);
         let delivery = source
-            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         assert_eq!(delivery.items.len(), 2);
         assert!(delivery.items[0]
@@ -311,7 +303,7 @@
         let reader = Arc::new(StubReader::new(vec![]));
         let source = WallSource::new(persona(), reader);
         let delivery = source
-            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
@@ -326,10 +318,9 @@
         reader.set_fail(true);
         let source = WallSource::new(persona(), reader);
         let delivery = source
-            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         assert!(delivery.items.is_empty());
-        assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
     // what this catches: cross-persona ctx gets nothing (defense in depth).
@@ -348,11 +339,7 @@
         let bound = Uuid::parse_str("00000000-0000-0000-0000-0000000000cc").unwrap();
         let source = WallSource::new(persona(), reader.clone()).for_room(bound);
         let _ = source
-            .deliver(
-                &RagContext::for_persona(persona(), 1_000_000),
-                1_000,
-                ResolutionPreference::Raw,
-            )
+            .deliver(&RagContext::for_persona(persona(), 1_000_000))
             .await;
         assert_eq!(
             // safe: test-local Mutex; the only writer is the stub above, single-threaded here.
@@ -368,74 +355,31 @@
         let source = WallSource::new(persona(), reader);
         let alien = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
         let delivery = source
-            .deliver(
-                &RagContext::for_persona(alien, 1_000_000),
-                1_000,
-                ResolutionPreference::Raw,
-            )
+            .deliver(&RagContext::for_persona(alien, 1_000_000))
             .await;
         assert!(delivery.items.is_empty());
-        assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
-    // what this catches: a board too large for one budget packs whole posts and
-    // stamps `truncated` — nothing resumes from here (ruling a); the rest becomes
-    // visible when a bigger budget re-derives fresh, or via the expand_command verb.
+    // what this catches: a large board is delivered WHOLE, one item per post keyed by its
+    // post id, each with a `[category] <first line>` summary and a persona/wall/list
+    // pointer, `truncated` false and no truncation marker; the view, not the source, sizes it.
     #[tokio::test]
-    async fn overflow_truncates_and_a_bigger_budget_sees_the_rest() {
-        // Each rendered post ("[c]\n" + 200 chars) ~= 51 tokens; budget 60
-        // admits exactly one whole post per call.
-        let body = "y".repeat(200);
-        let reader = Arc::new(StubReader::new(vec![
-            post("a", &body),
-            post("b", &body),
-            post("c", &body),
-        ]));
-        let source = WallSource::new(persona(), reader);
+    async fn every_post_is_delivered_whole_with_levels() {
+        let body = format!("first line\n{}", "y".repeat(10_000));
+        let posts = vec![post("a", &body), post("b", &body), post("c", &body)];
+        let ids: Vec<String> = posts.iter().map(|p| p.post_id.to_string()).collect();
+        let source = WallSource::new(persona(), Arc::new(StubReader::new(posts)));
 
-        let first = source.deliver(&ctx(), 60, ResolutionPreference::Raw).await;
-        assert_eq!(first.items.len(), 1, "one whole post fits in budget 60");
-        assert_eq!(first.items[0].metadata["category"], "a");
-        assert!(
-            first.truncated,
-            "two posts remain beyond the budget → truncated must be stamped"
-        );
-
-        // No cursor to resume: a fresh call under a bigger budget re-derives and
-        // admits all three — that is how the rest is seen now.
-        let full = source.deliver(&ctx(), 400, ResolutionPreference::Raw).await;
-        assert_eq!(full.items.len(), 3);
-        assert!(!full.truncated);
-    }
-
-    // what this catches: an oversized FIRST post is truncated and NEVER
-    // overspends the budget, across the whole budget regime — the same
-    // marker-only-overspend bug the doctrine source's adversarial review
-    // caught (PR #1651). Invariant: for ANY budget, either no block, or the
-    // delivered tokens fit the budget AND carry real content.
-    #[tokio::test]
-    async fn oversized_first_post_never_overspends_across_budget_regime() {
-        let big = "z".repeat(10_000);
-        for budget in [1u32, 2, 3, 5, 6, 7, 8, 20, 100, 500] {
-            let reader = Arc::new(StubReader::new(vec![post("plan", &big)]));
-            let source = WallSource::new(persona(), reader);
-            let delivery = source
-                .deliver(&ctx(), budget, ResolutionPreference::Raw)
-                .await;
-            assert!(
-                delivery.tokens_used <= budget,
-                "budget {budget}: overspent ({} > {budget})",
-                delivery.tokens_used
-            );
-            if let Some(item) = delivery.items.first() {
-                let only_marker =
-                    item.content.trim_start().starts_with('…') || !item.content.contains('z');
-                assert!(
-                    !only_marker,
-                    "budget {budget}: delivered a content-free block: {:?}",
-                    item.content
-                );
-            }
+        let d = source.deliver(&ctx()).await;
+        assert_eq!(d.items.len(), 3);
+        assert!(!d.truncated);
+        for (item, id) in d.items.iter().zip(&ids) {
+            assert_eq!(&item.key, id);
+            assert!(item.content.ends_with(&body), "post body whole, never cut");
+            assert!(!item.content.contains("truncated"));
+            let cat = item.metadata["category"].as_str().unwrap_or_default();
+            assert_eq!(item.summary.as_deref(), Some(format!("[{cat}] first line").as_str()));
+            let pointer = item.pointer.as_deref().unwrap_or_default();
+            assert!(pointer.contains(id.as_str()) && pointer.contains("persona/wall/list"), "{pointer}");
         }
     }
-

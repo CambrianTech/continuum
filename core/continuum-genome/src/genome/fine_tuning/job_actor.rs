@@ -382,6 +382,7 @@ fn run_actor(
             wall_clock_ms,
             cost_usd: None,
             layers_adapted: None,
+            trained_on: None,
         },
     };
     let _ = status_tx.send(TrainingStatus::Completed { artifact });

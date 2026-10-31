@@ -395,13 +395,10 @@ pub(super) async fn perception_grade(
         name: "perception/observe".to_string(),
         input: serde_json::json!(params),
     };
-    // Generous char bound: the ObserveResult carries the structure tree + (inline) the rendered
-    // PNG, which the model-facing path would fold. Grading is not latency-critical and needs the
-    // WHOLE JSON, so we don't fold it here.
-    const OBSERVE_RESULT_BOUND: usize = 16_000_000;
+    // Grading needs the WHOLE JSON (structure tree + inline PNG); results come back whole.
     let out = match acting
         .executor
-        .execute_native_batch(std::slice::from_ref(&observe_call), &ws_ctx, OBSERVE_RESULT_BOUND)
+        .execute_native_batch(std::slice::from_ref(&observe_call), &ws_ctx)
         .await
     {
         Ok(o) => o,

@@ -50,7 +50,7 @@ pub use entity::{
 pub use continuum_orm_derive::Entity;
 pub use migration::{MigrationEngine, MigrationHandle};
 pub use query::{QueryBuilder, QueryOperator, SortDirection, StorageQuery};
-pub use sqlite::SqliteAdapter;
+pub use sqlite::{IndexFailure, IndexPass, SqliteAdapter};
 pub use store::{OrmStore, OrmStoreError};
 pub use types::{
     CascadeRule, CollectionSchema, DataRecord, FieldType, ForeignKeyRef, RecordMetadata,

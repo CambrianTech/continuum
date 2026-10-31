@@ -4,6 +4,8 @@ pub mod eval;
 pub mod exam_serving;
 pub mod held_out;
 pub mod coursework;
+pub mod eval_set;
+pub mod correction_families;
 pub mod curriculum;
 pub mod training_sources;
 pub mod learning_policy;

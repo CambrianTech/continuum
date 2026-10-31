@@ -1,5 +1,9 @@
 # A mind's context and the engine it runs on
 
+**Focus boundary:** [Focus contract](FOCUS-CONTRACT.md) defines one allocation,
+full demand versus granted detail, learnable attention and node conformance.
+This document retains ownership of physical capacity and KV continuity.
+
 **Status:** DESIGN, co-authored (Fable, Codex), 2026-10-19. Nothing here is built.
 Supersedes nothing yet; it consolidates four designs that each named part of this and
 were built in pieces: [PERSONA-CONTEXT-PAGING](PERSONA-CONTEXT-PAGING.md),
@@ -46,6 +50,43 @@ Each fix of the past week (sticky collapse, churn ordering, ring scope labels, a
 env var, lane-queue aging) patched a symptom of two faults. This document names the two
 and the one owner each gets. It must hold on every machine we ship to: a 24 GB MacBook
 Pro, the M5, a 5090, a phone. No number in it is a constant for one machine.
+
+## The governing law: a context is a FIFO
+
+Joel, 2026-10-27: "The linear nature of an LLM, fifo, makes it fairly obvious what kinds of
+memory and data architectures make the most sense during this period. Optimization is the
+difference between many minds and many slots and breakdowns."
+
+An engine reuses a prompt up to the first token that differs from the last one, and
+recomputes everything after it. So every rule below follows from where a change lands:
+
+1. **Order by stability.** An immutable head (identity, tools, policy), an append-only middle
+   (her history, results, what reached her rooms), and a tail that alone may change (this
+   act's facts, the clock, the newest result). Whatever can change sits after everything
+   that cannot.
+2. **Never re-place what exists.** An item already sent stays where it was sent. Moving it,
+   reordering it, or re-rendering it in new words re-sends everything behind it.
+3. **Page by position.** The head is one copy shared by every mind; the middle is cold and
+   pages to RAM and disk; the tail is hot and stays in VRAM.
+4. **Collapse only the oldest end, and only at a restart.** A collapse anywhere else rewrites
+   what follows it (goal 7 states why the newest end is never cut).
+5. **One health number: re-processed tokens per act against appended tokens.** Healthy is
+   about 1:1. Every change to what a mind perceives reports it before and after.
+
+Every regression of this kind broke rule 2:
+
+| When | What moved | Cost per act |
+|---|---|---|
+| 10-19 | the results ring grew ahead of its own index, mid-prompt | 16,669-28,803 tokens re-prefilled |
+| 10-24 | the substrate's notices, re-rendered after her view | ~3.6k chars (Benchy, Aiko) |
+| 10-24 | the kanban's claim column and count, ahead of her history | 30% of turns broke the prefix |
+| 10-27 | room updates of a drive, re-placed below every act (#5526) | 12-13k tokens re-prefilled while ~1k was appended (Aris, 12:1) |
+
+The ratio is the difference this law names: at 12:1 the engine spends most of each act
+re-reading, so four residents saturate it; at 1:1 the same machine seats many minds. Work
+on the engine's memory architecture (a fixed-size recurrent state per mind, one shared head
+state for every mind) is measured against the clean 1:1 baseline, never against a feed that
+violates this law.
 
 ## Fault 1: a mind's context is re-rendered every act
 
@@ -222,6 +263,239 @@ labels as a stability device, and the block-ordering code whose only job is stab
 Added by the 2026-10-21 revision: the act-latency fill cap (`delib.fill.latency_capped`,
 `history_fill_cap`) and its front-drop of history, and the two duplicate renderings of her
 actions ("steps taken this session" and the action half of working memory).
+
+### Revision, 2026-10-25: one codec for every layer, owned by positron and the view
+
+Joel (10-25): "It's like any compression algorithm"; "like video it's time dependent ... prediction
+is a lot easier when you understand what changes between frames"; "make this more systematic in
+positron just like KV caching and collapsing to prevent this kind of thing."
+
+What happened without it: on the M5 (canary a59c2bf15) Aiko read one 51,827-char file whole 9
+times in 43 acts with 11 epoch turnovers, because three owners each decided a piece of what she
+sees. Working memory collapsed results against its own share. A hand table (`churn_of`) set the
+restart order. The view's start ended its keep-whole run at the first item too large. Every
+incident was fixed where it happened, so the next one appeared somewhere else.
+
+**The contract.** Every layer a mind or a human perceives is a positron layer, and every positron
+layer is a context `Source`:
+- **Keyed items, never one block.** Each item has a stable key naming its whole subject (one
+  result, one open file, one card, one roster per room). A change appends that item's new version.
+- **Levels of detail on every item:** `full`, `summary` (an outline, a digest, a thumbnail: a
+  mipmap level) and `pointer`. A `pointer` is an EXPAND HANDLE that a positron command resolves
+  back to `full`. An item whose pointer cannot be expanded is a defect, not a level.
+- **A fold below the pointer** (`Source::fold`, optional): the contiguous OLDEST run of a source's
+  items as ONE block naming its range and count (O(1) in the run, never a list of ids). The
+  source's floor is that block, not the sum of its pointers, so a floor never grows with every
+  act she takes (Aris, the M5, 2026-10-29: ~95 pointers at ~190 chars before anything whole fit).
+  The block is fixed at its start; folded items never arrive mid-epoch; a later start restores
+  them only for a rise to summary or whole, never for a pointer the block already covers. Like a
+  pointer, a fold must name how one of its items reopens (her acts: `tool/output` with `act`).
+- **The same items for humans and minds.** A human renderer and a mind's view consume one layer at
+  the level each can afford. Screen frames, video and 3D state follow later as items too.
+
+**The one owner of the invariants**, `continuum-context` (`View`, `Epoch`, `Motion`). No layer and
+no faculty re-implements them:
+1. Within an epoch the prompt only appends. A rewrite is a turnover, and turnover is the only
+   place collapse happens.
+2. The newest arrival stays whole unless it alone exceeds what a start would grant it. In that
+   case it arrives at its summary (admission, `View::readmit`); otherwise the view turns over and
+   shrinks the oldest first (goal 7). The same rule covers her newest native tool result
+   (`prompt/newest_result.rs`): when it alone exceeds what the window leaves it after the
+   irreducible parts (#5481's `required_parts`), it is shown at its summary level with its handle
+   and a note saying how to read the rest, never dropped. Kept whole, it made every request
+   overflow and she could not act at all (Aris, 2026-10-26: a 340,832-char result, 0 acts for a
+   day). A result that fits is never touched.
+3. A start gives each item the most detail that fits, newest first. One oversized item never
+   collapses the others (`levels`).
+4. Restart order comes from measured motion (`kept / (1 - p)` per source), never a label.
+5. The engine's held references (slot prefixes, checkpoints, the shared head of ~38.8k chars that
+   every resident already sends identically) are known to the encoder (`references()`, Codex), and
+   every miss is a probe with its cause.
+6. Every decision (start, lease size, order, prefetch) is an explicit action with an exact cost
+   (prefill tokens, seconds). Replaying captures is the simulator in which a learned policy must
+   beat the hand rule before it runs live (plan line 14).
+
+**Gates (source-hygiene ratchets; counts on canary a59c2bf15 + #5422, 2026-10-25):**
+
+| Gate | Today | Done |
+|---|---|---|
+| prompt messages built outside the view and the fresh tail's one renderer (`ChatMessage::text`/`tool_results` in `llm_deliberation_faculty/prompt`) | 13 | the tail's single renderer only |
+| collapse outside the view (`collapse_over` / `collapse_results_over_cap` callers) | 4 | 0: working memory bounds RAM by handle, never what she sees |
+| hand churn labels (`churn_of` callers; production lines, ratchet `hand_churn_labels`) | 3 | 0: `Motion` orders every start |
+| positron `ViewState` kinds that are not context `Source`s | 13 | 0: one adapter, items with levels and expand handles |
+
+**Media is the same codec** (Joel, 2026-10-26: "Should be positron. This is common across so
+much."). A frame (a screen, a camera, a room the minds share, an image in chat) is a positron
+item with LEVELS by image-token budget: a glance (low tokens: faces, rooms, live calls),
+grounding (at least 1,024 tokens: the Qwen-VL floor for pointing at UI elements, which the M5's
+engine warns about on every load), full, and an unchanged frame as its content hash alone. The
+view chooses the level per mind, task and budget through the same allocation as text levels;
+the engine only honours the per-request token budget it is handed. Measured 2026-10-26 on the M5:
+an avatar at ~200 image tokens was described correctly (prefill 2.5 s, decode 2.8 s), the
+grounding level is what desktop and UI work needs.
+
+These are OPEN VIEWS, multimedia (Joel: "like our views from before, but multimedia. Then audio
+too"): a mind keeps open views of the streams she is in (a screen, a camera, her avatar's eye in a
+3D world, a call, a room), keyed by stream and time, paged like a file she reads. Audio is the same
+codec: keyed segments by time with levels: a glance ("someone spoke", or the transcript), closer
+(the transcript with speaker and tone), full (the audio tokens, for a model that hears natively),
+and silence as nothing. Her body and voice are her hands: actions through the same command
+surface, observed back through her eyes and ears.
+
+**How to add a layer (the whole recipe; everything else is free):**
+1. Implement `continuum_context::source::Source` for it. `name` and `priority` are required;
+   set `required` only for input she must read.
+2. `items()` returns one `Item` per subject, under a key that names that whole subject. Build its
+   `summary` with `continuum_context::levels::summarize(full, Shape::…)` (`Code` with the producer's
+   line parser, `Output`, `List`). Its `pointer` names the handle that expands it. A source
+   whose items accumulate (her acts) implements `fold` so its floor is one block.
+3. Add the source to the view's source list. Never push a prompt message, never collapse, never
+   pick an order: the view appends, levels, admits, orders by measured motion and turns over.
+4. Prove it with a fixture in the source's test mod, then with the replay validator.
+
+What you get for free: append-only caching within an epoch, levels of detail that never
+collapse the newest, admission instead of turnovers, a restart order measured per mind, and
+(with Codex's engine verbs) the shared head across minds.
+
+**Owners:** Fable (the view, the adapter, the deletions), Codex (`references()`, head/ensure,
+slot/seed), Cormac (checkpoints at the head boundary and on turnover). The replay validator
+(`continuum-context` `examples/replay.rs`) and the live 15-minute read are the receipts for each slice.
+
+### Revision, 2026-10-30: causality is in the type, so nothing can loop as if it were progress
+
+**The failure.** On the M5 (build ab0466601, 2026-10-30) residents read the same file up to 8 times an hour
+and made 2 edits in 75 reads. Every act's turnover collapsed her earlier results to one-line notes, so her
+next input looked like her last and she repeated the act. Every loop we have recorded has this one shape:
+the next input equals the last, because a cause lost its effect or an effect lost its cause. Patching the
+budget that caused today's instance (ONE-BUDGET slice 6) does not make the next instance impossible. The
+data type has to.
+
+**The design** (Joel: "pointers into a linked list ... we already built into engrams ... handle it
+generically ... at a fundamental and centralized level"). Every element she perceives is a node in a causal
+chain: an act, its result, a message and its reply, a game move, a perception fact, an event from any
+activity. Engrams already link provenance (`EngramOrigin::ToolInvocation`, the parent of a reflection) and
+reply edges. The view's `Item` gains the same link.
+
+- **`Item { key, cause, content, ... }`.**
+  - `cause` is a typed, stable id assigned by the producer that persists the element (the engram id), never
+    an in-view position. That lets edges cross sources, epochs and restarts. The view resolves a cause to
+    whatever level it holds. A cause it cannot resolve (outside the epoch, evicted) is the typed
+    `CauseNotHeld`. It renders a durable, resolvable handle with typed availability, so the cause stays
+    reachable across an epoch. A `CauseNotHeld` does not count as demonstrated closure; the validator
+    reports it separately.
+  - `Root` exists only for a genuine origin (an external message, the start of an activity), and the ratchet
+    counts `Root` constructions per source.
+  - `content` is the hash of the whole, computed once where the whole is stored (`StoredWhole` gains it at
+    spill time), so a deferred whole is never re-read to compare.
+  - The constructor requires `cause` and `content`, so a source cannot build an item without causality.
+    Engram provenance and the view's link become one type: the view holds a chain within an epoch, and
+    engrams persist it.
+- **The view enforces it, centrally, for every source.** No source can opt out:
+  1. **Causal closure.** An element renders only if its cause is represented: whole, summarized, or folded
+     with its outcome. Nothing appears as an effect without its cause, and "read X" never appears without
+     what X said or how it ended.
+  2. **Every chain's head is whole.** This generalizes "never clip the newest end" (goal 7) from the newest
+     message to the newest element of each causal thread.
+  3. **Collapse folds a chain segment; it never breaks a chain.** A contiguous run becomes one node that
+     keeps its outcome and a pointer back. The chain shortens and stays linked.
+  4. **A cycle cannot be presented as progress.** Repeat identity is (action fingerprint, outcome content).
+     The fingerprint is the normalized request: the verb and its arguments as the tool saw them. No
+     argument is excluded by default; an exclusion is named only by the tool's own schema, never by the
+     view. (Key plus cause cannot catch the loop: each re-read's result is caused by a new act. Cormac's
+     review.) A new act whose fingerprint matches a prior act in its chain, and whose outcome content is
+     unchanged, renders as "repeat of #n, outcome unchanged", never as a fresh element, but only while
+     #n's whole is in front of her (Codex and Fable on the design, 2026-10-31):
+     - the view chooses it on the act's first arrival in an epoch, and only when #n is held whole in
+       that epoch (not folded, collapsed, summarized or itself a repeat). Otherwise she needs the
+       content again and it arrives whole, so a repeat never points at what her view lacks and her
+       reopen never answers another repeat;
+     - a turnover re-renders every item as itself; an explicit reopen (`tool/output`) is always whole;
+     - a repeat is never a read of a whole: it never discharges a whole-result obligation;
+     - the effect is the command's own declaration (`CommandSpec::EFFECT`: `Observes`, `Changes`,
+       `Reopens`, `Undeclared`), read from the descriptor of the command the call resolved to, never
+       from a name or an output. `Undeclared` authorizes nothing, and an act mixing effects takes the
+       strongest (a read plus a write is a change).
+     - **Same output is not the same effect** (Codex). Two appends or sends can both return "OK" and still
+       cause two effects. Every occurrence keeps its own id, order and side-effect receipt, and is never
+       erased. Repeated content renders by reference to the earlier occurrence. "Outcome unchanged" is
+       claimed only on the producer's evidence: a read whose content hash is unchanged qualifies; an "OK"
+       from a write does not.
+     - This is perception, not a gate and never an injected instruction. It makes progression visible.
+       Whether she stops repeating is behavior: only live useful work proves it.
+  5. **Asking again for a folded ancestor is a measured miss.** The measurement is the existing
+     handle-expand request on a folded node, counted in that one place. It raises that chain's claim in
+     the one allocation (ONE-BUDGET), so what she keeps needing stays whole, decided by her own misses
+     rather than a constant.
+- **Overflow, in ONE-BUDGET terms.**
+  - A finished chain (its outcome settled) folds whole into one node holding its outcome; only live chains
+    hold a skeleton.
+  - If the live chains' skeletons still exceed the grant (a small window, the 8 GB case), the allocation
+    returns the typed refusal or abstention of contract 5 ("demand, feasibility and allocation are three
+    things"). It never breaks a chain to fit.
+- **The flexbox allocates chains.** A chain is the claim unit:
+  - floor: its causal skeleton (head plus fold nodes);
+  - want: the whole chain;
+  - grow pass: most-missed and most-recent segments first.
+
+  The allocator is unchanged; its claims are now causally whole.
+- **One owner.** `continuum-context` owns the item type and the five invariants. Sources supply cause
+  links. Engrams reuse the link type. #5604's proprioception for unfulfilled acts becomes one consumer of
+  invariant 4, not a separate mechanism.
+- **Enforcement.**
+  - A ratchet: no item is constructed without a cause.
+  - A replay validator, in seconds and with no live peers. It proves visible progression and retained
+    outcomes, not behavior:
+    - across captured traces, a repeated (action fingerprint, outcome) renders as a repeat, never as fresh;
+    - every rendered effect has its cause represented, with `CauseNotHeld` counted separately;
+    - fixtures: an unchanged-read repeat (renders as a repeat), a repeated write with identical output
+      (two occurrences, both kept), and a cause across a restart (resolves through its durable id).
+
+    The M5 2026-10-30 read loops are an acceptance case, not a universal diagnosis.
+  - Live, on the health line: repeats per resident-hour.
+
+**Build order and owners:**
+1. The item type, typed causes, `CauseNotHeld`, the `Root` ratchet and invariants 1-3, in
+   `continuum-context`, with every source supplying causes. Owner: Fable.
+2. Invariant 4's fingerprint and its replay validator, which builds on the deferred-whole and fold code.
+   Owner: Cormac. The validator replays the M5 2026-10-30 captures and must fire on the 8-reads-an-hour case.
+   Built (card dcf95bce): `cause::Fingerprint` over `ToolCall::canonical_input`; `ToolEffect` in
+   `continuum-base`, declared per command (`code/read`, `code/search` observe; `tool/output` reopens);
+   the view's repeat rule (`view/repeat.rs`) and `Source::repeat`; the replay's invariant-4 line
+   (`examples/replay/validate.rs`). On IntelMac's own captures it fires: 8 exact re-reads, 8 unchanged,
+   6 rendered as repeats. The M5 run is Fable's.
+3. Invariant 5 and the overflow rule, together with ONE-BUDGET slice 6's measured claims. Owner: Fable.
+
+Each step lands with its validator and a 15-minute live read.
+
+**The render receipt: what was actually sent** (Codex on #5585 and #5611, 2026-10-30). An item's id, cause
+and content hash say what it IS. Nothing yet says what the render SENT, so no consumer can know whether she
+perceived a result or only that it was delivered. Codex's task wakes need exactly that: a wake may
+discharge only when the whole result was actually in a prompt she was sent.
+
+- **A render is not a send** (Codex). The view (`continuum-context`), the only place that decides levels,
+  produces a candidate receipt with each render. It becomes THE receipt only at the successful submission
+  boundary, bound to the submitted request's id, epoch and allocation (FOCUS-CONTRACT rule 8). A render that is
+  discarded (a refit, a refusal) or a send that fails produces no receipt and discharges nothing. It is not
+  assembled by sources or consumers.
+- **Per item:** its `ElementId`; the level actually sent (`Whole`, `Summary`, `Pointer`, or folded into a named
+  run); the content hash of the body actually sent; and its load outcome:
+  - `Resident`: the whole was in memory;
+  - `Loaded`: a stored whole was read back for this render;
+  - a stored whole that cannot be read is never silently replaced by its pointer (that would be an automatic
+    fallback). The load returns a typed `Unavailable { handle, kind }` to the one allocator: a mandatory whole
+    refuses or defers explicitly (a capacity outcome); an optional item's lower level is an explicit
+    decision by the allocator, which yields a fresh render and a fresh candidate receipt (Codex).
+- **Consumers read the receipt, never the prompt text.** A task wake discharges only when all hold: the
+  request was actually submitted; its result's item was sent at level `Whole` with load `Resident` or
+  `Loaded`; and the sent content hash and memory incarnation match the task result it is for. Delivery, durable checkpoints and ACKs are separate
+  facts and never imply she saw it (Codex).
+- **The receipt is the source of the signals** in HOW-A-MIND-GETS-WHAT-SHE-NEEDS section 7: faults (a
+  re-read of an item whose last receipt said folded), repeats (whole, unchanged), and the allocation
+  receipt the proving ground reduces.
+- **No per-source clipping and no second allocator:** the receipt reports the one allocation's outcome;
+  nothing downstream re-decides levels.
+- Owner: Fable (the receipt, in the view), after #5611 lands. Codex consumes it for task wakes and owns the
+  task source on top of it.
 
 ## Fault 2: engine configuration is decided in five places
 

@@ -68,8 +68,8 @@ pub(in crate::persona) fn build_persona_system_prompt(agent_name: &str) -> Arc<s
          - Speak as yourself, in the first person, with prose addressed to the \
          room — never narrate another peer's voice, and never emit a raw \
          tool-call envelope as your spoken reply. The silence token is described \
-         in the [Conversational Presence] block when that block is present; when \
-         it is absent you weren't handed the silent hatch, though declining in \
+         in the presence block ([Conversational Presence] or [Directed Presence]) \
+         when one is present; when neither is, you weren't handed the silent hatch, though declining in \
          your own words always stays yours to choose."
     ))
 }

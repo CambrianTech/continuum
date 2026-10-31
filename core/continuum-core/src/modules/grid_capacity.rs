@@ -58,7 +58,7 @@ impl GridCapacityModule {
     /// and offering a guess would be exactly the fabricated-capacity lie the grid's
     /// per-node-fit honesty exists to prevent.
     fn current_offer(&self) -> Option<CapacityOffer> {
-        offer_from_board(&self.resource_daemon.board(), EpochMs::now().millis(), |base| self.trains_base_here(base))
+        offer_from_board(&self.resource_daemon.board(), EpochMs::now().millis(), local_bases(), |base| self.trains_base_here(base))
     }
 
     /// Whether a trainer on this host takes LoRA jobs for `base`. Without the genome module
@@ -174,6 +174,7 @@ impl ServiceModule for GridCapacityModule {
 pub(crate) fn offer_from_board(
     board: &crate::resources::LeaseBoard,
     at_ms: u64,
+    local: Vec<String>,
     trains_here: impl Fn(&str) -> bool,
 ) -> Option<CapacityOffer> {
     let serving = crate::inference::llama_server::current_serving();
@@ -212,10 +213,33 @@ pub(crate) fn offer_from_board(
         // a gate checks membership here and refuses on absence; an older core advertises
         // nothing (serde default), so typed absence is safe by construction.
         capabilities: crate::capacity::gossip::this_build_capabilities(),
-        // What a peer may lease training to us for (card 6f05b89d): the served base, when a
-        // trainer here would take it. A node with no such trainer (IntelMac) advertises none.
-        trainable_bases: serving.active_model.iter().filter(|base| trains_here(base)).cloned().collect(),
+        // What a peer may lease training to us for (card 6f05b89d).
+        trainable_bases: trainable_bases(serving.active_model.as_deref(), local, trains_here),
+        // The residents this node last judged stalled or regressed (card 1c157668).
+        resident_alarms: crate::modules::citizen_health::current_resident_alarms(),
     })
+}
+
+/// The registry models whose weights are on this node (a resolved local GGUF): the bases a
+/// trainer here could load without a download.
+fn local_bases() -> Vec<String> {
+    crate::model_registry::try_global()
+        .map(|registry| registry.models().filter(|model| model.gguf_local_path.is_some()).map(|model| model.id.clone()).collect())
+        .unwrap_or_default() // unwrap_or_default: no registry yet = no local bases, the truth at boot
+}
+
+/// Every base a peer may lease training to this node for: the served one and every base whose
+/// weights are here, each only when a trainer on this host would take it (`trains_here`, the
+/// coordinator's own gate). Only the served model used to be asked, so a node serving one base
+/// never advertised another its engine lane would train from local weights, and a lease for
+/// that base found no receiver (Codex on card 92cd2251). Sorted and unique, so the beacon is
+/// stable. Admission is the lease's own (a lane's headroom is checked when it trains).
+fn trainable_bases(served: Option<&str>, local: Vec<String>, trains_here: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut bases: Vec<String> = served.map(str::to_owned).into_iter().chain(local).collect();
+    bases.sort();
+    bases.dedup();
+    bases.retain(|base| trains_here(base));
+    bases
 }
 
 #[cfg(test)]
@@ -231,9 +255,22 @@ mod tests {
             leases: Vec::new(),
             attributions: Vec::new(),
         };
-        let o = offer_from_board(&ram_only, 7, |_| false).expect("RAM alone is a capacity"); // JUSTIFIED: the invariant under test
+        let o = offer_from_board(&ram_only, 7, Vec::new(), |_| false).expect("RAM alone is a capacity"); // JUSTIFIED: the invariant under test
         assert_eq!(o.gpu_total_bytes, 0);
         assert_eq!(o.system_ram_free_bytes, 8 << 30);
-        assert!(offer_from_board(&LeaseBoard { kinds: Vec::new(), leases: Vec::new(), attributions: Vec::new() }, 7, |_| false).is_none(), "nothing governed = no offer");
+        assert!(offer_from_board(&LeaseBoard { kinds: Vec::new(), leases: Vec::new(), attributions: Vec::new() }, 7, Vec::new(), |_| false).is_none(), "nothing governed = no offer");
+    }
+
+    // what this catches (Codex on card 92cd2251): a node advertising only the base it serves,
+    // so a base its engine lane would train from local weights never reached the grid and a
+    // lease for it found no receiver. Every local base a trainer here takes is advertised,
+    // sorted and unique; one no trainer takes is not; with nothing served the locals still count.
+    #[test]
+    fn every_base_a_trainer_here_takes_is_advertised_not_only_the_served_one() {
+        let trainable = |base: &str| base != "no-trainer";
+        let local = vec!["qwen-0.5b".to_string(), "no-trainer".to_string(), "qwen-1.5b".to_string()];
+        assert_eq!(trainable_bases(Some("qwen-1.5b"), local.clone(), trainable), ["qwen-0.5b", "qwen-1.5b"]);
+        assert_eq!(trainable_bases(None, local, trainable), ["qwen-0.5b", "qwen-1.5b"]);
+        assert!(trainable_bases(Some("qwen-1.5b"), Vec::new(), |_| false).is_empty(), "no trainer here, nothing advertised");
     }
 }

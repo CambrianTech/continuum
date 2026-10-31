@@ -60,6 +60,34 @@ pub struct GenerationReceipt {
     /// before this field read as empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gene_scales: Vec<f64>,
+    /// The one allocation her prompt was fitted under (FOCUS-CONTRACT rule 8): with `capture`,
+    /// a lived call names the attention decision that shaped what she saw, so an outcome can be
+    /// attributed to it and the call replayed under another policy. `None` for calls no view
+    /// allocated, and for rows written before this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allocation: Option<AllocationReceipt>,
+}
+
+/// The allocation a call's prompt was fitted under: the window it ran over, the build that
+/// allocated it, and each claim's floor, want and grant, in tokens of that allocation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllocationReceipt {
+    pub window: u32,
+    /// The build that ran the allocator: its policy revision until the policy has its own.
+    pub revision: String,
+    pub claims: Vec<ClaimGrant>,
+}
+
+/// One claim of an allocation: what it could not go below, what it wanted whole, and what it got.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimGrant {
+    pub source: String,
+    pub priority: u8,
+    pub floor: u32,
+    pub want: u32,
+    pub grant: u32,
 }
 
 /// The genes a request actually runs with, and their scales: every requested adapter at a
@@ -138,12 +166,19 @@ impl GenerationReceipt {
             capture: None,
             genes: Vec::new(),
             gene_scales: Vec::new(),
+            allocation: None,
         }
     }
 
     /// Attach the genes the call ran with and their scales ([`genes_of`]).
     pub fn with_genes(mut self, genes: Vec<(String, f64)>) -> Self {
         (self.genes, self.gene_scales) = genes.into_iter().unzip();
+        self
+    }
+
+    /// Attach the allocation the call's prompt was fitted under ([`AllocationReceipt`]).
+    pub fn with_allocation(mut self, allocation: Option<AllocationReceipt>) -> Self {
+        self.allocation = allocation;
         self
     }
 
@@ -166,6 +201,7 @@ impl GenerationReceipt {
             capture: None,
             genes: Vec::new(),
             gene_scales: Vec::new(),
+            allocation: None,
         }
     }
 

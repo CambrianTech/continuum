@@ -1,87 +1,32 @@
-//! Per-persona command inbound pump — makes a persona a real
-//! command-callable peer on the airc grid.
+//! Per-identity command pump: makes a persona (and the node) a command-callable peer
+//! on the airc grid.
 //!
-//! ## What this exists for
+//! The pump reads ONE source: its identity's addressed inbox
+//! (`routing::addressed_inbox`), where airc delivers `Command` frames it has verified
+//! (signature, sender, addressee). It hands each frame to the installed command receiver
+//! (`ipc::command_ingress`), whose ingress contract decides it. Room subscriptions are
+//! perception's alone and carry no command handling: on 2026-10-30 an untrusted peer's
+//! commands published into #general were recognized by a header string on room events,
+//! executed, and fed to residents as speech.
 //!
-//! PR #1560 + #1563 proved the cross-grid command WIRE works
-//! end-to-end IN TESTS — but the wiring was always manual: each test
-//! constructed a `CommandRequestHandler` + spawned a subscribe loop
-//! against the test's airc peer. Production never installed the
-//! handler anywhere.
+//! Per `[[personas-are-citizens-airc-is-identity-provider]]` the pump lives on the
+//! persona's airc handle; the NODE runs one too ([`spawn_node_pump`]) because capacity
+//! is offered and placement targets at node granularity.
 //!
-//! Production substrates today therefore SILENTLY ignore incoming
-//! `AircCommandRequest` envelopes. The wire-test green-light reads
-//! "we proved the substrate CAN respond"; what's missing is "the
-//! substrate actually IS responding."
-//!
-//! This module fills the install step. Per
-//! `[[personas-are-citizens-airc-is-identity-provider]]`: the
-//! substrate has no airc identity of its own — only personas do. So
-//! the pump lives ON THE PERSONA, attached to its `Arc<Airc>` handle.
-//! (Superseded in one respect on 2026-09-17: the NODE answers too —
-//! see [`spawn_node_pump`] — because capacity is offered and placement
-//! targets at node granularity, and inference addressed to the node's
-//! identity had no handler anywhere.)
-//! Every persona that boots gets one; when peer_b dispatches
-//! `airc://<persona-uuid>/ai/generate`, that persona's pump receives
-//! the envelope, hands it to a `CommandRequestHandler`, the handler
-//! dispatches via the substrate's global `CommandExecutor`, and the
-//! reply ships back automatically.
-//!
-//! ## Why a separate task from the persona's chat subscribe loop
-//!
-//! `airc_persona_conversation.rs::next_message` is the chat pump. It
-//! filters by `body.as_text()` — anything that isn't a text body is
-//! silently dropped. Command envelopes carry `Body::Json` so the
-//! chat pump never sees them.
-//!
-//! Two options for the command path:
-//!
-//! 1. **Extend the chat pump** to also dispatch command envelopes
-//!    inline. Couples two concerns into one loop; cognition / lag
-//!    behavior gets tangled.
-//! 2. **Spawn a second subscribe loop** on the same airc handle.
-//!    airc-lib's `subscribe()` is broadcast-shape (verified in PR
-//!    #1563 R3): every subscriber gets every event, no contention.
-//!
-//! Option 2 wins on separation of concerns + composability. The chat
-//! pump stays single-purpose; the command pump stays single-purpose;
-//! airc-lib does the fan-out.
-//!
-//! ## Lifecycle
-//!
-//! - Spawn at persona boot — same place the chat pump primes.
-//! - Hold the `JoinHandle`. On persona shutdown, abort the task and
-//!   await it so the airc subscribe drops cleanly.
-//! - Per `[[no-fallbacks-ever]]`: if the airc subscribe call FAILS
-//!   at spawn, the pump task surfaces the error LOUDLY via tracing
-//!   and exits. A persona that can't subscribe can't receive cross-
-//!   grid commands; we refuse to pretend it can.
-//!
-//! ## Doctrinal alignment
-//!
-//! - `[[headless-success-is-personas-talking-over-airc]]` — this IS
-//!   the install step. Without it, "personas as command-callable
-//!   peers" is a doctrine without a wire.
-//! - `[[personas-are-citizens-airc-is-identity-provider]]` — pump
-//!   binds to a persona's airc handle, not a substrate singleton.
-//! - `[[no-fallbacks-ever]]` — subscribe failure surfaces; command
-//!   dispatch failure surfaces; the pump never silently drops what
-//!   it's supposed to be carrying.
+//! Lifecycle: spawned at persona boot; the `JoinHandle` is held and aborted on shutdown.
+//! Per `[[no-fallbacks-ever]]` an inbox that cannot be opened fails the spawn loudly; a
+//! closed inbox (daemon restart) is re-opened with a bounded backoff and says so.
 
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use airc_lib::adapter::ConsumerAdapter;
-use airc_lib::{Airc, AircError, FilteredEventStream};
-use continuum_airc_protocol::{COMMAND_REQUEST_BODY_HINT, HEADER_CONTINUUM_BODY_HINT};
-use futures::stream::StreamExt;
+use airc_lib::{Airc, AircError};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tracing::{debug, warn};
 use uuid::Uuid;
 
+use crate::routing::addressed_inbox::{AddressedHandler, AddressedInbox};
 use crate::routing::epoch_watermark::{OrmEpochWatermark, WatermarkError};
 use crate::routing::grid_capability::GrantAuthorizer;
 use crate::runtime::command_executor::CommandExecutor;
@@ -187,9 +132,10 @@ pub async fn spawn_node_pump(
     // The node never changes rooms on its own; the sender lives with the pump
     // for the life of the process so the loop never reads "runtime dropped".
     let (membership_tx, membership_rx) = watch::channel(0u64);
-    let pump = PersonaCommandInboundPump::spawn(peer, airc, executor, grant_authorizer, membership_rx)
-        .await
-        .map_err(NodePumpError::Subscribe)?;
+    let pump =
+        PersonaCommandInboundPump::spawn(peer, airc, executor, grant_authorizer, membership_rx)
+            .await
+            .map_err(NodePumpError::Pump)?;
     NODE_PUMP
         .set((pump, membership_tx))
         .map_err(|_| NodePumpError::AlreadyInstalled)?;
@@ -217,18 +163,19 @@ pub enum NodePumpError {
     #[error("node pump grant authorizer: {0}")]
     GrantAuthorizer(#[source] GrantAuthorizerBuildError),
     #[error("node pump: {0}")]
-    Subscribe(#[source] PumpSpawnError),
+    Pump(#[source] PumpSpawnError),
     #[error("the node command pump is already installed")]
     AlreadyInstalled,
 }
 
-/// Builds the envelope handler a pump runs: the command-ingress responder, which the socket
-/// layer owns (`ipc::command_ingress`) and installs here at boot. The persona owns its pump
-/// and the seam; it never names the layer that answers commands.
+/// Builds the command receiver a pump drives: the command-ingress handler, which the
+/// socket layer owns (`ipc::command_ingress`) and installs here at boot. The persona owns
+/// its pump and the seam; it never names the layer that answers commands.
 pub type CommandHandlerFactory =
-    fn(Arc<Airc>, Arc<CommandExecutor>, Arc<GrantAuthorizer>) -> Arc<dyn ConsumerAdapter>;
+    fn(Arc<Airc>, Arc<CommandExecutor>, Arc<GrantAuthorizer>) -> Arc<dyn AddressedHandler>;
 
-static HANDLER_FACTORY: parking_lot::RwLock<Option<CommandHandlerFactory>> = parking_lot::RwLock::new(None);
+static HANDLER_FACTORY: parking_lot::RwLock<Option<CommandHandlerFactory>> =
+    parking_lot::RwLock::new(None);
 
 /// Install the one command-handler factory. A second install replaces the first.
 pub fn install_command_handler(factory: CommandHandlerFactory) {
@@ -238,44 +185,36 @@ pub fn install_command_handler(factory: CommandHandlerFactory) {
 /// Why a pump could not start.
 #[derive(Debug, thiserror::Error)]
 pub enum PumpSpawnError {
-    #[error("subscribe the persona's rooms: {0}")]
-    Subscribe(#[source] AircError),
-    /// Boot never installed the command handler, so a pump would hear envelopes and answer
+    #[error("open the identity's addressed inbox: {0}")]
+    Inbox(#[source] airc_lib::AddressedError),
+    /// Boot never installed the command handler, so a pump would hear commands and answer
     /// none; refused rather than pretend the persona is addressable.
     #[error("no command handler installed (boot installs it before any pump starts)")]
     NoHandler,
 }
 
-/// One persona's command inbound pump. Holds the JoinHandle so the
-/// owning `PersonaAircRuntime` can abort + await on shutdown.
+/// One identity's command pump. Holds the JoinHandle so the owning runtime can abort +
+/// await on shutdown.
 pub struct PersonaCommandInboundPump {
     persona_id: Uuid,
     handle: JoinHandle<()>,
 }
 
+/// Open `airc`'s addressed inbox behind the core's seam: the ONLY way a command reaches
+/// this identity. Room subscriptions are perception's and carry no command handling.
+async fn open_inbox(airc: &Airc) -> Result<Box<dyn AddressedInbox>, airc_lib::AddressedError> {
+    let deadline = tokio::time::Instant::now() + airc_ipc::client::DEFAULT_RPC_TIMEOUT;
+    Ok(Box::new(airc.addressed_inbox(deadline).await?))
+}
+
 impl PersonaCommandInboundPump {
-    /// Spawn the pump. The airc subscribe call happens SYNCHRONOUSLY
-    /// before the task spawns — so a subscribe failure surfaces at
-    /// the call site immediately (per `[[no-fallbacks-ever]]`) instead
-    /// of getting buried in a log line + a silent-task exit. The
-    /// caller (`PersonaAircRuntime::bootstrap` once #222 lands) can
-    /// fail the persona's bootstrap with the same error rather than
-    /// declaring the persona ready when it's actually unaddressable.
+    /// Spawn the pump. The inbox is opened SYNCHRONOUSLY before the task spawns, so a
+    /// failure surfaces at the call site (per `[[no-fallbacks-ever]]`) instead of being
+    /// buried in a log line and a silent-task exit.
     ///
-    /// Once `spawn()` returns `Ok`, the subscribe loop runs until
-    /// either:
-    ///   (a) the airc subscribe stream ends (daemon disconnect),
-    ///   (b) the JoinHandle is aborted by the caller.
-    ///
-    /// `airc` is the persona's airc handle. `executor` is the
-    /// substrate's command executor — typically the global handle
-    /// from `crate::runtime::command_executor::executor()`.
-    ///
-    /// Per R2 of PR #1567: returning `Result` here closes the
-    /// "loud-once" gap. The OLD shape logged `error!` and exited the
-    /// task; the operator's only feedback was one log line + a
-    /// persona that mysteriously stopped answering. The new shape
-    /// makes the failure unmissable.
+    /// Once `spawn()` returns `Ok`, the pump reads the inbox until the runtime drops its
+    /// membership sender (the identity is torn down) or the JoinHandle is aborted; a
+    /// closed inbox (daemon restart) is re-opened with a bounded backoff.
     pub async fn spawn(
         persona_id: Uuid,
         airc: Arc<Airc>,
@@ -284,98 +223,42 @@ impl PersonaCommandInboundPump {
         membership: watch::Receiver<u64>,
     ) -> Result<Self, PumpSpawnError> {
         let factory = (*HANDLER_FACTORY.read()).ok_or(PumpSpawnError::NoHandler)?;
-        // Subscribe BEFORE spawning so failure surfaces at the call
-        // site. The stream moves into the spawned task; subsequent
-        // stream errors (lag, end-of-stream) are runtime concerns,
-        // not install-time concerns.
-        // Every room she is subscribed to, not just her default. A
-        // cross-grid command envelope is addressed to the PERSONA, so
-        // narrowing it by room made her un-callable from anywhere she
-        // was not currently parked — the same one-channel narrowing
-        // that made operator chat structurally invisible (task #64).
-        let stream = crate::routing::airc_subscription::subscribe_every_room(&airc)
-            .await
-            .map_err(PumpSpawnError::Subscribe)?;
-        // The handler VERIFIES presented capability grants against the authorizer
-        // (built from this node's own key + mesh + durable watermark). A peer
-        // presenting an owner-signed grant gets the conferred command past its tier
-        // ceiling; absent/invalid grants fall back to tier gating.
+        let inbox = open_inbox(&airc).await.map_err(PumpSpawnError::Inbox)?;
+        // The handler applies the ingress contract (direct, addressed here, the sender's
+        // trust tier meets the command's) and VERIFIES presented capability grants.
         let handler = factory(Arc::clone(&airc), executor, grant_authorizer);
-        // The pump is SUPERVISED on the persona: `run` re-opens its own stream
-        // and only returns when the runtime drops its epoch sender, so the one
-        // exit it cannot cover is a panic inside the task. The supervisor task
-        // is what `is_alive()` reads; it respawns `run` after a panic with a
-        // fresh stream and says so. Nothing outside the persona has to notice
-        // (the runtime is shared as `Arc<PersonaAircRuntime>`, so no reconciler
-        // could re-install it from outside without interior mutability —
-        // BigMama's review of #3814).
-        let handle = tokio::spawn(supervise(persona_id, airc, handler, stream, membership));
+        let handle = tokio::spawn(supervise(persona_id, airc, handler, inbox, membership));
         Ok(Self { persona_id, handle })
     }
 
-    /// Persona this pump belongs to. Useful for telemetry +
-    /// debug-logging in the owning runtime.
+    /// Persona this pump belongs to.
     pub fn persona_id(&self) -> Uuid {
         self.persona_id
     }
 
-    /// Whether the pump TASK is still running. `Some(pump)` on the runtime
-    /// used to mean "addressable"; measured 2026-09-06 on the M5 and the
-    /// 5090: four of five resident citizens held a `Some` whose task had
-    /// exited hours earlier. Liveness is the task, not the handle.
+    /// Whether the pump TASK is still running. Liveness is the task, not the handle
+    /// (2026-09-06: four of five citizens held a `Some` whose task had exited hours earlier).
     pub fn is_alive(&self) -> bool {
         !self.handle.is_finished()
     }
 
-    /// Abort the pump task and await its exit. Drop alone would
-    /// detach the task; callers that want clean shutdown should call
-    /// this. Idempotent — re-aborting an already-finished task is
-    /// a no-op.
+    /// Abort the pump task and await its exit. Idempotent.
     pub async fn shutdown(self) {
         self.handle.abort();
-        // Joining an aborted task yields a Cancelled JoinError; we
-        // don't care — the only failure path that matters here is
-        // "the task panic'd before abort", and the tokio runtime
-        // already surfaces panics via its own diagnostic channel.
+        // Joining an aborted task yields a Cancelled JoinError; the only failure that
+        // matters, a panic before the abort, the runtime already surfaces.
         let _ = self.handle.await;
     }
 
-    /// Fire-and-forget abort. Used by `PersonaAircRuntime::drop`
-    /// (which is sync and can't await). The tokio runtime reaps the
-    /// aborted task asynchronously; the JoinError on the eventual
-    /// await would be Cancelled, which is the expected shape.
-    /// Callers that want clean shutdown WITH await should use
-    /// [`shutdown`] instead.
+    /// Fire-and-forget abort, for a sync `Drop`.
     pub fn abort(&self) {
         self.handle.abort();
     }
 }
 
-/// Delay before the n-th consecutive re-open attempt: 1 s doubling to a
-/// 30 s cap. A daemon that is down stays down for a while; a stream that
-/// ended on a membership change is back in one hop.
-/// The channel set a subscribe would open on right now — the daemon's subscription
-/// set, as room ids. `None` when the daemon could not be asked (then a bump re-opens,
-/// the safe side).
-async fn subscribed_set(airc: &Airc) -> Option<std::collections::BTreeSet<Uuid>> {
-    let set = airc.subscription_set().await.ok()?;
-    Some(
-        set.all()
-            .map(|sub| sub.as_room().channel.as_uuid())
-            .collect(),
-    )
-}
-
+/// Delay before the n-th consecutive re-open attempt: 1 s doubling to a 30 s cap.
 fn reopen_delay(attempt: u32) -> Duration {
     Duration::from_secs(1u64 << attempt.min(5)).min(Duration::from_secs(30))
-}
-
-/// Why the pump is (re)opening its stream. Carried on the probe so a read
-/// can tell a daemon disconnect from a room join.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Reopen {
-    StreamEnded,
-    MembershipChanged,
 }
 
 /// Owns the supervisor's inner pump task: dropping it (the supervisor returns, or is
@@ -393,26 +276,32 @@ impl Drop for AbortOnDrop {
 async fn supervise(
     persona_id: Uuid,
     airc: Arc<Airc>,
-    handler: Arc<dyn ConsumerAdapter>,
-    first_stream: FilteredEventStream,
-    membership: watch::Receiver<u64>,
+    handler: Arc<dyn AddressedHandler>,
+    first_inbox: Box<dyn AddressedInbox>,
+    mut membership: watch::Receiver<u64>,
 ) {
-    let mut stream = Some(first_stream);
+    let mut inbox = Some(first_inbox);
     let mut respawns: u32 = 0;
     loop {
-        let this_stream = match stream.take() {
-            Some(s) => s,
-            None => match crate::routing::airc_subscription::subscribe_every_room(&airc).await {
-                Ok(s) => s,
+        let this_inbox = match inbox.take() {
+            Some(i) => i,
+            None => match tokio::select! {
+                result = open_inbox(&airc) => result,
+                _ = runtime_ended(&mut membership) => return,
+            } {
+                Ok(i) => i,
                 Err(e) => {
                     continuum_base::probe!(
                         class = "persona.command_pump.reopen_failed",
                         persona_id = %persona_id,
                         attempt = respawns,
                         error = %e,
-                        "command pump could not re-subscribe after a panic; retrying"
+                        "command pump could not re-open its addressed inbox after a panic; retrying"
                     );
-                    tokio::time::sleep(reopen_delay(respawns.min(5))).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(reopen_delay(respawns.min(5))) => {},
+                        _ = runtime_ended(&mut membership) => return,
+                    }
                     continue;
                 }
             },
@@ -421,11 +310,11 @@ async fn supervise(
             persona_id,
             Arc::clone(&airc),
             Arc::clone(&handler),
-            this_stream,
+            this_inbox,
             membership.clone(),
         )));
         match (&mut task.0).await {
-            // `run` returns only when the runtime dropped its epoch sender.
+            // `run` returns only when the runtime dropped its membership sender.
             Ok(()) => return,
             Err(e) if e.is_panic() => {
                 respawns = respawns.saturating_add(1);
@@ -433,9 +322,12 @@ async fn supervise(
                     class = "persona.command_pump.respawned_after_panic",
                     persona_id = %persona_id,
                     respawns = respawns,
-                    "command pump task panicked; respawning with a fresh stream"
+                    "command pump task panicked; respawning with a fresh inbox"
                 );
-                tokio::time::sleep(reopen_delay(respawns.min(5))).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(reopen_delay(respawns.min(5))) => {},
+                    _ = runtime_ended(&mut membership) => return,
+                }
             }
             // Cancelled: the supervisor itself was aborted (shutdown).
             Err(_) => return,
@@ -443,74 +335,56 @@ async fn supervise(
     }
 }
 
+async fn while_runtime_alive(
+    work: impl std::future::Future<Output = ()>,
+    membership: &mut watch::Receiver<u64>,
+) -> bool {
+    tokio::select! {
+        _ = work => true,
+        _ = runtime_ended(membership) => false,
+    }
+}
+
+async fn runtime_ended(membership: &mut watch::Receiver<u64>) {
+    while membership.changed().await.is_ok() {}
+}
+
 async fn run(
     persona_id: Uuid,
     airc: Arc<Airc>,
-    handler: Arc<dyn ConsumerAdapter>,
-    mut stream: FilteredEventStream,
+    handler: Arc<dyn AddressedHandler>,
+    mut inbox: Box<dyn AddressedInbox>,
     mut membership: watch::Receiver<u64>,
 ) {
-    let self_id = airc.peer_id();
     continuum_base::probe!(
         class = "persona.command_pump.installed",
         persona_id = %persona_id,
-        peer_id = %self_id.0,
-        "command inbound pump subscribed; the citizen is addressable"
+        peer_id = %airc.peer_id().0,
+        "command pump reading the addressed inbox; the citizen is addressable"
     );
-    // The stream ends whenever the daemon closes the subscription — a daemon
-    // restart, an update, or the citizen joining a room after she was seated.
-    // Before 2026-09-06 the loop simply returned here at `debug!` level: the
-    // citizen stayed resident, chatted and worked, and every request addressed
-    // to her was heard only by the operator seat and refused as not-his. Sahar
-    // on the 5090 and four of five citizens on the M5 were unaddressable for
-    // hours with nothing on any probe. The pump now re-opens on end AND on a
-    // membership move, with a bounded backoff, and says so each time.
-    let mut attempt: u32 = 0;
-    // The room set the live stream was opened on. A membership epoch bump whose set is
-    // unchanged (an idempotent join, a part of a room she never held) is NOT a reason
-    // to re-open: every re-open costs a daemon connection per channel, and the
-    // 2026-09-12 reseat storm turned 1,961 no-op bumps into 19,589 open sockets.
-    let mut opened_with = subscribed_set(&airc).await;
     loop {
-        let reason = loop {
+        // Read until the inbox closes (a daemon restart or update) or the runtime drops.
+        loop {
             tokio::select! {
-                next = stream.next() => match next {
-                    Some(Ok(event)) => {
-                        attempt = 0;
-                        if event.peer_id == self_id {
-                            continue;
+                next = inbox.next() => match next {
+                    Ok(frame) => {
+                        if !while_runtime_alive(handler.on_addressed(frame), &mut membership).await {
+                            return;
                         }
-                        let hint = event
-                            .headers
-                            .get(HEADER_CONTINUUM_BODY_HINT)
-                            .map(|s| s.as_str());
-                        if hint != Some(COMMAND_REQUEST_BODY_HINT) {
-                            continue;
-                        }
-                        if let Err(e) = handler.on_envelope((*event).clone()).await {
-                            warn!(
-                                persona_id = %persona_id,
-                                error = %e,
-                                "PersonaCommandInboundPump: handler.on_envelope rejected an envelope"
-                            );
-                        }
-                    }
-                    Some(Err(lag)) => {
+                    },
+                    Err(airc_lib::InboxError::Closed) => break,
+                    Err(error) => {
                         continuum_base::probe!(
-                            class = "persona.command_pump.lag",
+                            class = "persona.command_pump.inbox_loss",
                             persona_id = %persona_id,
-                            lag = %lag,
-                            "subscribe lag on the command pump — requests inside the gap are lost"
+                            error = %error,
+                            "addressed command refused or lost; its exchange cannot be completed"
                         );
-                        continue;
                     }
-                    None => break Reopen::StreamEnded,
                 },
-                changed = membership.changed() => match changed {
-                    Ok(()) => break Reopen::MembershipChanged,
-                    Err(_) => {
-                        // The runtime dropped its epoch sender: the citizen is
-                        // being torn down. Exit for real, and say so.
+                changed = membership.changed() => {
+                    if changed.is_err() {
+                        // The runtime dropped its sender: the citizen is being torn down.
                         continuum_base::probe!(
                             class = "persona.command_pump.ended",
                             persona_id = %persona_id,
@@ -519,47 +393,35 @@ async fn run(
                         );
                         return;
                     }
-                },
-            }
-        };
-        if reason == Reopen::MembershipChanged {
-            let now = subscribed_set(&airc).await;
-            if now.is_some() && now == opened_with {
-                continuum_base::probe!(
-                    class = "persona.command_pump.membership_unchanged",
-                    persona_id = %persona_id,
-                    rooms = opened_with.as_ref().map_or(0, |s| s.len()),
-                    "membership epoch moved but the room set did not — the stream stays open"
-                );
-                continue;
+                    // A room join changes perception's subscriptions, not the inbox.
+                }
             }
         }
         continuum_base::probe!(
             class = "persona.command_pump.ended",
             persona_id = %persona_id,
-            reason = ?reason,
-            "command pump stream ended; re-opening"
+            reason = "inbox_closed",
+            "addressed inbox closed; re-opening"
         );
-        loop {
+        // A closed owner must be released before acquiring its replacement.
+        drop(inbox);
+        let mut attempt: u32 = 0;
+        inbox = loop {
             let delay = reopen_delay(attempt);
-            tokio::time::sleep(delay).await;
-            // Joins arrive in bursts at boot (one per room). Every bump that
-            // landed during the sleep is folded into this one re-open.
-            let _ = membership.borrow_and_update();
-            match crate::routing::airc_subscription::subscribe_every_room(&airc).await {
+            let reopened = tokio::select! {
+                result = async { tokio::time::sleep(delay).await; open_inbox(&airc).await } => result,
+                _ = runtime_ended(&mut membership) => return,
+            };
+            match reopened {
                 Ok(next) => {
-                    stream = next;
-                    opened_with = subscribed_set(&airc).await;
                     continuum_base::probe!(
                         class = "persona.command_pump.reopened",
                         persona_id = %persona_id,
-                        reason = ?reason,
                         attempt = attempt,
                         delay_ms = delay.as_millis() as u64,
-                        "command pump re-subscribed; the citizen is addressable again"
+                        "addressed inbox re-opened; the citizen is addressable again"
                     );
-                    attempt = 0;
-                    break;
+                    break next;
                 }
                 Err(e) => {
                     attempt = attempt.saturating_add(1);
@@ -568,16 +430,11 @@ async fn run(
                         persona_id = %persona_id,
                         attempt = attempt,
                         error = %e,
-                        "command pump could not re-subscribe; retrying"
-                    );
-                    debug!(
-                        persona_id = %persona_id,
-                        attempt,
-                        "PersonaCommandInboundPump: re-subscribe failed: {e}"
+                        "command pump could not re-open its addressed inbox; retrying"
                     );
                 }
             }
-        }
+        };
     }
 }
 
@@ -597,5 +454,38 @@ mod tests {
         assert_eq!(reopen_delay(4), Duration::from_secs(16));
         assert_eq!(reopen_delay(5), Duration::from_secs(30));
         assert_eq!(reopen_delay(40), Duration::from_secs(30));
+    }
+    // Membership changes only affect perception. The command owner must survive them,
+    // while runtime teardown must interrupt even a pending retry or attach.
+    #[tokio::test]
+    async fn runtime_end_ignores_room_changes_but_observes_sender_drop() {
+        let (tx, mut rx) = watch::channel(0u64);
+        let mut ended = Box::pin(runtime_ended(&mut rx));
+        assert!(futures::poll!(&mut ended).is_pending());
+        tx.send(1).expect("runtime receiver exists");
+        assert!(futures::poll!(&mut ended).is_pending());
+        drop(tx);
+        assert!(futures::poll!(&mut ended).is_ready());
+    }
+    #[tokio::test]
+    async fn runtime_drop_cancels_a_blocked_handler_future() {
+        let (tx, mut rx) = watch::channel(0u64);
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        struct DropFlag(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let flag = DropFlag(dropped.clone());
+        let work = async move {
+            let _flag = flag;
+            std::future::pending::<()>().await;
+        };
+        let mut running = Box::pin(while_runtime_alive(work, &mut rx));
+        assert!(futures::poll!(&mut running).is_pending());
+        drop(tx);
+        assert!(!running.await);
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

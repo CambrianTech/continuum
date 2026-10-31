@@ -1,0 +1,356 @@
+//! Watch step execution — blocks until a matching event arrives on the MessageBus
+//!
+//! Uses the broadcast channel receiver to listen for events.
+//! Supports configurable timeout (default 300s).
+
+use serde_json::json;
+use std::time::{Duration, Instant};
+
+use crate::interpolation;
+use crate::types::{step_err, ExecutionContext, PipelineContext, StepResult};
+
+/// Default timeout for watch step: 5 minutes
+const DEFAULT_WATCH_TIMEOUT_SECS: u64 = 300;
+
+/// Block until a matching event arrives on the MessageBus
+pub async fn execute(
+    event_pattern: &str,
+    timeout_secs: Option<u64>,
+    index: usize,
+    ctx: &mut ExecutionContext,
+    pipeline_ctx: &PipelineContext<'_>,
+) -> Result<StepResult, String> {
+    use continuum_kernel::runtime;
+    let log = runtime::logger("sentinel");
+    let start = Instant::now();
+
+    let interpolated_pattern = interpolation::interpolate(event_pattern, ctx);
+    let raw_timeout = timeout_secs.unwrap_or(DEFAULT_WATCH_TIMEOUT_SECS);
+    // 0 means no timeout — wait indefinitely (critical for long-running training)
+    let has_timeout = raw_timeout > 0;
+    let timeout = Duration::from_secs(if has_timeout { raw_timeout } else { u64::MAX });
+
+    log.info(&format!(
+        "[{}] Watch step: waiting for event '{}' (timeout={})",
+        pipeline_ctx.handle_id,
+        interpolated_pattern,
+        if has_timeout {
+            format!("{}s", raw_timeout)
+        } else {
+            "none".to_string()
+        }
+    ));
+
+    let bus = pipeline_ctx
+        .bus
+        .ok_or_else(|| step_err(pipeline_ctx.handle_id, "Watch step", "requires MessageBus"))?;
+
+    // Check recent event buffer BEFORE subscribing to avoid race conditions.
+    // If the emit happened just before we subscribed, we'd miss it without this.
+    if let Some(recent) = bus.find_recent_event(&interpolated_pattern) {
+        log.info(&format!(
+            "[{}] Watch step: found recent event '{}' in buffer",
+            pipeline_ctx.handle_id, recent.name
+        ));
+        return Ok(StepResult {
+            step_index: index,
+            step_type: "watch".to_string(),
+            success: true,
+            duration_ms: start.elapsed().as_millis() as u64,
+            output: Some(recent.name.clone()),
+            error: None,
+            exit_code: None,
+            data: json!({
+                "event": recent.name,
+                "payload": recent.payload,
+            }),
+        });
+    }
+
+    let mut receiver = bus.receiver();
+
+    let result = tokio::time::timeout(timeout, async {
+        loop {
+            match receiver.recv().await {
+                Ok(bus_event) => {
+                    if event_matches(&bus_event.name, &interpolated_pattern) {
+                        return Ok((bus_event.name, bus_event.payload));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    log.warn(&format!(
+                        "[{}] Watch: receiver lagged by {} events",
+                        pipeline_ctx.handle_id, n
+                    ));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    return Err("MessageBus channel closed".to_string());
+                }
+            }
+        }
+    })
+    .await;
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    match result {
+        Ok(Ok((event_name, payload))) => {
+            log.info(&format!(
+                "[{}] Watch step: received event '{}' after {}ms",
+                pipeline_ctx.handle_id, event_name, duration_ms
+            ));
+
+            Ok(StepResult {
+                step_index: index,
+                step_type: "watch".to_string(),
+                success: true,
+                duration_ms,
+                output: Some(event_name.clone()),
+                error: None,
+                exit_code: None,
+                data: json!({
+                    "event": event_name,
+                    "payload": payload,
+                }),
+            })
+        }
+        Ok(Err(e)) => Err(step_err(pipeline_ctx.handle_id, "Watch step", e)),
+        Err(_) => {
+            log.warn(&format!(
+                "[{}] Watch step timed out after {}s waiting for '{}'",
+                pipeline_ctx.handle_id,
+                timeout.as_secs(),
+                interpolated_pattern
+            ));
+
+            Ok(StepResult {
+                step_index: index,
+                step_type: "watch".to_string(),
+                success: false,
+                duration_ms,
+                output: None,
+                error: Some(format!(
+                    "Timed out after {}s waiting for event '{}'",
+                    timeout.as_secs(),
+                    interpolated_pattern
+                )),
+                exit_code: None,
+                data: json!({
+                    "pattern": interpolated_pattern,
+                    "timeoutSecs": timeout.as_secs(),
+                }),
+            })
+        }
+    }
+}
+
+/// Match an event name against a pattern with simple glob support.
+///
+/// Patterns:
+/// - Exact match: `"build:complete"` matches `"build:complete"`
+/// - Trailing wildcard: `"build:*"` matches `"build:complete"`, `"build:failed"`
+/// - Single segment wildcard: `"*:complete"` matches `"build:complete"`
+fn event_matches(event_name: &str, pattern: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if pattern == event_name {
+        return true;
+    }
+
+    let pattern_parts: Vec<&str> = pattern.split(':').collect();
+    let event_parts: Vec<&str> = event_name.split(':').collect();
+
+    // Trailing wildcard: "build:*" matches "build:anything:nested"
+    if pattern.ends_with(":*") || pattern.ends_with("*") {
+        let prefix = pattern.trim_end_matches(":*").trim_end_matches('*');
+        return event_name.starts_with(prefix);
+    }
+
+    // Segment-level matching
+    if pattern_parts.len() != event_parts.len() {
+        return false;
+    }
+
+    pattern_parts
+        .iter()
+        .zip(event_parts.iter())
+        .all(|(p, e)| *p == "*" || *p == *e)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ExecutionContext;
+    use continuum_kernel::runtime::{message_bus::MessageBus, ModuleRegistry};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn test_ctx() -> ExecutionContext {
+        ExecutionContext {
+            step_results: Vec::new(),
+            inputs: HashMap::new(),
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        }
+    }
+
+    fn test_pipeline_ctx<'a>(
+        registry: &'a Arc<ModuleRegistry>,
+        bus: &'a Arc<MessageBus>,
+    ) -> PipelineContext<'a> {
+        PipelineContext {
+            handle_id: "test-watch",
+            registry,
+            bus: Some(bus),
+            steps_log_path: None,
+            executor: None,
+        }
+    }
+
+    // ── event_matches tests ──
+
+    #[test]
+    fn test_exact_match() {
+        assert!(event_matches("build:complete", "build:complete"));
+    }
+
+    #[test]
+    fn test_trailing_wildcard() {
+        assert!(event_matches("build:complete", "build:*"));
+        assert!(event_matches("build:failed", "build:*"));
+        assert!(event_matches("sentinel:abc:status", "sentinel:*"));
+    }
+
+    #[test]
+    fn test_universal_wildcard() {
+        assert!(event_matches("anything", "*"));
+        assert!(event_matches("a:b:c", "*"));
+    }
+
+    #[test]
+    fn test_segment_wildcard() {
+        assert!(event_matches("a:b:c", "a:*:c"));
+    }
+
+    #[test]
+    fn test_no_match() {
+        assert!(!event_matches("build:complete", "build:failed"));
+        assert!(!event_matches("build:complete", "deploy:complete"));
+        assert!(!event_matches("a:b:c", "a:*:d"));
+    }
+
+    #[test]
+    fn test_length_mismatch() {
+        assert!(!event_matches("a:b", "a:b:c"));
+        assert!(!event_matches("a:b:c", "a:b"));
+    }
+
+    // ── watch execution tests ──
+
+    #[tokio::test]
+    async fn test_watch_receives_matching_event() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        // Spawn a task that emits the event after a small delay
+        let bus_clone = bus.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            bus_clone.publish_async_only("build:done", json!({"result": "ok"}));
+        });
+
+        let result = execute("build:done", Some(5), 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output.as_deref(), Some("build:done"));
+        assert_eq!(result.data["event"], "build:done");
+        assert_eq!(result.data["payload"]["result"], "ok");
+    }
+
+    #[tokio::test]
+    async fn test_watch_timeout() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        // Watch for an event that never arrives, with 1s timeout
+        let result = execute("never:arrives", Some(1), 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert!(result.error.as_ref().unwrap().contains("Timed out"));
+        assert_eq!(result.data["timeoutSecs"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_watch_ignores_non_matching() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let bus_clone = bus.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            // Emit non-matching event first
+            bus_clone.publish_async_only("other:event", json!({}));
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            // Then matching event
+            bus_clone.publish_async_only("target:event", json!({"found": true}));
+        });
+
+        let result = execute("target:event", Some(5), 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["event"], "target:event");
+        assert_eq!(result.data["payload"]["found"], true);
+    }
+
+    #[tokio::test]
+    async fn test_watch_wildcard_pattern() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let bus_clone = bus.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            bus_clone.publish_async_only("build:complete", json!({"branch": "main"}));
+        });
+
+        let result = execute("build:*", Some(5), 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["event"], "build:complete");
+    }
+
+    #[tokio::test]
+    async fn test_watch_requires_bus() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let pipeline_ctx = PipelineContext {
+            handle_id: "test-watch",
+            registry: &registry,
+            bus: None,
+            steps_log_path: None,
+            executor: None,
+        };
+        let mut ctx = test_ctx();
+
+        let result = execute("test:event", Some(1), 0, &mut ctx, &pipeline_ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("requires MessageBus"));
+    }
+}

@@ -14,13 +14,15 @@ pub(super) async fn eval_settle(
     let delivery = crate::cognition::rag_budget::RagDelivery {
         source_id: "airc".to_string(),
         items: vec![crate::cognition::rag_budget::RagItem {
+            key: String::new(),
+            summary: None,
+            pointer: None,
             content: prompt.to_string(),
             tokens: 0,
             metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
         }],
         tokens_used: 0,
         truncated: false,
-        resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
     };
     let burst = crate::cognition::workspace::Burst::from_turns(
         room,

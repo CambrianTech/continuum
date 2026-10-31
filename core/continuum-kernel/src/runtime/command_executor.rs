@@ -180,6 +180,13 @@ impl CommandExecutor {
         }
     }
 
+    /// The trust this executor's policy resolves for `caller`: the same policy its gate uses
+    /// ([`AuthPolicy::caller_trust`](crate::routing::AuthPolicy::caller_trust)). `None` when the
+    /// policy cannot resolve it, which an owner-only handler treats as a refusal.
+    pub fn caller_trust(&self, caller: Option<&crate::routing::CallerIdentity>) -> Option<crate::routing::trust_level::TrustLevel> {
+        self.policy.caller_trust(caller)
+    }
+
     /// Replace the auth policy. Defaults to [`AllowAllPolicy`];
     /// operators install an ORM-backed or capability-backed impl
     /// here at boot. Builder-style so it chains with `new()`,
@@ -481,7 +488,7 @@ impl CommandExecutor {
         }
         .instrument(span);
         // The command runs inside every scope (the hands' admission is a task-local its
-        // children inherit until their tree has ended: `lane_process::run_owned`).
+        // children inherit until their tree has ended: `continuum_process::run_owned`).
         super::dispatch_hook::wrap_all(&scopes, Box::pin(command)).await
     }
 

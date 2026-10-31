@@ -15,7 +15,9 @@ pub(super) fn register_closing_modules(
     // Process isolation via child processes - safe for Xcode, cargo, etc.
     let sentinel_module = Arc::new(SentinelModule::new());
     runtime.register(sentinel_module.clone());
-    crate::modules::sentinel::register_for_shutdown(sentinel_module);
+    continuum_sentinel::register_for_shutdown(sentinel_module);
+    // The local-inference HTTP endpoint commands (sentinel/local-inference-*) live beside http/.
+    runtime.register(Arc::new(crate::http::LocalInferenceModule));
 
     // PlasticityModule: Adaptive neural plasticity optimization engine
     // Provides plasticity/analyze, plasticity/compact, plasticity/topology
@@ -38,9 +40,10 @@ pub(super) fn register_closing_modules(
     runtime.register(Arc::new(VisionModule::new(code_state.clone())));
 
     // GridModule: inter-node transport + routing (Tailscale, Reticulum)
-    let grid_dir = dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".continuum")
+    // The one continuum home, or boot stops: a fallback tree here would hide a retired-root
+    // refusal (#5420) behind a second grid state (Codex on #5421).
+    let grid_dir = crate::paths::continuum_home()
+        .expect("the continuum home must resolve before the grid can keep its state") // JUSTIFIED: boot-time registration; the home's own error (no home, a retired CONTINUUM_ROOT) is the reason, never a guessed tree
         .join("grid");
     let local_has_gpu = gpu_manager.total_vram_bytes() > 0;
     let local_vram_mb = gpu_manager.total_vram_bytes() / (1024 * 1024);
@@ -48,7 +51,12 @@ pub(super) fn register_closing_modules(
     // GridInterceptor below. The interceptor needs the same router +
     // node registry + transports the GridModule itself runs on; using
     // the public `state()` getter avoids duplicating any of that.
-    let grid_module = Arc::new(GridModule::new(grid_dir, local_has_gpu, local_vram_mb));
+    let grid_module = Arc::new(GridModule::new(
+        grid_dir,
+        local_has_gpu,
+        local_vram_mb,
+        crate::modules::grid::LocalBuild { git_sha: env!("CONTINUUM_BUILD_GIT_SHA"), number: env!("CONTINUUM_BUILD_NUMBER") },
+    ));
     let grid_state = grid_module.state();
     runtime.register(grid_module);
     grid_state

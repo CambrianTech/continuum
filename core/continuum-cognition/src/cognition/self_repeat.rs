@@ -2,9 +2,8 @@
 //! OWN recent output, BEFORE it reaches the room.
 //!
 //! The live run exposed the gap: with two personas over airc, Asha re-emitted her eviction
-//! policy almost verbatim on successive cognition cycles. The only redundancy mechanism in
-//! tree (`check_redundancy`) isn't wired into the live loop AND routes to groq (cloud) — a
-//! non-starter on an offline, local-first misfit box. So there was no gate at all; the
+//! policy almost verbatim on successive cognition cycles. The only redundancy mechanism then
+//! in tree was unwired and routed to a cloud model (deleted since). So there was no gate at all; the
 //! `should_respond` LLM even *encourages* re-answering ("respond if you have a different
 //! angle"), and the persona rationalizes one every cycle.
 //!

@@ -596,6 +596,12 @@ pub struct JobMetrics {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub layers_adapted: Option<u32>,
+    /// The base weights file the trainer's engine was launched on (card 3fd98325): what an
+    /// adapter returned across the grid names as its training base. `None` = the trainer does
+    /// not know the file it read, so its adapter is not returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub trained_on: Option<crate::inference::weights_stamp::WeightsStamp>,
 }
 
 #[cfg(test)]

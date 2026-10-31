@@ -17,6 +17,7 @@ pub mod eye_reaper;
 pub mod harness_archive;
 pub mod process_anomaly;
 pub mod bounded_command;
+pub mod cargo_discovery;
 pub mod concurrency;
 pub mod disk_eviction;
 pub mod disk_pressure;

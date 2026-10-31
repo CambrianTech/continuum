@@ -23,7 +23,7 @@
 //! connection) is declared in the schema as the next tier and refused until built.
 
 use crate::sdk_codegen::{AccessLevel, CommandDescriptor, DynCommand, TypeRef, WireShape};
-use crate::inference::lane_process::{Answer, Why};
+use continuum_process::{Answer, Why};
 use crate::runtime::CommandResult;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -260,11 +260,11 @@ impl ProcessCommand {
             program = %self.manifest.exec[0],
             "authored command process starting"
         );
-        // owned (lane_process::run_owned_with_input): params on stdin, written beside the wait so a
+        // owned (continuum_process::run_owned_with_input): params on stdin, written beside the wait so a
         // program that never reads them can't wedge the call; at the bound, or when this call is
         // dropped, the program and everything it started are ended (kill_on_drop ended only it)
         let bound = std::time::Duration::from_millis(self.manifest.timeout_ms);
-        let out = crate::inference::lane_process::run_owned_with_input(cmd, Some(body), Some(bound), "ext-command", std::sync::Arc::default())
+        let out = continuum_process::run_owned_with_input(cmd, Some(body), Some(bound), "ext-command", std::sync::Arc::default())
             .await
             .map_err(|e| format!("{}: cannot run {:?}: {e}", self.name, self.manifest.exec[0]))?;
         let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -334,6 +334,9 @@ impl DynCommand for ProcessCommand {
             wire: WireShape::Bare,
             native: self.manifest.native,
             aliases: &[],
+            // An authored command runs an arbitrary process and its manifest declares no
+            // effect: undeclared, so it is never a repeat and never taken as observing.
+            effect: continuum_base::tool_effect::ToolEffect::Undeclared,
             params: json.clone(),
             params_schema: self.manifest.params.clone(),
             result: json.clone(),

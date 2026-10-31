@@ -44,13 +44,11 @@
 //!   persona knows about the room's work, it does not decide WHETHER it speaks
 //!   (that is doctrine). Whole board = all owners, so the source imposes no
 //!   continuum-side ordering or filtering heuristic that would steer cognition
-//!   ([[no-hardcoded-heuristics-to-steer-cognition]]) — it delivers airc's own
-//!   card order and, under budget pressure, truncates with a logged count
-//!   rather than silently dropping or re-ranking.
-//! - Atomic unit = ONE card. A truncated board is still truthful for the cards
-//!   it names, so (like the active-work source) this source truncates rather
-//!   than paginates; pagination can be added later without changing the seam if
-//!   boards grow past a single budget.
+//!   ([[no-hardcoded-heuristics-to-steer-cognition]]) — it delivers EVERY card,
+//!   ordered by what she can act on, and never takes a size: the one allocation
+//!   in her prompt view chooses each item's level (whole line, else the
+//!   card's pointer), so a long board shrinks oldest-first, never silently.
+//! - Atomic unit = ONE card, keyed by its id.
 
 use continuum_base::time::EpochMs;
 use std::sync::Arc;
@@ -60,30 +58,9 @@ use airc_work::BoardSnapshot;
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::cognition::rag_budget::{ RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
+use crate::cognition::rag_budget::{RagContext, RagDelivery, RagItem, RagSource};
 
 use crate::cognition::faculty_ids::ROOM_BOARD;
-
-/// Most cards this source will render in full, per turn.
-///
-/// NOT a token budget — a RELEVANCE bound. The per-card loop below used to be limited only
-/// by whatever budget remained, so the board grew to fill the prompt: measured 2026-08-17,
-/// 38 cards / 9,284 chars / 49.7% of an 18,697-char system prompt on a routine ambient turn.
-/// That makes every citizen think slower as the backlog grows, which is exactly backwards
-/// for a work board.
-///
-/// Sized from what it MUST cover, not picked: the `[your work]` and `[available work]` leads
-/// each name up to 5 cards, so the detailed render must be able to carry both (10) or the
-/// summaries would promise cards the detail then omits — a citizen seeing "you hold 5" above
-/// a list of 3 would reasonably read the substrate as inconsistent. Two spare keeps a
-/// just-created card visible in the same turn it arrives. Ten is the floor this cannot go
-/// below without re-deriving the lead caps with it.
-const MAX_RENDERED_CARDS: usize = 12;
-
-/// Token estimate — the ONE canonical chars/4 estimator
-/// (`cognition::token_budget`), shared by every RAG source so the replay
-/// ledger's numbers match.
-use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
 
 /// Reads the CURRENT ROOM's complete work board from airc. Production rides
 /// `airc_lib::Airc::work_board_complete` (the WHOLE board, not the recent
@@ -288,16 +265,6 @@ impl RoomBoardSource {
         self
     }
 
-    fn empty() -> RagDelivery {
-        RagDelivery {
-            source_id: ROOM_BOARD.to_string(),
-            items: Vec::new(),
-            tokens_used: 0,
-            truncated: false,
-            resolution_used: ResolutionPreference::Placeholder,
-        }
-    }
-
     /// Render one card as a grounding line: the state (column), title, priority,
     /// and owner (or `unclaimed`) — the shape a teammate reads off the board.
     /// The whole board carries all owners, so owner is always surfaced (unlike
@@ -316,7 +283,7 @@ impl RoomBoardSource {
         names: &dyn crate::cognition::card_holder::PeerNames,
         include_submission: bool,
     ) -> String {
-        let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+        let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
         let held = crate::cognition::card_holder::holder(card, self_id, now_ms, names);
         // The tag leads with what the card IS to someone deciding whether to take
         // it, not with the column it happens to sit in — a lapsed claim is takeable
@@ -387,7 +354,7 @@ fn claim_is_live(card: &airc_work::WorkCard, now_ms: u64) -> bool {
 /// times. The path is now in front of her each turn she holds the card. With no checkout on
 /// this node the line says nothing about one: an absence is not reported as a location.
 fn held_card_line(card: &airc_work::WorkCard, checkout: Option<&std::path::Path>) -> String {
-    let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+    let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
     let line = format!("  {id8}: \"{}\" [{:?}]", card.title, card.state);
     match checkout {
         Some(path) => format!("{line}\n    its work is at {}", path.display()),
@@ -409,22 +376,9 @@ impl RagSource for RoomBoardSource {
         Some("work/list")
     }
 
-    /// MEASURED 26 tokens: the `[board] you hold N card(s); M claimable.`
-    /// headline, which is deliberately the first unit precisely so a
-    /// prefix-take cannot halve it. 32 gives it headroom for larger counts.
-    fn floor_tokens(&self) -> u32 {
-        32
-    }
-
-    async fn deliver(
-        &self,
-        ctx: &RagContext,
-        budget: u32,
-        resolution: ResolutionPreference,
-    ) -> RagDelivery {
+    async fn deliver(&self, ctx: &RagContext) -> RagDelivery {
         let working = crate::cognition::persona_workspace::acting_root_of(self.persona_id).is_some();
-        self.deliver_with_workspace(ctx, budget, resolution, working)
-            .await
+        self.deliver_with_workspace(ctx, working).await
     }
 
 }
@@ -432,17 +386,11 @@ impl RagSource for RoomBoardSource {
 impl RoomBoardSource {
     // The caller observes workspace custody; eligibility and rendering use the
     // same board snapshot regardless of whether open-deck detail is suppressed.
-    async fn deliver_with_workspace(
-        &self,
-        ctx: &RagContext,
-        budget: u32,
-        resolution: ResolutionPreference,
-        working: bool,
-    ) -> RagDelivery {
+    async fn deliver_with_workspace(&self, ctx: &RagContext, working: bool) -> RagDelivery {
         // Persona-scoped: a cross-persona ctx gets nothing (defense in depth,
         // same shape as the wall / active-work / roster sources).
         if ctx.persona_id != self.persona_id {
-            return Self::empty();
+            return RagDelivery::empty(ROOM_BOARD);
         }
         // Room resolution — TURN-PARAMETRIC (#443, measured live 2026-08-15).
         // This source used to be BOUND to the persona's bootstrap room and the
@@ -474,7 +422,7 @@ impl RoomBoardSource {
                     persona_id = %ctx.persona_id,
                     "synthetic nil-room context — no board, and no fallback to the bound room"
                 );
-                return Self::empty();
+                return RagDelivery::empty(ROOM_BOARD);
             }
             Some(t) => Some(t),
             None => self.room_id,
@@ -490,7 +438,7 @@ impl RoomBoardSource {
                     persona_id = %self.persona_id,
                     "room_board: work_board failed — empty delivery, cognition stays up"
                 );
-                return Self::empty();
+                return RagDelivery::empty(ROOM_BOARD);
             }
         };
         // Empty board → no block (normal: a room may have no cards yet).
@@ -510,12 +458,10 @@ impl RoomBoardSource {
                 turn_room = ?ctx.airc_room.as_ref().map(|r| r.as_uuid()),
                 "room-kanban delivered nothing: the READ SUCCEEDED and the board has zero cards"
             );
-            return Self::empty();
+            return RagDelivery::empty(ROOM_BOARD);
         }
 
         let mut items: Vec<RagItem> = Vec::new();
-        let mut tokens_used: u32 = 0;
-        let mut dropped: usize = 0;
         // One clock reading per delivery — every lease judgment in this block
         // (held / lapsed / available) agrees on the same instant.
         let now_ms = continuum_base::time::EpochMs::now().millis();
@@ -587,39 +533,34 @@ impl RoomBoardSource {
                 held = mine.len(),
                 avail = open.len(),
             );
-            let headline_tokens = estimate_tokens(&headline);
-            if headline_tokens <= budget {
-                tokens_used += headline_tokens;
-                items.push(RagItem {
-                    content: headline,
-                    tokens: headline_tokens,
-                    metadata: json!({
-                        "kind": "board-headline",
-                        "held_count": mine.len(),
-                        "open_count": open.len(),
-                        "open_lead_suppressed": working,
-                    }),
-                });
-            }
+            // No pointer: the headline is itself the shortest statement of the board.
+            items.push(RagItem::whole(
+                "headline",
+                headline,
+                json!({
+                    "kind": "board-headline",
+                    "held_count": mine.len(),
+                    "open_count": open.len(),
+                    "open_lead_suppressed": working,
+                }),
+            ));
         }
 
-        // A title-only lead used to consume the budget before the separate card
-        // containing its signed verdict could fit. Keep the focused candidate's
-        // next action/evidence handle ahead of incidental board detail, within the
-        // same budget. This is one atomic, truthful unit, not unbounded review prose.
+        // The focused candidate's next action/evidence handle rides ahead of incidental
+        // board detail, as one atomic, truthful unit keyed by its card.
         let mut focused_submission = None;
         if let Some(card) = crate::persona::work_focus::focus_workspace_card(mine.iter().copied()) {
             if let Some(content) = Self::submission_guidance(card, &board) {
-                let tokens = estimate_tokens(&content);
-                if tokens_used.saturating_add(tokens) <= budget {
-                    tokens_used += tokens;
-                    focused_submission = Some(card.card_id);
-                    items.push(RagItem {
+                focused_submission = Some(card.card_id);
+                let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
+                items.push(
+                    RagItem::whole(
+                        format!("submission:{}", card.card_id.as_uuid()),
                         content,
-                        tokens,
-                        metadata: json!({ "kind": "focused-submission", "card_id": card.card_id.as_uuid().to_string() }),
-                    });
-                }
+                        json!({ "kind": "focused-submission", "card_id": card.card_id.as_uuid().to_string() }),
+                    )
+                    .with_pointer(format!("[card {id8}] signed verdicts on its submission — work/submission")),
+                );
             }
         }
 
@@ -639,15 +580,10 @@ impl RoomBoardSource {
                  released (work/release); your tools do the work.",
                 n = mine.len(),
             );
-            let lead_tokens = estimate_tokens(&lead);
-            if tokens_used.saturating_add(lead_tokens) <= budget {
-                tokens_used += lead_tokens;
-                items.push(RagItem {
-                    content: lead,
-                    tokens: lead_tokens,
-                    metadata: serde_json::json!({ "kind": "your-work-lead" }),
-                });
-            }
+            items.push(
+                RagItem::whole("lead:yours", lead, json!({ "kind": "your-work-lead" }))
+                    .with_pointer(format!("[your work] you hold {} card(s) here — work/list", mine.len())),
+            );
         }
 
         // The detailed available-work lead (#122): unclaimed cards are work waiting for
@@ -684,7 +620,7 @@ impl RoomBoardSource {
                 .iter()
                 .take(5)
                 .map(|c| {
-                    let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
+                    let id8 = airc_core::shown_id::shown_form(c.card_id.as_uuid());
                     format!("  {id8}: \"{}\" ({:?})", c.title, c.priority)
                 })
                 .collect::<Vec<_>>()
@@ -702,15 +638,14 @@ impl RoomBoardSource {
                  work with your tools. Claimable work waits until someone chooses it.",
                 n = open.len(),
             );
-            let lead_tokens = estimate_tokens(&lead);
-            if tokens_used.saturating_add(lead_tokens) <= budget {
-                tokens_used += lead_tokens;
-                items.push(RagItem {
-                    content: lead,
-                    tokens: lead_tokens,
-                    metadata: json!({ "kind": "available-work-lead", "open_count": open.len() }),
-                });
-            }
+            items.push(
+                RagItem::whole(
+                    "lead:available",
+                    lead,
+                    json!({ "kind": "available-work-lead", "open_count": open.len() }),
+                )
+                .with_pointer(format!("[available work] {} card(s) claimable here — work/list", open.len())),
+            );
         }
 
         // Resolve every DISTINCT non-self owner on this board to a published
@@ -729,57 +664,30 @@ impl RoomBoardSource {
         }
         let names = self.reader.peer_names(&owner_peers).await;
 
-        // RELEVANCE ORDER + A HARD CAP, not "however many the budget happens to fit".
-        //
-        // Measured 2026-08-17 on a live ambient turn (capture 762a806b): this loop rendered
-        // 38 distinct cards into 9,284 chars — 49.7% of an 18,697-char system prompt, ~3,100
-        // of the turn's ~12,286 prefill tokens. Every citizen paid it on every self-tick.
-        //
-        // Two things make that wrong rather than merely expensive:
-        //
-        // 1. IT IS REDUNDANT. The `[board]` headline and the `[your work]` / `[available
-        //    work]` leads above already carry the counts and the top titles — and they were
-        //    ADDED because this dump is unreliable under budget (see the Asha 2026-08-06
-        //    note above). Rendering the summary AND the exhaustive list means the same facts
-        //    are paid for twice, and the expensive copy is the one that gets truncated.
-        // 2. IT SCALES THE WRONG WAY. Bounded only by remaining budget, the board grows to
-        //    fill the prompt, so every citizen thinks SLOWER as the backlog grows. A team
-        //    that accumulates work gets progressively less able to do it — the opposite of
-        //    what a work board is for.
-        //
-        // So: order by what she can act on (her own holds first, then newest claimable —
-        // the same recency argument the available-work lead already makes), take at most
-        // `MAX_RENDERED_CARDS`, and let the leads plus `work/list` carry the tail. Counts in
-        // the headline stay the TRUE totals; nothing here makes the board smaller than it is,
-        // only shorter than it was.
+        // RELEVANCE ORDER, delivered whole. Her own holds first, then newest claimable
+        // (the same recency argument the available-work lead makes). Every card is
+        // delivered: when the prompt view must shrink it collapses the oldest cards to
+        // their pointers (measured 2026-08-17: 38 cards were 49.7% of a system prompt;
+        // that is the allocation's problem to solve by level, not a count cap here).
         let mut ordered: Vec<&airc_work::WorkCard> = board.cards.iter().collect();
         ordered.sort_by_key(|c| {
             let mine_first = !(c.owner.map(|o| o.as_uuid()) == Some(self.persona_id));
             // Negate for newest-first without needing a reversed comparator.
             (mine_first, std::cmp::Reverse(c.created_at_ms))
         });
-        let render_budget_cards = MAX_RENDERED_CARDS.min(ordered.len());
 
-        let mut cards_delivered = 0usize;
-        for card in ordered.into_iter().take(render_budget_cards) {
+        for card in ordered {
             let content = Self::render(card, &board, self.persona_id, now_ms, &names, focused_submission != Some(card.card_id));
-            let tokens = estimate_tokens(&content);
-            if tokens_used.saturating_add(tokens) > budget {
-                // Budget exhausted — a truncated board is still truthful for the
-                // cards it names. Count the drops so truncation is visible, not
-                // silent. Atomic unit = one card; no continuation (see module doc).
-                // Counted over CARDS, excluding the available-work lead item.
-                dropped = board.cards.len() - cards_delivered;
-                break;
-                // (unchanged: `dropped` is measured against the TRUE board size, so a
-                // budget-truncated render and a cap-truncated one report the same honest
-                // "how many did she not see".)
-            }
-            tokens_used += tokens;
-            cards_delivered += 1;
+            let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
+            // The pointer keeps what a teammate decides on (the card and its takeable /
+            // held tag) once the line collapses; the title returns with `work/list`.
+            let tag = crate::cognition::card_holder::holder(card, self.persona_id, now_ms, &names).state_tag();
             items.push(RagItem {
+                key: format!("card:{}", card.card_id.as_uuid()),
+                tokens: continuum_base::token_estimate::estimate_prompt_tokens(&content),
                 content,
-                tokens,
+                summary: None,
+                pointer: Some(format!("[card {id8}] [{tag}] — work/list")),
                 metadata: json!({
                     "card_id": card.card_id.as_uuid().to_string(),
                     // Serde, NOT `format!("{:?}")`. Debug output is a developer convenience
@@ -812,35 +720,15 @@ impl RoomBoardSource {
             });
         }
 
-        // Cap-truncation counts as dropped just like budget-truncation. Without this the
-        // debug line would report dropped=0 on a capped board and the shortening would be
-        // invisible in the one place an operator looks for it.
-        if dropped == 0 && cards_delivered < board.cards.len() {
-            dropped = board.cards.len() - cards_delivered;
-        }
-
-        // Budget too small to carry even one card → no block.
-        if items.is_empty() {
-            return Self::empty();
-        }
-
+        let delivery = RagDelivery::of(ROOM_BOARD, items, false);
         tracing::debug!(
             persona_id = %self.persona_id,
-            budget,
             cards = board.cards.len(),
-            delivered = items.len(),
-            dropped,
-            tokens_used,
+            delivered = delivery.items.len(),
+            tokens_used = delivery.tokens_used,
             "room_board: deliver"
         );
-
-        RagDelivery {
-            source_id: ROOM_BOARD.to_string(),
-            items,
-            tokens_used,
-            truncated: false,
-            resolution_used: resolution,
-        }
+        delivery
     }
 }
 

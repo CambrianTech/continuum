@@ -67,6 +67,11 @@ pub use executor::*;
 mod speech_discipline_trait;
 pub use speech_discipline_trait::*;
 mod redrive;
+mod credit_acceptance_region;
+mod settle_slots;
+pub use credit_acceptance_region::{CreditAcceptanceRegion, Resolve};
+mod claim_following;
+pub use claim_following::{ClaimFollowingCapture, OpenCapture};
 mod settle_card_credit_bound;
 pub use settle_card_credit_bound::*;
 
@@ -91,6 +96,39 @@ pub mod test_support {
             capture: None,
             genes: Vec::new(),
             gene_scales: Vec::new(),
+            allocation: None,
+        }
+    }
+
+    /// The call a served receipt records, as the capture holds it: her request and her
+    /// response, linked to the receipt by its cursor (empty until one is captured).
+    pub fn lived_call(receipt: &crate::ai::provenance::GenerationReceipt) -> crate::genome::fine_tuning::LivedCall {
+        use crate::ai::types::{ChatMessage, TextGenerationRequest, TextGenerationResponse};
+        crate::genome::fine_tuning::LivedCall {
+            capture: receipt.capture.clone().unwrap_or_default(), // unwrap_or_default: a cursorless receipt reads back as no call
+            request: TextGenerationRequest {
+                messages: vec![ChatMessage::text("user", "card: verify the regression")],
+                ..Default::default()
+            },
+            response: TextGenerationResponse {
+                text: format!("read the source before answering ({})", receipt.submitted_request_id),
+                finish_reason: crate::ai::FinishReason::ToolUse,
+                model: "fixture-model".into(),
+                provider: "fixture-provider".into(),
+                usage: crate::ai::UsageMetrics::default(),
+                response_time_ms: 0,
+                request_id: receipt.submitted_request_id.clone(),
+                content: None,
+                tool_calls: Some(vec![crate::ai::ToolCall {
+                    id: receipt.submitted_request_id.clone(),
+                    name: "code/read".into(),
+                    input: serde_json::json!({"path": format!("src/{}.rs", receipt.submitted_request_id)}),
+                }]),
+                reasoning: Some(format!("the card names {}; read it before guessing", receipt.submitted_request_id)),
+                routing: None,
+                error: None,
+                timing: None,
+            },
         }
     }
 

@@ -274,7 +274,7 @@ pub(crate) async fn guard_resident_model(
         // the #106 sidecar lane beside a text-only mind. A request for the
         // sidecar's model is exactly as guaranteed as one for the active
         // model (the daemon verified its `/props` before publishing), and
-        // `endpoints_for_model` routes it to `vision_base_url`.
+        // `endpoints_for_model` (via `route_now`) routes it to `vision_base_url`.
         let mut snap = snap;
         if !snapshot_guarantees(&snap, model) && !settled_on_another_model(&snap) {
             // A TRANSITION, not a fault — wait it out instead of failing the turn.
@@ -311,7 +311,7 @@ pub(crate) async fn guard_resident_model(
                 waited_ms = started.elapsed().as_millis() as u64,
                 served_before = crate::inference::llama_server::has_reconciled(),
                 resolved = snapshot_guarantees(&snap, model),
-                degraded = &degraded[..degraded.len().min(200)],
+                degraded = degraded, // whole: a byte slice at 200 could split a multi-byte char and panic
                 "no lane was resident at pre-flight (serving transition) — waited on the \
                  daemon's readiness signal rather than failing the turn"
             );
@@ -332,7 +332,7 @@ pub(crate) async fn guard_resident_model(
         // restart (the wedge storm this task chased). The persona deliberation path
         // already fits its prompt to the live window; this is the chokepoint backstop
         // for the ~10 OTHER callers that build their own prompts (dream_consolidation,
-        // check_redundancy, validate_response, …), which the persona-scoped overshoot
+        // validate_response, …), which the persona-scoped overshoot
         // WARN below never covered. A refused request fails LOUD naming the caller and
         // never reaches llama_decode, so the slot stays healthy. Threshold is PROMPT
         // ALONE ≥ window for estimates. Exact engine measurements additionally

@@ -33,6 +33,7 @@ export type {
   ActReceiptVM,
   ActGroupVM,
   TranscriptRowVM,
+  TranscriptSpacers,
 } from './chatViewModel';
 export { actSummaryLine } from './chatViewModel';
 

@@ -304,9 +304,6 @@ pub struct LocalShape {
     pub lanes: u32,
     /// Measured capability of the local served model, or the planner's unmeasured proxy cap.
     pub rank: u8,
-    /// What one of this node's turns needs of a lane (the residents' typical prompt with
-    /// headroom); `None` = no turn measured yet, the serve floor stands.
-    pub requirement: Option<u32>,
 }
 
 /// The pure chooser: which minds move to which peer. `candidates` = minds at Home with
@@ -318,6 +315,7 @@ pub fn choose_offloads(
     peers: &[PeerOffer],
     rank_of: &(dyn Fn(&str) -> Option<u8> + Sync),
     candidates: &[(Uuid, u64)],
+    requirement_of: &dyn Fn(Uuid) -> Option<u32>,
 ) -> Vec<(Uuid, Uuid, String)> {
     let mut over = local.resident.saturating_sub(local.lanes) as usize;
     // No queue at home (a measured median under a millisecond) = nothing to gain by
@@ -328,9 +326,10 @@ pub fn choose_offloads(
     if over == 0 || candidates.is_empty() || !home_queued {
         return Vec::new();
     }
-    let mut minds: Vec<(Uuid, u64)> = candidates.to_vec();
-    minds.sort_by_key(|(_, grants)| *grants);
-    let mut next = minds.into_iter();
+    let mut minds: Vec<_> = candidates.iter()
+        .map(|(mind, grants)| (*mind, *grants, requirement_of(*mind)))
+        .collect();
+    minds.sort_by_key(|(_, grants, _)| *grants);
     let mut out = Vec::new();
     for p in peers {
         if over == 0 {
@@ -347,16 +346,18 @@ pub fn choose_offloads(
         if seat_queued(p.lane_wait_p50_ms, p.lane_wait_samples, local.lane_wait_p50_ms) {
             continue;
         }
-        // A seat that cannot hold one of our turns is not capacity, whatever it offers.
-        if p.served_context_window.is_some_and(|w| !crate::inference::planning::serving_plan::persona_lane_holds(w, local.requirement)) {
-            continue;
-        }
         // THE SEAT'S live grant-able count (lanes − in flight − already granted), not
         // `lanes − residents` roster arithmetic every node once evaluated on its own. The
         // grant itself is acquired by the caller before she moves.
         let mut free = p.free_slots_live as usize;
         while free > 0 && over > 0 {
-            let Some((mind, _)) = next.next() else { return out };
+            // Fit this mind, not the population median. Keep an unseated candidate
+            // available for a later, wider peer; she must not consume this slot or
+            // prevent a smaller candidate from using it.
+            let Some(index) = minds.iter().position(|(_, _, requirement)| {
+                !seat_starves(p.served_context_window, *requirement)
+            }) else { break };
+            let (mind, _, _) = minds.remove(index);
             out.push((mind, p.peer, model.to_string()));
             free -= 1;
             over -= 1;

@@ -90,6 +90,7 @@ mod tests {
             Arc::new(dashmap::DashMap::new()),
             Arc::new(dashmap::DashMap::new()),
             tokio::runtime::Handle::current(),
+            Arc::new(crate::modules::acting_provider::CoreActing),
         ));
         let objs = command_objects(cache, slot, code);
         assert_eq!(objs.len(), 7);

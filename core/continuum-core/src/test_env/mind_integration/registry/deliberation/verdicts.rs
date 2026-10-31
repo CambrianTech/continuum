@@ -22,7 +22,6 @@ async fn a_writing_turn_after_a_cut_gets_its_reply_on_a_46848_window() {
     let cut = reg.record_emission_in_memory(persona, 5_404, 0, EmissionStop::CutMidAnswer, 4);
     assert_eq!(cut.peak_tokens, 10_808, "a cut mid-answer records the answer at double");
     let wm = Arc::new(WorkingMemory::new(8));
-    wm.set_served_window(window);
     let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
     let faculty = LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", adapter.clone())
         .with_context_window(window)
@@ -38,10 +37,7 @@ async fn a_writing_turn_after_a_cut_gets_its_reply_on_a_46848_window() {
     let seen = adapter.seen.lock().unwrap();
     let request = &seen[0];
     let reply = request.max_tokens.expect("the reply is bounded");
-    assert!(
-        (10_808..=LlmDeliberationFaculty::ACT_OUTPUT_CAP).contains(&reply),
-        "the retried write gets at least the doubled cut, under the act's bound: {reply}"
-    );
+    assert!(reply >= 10_808, "the retried write gets at least the doubled cut: {reply}");
     let wire_tokens =
         LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
             + LlmDeliberationFaculty::messages_cost(&request.messages)
@@ -195,7 +191,9 @@ async fn provider_context_feedback_bounds_replay_and_scales_next_turn() {
         160
     );
     let fault = faculty.contribute(&ws).await.expect("bounded refusal");
-    assert!(fault.fault.is_some());
+    // Bounded: a fault or a typed capacity refusal (the newest-result refit's end), never a
+    // third request (asserted by the call count below).
+    assert!(fault.fault.is_some() || fault.capacity_refusal.is_some(), "{:?}", fault.fault);
     assert_eq!(
         adapter.call_count(),
         2,
@@ -282,7 +280,6 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
             None,
         )]));
         let wm = Arc::new(WorkingMemory::new(8));
-        wm.set_served_window(window);
         wm.record_receipt("latest complete tool receipt");
         // Optional history does not outrank the reply reserve. Give this
         // established citizen measured emissions so the large source
@@ -384,7 +381,7 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
             // budget-shed one.
             let minimum = GroundingPlan::minimum(&ws);
             let fixed = LlmDeliberationFaculty::framing_cost(&framing.stable)
-                + faculty.select_tool_surface(&ws).tokens
+                + faculty.prompt_view(&ws).tools.tokens
                 + minimum.context_reserve()
                 + minimum.trailing_tokens()
                 + unfitted.required_tokens()
@@ -396,7 +393,6 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
                     LlmDeliberationFaculty::holds_live_work(&ws),
                     ws.directed_at_self(),
                 )
-                .0
                 .min_tokens as usize;
             let cluster = history
                 .iter()
@@ -515,7 +511,7 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
         );
         let tools = request.tools.as_ref().expect("actual native surface");
         let tool_tokens = crate::cognition::tool_surface::tool_surface_tokens_of(tools);
-        assert_eq!(tool_tokens, faculty.select_tool_surface(&ws).tokens);
+        assert_eq!(tool_tokens, faculty.prompt_view(&ws).tools.tokens);
         let wire = LlmDeliberationFaculty::framing_cost(system)
             + LlmDeliberationFaculty::messages_cost(&request.messages)
             + tool_tokens

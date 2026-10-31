@@ -262,6 +262,7 @@ mod tests {
             parts: Vec::new(),
             expand_command: None,
             source_truncated: false,
+            units: std::sync::Arc::from(Vec::new()),
         };
         let verdict = Contribution {
             faculty: FacultyId::Deliberation,
@@ -285,6 +286,7 @@ mod tests {
             parts: Vec::new(),
             expand_command: None,
             source_truncated: false,
+            units: std::sync::Arc::from(Vec::new()),
         };
         let trace = WorkspaceTrace {
             cycle: crate::cognition::workspace::CycleId::UNSTAMPED,

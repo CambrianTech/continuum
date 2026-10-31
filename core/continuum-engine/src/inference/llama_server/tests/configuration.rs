@@ -166,6 +166,7 @@ async fn ready_predicate_requires_ready_and_a_model() {
         vision_base_url: None,
         vision_model: None,
         loading_model: None,
+        held_for: None,
     });
     assert!(!pred(&rx.borrow()));
     // not-ready but has a model → unsatisfied.
@@ -184,6 +185,7 @@ async fn ready_predicate_requires_ready_and_a_model() {
         vision_base_url: None,
         vision_model: None,
         loading_model: None,
+        held_for: None,
     });
     assert!(!pred(&rx.borrow()));
     // ready AND a model → satisfied, and wait_for resolves to it at once.
@@ -202,6 +204,7 @@ async fn ready_predicate_requires_ready_and_a_model() {
         vision_base_url: None,
         vision_model: None,
         loading_model: None,
+        held_for: None,
     });
     let got = tokio::time::timeout(Duration::from_millis(100), rx.wait_for(pred))
         .await
@@ -220,12 +223,18 @@ async fn ready_predicate_requires_ready_and_a_model() {
 #[test]
 fn the_only_eyes_on_the_node_go_on_the_main_lane() {
     use MainLaneMmproj::*;
-    assert_eq!(main_lane_mmproj_decision(false, false, true, Some(true)), Withhold);
-    assert_eq!(main_lane_mmproj_decision(false, false, true, Some(false)), WearAsOnlyEyes);
-    assert_eq!(main_lane_mmproj_decision(false, false, true, None), WearAsOnlyEyes);
-    assert_eq!(main_lane_mmproj_decision(true, false, true, Some(true)), Wear);
-    assert_eq!(main_lane_mmproj_decision(false, true, true, Some(true)), Wear);
-    assert_eq!(main_lane_mmproj_decision(false, false, false, Some(false)), NoneResolved);
+    assert_eq!(main_lane_mmproj_decision(false, false, true, false, Some(true)), Withhold);
+    assert_eq!(main_lane_mmproj_decision(false, false, true, false, Some(false)), WearAsOnlyEyes);
+    assert_eq!(main_lane_mmproj_decision(false, false, true, false, None), WearAsOnlyEyes);
+    assert_eq!(main_lane_mmproj_decision(true, false, true, false, Some(true)), Wear);
+    assert_eq!(main_lane_mmproj_decision(false, true, true, false, Some(true)), Wear);
+    assert_eq!(main_lane_mmproj_decision(false, false, false, false, Some(false)), NoneResolved);
+    // A hybrid (recurrent memory cannot shift) wears its eyes even with a sidecar on
+    // the node: cache_reuse is inert there, so the withhold would buy only blindness
+    // (2026-10-25, the M5 on Qwen3.6: withheld, then the sidecar yielded — blind).
+    assert_eq!(main_lane_mmproj_decision(false, false, true, true, Some(true)), WearReuseInert);
+    assert_eq!(main_lane_mmproj_decision(false, false, true, true, None), WearReuseInert);
+    assert!(WearReuseInert.wears());
     // And the readiness check names a withheld/absent projector as what it is —
     // never "--mmproj was passed" about a lane that was given none.
     let err = vision_lane_ready(true, false, None).unwrap_err();

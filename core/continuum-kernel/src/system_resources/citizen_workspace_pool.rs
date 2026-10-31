@@ -90,7 +90,7 @@ use std::sync::Arc;
 use crate::paging::pool::ResourcePool;
 use crate::system_resources::disk_reporters::TrackedDir;
 
-mod cargo_target;
+pub(crate) mod cargo_target;
 pub(crate) use cargo_target::is_cargo_target;
 use cargo_target::{hold_cargo_locks, take_target, ResidueKept, CARGO_CACHEDIR_SIGNATURE, PARKED_PREFIX};
 #[cfg(test)]

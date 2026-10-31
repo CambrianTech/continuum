@@ -1,0 +1,67 @@
+name: Warm the shared Rust build cache
+
+# Its own workflow, not a job of Continuum Rust Tests (card 28463ba7). It gates nothing (a failed
+# warm-up only leaves the previous cache), but as a job of the tests run its cancellation, which
+# happens whenever a newer canary push queues behind it in its concurrency group, made the whole
+# tests run conclude `cancelled`. The deploy tracker reads a cancelled run as Red, so a published
+# canary build of that commit could never be deployed (enrico, 2026-10-27: 791328aab, 8d6656f11).
+# As its own workflow it is listed in the tracker's NON_DEPLOY_WORKFLOW_PATHS, like core-binaries.
+
+on:
+  push:
+    branches: [canary]
+
+env:
+  # The same value as Continuum Rust Tests: the cached units' fingerprints must match theirs.
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # The shared target cache every Linux Rust job restores. Built COLD at one canary commit, so
+  # every unit in it is from that commit and `settle` (tools/scripts/ci-cargo-freshness.cjs) can
+  # mark exactly what differs; a cache that accumulated units across commits could not say which
+  # commit a stale unit came from. It builds what every crate job and the CLI job build, with the
+  # same features (the selector's TEST_FEATURES), then drops the test executables, which a
+  # crate job always rebuilds. Not a gate: a failed warm-up only leaves the previous cache.
+  warm-cache:
+    name: Warm the shared Rust build cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # One warm-up at a time; a newer push queues behind it rather than cancelling it, so a
+    # steady stream of merges still saves a cache.
+    concurrency:
+      group: continuum-rust-warm-cache-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/rust-ci-setup
+        id: setup
+        with:
+          restore-target: 'false'
+          save-apt: 'true'
+      - name: Build every crate job's tests and the CLI's (no run)
+        run: |
+          mapfile -t targets < <(node -e '
+            const { TEST_FEATURES } = require("./tools/scripts/ci-change-scope.cjs");
+            for (const [crate, features] of Object.entries(TEST_FEATURES)) console.log(`${crate}\t${features}`);')
+          for target in "${targets[@]}"; do
+            IFS=$'\t' read -r crate features <<< "$target"
+            echo "::group::$crate ($features)"
+            cargo test --locked -p "$crate" --lib --profile dev-fast --features "$features" --no-run --message-format=json >> warm.jsonl
+            echo "::endgroup::"
+          done
+          core_features=$(node -p 'require("./tools/scripts/ci-change-scope.cjs").TEST_FEATURES["continuum-core"]')
+          cargo test --locked -p continuum-core --bin continuum --profile dev-fast --features "$core_features" --no-run --message-format=json >> warm.jsonl
+          node tools/scripts/ci-cargo-freshness.cjs prune-test-executables warm.jsonl
+          du -sh "$CARGO_TARGET_DIR" ~/.cargo/registry ~/.cargo/git
+          df -h / "$CARGO_TARGET_DIR"
+      - name: Save the shared target cache
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /ci-target
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ steps.setup.outputs.cache-prefix }}${{ github.sha }}

@@ -45,7 +45,7 @@ const SYSTEM_PRESSURE_BROKER_STATE: &str = "system/pressure-broker-state";
 pub struct PressureBrokerModule {
     broker: Arc<PressureBroker>,
     tick_interval: std::time::Duration,
-    disk_data: std::sync::OnceLock<Arc<crate::modules::data::DataState>>,
+    disk_data: std::sync::OnceLock<Arc<dyn crate::runtime::StorageProvider>>,
 }
 
 impl PressureBrokerModule {
@@ -100,7 +100,7 @@ impl PressureBrokerModule {
     async fn restore_disk_ownership(&self) -> Result<(), String> {
         if let Some(data) = self.disk_data.get() {
             crate::system_resources::disk_reporters::restore_cargo_roots(
-                data.get_adapter("@node").await?,
+                data.adapter("@node").await?,
             ).await?;
         }
         Ok(())
@@ -132,13 +132,10 @@ impl ServiceModule for PressureBrokerModule {
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
         if !crate::system_resources::disk_reporters::registry_installed() { return Ok(()) }
-        let module = ctx.registry.get_by_name("data")
-            .ok_or_else(|| "disk ownership requires the data module".to_string())?;
-        let data = module.as_any().downcast_ref::<crate::modules::data::DataModule>()
-            .ok_or_else(|| "disk ownership: data module type mismatch".to_string())?;
+        let storage = ctx.storage("disk ownership")?;
         // Bind before I/O: a transient disk failure or boot deadline must not
         // strand writer admission forever. The existing broker tick retries.
-        self.disk_data.get_or_init(|| data.state.clone());
+        self.disk_data.get_or_init(|| storage);
         self.restore_disk_ownership().await
     }
 

@@ -149,6 +149,17 @@ pub struct PersonaDemand {
     /// Next slot to overwrite in `need_recent`.
     #[serde(default)]
     pub need_next: u8,
+    /// The last [`RECENT_TURNS`] growth samples (what `sent_peak` takes the max of, over a
+    /// lifetime): the lane floor reads their max, so one historic giant turn stops sizing
+    /// every plan forever. On the M5, 2026-10-28, all-time `sent_peak`s of 188-370k
+    /// (recent turns 20-43k) set a 423,945-token requirement no plan could meet, every
+    /// runnable plan was refused as below the floor, and four residents shared one
+    /// 27,904-token slot. Legacy files read empty.
+    #[serde(default)]
+    pub sent_recent: [u32; RECENT_TURNS],
+    /// Next slot to overwrite in `sent_recent`.
+    #[serde(default)]
+    pub sent_next: u8,
 }
 
 /// How many recent turns define "typical". Sixteen: a working session, not a
@@ -167,6 +178,27 @@ fn push_need(d: &mut PersonaDemand, need_tokens: u32) {
     let i = (d.need_next as usize) % RECENT_TURNS;
     d.need_recent[i] = need_tokens;
     d.need_next = ((i + 1) % RECENT_TURNS) as u8;
+}
+
+/// Push one growth sample into her sent ring (newest overwrites oldest).
+fn push_sent(d: &mut PersonaDemand, sent_tokens: u32) {
+    let i = (d.sent_next as usize) % RECENT_TURNS;
+    d.sent_recent[i] = sent_tokens;
+    d.sent_next = ((i + 1) % RECENT_TURNS) as u8;
+}
+
+/// Her growth sample for the lane floor: the largest of her RECENT growth samples, never a
+/// lifetime peak. A mind that never sent a growth sample has none, so she sets no floor. A
+/// record written before the ring existed holds only its lifetime peak: it stands on her
+/// typical demand, the same rule [`requirement_tokens`] states, else on that peak.
+pub fn growth_sample(d: &PersonaDemand) -> Option<u32> {
+    if let Some(recent) = d.sent_recent.iter().copied().max().filter(|&t| t > 0) {
+        return Some(recent);
+    }
+    if d.sent_peak == 0 {
+        return None;
+    }
+    typical_tokens(d).or(Some(d.sent_peak))
 }
 
 fn median_of(ring: &[u32; RECENT_TURNS]) -> Option<u32> {
@@ -347,22 +379,26 @@ pub enum EmissionStop {
 }
 
 impl EmissionStop {
-    /// Classify a finished generation by where the cap fell: `hit_cap` is a
-    /// `FinishReason::Length` stop, `answer_tokens` the share of the server's count that
-    /// was not reasoning. Only a cap hit is a cut.
-    pub fn classify(hit_cap: bool, answer_tokens: u32) -> Self {
-        match (hit_cap, answer_tokens) {
+    /// Classify a finished generation by where the cap fell. `hit_cap` is a
+    /// `FinishReason::Length` stop; `answered` is whether the response CARRIES an answer
+    /// (text or a call), never a token count, which a stream may not report: a cut with an
+    /// answer present and usage missing is a cut in the answer (Codex on #5616). Only a
+    /// cap hit is a cut. This is the one classification: the allowance policy, its probes
+    /// and the hour line's counter ([`Self::counted`]) all read it.
+    pub fn classify(hit_cap: bool, answered: bool) -> Self {
+        match (hit_cap, answered) {
             (false, _) => Self::Landed,
-            (true, 0) => Self::CutMidThought,
-            (true, _) => Self::CutMidAnswer,
+            (true, false) => Self::CutMidThought,
+            (true, true) => Self::CutMidAnswer,
         }
     }
 
     /// [`Self::classify`] with the request's reasoning budget in hand: a landed turn
     /// whose think reached the budget is a `ThinkBudgetHit`, the rest classify as before.
+    /// The reasoning count is a measurement: missing usage reads 0 and so never claims a hit.
     pub fn classify_with_budget(
         hit_cap: bool,
-        answer_tokens: u32,
+        answered: bool,
         reasoning_tokens: u32,
         reasoning_budget: Option<u32>,
         allowance: u32,
@@ -371,7 +407,22 @@ impl EmissionStop {
             Some(budget) if !hit_cap && budget > 0 && reasoning_tokens >= budget => {
                 Self::ThinkBudgetHit { allowance }
             }
-            _ => Self::classify(hit_cap, answer_tokens),
+            _ => Self::classify(hit_cap, answered),
+        }
+    }
+
+    /// The hour line's count of this stop (`health_ledger::Stop`). A landed turn splits by
+    /// what it carries: an answer is landed, reasoning alone ended in thought, nothing is empty.
+    /// `answered` is the same presence [`Self::classify`] was given.
+    pub fn counted(self, answered: bool, reasoned: bool) -> continuum_vitals::health_ledger::Stop {
+        use continuum_vitals::health_ledger::Stop;
+        match self {
+            Self::CutMidAnswer => Stop::CutAnswer,
+            Self::CutMidThought => Stop::CutThink,
+            Self::ThinkBudgetHit { .. } => Stop::ThinkBudget,
+            Self::Landed if answered => Stop::Landed,
+            Self::Landed if reasoned => Stop::ThinkEnded,
+            Self::Landed => Stop::Empty,
         }
     }
 }
@@ -490,8 +541,15 @@ impl WorkingSetRegistry {
         *self
             .observed
             .entry(persona)
-            .and_modify(|d| d.sent_peak = d.sent_peak.max(sent_tokens))
-            .or_insert(PersonaDemand { last_seen_ms: now_ms, sent_peak: sent_tokens, ..PersonaDemand::default() })
+            .and_modify(|d| {
+                d.sent_peak = d.sent_peak.max(sent_tokens);
+                push_sent(d, sent_tokens);
+            })
+            .or_insert_with(|| {
+                let mut d = PersonaDemand { last_seen_ms: now_ms, sent_peak: sent_tokens, ..PersonaDemand::default() };
+                push_sent(&mut d, sent_tokens);
+                d
+            })
     }
 
     /// Record the post-fit size of a turn the fit HELD — her need (see
@@ -526,8 +584,8 @@ impl WorkingSetRegistry {
             .filter(|&t| t > 0)
     }
 
-    /// Typical growth sample among `personas` — the median of their retained
-    /// starvation-aware peaks. The planner's per-lane floor follows this, not the ceiling: one mind
+    /// Typical growth sample among `personas` — the median of their RECENT starvation-aware
+    /// peaks ([`growth_sample`], never a lifetime max). The planner's per-lane floor follows this, not the ceiling: one mind
     /// with a 96k prompt must not size every lane to 120k and starve the roster
     /// (2026-09-14: 16 residents on 3 lanes). The outlier is reconciled down to the
     /// served window instead.
@@ -543,7 +601,7 @@ impl WorkingSetRegistry {
     pub fn sent_median_with(&self, personas: &[Uuid], extra: &[u32]) -> Option<u32> {
         let mut peaks: Vec<u32> = personas
             .iter()
-            .filter_map(|p| self.observed.get(p).map(|e| e.value().sent_peak))
+            .filter_map(|p| self.observed.get(p).and_then(|e| growth_sample(e.value())))
             .chain(extra.iter().copied())
             .filter(|&t| t > 0)
             .collect();
@@ -553,13 +611,12 @@ impl WorkingSetRegistry {
         peaks.sort_unstable();
         Some(peaks[peaks.len() / 2])
     }
-    /// Largest retained growth sample among `personas`, including unmet demand.
+    /// Largest recent growth sample among `personas`, including unmet demand ([`growth_sample`]).
     pub fn sent_ceiling_of(&self, personas: &[Uuid]) -> Option<u32> {
         personas
             .iter()
-            .filter_map(|p| self.observed.get(p).map(|e| e.value().sent_peak))
+            .filter_map(|p| self.observed.get(p).and_then(|e| growth_sample(e.value())))
             .max()
-            .filter(|&t| t > 0)
     }
 
     /// Record one completed generation's measured output for `persona`.
@@ -892,7 +949,8 @@ impl WorkingSetRegistry {
 }
 
 /// Each mind's requirement, from the untrimmed demand her turns assemble with the
-/// standard headroom — the ONE derivation, shared by the serving daemon (sizing this
+/// standard headroom, with her parked training examples' reservation beside it (never
+/// folded into her target or floor) — the ONE derivation, shared by the serving daemon (sizing this
 /// seat's lanes) and the grid allocator daemon (sizing the grid's roles). A mind with
 /// no turn yet is `Unknown`, never a number.
 pub fn requirements_for(
@@ -911,7 +969,12 @@ pub fn requirements_for(
                 .as_ref()
                 .and_then(need_tokens)
                 .unwrap_or(0); // JUSTIFIED unwrap_or: no held turn measured = no floor beyond the target (0 = no measurement)
-            crate::inference::planning::window_allocator::LaneRequirement::from_demand(*p, wish, crate::inference::planning::serving_plan::SENT_HEADROOM).with_need(need)
+            // Her parked training examples' reservation, carried beside her conversational target
+            // and need (card ea157b1a): the allocator grows toward it only from spare budget.
+            let training = crate::genome::fine_tuning::training_demand::TrainingDemand::for_persona(*p).reservation();
+            crate::inference::planning::window_allocator::LaneRequirement::from_demand(*p, wish, crate::inference::planning::serving_plan::SENT_HEADROOM)
+                .with_need(need)
+                .with_training(training)
         })
         .collect()
 }

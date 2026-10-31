@@ -42,8 +42,12 @@ if [[ -z "$JSONL" || ! -f "$JSONL" ]]; then
   exit 2
 fi
 
-COUNT="$(python3 - "$JSONL" <<'PY'
+# The crate set is derived from the workspace (Cargo.toml [workspace.metadata.ci]), never listed here.
+CRATES_JSON="$(node "$REPO_ROOT/tools/scripts/ci-change-scope.cjs" warning-crates)"
+
+COUNT="$(python3 - "$JSONL" "$CRATES_JSON" <<'PY'
 import json, sys
+counted = set(json.loads(sys.argv[2]))
 seen = set()
 for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
     line = line.strip()
@@ -55,8 +59,8 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
         continue
     if rec.get("reason") != "compiler-message":
         continue
-    # Crates cut out of continuum-core (engine, hands, live, mind, cognition, ...) keep their warnings counted.
-    if (rec.get("target") or {}).get("name") not in ("continuum-core", "continuum_core", "continuum-engine", "continuum_engine", "continuum-hands", "continuum_hands", "continuum-live", "continuum_live", "continuum-mind", "continuum_mind", "continuum-perception", "continuum_perception", "continuum-genome", "continuum_genome", "continuum-memory", "continuum_memory", "continuum-experience", "continuum_experience", "continuum-cognition", "continuum_cognition", "continuum-academy", "continuum_academy"):
+    # Every tested crate the policy counts: core and the crates cut out of it.
+    if (rec.get("target") or {}).get("name") not in counted:
         continue
     msg = rec.get("message") or {}
     if msg.get("level") != "warning":

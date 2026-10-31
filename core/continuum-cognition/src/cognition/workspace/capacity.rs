@@ -46,6 +46,10 @@ impl CapacityRefusal {
         if self.receipt_state.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit != 0 {
             return false;
         }
+        // A loop that stops with this refusal parked asks nothing more: never a stall.
+        if let (Some(persona), "stopped") = (persona, phase) {
+            crate::cognition::resident_service::unpark(persona);
+        }
         continuum_base::probe!(class = "persona.capacity.transition",
             persona = ?persona, room = %room, refusal = %self.id,
             phase = phase, reason = reason,

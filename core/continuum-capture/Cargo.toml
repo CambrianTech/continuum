@@ -1,0 +1,23 @@
+[package]
+name = "continuum-capture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+# Captures stamp the build they ran on (CONTINUUM_BUILD_GIT_SHA): core's build script is the one owner.
+build = "../continuum-core/build.rs"
+description = "The capture of a mind's turns: the capture fixture-directory policy and the prompt-capture recorder, owner and playback store. A leaf of the cognition crate tree (docs/architecture/COGNITION-CRATE-TREE.md)."
+
+[dependencies]
+continuum-base = { path = "../continuum-base" }
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-engine = { path = "../continuum-engine" }
+continuum-rooms = { path = "../continuum-rooms" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
+tempfile = "3"

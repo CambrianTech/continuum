@@ -44,7 +44,7 @@
             }),
         );
         let delivery = source
-            .deliver(&ctx(), 2048, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         let body = &delivery.items[0].content;
         for fact in [
@@ -151,7 +151,7 @@
     async fn layout_surfaces_with_real_dirs() {
         let reader = Arc::new(StubReader::ok(&["apps", "core", "docs", "src"]));
         let source = WorkspaceMapSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 512, ResolutionPreference::Raw).await;
+        let delivery = source.deliver(&ctx()).await;
         assert_eq!(delivery.items.len(), 1);
         let content = &delivery.items[0].content;
         // Both `core` and `src` are present — the exact ambiguity that tripped
@@ -181,7 +181,7 @@
     async fn grounds_without_steering() {
         let reader = Arc::new(StubReader::ok(&["core", "src"]));
         let source = WorkspaceMapSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 512, ResolutionPreference::Raw).await;
+        let delivery = source.deliver(&ctx()).await;
         let content = delivery.items[0].content.to_lowercase();
         assert!(
             !content.contains("rust is under") && !content.contains("rust lives"),
@@ -194,9 +194,8 @@
     #[tokio::test]
     async fn read_error_returns_empty_no_panic() {
         let source = WorkspaceMapSource::new(persona(), Arc::new(StubReader::err()));
-        let delivery = source.deliver(&ctx(), 512, ResolutionPreference::Raw).await;
+        let delivery = source.deliver(&ctx()).await;
         assert!(delivery.items.is_empty());
-        assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
     // what this catches: cross-persona ctx gets nothing (defense in depth).
@@ -205,14 +204,9 @@
         let source = WorkspaceMapSource::new(persona(), Arc::new(StubReader::ok(&["core"])));
         let alien = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
         let delivery = source
-            .deliver(
-                &RagContext::for_persona(alien, 1_000_000),
-                512,
-                ResolutionPreference::Raw,
-            )
+            .deliver(&RagContext::for_persona(alien, 1_000_000))
             .await;
         assert!(delivery.items.is_empty());
-        assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
     // what this catches: an empty workspace grounds WRITE-FIRST — it states the space
@@ -223,7 +217,7 @@
     #[tokio::test]
     async fn empty_layout_grounds_write_first() {
         let source = WorkspaceMapSource::new(persona(), Arc::new(StubReader::ok(&[])));
-        let delivery = source.deliver(&ctx(), 512, ResolutionPreference::Raw).await;
+        let delivery = source.deliver(&ctx()).await;
         assert_eq!(delivery.items.len(), 1);
         let content = &delivery.items[0].content;
         assert!(content.contains("EMPTY"), "states it's empty: {content}");
@@ -243,8 +237,6 @@
         );
     }
 
-    // what this catches: an absurdly tiny budget never overspends — either no
-    // block, or a block that fits the budget (same contract as the doctrine).
     // what this catches (card 0c42c0bf): a citizen who leased a port for her dev server not
     // seeing it in her grounding, so she guesses a port or re-leases every turn; and a line
     // that costs prompt tokens for a citizen who holds no leases.
@@ -270,20 +262,24 @@
         assert!(!line.contains('\n'), "one line");
     }
 
+    // what this catches: the map is delivered whole under the stable key "map", with the
+    // root-line-plus-count summary and the code/tree pointer, and never a truncation
+    // marker -- the view picks the level, the source never sizes.
     #[tokio::test]
-    async fn tiny_budget_never_overspends() {
-        let reader = Arc::new(StubReader::ok(&["apps", "core", "docs", "src", "tools"]));
-        for budget in [1u32, 2, 3, 5, 8, 20, 50] {
-            let source = WorkspaceMapSource::new(persona(), reader.clone());
-            let delivery = source
-                .deliver(&ctx(), budget, ResolutionPreference::Raw)
-                .await;
-            assert!(
-                delivery.tokens_used <= budget,
-                "budget {budget}: overspent ({} > {budget})",
-                delivery.tokens_used
-            );
-        }
+    async fn the_map_is_delivered_whole_with_levels() {
+        let source = WorkspaceMapSource::new(
+            persona(),
+            Arc::new(StubReader::ok(&["apps", "core", "docs", "src", "tools"])),
+        );
+        let delivery = source.deliver(&ctx()).await;
+        let item = &delivery.items[0];
+        assert_eq!(item.key, "map");
+        assert!(item.content.contains("apps, core, docs, src, tools"));
+        assert!(!item.content.contains("truncated"));
+        let summary = item.summary.as_deref().expect("summary level");
+        assert!(summary.contains("/repo") && summary.contains("5 top-level entries"), "{summary}");
+        assert_eq!(item.pointer.as_deref(), Some("[workspace map: reopen with code/tree]"));
+        assert!(!delivery.truncated);
     }
 
     // what this catches: the production reader reads our RECORDED checkout (never the

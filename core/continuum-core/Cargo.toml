@@ -46,6 +46,8 @@ name = "forge-custodian"
 path = "src/bin/forge_custodian.rs"
 
 [dependencies]
+continuum-process = { path = "../continuum-process" }
+continuum-git = { path = "../continuum-git" } # the deploy tree's stale index.lock and its submodules (bin/continuum deploy_ledger, deploy_consume; deploy_tracker)
 tool-working-set = { path = "../tool-working-set" }  # one relevance seam: commands/help ranks a query the way the learned tool head reads relevance
 continuum-tool-protocol = { path = "../continuum-tool-protocol" }
 tokio.workspace = true
@@ -55,11 +57,23 @@ serde_json.workspace = true
 ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" }
 continuum-kernel = { path = "../continuum-kernel" }
+continuum-perception = { path = "../continuum-perception" }
+continuum-sentinel = { path = "../continuum-sentinel" }
 continuum-mind = { path = "../continuum-mind" }
+continuum-memory = { path = "../continuum-memory" }
+continuum-academy = { path = "../continuum-academy" }  # commands::hf re-exports its hf/* (#5452): a normal dependency, not only a test one
+continuum-dreaming = { path = "../continuum-dreaming" }
 continuum-live = { path = "../continuum-live" }
 continuum-hands = { path = "../continuum-hands" }
 continuum-engine = { path = "../continuum-engine" }
+continuum-service = { path = "../continuum-service" }  # each resident's window judged, and the alarm the beacon carries (card 1c157668)
+continuum-models = { path = "../continuum-models" }
+continuum-serving = { path = "../continuum-serving" }
+continuum-embedding = { path = "../continuum-embedding" }
+continuum-store = { path = "../continuum-store" }  # the data layer and its commands (card 2709ec6d)
+continuum-grid = { path = "../continuum-grid" }  # grid discovery, trust and routing with their commands (plan phase 2)
 continuum-context = { path = "../continuum-context" }
 # JSON Schema generation from serde types — the runtime param schema every SDK
 # (CLI/web/mobile/RAG-tools) adapts from. Derived automatically by the command
@@ -78,13 +92,14 @@ continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 # `WsServerMessage`. The `CommandDispatch` seam keeps continuum-positron free
 # of a continuum-core dependency (no cycle — this crate implements the trait).
 continuum-positron = { path = "../continuum-positron" }
+continuum-text-analysis = { path = "../continuum-text-analysis" }
 # The client SDK. `InProcessTransport` (runtime/in_process_transport.rs)
 # implements `continuum_client::Transport` so an in-core citizen (persona,
 # foundry) holds the SAME `Connection` every external client uses — citizens
 # use clients ([[persona-is-a-client]]). No cycle: continuum-client does not
 # depend on continuum-core.
 continuum-client = { path = "../../client/continuum-client" }
-reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
 # Distributed compile-time registration: each `CommandSpec` self-registers at its
@@ -196,7 +211,7 @@ ts-rs.workspace = true  # TypeScript type generation
 # LiveKit server runs as its own container; this is only for Rust-side agent participation.
 # MIGRATION: bridge_client.rs replaces direct LiveKit usage. These deps will be removed
 # once bridge_client is fully validated. livekit-bridge binary handles WebRTC.
-livekit-api = { version = "0.4", features = ["native-tls"], optional = true }
+livekit-api = { workspace = true, optional = true }
 
 # Bridge protocol — shared types for livekit-bridge IPC (no heavy deps)
 continuum-bridge-protocol = { path = "../livekit-protocol" }
@@ -328,13 +343,13 @@ pocket-tts = ["continuum-live/pocket-tts"]
 # and web depend on. Regenerate after a command changes:
 # `cargo test -p continuum-core --features ts-codegen generates_live_typescript_sdk`.
 ts-codegen = ["continuum-kernel/ts-codegen"]
-metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml", "continuum-engine/metal", "continuum-live/metal", "continuum-mind/metal"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda", "continuum-kernel/cuda", "continuum-engine/cuda", "continuum-mind/cuda"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml", "continuum-engine/metal", "continuum-serving/metal", "continuum-live/metal", "continuum-mind/metal", "continuum-dreaming/metal", "continuum-grid/metal"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda", "continuum-kernel/cuda", "continuum-engine/cuda", "continuum-mind/cuda", "continuum-dreaming/cuda", "continuum-grid/cuda"]
 # Vulkan is llama.cpp-only (Candle has no Vulkan backend). Used by the
 # Mac-Carl-in-container path: Podman + krunkit routes Vulkan API calls out
 # to MoltenVK on the host, which translates to Metal. Also valid on Linux
 # Nvidia/AMD hosts with libvulkan available.
-vulkan = ["llama/vulkan", "continuum-kernel/vulkan", "continuum-engine/vulkan", "continuum-mind/vulkan"]
+vulkan = ["llama/vulkan", "continuum-kernel/vulkan", "continuum-engine/vulkan", "continuum-mind/vulkan", "continuum-dreaming/vulkan", "continuum-grid/vulkan"]
 # ORT execution providers for the broader Carl-OOTB matrix (#964 series
 # follow-up). Each adds a cfg branch in inference/ort_providers.rs so
 # fastembed / Piper-TTS / Moonshine-STT / Kokoro / Orpheus / Silero VAD
@@ -378,7 +393,7 @@ load-dynamic-ort = ["ort/load-dynamic"]
 #     via `cargo test --features test-fixtures` or `--features test-fixtures`
 #     on the bin target.
 #   - Production: heuristic adapter doesn't exist in the binary at all.
-test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-mind/test-fixtures"]
+test-fixtures = ["continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-serving/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-mind/test-fixtures", "continuum-dreaming/test-fixtures", "continuum-store/test-fixtures", "continuum-grid/test-fixtures"]
 
 # stress-tests: opts in concurrency / multi-thread / load tests that
 # pin substrate invariants under N-task simultaneous load. Each test
@@ -398,7 +413,7 @@ test-fixtures = ["continuum-base/test-fixtures", "continuum-kernel/test-fixtures
 # `#[cfg(test)] mod tests` block (chat, generator, data cursors,
 # airc realtime_store as of this writing). Greppable by:
 #     grep -rln 'cfg(feature = "stress-tests")' src/
-stress-tests = ["continuum-kernel/stress-tests", "continuum-mind/stress-tests"]
+stress-tests = ["continuum-kernel/stress-tests", "continuum-mind/stress-tests", "continuum-dreaming/stress-tests", "continuum-store/stress-tests"]
 
 # Integration tests that link a `test-fixtures`-gated lib symbol (the
 # HeuristicInferenceAdapter stand-in, or the ChatQueueItem `compute_calls`
@@ -450,9 +465,11 @@ unexpected_cfgs = "allow"
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
 continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }
+continuum-serving = { path = "../continuum-serving", features = ["test-fixtures"] }
 continuum-hands = { path = "../continuum-hands", features = ["test-fixtures"] }
 continuum-live = { path = "../continuum-live", features = ["test-fixtures"] }
 continuum-mind = { path = "../continuum-mind", features = ["test-fixtures"] }
+continuum-dreaming = { path = "../continuum-dreaming", features = ["test-fixtures"] }
 continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
 continuum-experience = { path = "../continuum-experience", features = ["test-fixtures"] }
 continuum-academy = { path = "../continuum-academy", features = ["test-fixtures"] }
@@ -464,7 +481,6 @@ continuum-positron = { path = "../continuum-positron", features = ["test-fixture
 source-hygiene = { path = "../source-hygiene" }
 tokio-test = "0.4"
 tempfile = "3"                   # Temp directories for code module tests
-continuum-base = { path = "../continuum-base", features = ["test-fixtures"] }
 
 # Enable continuum-client's test-fixtures (the `mock` transport) in TEST builds
 # only — production links the regular dep above without it. Lets tests drive a

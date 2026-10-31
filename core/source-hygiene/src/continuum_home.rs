@@ -8,21 +8,24 @@
 //! rule's predicate on canary ae7145966: 77 such joins in production code (card 5e3a3e75).
 //!
 //! The count may only fall. Fix a site by resolving through
-//! `crate::paths::continuum_home()` (and joining the subdirectory onto that), never by
+//! `crate::paths::continuum_home()` (in `continuum-base`, `crate::home::continuum_home()`; the
+//! kernel's delegates to it) and joining the subdirectory onto that, never by
 //! raising the baseline. It is a measured syntactic ratchet over the production half (the
 //! scanner's cut, which can end a file early), not proof that every bypass is gone.
 
 use super::{SourceFile, SourceRule, Violation};
 
-/// The module that owns the resolution.
-const OWNER: &str = "paths/";
+/// The modules that own the resolution: the rule itself at the floor (`continuum-base`'s
+/// `home`, which `config_env` and `secrets` use), and the kernel's `paths`, which delegates to
+/// it and adds the test-build homes (card f04a437f).
+const OWNERS: &[&str] = &["paths/", "continuum-base/home.rs"];
 
 pub struct ContinuumHomeResolvedOnce;
 
 /// The code of a line, strings intact: the scanner's one string-aware split, so a `//`
 /// inside `"http://…"` is never read as a comment (Astra on #5196).
 fn code(line: &str) -> &str {
-    super::split_code_and_comment(line).0
+    super::lexer::split_code_and_comment(line).0
 }
 
 /// Whether the code at `i` joins `.continuum` onto a path by hand, including a `.join(`
@@ -48,7 +51,7 @@ impl SourceRule for ContinuumHomeResolvedOnce {
     }
 
     fn check(&self, file: &SourceFile) -> Vec<Violation> {
-        if file.rel.starts_with(OWNER) {
+        if OWNERS.iter().any(|owner| file.rel.starts_with(owner)) {
             return Vec::new();
         }
         let lines: Vec<&str> = file.production.lines().collect();
@@ -114,10 +117,11 @@ mod tests {
             !one(r#"let url = "http://x/.join(\".continuum\")"; // not code"#),
             "a string holding the text is not a join"
         );
-        let owner = SourceFile::for_test("paths/mod.rs", "fn h() { home.join(\".continuum\") }\n");
-        assert!(
-            ContinuumHomeResolvedOnce.check(&owner).is_empty(),
-            "the owner builds it"
-        );
+        for owner in ["paths/mod.rs", "continuum-base/home.rs"] {
+            let owner = SourceFile::for_test(owner, "fn h() { home.join(\".continuum\") }\n");
+            assert!(ContinuumHomeResolvedOnce.check(&owner).is_empty(), "the owner builds it: {}", owner.rel);
+        }
+        let floor_reader = SourceFile::for_test("continuum-base/config_env.rs", "fn h() { home.join(\".continuum\") }\n");
+        assert_eq!(ContinuumHomeResolvedOnce.check(&floor_reader).len(), 1, "a floor reader is not the owner");
     }
 }

@@ -233,7 +233,7 @@ impl ConsumeLedger {
             serde_json::to_writer(&mut file, self).map_err(|error| format!("encode deploy ledger: {error}"))?; // boundary: durable lifecycle receipt
             file.flush().and_then(|_| file.sync_all()).map_err(|error| format!("sync deploy ledger: {error}"))?;
             drop(file);
-            continuum_base::fs_portable::durable_rename(&temporary, path).map_err(|error| format!("replace deploy ledger: {error}"))?;
+            continuum_host::durable::replace(&temporary, path).map_err(|error| format!("replace deploy ledger: {error}"))?;
             Ok(())
         })();
         if result.is_err() { let _ = std::fs::remove_file(&temporary); }
@@ -345,72 +345,32 @@ pub(super) fn git_in(repo: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Whether any running `git` might be working on `repo`, judged conservatively: a git whose
-/// cwd is inside the tree, whose command line names the tree (`--git-dir` / `--work-tree`
-/// given from elsewhere), or whose cwd cannot be read at all. Only a git positively seen
-/// working elsewhere is ruled out: an unreadable cwd (permissions, a platform without cwd
-/// inspection) is not evidence of absence (Codex on #4477).
-pub(super) fn git_running_in(repo: &Path) -> bool {
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing()
-            .with_cwd(UpdateKind::Always)
-            .with_cmd(UpdateKind::Always),
-    );
-    let canonical = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf()); // unwrap_or_else: an uncanonicalizable root still compares as given
-    let spellings = [repo.to_string_lossy().into_owned(), canonical.to_string_lossy().into_owned()];
-    sys.processes().values().any(|p| {
-        let name = p.name().to_string_lossy();
-        if name != "git" && name != "git.exe" {
-            return false;
-        }
-        let names_repo = p
-            .cmd()
-            .iter()
-            .any(|a| spellings.iter().any(|r| a.to_string_lossy().contains(r.as_str())));
-        match p.cwd() {
-            Some(cwd) => names_repo || cwd.starts_with(&canonical) || cwd.starts_with(repo),
-            None => true, // unreadable: it may be working here
-        }
-    })
-}
-
 /// The deploy tree's `index.lock`, judged and (when stale) removed. `Ok(true)` = the tree
 /// may be deployed; `Ok(false)` = a lock that may be live stands, named in the deploy log,
 /// retried next tick without spending one of the tip's attempts.
 pub(super) fn settle_index_lock(repo: &Path) -> Result<bool, String> {
-    use continuum_cli_lifecycle::deploy_tracker::{index_lock_verdict, IndexLock, STALE_INDEX_LOCK};
-    let rel = git_in(repo, &["rev-parse", "--git-path", "index.lock"])?;
-    let lock = repo.join(rel);
-    let age = std::fs::metadata(&lock)
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .map(|t| t.elapsed().unwrap_or_default()); // unwrap_or_default: an mtime in the future reads as brand new, never as stale
-    match index_lock_verdict(age, age.is_some() && git_running_in(repo)) {
-        IndexLock::Absent => Ok(true),
-        IndexLock::Held => {
+    use continuum_git::index_lock::{settle, Settled, STALE_INDEX_LOCK};
+    match settle(repo, STALE_INDEX_LOCK) {
+        Settled::Absent => Ok(true),
+        Settled::Held { lock, age } => {
             deploy_note(&format!(
                 "deploy-consume: {} is locked ({} s old, a git operation may hold it) — not deploying this tick; \
                  it is removed once it is {} s old with no git running in the tree",
                 lock.display(),
-                age.unwrap_or_default().as_secs(), // unwrap_or_default: Held always carries an age
+                age.as_secs(),
                 STALE_INDEX_LOCK.as_secs()
             ));
             Ok(false)
         }
-        IndexLock::Stale => {
-            std::fs::remove_file(&lock)
-                .map_err(|e| format!("deploy-consume: cannot remove stale {}: {e}", lock.display()))?;
+        Settled::Cleared { lock, age } => {
             deploy_note(&format!(
                 "deploy.tree.stale_lock_cleared: removed {} ({} s old, no git running in the tree) — a git process died mid-write",
                 lock.display(),
-                age.unwrap_or_default().as_secs() // unwrap_or_default: Stale always carries an age
+                age.as_secs()
             ));
             Ok(true)
         }
+        Settled::Failed { lock, error, .. } => Err(format!("deploy-consume: cannot remove stale {}: {error}", lock.display())),
     }
 }
 

@@ -400,6 +400,47 @@ pub(crate) async fn end_card_turn(card: &CardHands, acts: usize) {
     crate::persona::card_carry::request();
 }
 
+/// One turn in the hands of the card she holds, start to end (card 959f3d5c): rooted at
+/// the held card, its credit captured on her act, driven in the card claim's hands, and its
+/// work synced to the card's branch. A room turn and her own-time turn are the same turn
+/// here; with no card held it drives in her default hands with no capture. The credit is
+/// returned from the CARD, not her hands (see [`HeldCardTurn::credit`]).
+pub(crate) async fn drive_in_held_card(
+    cycle: &WorkspaceCycle,
+    persona_id: Uuid,
+    persona_name: &str,
+    stimulus: &str,
+    burst: crate::cognition::workspace::Burst,
+    framing: crate::cognition::workspace::TurnFraming,
+    max_acts: usize,
+    conversation: &mut dyn CitizenConversation,
+) -> (
+    crate::cognition::act_observe::SettleOutcome,
+    Option<crate::persona::training_producer::CapturedCredit>,
+) {
+    let held = root_at_held_card(cycle, persona_id, &*conversation).await;
+    // Her credit follows the card she holds through the turn (card 12ddd78f): a turn that
+    // begins holding nothing and claims a card stages from the claim on.
+    let mut capture = crate::persona::training_producer::ClaimFollowingCapture::new(
+        held.credit.as_ref(),
+        conversation.stream_citizen(),
+        crate::persona::training_producer::TurnCreditCapture::opener(persona_id, persona_name, stimulus),
+    );
+    let outcome = crate::cognition::act_observe::drive_to_settle_with_credit(
+        cycle,
+        burst.in_hands(held.turn_hands()),
+        max_acts,
+        framing,
+        conversation,
+        Some(&mut capture as &mut dyn crate::cognition::act_observe::TurnCredit),
+    )
+    .await;
+    if let Some(hands) = &held.hands {
+        end_card_turn(hands, outcome.acts).await;
+    }
+    (outcome, capture.into_credit())
+}
+
 impl HeldCardTurn {
     /// The hands this turn acts with: its card claim's, the card's never-rooted stand-in when
     /// those could not be bound, or her default hands when she works no card.

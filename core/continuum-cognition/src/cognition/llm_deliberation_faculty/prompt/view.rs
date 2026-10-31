@@ -24,12 +24,32 @@ impl LlmDeliberationFaculty {
         self.prompt_view_with_feedback(ws, window, calibration)
     }
 
+    /// The window her prompt is fitted to: the working window
+    /// ([`crate::cognition::context_budget::ContextBudget::working_window`]), narrowed by the
+    /// provider's last observation. The binding keeps the served window: serving reads it.
     pub fn prompt_fit(&self, binding: &ModelBinding) -> (u32, PromptCalibration) {
+        self.fit_within(binding, crate::cognition::context_budget::ContextBudget::working_window(binding.context_window))
+    }
+
+    /// The served window, narrowed the same way: the one rebuild when her required input
+    /// cannot fit the working window (`verdict/contribute.rs`), so a large required payload is
+    /// served from the whole slot instead of refused.
+    pub fn prompt_fit_served(&self, binding: &ModelBinding) -> (u32, PromptCalibration) {
+        self.fit_within(binding, binding.context_window)
+    }
+
+    fn fit_within(&self, binding: &ModelBinding, window: u32) -> (u32, PromptCalibration) {
         let feedback = self.prompt_feedback.load();
         feedback.as_ref().filter(|f| f.applies_to(binding)).map_or(
-            (binding.context_window, PromptCalibration::default()),
-            |f| (binding.context_window.min(f.available), f.calibration),
+            (window, PromptCalibration::default()),
+            |f| (window.min(f.available), f.calibration),
         )
+    }
+
+    /// The working window for this faculty's current binding: the shares sized from the
+    /// window (results, room updates, the tool surface) scale with the prompt they live in.
+    pub(in super::super) fn working_window(&self) -> u32 {
+        crate::cognition::context_budget::ContextBudget::working_window(self.binding.load().context_window)
     }
 
     /// Fixture view against an explicit window, without a prior provider observation.
@@ -98,7 +118,7 @@ impl LlmDeliberationFaculty {
         // its grant travels with the view into `build_request_within` as `max_tokens`.
         let pending_peak = self.working_memory.as_ref()
             .map_or(0, |wm| wm.pending_emission_peak(ws.activity_room_id));
-        let (reply, reply_runaway) = reply_claim(
+        let reply = reply_claim(
             self.turn_kind(ws),
             self.working_set.as_ref().and_then(|reg| reg.need_of(self.persona_id)),
             pending_peak,
@@ -126,11 +146,9 @@ impl LlmDeliberationFaculty {
         // here, AND the human-readable tool MENU inside `compose_system` (counted in
         // `framing_tokens`). Whether that duplication is intended is an open
         // question, not something this comment should assert either way.
-        // The SELECTED surface, not the whole registry: `contribute` narrows to her
-        // hands on a work turn, and subtracting the full registry here trimmed the
-        // conversation to fit room that was never occupied (card dec1a7ff). One
-        // decision, made once, consulted by the budget and by the request alike.
-        let selected = self.select_tool_surface(ws);
+        // Her hands are a claim in the one allocation below (`tools_epoch.rs`): before it,
+        // only their floor is irreducible; the surface sent is what the grant buys.
+        let tools = self.tools_claim(ws);
 
         // Which tool categories the bookmarked menu OPENS this turn. Computed ONCE
         // here from `ws` (NOT from the budgeted `context`, which is not built yet) and
@@ -158,20 +176,21 @@ impl LlmDeliberationFaculty {
                 .stable,
         );
 
-        // The volatile framing (clock + own-time/presence) rides the FACTS phase
-        // of the conversation — flicker-class content, before the ask — never the
-        // system message it invalidated on every act (see the split note below).
-        let trailing_framing = deliberation_prompt::compose_trailing(
-            ws.now_ms,
-            ws.self_initiated,
-            ws.directed_at_self(),
-            holds_live_work,
-        );
+        // The contracts in force (own time, presence) are fixed text: each enters her view
+        // as a standing block, once per epoch, and stays cached. Only the clock and the line
+        // naming what is in force ride the fresh tail, so the ask stays last (the parrot fix)
+        // without re-sending the bodies every act (context validator, 2026-10-25: 8.7% of an
+        // act's prefill on the M5's captures).
+        let contracts = deliberation_prompt::contracts_in_force(ws.self_initiated, ws.directed_at_self(), holds_live_work);
+        let trailing_framing = deliberation_prompt::compose_live_framing(ws.now_ms, &contracts);
         let mut all_messages = self.messages_with_visual_feedback(
             ws,
             (!trailing_framing.is_empty()).then_some(trailing_framing.as_str()),
             visual,
         );
+        all_messages.streams.blocks.extend(contracts.into_iter().map(|contract| {
+            crate::cognition::context_streams::blocks::Grounding::atomic(self.persona_id, contract.name, contract.body)
+        }));
         // Her view leads the history: this act appends to it, and everything after it (the
         // standing grounding, facts, the clock) is this act's fresh tail.
         let view = self.place_view(&mut all_messages);
@@ -180,32 +199,59 @@ impl LlmDeliberationFaculty {
         // leaves them borrowed until the same plan has reserved their exact units.
         let input_identity = all_messages.input_identity;
         let calibration = calibration.for_input(input_identity);
-        // Her view already carries every block that rides the conversation.
-        let unfitted_message_tokens = all_messages.tokens();
-        // KEEP THE OVERFLOW. This used to be one chained `saturating_sub` ending in
-        // `- all_messages.required_tokens()`, and the saturation is where the diagnosis
-        // died: "over by 31,000" and "exactly at the line" both arrive as `0`, so the one
-        // number that says HOW BADLY the turn is over its window was destroyed at the
-        // moment it was computed. Subtract in two steps and probe the remainder.
-        let required_payload = all_messages.required_tokens();
         let after_reserves = calibration
             .prompt_budget(
                 (context_window as usize).saturating_sub(Self::COMPLETION_FLOOR_TOKENS as usize),
             )
             .saturating_sub(framing_tokens)
-            .saturating_sub(selected.tokens);
-        let grounding_budget = after_reserves.saturating_sub(required_payload);
-        let payload_overflow = required_payload.saturating_sub(after_reserves);
+            .saturating_sub(tools.floor);
+        // Her view's REQUIRED sources (notices, the lines of files she has open) are never shed:
+        // granted their floor first, or kept over their grant (`fit_view`). That floor is
+        // therefore as irreducible as the turn's own input, and what is left for the rest is
+        // what remains after it. Kimi on the windows 5090 (2026-10-28, refusal 1eef970d): her
+        // newest result was priced against the window less framing and tools alone, fit there,
+        // stayed whole, and the view's floor then took its room: required 33,719 > 30,243,
+        // refused before sending with no reduction offered.
+        let view_floor: usize = self
+            .view_claims(&all_messages.streams)
+            .iter()
+            .filter(|claim| claim.required)
+            .map(|claim| claim.floor_tokens as usize)
+            .sum();
+        let irreducible_room = after_reserves.saturating_sub(view_floor);
+        // Her view already carries every block that rides the conversation. Measured BEFORE her
+        // newest result is fitted: demand is the sum of wants (FOCUS-CONTRACT rule 5), so a result
+        // shown at a smaller level still asks for its whole, or the window never grows for it.
+        let unfitted_message_tokens = all_messages.tokens();
+        // Her newest result alone over what the window leaves it is shown at a smaller level
+        // with its handle, never dropped (goal 7); one that fits is untouched.
+        let newest_result_reduced = self.fit_newest_result(&mut all_messages, irreducible_room);
+        // KEEP THE OVERFLOW. This used to be one chained `saturating_sub` ending in
+        // `- all_messages.required_tokens()`, and the saturation is where the diagnosis
+        // died: "over by 31,000" and "exactly at the line" both arrive as `0`, so the one
+        // number that says HOW BADLY the turn is over its window was destroyed at the
+        // moment it was computed. Subtract in two steps and probe the remainder.
+        let required = all_messages.required_parts();
+        let newest_result_tokens = required.latest_result;
+        let required_payload = required.total();
+        let grounding_budget = irreducible_room.saturating_sub(required_payload);
+        let payload_overflow = required_payload.saturating_sub(irreducible_room);
         if payload_overflow > 0 {
             continuum_base::probe!(
                 class = "delib.payload.over_window",
                 persona = %self.persona_name,
                 required_payload,
                 after_reserves,
+                view_floor_tokens = view_floor,
                 payload_overflow,
                 context_window,
                 framing_tokens,
-                tool_tokens = selected.tokens,
+                tool_tokens = tools.floor,
+                stimulus_tokens = required.stimulus,
+                action_statement_tokens = required.action_statement,
+                latest_result_tokens = required.latest_result,
+                latest_results = required.latest_result_count,
+                grounding_tokens = required.grounding,
                 "the turn's IRREDUCIBLE payload does not fit the served window — grounding                  gets nothing, and this is the amount by which the window is short"
             );
         }
@@ -259,7 +305,7 @@ impl LlmDeliberationFaculty {
             // allocation as this floor, never pre-charged here.
             let after_framing = calibration
                 .prompt_budget((context_window as usize).saturating_sub(reply.floor_tokens as usize))
-                .saturating_sub(selected.tokens)
+                .saturating_sub(tools.floor)
                 .saturating_sub(framing_tokens);
             offered()
                 .find(|c| c.faculty.as_str() == crate::cognition::faculty_ids::ACTIVE_WORK)
@@ -303,20 +349,14 @@ impl LlmDeliberationFaculty {
         };
         let history_floor = evidence.tokens.max(quiet_minimum).min(optional_history);
         let claim = |tokens: usize| calibration.charge(tokens).min(u32::MAX as usize) as u32;
-        let fixed_cost = claim(framing_tokens.saturating_add(selected.tokens));
+        let fixed_cost = claim(framing_tokens);
+        let tools_floor = claim(tools.floor);
         let required_cost = claim(required_tokens);
         let mut reply = reply;
         // The reply never takes from required content: its floor is what the window leaves
         // after framing, tools and the required input. Its UNCLIPPED floor is her need.
         let reply_need = reply.floor_tokens;
-        // An act's reply wants its whole runaway bound, at its priority above her context's:
-        // what no claim took used to top it up to that bound, and her view, a claim on the
-        // whole window, leaves nothing untaken. Aris's act was cut at the output limit with
-        // 5,316 granted and 0 unallocated (the M5, 2026-10-22 00:14Z), a whole turn lost.
-        if matches!(self.turn_kind(ws), TurnKind::Act) {
-            reply.max_tokens = reply.max_tokens.max(reply_runaway);
-        }
-        reply.floor_tokens = reply_need.min(context_window.saturating_sub(fixed_cost.saturating_add(required_cost)));
+        reply.floor_tokens = reply_need.min(context_window.saturating_sub(fixed_cost.saturating_add(tools_floor).saturating_add(required_cost)));
         reply.min_tokens = reply.floor_tokens;
         let fixed_claim = |id: &str, tokens: u32| crate::cognition::rag_budget::RagSourceBudget {
             source_id: id.to_owned(),
@@ -356,6 +396,20 @@ impl LlmDeliberationFaculty {
                 required: false,
             },
             reply,
+            // Her hands, above grounding (`tools_epoch.rs`): floor = core hands, want = her whole
+            // surface, and priority decides between them like every other claim. The level this
+            // epoch chose is never a minimum: re-priced after a refusal scaled the calibration it
+            // took two thirds of the window ahead of her whole conversation (22,167 of 29,440,
+            // a_scaled_calibration_after_turnovers). A grant below it is a surface change the
+            // epoch_level_lost probe reports.
+            crate::cognition::rag_budget::RagSourceBudget {
+                source_id: FLEX_TOOLS.to_owned(),
+                priority: 7,
+                floor_tokens: tools_floor,
+                min_tokens: tools_floor,
+                max_tokens: claim(tools.want).max(tools_floor),
+                required: true,
+            },
         ];
         // Her view's sources, each its own claim (`epoch.rs`): the blocks she works from at
         // the grounding claim's weight, her conversation, thoughts and results at history's.
@@ -366,13 +420,28 @@ impl LlmDeliberationFaculty {
             source
         }));
         let plan = crate::cognition::rag_budget::flex_allocate(context_window, &claims);
+        let allocation = Some(crate::ai::provenance::AllocationReceipt {
+            window: context_window,
+            revision: env!("CONTINUUM_BUILD_GIT_SHA").to_owned(),
+            claims: claims
+                .iter()
+                .map(|claim| crate::ai::provenance::ClaimGrant {
+                    source: claim.source_id.clone(),
+                    priority: claim.priority,
+                    floor: claim.floor_tokens,
+                    want: claim.max_tokens,
+                    grant: plan.granted(&claim.source_id),
+                })
+                .collect(),
+        });
+        let tools_grant = calibration.prompt_budget(plan.granted(FLEX_TOOLS) as usize);
+        let (tools_choice, tools_refusal) = self.granted_tools(ws, tools, tools_grant);
         let budget_floor = crate::cognition::rag_budget::turn_need(&claims).saturating_sub(claims.iter().find(|c| c.source_id == FLEX_REPLY).map_or(0, |c| c.floor_tokens)).saturating_add(reply_need);
-        // Whatever no claim took is hers to write with, up to the runaway bound.
+        // Her reply's grant is her measured need from the one allocation, carried as `max_tokens`.
+        // What no claim took is her view's to grow into by appends (`fit_view`), never the
+        // reply's: a cap claimed above her context starved her reads (ONE-BUDGET slice 6).
         let reply_grant = plan.granted(FLEX_REPLY);
-        let completion_reserve = reply_grant
-            .saturating_add(plan.unallocated)
-            .min(reply_runaway)
-            .max(1) as usize;
+        let completion_reserve = reply_grant.max(1) as usize;
         continuum_base::probe!(
             class = "delib.window.flex",
             persona = %self.persona_name,
@@ -381,43 +450,50 @@ impl LlmDeliberationFaculty {
             required_tokens = required_cost,
             grounding_granted = plan.granted(FLEX_GROUNDING),
             history_granted = plan.granted(FLEX_HISTORY),
+            tools_granted = plan.granted(FLEX_TOOLS),
+            tools_floor,
             reply_priority = claims[4].priority,
             reply_floor = claims[4].floor_tokens,
             reply_wanted = claims[4].max_tokens,
             reply_granted = reply_grant,
             unallocated = plan.unallocated,
-            reply_runaway,
-            allowance = completion_reserve,
+            reserve = completion_reserve,
             escalation = plan.escalation_needed,
-            "the served window's one allocation — framing, required input, grounding, \
-             history and the reply by priority; the allowance is the reply's grant plus \
-             what no claim took, under its runaway bound"
+            "the served window's one allocation: framing, required input, tools, grounding, \
+             her view and the reply by priority; the reply reserves its measured need and what \
+             no claim took is her view's room"
         );
         // Grounding is optional: when its floor did not fit, it holds no room the
         // required input then has to do without.
         let ctx_floor = if plan.granted(FLEX_GROUNDING) < grounding_floor { 0 } else { ctx_floor };
         let after_framing = calibration
             .prompt_budget((context_window as usize).saturating_sub(completion_reserve))
-            .saturating_sub(selected.tokens)
+            .saturating_sub(tools_choice.sent.tokens)
             .saturating_sub(framing_tokens);
         let window_msg_budget = after_framing.saturating_sub(ctx_floor);
         // History and her view get their grants; the required input is never part of the trade.
         let view_granted: u32 = plan
             .allocations
             .iter()
-            .filter(|a| claims.iter().skip(5).any(|c| c.source_id == a.source_id))
+            .filter(|a| claims.iter().skip(6).any(|c| c.source_id == a.source_id))
             .map(|a| a.allocated_tokens)
             .sum();
-        // What no claim took goes to the reply up to its runaway bound; only the rest is room
-        // her view may grow into by appends (`fit_view`), and the fit's budget holds that same
-        // room, or it would drop what the epoch was allowed to keep.
-        let view_room = plan.unallocated.saturating_sub(reply_runaway.saturating_sub(reply_grant));
+        // What no claim took is room her view grows into by appends (`fit_view`), and the fit's
+        // budget holds that same room, or it would drop what the epoch was allowed to keep.
+        let view_room = plan.unallocated;
         let msg_budget = window_msg_budget.min(required_tokens.saturating_add(calibration.prompt_budget(
             plan.granted(FLEX_HISTORY).saturating_add(view_granted).saturating_add(view_room) as usize,
         )));
         // Her view within what the allocation granted its sources (`epoch.rs`): the only place
         // it is ever collapsed.
-        self.fit_view(&mut all_messages, view, &plan, view_room as usize, calibration);
+        // A broken allocator contract refuses the turn (`budget_fault`), never a prompt sent anyway.
+        let view_fault = self
+            .fit_view(&mut all_messages, view, &plan, view_room as usize, calibration)
+            .err()
+            .map(|mismatch| format!("her view could not be sized: {mismatch}"));
+        self.view_sent();
+        // The surface this act sends: the epoch's set, or this act's own when it turned the view over.
+        let selected = self.retain_tools(tools_choice, tools_refusal.is_some());
         // Her view as the allocation sized it: the fit below never cuts it.
         let view_len = all_messages.grounding_at;
 
@@ -494,6 +570,8 @@ impl LlmDeliberationFaculty {
             }
             Err(error) => (FittedMessages::default(), Some(error)),
         };
+        // Her hands not granted even their floor refuse the turn as loudly as her input would.
+        let capacity_error = tools_refusal.or(capacity_error);
         // THE FIT'S RECEIPT (card d33e928a, Kimi's finding): whenever the fit dropped
         // history, say what it dropped and from what budget, and say it loudly when
         // nothing optional survived — that turn composes with no room at all, operator
@@ -658,7 +736,9 @@ impl LlmDeliberationFaculty {
             .saturating_add(selected.tokens);
         // THE ONE BUDGET'S INVARIANT (`budget.rs`), at the one place the messages are final.
         // A required input that cannot fit is a capacity refusal, decided by the fit above.
-        let budget_fault = if capacity_error.is_none() {
+        let budget_fault = if let Some(fault) = view_fault {
+            Some(fault)
+        } else if capacity_error.is_none() {
             self.budget_violation(&BudgetLedger {
                 context_window,
                 calibration,
@@ -668,7 +748,7 @@ impl LlmDeliberationFaculty {
                 messages: &messages,
                 view_len: grounding_at,
                 grounding_len: refit.grounding_len,
-                framing_grant: fixed_cost,
+                framing_grant: fixed_cost.saturating_add(plan.granted(FLEX_TOOLS)),
                 required_grant: required_cost,
                 history_grant: plan.granted(FLEX_HISTORY),
                 grounding_grant: plan.granted(FLEX_GROUNDING),
@@ -689,6 +769,11 @@ impl LlmDeliberationFaculty {
             protocol_error,
             messages,
             segments,
+            newest_result_reduced,
+            newest_result_tokens,
+            allocation,
+            tools: selected.into_owned(),
+            tools_grant,
         }
     }
 

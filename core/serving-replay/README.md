@@ -30,7 +30,7 @@ to seat her, is the engine's business (S5's `seq_table` and `scheduler`). Engine
 expose raw seats, today's llama-server and the test fake, sit behind `SeatedTarget`.
 `SeatedTarget` is today's core policy written once: seat a mind in a free seat or
 displace the least recent mind, save the displaced mind's page with
-`keep_newest_checkpoints = 4` as the live core does, and restore her page or start cold.
+the live core's checkpoint subset (`keep_view_checkpoints`), and restore her page or start cold.
 S1's RAM page verbs become a second `SlotEngine`, and S5's `continuum-serving` port
 implements `ServingTarget` directly.
 

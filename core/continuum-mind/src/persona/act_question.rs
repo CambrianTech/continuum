@@ -193,7 +193,7 @@ pub(crate) async fn ask_the_act_question(
                     // same page the catch-up reads. A failed page is a missing
                     // block, never a failed turn.
                     let page =
-                        crate::persona::durable_history::room_rows(turn_room, WORK_GATE_PAGE_ROWS)
+                        crate::persona::durable_history::room_rows(turn_room, crate::persona::durable_history::RoomPage::Newest, WORK_GATE_PAGE_ROWS)
                             .await;
                     let last_state = match &page {
                         Ok(rows) => {
@@ -406,20 +406,23 @@ pub(crate) async fn ask_the_act_question(
                 );
                 cycle.page_in(phenotype.genes);
             }
-                    let mut credit_capture =
-                        crate::persona::training_producer::TurnCreditCapture::for_turn(
+                    // Her credit follows the card she holds through the turn (card 12ddd78f).
+                    let mut credit_capture = crate::persona::training_producer::ClaimFollowingCapture::new(
+                        selected_credit.as_ref(),
+                        conversation.stream_citizen(),
+                        crate::persona::training_producer::TurnCreditCapture::opener(
                             ctx.identity.peer_id.as_uuid(),
                             &ctx.identity.agent_name,
                             &work_context,
-                            selected_credit.as_ref(),
-                        );
+                        ),
+                    );
                     let work = crate::cognition::act_observe::drive_to_settle_with_credit(
                         &cycle,
                         burst,
                         LIVE_MAX_ACTS,
                         work_framing,
                         conversation,
-                        credit_capture.as_mut().map(|c| c as &mut dyn crate::cognition::act_observe::TurnCredit),
+                        Some(&mut credit_capture as &mut dyn crate::cognition::act_observe::TurnCredit),
                     )
                     .await;
                     // The turn's work is synced to its card's branch; her hands stay where

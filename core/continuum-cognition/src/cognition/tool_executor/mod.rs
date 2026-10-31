@@ -28,6 +28,7 @@
 //! - When the time comes to port, add the impl module in the pattern
 //!   already laid here — no caller-code changes
 
+pub mod answer;
 pub mod command_executor;
 pub mod result_tap;
 pub mod spill;
@@ -65,12 +66,12 @@ pub trait ToolExecutor: Send + Sync {
     /// Per-call failure modes (one bad call shouldn't fail the batch)
     /// land inside `NativeBatchOutcome`. `Err(ToolError)` is reserved
     /// for batch-level failures (e.g. the executor itself is
-    /// unavailable / IPC channel down).
+    /// unavailable / IPC channel down). Every result is saved whole and handed back whole with
+    /// its handle; no size is passed in, what she sees is her view's decision.
     async fn execute_native_batch(
         &self,
         calls: &[NativeToolCall],
         context: &ToolExecutionContext,
-        max_result_chars: usize,
     ) -> Result<NativeBatchOutcome, ToolError>;
 
     /// [`Self::execute_native_batch`], saving every result through `pin`: each saved file is
@@ -81,10 +82,9 @@ pub trait ToolExecutor: Send + Sync {
         &self,
         calls: &[NativeToolCall],
         context: &ToolExecutionContext,
-        max_result_chars: usize,
         _pin: &spill::LivePin,
     ) -> Result<NativeBatchOutcome, ToolError> {
-        self.execute_native_batch(calls, context, max_result_chars).await
+        self.execute_native_batch(calls, context).await
     }
 
     /// The core `CommandExecutor` behind these hands, if any. A live persona's executor

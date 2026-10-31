@@ -124,3 +124,20 @@ fn tail_or_hang_marker_fingerprints_empty_and_tails_nonempty() {
     // sanity: order preserved (line11 appears before line30)
     assert!(tail.find("line11") < tail.find("line30"));
 }
+
+// what this catches (M5 2026-10-25, card 9e3350bd's second site): a synthetic smoke decode
+// seated on a slot holding a mind's tokens replaces her KV, so her next turn re-prefills from 0
+// and her next page save writes the probe as her page. The seat is the scratch slot when the
+// pool has one, any slot only when the server holds nothing, and otherwise no decode at all.
+#[test]
+fn a_smoke_decode_never_takes_a_slot_holding_a_mind() {
+    use serde_json::json;
+    let fresh = json!([{"id": 0, "is_processing": false, "n_prompt_tokens": 0}, {"id": 1, "is_processing": false}]);
+    let resident = json!([{"id": 0, "is_processing": false, "n_prompt_tokens": 26728}, {"id": 1, "is_processing": false, "n_prompt_tokens": 0}]);
+    let busy = json!([{"id": 0, "is_processing": true, "n_prompt_tokens": 0}]);
+    assert_eq!(smoke_seat(Some(2), &resident), SmokeSeat::Scratch(2), "the scratch slot is always a seat");
+    assert_eq!(smoke_seat(None, &fresh), SmokeSeat::Empty, "a server holding nothing may prove decode anywhere");
+    assert_eq!(smoke_seat(None, &resident), SmokeSeat::Occupied, "one slot holding her prompt: no synthetic decode");
+    assert_eq!(smoke_seat(None, &busy), SmokeSeat::Occupied, "a processing slot is taken");
+    assert_eq!(smoke_seat(None, &json!({"error": "x"})), SmokeSeat::Occupied, "an unreadable account is never read as empty");
+}

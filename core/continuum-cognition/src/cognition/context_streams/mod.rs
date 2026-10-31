@@ -12,6 +12,7 @@ pub(crate) mod blocks;
 pub(crate) mod conversation;
 pub(crate) mod notices;
 pub(crate) mod open_views;
+pub(crate) mod tasks;
 pub(crate) mod thoughts;
 
 use continuum_context::epoch::Block;
@@ -22,26 +23,55 @@ use crate::cognition::working_memory::WorkingMemory;
 /// The streams her working memory feeds her view: her actions, her thoughts, her open views
 /// and the notices her substrate posted. Built once per use from her memory, never assembled
 /// by hand.
+/// Which producer named an occurrence: part of its id, so an act and a turn never share one.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Producer {
+    Act,
+    Turn,
+    OpenView,
+    Thought,
+    Notice,
+    Standing,
+    Task,
+}
+
+/// An occurrence's id from its producer's own stable identity: whose (`persona`), which producer,
+/// and the producer's id for it (an act's `seq`, a turn's event, a view's key). Deterministic, so it
+/// survives epochs and restarts exactly as long as the producer's identity does.
+pub(crate) fn element(persona: uuid::Uuid, producer: Producer, local: &[u8]) -> continuum_context::cause::ElementId {
+    continuum_context::cause::ElementId::of(&[persona.as_bytes(), &[producer as u8], local])
+}
+
+/// A standing item of `source` (a banner, a block that leads her view): the root of its activity,
+/// resident whole. Its id is namespaced by the source, so two sources' banners never share one.
+pub(crate) fn standing(persona: uuid::Uuid, source: &str, key: &str, message: ContextMessage) -> continuum_context::source::Item<ContextMessage> {
+    use continuum_context::cause::{Cause, Origin};
+    let id = element(persona, Producer::Standing, format!("{source}/{key}").as_bytes());
+    continuum_context::source::Item::whole(id, Cause::Root(Origin::ActivityStart), key, message.clone()).with_pointer(message)
+}
+
 pub(crate) struct MemoryStreams<'a> {
     pub actions: actions::Actions<'a>,
     pub thoughts: thoughts::Thoughts<'a>,
+    pub tasks: tasks::Tasks<'a>,
     pub open_views: open_views::OpenViews<'a>,
     pub notices: notices::Notices<'a>,
 }
 
 impl<'a> MemoryStreams<'a> {
-    pub fn of(memory: &'a WorkingMemory) -> Self {
+    pub fn of(memory: &'a WorkingMemory, persona: uuid::Uuid) -> Self {
         Self {
-            actions: actions::Actions { memory },
-            thoughts: thoughts::Thoughts { memory },
-            open_views: open_views::OpenViews { memory },
-            notices: notices::Notices { memory },
+            actions: actions::Actions { memory, persona },
+            thoughts: thoughts::Thoughts { memory, persona },
+            tasks: tasks::Tasks { memory, persona },
+            open_views: open_views::OpenViews { memory, persona },
+            notices: notices::Notices { memory, persona },
         }
     }
 }
 
 /// Who a message of her view speaks as: her own voice, or anyone else's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Role {
     User,
     Assistant,
@@ -58,7 +88,7 @@ impl Role {
 
 /// One message of her context view: who it speaks as, and what it says. Serializable, so her
 /// view is saved with her working memory and survives a restart.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ContextMessage {
     pub role: Role,
     pub text: String,
@@ -75,9 +105,8 @@ impl ContextMessage {
 }
 
 impl Block for ContextMessage {
-    fn chars(&self) -> usize {
-        // `str::chars`, not this trait's `chars`, which `String` also implements.
-        self.text.as_str().chars().count()
+    fn text(&self) -> &str {
+        &self.text
     }
 }
 

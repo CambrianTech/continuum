@@ -2,21 +2,14 @@
 name = "continuum-base"
 version = "0.1.0"
 edition = "2021"
-description = "The floor of the core: leaf utilities every other crate may depend on and that depend on nothing in Continuum (time, config, secrets, ids, portable fs and shell, audio constants)."
+description = "The floor of the core: leaf utilities every other crate may depend on and that depend on nothing in Continuum (time, config, secrets, ids, portable shell, audio constants)."
 
 [dependencies]
 chrono.workspace = true
+serde = { workspace = true }
 dirs = "5.0"
 tracing.workspace = true
 uuid.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-# fs_portable's Windows file-system calls (Win32 file info / flush).
-windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
-
-[features]
-# Fault injection and helpers for tests in this crate and its dependents; never in a release.
-test-fixtures = []
 
 [dev-dependencies]
 tempfile = "3"

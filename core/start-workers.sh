@@ -11,12 +11,17 @@ NC='\033[0m' # No Color
 CONFIG_FILE="$(dirname "$0")/workers-config.json"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-# All data lives at $HOME/.continuum — matches SystemPaths.root in TypeScript.
-CONTINUUM_ROOT="${CONTINUUM_ROOT:-$HOME/.continuum}"
+# The continuum home: $CONTINUUM_HOME, else $HOME/.continuum (the core's paths::continuum_home).
+# $CONTINUUM_ROOT is retired: set to another tree it is refused, never silently ignored.
+if [ -n "${CONTINUUM_ROOT:-}" ] && [ "${CONTINUUM_ROOT}" != "${CONTINUUM_HOME:-$HOME/.continuum}" ]; then
+  echo "CONTINUUM_ROOT is no longer read: set CONTINUUM_HOME=$CONTINUUM_ROOT to keep that tree, or unset CONTINUUM_ROOT (nothing was moved)" >&2
+  exit 1
+fi
+CONTINUUM_HOME="${CONTINUUM_HOME:-$HOME/.continuum}"
 
 # Resolve .continuum paths from workers-config.json to absolute $HOME paths
 resolve_path() {
-  echo "$1" | sed "s|^\.continuum|$CONTINUUM_ROOT|"
+  echo "$1" | sed "s|^\.continuum|$CONTINUUM_HOME|"
 }
 
 # Memory limit helper - converts "8G" to bytes for ulimit
@@ -80,7 +85,7 @@ if (command -v nvidia-smi &>/dev/null || [ -d /usr/lib/wsl/lib ]) && \
   echo -e "${RED}   Fix: run 'bash scripts/install.sh' to install libnvidia-gl.${NC}"
 fi
 # Clean up stale user-space ICD (previous versions created one that confused the loader)
-rm -rf "$CONTINUUM_ROOT/vulkan" 2>/dev/null
+rm -rf "$CONTINUUM_HOME/vulkan" 2>/dev/null
 
 echo -e "${YELLOW}📋 Loading worker config: $CONFIG_FILE${NC}"
 
@@ -91,14 +96,14 @@ if ! command -v jq &> /dev/null; then
 fi
 
 # Setup runtime directories (BEFORE anything writes to them)
-mkdir -p "$CONTINUUM_ROOT/jtag/logs/system/modules"
-mkdir -p "$CONTINUUM_ROOT/jtag/logs/system/daemons"
-mkdir -p "$CONTINUUM_ROOT/sockets"
+mkdir -p "$CONTINUUM_HOME/jtag/logs/system/modules"
+mkdir -p "$CONTINUUM_HOME/jtag/logs/system/daemons"
+mkdir -p "$CONTINUUM_HOME/sockets"
 
 # Start LiveKit SFU server (WebRTC media transport)
 # Check brew first, then manual install location
 LIVEKIT_BIN=$(command -v livekit-server 2>/dev/null || echo "$HOME/.continuum/bin/livekit-server")
-LIVEKIT_LOG="$CONTINUUM_ROOT/jtag/logs/system/livekit-server.log"
+LIVEKIT_LOG="$CONTINUUM_HOME/jtag/logs/system/livekit-server.log"
 if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
   # Kill existing LiveKit server (SIGKILL for clean port release)
   pkill -9 -f "livekit-server" 2>/dev/null || true
@@ -117,7 +122,7 @@ if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
     # This makes LiveKit generate 127.0.0.1 ICE candidates so the browser on
     # localhost can actually connect. force_tcp because WSL2 Hyper-V firewall
     # blocks inbound UDP (known WSL2 bug, unfixed since 2023).
-    LIVEKIT_CONFIG="$CONTINUUM_ROOT/livekit-wsl2.yaml"
+    LIVEKIT_CONFIG="$CONTINUUM_HOME/livekit-wsl2.yaml"
     cat > "$LIVEKIT_CONFIG" << 'YAML'
 port: 7880
 bind_addresses:
@@ -136,11 +141,11 @@ YAML
     echo -e "${YELLOW}   WSL2 — YAML config with loopback ICE + TCP${NC}"
   else
     # Check for TLS certs (Tailscale or manual) in ~/.continuum/
-    LIVEKIT_CERT=$(ls "$CONTINUUM_ROOT"/*.crt 2>/dev/null | head -1)
-    LIVEKIT_KEY=$(ls "$CONTINUUM_ROOT"/*.key 2>/dev/null | head -1)
+    LIVEKIT_CERT=$(ls "$CONTINUUM_HOME"/*.crt 2>/dev/null | head -1)
+    LIVEKIT_KEY=$(ls "$CONTINUUM_HOME"/*.key 2>/dev/null | head -1)
     if [ -n "$LIVEKIT_CERT" ] && [ -n "$LIVEKIT_KEY" ]; then
       # TLS available — use config file instead of --dev
-      LIVEKIT_CONFIG="$CONTINUUM_ROOT/livekit-tls.yaml"
+      LIVEKIT_CONFIG="$CONTINUUM_HOME/livekit-tls.yaml"
       LIVEKIT_HOSTNAME=$(echo "$LIVEKIT_CERT" | sed 's|.*/||;s|\.crt$||')
       cat > "$LIVEKIT_CONFIG" << YAML
 port: 7880
@@ -214,7 +219,7 @@ fi
 
 # Truncate all worker logs on restart (prevents multi-hundred-MB bloat)
 # Each session starts clean — old logs are not useful across restarts
-for logfile in "$CONTINUUM_ROOT"/jtag/logs/system/*.log "$CONTINUUM_ROOT"/jtag/logs/system/modules/*.log "$CONTINUUM_ROOT"/jtag/logs/system/daemons/*.log; do
+for logfile in "$CONTINUUM_HOME"/jtag/logs/system/*.log "$CONTINUUM_HOME"/jtag/logs/system/modules/*.log "$CONTINUUM_HOME"/jtag/logs/system/daemons/*.log; do
   [ -f "$logfile" ] && : > "$logfile"
 done
 echo -e "${GREEN}✅ Logs truncated${NC}"
@@ -293,7 +298,7 @@ while read -r worker; do
     # TCP worker (e.g., gRPC server) - no socket argument
     WORKER_PID=$(node "$PROJECT_DIR/scripts/spawn-detached.mjs" \
       --cwd "$PROJECT_DIR" \
-      --log "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" \
+      --log "$CONTINUUM_HOME/jtag/logs/system/${name}.log" \
       "${spawn_memory_args[@]}" \
       -- "$binary")
 
@@ -305,7 +310,7 @@ while read -r worker; do
       fi
       if [ $i -eq 40 ]; then
         echo -e "${RED}❌ ${name} failed to start (port $port not listening after 20s)${NC}"
-        echo -e "${YELLOW}💡 Try: tail -50 $CONTINUUM_ROOT/jtag/logs/system/${name}.log${NC}"
+        echo -e "${YELLOW}💡 Try: tail -50 $CONTINUUM_HOME/jtag/logs/system/${name}.log${NC}"
         # Don't exit - let other workers start
       fi
       sleep 0.5
@@ -321,7 +326,7 @@ while read -r worker; do
 
     WORKER_PID=$(node "$PROJECT_DIR/scripts/spawn-detached.mjs" \
       --cwd "$PROJECT_DIR" \
-      --log "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" \
+      --log "$CONTINUUM_HOME/jtag/logs/system/${name}.log" \
       "${spawn_memory_args[@]}" \
       -- "$binary" "$socket" "${arg_array[@]}")
 
@@ -333,7 +338,7 @@ while read -r worker; do
       fi
       if [ $i -eq 60 ]; then
         echo -e "${RED}❌ ${name} failed to start (socket not created after 30s)${NC}"
-        echo -e "${YELLOW}💡 Try: tail -20 $CONTINUUM_ROOT/jtag/logs/system/${name}.log${NC}"
+        echo -e "${YELLOW}💡 Try: tail -20 $CONTINUUM_HOME/jtag/logs/system/${name}.log${NC}"
         # Don't exit — non-critical workers shouldn't block server startup.
         # The server will degrade gracefully without search/archive.
         # CRITICAL workers (continuum-core, data-daemon, logger) are checked below.

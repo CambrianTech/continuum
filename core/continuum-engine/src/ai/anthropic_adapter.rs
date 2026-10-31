@@ -452,7 +452,7 @@ impl AIProviderAdapter for AnthropicAdapter {
             .stop_reason
             .as_deref()
             .map(|r| self.map_finish_reason(r))
-            .unwrap_or(FinishReason::Stop);
+            .unwrap_or(FinishReason::Unreported); // no stop_reason arrived: say so, never claim a stop
 
         let usage = response_json
             .usage

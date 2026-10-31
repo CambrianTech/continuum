@@ -60,59 +60,35 @@
         let _ = std::fs::remove_file(&blocked);
     }
 
-    // what this catches: the head+tail fold (the executor's tier 1 until 2026-10-12) and
-    // every other fragment. A result within its share is returned byte-identical; one over
-    // it is saved whole, resolvable by the returned handle, and the text shown carries no
-    // piece of it, neither the head nor the tail.
+    // what this catches: any fragment at execution (the head+tail fold, the head cut). A small
+    // and a large result both come back Complete with the whole text, saved byte-identical
+    // under a resolvable handle; a failed save still carries the whole with the honest notice.
     #[test]
-    fn a_result_is_whole_or_a_handle_never_a_fragment() {
+    fn a_result_is_saved_whole_and_handed_back_whole() {
         let tmp = std::env::temp_dir().join(format!("spill-test-{}", Uuid::new_v4()));
         let persona = Uuid::new_v4();
-        let small = "ok: 2 passed".to_string();
-        let Fitted::Complete { text, handle } = whole_or_handle_in(&tmp, small.clone(), 600, persona, &LivePin::new())
-        else {
-            panic!("a fitting result is complete")
-        };
-        assert_eq!(text, small, "shown byte-identical");
-        let path = resolve_in(&tmp, persona, &handle).expect("resolve");
-        assert_eq!(std::fs::read_to_string(path).unwrap(), small, "and saved, so it stays reachable");
-
-        let body = format!("HEAD-MARK\n{}TAIL-MARK error: boom\n", "compiling module\n".repeat(5000));
-        let Fitted::Stored { shown, handle } = whole_or_handle_in(&tmp, body.clone(), 600, persona, &LivePin::new())
-        else {
-            panic!("an over-share result is saved")
-        };
-        // the head rides along, LABELLED as lines 1-N of M; the tail does not, and the pointer
-        // names the unseen range, so a head is never passed off as the whole
-        assert!(shown.contains("HEAD-MARK") && !shown.contains("TAIL-MARK"), "a labelled head, no tail: {shown}");
-        assert!(shown.contains("lines 1-") && shown.contains("are not shown"), "the head is named and the unseen range is named: {shown}");
-        assert!(shown.contains(&handle) && shown.contains("tool/output"), "names the way in: {shown}");
-        assert!(shown.contains("\"filter\":\"errors\""), "points at the failure filter: {shown}");
-        let path = resolve_in(&tmp, persona, &handle).expect("resolve");
-        assert_eq!(std::fs::read_to_string(path).unwrap(), body, "saved byte-identical");
+        let large = format!("HEAD-MARK\n{}TAIL-MARK error: boom\n", "compiling module\n".repeat(5000));
+        for body in ["ok: 2 passed".to_string(), large] {
+            let Fitted::Complete { text, handle } = whole_or_handle_in(&tmp, body.clone(), persona, &LivePin::new())
+            else {
+                panic!("a saved result is complete")
+            };
+            assert_eq!(text, body, "handed back byte-identical");
+            let path = resolve_in(&tmp, persona, &handle).expect("resolve");
+            assert_eq!(std::fs::read_to_string(path).unwrap(), body, "and saved byte-identical");
+        }
 
         // A failed save keeps the WHOLE result and says why: nothing else holds those bytes.
         let blocked = tmp.join("not-a-dir");
         std::fs::write(&blocked, b"file where the persona dir must go").unwrap();
         let unsaved_body = "UNSAVED-HEAD ".repeat(100);
         let Fitted::RetentionFailed { shown } =
-            whole_or_handle_in(&blocked, unsaved_body.clone(), 64, persona, &LivePin::new())
+            whole_or_handle_in(&blocked, unsaved_body.clone(), persona, &LivePin::new())
         else {
             panic!("a failed save is its own state")
         };
         assert!(shown.contains("saving this") && shown.ends_with(&unsaved_body), "kept whole: {shown}");
-        let Fitted::RetentionFailed { shown } =
-            whole_or_handle_in(&blocked, "ok".to_string(), 64, persona, &LivePin::new())
-        else {
-            panic!("a fitting result whose save failed says so too")
-        };
-        assert!(shown.contains("cannot be reopened") && shown.ends_with("ok"), "{shown}");
-
-        // Multibyte bodies measure in chars, the unit the share is in, and never split: the
-        // head of a one-line body is cut at a CHAR boundary, at most a quarter of the share.
-        let (shown, _) = whole_or_handle_in(&tmp, "αβγδε".repeat(2000), 64, persona, &LivePin::new()).into_parts();
-        let greek = shown.chars().filter(|c| "αβγδε".contains(*c)).count();
-        assert!(greek > 0 && greek <= 64 / HEAD_SHARE_DENOM, "a char-bounded head: {greek} chars in {shown}");
+        assert!(shown.contains("cannot be reopened"), "{shown}");
         std::fs::remove_dir_all(&tmp).ok();
     }
 
@@ -336,7 +312,7 @@
         fs::write(&staging, "retained").unwrap();
         assert!(matches!(evict_unless_live(&staging), Removal::Protected));
         let published = parent.join(format!("{handle}.log"));
-        continuum_base::fs_portable::durable_publish_new(&staging, &published).unwrap();
+        continuum_host::durable::publish_new(&staging, &published).unwrap();
         let _ = fs::remove_file(&staging);
         assert!(matches!(evict_unless_live(&published), Removal::Protected));
         drop(pin);
@@ -355,7 +331,7 @@
         let pin = LivePin::new();
         pin.hold(&handle);
         let path = persona_dir(dir.path(), persona).join(format!("{handle}.log"));
-        continuum_base::fs_portable::fault_injection::with_failed_publication_fence(|| {
+        continuum_host::durable::fault_injection::with_failed_fence(|| {
             assert!(write_in(dir.path(), persona, &handle, body).is_err());
             assert_eq!(fs::read_to_string(&path).unwrap(), body);
             // The object is already visible; byte equality must not bypass the fence.

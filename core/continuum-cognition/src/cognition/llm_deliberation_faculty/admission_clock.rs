@@ -15,6 +15,9 @@ pub(crate) struct QueueTime {
     started: Option<Instant>,
     waiting: usize,
     pub(crate) stalled: bool,
+    /// The step's model call was dispatched (its drop witness armed): a deadline that ends
+    /// the step from here drops a generation, never a wait (card 843d5570).
+    pub(crate) dispatched: bool,
 }
 impl QueueTime {
     pub(crate) fn new(base: Instant, bound: Duration) -> Self {
@@ -25,6 +28,7 @@ impl QueueTime {
             started: None,
             waiting: 0,
             stalled: false,
+            dispatched: false,
         }
     }
     /// Generation extensions accrue only outside a registered wait. Completed
@@ -45,6 +49,14 @@ tokio::task_local! { static QUEUE_TIME: watch::Sender<QueueTime>; }
 pub(crate) async fn scope<T>(tx: watch::Sender<QueueTime>, work: impl Future<Output = T>) -> T {
     QUEUE_TIME.scope(tx, work).await
 }
+/// Mark this step's model call dispatched. Outside a step's scope there is no deadline to
+/// classify, so there is nothing to mark.
+pub(crate) fn note_dispatched() {
+    QUEUE_TIME
+        .try_with(|tx| tx.send_modify(|state| state.dispatched = true))
+        .unwrap_or(()); // unwrap_or: no step scope = no step deadline to tell a drop from a wait
+}
+
 struct Waiting(watch::Sender<QueueTime>);
 impl Drop for Waiting {
     fn drop(&mut self) {

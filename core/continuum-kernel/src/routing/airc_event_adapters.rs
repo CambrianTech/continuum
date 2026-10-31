@@ -1,57 +1,17 @@
-//! `EventSubscribeAdapter` + `EventUnsubscribeAdapter` — the
-//! ConsumerAdapter shells that wire
-//! [`EventPublisherState`](super::EventPublisherState) into the
-//! airc adapter registry.
-//!
-//! These are thin shells around the pure functions in
-//! [`super::airc_event_publisher`]: parse the envelope via the
-//! relevant pure function, delegate to the state machine, build
-//! the ack via the relevant pure function, reply via
-//! `Airc::reply`. The interesting logic lives in the pure
-//! functions; the adapter is the wire-binding glue.
-//!
-//! ## Why two adapters, not one
-//!
-//! The airc adapter registry routes by `body_hint`. Subscribe and
-//! unsubscribe have distinct body hints
-//! ([`EVENT_SUBSCRIBE_BODY_HINT`] vs
-//! [`EVENT_UNSUBSCRIBE_BODY_HINT`]) so each needs its own
-//! ConsumerAdapter registration. They share an
-//! `Arc<EventPublisherState>` so unsubscribe targets the same
-//! registry subscribe populated.
-//!
-//! ## Composition at boot
-//!
-//! ```ignore
-//! use std::sync::Arc;
-//! use continuum_core::routing::{
-//!     EventPublisherState, EventSubscribeAdapter, EventUnsubscribeAdapter,
-//! };
-//!
-//! let state = Arc::new(EventPublisherState::new());
-//! let subscribe = EventSubscribeAdapter::new(airc.clone(), state.clone());
-//! let unsubscribe = EventUnsubscribeAdapter::new(airc.clone(), state.clone());
-//! airc.register_consumer_adapter(subscribe).await?;
-//! airc.register_consumer_adapter(unsubscribe).await?;
-//! ```
-//!
-//! After registration, every inbound
-//! `airc://<this-peer>/events/<topic>/subscribe` flows through
-//! `EventSubscribeAdapter` → `EventPublisherState::register` →
-//! ack reply. Mirrors `CommandRequestHandler`'s wire-binding
-//! exactly.
+//! Event control adapters accept only verified addressed commands. Their shared
+//! policy and subscription state remain the owners of authorization and fan-out.
+//! Call `on_addressed` from an addressed inbox dispatcher; these adapters cannot
+//! register on the room transcript consumer surface.
 
 use std::sync::Arc;
 
-use airc_core::{Body, Headers, TranscriptEvent};
-use airc_lib::adapter::{AdapterError, ConsumerAdapter};
-use airc_lib::Airc;
-use async_trait::async_trait;
+use airc_core::{Body, Headers};
+use airc_lib::adapter::AdapterError;
+use airc_lib::{AddressedKind, Airc, VerifiedAddressed};
 
 use super::airc_event_publisher::{
-    build_publish_ack, build_subscribe_ack, build_unsubscribe_ack, parse_publish_envelope,
-    parse_subscribe_envelope, parse_unsubscribe_envelope, AircEventPublisher, EventPublisherState,
-    ParsedPublish, ParsedSubscribe, ParsedUnsubscribe,
+    build_publish_ack, build_subscribe_ack, build_unsubscribe_ack, AircEventPublisher,
+    EventPublisherState, ParsedPublish, ParsedSubscribe, ParsedUnsubscribe,
 };
 use super::{
     AllowAllPolicy, AuthPolicy, CallerIdentity, RouteDecision, Verdict, EVENT_PUBLISH_BODY_HINT,
@@ -67,8 +27,7 @@ pub const UNSUBSCRIBE_ADAPTER_NAME: &str = "continuum.event.unsubscribe";
 /// Stable adapter name for the publish path.
 pub const PUBLISH_ADAPTER_NAME: &str = "continuum.event.publish";
 
-/// ConsumerAdapter for the subscribe path. Registered with the
-/// airc adapter registry as claiming
+/// Verified addressed handler for the subscribe path, identified by
 /// [`EVENT_SUBSCRIBE_BODY_HINT`].
 ///
 /// Carries an `Arc<dyn AuthPolicy>` so every inbound subscribe is
@@ -86,8 +45,7 @@ pub struct EventSubscribeAdapter {
     policy: Arc<dyn AuthPolicy>,
 }
 
-/// ConsumerAdapter for the unsubscribe path. Registered with the
-/// airc adapter registry as claiming
+/// Verified addressed handler for the unsubscribe path, identified by
 /// [`EVENT_UNSUBSCRIBE_BODY_HINT`].
 ///
 /// No policy on this side because unsubscribe is idempotent
@@ -102,7 +60,7 @@ pub struct EventUnsubscribeAdapter {
     state: Arc<EventPublisherState>,
 }
 
-/// ConsumerAdapter for the publish path — the `emit` half of the Event
+/// Verified addressed handler for the publish path — the `emit` half of the Event
 /// primitive. Registered with the airc adapter registry as claiming
 /// [`EVENT_PUBLISH_BODY_HINT`].
 ///
@@ -334,66 +292,96 @@ impl EventPublishAdapter {
     }
 }
 
-#[async_trait]
-impl ConsumerAdapter for EventSubscribeAdapter {
-    fn name(&self) -> &'static str {
-        SUBSCRIBE_ADAPTER_NAME
+fn decode_control<T: serde::de::DeserializeOwned>(
+    request: &VerifiedAddressed,
+    me: airc_core::PeerId,
+    hint: &str,
+) -> Result<T, AdapterError> {
+    if request.kind() != AddressedKind::Command || request.to() != me {
+        return Err(AdapterError::Consumer(
+            "event control requires a command addressed to this identity".into(),
+        ));
     }
-
-    fn body_hint(&self) -> &'static str {
-        EVENT_SUBSCRIBE_BODY_HINT
+    if tokio::time::Instant::now() >= request.deadline() {
+        return Err(AdapterError::Consumer(
+            "event control deadline elapsed".into(),
+        ));
     }
+    if request
+        .headers()
+        .get(super::HEADER_CONTINUUM_BODY_HINT)
+        .map(String::as_str)
+        != Some(hint)
+    {
+        return Err(AdapterError::Consumer("event control kind mismatch".into()));
+    }
+    let Body::Json(value) = request.body() else {
+        return Err(AdapterError::Consumer("event control requires JSON".into()));
+    };
+    serde_json::from_value(value.clone()) // airc wire: decode the authenticated event-control payload.
+        .map_err(|error| AdapterError::Consumer(format!("event control payload: {error}")))
+}
 
-    async fn on_envelope(&self, envelope: TranscriptEvent) -> Result<(), AdapterError> {
-        let parsed = parse_subscribe_envelope(&envelope)?;
-        let (headers, body) = Self::process_subscribe(&self.state, &*self.policy, &parsed)?;
-        self.airc
-            .reply(parsed.reply_to, parsed.correlation_id, headers, body)
+impl EventSubscribeAdapter {
+    pub async fn on_addressed(&self, request: &VerifiedAddressed) -> Result<(), AdapterError> {
+        let parsed = ParsedSubscribe {
+            caller_peer_id: request.from(),
+            reply_to: request.from(),
+            correlation_id: request.correlation(),
+            request: decode_control(request, self.airc.peer_id(), EVENT_SUBSCRIBE_BODY_HINT)?,
+        };
+        let work = async {
+            let (headers, body) = Self::process_subscribe(&self.state, &*self.policy, &parsed)?;
+            self.airc
+                .reply(request, headers, body)
+                .await
+                .map_err(|error| AdapterError::Io(format!("event control reply: {error}")))
+        };
+        tokio::time::timeout_at(request.deadline(), work)
             .await
-            .map_err(|e| AdapterError::Io(format!("airc reply (subscribe ack): {e}")))?;
-        Ok(())
+            .map_err(|_| AdapterError::Consumer("event control deadline elapsed".into()))?
     }
 }
 
-#[async_trait]
-impl ConsumerAdapter for EventUnsubscribeAdapter {
-    fn name(&self) -> &'static str {
-        UNSUBSCRIBE_ADAPTER_NAME
-    }
-
-    fn body_hint(&self) -> &'static str {
-        EVENT_UNSUBSCRIBE_BODY_HINT
-    }
-
-    async fn on_envelope(&self, envelope: TranscriptEvent) -> Result<(), AdapterError> {
-        let parsed = parse_unsubscribe_envelope(&envelope)?;
-        let (headers, body) = Self::process_unsubscribe(&self.state, &parsed)?;
-        self.airc
-            .reply(parsed.reply_to, parsed.correlation_id, headers, body)
+impl EventUnsubscribeAdapter {
+    pub async fn on_addressed(&self, request: &VerifiedAddressed) -> Result<(), AdapterError> {
+        let parsed = ParsedUnsubscribe {
+            caller_peer_id: request.from(),
+            reply_to: request.from(),
+            correlation_id: request.correlation(),
+            request: decode_control(request, self.airc.peer_id(), EVENT_UNSUBSCRIBE_BODY_HINT)?,
+        };
+        let work = async {
+            let (headers, body) = Self::process_unsubscribe(&self.state, &parsed)?;
+            self.airc
+                .reply(request, headers, body)
+                .await
+                .map_err(|error| AdapterError::Io(format!("event control reply: {error}")))
+        };
+        tokio::time::timeout_at(request.deadline(), work)
             .await
-            .map_err(|e| AdapterError::Io(format!("airc reply (unsubscribe ack): {e}")))?;
-        Ok(())
+            .map_err(|_| AdapterError::Consumer("event control deadline elapsed".into()))?
     }
 }
 
-#[async_trait]
-impl ConsumerAdapter for EventPublishAdapter {
-    fn name(&self) -> &'static str {
-        PUBLISH_ADAPTER_NAME
-    }
-
-    fn body_hint(&self) -> &'static str {
-        EVENT_PUBLISH_BODY_HINT
-    }
-
-    async fn on_envelope(&self, envelope: TranscriptEvent) -> Result<(), AdapterError> {
-        let parsed = parse_publish_envelope(&envelope)?;
-        let (headers, body) = self.process_publish(&parsed).await?;
-        self.airc
-            .reply(parsed.reply_to, parsed.correlation_id, headers, body)
+impl EventPublishAdapter {
+    pub async fn on_addressed(&self, request: &VerifiedAddressed) -> Result<(), AdapterError> {
+        let parsed = ParsedPublish {
+            caller_peer_id: request.from(),
+            reply_to: request.from(),
+            correlation_id: request.correlation(),
+            request: decode_control(request, self.airc.peer_id(), EVENT_PUBLISH_BODY_HINT)?,
+        };
+        let work = async {
+            let (headers, body) = self.process_publish(&parsed).await?;
+            self.airc
+                .reply(request, headers, body)
+                .await
+                .map_err(|error| AdapterError::Io(format!("event control reply: {error}")))
+        };
+        tokio::time::timeout_at(request.deadline(), work)
             .await
-            .map_err(|e| AdapterError::Io(format!("airc reply (publish ack): {e}")))?;
-        Ok(())
+            .map_err(|_| AdapterError::Consumer("event control deadline elapsed".into()))?
     }
 }
 

@@ -81,6 +81,13 @@ pub enum InferenceError {
     /// field, unexpected schema). Retrying verbatim is unlikely to help; this
     /// is a bug on one side of the wire, so it must stay loud.
     Protocol(String),
+
+    /// The request carried `tail_tools` (verbs callable outside her rendered head), but the
+    /// engine it is routed to now does not take them: the lane was replaced, its build is not
+    /// verified, or the route moved to another server. Sending it without the tail would hand
+    /// her a head that lacks verbs she was told she could call, so it is refused instead.
+    /// PERMANENT for the unchanged request: the caller rebuilds her surface without the tail.
+    TailToolsUnreachable { model: String },
 }
 
 impl InferenceError {
@@ -93,6 +100,7 @@ impl InferenceError {
         match self {
             Self::ContextExceeded { .. } => false,
             Self::Protocol(_) => false,
+            Self::TailToolsUnreachable { .. } => false,
             Self::Unavailable(_) | Self::Transient(_) => true,
         }
     }
@@ -191,6 +199,10 @@ impl fmt::Display for InferenceError {
             Self::Unavailable(detail) => write!(f, "backend unavailable: {detail}"),
             Self::Transient(detail) => write!(f, "{detail}"),
             Self::Protocol(detail) => write!(f, "protocol error: {detail}"),
+            Self::TailToolsUnreachable { model } => write!(
+                f,
+                "the engine serving {model} does not take tail_tools now: rebuild the request without its tail"
+            ),
         }
     }
 }
