@@ -153,9 +153,13 @@ fn literal_after(code: &str, call: &str) -> bool {
     direct || call.strip_suffix('(').is_some_and(|name| turbofish_literal(code, &format!("{name}::<")))
 }
 
-/// `channel::<T>(256)`: a literal capacity after a turbofish.
+/// `channel::<T>(256)`: a literal capacity after a turbofish (never `watch::channel::<T>(0)`,
+/// whose argument is its initial value).
 fn turbofish_literal(code: &str, call: &str) -> bool {
     code.match_indices(call).any(|(at, _)| {
+        if call == "channel::<" && code[..at].ends_with("watch::") {
+            return false;
+        }
         let rest = &code[at + call.len()..];
         rest.find(">(").is_some_and(|close| rest[close + 2..].trim_start().starts_with(|c: char| c.is_ascii_digit()))
     })
