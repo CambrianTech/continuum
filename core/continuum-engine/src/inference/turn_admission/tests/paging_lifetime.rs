@@ -44,13 +44,15 @@ async fn healthy_restore_outlives_generation_prediction() -> Result<(), Box<dyn 
     assert_eq!(sem.available_permits(), 0);
     tokio::time::resume();
     release.notify_one();
-    let admitted = admitting.as_mut().await?;
+    let mut admitted = tokio::time::timeout(Duration::from_secs(5), admitting.as_mut()).await??;
     assert!(admitted.page_confirmed);
     assert!(admitted.slot().is_some());
+    admitted.generation_completed();
     drop(admitted);
     drop(admitting);
-    let subsequent = admit_turn(&sem, Some(key), Some(pool), &client, &root,
-        100, AdmissionPatience::for_turn()).await?;
+    let subsequent = tokio::time::timeout(Duration::from_secs(5),
+        admit_turn(&sem, Some(key), Some(pool), &client, &root,
+            100, AdmissionPatience::for_turn())).await??;
     assert!(subsequent.page_confirmed);
     drop(subsequent);
     assert_eq!(sem.available_permits(), 1);
