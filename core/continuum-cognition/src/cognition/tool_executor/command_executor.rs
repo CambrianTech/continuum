@@ -673,7 +673,24 @@ impl ToolExecutor for CommandToolExecutor {
                     // so its newlines were `\n` sequences, the spill counted it as ONE line,
                     // and the line-range way into it was meaningless (Benchy, the M5,
                     // 2026-10-16: a 248-line read arrived as "1 lines (13449 chars)").
-                    let full = crate::cognition::tool_executor::spill::result_text(&value);
+                    let status = if verdict.failed() {
+                        super::answer::Status::Failed
+                    } else if verdict.running() {
+                        super::answer::Status::Running
+                    } else {
+                        super::answer::Status::Ok
+                    };
+                    let cause = (status == super::answer::Status::Failed).then(|| super::answer::exit_cause(&value)).flatten();
+                    super::answer::without_empty_fields(&mut value);
+                    let task = dispatch_handle.filter(|_| status == super::answer::Status::Running).map(|h| h.to_string());
+                    let full = super::answer::render(
+                        status,
+                        &calls[i].name,
+                        &calls[i].input,
+                        cause.as_deref(),
+                        &crate::cognition::tool_executor::spill::result_text(&value),
+                        task.as_deref(),
+                    );
                     {
                         // Saved whole and handed back whole with its handle: never a
                         // fragment. The HANDLE rides the result type-level so working
@@ -729,11 +746,18 @@ impl ToolExecutor for CommandToolExecutor {
                         dispatch_handle: None,
                     });
                     // The same custody as a success: saved whole, handed back whole.
-                    let (content, custody) = pin.whole_or_handle(
-                        persona_tool_error(attempted, raw),
-                        ctx.persona_id,
-                    )
-                    .into_parts();
+                    // Line 1 names the refusal's kind (`[invalid]`, `[not_found]`) as its cause.
+                    let kind = raw.split_once('[').and_then(|(_, rest)| rest.split_once(']')).map(|(kind, _)| kind.to_owned());
+                    let input = calls.get(i).map_or(&Value::Null, |c| &c.input); // map_or: a result with no call echoes no arguments
+                    let rendered = super::answer::render(
+                        super::answer::Status::Refused,
+                        attempted,
+                        input,
+                        kind.as_deref(),
+                        &persona_tool_error(attempted, raw),
+                        None,
+                    );
+                    let (content, custody) = pin.whole_or_handle(rendered, ctx.persona_id).into_parts();
                     NativeToolResult {
                         tool_use_id,
                         content,
