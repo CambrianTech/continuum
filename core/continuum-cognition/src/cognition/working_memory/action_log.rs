@@ -74,9 +74,20 @@ impl ActionRecord {
         super::receipt_key(self.seq, self.handle.as_deref())
     }
 
-    /// The RAM its resident body holds, in bytes: what the memory owner accounts, never a
-    /// character count (that is `stored_chars`, the view's price).
+    /// The RAM this record holds, in bytes: every text it owns (its ledger line, its summary and
+    /// its body while resident), so a line or summary that outlives a shed stays in the memory
+    /// owner's account as pinned charge (Codex on #5637). Never a character count (that is
+    /// `stored_chars`, the view's price).
     pub fn resident_bytes(&self) -> u64 {
+        [&self.head, &self.summary, &self.result]
+            .into_iter()
+            .map(|text| text.as_ref().map_or(0, |text| text.len() as u64))
+            .sum()
+    }
+
+    /// The bytes a shed releases: its resident body. The line and the summary stay with the
+    /// record for as long as her mind lives.
+    pub fn body_bytes(&self) -> u64 {
         self.result.as_ref().map_or(0, |result| result.len() as u64)
     }
 }
@@ -145,7 +156,7 @@ impl ActionLog {
             .collect()
     }
 
-    /// The RAM every resident body holds, in bytes.
+    /// The RAM every record holds, in bytes: bodies, lines and summaries.
     pub fn resident_bytes(&self) -> u64 {
         self.records.iter().map(ActionRecord::resident_bytes).sum()
     }
@@ -166,7 +177,7 @@ impl ActionLog {
     }
 
     /// Move the oldest evictable bodies to their handles until at most `budget` bytes stay
-    /// resident. Each keeps its measured length (`stored_chars`) and its handle, so her view
+    /// resident, counting every record's line and summary (which no shed releases). Each keeps its measured length (`stored_chars`) and its handle, so her view
     /// still prices and reloads its whole. Exactly to the budget: the memory owner decides
     /// when, so there is no hysteresis here.
     pub fn collapse_over(&mut self, budget: u64, saved: &dyn Fn(u64, &str) -> bool) -> Collapsed {
@@ -179,14 +190,14 @@ impl ActionLog {
             self.evictable(saved)
                 .take_while(|record| {
                     let take = over > 0;
-                    over = over.saturating_sub(record.resident_bytes());
+                    over = over.saturating_sub(record.body_bytes());
                     take
                 })
                 .map(|record| record.seq)
                 .collect()
         };
         for record in self.records.iter_mut().filter(|record| chosen.contains(&record.seq)) {
-            total -= record.resident_bytes();
+            total -= record.body_bytes();
             record.stored_chars = record.result.as_ref().map(|result| result.chars().count());
             record.result = None;
         }

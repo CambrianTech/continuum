@@ -24,7 +24,7 @@ pub(crate) struct ShedCandidate {
 /// One mind's resident result bodies, read under her lock with no filesystem access.
 #[derive(Debug, Clone)]
 pub(crate) struct ResidentResults {
-    /// Bytes of every resident body.
+    /// Bytes of every record: resident bodies, plus the lines and summaries no shed releases.
     pub resident_bytes: u64,
     /// Saved bodies other than the newest, oldest first: what a shed may move once each
     /// candidate's output is vouched for.
@@ -32,7 +32,7 @@ pub(crate) struct ResidentResults {
 }
 
 impl WorkingMemory {
-    /// The RAM her resident result bodies hold, in bytes. Cheap: one pass, no allocation.
+    /// The RAM her action records hold, in bytes: bodies, lines and summaries. Cheap: one pass, no allocation.
     pub(crate) fn resident_result_bytes(&self) -> u64 {
         self.actions.lock().resident_bytes()
     }
@@ -48,7 +48,7 @@ impl WorkingMemory {
                     received_ms: record.received_ms,
                     seq: record.seq,
                     handle: record.handle.clone()?,
-                    bytes: record.resident_bytes(),
+                    bytes: record.body_bytes(),
                 })
             })
             .collect();

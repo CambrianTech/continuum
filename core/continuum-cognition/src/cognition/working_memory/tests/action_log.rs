@@ -76,3 +76,30 @@ fn an_acts_arguments_are_whole_or_plainly_elided_never_cut() {
     assert!(!line.contains("fn main() {}"), "a multi-line body is referenced, not repeated: {line}");
     assert!(line.contains("[1,40]"), "{line}");
 }
+
+// what this catches (Codex on #5637): a ledger line outside the memory owner's account. A
+// single-line argument renders whole in her line however long, and the line outlives every
+// shed, so an account of bodies alone reported a write's bytes shed while its payload stayed
+// in RAM in the line. Every byte a record keeps is charged; a shed releases its body and the
+// line stays as pinned charge, through a checkpoint roundtrip with its handle reachable.
+#[test]
+fn a_whole_single_line_argument_stays_in_the_memory_owners_account_after_a_shed() {
+    let payload = "x".repeat(16 * BODY);
+    let mut act = crate::cognition::act_observe::test_support::act("code/write", Some("/w/a.txt"));
+    act.call.input = serde_json::json!({"file_path": "/w/a.txt", "content": payload});
+    let wm = WorkingMemory::new(8);
+    wm.record_receipt_typed(&[act], &"wrote\n".repeat(BODY), None, saved("write-handle"));
+    record_saved(&wm, "newest");
+    let before = wm.resident_results();
+    let write = before.candidates.iter().find(|c| c.handle == "write-handle").expect("test: the write is sheddable");
+    assert!(before.resident_bytes >= payload.len() as u64 + write.bytes, "line and body both charged: {before:?}");
+    shed(&wm, 0);
+    let after = wm.resident_results();
+    assert!(after.candidates.iter().all(|c| c.handle != "write-handle"), "its body moved to its handle");
+    assert!(after.resident_bytes >= payload.len() as u64, "the line is still charged: {after:?}");
+    assert_eq!(before.resident_bytes - after.resident_bytes, write.bytes, "a shed releases exactly its body");
+    let restored = WorkingMemory::new(8);
+    restored.restore(wm.snapshot());
+    assert_eq!(restored.resident_results().resident_bytes, after.resident_bytes, "the charge survives a restart");
+    assert!(restored.actions.lock().records().any(|r| r.handle.as_deref() == Some("write-handle")), "its handle is reachable");
+}

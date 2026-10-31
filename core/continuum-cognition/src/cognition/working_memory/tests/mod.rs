@@ -25,6 +25,11 @@ fn record_saved(wm: &WorkingMemory, text: &str) {
 /// size is the test's choice; production has no such number (the memory owner sheds).
 const BODY: usize = 4_096;
 
+/// The bytes no shed releases: her records' ledger lines and summaries, charged as pinned.
+fn line_bytes(wm: &WorkingMemory) -> usize {
+    wm.actions.lock().records().map(|r| (r.resident_bytes() - r.body_bytes()) as usize).sum()
+}
+
 /// Shed `wm`'s resident bodies down to `budget` bytes, as the memory owner's reporter does,
 /// with every handle's saved output vouched for.
 fn shed(wm: &WorkingMemory, budget: usize) {
