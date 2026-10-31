@@ -83,10 +83,12 @@ pub struct Lock {
 
 /// Lock `path` exclusively, waiting for a holder when `wait`, else refusing with `WouldBlock`.
 pub fn lock(path: &Path, wait: bool) -> io::Result<Lock> {
-    if std::fs::symlink_metadata(path).is_ok_and(|meta| !meta.is_file()) {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    let file = crate::confine::open_no_follow(path, &options)?;
+    if !file.metadata()?.is_file() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("lock {} is not a regular file", path.display())));
     }
-    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
     if wait {
         file.lock()?;
     } else {

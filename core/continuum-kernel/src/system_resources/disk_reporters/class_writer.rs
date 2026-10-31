@@ -78,8 +78,9 @@ impl ClassWriter {
         Ok(owners)
     }
 
-    /// Where `relative` lives in this class. Refused unless it names something inside the class
-    /// root: no absolute path, no `..`, no `.`, not empty.
+    /// Where `relative` lives in this class, by name: refused unless it is plain names (no absolute
+    /// path, `..`, `.`, empty). This is the address only; what is created or opened there goes
+    /// through `continuum_host::confine`, which also refuses a redirect on the way.
     pub fn path(&self, relative: &Path) -> io::Result<PathBuf> {
         let mut parts = relative.components().peekable();
         if parts.peek().is_none() || !parts.all(|part| matches!(part, Component::Normal(_))) {
@@ -91,11 +92,13 @@ impl ClassWriter {
         Ok(self.dir.path().join(&self.scope).join(relative))
     }
 
+    /// The file's path with its directories created under the class root, every one a real
+    /// directory (no symlink or junction redirects the write out of the measured root).
     fn prepared(&self, relative: &Path) -> io::Result<PathBuf> {
         let path = self.path(relative)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        let scoped = self.scope.join(relative);
+        let dirs = scoped.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{} names no file", relative.display())))?;
+        continuum_host::confine::dirs_within(self.dir.path(), dirs)?;
         Ok(path)
     }
 
@@ -123,7 +126,10 @@ impl ClassWriter {
 
     /// Open a file to append to (a log, a capture stream), creating it on first use.
     pub fn append(&self, relative: &Path) -> io::Result<File> {
-        OpenOptions::new().create(true).append(true).open(self.prepared(relative)?)
+        self.path(relative)?;
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        continuum_host::confine::open_within(self.dir.path(), &self.scope.join(relative), &options)
     }
 
     /// Lock `relative` exclusively (a lock file in the class), waiting for a holder when `wait`,
@@ -188,6 +194,25 @@ mod tests {
         writer.replace(Path::new("README"), b"not an owner").expect("stray");
         assert_eq!(writer.owners().expect("owners"), vec![uuid::Uuid::from_u128(3), owner]);
         assert_eq!(class().1.owners().expect("empty class"), Vec::<uuid::Uuid>::new());
+    }
+
+    // what this catches: a symlink inside the class sending a write outside the measured root
+    // (Codex on #5651): through a linked directory and through a linked final file, for replace,
+    // append and lock alike; nothing lands outside.
+    #[cfg(unix)]
+    #[test]
+    fn a_redirect_inside_the_class_writes_nothing_outside_it() {
+        let (root, writer) = class();
+        let outside = tempfile::tempdir().expect("outside");
+        writer.replace(Path::new("seed"), b"x").expect("the class root exists");
+        std::os::unix::fs::symlink(outside.path(), root.path().join("class/away")).expect("dir link");
+        assert!(writer.replace(Path::new("away/state.json"), b"leak").is_err());
+        assert!(writer.append(Path::new("away/log")).is_err());
+        assert!(writer.lock(Path::new("away/.lock"), false).is_err());
+        std::fs::write(outside.path().join("target"), b"").expect("target");
+        std::os::unix::fs::symlink(outside.path().join("target"), root.path().join("class/file-link")).expect("file link");
+        assert!(writer.append(Path::new("file-link")).is_err());
+        assert_eq!(std::fs::read_dir(outside.path()).expect("outside").count(), 1, "nothing written outside the class");
     }
 
     // what this catches: a writer that guesses a directory when its class is not registered.

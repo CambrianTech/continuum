@@ -92,7 +92,7 @@ fn a_leftover_staging_name_is_skipped_not_refused() {
     let dir = tempfile::tempdir().expect("tempdir");
     // Plant the names the next few staging files would take, as a crash would leave them.
     let next = super::staging::peek_seq();
-    for seq in next..next + 3 {
+    for seq in next..next + 64 {
         std::fs::write(dir.path().join(format!(".{}-{seq}.staging", std::process::id())), b"crash").expect("plant");
     }
     let mut staging = Staging::new_in(dir.path()).expect("a leftover name is skipped");
