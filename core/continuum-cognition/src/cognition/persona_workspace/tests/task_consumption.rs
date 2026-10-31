@@ -231,3 +231,61 @@ async fn task_read_receipt_rejects_replaced_memory_and_retries_failed_commit(
     assert!(restored.pending_task_wakes().is_empty());
     Ok(())
 }
+
+#[tokio::test]
+async fn rejected_read_batch_cannot_partially_retire_a_durable_wake(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let registry = PersonaWorkspaceRegistry::new();
+    let owner = Uuid::new_v4();
+    let task = Uuid::new_v4();
+    registry.register_from_cfg(cfg_for(owner))?;
+    registry.consume_task_ends(owner, vec![(task, TaskEnd::Stopped)])?;
+    let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
+    let path = volatile_path(owner)?;
+    let before = std::fs::read(&path)?;
+    assert!(matches!(
+        registry.record_task_reads(owner, memory.incarnation(), &[task, Uuid::new_v4()]),
+        Err(TaskConsumptionError::Receipt(_))
+    ));
+    assert_eq!(std::fs::read(&path)?, before);
+    // An unrelated later checkpoint must not publish a partial staging from the
+    // refused batch. Checking only the immediate wake would miss that failure.
+    for (_, result) in registry.flush_volatile_all() {
+        result?;
+    }
+    let restored = WorkingMemory::new(8);
+    restored.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
+    assert_eq!(memory.pending_task_wakes(), vec![task]);
+    assert_eq!(restored.pending_task_wakes(), vec![task]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn served_read_arriving_after_shutdown_preserves_restart_delivery(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let registry = PersonaWorkspaceRegistry::new();
+    let owner = Uuid::new_v4();
+    let task = Uuid::new_v4();
+    registry.register_from_cfg(cfg_for(owner))?;
+    registry.consume_task_ends(owner, vec![(task, TaskEnd::Lost)])?;
+    let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
+    for (_, result) in registry.stop_volatile_checkpoints() {
+        result?;
+    }
+    let path = volatile_path(owner)?;
+    let before = std::fs::read(&path)?;
+    assert!(matches!(
+        registry.record_task_reads(owner, memory.incarnation(), &[task]),
+        Err(TaskConsumptionError::Stopped)
+    ));
+    assert_eq!(std::fs::read(&path)?, before);
+    let restored = WorkingMemory::new(8);
+    restored.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
+    assert_eq!(memory.pending_task_wakes(), vec![task]);
+    assert_eq!(restored.pending_task_wakes(), vec![task]);
+    Ok(())
+}
