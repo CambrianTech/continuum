@@ -1,7 +1,7 @@
 //! Persist acceptance before execution and the terminal result before notification.
 use super::{CommandExecutor, DispatchFailure};
 use crate::routing::{CallerIdentity, CommandUri};
-use crate::runtime::tasks::{Committed, HeldTerminal, TaskEnd, TaskLedger, TaskOutput};
+use crate::runtime::tasks::{Committed, CustodyError, HeldTerminal, TaskEnd, TaskLedger, TaskOutput};
 use futures::FutureExt;
 use serde_json::Value;
 use std::sync::Arc;
@@ -89,7 +89,9 @@ impl CommandExecutor {
             match this.task_custody.commit(ledger.as_ref(), handle).await {
                 Ok(Some(committed)) => this.deliver_terminal(committed),
                 Ok(None) => {}
-                Err(error) => tracing::warn!(%handle, %owner, %error, "terminal commit failed; held for the next flush"),
+                Err(CustodyError::Store(error)) => tracing::warn!(%handle, %owner, %error, "terminal commit failed; held for the next flush"),
+                // Shutdown is draining: the terminal is held, and shutdown commits or reports it.
+                Err(CustodyError::Closed) => {}
             }
         });
         Ok(handle)
@@ -101,9 +103,22 @@ impl CommandExecutor {
     /// existing lifecycle tick (cognition's task reconcile), never by a timer of its own.
     pub async fn flush_task_terminals(&self) -> Result<usize, String> {
         let ledger = self.task_ledger().await?;
-        let committed = self.task_custody.flush(ledger.as_ref()).await;
-        let delivered = committed.len();
-        committed.into_iter().for_each(|done| self.deliver_terminal(done));
+        let report = match self.task_custody.flush(ledger.as_ref()).await {
+            Ok(report) => report,
+            // Shutdown is draining and makes the final pass itself.
+            Err(CustodyError::Closed) => return Ok(0),
+            Err(CustodyError::Store(error)) => return Err(error),
+        };
+        for (task, reason) in &report.failed {
+            continuum_base::probe!(
+                class = "tasks.terminal.commit_failed",
+                task = %task,
+                reason = %reason,
+                "a held terminal's durable commit failed on this tick; it stays held for the next"
+            );
+        }
+        let delivered = report.committed.len();
+        report.committed.into_iter().for_each(|done| self.deliver_terminal(done));
         Ok(delivered)
     }
 
@@ -111,9 +126,17 @@ impl CommandExecutor {
     /// and return every terminal still held so the supervisor reports it (never dropped silently).
     pub async fn shutdown_task_terminals(&self) -> Result<Vec<HeldTerminal>, String> {
         let ledger = self.task_ledger().await?;
-        let (committed, unresolved) = self.task_custody.shutdown(ledger.as_ref()).await;
-        committed.into_iter().for_each(|done| self.deliver_terminal(done));
-        Ok(unresolved)
+        let report = self.task_custody.shutdown(ledger.as_ref()).await;
+        for (task, reason) in &report.last_pass.failed {
+            continuum_base::probe!(
+                class = "tasks.terminal.commit_failed",
+                task = %task,
+                reason = %reason,
+                "shutdown's final commit of a held terminal failed; it is reported, not dropped"
+            );
+        }
+        report.last_pass.committed.into_iter().for_each(|done| self.deliver_terminal(done));
+        Ok(report.unresolved)
     }
 
     /// Deliver a committed terminal: the store's durable winner, never this writer's proposal.

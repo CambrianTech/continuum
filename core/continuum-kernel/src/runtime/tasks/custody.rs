@@ -11,8 +11,13 @@
 //!   end first), never this writer's losing proposal;
 //! - a failed commit keeps the terminal held; it is retried by `flush` on the existing lifecycle tick,
 //!   never by a private timer;
-//! - `shutdown` closes admission, waits for in-flight attempts, tries once more and returns every
-//!   terminal it still holds, typed, so the supervisor reports them instead of dropping them.
+//! - `shutdown` drains exclusively: it moves the custody to `Draining` (holds are still accepted, so
+//!   they are reported; outside commits and flushes claim nothing), waits for in-flight attempts on an
+//!   armed notification, makes the final attempt itself, then closes and reports every terminal it
+//!   still holds under the same lock, typed, so none escapes both delivery and the report (Codex on
+//!   #5664: an outside commit could claim after the empty check and return with IO in flight);
+//! - a store failure is a typed outcome, never a silent zero: `flush` reports what committed and
+//!   what failed, with the store's reason (Codex on #5664).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -61,7 +66,33 @@ pub struct Committed {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CustodyError {
-    /// Shutdown closed admission; the caller reports the terminal itself.
+    /// Shutdown is draining or closed custody: an outside commit or flush claims nothing (shutdown
+    /// makes the final attempt itself), and after close a new terminal is refused; the caller reports it.
+    Closed,
+    /// The store did not make the terminal durable; it stays held for the next flush.
+    Store(String),
+}
+
+/// What one pass over the held terminals did: delivered winners, and every failure with its reason.
+#[derive(Debug, Default)]
+pub struct FlushReport {
+    pub committed: Vec<Committed>,
+    pub failed: Vec<(Uuid, String)>,
+}
+
+/// What shutdown did: its final pass, and every terminal still held after it closed.
+#[derive(Debug, Default)]
+pub struct ShutdownReport {
+    pub last_pass: FlushReport,
+    pub unresolved: Vec<HeldTerminal>,
+}
+
+/// Custody's lifetime: open, draining (shutdown alone commits; holds are kept to be reported), closed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Phase {
+    #[default]
+    Open,
+    Draining,
     Closed,
 }
 
@@ -69,7 +100,7 @@ pub enum CustodyError {
 struct State {
     held: HashMap<Uuid, HeldTerminal>,
     committing: HashSet<Uuid>,
-    closed: bool,
+    phase: Phase,
 }
 
 #[derive(Default)]
@@ -100,7 +131,7 @@ impl TerminalCustody {
     /// same task is ignored (one terminal per task).
     pub fn hold(&self, terminal: HeldTerminal) -> Result<(), CustodyError> {
         let mut state = self.state.lock();
-        if state.closed {
+        if state.phase == Phase::Closed {
             return Err(CustodyError::Closed);
         }
         state.held.entry(terminal.task).or_insert(terminal);
@@ -108,11 +139,20 @@ impl TerminalCustody {
     }
 
     /// Try to make one held terminal durable. `Ok(Some)` when this attempt committed it (deliver the
-    /// winner), `Ok(None)` when it is not held or another attempt has it claimed, `Err` when the store
-    /// failed (the terminal stays held for the next flush).
-    pub async fn commit(&self, store: &dyn TerminalStore, task: Uuid) -> Result<Option<Committed>, String> {
+    /// winner), `Ok(None)` when it is not held or another attempt has it claimed, `Err(Store)` when the
+    /// store failed (the terminal stays held for the next flush), `Err(Closed)` once shutdown drains.
+    pub async fn commit(&self, store: &dyn TerminalStore, task: Uuid) -> Result<Option<Committed>, CustodyError> {
+        self.commit_in(store, task, Phase::Open).await
+    }
+
+    /// One attempt, claimed only while the custody is in `phase`: outside callers pass `Open`,
+    /// shutdown's final pass `Draining`, so nothing outside can claim once draining has begun.
+    async fn commit_in(&self, store: &dyn TerminalStore, task: Uuid, phase: Phase) -> Result<Option<Committed>, CustodyError> {
         let held = {
             let mut state = self.state.lock();
+            if state.phase != phase {
+                return Err(CustodyError::Closed);
+            }
             let Some(held) = state.held.get(&task).cloned() else { return Ok(None) };
             if !state.committing.insert(task) {
                 return Ok(None);
@@ -120,25 +160,35 @@ impl TerminalCustody {
             held
         };
         let _claim = Claim { custody: self, task };
-        let winner = store.finish(held.task, held.owner, held.end.clone()).await?;
+        let winner = store.finish(held.task, held.owner, held.end.clone()).await.map_err(CustodyError::Store)?;
         self.state.lock().held.remove(&task);
         Ok(Some(Committed { held, winner }))
     }
 
-    /// Try every held terminal not already being committed; the ones made durable are returned for
-    /// delivery, the rest stay held. Called on the existing lifecycle tick.
-    pub async fn flush(&self, store: &dyn TerminalStore) -> Vec<Committed> {
+    /// Try every held terminal not already being committed; committed winners are delivered, failures
+    /// reported with their reason, and both stay typed. Called on the existing lifecycle tick.
+    pub async fn flush(&self, store: &dyn TerminalStore) -> Result<FlushReport, CustodyError> {
+        self.pass(store, Phase::Open).await
+    }
+
+    async fn pass(&self, store: &dyn TerminalStore, phase: Phase) -> Result<FlushReport, CustodyError> {
         let tasks: Vec<Uuid> = {
             let state = self.state.lock();
+            if state.phase != phase {
+                return Err(CustodyError::Closed);
+            }
             state.held.keys().filter(|task| !state.committing.contains(task)).copied().collect()
         };
-        let mut committed = Vec::new();
+        let mut report = FlushReport::default();
         for task in tasks {
-            if let Ok(Some(done)) = self.commit(store, task).await {
-                committed.push(done);
+            match self.commit_in(store, task, phase).await {
+                Ok(Some(done)) => report.committed.push(done),
+                Ok(None) => {}
+                Err(CustodyError::Store(reason)) => report.failed.push((task, reason)),
+                Err(CustodyError::Closed) => return Err(CustodyError::Closed),
             }
         }
-        committed
+        Ok(report)
     }
 
     /// How many terminals are held (committed or not yet).
@@ -146,19 +196,27 @@ impl TerminalCustody {
         self.state.lock().held.len()
     }
 
-    /// Close admission, wait for in-flight attempts, flush once more, and return what was committed
-    /// (to deliver) and every terminal still held (to report: never dropped silently).
-    pub async fn shutdown(&self, store: &dyn TerminalStore) -> (Vec<Committed>, Vec<HeldTerminal>) {
-        self.state.lock().closed = true;
+    /// Drain exclusively and close: from here outside commits and flushes claim nothing; wait for the
+    /// attempts already in flight; make the final pass; then close and report every terminal still
+    /// held, read under the lock that closes, so a hold either reached this report or was refused.
+    pub async fn shutdown(&self, store: &dyn TerminalStore) -> ShutdownReport {
+        self.state.lock().phase = Phase::Draining;
         loop {
+            // Armed before the check, so a claim released between the check and the await still wakes it.
             let settled = self.settled.notified();
+            tokio::pin!(settled);
+            settled.as_mut().enable();
             if self.state.lock().committing.is_empty() {
                 break;
             }
             settled.await;
         }
-        let committed = self.flush(store).await;
-        let unresolved = self.state.lock().held.values().cloned().collect();
-        (committed, unresolved)
+        let last_pass = self.pass(store, Phase::Draining).await.unwrap_or_default(); // unwrap_or_default: only shutdown moves the phase off Draining, so its own pass cannot be refused
+        let unresolved = {
+            let mut state = self.state.lock();
+            state.phase = Phase::Closed;
+            state.held.values().cloned().collect()
+        };
+        ShutdownReport { last_pass, unresolved }
     }
 }
