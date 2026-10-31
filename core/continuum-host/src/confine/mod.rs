@@ -49,6 +49,10 @@ fn check_dir(path: &Path) -> io::Result<bool> {
 /// to be a real directory (and checked again after creating it, so a redirect swapped in between
 /// is caught).
 pub fn dirs_within(root: &Path, relative: &Path) -> io::Result<PathBuf> {
+    // The root is the owner's choice and may itself be a redirect (a relocated home); it is
+    // created as given, so a fresh install's empty class still takes its first write (Cormac on
+    // #5651: the walk created only what lay below it).
+    std::fs::create_dir_all(root)?;
     let mut at = root.to_path_buf();
     for name in names(relative)? {
         at.push(name);
