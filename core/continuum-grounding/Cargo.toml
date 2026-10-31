@@ -11,7 +11,7 @@ continuum-kernel = { path = "../continuum-kernel" }
 airc-core.workspace = true
 airc-lib.workspace = true
 async-trait.workspace = true
-futures = "0.3"
+futures = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
