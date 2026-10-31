@@ -579,11 +579,14 @@ pub struct CodeShellParams {
     /// handle to poll. Defaults to 30000 (30s). A long job keeps running past this.
     #[serde(default)]
     pub wait_ms: Option<u64>,
-    /// Optional HARD kill timeout (ms) for the command itself. Default: none — a
-    /// long-running command (training, a daemon) runs until it finishes or you
-    /// `code/shell-kill` it. Set this only when you want the command force-stopped.
+    /// KILLS the command after this many ms. Not a wait: to wait longer, raise `wait_ms`
+    /// (the command keeps running past it and its result reaches you when it ends).
+    /// Default: none — a long build, training run or daemon runs until it finishes or
+    /// you `code/shell-kill` it. Named for what it does: as `timeout_ms` it read as a
+    /// wait, and a resident's 120 s "timeout" killed her `cargo test` mid-compile
+    /// (Benchy, the M5, 2026-10-31; a 300 s one killed the next).
     #[serde(default)]
-    pub timeout_ms: Option<u64>,
+    pub kill_after_ms: Option<u64>,
 }
 
 /// Snapshot an execution's current state into the wire response. Used both when a
@@ -641,7 +644,7 @@ impl ActionCommand for CodeShell {
                 CommandError::Internal("shell vanished after provisioning".into())
             })?;
             let exec_id = shell
-                .execute(&p.cmd, p.timeout_ms, &self.state.rt_handle)
+                .execute(&p.cmd, p.kill_after_ms, &self.state.rt_handle)
                 .map_err(CommandError::Internal)?;
             shell
                 .get_execution_state(&exec_id)
