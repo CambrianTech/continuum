@@ -207,6 +207,7 @@ pub struct ActingBody {
 /// integrates the bids into the bounded workspace, the workspace broadcasts.
 /// The participation [`Decision`] is then read from the broadcast.
 pub struct WorkspaceCycle {
+    pub(super) render_custody: super::render_custody::RenderCustody,
     pub(super) faculties: Vec<Arc<dyn Faculty>>,
     pub(super) arbiter: Arc<dyn Arbiter>,
     /// Replay/logging seam — every tick is recorded here. Default `Noop`

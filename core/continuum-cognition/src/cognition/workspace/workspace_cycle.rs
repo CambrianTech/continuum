@@ -3,6 +3,7 @@ use super::*;
 impl WorkspaceCycle {
     pub fn new(faculties: Vec<Arc<dyn Faculty>>, arbiter: Arc<dyn Arbiter>) -> Self {
         Self {
+            render_custody: super::render_custody::RenderCustody::Isolated,
             faculties,
             arbiter,
             capture: Arc::new(NoopWorkspaceCaptureSink),

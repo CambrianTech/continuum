@@ -282,7 +282,7 @@ impl PersonaWorkspaceRegistry {
     /// Checkpoint lock/read/schema failures refuse this registration and leave
     /// an existing resident unchanged. Call from a blocking worker during boot.
     pub fn register_from_cfg(
-        &self,
+        self: &Arc<Self>,
         cfg: PersonaBrainConfig,
     ) -> std::io::Result<Arc<WorkspaceCycle>> {
         let _assembly = self.assembly.lock();
@@ -297,7 +297,7 @@ impl PersonaWorkspaceRegistry {
                 .tool_head()
                 .attach(crate::cognition::tool_head::entity::ToolHeadStore::new(Arc::clone(store), persona_id));
         }
-        let cycle = Arc::new(cycle);
+        let cycle = Arc::new(cycle.with_render_custody(self, persona_id, working_memory.incarnation()));
         // cycles THEN templates (the one canonical lock order).
         let mut cycles = self.cycles.lock();
         self.templates.lock().insert(persona_id, template);
@@ -315,7 +315,7 @@ impl PersonaWorkspaceRegistry {
     /// Lazy-init so a persona's cycle is assembled once and reused across every
     /// room it services (the "one soul" invariant). Also retains the fork-template
     /// (same as [`register_from_cfg`](Self::register_from_cfg)).
-    pub fn get_or_build(&self, cfg: PersonaBrainConfig) -> std::io::Result<Arc<WorkspaceCycle>> {
+    pub fn get_or_build(self: &Arc<Self>, cfg: PersonaBrainConfig) -> std::io::Result<Arc<WorkspaceCycle>> {
         let persona_id = cfg.persona_id;
         if let Some(existing) = self.get(&persona_id) {
             return Ok(existing);
@@ -333,7 +333,7 @@ impl PersonaWorkspaceRegistry {
                 .tool_head()
                 .attach(crate::cognition::tool_head::entity::ToolHeadStore::new(Arc::clone(store), persona_id));
         }
-        let cycle = Arc::new(cycle);
+        let cycle = Arc::new(cycle.with_render_custody(self, persona_id, working_memory.incarnation()));
         // cycles THEN templates (the one canonical lock order).
         let mut cycles = self.cycles.lock();
         self.templates.lock().insert(persona_id, template);

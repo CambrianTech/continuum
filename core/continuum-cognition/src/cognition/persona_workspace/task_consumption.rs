@@ -142,6 +142,10 @@ impl ResidentTaskSink {
 
 #[derive(Debug, thiserror::Error)]
 pub enum TaskSinkError {
+    #[error("receipt checkpoint owner {0} no longer exists")]
+    OwnerGone(Uuid),
+    #[error("render receipt does not belong to cycle {owner} incarnation {incarnation}")]
+    CustodyMismatch { owner: Uuid, incarnation: Uuid },
     #[error(transparent)]
     Consumption(#[from] TaskConsumptionError),
     #[error("resident task checkpoint worker failed: {0}")]

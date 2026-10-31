@@ -15,7 +15,7 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
     registry.register_from_cfg(cfg_for(owner))?;
     let task = Uuid::new_v4();
     registry.consume_task_ends(owner, vec![(task, TaskEnd::TimedOut)])?;
-    registry.register_from_cfg(cfg_for(owner))?;
+    let cycle = registry.register_from_cfg(cfg_for(owner))?;
     let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
     let source = crate::cognition::context_streams::tasks::Tasks { memory: &memory, persona: owner };
     let (view, _) = View::<crate::cognition::context_streams::ContextMessage>::start(Vec::new(), &[&source as &dyn Source<_>], |claims| {
@@ -26,6 +26,14 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
         owner, incarnation: memory.incarnation(), request: "submitted-request".to_owned(), view: view.receipt(),
     };
     let exact = receipt.clone();
+    let isolated = registry.mind_cycle(&owner).ok_or("private cycle absent")?;
+    isolated.persist_render_receipts(vec![exact.clone()]).await?;
+    assert_eq!(memory.pending_task_wakes(), vec![task], "private cycles have no live checkpoint authority");
+    let mut foreign = exact.clone();
+    foreign.incarnation = Uuid::new_v4();
+    assert!(matches!(cycle.persist_render_receipts(vec![exact.clone(), foreign]).await,
+        Err(TaskSinkError::CustodyMismatch { .. })));
+    assert_eq!(memory.pending_task_wakes(), vec![task], "validate the whole batch before retirement");
     for item in &mut receipt.view.items { item.element = None; }
     assert!(sink.record_rendered(receipt).await?.is_none());
     receipt = exact.clone();
@@ -44,15 +52,25 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
     before_retry.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
     assert_eq!(before_retry.pending_task_wakes(), vec![task]);
     std::fs::remove_dir(&obstruction)?;
-    assert!(sink.record_rendered(exact.clone()).await?.is_some());
+    cycle.persist_render_receipts(vec![exact.clone()]).await?;
     assert!(memory.pending_task_wakes().is_empty());
     let checkpoint = std::fs::read(volatile_path(owner)?)?;
-    assert!(sink.record_rendered(exact).await?.is_none());
+    assert!(sink.record_rendered(exact.clone()).await?.is_none());
     assert_eq!(std::fs::read(volatile_path(owner)?)?, checkpoint);
     assert!(source.items().is_empty(), "a consumed end must not leave a standing task banner");
     let restored = WorkingMemory::new(8);
     restored.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
     assert!(restored.pending_task_wakes().is_empty());
+    registry.register_from_cfg(cfg_for(owner))?;
+    assert!(matches!(cycle.persist_render_receipts(vec![exact.clone()]).await,
+        Err(TaskSinkError::Consumption(TaskConsumptionError::Replaced(id))) if id == owner));
+    // Retaining a cycle must not retain its registry through a reference cycle.
+    let weak = Arc::downgrade(&registry);
+    drop(sink);
+    drop(registry);
+    assert!(weak.upgrade().is_none());
+    assert!(matches!(cycle.persist_render_receipts(vec![exact]).await,
+        Err(TaskSinkError::OwnerGone(id)) if id == owner));
     Ok(())
 }
 
@@ -61,7 +79,7 @@ async fn forgotten_end_is_committed_before_receipt_and_restored_with_wake(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let home = tempfile::tempdir()?;
     let _native = crate::paths::NativeHomeOverride::install(home.path());
-    let registry = PersonaWorkspaceRegistry::new();
+    let registry = Arc::new(PersonaWorkspaceRegistry::new());
     let owner = Uuid::new_v4();
     let task = Uuid::new_v4();
     registry.register_from_cfg(cfg_for(owner))?;
@@ -93,7 +111,7 @@ async fn absent_conflicting_and_shutdown_consumption_are_explicit_refusals(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let home = tempfile::tempdir()?;
     let _native = crate::paths::NativeHomeOverride::install(home.path());
-    let registry = PersonaWorkspaceRegistry::new();
+    let registry = Arc::new(PersonaWorkspaceRegistry::new());
     let owner = Uuid::new_v4();
     let task = Uuid::new_v4();
     assert!(
@@ -125,7 +143,7 @@ async fn failed_checkpoint_returns_no_receipt_and_replay_commits_staged_end(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let home = tempfile::tempdir()?;
     let _native = crate::paths::NativeHomeOverride::install(home.path());
-    let registry = PersonaWorkspaceRegistry::new();
+    let registry = Arc::new(PersonaWorkspaceRegistry::new());
     let owner = Uuid::new_v4();
     let task = Uuid::new_v4();
     registry.register_from_cfg(cfg_for(owner))?;
@@ -223,7 +241,7 @@ async fn failed_read_checkpoint_keeps_wake_pending_until_retry(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let home = tempfile::tempdir()?;
     let _native = crate::paths::NativeHomeOverride::install(home.path());
-    let registry = PersonaWorkspaceRegistry::new();
+    let registry = Arc::new(PersonaWorkspaceRegistry::new());
     let owner = Uuid::new_v4();
     let task = Uuid::new_v4();
     registry.register_from_cfg(cfg_for(owner))?;
@@ -259,7 +277,7 @@ async fn task_read_receipt_rejects_replaced_memory_and_retries_failed_commit(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let home = tempfile::tempdir()?;
     let _native = crate::paths::NativeHomeOverride::install(home.path());
-    let registry = PersonaWorkspaceRegistry::new();
+    let registry = Arc::new(PersonaWorkspaceRegistry::new());
     let owner = Uuid::new_v4();
     let task = Uuid::new_v4();
     registry.register_from_cfg(cfg_for(owner))?;
@@ -291,7 +309,7 @@ async fn rejected_read_batch_cannot_partially_retire_a_durable_wake(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let home = tempfile::tempdir()?;
     let _native = crate::paths::NativeHomeOverride::install(home.path());
-    let registry = PersonaWorkspaceRegistry::new();
+    let registry = Arc::new(PersonaWorkspaceRegistry::new());
     let owner = Uuid::new_v4();
     let task = Uuid::new_v4();
     registry.register_from_cfg(cfg_for(owner))?;
@@ -321,7 +339,7 @@ async fn served_read_arriving_after_shutdown_preserves_restart_delivery(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let home = tempfile::tempdir()?;
     let _native = crate::paths::NativeHomeOverride::install(home.path());
-    let registry = PersonaWorkspaceRegistry::new();
+    let registry = Arc::new(PersonaWorkspaceRegistry::new());
     let owner = Uuid::new_v4();
     let task = Uuid::new_v4();
     registry.register_from_cfg(cfg_for(owner))?;
