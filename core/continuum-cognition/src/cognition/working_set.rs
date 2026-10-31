@@ -54,6 +54,7 @@
 
 use std::sync::Arc;
 
+use continuum_kernel::system_resources::disk_reporters::ClassWriter;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -73,31 +74,15 @@ pub fn global() -> WorkingSetRegistry {
     GLOBAL.get_or_init(WorkingSetRegistry::new).clone()
 }
 
-/// Where one mind's measured demand lives across restarts — beside the rest of
-/// her durable state, because it IS her property and should travel with her.
-/// Mirrors `persona_workspace::volatile_path`'s layout exactly.
-fn personas_root() -> std::io::Result<std::path::PathBuf> {
-    crate::paths::home_dir()
-        .map(|home| home.join(".continuum/personas"))
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "cannot resolve persistent home directory",
-            )
-        })
-}
-
-fn demand_path(persona: Uuid) -> std::io::Result<std::path::PathBuf> {
-    Ok(personas_root()?
-        .join(persona.to_string())
-        .join("working-set.json"))
-}
-
-fn emission_path(persona: Uuid) -> std::io::Result<std::path::PathBuf> {
-    Ok(personas_root()?
-        .join(persona.to_string())
-        .join("emission.json"))
-}
+/// The disk class one mind's measured demand lives in across restarts: `personas`, beside the rest
+/// of her durable state, because it IS her property and travels with her. Through the class, every
+/// file is under a measured root with an eviction decision (`disk_reporters::standard_tracked_dirs`,
+/// ONE-BUDGET row 5): no hand-built path.
+const PERSONAS_CLASS: &str = "personas";
+/// Her measured window demand, within the class.
+const DEMAND_FILE: &str = "working-set.json";
+/// Her measured reply size, within the class.
+const EMISSION_FILE: &str = "emission.json";
 
 /// One mind's observed demand.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -246,54 +231,9 @@ pub fn requirement_tokens(d: &PersonaDemand) -> u32 {
 /// to 195 tokens and dropping the room board for want of 137 (measured
 /// 2026-08-31, the meta-loop spiral). Both reserve comments named this exact
 /// registry pattern as the honest endgame; this is it.
-/// How many recent turns the reasoning / answer NEED is read from — a p90 over this
-/// many is the mind's measured demand per channel; a peak alone is one loud turn.
-const NEED_SAMPLES: usize = 16;
-/// Turns observed before the need is trusted to size an allowance — the same bar the
-/// reserve asks (`turns >= 3`) before one reply sizes every turn after it.
-const MIN_NEED_TURNS: u32 = 3;
-/// Headroom over the p90 need (5/4): the p90 is what she USUALLY needs; the allowance
-/// must hold the turn that runs a little longer. An integer ratio, like the decay.
-const NEED_HEADROOM_NUM: u32 = 5;
-const NEED_HEADROOM_DEN: u32 = 4;
-
-/// What ONE turn of this mind needs to generate, per channel: her measured reasoning
-/// (the `<think>` / `reasoning_content` channel) and her measured answer — each the p90
-/// of recent turns with headroom. Measured on the M5 (2026-09-20, 20:58–21:14Z) because
-/// #4194 sized the allowance in TIME alone and two turns ended inside the reasoning
-/// channel (`persona.act.think_only reasoning_len=2730`, `2112`): no answer, no act. An
-/// allowance that does not hold the think never reaches the answer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OutputNeed {
-    /// Tokens of reasoning a turn needs (p90 × headroom).
-    pub reasoning: u32,
-    /// Tokens of answer a turn needs (p90 × headroom).
-    pub answer: u32,
-    /// Turns the need was read from — how much to trust it.
-    pub turns: u32,
-}
-
-impl OutputNeed {
-    /// The whole turn: think, then answer.
-    pub fn total(self) -> u32 {
-        self.reasoning.saturating_add(self.answer)
-    }
-}
-
-/// The p90 of `samples` (ascending sort, the value at the 90th percentile position)
-/// with the need headroom applied. Empty = 0.
-fn p90_with_headroom(samples: &[u32]) -> u32 {
-    if samples.is_empty() {
-        return 0;
-    }
-    let mut sorted = samples.to_vec();
-    sorted.sort_unstable();
-    let n = sorted.len();
-    let idx = (n * 9).div_ceil(10).saturating_sub(1);
-    sorted[idx.min(n - 1)]
-        .saturating_mul(NEED_HEADROOM_NUM)
-        .div_ceil(NEED_HEADROOM_DEN)
-}
+mod need;
+pub use need::OutputNeed;
+use need::{p90, reasoning_at_least, NEED_SAMPLES};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonaEmission {
@@ -317,9 +257,23 @@ pub struct PersonaEmission {
     /// The last [`NEED_SAMPLES`] turns' answer tokens, the same ring.
     #[serde(default)]
     pub answer_samples: [u32; NEED_SAMPLES],
-    /// Turns recorded into the rings (saturating). `< MIN_NEED_TURNS` = no need yet.
+    /// Turns recorded into the rings (saturating). `0` = no need measured yet.
     #[serde(default)]
     pub need_turns: u32,
+    /// The last [`NEED_SAMPLES`] thinks cut before they ended (`CutMidThought`,
+    /// `ThinkBudgetHit`): each a lower bound on her reasoning need, never a measurement, so
+    /// they stay out of the landed rings ([`OutputNeed::reasoning_at_least`]). A ring with
+    /// `cut_count` as its cursor; a file written before cuts were kept has none, which is
+    /// what it recorded.
+    #[serde(default)]
+    pub cut_samples: [u32; NEED_SAMPLES],
+    /// The observation (`turns`) each cut was recorded at: a cut counts only while it is
+    /// among her last [`NEED_SAMPLES`] turns, so an old cut ages out and the bound can fall.
+    #[serde(default)]
+    pub cut_at_turn: [u64; NEED_SAMPLES],
+    /// Cuts recorded into the cut ring (saturating).
+    #[serde(default)]
+    pub cut_count: u32,
 }
 
 /// How a generation ENDED, as the emission record has to know it. The registry sizes
@@ -432,15 +386,59 @@ impl EmissionStop {
 /// Cheap to clone (`Arc` inside) so the deliberation faculty, the serving daemon,
 /// and a status command can all hold the same registry without threading a lock
 /// through their signatures.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct WorkingSetRegistry {
     observed: Arc<DashMap<Uuid, PersonaDemand>>,
     emitted: Arc<DashMap<Uuid, PersonaEmission>>,
+    /// The class it persists through when one is given ([`Self::with_store`], a test's own root);
+    /// otherwise `ClassWriter::of(PERSONAS_CLASS)`, resolved at each use, so a global built before
+    /// boot resolves at its first write and a write before boot is a loud refusal, never a guess.
+    store: Option<ClassWriter>,
+}
+
+impl std::fmt::Debug for WorkingSetRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkingSetRegistry")
+            .field("observed", &self.observed.len())
+            .field("emitted", &self.emitted.len())
+            .field("store", &self.store.as_ref().map(ClassWriter::class))
+            .finish()
+    }
 }
 
 impl WorkingSetRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A registry that persists through `class` (a test's own root; production resolves the class
+    /// boot installed, at each use).
+    pub fn with_store(class: ClassWriter) -> Self {
+        Self { store: Some(class), ..Self::default() }
+    }
+
+    /// The class this registry persists through: the one it was given, else the registered one.
+    fn class(&self) -> std::io::Result<ClassWriter> {
+        match &self.store {
+            Some(class) => Ok(class.clone()),
+            None => ClassWriter::of(PERSONAS_CLASS),
+        }
+    }
+
+    /// Write one mind's file whole through the class (staged, synced, then placed: a crash never
+    /// leaves a torn file that would fail to parse and wake her at the cold-start window).
+    fn persist(&self, persona: Uuid, name: &str, bytes: std::io::Result<Vec<u8>>, what: &str) {
+        let written = self.class().and_then(|class| bytes.and_then(|bytes| class.owned_by(persona).replace(name.as_ref(), &bytes)));
+        if let Err(error) = written {
+            tracing::warn!(persona_id = %persona, %error, "{what} not persisted — this mind re-measures it after the next restart");
+        }
+    }
+
+    /// One mind's file read back through the class; `None` when absent, unreadable, or the class
+    /// is not under management.
+    fn read(&self, persona: Uuid, name: &str) -> Option<Vec<u8>> {
+        let path = self.class().ok()?.owned_by(persona).path(name.as_ref()).ok()?;
+        std::fs::read(path).ok()
     }
 
     /// Record one turn's UNCLAMPED demand for `persona`.
@@ -463,7 +461,7 @@ impl WorkingSetRegistry {
         // window every boot is not paused. One tiny JSON per turn, atomic
         // tmp+rename, best-effort — losing one interval is acceptable, blocking a
         // turn is not (the same contract as `save_volatile`).
-        Self::save(persona, &updated);
+        self.save(persona, &updated);
     }
 
     /// The in-memory half, split out so persistence is a separate concern and the
@@ -531,7 +529,7 @@ impl WorkingSetRegistry {
             return;
         }
         let updated = self.record_sent_in_memory(persona, sent_tokens, now_ms);
-        Self::save(persona, &updated);
+        self.save(persona, &updated);
     }
 
     /// The in-memory half of [`Self::record_sent`], without the disk write — the
@@ -559,7 +557,7 @@ impl WorkingSetRegistry {
             return;
         }
         let updated = self.record_need_in_memory(persona, need_tokens, now_ms);
-        Self::save(persona, &updated);
+        self.save(persona, &updated);
     }
 
     pub(crate) fn record_need_in_memory(&self, persona: Uuid, need_tokens: u32, now_ms: u64) -> PersonaDemand {
@@ -648,27 +646,7 @@ impl WorkingSetRegistry {
             self.record_emission_in_memory(persona, output_tokens, reasoning_tokens, stop, now_ms);
         // Same persistence contract as demand: every observation, atomic, best-effort
         // — a restart is a pause, and a mind must not re-earn its reply size per boot.
-        let path = match emission_path(persona) {
-            Ok(path) => path,
-            Err(error) => {
-                tracing::warn!(persona_id = %persona, %error, "emission root unavailable — measurement remains in memory");
-                return Some(updated);
-            }
-        };
-        let write = || -> std::io::Result<()> {
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            let tmp = path.with_extension("json.tmp");
-            std::fs::write(&tmp, serde_json::to_vec(&updated)?)?; // BOUNDARY: disk — the per-persona emission.json durable format
-            std::fs::rename(&tmp, &path)
-        };
-        if let Err(e) = write() {
-            tracing::warn!(
-                persona_id = %persona, error = %e, path = %path.display(),
-                "emission not persisted — this mind re-measures its reply size after the next restart"
-            );
-        }
+        self.persist(persona, EMISSION_FILE, serde_json::to_vec(&updated).map_err(std::io::Error::from), "emission"); // BOUNDARY: disk — the per-persona emission.json durable format
         Some(updated)
     }
 
@@ -709,8 +687,13 @@ impl WorkingSetRegistry {
         };
         let observed = reasoning.saturating_add(answer);
         let push_need = |e: &mut PersonaEmission| {
-            // A think-only cut is not a sample of her need ([`EmissionStop::CutMidThought`]).
+            // A think-only cut is not a sample of her need ([`EmissionStop::CutMidThought`]):
+            // it is a lower bound on it, kept in its own ring at the turn it happened.
             if matches!(stop, EmissionStop::CutMidThought | EmissionStop::ThinkBudgetHit { .. }) {
+                let slot = (e.cut_count as usize) % NEED_SAMPLES;
+                e.cut_samples[slot] = reasoning;
+                e.cut_at_turn[slot] = e.turns;
+                e.cut_count = e.cut_count.saturating_add(1);
                 return;
             }
             let slot = (e.need_turns as usize) % NEED_SAMPLES;
@@ -757,6 +740,9 @@ impl WorkingSetRegistry {
                     reasoning_samples: [0; NEED_SAMPLES],
                     answer_samples: [0; NEED_SAMPLES],
                     need_turns: 0,
+                    cut_samples: [0; NEED_SAMPLES],
+                    cut_at_turn: [0; NEED_SAMPLES],
+                    cut_count: 0,
                 };
                 push_need(&mut e);
                 e
@@ -768,60 +754,41 @@ impl WorkingSetRegistry {
         self.emitted.get(&persona).map(|e| *e.value())
     }
 
-    /// What ONE turn of this mind needs to generate, per channel — `None` until
-    /// [`MIN_NEED_TURNS`] turns have been measured (a legacy `emission.json` without the
-    /// rings reads `None` too). Unknown is not zero: the caller falls back to the reserve.
+    /// What ONE turn of this mind needs to generate, per channel — `None` until a turn has
+    /// landed (a legacy `emission.json` without the rings reads `None` too). Unknown is not
+    /// zero: the caller falls back to the cold prior. Any measured turn is used as measured;
+    /// how far to trust few turns is the claim's (`OutputNeed::turns`), never a bar here.
     pub fn need_of(&self, persona: Uuid) -> Option<OutputNeed> {
         let e = self.emission_of(persona)?;
-        if e.need_turns < MIN_NEED_TURNS {
+        if e.need_turns == 0 {
             return None;
         }
         let filled = (e.need_turns as usize).min(NEED_SAMPLES);
+        let landed = &e.reasoning_samples[..filled];
+        let reasoning = p90(landed);
+        // Cuts among her last NEED_SAMPLES observations (`turns` counts the observation a
+        // cut was recorded at before it increments).
+        let recent: Vec<u32> = (0..(e.cut_count as usize).min(NEED_SAMPLES))
+            .filter(|&slot| e.turns.saturating_sub(e.cut_at_turn[slot]) <= NEED_SAMPLES as u64)
+            .map(|slot| e.cut_samples[slot])
+            .collect();
         Some(OutputNeed {
-            reasoning: p90_with_headroom(&e.reasoning_samples[..filled]),
-            answer: p90_with_headroom(&e.answer_samples[..filled]),
+            reasoning,
+            answer: p90(&e.answer_samples[..filled]),
             turns: e.need_turns.min(NEED_SAMPLES as u32),
+            reasoning_at_least: reasoning_at_least(landed, &recent, reasoning),
         })
     }
 
-    /// Atomic tmp+rename so a crash mid-write never leaves a torn file that would
-    /// fail to parse and silently wake her at the cold-start window.
-    fn save(persona: Uuid, demand: &PersonaDemand) {
-        let path = match demand_path(persona) {
-            Ok(path) => path,
-            Err(error) => {
-                tracing::warn!(persona_id = %persona, %error, "working-set root unavailable — measurement remains in memory");
-                return;
-            }
-        };
-        let write = || -> std::io::Result<()> {
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            let tmp = path.with_extension("json.tmp");
-            std::fs::write(&tmp, serde_json::to_vec(demand)?)?;
-            std::fs::rename(&tmp, &path)
-        };
-        if let Err(e) = write() {
-            tracing::warn!(
-                persona_id = %persona, error = %e, path = %path.display(),
-                "working-set demand not persisted — this mind re-measures its window after the next restart"
-            );
-        }
+    fn save(&self, persona: Uuid, demand: &PersonaDemand) {
+        self.persist(persona, DEMAND_FILE, serde_json::to_vec(demand).map_err(std::io::Error::from), "working-set demand"); // BOUNDARY: disk — the per-persona working-set.json durable format
     }
 
     /// Re-adopt a mind's measured demand at spawn, so she wakes at the window she
     /// earned rather than the cold-start floor. Unreadable/absent = no observation
     /// (honest), never an invented number.
     pub fn rehydrate(&self, persona: Uuid) {
-        let path = match demand_path(persona) {
-            Ok(path) => path,
-            Err(error) => {
-                tracing::warn!(persona_id = %persona, %error, "working-set root unavailable — prior demand could not be loaded");
-                return;
-            }
-        };
-        let Ok(bytes) = std::fs::read(&path) else {
+        let Some(bytes) = self.read(persona, DEMAND_FILE) else {
             return;
         };
         match serde_json::from_slice::<PersonaDemand>(&bytes) {
@@ -837,13 +804,13 @@ impl WorkingSetRegistry {
             }
             Ok(_) => {}
             Err(e) => tracing::warn!(
-                persona_id = %persona, error = %e, path = %path.display(),
+                persona_id = %persona, error = %e,
                 "working-set file unreadable — this mind re-measures its window from scratch"
             ),
         }
         // The emission twin rides the same rehydration pass: absent/unreadable stays
         // silent (the reserve falls back to the cold-start share — honest, never invented).
-        if let Ok(bytes) = emission_path(persona).and_then(std::fs::read) {
+        if let Some(bytes) = self.read(persona, EMISSION_FILE) {
             match serde_json::from_slice::<PersonaEmission>(&bytes) {
                 Ok(e) if e.peak_tokens > 0 => {
                     self.emitted.insert(persona, e);
@@ -881,25 +848,15 @@ impl WorkingSetRegistry {
     /// Unreadable or absent files stay silent — the same honesty `rehydrate` keeps. A
     /// ghost persona dir with no `working-set.json` contributes nothing rather than a zero.
     pub fn rehydrate_all(&self) -> usize {
-        let root = match personas_root() {
-            Ok(root) => root,
+        let owners = match self.class().and_then(|class| class.owners()) {
+            Ok(owners) => owners,
             Err(error) => {
-                tracing::warn!(%error, "working-set root unavailable — persisted demand could not be enumerated");
+                tracing::warn!(%error, class = PERSONAS_CLASS, "persisted demand could not be enumerated");
                 return 0;
             }
         };
-        let Ok(entries) = std::fs::read_dir(root) else {
-            return 0; // no personas root yet — a fresh install, not an error
-        };
         let mut adopted = 0;
-        for entry in entries.flatten() {
-            let Some(persona) = entry
-                .file_name()
-                .to_str()
-                .and_then(|s| Uuid::parse_str(s).ok())
-            else {
-                continue; // not a persona dir; never guess an id from a non-uuid name
-            };
+        for persona in owners {
             let before = self.observed.contains_key(&persona);
             self.rehydrate(persona);
             if !before && self.observed.contains_key(&persona) {

@@ -261,7 +261,7 @@
     fn a_think_only_cut_moves_nothing_and_a_mid_answer_cut_grows_only_its_channel() {
         let reg = WorkingSetRegistry::default();
         // Her landed shape: ~6.4k-token turns, mostly think.
-        for t in 0..MIN_NEED_TURNS as u64 {
+        for t in 0..3u64 {
             reg.record_emission_in_memory(p(9), 6_448, 6_000, EmissionStop::Landed, t);
         }
         let landed = reg.need_of(p(9)).expect("need measured");
@@ -271,7 +271,14 @@
         for t in 0..(NEED_SAMPLES as u64 + 4) {
             reg.record_emission_in_memory(p(9), cap, cap, EmissionStop::classify(true, false), 100 + t);
             let need = reg.need_of(p(9)).expect("need measured");
-            assert_eq!(need, landed, "a think-only cut is not a sample: the need does not move (turn {t})");
+            assert_eq!(
+                (need.reasoning, need.answer, need.turns),
+                (landed.reasoning, landed.answer, landed.turns),
+                "a think-only cut is not a sample: the need does not move (turn {t})"
+            );
+            if t >= 1 {
+                assert!(need.reasoning_at_least.is_some(), "the cuts are kept as her lower bound (turn {t})");
+            }
             let e = reg.emission_of(p(9)).expect("recorded");
             assert_eq!(e.last_tokens, cap, "the peak side takes the cut verbatim");
             assert!(e.peak_tokens <= peak_landed.max(cap), "never output × 2: peak {}", e.peak_tokens);
@@ -294,18 +301,18 @@
     #[test]
     fn a_measured_peak_survives_a_restart_so_a_reboot_is_a_pause_not_a_demotion() {
         let home = tempfile::tempdir().expect("tmp home");
-        // HOME is absent at the shared policy seam; native discovery points at
-        // this thread's isolated home. Never mutate the parallel suite's env.
-        let _native = crate::paths::NativeHomeOverride::install(home.path());
+        // The registry persists through its disk class; this test's class is its own root, never
+        // the shared home (no global is touched, so the parallel suite stays independent).
+        let class = || continuum_kernel::system_resources::disk_reporters::TrackedDir::new("personas", home.path().join("personas")).writer();
 
         let persona = p(9);
-        let before = WorkingSetRegistry::new();
+        let before = WorkingSetRegistry::with_store(class());
         before.record(persona, 24_126, 1_000);
         let _ = before.record_emission(persona, 321, 200, EmissionStop::Landed, 1_001);
         assert_eq!(before.ceiling(), Some(24_126));
 
         // A fresh process: new registry, nothing in memory.
-        let after = WorkingSetRegistry::new();
+        let after = WorkingSetRegistry::with_store(class());
         assert_eq!(
             after.ceiling(),
             None,
@@ -324,36 +331,32 @@
             Some((1, 200, 121)),
             "the channel split rides the same file: her reasoning need is not re-earned per boot"
         );
-        assert!(home
-            .path()
-            .join(".continuum/personas")
-            .join(persona.to_string())
-            .join("working-set.json")
-            .is_file());
+        assert!(home.path().join("personas").join(persona.to_string()).join("working-set.json").is_file(), "written under the class, in her own directory");
     }
 
     // what this catches (the M5, 2026-09-20 20:58–21:14Z): an allowance sized in time alone
     // (20 s × 12 tok/s = 240) cannot hold a thinking pass; Qwen3.8 ended two turns inside
     // the reasoning channel (`think_only reasoning_len=2730`, `2112`). The need is the p90
-    // of recent turns per channel with 5/4 headroom; it is UNKNOWN (None) before three
-    // turns and for a legacy emission file; a Length stop with no answer is not a need
+    // of recent turns per channel, as measured (no headroom: the claim grows the grant); it
+    // is UNKNOWN (None) before a turn lands and for a legacy emission file; a Length stop with no answer is not a need
     // sample; the ring keeps the last 16 so one loud turn ages out.
     #[test]
-    fn the_reasoning_need_is_a_p90_with_headroom_and_unknown_before_it_is_measured() {
+    fn the_reasoning_need_is_a_p90_as_measured_and_unknown_before_it_is_measured() {
         let reg = WorkingSetRegistry::new();
         assert_eq!(reg.need_of(p(3)), None, "never measured: unknown, not zero");
         reg.record_emission_in_memory(p(3), 1_000, 700, EmissionStop::Landed, 1);
+        let one = reg.need_of(p(3)).expect("one landed turn is measured");
+        assert_eq!((one.reasoning, one.answer, one.turns), (700, 300, 1), "one sample's p90 is that sample");
         reg.record_emission_in_memory(p(3), 1_200, 900, EmissionStop::Landed, 2);
-        assert_eq!(reg.need_of(p(3)), None, "two turns are not yet a need");
         reg.record_emission_in_memory(p(3), 900, 600, EmissionStop::Landed, 3);
-        let need = reg.need_of(p(3)).expect("three turns measure a need");
-        assert_eq!((need.reasoning, need.answer, need.turns), (1_125, 375, 3), "p90 of 3 is the max (900, 300) × 5/4");
-        assert_eq!(need.total(), 1_500);
+        let need = reg.need_of(p(3)).expect("measured");
+        assert_eq!((need.reasoning, need.answer, need.turns), (900, 300, 3), "p90 of 3 is the max");
+        assert_eq!(need.total(), 1_200);
         // A Length stop with NO answer cut the think: the peak takes it, the need ring
         // does not (Cormac's review of #4406 — doubling it here was the ratchet).
         reg.record_emission_in_memory(p(3), 768, 768, EmissionStop::CutMidThought, 4);
         let need = reg.need_of(p(3)).expect("measured");
-        assert_eq!((need.reasoning, need.turns), (1_125, 3), "a think-only cut is not a need sample");
+        assert_eq!((need.reasoning, need.turns), (900, 3), "a think-only cut is not a need sample");
         // A Length stop WITH an answer cut the answer: that channel records at double.
         reg.record_emission_in_memory(p(3), 1_000, 600, EmissionStop::CutMidAnswer, 5);
         assert_eq!(reg.emission_of(p(3)).map(|e| e.answer_samples[3]), Some(800));
@@ -362,16 +365,16 @@
             reg.record_emission_in_memory(p(3), 400, 300, EmissionStop::Landed, t);
         }
         let need = reg.need_of(p(3)).expect("measured");
-        assert_eq!((need.reasoning, need.answer, need.turns), (375, 125, 16));
+        assert_eq!((need.reasoning, need.answer, need.turns), (300, 100, 16));
         // A legacy emission.json (no rings) reads as no need — never a zero need.
         let legacy: PersonaEmission =
             serde_json::from_str(r#"{"peak_tokens":2500,"last_tokens":2500,"last_seen_ms":1,"turns":9}"#).unwrap();
         assert_eq!(legacy.need_turns, 0);
         reg.emitted.insert(p(4), legacy);
         assert_eq!(reg.need_of(p(4)), None);
-        assert_eq!(p90_with_headroom(&[]), 0);
-        assert_eq!(p90_with_headroom(&[100; 10]), 125);
-        assert_eq!(p90_with_headroom(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), 12, "the 9th of ten × 5/4, rounded up");
+        assert_eq!(p90(&[]), 0);
+        assert_eq!(p90(&[100; 10]), 100);
+        assert_eq!(p90(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), 9, "the 9th of ten");
     }
 
     // what this catches: an invented number standing in for missing data. Before any
@@ -429,7 +432,7 @@
     #[test]
     fn a_think_stopped_at_the_budget_never_contracts_the_allowance() {
         let reg = WorkingSetRegistry::default();
-        for t in 0..MIN_NEED_TURNS as u64 {
+        for t in 0..3u64 {
             reg.record_emission_in_memory(p(6), 6_448, 6_000, EmissionStop::Landed, t);
         }
         let landed = reg.need_of(p(6)).expect("need measured");
@@ -455,7 +458,7 @@
         // step shows only per ring turnover; ten turnovers make the geometric shrink
         // toward 20 × answer unmistakable.
         let reg2 = WorkingSetRegistry::default();
-        for t in 0..MIN_NEED_TURNS as u64 {
+        for t in 0..3u64 {
             reg2.record_emission_in_memory(p(5), 6_448, 6_000, EmissionStop::Landed, t);
         }
         let mut a2 = reg2.need_of(p(5)).expect("need measured").total();
@@ -518,4 +521,71 @@ fn every_completed_generation_maps_to_exactly_one_counted_stop() {
         assert_eq!(stop, policy, "policy class for {:?}", (cut, answered, reasoned, reasoning));
         assert_eq!(stop.counted(answered, reasoned), counter, "counted class for {:?}", (cut, answered, reasoned, reasoning));
     }
+}
+
+// what this catches (Benchy on the M5, 2026-10-31): a cut think recorded as nothing, so a
+// mind whose thinks grew past her grant kept a need read only from the short turns that
+// landed (520 while she thought 597+), and the grant never grew. A cut is a lower bound: two
+// cuts in her top tenth raise `reasoning_at_least` past them, and the landed need, the one
+// the grant reads today, does not move.
+#[test]
+fn a_cut_think_raises_the_lower_bound_and_never_the_landed_need() {
+    let reg = WorkingSetRegistry::default();
+    for t in 0..10u64 {
+        reg.record_emission_in_memory(p(7), 416 + 60, 416, EmissionStop::Landed, t);
+    }
+    let landed = reg.need_of(p(7)).expect("need measured");
+    assert_eq!((landed.reasoning, landed.reasoning_at_least), (416, None), "an uncut mind: no bound");
+    reg.record_emission_in_memory(p(7), 597, 597, EmissionStop::CutMidThought, 10);
+    let one = reg.need_of(p(7)).expect("need measured");
+    assert_eq!(one.reasoning_at_least, None, "one cut in eleven is not her top tenth");
+    reg.record_emission_in_memory(p(7), 610, 610, EmissionStop::CutMidThought, 11);
+    let two = reg.need_of(p(7)).expect("need measured");
+    assert_eq!(two.reasoning_at_least, Some(610), "past the largest cut: at least 610");
+    assert_eq!((two.reasoning, two.answer), (landed.reasoning, landed.answer), "the landed need is unchanged");
+    // A cut ages out with her turns, so the bound can fall again.
+    for t in 12..(12 + NEED_SAMPLES as u64) {
+        reg.record_emission_in_memory(p(7), 476, 416, EmissionStop::Landed, t);
+    }
+    assert_eq!(reg.need_of(p(7)).expect("need measured").reasoning_at_least, None, "old cuts age out");
+    // A file written before cuts were kept loads with none, which is what it recorded.
+    let legacy: PersonaEmission = serde_json::from_str(
+        r#"{"peak_tokens":1,"last_tokens":1,"last_seen_ms":1,"turns":1}"#,
+    )
+    .expect("an emission without the cut ring");
+    assert_eq!(legacy.cut_count, 0);
+}
+
+// what this catches: the 8k → 184k compounding (`EmissionStop::ThinkBudgetHit`) coming back
+// through the bound. A thinking model fills whatever it is given, so every turn is cut at its
+// grant. Composed with the reply side's rule (want = max(need, min(bound, time term)), only
+// when a rate is measured), the grant rises to the time term and stays there: never past it.
+#[test]
+fn a_mind_that_fills_every_grant_stops_at_the_time_term() {
+    let reg = WorkingSetRegistry::default();
+    for t in 0..3u64 {
+        reg.record_emission_in_memory(p(8), 500, 400, EmissionStop::Landed, t);
+    }
+    let time_term = 2_000u32;
+    let mut grant = 0;
+    for t in 0..(4 * NEED_SAMPLES as u64) {
+        let need = reg.need_of(p(8)).expect("need measured");
+        let bound = need.reasoning_at_least.map_or(0, |at_least| at_least.saturating_add(need.answer));
+        grant = need.total().max(bound.min(time_term));
+        assert!(grant <= time_term, "turn {t}: grant {grant} past the time term");
+        reg.record_emission_in_memory(p(8), grant, grant, EmissionStop::CutMidThought, 10 + t);
+    }
+    assert_eq!(grant, time_term, "the upward test reaches the measured ceiling");
+}
+
+#[test]
+fn the_product_limit_p90_is_the_landed_p90_without_cuts_and_only_rises_with_them() {
+    let landed: Vec<u32> = (1..=10).map(|i| i * 100).collect();
+    assert_eq!(need::reasoning_at_least(&landed, &[], 0), None, "no cut: no bound");
+    // A cut BELOW the landed p90 moves its mass to longer turns: it may raise the estimate.
+    let low = need::reasoning_at_least(&landed, &[150, 160], 0).expect("a positive estimate");
+    assert!(low >= p90(&landed), "{low} below the landed p90");
+    // Cuts holding the top tenth: the p90 is past every landed think.
+    assert_eq!(need::reasoning_at_least(&landed, &[1_100, 1_200], 0), Some(1_200));
+    assert_eq!(need::reasoning_at_least(&landed, &[1_100, 1_200], 1_200), None, "only where higher");
 }
