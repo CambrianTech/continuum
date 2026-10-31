@@ -9,6 +9,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// The sequence number the next staging file tries first (tests plant a crash's leftovers there).
+#[cfg(test)]
+pub(super) fn peek_seq() -> u64 {
+    SEQ.load(Ordering::Relaxed)
+}
+
 /// A staging file in a directory, exclusively created. Write into [`Staging::file`], then place it
 /// with [`Staging::publish_new`] or [`Staging::replace`]; dropped unplaced, it is removed.
 pub struct Staging {
@@ -17,11 +23,20 @@ pub struct Staging {
 }
 
 impl Staging {
-    /// A new staging file in `dir` (which exists, on the destination's filesystem).
+    /// A new staging file in `dir` (which exists, on the destination's filesystem). A name left by
+    /// a crashed writer is skipped, never refused: the sequence restarts in every process and a
+    /// container's core is PID 1 every boot, so `.1-0.staging` from the last life would otherwise
+    /// fail this life's first write (Cormac on #5651). Each attempt takes a fresh sequence number,
+    /// so the walk ends at the first name no file holds.
     pub fn new_in(dir: &Path) -> io::Result<Self> {
-        let path = dir.join(format!(".{}-{}.staging", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
-        let file = OpenOptions::new().write(true).create_new(true).open(&path)?;
-        Ok(Staging { path, file })
+        loop {
+            let path = dir.join(format!(".{}-{}.staging", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => return Ok(Staging { path, file }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// The file to write the content into.

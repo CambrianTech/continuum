@@ -83,3 +83,20 @@ fn a_held_lock_refuses_a_second_holder() {
     drop(held);
     lock(&path, false).expect("free again");
 }
+
+// what this catches: a staging name left by a crashed writer with this PID (a container's core is
+// PID 1 every boot, and the sequence restarts) refusing the next life's first write.
+#[test]
+fn a_leftover_staging_name_is_skipped_not_refused() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Plant the names the next few staging files would take, as a crash would leave them.
+    let next = super::staging::peek_seq();
+    for seq in next..next + 3 {
+        std::fs::write(dir.path().join(format!(".{}-{seq}.staging", std::process::id())), b"crash").expect("plant");
+    }
+    let mut staging = Staging::new_in(dir.path()).expect("a leftover name is skipped");
+    staging.file().write_all(b"fresh").expect("write");
+    staging.replace(&dir.path().join("out")).expect("place");
+    assert_eq!(std::fs::read(dir.path().join("out")).expect("read"), b"fresh");
+}
