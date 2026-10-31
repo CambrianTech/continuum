@@ -29,7 +29,7 @@ jobs:
       examples: ${{ steps.select.outputs.examples }}
     steps:
       - uses: actions/checkout@v4
-      - run: node --test tools/scripts/tests/ci-change-scope.test.cjs tools/scripts/tests/ci-cargo-freshness.test.cjs
+      - run: node --test tools/scripts/tests/ci-change-scope.test.cjs tools/scripts/tests/ci-cargo-freshness.test.cjs tools/scripts/tests/ci-windows-check.test.cjs
       - uses: actions/github-script@v7
         id: select
         with:
@@ -550,18 +550,51 @@ jobs:
         if: needs.changes.outputs.rust != 'false'
         run: cargo test --locked -p continuum-cli-lifecycle
 
-  # Preserve the required Windows context; neither child can silently disappear.
+  # Real native compilation for Rust changes, including canary PRs. Keep linking and
+  # custody execution in their existing contracts; this cache stores check artifacts.
+  windows-type-check:
+    name: Native MSVC type-check (headless lib + tests)
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
+    runs-on: windows-latest
+    # Cold-cache ceiling, not a claim that the warm <10-minute target is proven.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Resolve pinned toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: continuum-windows-check-v1
+          save-if: ${{ github.event_name != 'pull_request' }}
+          cache-workspace-crates: true
+      - name: Type-check native Windows libraries and test targets
+        shell: pwsh
+        run: ./tools/scripts/ci-windows-check.ps1
+
+  # Preserve the required Windows context; selected compilation cannot silently disappear.
   cargo-check-windows:
     name: cargo check windows-msvc (lib + tests)
-    needs: [windows-core-contract, windows-lifecycle-contract]
+    needs: [changes, windows-type-check, windows-core-contract, windows-lifecycle-contract]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require both Windows contracts
         env:
+          SELECT_RESULT: ${{ needs.changes.result }}
+          RUST_CHANGED: ${{ needs.changes.outputs.rust }}
+          CHECK_RESULT: ${{ needs.windows-type-check.result }}
           CORE_RESULT: ${{ needs.windows-core-contract.result }}
           LIFECYCLE_RESULT: ${{ needs.windows-lifecycle-contract.result }}
         run: |
           ok() { test "$1" = success || test "$1" = skipped; }  # skipped = a canary PR, by design
+          test "$SELECT_RESULT" = success
+          if [ "$RUST_CHANGED" = true ]; then test "$CHECK_RESULT" = success; else test "$RUST_CHANGED" = false; fi
           ok "$CORE_RESULT" && ok "$LIFECYCLE_RESULT"
