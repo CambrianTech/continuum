@@ -7,15 +7,19 @@
 //! the stale view is discarded.
 
 use serde::{Deserialize, Deserializer};
+use serde_json::value::RawValue;
 
 use super::ContextView;
 
 /// `context_view`'s deserializer: the view when it decodes, else none (and a probe saying why).
+/// The view is read as its exact source text first (`RawValue`), never as a `serde_json::Value`:
+/// a view's element ids are u128, which a `Value` cannot hold ("number out of range"), so a
+/// `Value` intermediate would refuse every valid view (Codex on #5659, executed test).
 pub(crate) fn or_new_epoch<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<ContextView>, D::Error> {
-    let Some(raw) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+    let Some(raw) = Option::<Box<RawValue>>::deserialize(deserializer)? else {
         return Ok(None);
     };
-    match serde_json::from_value::<ContextView>(raw) {
+    match serde_json::from_str::<ContextView>(raw.get()) {
         Ok(view) => Ok(Some(view)),
         Err(error) => {
             continuum_base::probe!(
