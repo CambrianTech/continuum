@@ -198,8 +198,8 @@ pub struct ServeOutcome {
     /// Time spent in `cognition.compose_for_turn` (the RAG flexbox
     /// composer + multi-source delivery). Holds the cognition mutex.
     pub compose_latency: LatencyAggregate,
-    /// Time spent in `persona::response::respond` (the cognition
-    /// cycle including the LLM call). Does NOT hold the cognition
+    /// Time spent in the turn's cognition cycle (including the LLM
+    /// call). Does NOT hold the cognition
     /// mutex — the substrate stays responsive while the model
     /// decodes. This is typically the dominant cost and the
     /// primary target of subsequent optimization slices.
