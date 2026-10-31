@@ -5,6 +5,10 @@ pub(crate) use super::test_support::*;
 use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
 use crate::cognition::engram::{Engram, EngramKind, EngramOrigin};
 
+/// The tests' observation budget: room for a few short engrams. The size is the test's
+/// choice; production derives it from the served window (`passes.rs`).
+const OBSERVATION_CHARS: usize = 4_096;
+
 // what this catches (#175 budget-at-assembly): the observation block is composed
 // WITHIN the char budget by dropping WHOLE trailing engrams — never truncating an
 // engram's text (which would malform the prompt). This is what stops a big cluster
@@ -77,7 +81,7 @@ async fn distill_invokes_adapter_and_preserves_provenance() {
         episodic(id3, "Headless core, many clients", &["node", "clients"]),
     ];
 
-    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()));
+    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), OBSERVATION_CHARS);
     let fact = distiller
         .distill(Some(Uuid::from_u128(99)), &sources)
         .await
@@ -110,7 +114,7 @@ async fn distill_invokes_adapter_and_preserves_provenance() {
 // ([[fallbacks-are-illegal-fail-loud]]).
 #[tokio::test]
 async fn distill_empty_cluster_fails_loud() {
-    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()));
+    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), OBSERVATION_CHARS);
     let err = distiller
         .distill(None, &[])
         .await
@@ -129,7 +133,7 @@ async fn historian_output_is_provenance_tagged_and_consolidator_is_not() {
         episodic(Uuid::from_u128(1), "tried the fence idiom again", &["act"]),
         episodic(Uuid::from_u128(2), "the fence parsed this time", &["act"]),
     ];
-    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()));
+    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), OBSERVATION_CHARS);
 
     let thought = distiller
         .distill_with(LENS_HISTORIAN, None, &sources)
@@ -160,7 +164,7 @@ async fn historian_output_is_provenance_tagged_and_consolidator_is_not() {
 #[tokio::test]
 async fn lens_system_prompt_reaches_the_adapter() {
     let sources = vec![episodic(Uuid::from_u128(7), "one memory", &["k"])];
-    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()));
+    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), OBSERVATION_CHARS);
 
     let historian = distiller
         .distill_with(LENS_HISTORIAN, None, &sources)
