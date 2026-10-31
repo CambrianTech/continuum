@@ -225,6 +225,29 @@
         assert!(headline.content.contains("40 claimable"), "{}", headline.content);
     }
 
+    // what this catches: settled history crowding out her live work (the M5, 2026-10-31: 840
+    // closed cards, 31,185 chars of her prompt, while her own results collapsed to handles).
+    // Live cards are delivered; merged and closed ones are one counted line naming work/list.
+    #[tokio::test]
+    async fn settled_cards_are_one_counted_history_line_not_cards() {
+        let mut cards = vec![
+            card("live open", CardState::Open, None),
+            card("live review", CardState::Review, None),
+        ];
+        for i in 0..5 {
+            cards.push(card(&format!("closed {i}"), CardState::Closed, None));
+        }
+        cards.push(card("merged", CardState::Merged, None));
+        let reader = Arc::new(StubReader::new(snapshot(cards)));
+        let delivery = RoomBoardSource::new(persona(), reader).deliver(&ctx()).await;
+        let titles: Vec<&str> = delivery.items.iter().filter(|i| i.key.starts_with("card:")).map(|i| i.content.as_str()).collect();
+        assert_eq!(titles.len(), 2, "only live cards are delivered as cards: {titles:?}");
+        assert!(titles.iter().all(|t| !t.contains("closed") && !t.contains("merged")), "{titles:?}");
+        let history = delivery.items.iter().find(|i| i.key == "history").expect("a history line counts the settled cards"); // expect: the board above holds six settled cards
+        assert_eq!(history.metadata["settled_count"], 6);
+        assert!(history.content.contains("work/list"), "{}", history.content);
+    }
+
     #[tokio::test]
     async fn whole_board_surfaces_with_owner_and_state() {
         let holder = airc_core::PeerId::new();

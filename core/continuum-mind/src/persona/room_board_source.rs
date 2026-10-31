@@ -1,5 +1,6 @@
 //! RoomBoardSource — grounds a persona in the CURRENT ROOM's whole work board
-//! (the kanban): every card, every owner, every column — read live from airc.
+//! (the kanban): every live card, every owner, every column — read live from airc; merged and
+//! closed cards are one counted history line (`work/list` shows each).
 //!
 //! ### Why this source exists (the Observer perceiving the board)
 //!
@@ -665,11 +666,29 @@ impl RoomBoardSource {
         let names = self.reader.peer_names(&owner_peers).await;
 
         // RELEVANCE ORDER, delivered whole. Her own holds first, then newest claimable
-        // (the same recency argument the available-work lead makes). Every card is
+        // (the same recency argument the available-work lead makes). Every LIVE card is
         // delivered: when the prompt view must shrink it collapses the oldest cards to
         // their pointers (measured 2026-08-17: 38 cards were 49.7% of a system prompt;
         // that is the allocation's problem to solve by level, not a count cap here).
-        let mut ordered: Vec<&airc_work::WorkCard> = board.cards.iter().collect();
+        // A merged or closed card carries no decision for her: it is history, one counted
+        // line, and `work/list` still shows each. On the M5 (2026-10-31) Benchy's board block
+        // was 31,185 chars of 840 closed cards, the room her own results then lacked (they
+        // collapsed to handles and she read them again: 133 exact re-reads in 885 acts).
+        let (history, live): (Vec<&airc_work::WorkCard>, Vec<&airc_work::WorkCard>) = board
+            .cards
+            .iter()
+            .partition(|card| matches!(card.state, airc_work::CardState::Merged | airc_work::CardState::Closed));
+        if !history.is_empty() {
+            items.push(
+                RagItem::whole(
+                    "history",
+                    format!("[board history] {} card(s) merged or closed in this room — work/list shows them", history.len()),
+                    json!({ "kind": "board-history", "settled_count": history.len() }),
+                )
+                .with_pointer(format!("[board history] {} merged/closed — work/list", history.len())),
+            );
+        }
+        let mut ordered: Vec<&airc_work::WorkCard> = live;
         ordered.sort_by_key(|c| {
             let mine_first = !(c.owner.map(|o| o.as_uuid()) == Some(self.persona_id));
             // Negate for newest-first without needing a reversed comparator.
