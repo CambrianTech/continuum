@@ -70,26 +70,42 @@ CONCURRENCY-STYLE-GUIDE.md, plan goal 9).
 | 27 | `airc_persona_conversation/polled.rs:16,684,210` | A 60 s catch-up per mind pages every room in series inside the pump's `select!`, delaying live frames | One durable gap feed per core |
 | 28 | `beat_outcome.rs:57,65`; `burst_fingerprint.rs:323-347`; `wake_select.rs:63-90` | A 15-240 s heartbeat rebuilds context to *detect* change by fingerprint | Wake on feed and board events |
 
+## The shape: minds submit at once, the engine batches (Joel: "You forced things into FIFO for no reason")
+
+llama-server runs continuous batching: every active slot rides the same forward pass. The live
+engine on the M5 shows what that is worth (203 generations, 6 h, 526bbe418, `delib.generate.cache`
+decode/prefill windows overlapped in time):
+
+| generations running together | decode tok/s per stream | aggregate | prefill tok/s per stream | aggregate |
+|---|---|---|---|---|
+| 1 | 11.5 (4 samples) | 11.5 | 360 | 360 |
+| 2 | 18.6 | ~37 | 261 | ~522 |
+| 3 | 14.9 | ~45 | 148 | ~443 |
+
+Decode batches: a third stream costs each about 20% and adds about 20% to the total. Prefill is
+compute-bound and stops gaining past two. So:
+
+- **No line in front of the engine.** A mind submits her generation the moment she is ready: no
+  lane permit, reserved lane, ticket ledger, adapter semaphore or per-mind gate around generation
+  (rows 1-5, 7, 9 are deleted, not reordered).
+- **Slots sized to the minds**, from measured memory (each seat's KV, recurrent state and
+  checkpoints, card 07484926), so every resident decodes at once. A mind's KV is pageable state, not
+  a slot property: paging off flash is ~1 s (restores measured 0.6-2.7 s), so no mind waits for
+  "her" slot; affinity only skips a restore.
+- **Priority is a weight, never a line:** who pages out under memory pressure, and batch share.
+- **Prefill is the scarce resource:** spent only on new tokens (a stable head, PR #5670; view
+  turnovers only when forced, PR #5666), and overlapped with her tool runs instead of colliding at
+  the turn boundary.
+
 ## Order of repair
 
-1. **The generation's admission becomes one scheduler** (rows 1-5, 7, 9; Codex, card 07484926):
-   - a generation is a job submitted with her priority;
-   - one dispatcher hands out a slot, then a lane, only when both can run;
-   - no reserved idle lane, no second FIFO, no permit across a tool or a wait;
-   - receipts: `slot_affinity.waited` p50 near 0, and lane grants by priority.
-2. **Her turn runs as tasks** (rows 10-16; Fable):
-   - independent reads joined;
-   - git sync spawned after the say;
-   - a directed message is an event between acts;
-   - the ambient permit deleted.
-3. **Shared stores and registries off the lock** (rows 8, 17-24):
-   - ArcSwap for the registries;
-   - a reader pool and a writer task per DB;
-   - per-key gates.
-4. **Ticks become events** (rows 25-28):
-   - save on change;
-   - plan on change;
-   - one gap feed.
+1. **Delete the line in front of the engine** (rows 1-5, 7, 9; Codex, card 07484926): generations
+   submit at once; slots = minds the measured memory holds; paging only under pressure. Receipts:
+   lane and slot waits near 0, all slots decoding, aggregate decode tok/s and acts/hour per resident.
+2. **Her turn runs as tasks** (rows 10-16; Fable): the ambient permit deleted (#5668), git sync after
+   the say (#5669), the next prefill during her tool run.
+3. **Shared stores and registries off the lock** (rows 8, 17-24).
+4. **Ticks become events** (rows 25-28).
 
 Each slice lands with its probe read on the live node: lane wait, slot wait, the share of
 prefill tokens that are new, and acts/hour per resident. A source-hygiene ratchet follows the
