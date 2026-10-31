@@ -110,6 +110,34 @@ impl ResidentTaskSink {
     pub fn new(registry: Arc<PersonaWorkspaceRegistry>) -> Self {
         Self(registry)
     }
+
+    /// Await the same checkpoint owner used for incoming ends. The caller keeps
+    /// this persistence result separate from the generation that produced the
+    /// receipt: failure here cannot turn a served generation into an inference fault.
+    pub async fn record_rendered(
+        &self,
+        receipt: crate::cognition::render_receipt::RenderReceipt,
+    ) -> Result<Option<VolatileReceipt>, TaskSinkError> {
+        self.commit(move |registry| registry.record_rendered_tasks(&receipt)).await
+    }
+
+    async fn commit<R: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&PersonaWorkspaceRegistry) -> Result<R, TaskConsumptionError>
+            + Send + 'static,
+    ) -> Result<R, TaskSinkError> {
+        let registry = Arc::clone(&self.0);
+        // Carry the existing test filesystem scope onto the blocking worker.
+        #[cfg(test)]
+        let test_home = crate::paths::NativeHomeOverride::current();
+        Ok(tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            let _native = test_home
+                .as_deref()
+                .map(crate::paths::NativeHomeOverride::install);
+            operation(&registry)
+        }).await??)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -125,19 +153,8 @@ impl continuum_kernel::runtime::tasks::TaskOwnerSink for ResidentTaskSink {
     type Error = TaskSinkError;
 
     async fn consume(&self, owner: Uuid, ends: &[(Uuid, TaskEnd)]) -> Result<(), Self::Error> {
-        let registry = Arc::clone(&self.0);
         let ends = ends.to_vec();
-        // Carry the existing test filesystem scope onto the blocking worker.
-        #[cfg(test)]
-        let test_home = crate::paths::NativeHomeOverride::current();
-        tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
-            let _native = test_home
-                .as_deref()
-                .map(crate::paths::NativeHomeOverride::install);
-            registry.consume_task_ends(owner, ends)
-        })
-        .await??;
+        self.commit(move |registry| registry.consume_task_ends(owner, ends)).await?;
         Ok(())
     }
 }

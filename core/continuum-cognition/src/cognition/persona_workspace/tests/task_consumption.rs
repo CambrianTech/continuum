@@ -9,7 +9,8 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
     use continuum_context::view::View;
     let home = tempfile::tempdir()?;
     let _native = crate::paths::NativeHomeOverride::install(home.path());
-    let registry = PersonaWorkspaceRegistry::new();
+    let registry = Arc::new(PersonaWorkspaceRegistry::new());
+    let sink = ResidentTaskSink::new(Arc::clone(&registry));
     let owner = Uuid::new_v4();
     registry.register_from_cfg(cfg_for(owner))?;
     let task = Uuid::new_v4();
@@ -26,18 +27,27 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
     };
     let exact = receipt.clone();
     for item in &mut receipt.view.items { item.element = None; }
-    assert!(registry.record_rendered_tasks(&receipt)?.is_none());
+    assert!(sink.record_rendered(receipt).await?.is_none());
     receipt = exact.clone();
     for item in &mut receipt.view.items { item.level = continuum_context::level::Level::Folded; }
-    assert!(registry.record_rendered_tasks(&receipt)?.is_none());
+    assert!(sink.record_rendered(receipt).await?.is_none());
     receipt = exact.clone();
     for item in &mut receipt.view.items { item.retired = true; }
-    assert!(registry.record_rendered_tasks(&receipt)?.is_none());
+    assert!(sink.record_rendered(receipt).await?.is_none());
     assert_eq!(memory.pending_task_wakes(), vec![task]);
-    assert!(registry.record_rendered_tasks(&exact)?.is_some());
+    let obstruction = volatile_path(owner)?.with_extension("json.tmp");
+    std::fs::create_dir(&obstruction)?;
+    assert!(matches!(sink.record_rendered(exact.clone()).await,
+        Err(TaskSinkError::Consumption(TaskConsumptionError::Checkpoint(_)))));
+    assert_eq!(memory.pending_task_wakes(), vec![task]);
+    let before_retry = WorkingMemory::new(8);
+    before_retry.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
+    assert_eq!(before_retry.pending_task_wakes(), vec![task]);
+    std::fs::remove_dir(&obstruction)?;
+    assert!(sink.record_rendered(exact.clone()).await?.is_some());
     assert!(memory.pending_task_wakes().is_empty());
     let checkpoint = std::fs::read(volatile_path(owner)?)?;
-    assert!(registry.record_rendered_tasks(&exact)?.is_none());
+    assert!(sink.record_rendered(exact).await?.is_none());
     assert_eq!(std::fs::read(volatile_path(owner)?)?, checkpoint);
     assert!(source.items().is_empty(), "a consumed end must not leave a standing task banner");
     let restored = WorkingMemory::new(8);
