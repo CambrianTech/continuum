@@ -650,7 +650,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if generational {
             variants.push(("append-tail + generational", append::Options { outline: outline::Mode::Whole, generational: true, paged: false, young_acts: None }));
-            for (label, k) in [("append-tail + LSM young 2 acts", 2), ("append-tail + LSM young 4 acts", 4), ("append-tail + LSM young 8 acts", 8)] {
+            for (label, k) in [("append-tail + LSM young 1 act", 1), ("append-tail + LSM young 2 acts", 2), ("append-tail + LSM young 4 acts", 4), ("append-tail + LSM young 8 acts", 8), ("append-tail + fold only when full (young = all the room)", usize::MAX)] {
                 variants.push((label, append::Options { outline: outline::Mode::Whole, generational: true, paged: false, young_acts: Some(k) }));
             }
             variants.push(("append-tail + generational + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: true, paged: false, young_acts: None }));
