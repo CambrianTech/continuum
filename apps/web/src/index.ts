@@ -609,9 +609,6 @@ async function main(): Promise<void> {
   ];
   // Liveness re-polls: right after a core reboot the roster is empty while
   // citizens respawn — a one-shot seed would freeze that emptiness forever.
-  // NOTE: `persona/roster` is the CANONICAL name — the auth gate does not yet
-  // resolve aliases (persona/list bounces off the Owner wildcard; core fix
-  // queued), so the canonical verb is load-bearing here.
   const seedDirectory = async (): Promise<void> => {
     // THE panel is global scope (Joel, 2026-08-31: "who all exists in this
     // continuum and who is online — any activity"). presence/directory is the

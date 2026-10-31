@@ -9,10 +9,6 @@ pub(super) fn register_inference_modules(runtime: &Arc<Runtime>) {
         crate::resource_broker::ResourceBrokerModule::new(),
     ));
 
-    // `inference/capacity` is now a stateless self-routing command
-    // (`commands/inference/capacity.rs`) — same single-source-of-truth RAM
-    // formula (issue #887), no module shell needed. See the typed registry.
-
     // InferenceHandleModule — the `ai/inference/{open,generate,close,inspect}`
     // lane command surface, routed through the SAME `InferenceCoordinator`
     // the InferenceCoordinatorModule stood up + registered with the broker.

@@ -416,8 +416,9 @@ but the constraints he stated are inferable:
   (realtime / interactive / background / sentinel) but not yet a
   formal field on persona records or on requests. Lands when #109
   starts.
-- **Per-modality capacity reporting.** `inference/capacity` returns
-  one number today (LLM slots). The full `ai/capacity` surface that
+- **Per-modality capacity reporting.** The fixed RAM-tier
+  `inference/capacity` count is deleted; LLM sequence capacity is the
+  engine's measured contract (#5188). The full `ai/capacity` surface that
   reports vision/audio/embedding/etc. caps separately is part of
   the namespace consolidation (#106).
 - **Cross-grid persona projection.** How "Paige on local Mac" maps
