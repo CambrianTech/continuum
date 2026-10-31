@@ -12,7 +12,7 @@ use ts_rs::TS;
 
 use crate::ai::types::TextGenerationResponse;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
-use crate::genome::gym_grader::test_grade;
+use crate::genome::gym_grader::{grade, Grade, GradeStage};
 use crate::ai::provenance::{GenerationOutcome, GenerationReceipt};
 use crate::inference::llama_server::PROVIDER_ID;
 use crate::sdk_codegen::CommandError;
@@ -21,14 +21,9 @@ pub mod progress;
 pub use progress::{subscribe_teach_progress, TeachProgress};
 use progress::{emit_teach_milestone, emit_teach_progress};
 
-/// How many fix attempts a single task gets before it's dropped as unsolved, when
-/// the caller doesn't set `max_fix_iters`. The first generation + this many fixes.
-/// One place decides the default — one place decides how many fixes a lesson gets, command or loop.
-pub const DEFAULT_MAX_FIX_ITERS: u32 = 4;
-
 /// Teacher decoding temperature default — low, because we want correct code, and a
 /// fix turn should converge on the error, not wander. `pub(crate)` for the same
-/// single-source reason as [`DEFAULT_MAX_FIX_ITERS`].
+/// single-source reason as the rest of the teacher's defaults.
 pub const DEFAULT_TEMPERATURE: f32 = 0.2;
 
 /// One lesson the teacher works to green: what is asked, and the test that proves an
@@ -185,9 +180,59 @@ pub struct RemediationCorpus {
     pub with_correction: usize,
 }
 
+/// Whether a task's next attempt is still earning its turn: observed grader progress, not a proof
+/// that the teacher converges (Codex and Fable on card a4bbae0a). An attempt continues only if its
+/// failure set has not been seen on this task before and it either improves the best so far, by
+/// [`level`], or is the single sideways step allowed at that best level. A failure repeated, a
+/// regression, a second sideways step, or a grade the grader refused ends the task, with the
+/// reason. It always ends: the level can rise only a finite number of times (fewer compile errors,
+/// then a later failing test line), and each level allows one sideways step.
+#[derive(Default)]
+struct AttemptProgress {
+    best: Option<(u8, u8, i64)>,
+    sideways_spent: bool,
+    seen: std::collections::HashSet<std::collections::BTreeSet<String>>,
+}
+
+/// How far a failed attempt got, ordered: any run failure beats any compile failure; within a
+/// compile failure, getting past the parser beats fewer errors (a syntax error carries no code,
+/// rustc's later passes do, and fixing one syntax error can expose three type errors, which is
+/// progress, not a regression: Codex on card a4bbae0a); then fewer errors; and a later failing test
+/// line beats an earlier one. `None` for a grade the grader refused, which says nothing about the
+/// candidate.
+fn level(grade: &Grade) -> Option<(u8, u8, i64)> {
+    match grade.stage {
+        GradeStage::Refused | GradeStage::Pass => None,
+        GradeStage::Compile => {
+            let past_parser = grade.failures.iter().all(|f| f.starts_with('E'));
+            Some((0, u8::from(past_parser), -(grade.failures.len() as i64)))
+        }
+        GradeStage::Run => Some((1, 0, grade.test_line.map_or(0, i64::from))), // map_or: a panic in the solution, before any test line passed
+    }
+}
+
+impl AttemptProgress {
+    fn admit(&mut self, grade: &Grade) -> Result<(), &'static str> {
+        let level = level(grade).ok_or("the grader refused to grade it")?;
+        if !self.seen.insert(grade.failures.clone()) {
+            return Err("the same failure again: no progress");
+        }
+        match self.best {
+            None => self.best = Some(level),
+            Some(best) if level > best => {
+                self.best = Some(level);
+                self.sideways_spent = false;
+            }
+            Some(best) if level == best && !self.sideways_spent => self.sideways_spent = true,
+            Some(_) => return Err("no progress past its best attempt"),
+        }
+        Ok(())
+    }
+}
+
 /// **The curriculum synthesizer** (remediation mode). For each test-graded task, a
 /// teacher model writes a solution, the gym grader compiles+runs it, the REAL error
-/// feeds back, and it loops to green within `max_fix_iters` — only test-PASSING
+/// feeds back, and it loops while the grader shows progress ([`AttemptProgress`]) — only test-PASSING
 /// trajectories become corpus. The write→error→fix→pass ordering IS the lesson (the
 /// self-verify-and-correct reflex being taught).
 ///
@@ -209,7 +254,7 @@ pub async fn synthesize_remediation_with_adapter(
     tasks: &[TeachTask],
     teacher_model: &str,
     temperature: f32,
-    max_fix_iters: u32,
+    max_fix_iters: Option<u32>,
     adapter: &std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
     cancellation: Option<&tokio::sync::watch::Receiver<bool>>,
 ) -> Result<RemediationCorpus, CommandError> {
@@ -251,13 +296,15 @@ pub async fn synthesize_remediation_with_adapter(
         let mut last_error: Option<String> = None;
         let mut solved = false;
 
-        // First generation + up to `max_fix_iters` corrections. Readiness is an EVENT
-        // (the caller's lane acquisition waits on the serving watch — a push, not a poll), so
+        // Attempts run while the grader shows progress (observed grader progress, never a count:
+        // [`AttemptProgress`]); a caller's `max_fix_iters` is an extra cap it chose. Readiness is an
+        // EVENT (the caller's lane acquisition waits on the serving watch — a push, not a poll), so
         // the generation runs against a lane that IS up; a dead lane surfaces as an adapter
         // error (a push from the transport), not an indefinite hang. No wall-clock timeout
         // — a timeout is a guess about health, and guessing is the smell we're removing.
         // [[command-async-shape-prefer-stream-never-block]]
-        for _ in 0..=max_fix_iters {
+        let mut progress = AttemptProgress::default();
+        loop {
             if cancellation.is_some_and(|cancel| *cancel.borrow()) {
                 return Err(CommandError::Internal(
                     "teacher batch cancelled between attempts".into(),
@@ -278,19 +325,27 @@ pub async fn synthesize_remediation_with_adapter(
             attempts += 1;
             trajectory.push(ChatMessage::text("assistant", &answer));
 
-            let (passed, grade) = test_grade(&answer, lang, test).await;
-            if passed {
+            let graded = grade(&answer, lang, test).await;
+            if graded.passed() {
                 solved = true;
                 break;
             }
-            last_error = Some(grade.clone());
+            if let Err(stop) = progress.admit(&graded) {
+                last_error = Some(format!("stopped: {stop}\n{}", graded.text));
+                break;
+            }
+            last_error = Some(graded.text.clone());
+            if max_fix_iters.is_some_and(|cap| attempts > cap) {
+                break;
+            }
             // Feed the REAL error back as the next turn — this is the reflex being
             // taught: read the actual compiler/test output, then correct.
             trajectory.push(ChatMessage::text(
                 "user",
                 format!(
-                    "Your solution failed:\n{grade}\n\nRead the error and return the COMPLETE \
-                     corrected solution in a ```rust block."
+                    "Your solution failed:\n{}\n\nRead the error and return the COMPLETE \
+                     corrected solution in a ```rust block.",
+                    graded.text
                 ),
             ));
         }

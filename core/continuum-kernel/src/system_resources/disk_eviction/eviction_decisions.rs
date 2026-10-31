@@ -94,6 +94,13 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
              like cargo-target, if pressure ever needs more than three",
         ),
         (
+            "progress",
+            "a4bbae0a: run ledgers — one small JSON row per detached run (teach, eval). A run \
+             in flight is never evicted (its status poller reads it); a finished run's row is \
+             its only durable result. Owner when built: an age-based sweep of FINISHED rows \
+             (complete:true) past their reader's retention, skipping any run still in flight",
+        ),
+        (
             "moe-probe",
             "a5d4c876/#155: age-based sweep — every run is a re-creatable measurement \
              (expert-activation traces, coverage curves); the K3 predictor memories hold \

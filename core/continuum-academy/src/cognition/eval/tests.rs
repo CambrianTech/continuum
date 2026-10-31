@@ -861,7 +861,7 @@
             ..Default::default()
         }];
         let remediation =
-            synthesize_remediation_with_lane(&tasks, "teacher", 0.0, 1, refused()).await;
+            synthesize_remediation_with_lane(&tasks, "teacher", 0.0, Some(1), refused()).await;
         assert!(
             matches!(remediation, Err(CommandError::Internal(ref message)) if message == "lane refused")
         );

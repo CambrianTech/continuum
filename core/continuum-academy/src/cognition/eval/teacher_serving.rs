@@ -13,7 +13,7 @@ pub struct TeacherBatchRequest {
     pub tasks: Vec<EvalTask>,
     pub teacher_model: String,
     pub temperature: f32,
-    pub max_fix_iters: u32,
+    pub max_fix_iters: Option<u32>,
 }
 
 /// The serving owner's exclusive teacher window: only a corpus comes back.
