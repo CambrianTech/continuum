@@ -271,7 +271,8 @@ impl ToolSurface {
     }
 
     /// The verbs an activity declares (a command name, or a subtree `code/**`), with the
-    /// discovery pair and her own mind's verbs beside them: a room's recipe is the rule of
+    /// discovery pair and her own mind's verbs beside them (`focus/`, and `tool/output`, the
+    /// verb her view names to reopen a folded result): a room's recipe is the rule of
     /// that room, never of her mind (Kimi, 2026-10-05: "help works; nothing to invoke
     /// against"). `None` when it declares nothing, or nothing that is a native verb here.
     fn declared(&self, declared: &[String]) -> Option<Offer> {
@@ -286,7 +287,7 @@ impl ToolSurface {
             .filter(|(name, _)| {
                 let named = declared.iter().any(|pattern| declares(pattern, name));
                 granted |= named;
-                named || name.starts_with("commands/") || name.starts_with("focus/")
+                named || ["commands/", "focus/", "tool/"].iter().any(|own| name.starts_with(own))
             })
             .map(|(_, spec)| spec.clone())
             .collect();
@@ -491,6 +492,7 @@ mod tests {
     const REGISTRY: &[&str] = &[
         "web/fetch", "code/read", "activity/archive", "work/review", "commands/help", "code/git/apply",
         "focus/continue", "code/edit", "codex/run", "work/submit", "commands/list", "code/write",
+        "tool/output",
     ];
 
     fn built(order: impl Iterator<Item = &'static str>) -> ToolSurface {
@@ -521,11 +523,13 @@ mod tests {
         sorted.sort_unstable();
         assert_eq!(names, sorted, "canonical order");
         assert!(names.contains(&"work/review"), "the reviewer verbs are part of work/**: {names:?}");
+        assert!(names.contains(&"tool/output"), "the verb her view names to reopen a fold is in her hands: {names:?}");
         assert!(!names.contains(&"code/git/apply") && !names.contains(&"activity/archive"), "{names:?}");
     }
 
     // what this catches: a subtree declaration (`code/**`) granting a sibling that only shares
-    // the prefix (`codex/run`), or a room rule stripping her discovery pair or focus verbs.
+    // the prefix (`codex/run`), or a room rule stripping her discovery pair, focus verbs or the
+    // reopen verb her view names for every folded result (the M5, 2026-10-31: 0 reopens).
     #[test]
     fn a_declared_subtree_selects_that_subtree_with_her_discovery_and_focus_verbs() {
         let surface = built(REGISTRY.iter().copied());
@@ -534,7 +538,7 @@ mod tests {
         let names: Vec<&str> = selected.specs.as_deref().into_iter().flatten().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
-            ["code/edit", "code/git/apply", "code/read", "code/write", "commands/help", "commands/list", "focus/continue"]
+            ["code/edit", "code/git/apply", "code/read", "code/write", "commands/help", "commands/list", "focus/continue", "tool/output"]
         );
         let unmatched = surface.select_granted(&["mail/send".to_string()], 87_296).expect("hands fit");
         assert_eq!(unmatched.reason, SurfaceReason::Hands, "a rule binding nothing offers her hands, never nothing");
