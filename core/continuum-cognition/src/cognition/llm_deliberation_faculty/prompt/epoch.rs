@@ -486,7 +486,6 @@ thread_local! {
 /// minimum, which `flex_allocate` serves first in priority order, and the lowest priority
 /// shares what is left. The newest end is never cut: a source keeps its newest items whole
 /// and collapses its oldest first, at the start only ([`View::turn_over`]).
-
 pub(in super::super) fn start_grants(
     claims: &[Claim],
     plan: &crate::cognition::rag_budget::FlexAllocation,
