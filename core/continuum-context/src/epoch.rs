@@ -86,6 +86,13 @@ impl<T: Block> Epoch<T> {
         let latest = self.events.iter().rposition(|e| e.source == source);
         if let Some(i) = latest {
             if self.events[i].text == text {
+                // The same bytes now stand for another occurrence or level (a short item whose
+                // pointer is itself, a re-read of unchanged content): the prompt is unchanged, so
+                // nothing appends, but what the block IS updates in place, or a receipt would
+                // report the old occurrence or level (Codex on #5639).
+                let event = &mut self.events[i];
+                event.element = element;
+                event.level = level;
                 return Observed::Unchanged;
             }
             self.superseded_chars += self.events[i].text.chars();
@@ -153,6 +160,22 @@ impl<T: Block> Epoch<T> {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: a receipt reporting stale evidence when identical bytes change meaning:
+    // a block first shown as a pointer whose whole is the same bytes, or a re-read of unchanged
+    // content by a new occurrence (Codex on #5639). The prompt must not grow; the metadata must.
+    #[test]
+    fn identical_bytes_with_a_new_level_or_occurrence_update_the_block_without_appending() {
+        use crate::cause::ElementId;
+        use crate::level::Level;
+        let mut e = Epoch::<String>::new(1, Vec::new());
+        let (first, second) = (ElementId::of(&[b"read 1"]), ElementId::of(&[b"read 2"]));
+        assert_eq!(e.observe(src("open-views/a.rs"), Some(first), Level::Pointer, "a.rs: 3 lines".into()), Observed::Appended { version: 0 });
+        assert_eq!(e.observe(src("open-views/a.rs"), Some(first), Level::Full, "a.rs: 3 lines".into()), Observed::Unchanged);
+        assert_eq!((e.events().len(), e.events()[0].level), (1, Level::Full), "same bytes, now its whole");
+        assert_eq!(e.observe(src("open-views/a.rs"), Some(second), Level::Full, "a.rs: 3 lines".into()), Observed::Unchanged);
+        assert_eq!((e.events().len(), e.events()[0].element), (1, Some(second)), "same bytes, now the newer occurrence");
+    }
+
     /// A test block: whole, standing for no particular occurrence.
     fn seen(e: &mut Epoch<String>, source: SourceId, text: String) -> Observed {
         e.observe(source, None, crate::level::Level::Full, text)
