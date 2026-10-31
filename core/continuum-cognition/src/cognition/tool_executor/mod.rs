@@ -28,6 +28,7 @@
 //! - When the time comes to port, add the impl module in the pattern
 //!   already laid here — no caller-code changes
 
+pub mod answer;
 pub mod command_executor;
 pub mod result_tap;
 pub mod spill;

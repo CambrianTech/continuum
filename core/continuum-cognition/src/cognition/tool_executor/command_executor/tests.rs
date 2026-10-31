@@ -75,7 +75,7 @@
             "work_review",
             "an explicit activity room is required".to_string(),
         );
-        assert!(out.contains("`work/review` failed"), "{out}");
+        assert!(!out.contains("failed:"), "the status line frames the refusal once, never a second frame: {out}");
         assert!(out.contains("`work/get`") && out.contains("`work/submit`"), "{out}");
         assert!(out.contains("activity room is required"), "{out}");
         let out = persona_tool_error(
@@ -252,10 +252,9 @@
             content.contains("nonexistent"),
             "surfaces the real reason: {content}"
         );
-        assert!(
-            !content.contains("refused"),
-            "no client-wrapper prefix leaks to the model: {content}"
-        );
+        // Line 1 is the one frame (answer.rs); the client wrapper's own text never reaches her.
+        assert!(content.starts_with("refused test/nonexistent()"), "one status line: {content}");
+        assert_eq!(content.matches("refused").count(), 1, "no client-wrapper prefix leaks to the model: {content}");
     }
 
     /// Concurrency + load proofs. Gated behind `stress-tests` per the test
