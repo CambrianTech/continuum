@@ -84,13 +84,13 @@
 
 use std::sync::Arc;
 
-use airc_work::{BoardSnapshot, CardState, LaneRecord, LaneState, Priority, WorkCard};
+use airc_work::{BoardSnapshot, CardState, LaneRecord, LaneState, Priority, WorkCard, WorkReviewOutcome};
 use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use continuum_positron::{
     KanbanCardState, KanbanCardView, KanbanHold, KanbanLaneState, KanbanLaneView, KanbanPriority,
-    KanbanPullRequest, KanbanViewState, RosterSlotView, StateBuilder, Substrate,
+    KanbanPullRequest, KanbanReviewOutcome, KanbanReviewView, KanbanViewState, RosterSlotView, StateBuilder, Substrate,
 };
 use serde::Deserialize;
 
@@ -161,6 +161,16 @@ fn map_card_state(state: CardState) -> KanbanCardState {
     }
 }
 
+/// Map airc's `WorkReviewOutcome` → positron's mirrored `KanbanReviewOutcome` by value.
+/// Exhaustive for the same reason as [`map_card_state`].
+fn map_review_outcome(outcome: WorkReviewOutcome) -> KanbanReviewOutcome {
+    match outcome {
+        WorkReviewOutcome::Passed => KanbanReviewOutcome::Passed,
+        WorkReviewOutcome::Failed => KanbanReviewOutcome::Failed,
+        WorkReviewOutcome::Unknown => KanbanReviewOutcome::Unknown,
+    }
+}
+
 /// Map airc's `LaneState` → positron's mirrored `KanbanLaneState` by value.
 /// Exhaustive for the same reason as [`map_card_state`].
 fn map_lane_state(state: LaneState) -> KanbanLaneState {
@@ -211,6 +221,9 @@ struct KanbanProjection {
     cards: Vec<WorkCard>,
     /// Last authoritative lanes read from the board fold.
     lanes: Vec<LaneRecord>,
+    /// Last authoritative accepted reviews, from the same board fold: each card shows the
+    /// latest review of its latest submission, finding included.
+    reviews: Vec<airc_work::WorkSubmissionReview>,
     /// Identity-resolution lookup table (from `presence:updated`). NOT
     /// stored on the view — the kanban view carries resolved creators /
     /// assignees, not the whole roster (a board renders cards, not a member
@@ -230,6 +243,7 @@ impl KanbanProjection {
             room_id,
             cards: Vec::new(),
             lanes: Vec::new(),
+            reviews: Vec::new(),
             roster: Vec::new(),
             reader,
         }
@@ -247,6 +261,7 @@ impl KanbanProjection {
             Ok(board) => {
                 self.cards = board.cards;
                 self.lanes = board.lanes;
+                self.reviews = board.submission_reviews;
                 self.store();
             }
             Err(err) => {
@@ -301,9 +316,30 @@ impl KanbanProjection {
                 repo: pr.repo.to_string(),
                 number: pr.number,
             }),
+            review: self.latest_review(card),
             created_at: card.created_at_ms,
             updated_at: card.updated_at_ms,
         }
+    }
+
+    /// The latest review of `card`'s latest submission, its reviewer resolved like a creator
+    /// and its finding as the reviewer wrote it.
+    fn latest_review(&self, card: &WorkCard) -> Option<KanbanReviewView> {
+        let submission = crate::cognition::card_holder::latest_submission(card)?.submission_id;
+        let review = self
+            .reviews
+            .iter()
+            .filter(|r| r.submission_id == submission)
+            .max_by_key(|r| r.reviewed_at_ms)?;
+        let reviewer_id = review.reviewer.as_uuid();
+        Some(KanbanReviewView {
+            submission_id: submission.as_uuid(),
+            reviewer_id,
+            reviewer_name: resolve_identity(&self.roster, reviewer_id).name,
+            outcome: map_review_outcome(review.outcome),
+            finding: review.evidence_text.clone(),
+            reviewed_at: review.reviewed_at_ms,
+        })
     }
 
     /// Project one airc `LaneRecord` into a renderer-shaped [`KanbanLaneView`].
@@ -510,480 +546,4 @@ pub fn spawn_node_kanban_projector(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ipc::positron_source::{test_presence_payload, test_roster_slot};
-    use airc_core::{PeerId, RoomId};
-    use airc_work::{LaneId, RepoId, WorkCardId};
-    use async_trait::async_trait;
-    use continuum_positron::{Provenance, SenderKind};
-    use serde_json::json;
-    use std::sync::Mutex;
-
-    /// A `WorkBoardReader` stub returning a canned board — lets the
-    /// projection be driven without a daemon (mirrors
-    /// `positron_wall_source::tests::StubReader`).
-    struct StubReader {
-        board: Mutex<BoardSnapshot>,
-        fail: Mutex<bool>,
-    }
-
-    impl StubReader {
-        fn new(cards: Vec<WorkCard>, lanes: Vec<LaneRecord>) -> Arc<Self> {
-            Arc::new(Self {
-                board: Mutex::new(board(cards, lanes)),
-                fail: Mutex::new(false),
-            })
-        }
-        /// Flip the reader into failure mode — the next `work_board()`
-        /// returns a terminal-shaped `AircError`.
-        fn set_fail(&self, fail: bool) {
-            *self.fail.lock().unwrap() = fail;
-        }
-    }
-
-    #[async_trait]
-    impl WorkBoardReader for StubReader {
-        async fn work_board(&self) -> Result<BoardSnapshot, airc_lib::AircError> {
-            if *self.fail.lock().unwrap() {
-                return Err(airc_lib::AircError::UnknownPeer(PeerId::new()));
-            }
-            Ok(self.board.lock().unwrap().clone())
-        }
-    }
-
-    /// An empty `BoardSnapshot` with the given cards/lanes — the other
-    /// (workspace/PR/hygiene) collections stay empty, since the kanban view
-    /// projects only cards + lanes.
-    fn board(cards: Vec<WorkCard>, lanes: Vec<LaneRecord>) -> BoardSnapshot {
-        BoardSnapshot {
-            submission_reviews: Vec::new(),
-            cards,
-            lanes,
-            workspaces: Vec::new(),
-            repo_tracking: Vec::new(),
-            pull_requests: Vec::new(),
-            manager_hats: Vec::new(),
-            agent_availability: Vec::new(),
-            hygiene_reports: Vec::new(),
-        }
-    }
-
-    fn repo() -> RepoId {
-        RepoId::new("CambrianTech/continuum").expect("valid repo id")
-    }
-
-    fn card(
-        room: RoomId,
-        creator: PeerId,
-        title: &str,
-        state: CardState,
-        owner: Option<PeerId>,
-    ) -> WorkCard {
-        let _ = room; // cards carry repo, not room_id; room comes from the projector
-        WorkCard {
-            card_id: WorkCardId::new(),
-            repo: repo(),
-            title: title.to_string(),
-            body: None,
-            priority: Priority::P2,
-            lane_id: None,
-            state,
-            owner,
-            claim_provenance: None,
-            claim_id: None,
-            claim_expires_at_ms: None,
-            last_heartbeat_at_ms: None,
-            pull_request: None,
-            created_by: creator,
-            created_at_ms: 1_700_000_000_000,
-            updated_at_ms: 1_700_000_000_000,
-            reviews: None,
-            submissions: Vec::new(),
-            last_submission_rejection: None,
-        }
-    }
-
-    fn lane(title: &str, state: LaneState, card_ids: Vec<WorkCardId>) -> LaneRecord {
-        LaneRecord {
-            lane_id: LaneId::new(),
-            repo: repo(),
-            title: title.to_string(),
-            state,
-            card_ids,
-            created_by: PeerId::new(),
-            created_at_ms: 1_700_000_000_000,
-            updated_at_ms: 1_700_000_000_000,
-        }
-    }
-
-    fn presence_one(room: Uuid, member: Uuid, name: &str, kind: &str) -> serde_json::Value {
-        // Serialize the REAL typed slot via the shared helper — never a
-        // hand-authored JSON literal, so the test wire can't drift from
-        // `RosterSlotView`'s field names.
-        let kind: SenderKind = serde_json::from_value(json!({ "kind": kind })).unwrap();
-        let mut integrations = std::collections::BTreeMap::new();
-        integrations.insert("continuum.persona_id".to_string(), "asha-1".to_string());
-        test_presence_payload(
-            room,
-            vec![RosterSlotView {
-                integrations,
-                provenance: Provenance {
-                    runtime: "claude".to_string(),
-                },
-                ..test_roster_slot(member, name, kind)
-            }],
-        )
-    }
-
-    fn current_kanban(substrate: &Substrate) -> KanbanViewState {
-        let env = substrate
-            .cache()
-            .get(KanbanViewState::KIND)
-            .expect("a kanban envelope must be stored");
-        serde_json::from_value(env.payload.clone()).expect("payload is a KanbanViewState")
-    }
-
-    #[tokio::test]
-    async fn reload_projects_the_board_into_the_substrate() {
-        // what this catches: regression where a board re-read does not reach
-        // the substrate as a KanbanViewState — the whole point of the kanban
-        // projection. With no presence yet, the creator renders provisionally
-        // (short peer-id label, neutral Human) — the honest pending-truth
-        // state, never a fabricated author. Mirrors
-        // positron_wall_source::tests::reload_projects_the_board_into_the_substrate.
-        let substrate = Substrate::new();
-        let room = RoomId::new();
-        let creator = PeerId::new();
-        let c = card(
-            room,
-            creator,
-            "Wire the kanban projector",
-            CardState::Open,
-            None,
-        );
-        let reader = StubReader::new(vec![c], vec![]);
-        let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
-        p.reload().await;
-
-        let view = current_kanban(&substrate);
-        assert_eq!(view.room_id, room.as_uuid());
-        assert_eq!(view.cards.len(), 1);
-        assert_eq!(view.cards[0].title, "Wire the kanban projector");
-        assert_eq!(view.cards[0].state, KanbanCardState::Open);
-        assert_eq!(view.cards[0].creator_id, creator.as_uuid());
-        assert_eq!(view.cards[0].creator_kind, SenderKind::Human);
-        assert!(
-            view.cards[0].creator_name.starts_with("peer-"),
-            "provisional creator label until presence, got {}",
-            view.cards[0].creator_name
-        );
-        assert!(view.cards[0].integrations.is_empty());
-        // Open, unclaimed card: no assignee, no PR.
-        assert!(view.cards[0].assignee_id.is_none());
-        assert!(view.cards[0].assignee_name.is_none());
-        assert!(view.cards[0].pull_request.is_none());
-    }
-
-    #[tokio::test]
-    async fn creator_upgrades_in_place_when_presence_folds_the_card() {
-        // what this catches: the attribution-woven-in contract — a card filed
-        // before its author's presence card arrives renders provisionally,
-        // then UPGRADES (name + kind + badges + provenance) the instant
-        // presence folds the card. A regression that dropped the re-project on
-        // presence would leave the creator stuck as "peer-xxxx"/Human forever,
-        // unattributable. [[positron-identity-security-first-class]]. Mirrors
-        // the wall projector's author-upgrade test.
-        let substrate = Substrate::new();
-        let room = RoomId::new();
-        let creator = PeerId::new();
-        let c = card(room, creator, "File the card", CardState::Open, None);
-        let reader = StubReader::new(vec![c], vec![]);
-        let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
-        p.reload().await;
-        assert_eq!(
-            current_kanban(&substrate).cards[0].creator_kind,
-            SenderKind::Human
-        );
-
-        // Card arrives via presence: Agent named Asha carrying a badge.
-        let presence = presence_one(room.as_uuid(), creator.as_uuid(), "Asha", "agent");
-        match classify(PRESENCE_UPDATED, &presence).expect("presence classifies") {
-            KanbanInput::Presence(rid, roster) => {
-                assert_eq!(rid, room.as_uuid());
-                p.apply_roster(roster);
-            }
-            _ => panic!("presence:updated must classify as Presence"),
-        }
-        let view = current_kanban(&substrate);
-        assert_eq!(view.cards[0].creator_name, "Asha");
-        assert_eq!(view.cards[0].creator_kind, SenderKind::Agent);
-        assert_eq!(
-            view.cards[0]
-                .integrations
-                .get("continuum.persona_id")
-                .map(String::as_str),
-            Some("asha-1"),
-            "opaque badge resolved from the card"
-        );
-        assert_eq!(
-            view.cards[0].provenance.runtime, "claude",
-            "accountability provenance resolved from the card"
-        );
-    }
-
-    #[tokio::test]
-    async fn claimed_card_resolves_assignee_name_from_roster() {
-        // what this catches: the assignee (owner) status-pointer contract — a
-        // claimed card carries a resolved assignee id + display name (from the
-        // roster), distinct from the richer creator identity. A regression
-        // that dropped assignee resolution, or filled it for an unclaimed
-        // card, would mislabel who's working a card. The assignee is resolved
-        // to NAME only (a status pointer), not the full creator identity axes.
-        let substrate = Substrate::new();
-        let room = RoomId::new();
-        let creator = PeerId::new();
-        let owner = PeerId::new();
-        let c = card(room, creator, "Claim me", CardState::Claimed, Some(owner));
-        let reader = StubReader::new(vec![c], vec![]);
-        let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
-        p.reload().await;
-        // Roster knows the owner as "BigMama".
-        let presence = presence_one(room.as_uuid(), owner.as_uuid(), "BigMama", "agent");
-        if let KanbanInput::Presence(_, roster) = classify(PRESENCE_UPDATED, &presence).unwrap() {
-            p.apply_roster(roster);
-        }
-        let view = current_kanban(&substrate);
-        assert_eq!(view.cards[0].state, KanbanCardState::Claimed);
-        assert_eq!(view.cards[0].assignee_id, Some(owner.as_uuid()));
-        assert_eq!(view.cards[0].assignee_name.as_deref(), Some("BigMama"));
-    }
-
-    #[tokio::test]
-    async fn a_lapsed_lease_projects_as_takeable_even_though_the_column_still_says_claimed() {
-        // what this catches: the human board's half of the stale-lease defect.
-        // A claim is a LEASE; when it expires the holder stopped and the card
-        // is takeable — but `state` still reads Claimed, so a view carrying
-        // only the column shows dead work as active work. Measured 2026-08-06:
-        // 17 of 19 leases expired and six citizens reported nothing to do.
-        // The renderer can only grey a lapsed hold if the substrate SAYS it,
-        // and this asserts the substrate says it — through the SAME predicate
-        // the persona's board line uses, so the two cannot disagree.
-        let substrate = Substrate::new();
-        let room = RoomId::new();
-        let owner = PeerId::new();
-
-        let mut live = card(
-            room,
-            PeerId::new(),
-            "Live hold",
-            CardState::Claimed,
-            Some(owner),
-        );
-        live.claim_id = Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()));
-        live.claim_expires_at_ms = Some(u64::MAX);
-
-        let mut lapsed = card(
-            room,
-            PeerId::new(),
-            "Lapsed hold",
-            CardState::Claimed,
-            Some(owner),
-        );
-        lapsed.claim_id = Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()));
-        lapsed.claim_expires_at_ms = Some(1_000_000); // 1970-adjacent — long expired
-
-        let open = card(room, PeerId::new(), "Nobody's", CardState::Open, None);
-
-        let reader = StubReader::new(vec![live, lapsed, open], vec![]);
-        let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
-        p.reload().await;
-        let view = current_kanban(&substrate);
-
-        // The column says Claimed for BOTH held cards — that is exactly why the
-        // column alone cannot carry the fact.
-        assert_eq!(view.cards[0].state, KanbanCardState::Claimed);
-        assert_eq!(view.cards[1].state, KanbanCardState::Claimed);
-        // The hold tells them apart.
-        assert_eq!(view.cards[0].hold, KanbanHold::Held);
-        assert_eq!(view.cards[1].hold, KanbanHold::Lapsed);
-        assert_eq!(view.cards[2].hold, KanbanHold::Unclaimed);
-        // And the lapsed card still names who held it, so the renderer can say
-        // whom to ask rather than who is busy.
-        assert_eq!(view.cards[1].assignee_id, Some(owner.as_uuid()));
-    }
-
-    #[tokio::test]
-    async fn lane_projects_with_state_and_card_ids() {
-        // what this catches: the lane projection — a lane's id, title, mapped
-        // state, and card_ids must reach the view so a renderer can group
-        // cards into swimlanes. A regression in the LaneRecord→KanbanLaneView
-        // map (dropped card_ids, wrong state) would break swimlane grouping.
-        let substrate = Substrate::new();
-        let room = RoomId::new();
-        let creator = PeerId::new();
-        let c = card(room, creator, "Laned card", CardState::InProgress, None);
-        let card_id = c.card_id;
-        let l = lane("positron define-once", LaneState::Active, vec![card_id]);
-        let lane_id = l.lane_id;
-        let reader = StubReader::new(vec![c], vec![l]);
-        let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
-        p.reload().await;
-
-        let view = current_kanban(&substrate);
-        assert_eq!(view.lanes.len(), 1);
-        assert_eq!(view.lanes[0].lane_id, lane_id.as_uuid());
-        assert_eq!(view.lanes[0].title, "positron define-once");
-        assert_eq!(view.lanes[0].state, KanbanLaneState::Active);
-        assert_eq!(view.lanes[0].card_ids, vec![card_id.as_uuid()]);
-    }
-
-    #[tokio::test]
-    async fn empty_board_is_projected_not_an_error() {
-        // what this catches: a room with no work projects an empty board (not
-        // a skipped store, not an error) — the honest-empty contract the
-        // KanbanViewState type documents. A renderer subscribed to kind=kanban
-        // must still receive a snapshot so it can clear a stale board. Mirrors
-        // the wall projector's empty-board test.
-        let substrate = Substrate::new();
-        let room = RoomId::new();
-        let reader = StubReader::new(vec![], vec![]);
-        let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
-        p.reload().await;
-        let view = current_kanban(&substrate);
-        assert_eq!(view.room_id, room.as_uuid());
-        assert!(view.cards.is_empty());
-        assert!(view.lanes.is_empty());
-    }
-
-    #[test]
-    fn foreign_room_and_malformed_events_are_skipped() {
-        // what this catches: regression where a non-kanban event, or a
-        // kanban:changed missing the room_id, gets classified into a spurious
-        // re-read. Per [[fallbacks-are-illegal-fail-loud]]: an event that
-        // can't deserialize into the contract is not-a-kanban-event → None.
-        // (Room-mismatch filtering is enforced in the loop, tested via the
-        // room_id the Changed/Presence inputs carry.)
-        assert!(classify("media:frame", &json!({ "bytes": 4 })).is_none());
-        assert!(classify(KANBAN_CHANGED, &json!({ "nope": true })).is_none());
-        let room = Uuid::from_u128(0xa);
-        match classify(KANBAN_CHANGED, &json!({ "roomId": room })).expect("classifies") {
-            KanbanInput::Changed(rid) => assert_eq!(rid, room),
-            _ => panic!("kanban:changed must classify as Changed"),
-        }
-    }
-
-    #[tokio::test]
-    async fn revision_advances_monotonically_across_stores() {
-        // what this catches: regression where successive kanban projections
-        // stamp a stale or non-monotonic revision — the session-protocol
-        // last_seen replay routes by revision, so a flat revision would stop
-        // the kanban widget from seeing updates. Mirrors the wall projector's
-        // revision test.
-        let substrate = Substrate::new();
-        let room = RoomId::new();
-        let creator = PeerId::new();
-        let c = card(room, creator, "v1", CardState::Open, None);
-        let reader = StubReader::new(vec![c], vec![]);
-        let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
-        p.reload().await;
-        let r1 = substrate
-            .cache()
-            .get(KanbanViewState::KIND)
-            .unwrap()
-            .revision;
-        // A presence fold re-projects → a second store, revision advances.
-        let presence = presence_one(room.as_uuid(), creator.as_uuid(), "Asha", "agent");
-        if let KanbanInput::Presence(_, roster) = classify(PRESENCE_UPDATED, &presence).unwrap() {
-            p.apply_roster(roster);
-        }
-        let r2 = substrate
-            .cache()
-            .get(KanbanViewState::KIND)
-            .unwrap()
-            .revision;
-        assert!(r2 > r1, "revision must advance: {r1:?} -> {r2:?}");
-    }
-
-    #[tokio::test]
-    async fn read_error_keeps_the_last_good_board() {
-        // what this catches: the projector's DISTINCT resilience contract — a
-        // `work_board()` read failure must keep the last-good board on the
-        // widget, never blink it empty. A regression that cleared cards/lanes
-        // on error, or stored an empty view, would flash the board blank on
-        // every transient airc hiccup ([[fallbacks-are-illegal-fail-loud]]:
-        // resilience, never a fabricated empty substitute). Mirrors the wall
-        // projector's last-good-board test.
-        let substrate = Substrate::new();
-        let room = RoomId::new();
-        let creator = PeerId::new();
-        let c = card(room, creator, "v1", CardState::Open, None);
-        let reader = StubReader::new(vec![c], vec![]);
-        let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader.clone());
-        p.reload().await;
-        assert_eq!(current_kanban(&substrate).cards.len(), 1);
-
-        // The reader goes down mid-stream; the re-read fails.
-        reader.set_fail(true);
-        p.reload().await;
-
-        let view = current_kanban(&substrate);
-        assert_eq!(view.cards.len(), 1, "last-good board survives a read error");
-        assert_eq!(view.cards[0].title, "v1");
-    }
-
-    #[tokio::test]
-    async fn lagged_re_reads_and_closed_stops_and_foreign_room_ignored() {
-        // what this catches: three otherwise trust-me loop-guard branches (the
-        // loop is an infinite recv). (1) On `Lagged` (fell behind the buffer)
-        // it RE-READS the authoritative board rather than continuing on a
-        // stale one. (2) A `kanban:changed` for a DIFFERENT room is NOT
-        // re-read — the defensive room guard drops it so a foreign room's
-        // churn can't thrash this projector's board. (3) A `Closed` bus stops
-        // the loop (Stop) — no spin. Drives the exact loop decisions via
-        // `fold_recv` (no racing a live channel). Mirrors the wall projector's
-        // fold_recv guard tests.
-        let substrate = Substrate::new();
-        let room = RoomId::new();
-        let creator = PeerId::new();
-        let reader = StubReader::new(vec![], vec![]);
-        let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader.clone());
-        p.reload().await;
-        assert!(current_kanban(&substrate).cards.is_empty());
-
-        // Board gains a card while the loop was behind; a Lagged arrives.
-        reader.board.lock().unwrap().cards.push(card(
-            room,
-            creator,
-            "caught up",
-            CardState::Open,
-            None,
-        ));
-        let step = fold_recv(&mut p, room.as_uuid(), Err(RecvError::Lagged(3))).await;
-        assert_eq!(step, LoopStep::Continue);
-        assert_eq!(
-            current_kanban(&substrate).cards.len(),
-            1,
-            "Lagged must trigger an authoritative re-read, not a stale continue"
-        );
-
-        // A change for some OTHER room must not re-read our board.
-        let other = Uuid::from_u128(0xdead);
-        let foreign = BusEvent {
-            name: KANBAN_CHANGED.to_string(),
-            payload: std::sync::Arc::new(json!({ "roomId": other })),
-        };
-        reader.board.lock().unwrap().cards.clear();
-        let step = fold_recv(&mut p, room.as_uuid(), Ok(foreign)).await;
-        assert_eq!(step, LoopStep::Continue);
-        assert_eq!(
-            current_kanban(&substrate).cards.len(),
-            1,
-            "a foreign room's kanban:changed must not re-read our board"
-        );
-
-        // A closed bus stops the loop.
-        let step = fold_recv(&mut p, room.as_uuid(), Err(RecvError::Closed)).await;
-        assert_eq!(step, LoopStep::Stop);
-    }
-}
+mod tests;

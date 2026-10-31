@@ -78,6 +78,9 @@ const VENDORED = [
   { src: 'positron', dest: 'views', name: 'KanbanPullRequest' },
   // KanbanCardView imports ./KanbanHold (lease liveness, #321/#331)
   { src: 'positron', dest: 'views', name: 'KanbanHold' },
+  // KanbanCardView imports ./KanbanReviewView (the card's latest verdict, one-board slice 1)
+  { src: 'positron', dest: 'views', name: 'KanbanReviewView' },
+  { src: 'positron', dest: 'views', name: 'KanbanReviewOutcome' },
   // Experience / Join Contract manifest closure — mirrored into experience/, keeps
   // its `./Sibling` + `../grid/TrustLevel` relative imports.
   { src: 'experience', dest: 'experience', name: 'Experience' },
