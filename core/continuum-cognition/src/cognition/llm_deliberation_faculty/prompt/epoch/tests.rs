@@ -102,7 +102,7 @@ fn consecutive_acts_share_the_whole_view_and_a_turnover_keeps_the_settled_front(
         LlmDeliberationFaculty::view_sources(&now, Some(&memory_streams)).iter().map(|s| s.name()).collect();
     assert_eq!(
         names,
-        ["workspace-map", "actions", "conversation", "room-kanban", "recall", "thoughts", "open-views", "notices"],
+        ["workspace-map", "actions", "conversation", "room-kanban", "recall", "thoughts", "tasks", "open-views", "notices"],
         "settled blocks, then her actions and conversation, then what counts or changes within an epoch"
     );
 
