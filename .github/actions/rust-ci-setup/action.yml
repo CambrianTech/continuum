@@ -42,6 +42,11 @@ runs:
         fi
         echo "CARGO_TARGET_DIR=/ci-target" >> "$GITHUB_ENV"
         df -h / /ci-target
+        # An annotation is stored apart from the job log, so it survives a worker that dies writing
+        # its log on a full disk (two jobs on #5651 did, after #5650): the next disk-full names its
+        # runner image and the room it started with.
+        target_dev=$(df --output=source /ci-target | tail -1)
+        echo "::notice title=runner disk::${ImageOS:-unknown} ${ImageVersion:-unknown}; / free $(df -h --output=avail / | tail -1 | tr -d ' '); /ci-target on ${target_dev} free $(df -h --output=avail /ci-target | tail -1 | tr -d ' ')"
 
     - name: Install Rust toolchain from rust-toolchain.toml
       shell: bash
