@@ -568,8 +568,9 @@ pub trait AIProviderAdapter: Send + Sync {
     /// when you don't need the tokens live.
     ///
     /// `sink` is an unbounded channel so a slow consumer never stalls token
-    /// decode; a consumer that only wants the final answer passes a sink it
-    /// drops/ignores (the chunks are cheap to discard).
+    /// decode; a consumer that only wants the final answer uses
+    /// `stream_sinks::drain_generation` to keep consuming until completion.
+    /// Closing a streaming receiver can cancel the generation.
     ///
     /// Default impl: a NON-incremental adapter (a cloud one-shot endpoint, the
     /// heuristic test adapter) genuinely has nothing to stream — it produces the
