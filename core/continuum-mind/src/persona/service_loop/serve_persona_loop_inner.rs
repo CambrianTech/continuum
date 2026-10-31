@@ -130,11 +130,8 @@ pub(super) async fn serve_persona_loop_inner(
         // Taken the moment a wake is produced, BEFORE the match, because the
         // `Wake::Tick` arm does its self-tick deliberation INLINE and then `continue`s —
         // it never reaches the code below it. A permit taken after the match would have
-        // counted inbound turns and silently missed every self-directed one, which is the
-        // same blindness as draining on `activity_gate`'s `engaged` flag: that one is
-        // stamped at serving-lane acquisition, so a turn still composing its context does
-        // not appear there either. Both gaps hide turns that have consumed input and
-        // written nothing.
+        // counted inbound turns and silently missed every self-directed one: turns that have
+        // consumed input and written nothing.
         //
         // Held to the end of the loop body, so it is released on EVERY exit path — the
         // `continue` at the end of the tick arm included. A manual decrement would have to

@@ -216,9 +216,6 @@ impl LlmDeliberationFaculty {
             let _admission = self
                 .admit_generation(ws, &request, adapter.generation_admission(), &mut capture)
                 .await?;
-            // HER task-positive system is engaged from here: the per-citizen boredom gate
-            // (dreams) reads this stamp, never a room wake.
-            crate::cognition::activity_gate::persona_engaged(self.persona_id);
             // COGNITION PULSE per generation, not only per turn start. The claim-renewal
             // gate reads this stamp, and a single service-loop turn can run many acts: on
             // the M5 an act takes 7-9 minutes, so a multi-act turn outlives the 30-minute

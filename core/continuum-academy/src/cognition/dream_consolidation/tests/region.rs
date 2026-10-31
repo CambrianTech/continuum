@@ -8,10 +8,11 @@
 use super::*;
 use crate::runtime::brain_region::RegionContext;
 
-// ce37fbfb: a parked idle owner cannot swallow a reviewed boundary;
-// repeated delivery and concurrent ticks must not double inference.
+// ce37fbfb, a31e72a4: the idle pass runs while she works (no wait for her idle); a reviewed
+// boundary delivered while it is in flight is finished by a later tick, never swallowed by the
+// in-flight flag; repeated delivery and concurrent ticks never double inference.
 #[tokio::test]
-async fn reviewed_boundary_wakes_the_idle_owner_and_deduplicates_replay() {
+async fn a_reviewed_boundary_during_an_idle_pass_is_finished_once_without_doubling_inference() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let persona = Uuid::new_v4();
     let seeds: Vec<_> = (0..3)
@@ -34,30 +35,27 @@ async fn reviewed_boundary_wakes_the_idle_owner_and_deduplicates_replay() {
             HeuristicInferenceAdapter::new().with_generate_observer(calls.clone()),
         ),
     }));
-    region.idle_wait = Some(Arc::new(tokio::sync::Notify::new()));
+    let park = Arc::new(tokio::sync::Notify::new());
+    region.idle_wait = Some(park.clone());
     region.consolidate(persona).await;
     tokio::task::yield_now().await;
-    assert!(region.dreaming());
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        0,
-        "the actual owner is parked before inference"
-    );
+    assert!(region.dreaming(), "the idle pass is in flight");
     let review = Uuid::new_v4();
     assert!(region.request_reviewed_boundary(persona, review));
-    assert!(!region.request_reviewed_boundary(persona, review));
+    assert!(!region.request_reviewed_boundary(persona, review), "repeated delivery queues once");
+    park.notify_one();
     drain(&region).await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        0,
-        "wake retires stale selection; it does not start another task"
+        2,
+        "the idle pass ran to the end while she works: one consolidator and one historian request"
     );
     tokio::join!(region.consolidate(persona), region.consolidate(persona));
     drain(&region).await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
         2,
-        "one consolidator and one historian request"
+        "the boundary finds its episodes already folded: finished, with no second inference"
     );
     assert_eq!(
         admission
@@ -67,7 +65,7 @@ async fn reviewed_boundary_wakes_the_idle_owner_and_deduplicates_replay() {
             .count(),
         1
     );
-    assert!(!region.request_reviewed_boundary(persona, review));
+    assert!(!region.request_reviewed_boundary(persona, review), "a finished boundary is not queued again");
     region.consolidate(persona).await;
     drain(&region).await;
     assert_eq!(calls.load(Ordering::SeqCst), 2);

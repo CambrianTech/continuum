@@ -233,10 +233,9 @@ impl ServiceModule for CognitionModule {
     ///    while we tried to save her.
     /// 2. Wait for the turns already admitted to finish, bounded.
     ///
-    /// The count comes from the permits the loops hold, not from `activity_gate`'s
-    /// `engaged` flag: engagement is stamped at serving-lane acquisition, so a turn that
-    /// has taken a message and is still composing context is not engaged, and draining on
-    /// that flag would walk past exactly the turns whose loss leaves no trace.
+    /// The count comes from the permits the loops hold: a turn that has taken a message and
+    /// is still composing context holds one before any serving lane, so the drain waits for
+    /// exactly the turns whose loss would leave no trace.
     ///
     /// Returns the number still running when the budget expired — a citizen who is still
     /// thinking is a fact the receipt reports, not one it waits forever for.
