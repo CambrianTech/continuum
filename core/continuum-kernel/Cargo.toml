@@ -15,6 +15,7 @@ command-name resolver, MeshPresence, ClogSink) installed at boot.
 [dependencies]
 continuum-base = { path = "../continuum-base" }
 continuum-host = { path = "../continuum-host" }
+continuum-resource-observation = { path = "../continuum-resource-observation" }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }
 continuum-orm-derive = { path = "../continuum-orm-derive" }

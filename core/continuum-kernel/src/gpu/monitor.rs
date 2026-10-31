@@ -31,6 +31,7 @@
 //!   - `NvidiaMonitor` via NVML (`nvml-wrapper` crate)
 //!   - `VulkanMonitor` via VK_EXT_memory_budget for cross-vendor
 
+use continuum_resource_observation::{ByteMeasurement, Measurement, UnavailableReason};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -101,7 +102,17 @@ pub trait GpuMonitor: Send + Sync {
     /// answering a failed Mach syscall with `total_bytes` — i.e. "the syscall
     /// broke, so assume every byte is free", the most optimistic possible lie
     /// told directly to the governor. An unreadable sensor is not a full tank.
-    fn free_bytes(&self) -> Option<u64>;
+    fn free_bytes(&self) -> Option<u64> {
+        match self.memory_measurement() {
+            Measurement::Measured(bytes) => Some(bytes.available()),
+            Measurement::Unavailable(_) => None,
+        }
+    }
+
+    /// The complete latest memory sampling attempt. Allocation consumers must
+    /// handle unavailability explicitly; a previous successful sample is not a
+    /// replacement for a failed current attempt.
+    fn memory_measurement(&self) -> Measurement;
 
     /// Bytes allocated by OUR process specifically. Lets the policy
     /// distinguish "system is tight" from "we are tight" and react
@@ -256,11 +267,14 @@ impl GpuMonitor for MockMonitor {
     fn total_bytes(&self) -> u64 {
         self.total_bytes
     }
-    fn free_bytes(&self) -> Option<u64> {
-        // A scripted mock always HAS a reading — the scenario set it. The
-        // unknown state is a property of real sensors, so tests that want it
-        // reach for a monitor that models the failure, not a `None` here.
-        Some(self.free_bytes.load(std::sync::atomic::Ordering::Relaxed))
+    fn memory_measurement(&self) -> Measurement {
+        match ByteMeasurement::new(
+            self.total_bytes,
+            self.free_bytes.load(std::sync::atomic::Ordering::Relaxed),
+        ) {
+            Ok(bytes) => Measurement::Measured(bytes),
+            Err(_) => Measurement::Unavailable(UnavailableReason::InvalidMeasurement),
+        }
     }
     fn process_bytes(&self) -> u64 {
         self.process_bytes
