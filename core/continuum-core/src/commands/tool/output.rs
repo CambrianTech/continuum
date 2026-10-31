@@ -422,8 +422,7 @@ mod tests {
             panic!("a handle names itself")
         };
         assert_eq!(by_act, by_handle);
-        let read =
-            |handle: String| read_saved(&path, handle, ToolOutputParams::default(), None, 4_096);
+        let read = |handle: String| read_saved(&path, handle, ToolOutputParams::default(), None);
         let (Ok(act_read), Ok(handle_read)) = (read(by_act), read(by_handle)) else {
             panic!("the saved output reads back")
         };
