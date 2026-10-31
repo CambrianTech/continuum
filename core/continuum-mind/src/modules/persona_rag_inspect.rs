@@ -399,6 +399,22 @@ pub(crate) async fn inspect_persona(
 
 #[cfg(test)]
 mod tests {
+    /// A test names its window, as any caller with no served window must (nothing is served here).
+    fn windowed() -> RagInspectParams {
+        RagInspectParams { context_window: Some(8_192), ..Default::default() }
+    }
+
+    // what this catches: an inspection run on an assumed window when nothing is served and the
+    // caller named none; it must refuse and say how to proceed.
+    #[tokio::test]
+    async fn no_served_window_and_none_named_refuses() {
+        let m = module_with(vec![make_event(Some("hi"), 1, 990_000)]);
+        let refusal = inspect_persona(&m.resolver, RagInspectParams { persona: "Pax".to_string(), ..Default::default() })
+            .await
+            .expect_err("no window to inspect against");
+        assert!(refusal.contains("pass context_window"), "{refusal}");
+    }
+
     use super::*;
     use crate::commands::persona::rag_inspect::PersonaRagInspect;
     use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
@@ -527,7 +543,7 @@ mod tests {
             &m.resolver,
             RagInspectParams {
                 persona: "".to_string(),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await;
@@ -543,7 +559,7 @@ mod tests {
             &m.resolver,
             RagInspectParams {
                 persona: "Unknown".to_string(),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await;
@@ -560,7 +576,7 @@ mod tests {
             RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await
@@ -583,7 +599,7 @@ mod tests {
             RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await
@@ -606,7 +622,7 @@ mod tests {
                 persona: "Pax".to_string(),
                 context_window: Some(8_192),
                 now_ms: Some(1_000_000),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await
@@ -630,7 +646,7 @@ mod tests {
                 RagInspectParams {
                     persona: "Paige".to_string(),
                     now_ms: Some(1_000_000),
-                    ..Default::default()
+                    ..windowed()
                 },
             )
             .await
@@ -666,7 +682,7 @@ mod tests {
             RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await
@@ -686,7 +702,7 @@ mod tests {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
                 chain_inference: Some(true),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await
@@ -711,7 +727,7 @@ mod tests {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
                 chain_inference: Some(true),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await
@@ -736,7 +752,7 @@ mod tests {
                     persona: "Paige".to_string(),
                     now_ms: Some(1_000_000),
                     chain_inference: Some(true),
-                    ..Default::default()
+                    ..windowed()
                 },
             )
             .await
