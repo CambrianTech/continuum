@@ -745,10 +745,10 @@ impl LlmDeliberationFaculty {
                 };
                 return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
             }
-            let head: String = resp.text.chars().take(200).collect();
             return Some(Contribution::deliberation_fault(format!(
-                "the model hit the output limit mid-thought with no committed action                  (finish_reason Length, {} chars) — a cut thought is not an answer.                  It began: {head}",
-                resp.text.len()
+                "the model hit the output limit mid-thought with no committed action \
+                 (finish_reason Length, {} bytes, response {}) — a cut thought is not an answer",
+                resp.text.len(), resp.request_id
             )));
         }
 
