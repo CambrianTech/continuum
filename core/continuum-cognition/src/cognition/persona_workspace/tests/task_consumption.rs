@@ -21,7 +21,7 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
     let (view, _) = View::<crate::cognition::context_streams::ContextMessage>::start(Vec::new(), &[&source as &dyn Source<_>], |claims| {
         claims.iter().map(|claim| claim.full_chars).collect()
     })?;
-    assert!(view.render().any(|message| message.text.contains("timed out task")));
+    assert!(view.render().any(|message| message.text.contains("timed_out task")));
     let mut receipt = crate::cognition::render_receipt::RenderReceipt {
         owner, incarnation: memory.incarnation(), request: "submitted-request".to_owned(), view: view.receipt(),
     };

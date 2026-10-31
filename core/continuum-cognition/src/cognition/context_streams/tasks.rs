@@ -35,6 +35,14 @@ pub(crate) struct Tasks<'a> {
     pub persona: uuid::Uuid,
 }
 
+fn task_line(task: uuid::Uuid, word: &str, label: Option<&str>) -> String {
+    let line = format!("{word} task {}", airc_core::shown_id::shown_form(task));
+    match label {
+        Some(label) if !label.is_empty() => format!("{line} {label}"),
+        _ => line,
+    }
+}
+
 impl Source<ContextMessage> for Tasks<'_> {
     fn name(&self) -> &str {
         "tasks"
@@ -47,7 +55,10 @@ impl Source<ContextMessage> for Tasks<'_> {
     fn items(&self) -> Vec<Item<ContextMessage>> {
         let terminals = self.memory.task_terminals();
         let terminal_ids: std::collections::BTreeSet<_> = terminals.iter().map(|end| end.task).collect();
-        let tasks: Vec<_> = self.memory.dispatched_snapshot().into_iter()
+        let dispatched = self.memory.dispatched_snapshot();
+        let labels: std::collections::BTreeMap<_, _> = dispatched.iter()
+            .map(|(task, label, ..)| (*task, label.clone())).collect();
+        let tasks: Vec<_> = dispatched.into_iter()
             .filter(|(task, ..)| !terminal_ids.contains(task)).collect();
         if tasks.is_empty() && !terminals.iter().any(|end| end.wake_pending) {
             return Vec::new();
@@ -65,7 +76,7 @@ impl Source<ContextMessage> for Tasks<'_> {
                 DispatchStatus::Done => "ok",
                 DispatchStatus::Failed => "failed",
             };
-            let line = format!("{word} task {} {label}", airc_core::shown_id::shown_form(task));
+            let line = task_line(task, word, Some(&label));
             let whole = if output.is_empty() { line.clone() } else { format!("{line}\n{output}") };
             let summary = summarize(&output, Shape::Output).map(|level| ContextMessage::user(format!("{line}\n{level}")));
             Item::whole(task_element(self.persona, task, &status), Cause::Root(Origin::ActivityStart), task.to_string(), ContextMessage::user(whole))
@@ -74,15 +85,15 @@ impl Source<ContextMessage> for Tasks<'_> {
         }));
         items.extend(terminals.into_iter().filter(|end| end.wake_pending).map(|end| {
             let status = match end.state {
-                TaskEndState::Done => "done",
+                TaskEndState::Done => "ok",
                 TaskEndState::Failed => "failed",
-                TaskEndState::TimedOut => "timed out",
+                TaskEndState::TimedOut => "timed_out",
                 TaskEndState::Stopped => "stopped",
                 TaskEndState::Lost => "lost",
             };
             // This item is the terminal notification, not a projection claiming
             // to contain the ledger's output. Its identity binds that exact end.
-            let line = ContextMessage::user(format!("{status} task {}", end.task));
+            let line = ContextMessage::user(task_line(end.task, status, labels.get(&end.task).map(String::as_str)));
             Item::whole(terminal_element(self.persona, end.task, &end.fingerprint),
                 Cause::Root(Origin::ActivityStart), end.task.to_string(), line.clone())
                 .with_pointer(line)
@@ -95,6 +106,25 @@ impl Source<ContextMessage> for Tasks<'_> {
 mod tests {
     use super::*;
     use continuum_context::epoch::Block;
+
+    #[test]
+    fn terminal_replaces_dispatch_in_the_same_shape_and_keeps_known_label() {
+        use continuum_kernel::runtime::tasks::{TaskEnd, TaskOutput};
+        let memory = WorkingMemory::new(8);
+        let persona = uuid::Uuid::new_v4();
+        let task = uuid::Uuid::new_v4();
+        memory.record_dispatch_event(task, "compile core", "working", DispatchStatus::Running);
+        memory.stage_task_end(task, TaskEnd::Done(TaskOutput::Json(serde_json::json!({"ok": true})))).expect("fixture terminal");
+        memory.publish_task_checkpoint(memory.snapshot().task_results.publication());
+        let items = Tasks { memory: &memory, persona }.items();
+        let expected = format!("ok task {} compile core", airc_core::shown_id::shown_form(task));
+        assert_eq!(items.iter().filter(|item| item.full().text == expected).count(), 1);
+        assert!(items.iter().all(|item| !item.full().text.contains("running task")));
+        let restored = WorkingMemory::new(8);
+        restored.restore(memory.snapshot());
+        let expected = format!("ok task {}", airc_core::shown_id::shown_form(task));
+        assert!(Tasks { memory: &restored, persona }.items().iter().any(|item| item.full().text == expected));
+    }
 
     #[test]
     fn dispatch_has_one_source_even_when_thoughts_are_present() {
