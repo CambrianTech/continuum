@@ -52,14 +52,14 @@ const IDENTIFYING: &[&str] = &[
 ];
 
 /// Line 1: what ended, how, and which call it was. The arguments go through the one call
-/// renderer (`render_call_args`: a single-line value whole, a multi-line one as its shape and
+/// renderer (`act_observe::call_args`: a single-line value whole, a multi-line one as its shape and
 /// hash), so a heredoc never spills past line 1 and a call reads the same here as in her ledger.
 pub fn status_line(status: Status, tool: &str, input: &Value, cause: Option<&str>) -> String {
     let identifying: serde_json::Map<String, Value> = IDENTIFYING
         .iter()
         .filter_map(|key| input.get(*key).filter(|v| !v.is_null()).map(|v| ((*key).to_owned(), v.clone())))
         .collect();
-    let args = crate::cognition::act_observe::recency::render_call_args(&Value::Object(identifying));
+    let args = crate::cognition::act_observe::call_args(&Value::Object(identifying));
     let cause = cause.map(|c| format!(" {c}")).unwrap_or_default(); // unwrap_or_default: no cause, nothing after the call
     format!("{} {tool}({args}){cause}", status.word())
 }

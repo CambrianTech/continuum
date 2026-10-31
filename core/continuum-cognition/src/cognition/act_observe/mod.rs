@@ -32,6 +32,8 @@ mod perception;
 mod recency;
 
 mod observation;
+/// The one renderer of a call's arguments, for the tool result's status line (`tool_executor::answer`).
+pub(crate) use observation::call_args;
 pub use observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
 
 mod types;
