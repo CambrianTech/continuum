@@ -39,7 +39,7 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
     let checkpoint = std::fs::read(volatile_path(owner)?)?;
     assert!(registry.record_rendered_tasks(&exact)?.is_none());
     assert_eq!(std::fs::read(volatile_path(owner)?)?, checkpoint);
-    assert!(source.items().iter().all(|item| !item.full().text.contains("timed out task")));
+    assert!(source.items().is_empty(), "a consumed end must not leave a standing task banner");
     let restored = WorkingMemory::new(8);
     restored.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
     assert!(restored.pending_task_wakes().is_empty());

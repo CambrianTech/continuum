@@ -48,7 +48,7 @@ impl Source<ContextMessage> for Tasks<'_> {
         let terminal_ids: std::collections::BTreeSet<_> = terminals.iter().map(|end| end.task).collect();
         let tasks: Vec<_> = self.memory.dispatched_snapshot().into_iter()
             .filter(|(task, ..)| !terminal_ids.contains(task)).collect();
-        if tasks.is_empty() && terminals.is_empty() {
+        if tasks.is_empty() && !terminals.iter().any(|end| end.wake_pending) {
             return Vec::new();
         }
         let banner = super::standing(
