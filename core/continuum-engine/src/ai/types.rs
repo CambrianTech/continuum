@@ -448,6 +448,10 @@ pub enum FinishReason {
     Length,
     ToolUse,
     Error,
+    /// The stream ended without the backend saying why (no `finish_reason` arrived). Not a
+    /// stop: a receipt must never claim an explicit stop it did not see (Codex, 2026-10-31:
+    /// Kimi's reasoning-only completions read `stop` because an absent marker defaulted to it).
+    Unreported,
 }
 
 impl std::fmt::Display for FinishReason {
@@ -457,6 +461,7 @@ impl std::fmt::Display for FinishReason {
             FinishReason::Length => write!(f, "length"),
             FinishReason::ToolUse => write!(f, "tool_use"),
             FinishReason::Error => write!(f, "error"),
+            FinishReason::Unreported => write!(f, "unreported"),
         }
     }
 }
