@@ -398,6 +398,12 @@ pub(super) async fn run_turn_cycle(
                     outcome.turns_skipped += 1;
                     return CycleVerdict::Skip;
                 }
+                crate::cognition::act_observe::SettleStep::ReceiptPersistenceFailed { error } => {
+                    tracing::error!(persona = %ctx.identity.agent_name, lamport = msg.lamport,
+                        error = %error, "render receipt checkpoint failed; generation served, action not executed");
+                    outcome.turns_skipped += 1;
+                    return CycleVerdict::Skip;
+                }
                 crate::cognition::act_observe::SettleStep::InferenceFailed { error } => {
                     // The model call FAILED (timeout, 5xx, the serving lane
                     // refusing a model it isn't hosting) — NOT a chosen silence.

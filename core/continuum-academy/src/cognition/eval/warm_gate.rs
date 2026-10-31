@@ -37,8 +37,11 @@ pub(super) async fn warm_gate(cycle: &crate::cognition::workspace::WorkspaceCycl
             crate::cognition::workspace::TurnFraming::directed(),
         )
         .await;
-        if probe.inference_error.is_none() {
+        if probe.failure.is_none() {
             warm = true;
+            break;
+        }
+        if matches!(probe.failure, Some(crate::cognition::act_observe::SettlementFailure::ReceiptPersistence(_))) {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_secs(4)).await;

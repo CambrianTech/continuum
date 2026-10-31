@@ -250,7 +250,7 @@ pub(super) async fn run_pass(
         // Wedge detection is the SERVING layer's job and it is event-based there: the
         // stream-liveness classifier (phase-aware budgets, 9e2f95820) kills a
         // zero-token stream at the source and the failure surfaces here as
-        // `inference_error` — the event path `drive_to_settle` already returns on.
+        // `failure` — the event path `drive_to_settle` already returns on.
         // The old flat 600s deadline predated that sensor (#123, 2026-07-17) and was
         // never demoted once it shipped: it second-guessed the serving layer with a
         // stopwatch, declared a LIVE multi-minute e2e decode "wedged" (fluid-sim-e2e,
@@ -276,7 +276,7 @@ pub(super) async fn run_pass(
         const PER_TASK_IDLE_BACKSTOP: std::time::Duration =
             std::time::Duration::from_secs(20 * 60);
         // BOUNDED INFRA-FAULT RECOVERY (Proctored Exam Session, Slice B). Drive to
-        // settlement; if the model call itself FAILS (`inference_error`: lane not-ready /
+        // settlement; if the model call itself FAILS (`failure`: lane not-ready /
         // connect-refused / "not the active served model" / compute-error / deadline-wedge)
         // that is an INFRA fault, never a wrong answer. Re-verify the lane and retry the
         // SAME task — the retried generation is itself the real decode proof — up to
@@ -325,9 +325,13 @@ pub(super) async fn run_pass(
                     }
                 }
             };
-            let Some(cause) = settled.inference_error.clone() else {
+            let Some(cause) = settled.failure.clone() else {
                 break; // reached a verdict (answer OR graded-wrong) on a working lane
             };
+            // Re-verifying an inference lane cannot repair checkpoint custody.
+            if matches!(cause, crate::cognition::act_observe::SettlementFailure::ReceiptPersistence(_)) {
+                break;
+            }
             infra_attempt += 1;
             if infra_attempt > INFRA_FAULT_RETRIES {
                 break;
@@ -348,7 +352,7 @@ pub(super) async fn run_pass(
         // INFRA_FAULT_RETRIES re-verify+retry cycles. Record the row for forensics, mark the
         // run void, and ABORT — every remaining task would only accrue more phantom zeros on
         // a dead lane. The caller reports InfraUnavailable, NEVER a fake pass_rate.
-        if let Some(cause) = &settled.inference_error {
+        if let Some(cause) = &settled.failure {
             infra_faults += 1;
             if infra_reason.is_none() {
                 infra_reason = Some(format!("task '{}': {cause}", t.id));
@@ -356,7 +360,7 @@ pub(super) async fn run_pass(
             results.push(EvalTaskResult {
                 id: t.id.clone(),
                 ok: false,
-                grade: format!("infra unavailable (lane never recovered): {cause}"),
+                grade: format!("settlement infrastructure unavailable: {cause}"),
                 acts: 0,
                 answer: String::new(),
                 latency_ms: 0,
@@ -372,7 +376,7 @@ pub(super) async fn run_pass(
                 task = %t.id,
                 attempted = results.len(),
                 cause = %cause,
-                "aborting run as InfraUnavailable — serving lane never recovered; refusing to \
+                "aborting run as InfraUnavailable — settlement failed; refusing to \
                  publish a phantom score over a dead lane"
             );
             break;
@@ -444,7 +448,7 @@ pub(super) async fn run_pass(
             .await
             {
                 // Take the re-drive only if it produced a real turn (not an infra fault).
-                if re.inference_error.is_none() {
+                if re.failure.is_none() {
                     settled = re;
                 }
             }
@@ -559,7 +563,7 @@ Fix the workspace and finish —                              the grade reads th
                 )
                 .await
                 {
-                    if re.inference_error.is_none() {
+                    if re.failure.is_none() {
                         settled = re;
                     }
                 }
@@ -601,9 +605,9 @@ Fix the workspace and finish —                              the grade reads th
             });
             continue; // no grade, NO lesson — a harness fault teaches nothing
         }
-        // `settled.inference_error` is None here — the abort above consumed every infra
+        // `settled.failure` is None here — the abort above consumed every infra
         // fault, so this grades a REAL verdict (a working lane produced an answer, right or
-        // wrong). No `inference_error` arm remains: an infra fault can no longer masquerade
+        // wrong). No `failure` arm remains: an infra fault can no longer masquerade
         // as a graded miss.
         let (ok, grade) = if !t.ui_checks.is_empty() {
             // FUNCTIONAL WEB-DEV: grade what her UI ACTUALLY RENDERED. Observe `target` through

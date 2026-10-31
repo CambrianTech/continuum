@@ -605,6 +605,10 @@ pub(super) async fn run_self_cycle(
                 "self-thread act; result admitted as memory, re-perceives next tick"
             );
         }
+        crate::cognition::act_observe::SettleStep::ReceiptPersistenceFailed { error } => {
+            tracing::error!(persona = %ctx.identity.agent_name, error = %error,
+                "self-cycle render receipt checkpoint failed; generation served, action not executed");
+        }
         crate::cognition::act_observe::SettleStep::InferenceFailed { error } => {
             // Even on the self-thread a failed model call is surfaced, never swallowed
             // by the `_ => {}` sleep ([[fallbacks-are-illegal-fail-loud]]): a broken

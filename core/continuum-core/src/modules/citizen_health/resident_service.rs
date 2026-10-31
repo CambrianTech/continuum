@@ -110,6 +110,7 @@ fn probe(alarm: &ResidentAlarm) {
     let refusal = match alarm.refusal {
         Some(resident::Refusal::PromptCapacity { .. }) => "prompt_capacity",
         Some(resident::Refusal::InferenceFailed) => "inference_failed",
+        Some(resident::Refusal::ReceiptPersistenceFailed) => "receipt_persistence_failed",
         Some(resident::Refusal::LaneStarved) => "lane_starved",
         None => "none",
     };

@@ -67,7 +67,7 @@ pub async fn settle_step(
     // One Instant and one probe; no signature change, and the caller's arithmetic
     // is unchanged.
     let cycle_started = std::time::Instant::now();
-    let ws = cycle.run_situated(burst, framing, situation).await;
+    let mut ws = cycle.run_situated(burst, framing, situation).await;
     let cycle_ms = cycle_started.elapsed().as_millis() as u64;
     // The cost of THIS tick's deliberation generation — latency + tokens of the
     // model call behind the verdict. Carried out alongside the step so the caller
@@ -99,6 +99,11 @@ pub async fn settle_step(
     // flatter exactly the failure mode we are hunting. One writer, one place.
     if let Some(m) = metrics.as_ref() {
         cycle.note_generation(m);
+    }
+    if let Err(error) = cycle.persist_render_receipts(std::mem::take(&mut ws.render_receipts)).await {
+        continuum_base::probe!(class = "settle.receipt_persistence_failed", room = %room_id,
+            error = %error, "served generation retained; checkpoint failed before speech or action");
+        return (SettleStep::ReceiptPersistenceFailed { error: Arc::new(error) }, metrics, step_receipts);
     }
     // A FAILED model call is not a verdict and not a silence — surface it LOUD so no
     // failure ever masquerades as a chosen `Pass` ([[fallbacks-are-illegal-fail-loud]]).

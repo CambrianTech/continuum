@@ -154,9 +154,9 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
         let outcome =
             drive_to_settle_with_input(&cycle, burst, 8, framing, &mut conversation).await;
         assert!(
-            outcome.inference_error.is_none(),
+            outcome.failure.is_none(),
             "{:?}",
-            outcome.inference_error
+            outcome.failure
         );
         assert_eq!(outcome.acts, 2);
         assert_eq!(outcome.room, room);

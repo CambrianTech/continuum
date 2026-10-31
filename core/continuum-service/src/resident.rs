@@ -29,6 +29,8 @@ pub enum Refusal {
     PromptCapacity { required_tokens: u32, budget_tokens: u32, context_window: Option<u32> },
     /// The model call faulted and its retries were spent.
     InferenceFailed,
+    /// Inference was served, but the observed task end could not be checkpointed.
+    ReceiptPersistenceFailed,
     /// She waited at the serving gate and never reached the model.
     LaneStarved,
 }
@@ -329,6 +331,7 @@ impl ResidentAlarm {
                 format!(", prompt capacity {required_tokens} > {budget_tokens}{at}")
             }
             Some(Refusal::InferenceFailed) => ", inference failed".to_string(),
+            Some(Refusal::ReceiptPersistenceFailed) => ", receipt persistence failed".to_string(),
             Some(Refusal::LaneStarved) => ", lane starved".to_string(),
             None => String::new(),
         };
