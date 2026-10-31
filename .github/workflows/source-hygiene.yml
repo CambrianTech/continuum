@@ -86,4 +86,4 @@ jobs:
               base="origin/canary"
             fi
           fi
-          cargo run -q -p source-hygiene --bin ratchets -- "$base"
+          cargo run --locked -q -p source-hygiene --bin ratchets -- "$base"
