@@ -579,12 +579,10 @@ pub struct CodeShellParams {
     /// handle to poll. Defaults to 30000 (30s). A long job keeps running past this.
     #[serde(default)]
     pub wait_ms: Option<u64>,
-    /// KILLS the command after this many ms. Not a wait: to wait longer, raise `wait_ms`
-    /// (the command keeps running past it and its result reaches you when it ends).
-    /// Default: none — a long build, training run or daemon runs until it finishes or
-    /// you `code/shell-kill` it. Named for what it does: as `timeout_ms` it read as a
-    /// wait, and a resident's 120 s "timeout" killed her `cargo test` mid-compile
-    /// (Benchy, the M5, 2026-10-31; a 300 s one killed the next).
+    // Named for what it does: as `timeout_ms` it read as a wait, and residents' 120-300 s
+    // "timeouts" killed their cargo runs mid-compile (Benchy, the M5, 2026-10-31).
+    /// KILLS the command after this many ms; not a wait (raise `wait_ms` to wait longer).
+    /// Default: none — it runs until done or `code/shell-kill`.
     #[serde(default)]
     pub kill_after_ms: Option<u64>,
 }
