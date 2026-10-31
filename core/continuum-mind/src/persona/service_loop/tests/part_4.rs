@@ -1,27 +1,14 @@
 #![cfg(test)]
 use super::*;
 
-    // what this catches: the STARVATION RATCHET — a yield being charged the rest
-    // backoff it did not earn. Regression for the live 2026-08-17 measurement (24
-    // hosted citizens, ambient pool of 1, ONE self-tick in 40 minutes on a
-    // healthy decoding lane). If `YieldedNoSlot` ever compounds again, contention
-    // silently becomes permanent slowness and the whole roster degrades as it grows.
+    // what this catches: a fruitless cycle that never rests, or a rest that never ends: a
+    // musing that found nothing backs off to the cap and saturates there, and finding
+    // something new snaps her back to the engaged beat.
     #[test]
-    pub(super) fn a_yield_never_costs_her_cadence_but_a_fruitless_cycle_still_rests() {
+    pub(super) fn a_fruitless_cycle_rests_to_the_cap_and_news_wakes_her() {
         use std::time::Duration;
         let engaged = Duration::from_millis(SELF_TICK_MS);
         let cap = Duration::from_millis(SELF_TICK_REST_CAP_MS);
-
-        // A yield leaves the beat EXACTLY where it was — she never ran.
-        let mut beat = engaged;
-        for _ in 0..50 {
-            beat = next_beat_after(BeatOutcome::YieldedNoSlot, beat, engaged, cap);
-        }
-        assert_eq!(
-            beat, engaged,
-            "50 yields must not slow her by a single millisecond — she never ran, \
-             so there is nothing to rest on (the ratchet that pinned 24 citizens at the cap)"
-        );
 
         // A cycle that found nothing DOES rest deeper, and saturates at the cap.
         let mut beat = engaged;

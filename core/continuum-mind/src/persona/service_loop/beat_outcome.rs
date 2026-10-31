@@ -1,32 +1,15 @@
 use super::*;
 
 /// What a self-tick beat DID, and therefore what the next interval should be.
-///
-/// Extracted as a pure decision (the `core_bind_guard::decide` shape) because the
-/// three outcomes are trivially confusable in an inline `match`, and confusing two
-/// of them cost a measured 16× slowdown across the whole roster — see
-/// [`next_beat_after`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BeatOutcome {
     /// She ran a cycle and the room had something new → stay engaged.
     Engaged,
     /// She ran a cycle and nothing had changed → rest deeper (earned backoff).
     NothingNew,
-    /// She never ran: a peer held the single ambient slot. She learned NOTHING,
-    /// so there is nothing to rest on and the beat must NOT compound.
-    YieldedNoSlot,
 }
 
 /// The self-tick cadence rule. Pure so every row is table-testable without a runtime.
-///
-/// The bug this encodes against (measured live 2026-08-17, 24 hosted citizens):
-/// `YieldedNoSlot` used to share `NothingNew`'s 1.5× backoff. With
-/// the ambient pool hardcoded at 1, ~23 citizens yield per beat, so each of them
-/// compounded 15s → the 240s cap in ~8 yields and STAYED pinned there — the only
-/// resets being a successful cycle (which the backoff itself denied them) or an
-/// inbound message. Transient contention became permanent slowness, and it got
-/// worse as the roster grew. Measured symptom: ONE self-tick across 24 citizens in
-/// 40 minutes, on a lane that was healthy and decoding throughout.
 pub fn next_beat_after(
     outcome: BeatOutcome,
     current: std::time::Duration,
@@ -36,8 +19,6 @@ pub fn next_beat_after(
     match outcome {
         BeatOutcome::Engaged => engaged,
         BeatOutcome::NothingNew => (current + current / 2).min(rest_cap),
-        // Unchanged: contention must never cost her cadence.
-        BeatOutcome::YieldedNoSlot => current,
     }
 }
 
