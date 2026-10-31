@@ -155,6 +155,55 @@ The fold pointers (two formats today), the open-views banner's call syntax, help
 next act", every error's free-text advice and every command's own size cap become `Answer`
 fields. Two shapes replace roughly a dozen.
 
+## The right form is the only form, and the easiest (the verb macro)
+
+Joel, 2026-10-31: "Make it impossible to write bad forms and make new ones easy and low effort,
+automatic." Today the schemas are formulaic (derived from each command's declaration) but every
+sentence that tells her what to call next is hand-written prose: verb names appear about 2,800
+times across 189 core files, in canonical form (`tool/output`) while she is offered another
+(`read_output`), some naming verbs she does not hold. The fix is in the abstraction, not in review.
+
+**One declaration generates everything.** `action_command!` (284 commands; 69 more implement the
+trait by hand and migrate to it) already turns a doc comment into the description and the params
+type into the schema. It grows into two halves, so the compiler can enforce the pattern across
+crates:
+
+- `verb! { /// doc  pub struct ToolOutput; name, access, native?, aliases?, params, output,
+  shape: Output, effect: Reopens, refusals: OutputRefusal }` declares the SPEC in the lowest
+  crate that names the verb (a pure move for the verbs her mind names: `tool/output`,
+  `commands/help`, `focus/*`, the task verbs). It generates the spec type, its registration, its
+  ts types, and its call constructor `ToolOutput::call(ToolOutputParams { act: Some(41), .. })`.
+- `handles! { ToolOutput { deps }, run(this, ctx, p) => body }` implements it in its own crate.
+- `action_command!` stays, as both halves in one place, for a verb nothing else names: a new
+  command is still ONE macro invocation and gets every property below for free.
+
+**What becomes impossible to write.**
+- A call named by string: `Call`'s fields are private and its only constructors are the generated
+  `X::call(params)`; a misspelled verb, a renamed one or a wrong field is a compile error. `Call`
+  renders in her wire dialect in one place (`read_output {"act":41}`), and naming one in a
+  context claims its schema in the one allocation (Codex on #5632), so what she is told and what
+  she can call are one fact.
+- A refusal as prose: `run` returns `Result<Output, Refusal<Self::Refusals>>`, where the
+  command's refusal enum derives `Refusal` (its kind, its message, and `fn fix(&self, params) ->
+  Option<Call>`). `CommandError::Invalid(String)` is removed; until the last command migrates, a
+  ratchet counts it down.
+- A result frame of its own: the command returns its `Output` and nothing else; the executor
+  builds the one rendering from the declared `shape` (Code, Output or List: the same shapes the
+  view's levels summarize), the declared `effect`, and the refusal's `fix`.
+- An echo list kept by hand: identifying arguments are marked on the params struct
+  (`#[identifying] file_path: String`) and derived with its schema, replacing `answer.rs`'
+  `IDENTIFYING` array (Cormac on #5635).
+
+**What stays automatic.** Effect defaults to `Undeclared` (authorizes nothing, counted); shape
+defaults to `Output`; refusals default to a generated enum with one `Other` arm (counted). A new
+command written with no thought for any of this still renders correctly, and the ratchets show
+exactly which declarations it has not made yet.
+
+**Ratchets that back it:** `named_verbs_offered` (a verb name inside a string literal outside
+`verb!`), `untyped_refusals` (`CommandError::Invalid(String)`), `results_outside_the_answer`. Each
+falls to zero; the bulk migration of the 353 commands is mechanical work for a cheap model or a
+script, verified by these counts.
+
 ## The verbs
 
 The task verbs are HER-TASKS' (T4 there); summarized here for the surface ratchet, so her hands
