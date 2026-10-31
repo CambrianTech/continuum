@@ -257,12 +257,6 @@ impl Observation {
         self.output.verdict.failed() || self.output.result.is_error == Some(true)
     }
 
-    /// The RECENCY-channel rendering: the FULL trace working memory keeps so the
-    /// mind can act on what it just fetched. Byte-identical to the old inline
-    /// `apply.rs` block (`{name}({args}){because}\nResult:\n{bounded}\n\n`) — the
-    /// #205 KV-stability invariant. `intent` is batch-level (one per `apply_act`
-    /// call, shared by every act in the batch), so it is passed rather than
-    /// stored per-`Observation`.
     /// The call as she made it, `name(args)`: its arguments by shape, never by size
     /// (`render_call_args`). The one rendering of a call, for its recency trace, its summary part
     /// and its ledger line.
@@ -270,19 +264,13 @@ impl Observation {
         format!("{}({})", self.call.name, render_call_args(&self.call.input))
     }
 
-    pub fn render_recency(&self, intent: &str) -> String {
-        // The intent rides the result as a ONE-LINE reason, its first line: a shape rule,
-        // never a size, and never the whole monologue.
-        // Measured 2026-09-04: one result header carried 2,902 chars of intent
-        // ("Let me get oriented…") ahead of 790 chars of actual output; across a
-        // turn, 6.1k of 20.6k result chars were intent echo. The output is what
-        // she must read; the reason is a label.
-        let because = if intent.trim().is_empty() {
-            String::new()
-        } else {
-            format!(" because {}", intent_label(intent))
-        };
-        format!("{}{}\nResult:\n{}\n\n", self.call_line(), because, self.body_text().trim())
+    /// The RECENCY-channel rendering: the FULL trace working memory keeps so the mind can act on
+    /// what it just fetched, `{call}\nResult:\n{body}\n\n`, stable across acts (the #205
+    /// KV-stability invariant).
+    pub fn render_recency(&self) -> String {
+        // No reason clause: her intent reaches her whole as her own thought, and #5611's causes
+        // link each result to its act, so a result carries its call and its output only.
+        format!("{}\nResult:\n{}\n\n", self.call_line(), self.body_text().trim())
     }
 
     /// This act as one part of a batch receipt's summary level: the recency header (its name and
@@ -350,27 +338,9 @@ pub fn extract_paths(input: &serde_json::Value) -> Vec<PathBuf> {
     out
 }
 
-/// Clip an act's intent to a one-line reason of at most `max_chars` characters
-/// (first line, head-trimmed with an ellipsis). Pure; used by the recency render.
-/// The intent's label on a result: its first line. A shape rule, never a size: the rest of what she
-/// thought is her own message, already in her view.
-pub fn intent_label(intent: &str) -> String {
-    intent.trim().lines().next().map_or_else(String::new, |first| first.trim().to_string()) // an empty intent labels nothing
-}
-
 #[cfg(test)]
 mod tests {
 
-    // what this catches: the monologue riding every result (2,902 chars of intent ahead of 790
-    // chars of output, measured 2026-09-04). The label is the first line, by shape, never a size.
-    #[test]
-    fn intent_on_a_result_is_its_first_line() {
-        let long = "Let me get oriented properly this time. I've been confusing myself with stale context and the board says otherwise.\nSecond line never rides.";
-        let label = super::intent_label(long);
-        assert!(label.starts_with("Let me get oriented") && !label.contains("Second line"), "{label:?}");
-        assert_eq!(super::intent_label("read the card"), "read the card");
-        assert_eq!(super::intent_label("   "), "");
-    }
 
     use super::*;
 

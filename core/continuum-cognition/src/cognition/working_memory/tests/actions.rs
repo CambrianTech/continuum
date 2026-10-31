@@ -384,7 +384,7 @@ fn a_batch_receipts_summary_keeps_every_operation() {
     let summary_of = |acts: Vec<crate::cognition::act_observe::Observation>| {
         let wm = WorkingMemory::new(8);
         // The receipt as production renders it: each act's recency rendering, in order.
-        let rendered: String = acts.iter().map(|a| a.render_recency("")).collect();
+        let rendered: String = acts.iter().map(|a| a.render_recency()).collect();
         wm.record_receipt_typed(&acts, &rendered, None, Default::default());
         let actions = wm.actions.lock();
         actions.records().last().and_then(|record| record.summary.clone())

@@ -98,7 +98,7 @@ mod the_newest_result_over_her_window {
             },
             status: ActStatus::Executed,
         };
-        let rendered = observation.render_recency("");
+        let rendered = observation.render_recency();
         wm.record_receipt_typed(&[observation], &rendered, Some(room), ResultCustody::Whole { handle: HANDLE.into() });
         LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", adapter)
             .with_context_window(window)

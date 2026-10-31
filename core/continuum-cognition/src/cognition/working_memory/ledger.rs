@@ -222,13 +222,14 @@ impl WorkingMemory {
     }
 
     /// Attach her stated reasoning for the act just recorded to the open views it touched,
-    /// so each view carries what she understood, not only how far she read. The note is the
-    /// intent's label, its first line: the same shape rule a result's header uses, never a size.
+    /// so each view carries what she intended, not only how far she read. Whole, never a first
+    /// line: it is an optional level of the open-views source, which her view sizes and drops
+    /// before the cursor (`planning_detail_yields_to_cursor_and_returns_when_granted`).
     pub fn annotate_open_views(&self, intent: &str) {
         let Some(seq) = self.next_action_seq.load(Ordering::Relaxed).checked_sub(1) else {
             return;
         };
-        self.open_views.lock().annotate(seq, &crate::cognition::act_observe::intent_label(intent));
+        self.open_views.lock().annotate(seq, intent);
     }
 
     pub(crate) fn record_receipt_measured(

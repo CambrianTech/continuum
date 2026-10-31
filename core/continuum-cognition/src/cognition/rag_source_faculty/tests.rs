@@ -636,6 +636,3 @@
         );
     }
 
-    /// The production default capacity (mirror of persona_workspace's constant) so
-    /// the canary tests the realistic configuration, not a contrived one.
-    const DEFAULT_CAPACITY_FOR_TEST: usize = 6;
