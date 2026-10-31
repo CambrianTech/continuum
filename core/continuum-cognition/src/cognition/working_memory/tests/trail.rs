@@ -289,3 +289,24 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         "no fabricated save age on legacy snapshots: {q:?}"
     );
 }
+
+// what this catches: a checkpoint whose context view no longer decodes (the view's shape changed in
+// a later build) refusing the whole restore. On 2026-10-31 a new field on the view's events made
+// every resident's checkpoint undecodable and the M5 hosted no one for 32 minutes. The view is
+// derived: it is dropped, her memory restores, and her next act opens a new epoch.
+#[test]
+fn an_undecodable_view_is_dropped_and_her_memory_still_restores() {
+    let wm = WorkingMemory::new(8);
+    wm.record("the build failed on the missing import");
+    let mut checkpoint = serde_json::to_value(wm.snapshot()).expect("encode");
+    checkpoint["context_view"] = serde_json::json!({ "events": [{ "shape": "from another build" }] });
+    let snap: VolatileSnapshot = serde_json::from_value(checkpoint).expect("the checkpoint still decodes");
+    assert!(snap.context_view.is_none(), "the stale view is dropped");
+    let restored = WorkingMemory::new(8);
+    restored.restore(snap);
+    assert!(
+        restored.recent_entries().iter().any(|entry| entry.text.contains("missing import")),
+        "her memory survives the dropped view"
+    );
+    assert!(restored.take_view().is_none(), "her next act opens a new epoch");
+}
