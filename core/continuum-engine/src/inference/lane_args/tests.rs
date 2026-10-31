@@ -282,6 +282,21 @@
     // than the governed directory. The fork refuses /train without --train-dir, so a
     // dropped flag sends every dream back to the retired trainer with nothing red; a
     // second or wrong value would let the route write outside the tracked dir.
+    // what this catches: the prompt cache's disk tier dropped (an evicted conversation is then
+    // re-prefilled whole) or launched without its limit (the engine would fill the volume).
+    #[test]
+    fn cache_disk_flags_ride_together_only_when_given() {
+        let off = inv(1, 4096).with_options(&LaneOptions::default());
+        assert!(!off.has("--cache-disk") && !off.has("--cache-disk-mib"), "{:?}", off.args);
+        let dir = PathBuf::from("/home/u/.continuum/cache/kv-pages/prompt-cache/m");
+        let on = inv(1, 4096).with_options(&LaneOptions {
+            prompt_cache_disk: Some((&dir, 81_920)),
+            ..LaneOptions::default()
+        });
+        assert_eq!(on.value_of("--cache-disk"), Some(dir.to_string_lossy().as_ref()));
+        assert_eq!(on.value_of("--cache-disk-mib"), Some("81920"));
+    }
+
     #[test]
     fn train_dir_flag_is_present_only_when_given_and_carries_that_path() {
         let off = inv(1, 4096).with_options(&LaneOptions::default());

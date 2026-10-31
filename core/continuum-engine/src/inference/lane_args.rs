@@ -498,6 +498,10 @@ pub struct LaneOptions<'a> {
     /// every file it writes is a bare `.gguf` name inside this directory. `None` =
     /// training off on this lane; serving is the same either way.
     pub train_dir: Option<&'a Path>,
+    /// The host prompt cache's disk tier (`--cache-disk DIR --cache-disk-mib N`, engine fork
+    /// #78): an entry evicted from `--cache-ram` is written to DIR instead of dropped. `None`
+    /// = no tier; the RAM tier serves the same either way.
+    pub prompt_cache_disk: Option<(&'a Path, u32)>,
     /// K3 expert paging (#278): `-ot` tensor placement for COLD layers, from the
     /// residency planner. `None` / all-hot → no flag (llama-server rejects an empty one).
     pub expert_ot: Option<&'a str>,
@@ -661,6 +665,10 @@ impl LaneInvocation {
         // governed directory, never a caller's path.
         if let Some(dir) = opts.train_dir {
             pair(&mut self.args, "--train-dir", dir);
+        }
+        if let Some((dir, mib)) = opts.prompt_cache_disk {
+            pair(&mut self.args, "--cache-disk", dir);
+            pair(&mut self.args, "--cache-disk-mib", mib.to_string());
         }
         // K3 slice-1 physical expert paging: offload COLD layers' stacked expert tensors
         // to CPU while hot layers stay GPU-resident. Experts are stacked (one

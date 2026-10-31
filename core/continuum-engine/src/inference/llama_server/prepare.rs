@@ -77,6 +77,27 @@ impl LlamaServerProcess {
                 None
             }
         });
+        // The prompt cache's disk tier is an addition to the lane too: an engine without the
+        // flag, a volume the disk monitor has not sampled yet, or a directory that cannot be
+        // made starts the lane without it, and the probe says which.
+        let cache_disk = (target.host_prompt_cache_mib > 0).then(|| prompt_cache_disk_dir(&target.model.id));
+        let cache_disk = cache_disk.and_then(|dir| {
+            let outcome = if !engine_accepts_cache_disk() {
+                Err("engine_lacks_flag".to_string())
+            } else if let Err(e) = std::fs::create_dir_all(&dir) {
+                Err(format!("dir_not_created: {e}"))
+            } else {
+                prompt_cache_disk_mib(&dir).ok_or_else(|| "volume_unsampled".to_string())
+            };
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.prompt_cache.disk_tier",
+                model = %target.model.id,
+                dir = %dir.display(),
+                limit_mib = ?outcome.as_ref().ok(),
+                off_because = ?outcome.as_ref().err(),
+                "the prompt cache's disk tier for this launch, or why it is off"
+            );
+            outcome.ok().map(|mib| (dir, mib))
+        });
         let moe_paths = if target.expert_placement.is_some() {
             moe_glass_box_paths(port)
         } else {
@@ -304,6 +325,7 @@ impl LlamaServerProcess {
             loras: &lora_paths,
             // only to an engine that lists the flag: an older one refuses to start with it
             train_dir: train_dir.as_deref().filter(|_| engine_accepts_train_dir()),
+            prompt_cache_disk: cache_disk.as_ref().map(|(dir, mib)| (dir.as_path(), *mib)),
             expert_ot: expert_ot.as_deref(),
             host_pinned_tensors: target.model.serving.host_pinned_tensors,
             fit_off: target.model.serving.fit_off,
