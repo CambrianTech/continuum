@@ -71,6 +71,7 @@ continuum-engine = { path = "../continuum-engine" }
 continuum-service = { path = "../continuum-service" }  # each resident's window judged, and the alarm the beacon carries (card 1c157668)
 continuum-models = { path = "../continuum-models" }
 continuum-serving = { path = "../continuum-serving" }
+continuum-gateway = { path = "../continuum-gateway" }
 continuum-embedding = { path = "../continuum-embedding" }
 continuum-store = { path = "../continuum-store" }  # the data layer and its commands (card 2709ec6d)
 continuum-grid = { path = "../continuum-grid" }  # grid discovery, trust and routing with their commands (plan phase 2)

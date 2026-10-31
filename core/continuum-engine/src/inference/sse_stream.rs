@@ -312,7 +312,8 @@ pub(crate) async fn consume_sse_stream(
     response: reqwest::Response,
     sink: &tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
 ) -> Result<StreamOutcome, String> {
-    // Consume the SSE stream: every token reaches `sink` the INSTANT it arrives.
+    // Consume the SSE stream: every token reaches `sink` the INSTANT it arrives, and its
+    // consumer gets the turn before the next is parsed (`stream_sinks::deliver`).
     // Liveness is the per-token idle watchdog ([`STREAM_IDLE_TIMEOUT_SECS`]) —
     // silence means the backend died, NOT that generation is simply long.
     use futures::StreamExt;
@@ -783,11 +784,15 @@ pub(crate) async fn consume_sse_stream(
                         if local_lane {
                             crate::inference::llama_server::note_real_prefill_progress();
                         }
-                        let _ = sink.send(GenerationChunk::Prefill {
-                            processed: p.processed,
-                            total: p.total,
-                            cached: p.cache,
-                        });
+                        crate::ai::stream_sinks::deliver(
+                            sink,
+                            GenerationChunk::Prefill {
+                                processed: p.processed,
+                                total: p.total,
+                                cached: p.cache,
+                            },
+                        )
+                        .await;
                     }
                 }
                 // Any REAL output (token, reasoning, tool delta, finish) means
@@ -805,14 +810,14 @@ pub(crate) async fn consume_sse_stream(
                         if let Some(c) = delta.content {
                             if !c.is_empty() {
                                 acc_content.push_str(&c);
-                                let _ = sink.send(GenerationChunk::Token(c));
+                                crate::ai::stream_sinks::deliver(sink, GenerationChunk::Token(c)).await;
                                 last_progress = Instant::now();
                             }
                         }
                         if let Some(r) = delta.reasoning_content {
                             if !r.is_empty() {
                                 acc_reasoning.push_str(&r);
-                                let _ = sink.send(GenerationChunk::Reasoning(r));
+                                crate::ai::stream_sinks::deliver(sink, GenerationChunk::Reasoning(r)).await;
                                 last_progress = Instant::now();
                             }
                         }

@@ -79,6 +79,29 @@ pub fn take(stream_id: Uuid) -> Option<UnboundedSender<GenerationChunk>> {
     sinks().remove(&stream_id).map(|(_, s)| s)
 }
 
+/// Hand one chunk to a generation's consumer, then give the consumer the turn before the
+/// producer parses further. Every producer the local serving path runs sends through this:
+/// `inference::sse_stream` (llama-server's stream) and `AIProviderAdapter`'s default
+/// `generate_stream` (a one-shot backend's whole answer).
+///
+/// The sink is unbounded so decode never blocks on a reader, but an unbounded send never
+/// returns `Pending` either: one network read of llama-server's stream carries many events,
+/// and a producer that parsed them all in one poll left a whole read's worth of chunks
+/// waiting before its consumer ran. Yielding after each send makes every chunk its own poll,
+/// so a consumer that polls the generation only when it can take more (the driver gateway's
+/// streamed answer) holds at most one chunk; the rest stays unread in the engine's stream,
+/// where the socket's receive window pushes back on the server. A resident's generation
+/// pays one reschedule per chunk. Pinned against a ready burst through the real producer by
+/// `ai/openai_adapter/tests/a_ready_burst_reaches_the_consumer_one_chunk_per_poll.rs`.
+///
+/// A send to a closed sink is not a failure: a caller that wants only the assembled answer
+/// drops its receiver, and generation continues for the response it returns.
+pub async fn deliver(sink: &UnboundedSender<GenerationChunk>, chunk: GenerationChunk) {
+    if sink.send(chunk).is_ok() {
+        tokio::task::yield_now().await;
+    }
+}
+
 /// The stream id a caller stamped on the params, if any.
 pub fn stream_id_of(params: &serde_json::Value) -> Option<Uuid> {
     params
