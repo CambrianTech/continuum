@@ -8,7 +8,7 @@ pub(super) enum CycleVerdict {
     Skip,
     /// Custody failed after generation. The loop must leave its durable
     /// obligation open and return to lifecycle supervision, not close a skip.
-    CheckpointFailed(Arc<crate::cognition::persona_workspace::TaskSinkError>),
+    CheckpointFailed(std::sync::Arc<crate::cognition::persona_workspace::TaskSinkError>),
 }
 
 /// The L2 producer's two provenance inputs are BORN inside the cycle — credit on her hands
