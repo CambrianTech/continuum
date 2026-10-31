@@ -284,7 +284,7 @@ candle-transformers = { version = "0.9" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] } # raw_value: a derived field is held as its exact text until decoded, so u128 ids never pass through Value (#5659)
 
 # Database
 rusqlite = { version = "0.38", features = ["bundled"] }

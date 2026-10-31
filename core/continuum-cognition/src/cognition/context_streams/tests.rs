@@ -87,45 +87,52 @@ fn a_view_from_an_older_build_is_dropped_and_authoritative_state_survives() {
     let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
     let (view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap();
     memory.keep_view(Some(view));
-    let good = serde_json::to_value(memory.snapshot()).expect("encode");
+    // Text, never `serde_json::Value`: the view's element ids are u128, which a Value cannot hold.
+    let terminals = serde_json::to_string(&memory.snapshot().task_results).expect("terminal references");
+    let good = serde_json::to_string(&memory.snapshot()).expect("encode");
 
-    // The older build's shape: the same real view, its `level` fields removed and nothing else.
-    fn strip_levels(value: &mut serde_json::Value) -> usize {
-        match value {
-            serde_json::Value::Object(map) => {
-                let here = usize::from(map.remove("level").is_some());
-                here + map.values_mut().map(strip_levels).sum::<usize>()
-            }
-            serde_json::Value::Array(items) => items.iter_mut().map(strip_levels).sum(),
-            _ => 0,
+    // The older build's shape: the same real view, its `level` pairs removed and nothing else.
+    let (head, view_and_rest) = good.split_at(good.find("\"context_view\":").expect("the checkpoint carries her view"));
+    let mut older_view = view_and_rest.to_owned();
+    let mut stripped = 0;
+    for variant in ["Full", "Summary", "Pointer", "Folded"] {
+        for pattern in [format!("\"level\":\"{variant}\","), format!(",\"level\":\"{variant}\"")] {
+            stripped += older_view.matches(pattern.as_str()).count();
+            older_view = older_view.replace(pattern.as_str(), "");
         }
     }
-    let mut older = good.clone();
-    assert!(strip_levels(&mut older["context_view"]) > 0, "the fixture reproduces the missing-level view");
+    assert!(stripped > 0, "the fixture reproduces the missing-level view");
+    let older = format!("{head}{older_view}");
 
-    let snap: VolatileSnapshot = serde_json::from_value(older).expect("an older view never refuses the checkpoint");
+    let snap: VolatileSnapshot = serde_json::from_str(&older).expect("an older view never refuses the checkpoint");
     let restored = WorkingMemory::new(8);
     restored.restore(snap);
     assert!(restored.take_view().is_none(), "the stale view is dropped: her next act opens a new epoch");
     assert!(restored.has_receipt(), "her newest result survives");
     assert_eq!(restored.pending_task_wakes(), vec![task], "discarding a view must not acknowledge an end");
-    assert_eq!(serde_json::to_value(restored.snapshot()).expect("snapshot")["task_results"], good["task_results"]);
+    assert_eq!(serde_json::to_string(&restored.snapshot().task_results).expect("terminal references"), terminals);
     let settled = |m: &WorkingMemory| m.recent_entries().iter().any(|entry| entry.text.contains("listed the four files"));
     assert!(settled(&restored), "her settlement survives");
 
+    // A VALID view (u128 ids and all) still restores whole: the derived decoder is lossless.
+    let current: VolatileSnapshot = serde_json::from_str(&good).expect("the current view decodes");
+    let resumed = WorkingMemory::new(8);
+    resumed.restore(current);
+    assert!(resumed.take_view().is_some(), "a view that decodes is kept");
+
     // The next save keeps every authoritative field and carries no view until she renders one.
-    let saved = serde_json::to_value(restored.snapshot()).expect("encode");
-    assert!(saved.get("context_view").is_none());
+    let saved = serde_json::to_string(&restored.snapshot()).expect("encode");
+    assert!(!saved.contains("\"context_view\""));
     let again = WorkingMemory::new(8);
-    assert_eq!(saved["task_results"], good["task_results"], "terminal identity and fingerprint survive the next save");
-    again.restore(serde_json::from_value(saved).expect("the repaired save decodes"));
+    assert_eq!(serde_json::to_string(&restored.snapshot().task_results).expect("terminal references"), terminals,
+        "terminal identity and fingerprint survive the next save");
+    again.restore(serde_json::from_str(&saved).expect("the repaired save decodes"));
     assert_eq!(again.pending_task_wakes(), vec![task]);
     assert!(again.has_receipt() && settled(&again), "authoritative state survives the repaired save");
 
     // A corrupt authoritative field is still refused: only the derived view is forgiven.
-    let mut corrupt = good;
-    corrupt["next_action_seq"] = serde_json::json!("not a number");
-    assert!(serde_json::from_value::<VolatileSnapshot>(corrupt).is_err());
+    let corrupt = good.replacen("\"next_action_seq\":", "\"next_action_seq\":\"not a number\",\"_was\":", 1);
+    assert!(serde_json::from_str::<VolatileSnapshot>(&corrupt).is_err());
 }
 
 // what this catches (Cormac on #5255): a result kept in memory but never saved under a handle
