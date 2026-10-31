@@ -392,6 +392,7 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
                     0,
                     LlmDeliberationFaculty::holds_live_work(&ws),
                     ws.directed_at_self(),
+                    None, // the floor (min_tokens) does not read the time term
                 )
                 .min_tokens as usize;
             let cluster = history
