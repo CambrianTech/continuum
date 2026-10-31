@@ -49,3 +49,46 @@ fn publish_new_refuses_an_occupied_address_and_a_failed_fence_is_an_error() {
     fault_injection::with_failed_fence(|| assert!(fence(&file, &free).is_err()));
     fence(&file, &free).unwrap();
 }
+
+// what this catches: a staging file outliving its write (dropped unplaced, placed by rename, or
+// placed by hard link), a publish over a taken name changing it, and a leftover staging name from
+// a crashed writer with this PID refusing the next life's first write (a container's core is PID 1
+// every boot; Cormac on #5651).
+#[test]
+fn staging_never_outlives_its_write_and_never_refuses_a_leftover_name() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let dir = cap_std::fs::Dir::open_ambient_dir(base.path(), cap_std::ambient_authority()).expect("dir");
+    let next = staging::peek_seq();
+    for seq in next..next + 64 {
+        std::fs::write(base.path().join(format!(".{}-{seq}.staging", std::process::id())), b"crash").expect("plant");
+    }
+    let planted = std::fs::read_dir(base.path()).expect("dir").count();
+    drop(Staging::new(&dir).expect("a leftover name is skipped"));
+    assert_eq!(std::fs::read_dir(base.path()).expect("dir").count(), planted, "dropped unplaced: removed");
+    let dest = std::path::Path::new("blob");
+    let mut first = Staging::new(&dir).expect("staging");
+    first.write_all(b"one").expect("write");
+    first.publish_new(dest).expect("publish");
+    let mut second = Staging::new(&dir).expect("staging");
+    second.write_all(b"two").expect("write");
+    assert_eq!(second.publish_new(dest).expect_err("taken").kind(), std::io::ErrorKind::AlreadyExists);
+    fence_existing(&dir, dest).expect("fence the existing name");
+    let mut third = Staging::new(&dir).expect("staging");
+    third.write_all(b"three").expect("write");
+    third.replace(dest).expect("replace");
+    assert_eq!(std::fs::read(base.path().join("blob")).expect("read"), b"three");
+    assert_eq!(std::fs::read_dir(base.path()).expect("dir").count(), planted + 1, "only the placed file was added");
+}
+
+// what this catches: two holders of one lock at once.
+#[test]
+fn a_held_lock_refuses_a_second_holder() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let path = base.path().join(".x.lock");
+    let held = lock_path(&path, false).expect("first");
+    assert_eq!(lock_path(&path, false).err().map(|e| e.kind()), Some(std::io::ErrorKind::WouldBlock));
+    drop(held);
+    // Waiting, not try: a child another test is spawning shares the lock's open description
+    // between fork and exec (O_CLOEXEC releases it at exec), so "free" is "free once that ends".
+    lock_path(&path, true).expect("free again");
+}

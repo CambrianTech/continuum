@@ -3,6 +3,7 @@
 //! differ, chosen once at the module boundary. Nothing without an OS difference belongs here, and
 //! no code outside this crate branches on the OS for these capabilities.
 
+pub mod confine;
 pub mod durable;
 pub mod file_identity;
 pub mod local_stream;
