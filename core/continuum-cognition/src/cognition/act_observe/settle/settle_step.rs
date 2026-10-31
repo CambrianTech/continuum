@@ -147,12 +147,33 @@ pub async fn settle_step(
                 // re-perceive next step; `NoHands`/`ExecutorError` → unfulfilled. Behavior
                 // identical to the old `Some`/`None`, but `ExecutorError` is now
                 // distinguishable for a future backstop.
-                if apply_act(cycle, &calls, &intent, ws.activity_room_id, chain, hands, ws.decision_generation())
-                    .await
-                    .produced_an_act()
-                {
+                let act_outcome = apply_act(cycle, &calls, &intent, ws.activity_room_id, chain, hands, ws.decision_generation())
+                    .await;
+                if act_outcome.produced_an_act() {
                     SettleStep::Acted { calls, intent }
                 } else {
+                    // Proprioception backstop for failed acts: the persona decided to
+                    // run tools but nothing executed — without this fact they have no
+                    // internal signal that their action was unfulfilled, so the next
+                    // tick starts with identical cognition and repeats (the "six times
+                    // the substrate told a party that could not act" loop).
+                    if let Some(body) = cycle.acting() {
+                        body.working_memory.record_fact(
+                            "[unfulfilled] I decided to run tools but nothing executed \
+                             this concern — the tool calls were not carried out. Nothing \
+                             exists in the workspace until a tool call actually executes \
+                             it. If I named a tool, that name may not exist: `list_commands` \
+                             shows the tools that are real.",
+                        );
+                        continuum_base::probe!(
+                            class = "persona.act.unfulfilled_proprioception",
+                            persona = %body.persona_name,
+                            room_id = %room_id,
+                            calls_count = calls.len(),
+                            intent = %intent,
+                            "ActUnfulfilled: recorded unfulfilled-promise proprioception for failed act"
+                        );
+                    }
                     SettleStep::ActUnfulfilled { calls, intent }
                 }
             }
