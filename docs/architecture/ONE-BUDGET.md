@@ -221,11 +221,16 @@ from, the behaviour model, ts-rs bindings) stay out of it.
    held amounts plus every reservation fit. In Codex's case (capacity 10, A holds 10, B proposes 10) either
    A is held and B's target is 0, or A is asked to shrink and B waits holding nothing; B never owns a unit A
    still holds.
-7. **A release is the holder reporting what it physically holds now,** keyed by its claim: idempotent and
-   monotone (it only ever lowers what is charged, never below the target it was asked for). It is not fenced
+7. **A release is the holder reporting what it physically holds now,** keyed by its claim, at or below its
+   target as it likes: idempotent and monotone (it only ever lowers what is charged). A holder known to be gone
+   (its process exited or crashed) is **withdrawn** by the authority, freeing everything it owned, so a holder
+   that disappears after a shrink request never strands its units (Cormac on #5620). It is not fenced
    by the clearing generation, since a release can never overcommit, so a later clearing never invalidates a
    delayed real release (Codex on airc#1630).
-8. **New commitments are fenced:** a commitment to use more carries the generation it was made at and is
+8. **Capacity measured below what holders own** (the person's game took memory, S4) is reported as
+   `Overcommitted { by }` in the receipt: nothing grows, free capacity is zero (never negative), and shrinks are
+   issued toward targets that fit the new capacity (Cormac).
+9. **New commitments are fenced:** a commitment to use more carries the generation it was made at and is
    refused when stale, so no holder grows on an old decision.
 
 **Nesting.** A tier is itself a claim on its parent. Its value curve one level up is its children's
@@ -248,7 +253,8 @@ the reported bounds bracketing a brute-forced optimum.
 **Validator cases** the airc PR adding the crate carries (airc's NETWORK-AUTHORITY N1 builds on them): two joint
 claims competing for the last unit of one resource never leave either half-granted; the same inputs in any order
 give byte-identical receipts; a shrink is never re-granted before the holder reports its release; a release reported after
-a later clearing is still credited; growth never commits part of an indivisible block or an optional floor; a
+a later clearing is still credited; a withdrawn holder frees everything at once; capacity below what is owned
+is overcommitted and nothing grows; growth never commits part of an indivisible block or an optional floor; a
 stale commitment is refused; a fully met demand publishes a zero price; required floors past capacity are `Infeasible` with the claims named; an
 unmeasured claim gets only its floor.
 
