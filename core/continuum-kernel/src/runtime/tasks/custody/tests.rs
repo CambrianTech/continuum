@@ -195,3 +195,27 @@ async fn concurrent_shutdowns_have_one_owner_and_stay_closed() {
     let late = custody.shutdown(&store).await;
     assert!(late.last_pass.committed.is_empty() && late.unresolved.is_empty(), "a late shutdown reopens nothing");
 }
+
+// what this catches (Codex on #5664 at 0efc9cf44): a shutdown cancelled after it set Draining left
+// the phase there with no owner, so every later shutdown waited forever for a Closed nobody would set.
+// The owner's guard reopens the phase on drop; the next shutdown owns the drain and closes.
+#[tokio::test]
+async fn a_cancelled_shutdown_hands_the_drain_to_the_next_one() {
+    let custody = TerminalCustody::new();
+    let store = Store::new(0, None, Duration::from_millis(40));
+    custody.hold(held(30, TaskEnd::Stopped)).expect("custody is open"); // test: a fixture step that must succeed
+    {
+        let first = custody.shutdown(&store);
+        tokio::pin!(first);
+        // Cancelled mid-pass: draining began and its commit of task 30 is in flight.
+        assert!(tokio::time::timeout(Duration::from_millis(10), first.as_mut()).await.is_err(), "the first shutdown is still draining");
+        assert_eq!(custody.state.lock().phase, Phase::Draining);
+    }
+    assert_eq!(custody.state.lock().phase, Phase::Open, "the dropped owner reopened the phase");
+    let report = tokio::time::timeout(Duration::from_secs(5), custody.shutdown(&store))
+        .await
+        .expect("the next shutdown owns the drain instead of waiting forever"); // test: a fixture step that must succeed
+    assert_eq!(report.last_pass.committed.iter().map(|c| c.held.task).collect::<Vec<_>>(), vec![Uuid::from_u128(30)]);
+    assert!(report.unresolved.is_empty());
+    assert_eq!(custody.hold(held(31, TaskEnd::Stopped)), Err(CustodyError::Closed), "closed after the second shutdown");
+}
