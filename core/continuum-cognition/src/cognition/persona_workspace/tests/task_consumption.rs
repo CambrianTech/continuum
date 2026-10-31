@@ -17,7 +17,7 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
     registry.register_from_cfg(cfg_for(owner))?;
     let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
     let source = crate::cognition::context_streams::tasks::Tasks { memory: &memory, persona: owner };
-    let (view, _) = View::start(Vec::new(), &[&source as &dyn Source<_>], |claims| {
+    let (view, _) = View::<crate::cognition::context_streams::ContextMessage>::start(Vec::new(), &[&source as &dyn Source<_>], |claims| {
         claims.iter().map(|claim| claim.full_chars).collect()
     })?;
     assert!(view.render().any(|message| message.text.contains("timed out task")));
@@ -36,6 +36,10 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
     assert_eq!(memory.pending_task_wakes(), vec![task]);
     assert!(registry.record_rendered_tasks(&exact)?.is_some());
     assert!(memory.pending_task_wakes().is_empty());
+    let checkpoint = std::fs::read(volatile_path(owner)?)?;
+    assert!(registry.record_rendered_tasks(&exact)?.is_none());
+    assert_eq!(std::fs::read(volatile_path(owner)?)?, checkpoint);
+    assert!(source.items().iter().all(|item| !item.full().text.contains("timed out task")));
     let restored = WorkingMemory::new(8);
     restored.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
     assert!(restored.pending_task_wakes().is_empty());

@@ -36,7 +36,7 @@ impl PersonaWorkspaceRegistry {
         let shown: std::collections::BTreeSet<_> = receipt.view.items.iter()
             .filter(|item| !item.retired && matches!(item.level, Level::Full | Level::Summary | Level::Pointer))
             .filter_map(|item| item.element).collect();
-        let tasks: Vec<_> = memory.task_terminals().into_iter().filter(|end| {
+        let tasks: Vec<_> = memory.task_terminals().into_iter().filter(|end| end.wake_pending).filter(|end| {
             shown.contains(&crate::cognition::context_streams::tasks::terminal_element(
                 receipt.owner, end.task, &end.fingerprint))
         }).map(|end| end.task).collect();

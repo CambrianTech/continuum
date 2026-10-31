@@ -71,7 +71,7 @@ impl Source<ContextMessage> for Tasks<'_> {
                 .with_summary(summary)
                 .with_pointer(ContextMessage::user(line))
         }));
-        items.extend(terminals.into_iter().map(|end| {
+        items.extend(terminals.into_iter().filter(|end| end.wake_pending).map(|end| {
             let status = match end.state {
                 TaskEndState::Done => "done",
                 TaskEndState::Failed => "failed",

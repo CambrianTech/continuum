@@ -28,6 +28,7 @@ pub(crate) struct TaskTerminal {
     pub task: Uuid,
     pub fingerprint: [u8; 32],
     pub state: TaskEndState,
+    pub wake_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -116,10 +117,11 @@ impl WorkingMemory {
     pub(crate) fn task_terminals(&self) -> Vec<TaskTerminal> {
         let results = self.task_results.lock();
         results.entries.iter().filter_map(|(task, end)| {
-            results.published.contains_key(task).then_some(TaskTerminal {
+            results.published.get(task).map(|pending| TaskTerminal {
                 task: *task,
                 fingerprint: end.fingerprint,
                 state: end.state,
+                wake_pending: *pending,
             })
         }).collect()
     }
