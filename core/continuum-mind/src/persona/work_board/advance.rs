@@ -144,7 +144,20 @@ pub async fn advance_card_state_effective(
         && review_parent.is_none()
     {
         if let Some(root) = actor.and_then(crate::cognition::persona_workspace::acting_root_of) {
+            // Read only for a close: whether her ledger records a findings conclusion.
+            let findings = state == CardState::Closed && concluded_by_findings(airc, card_id, actor).await;
             match checkout_change(&root) {
+                ChangeVerdict::NoChange if findings => {
+                    // A close needs no write when she established why no change is needed (an
+                    // already-fixed bug, a premise that no longer holds): her ledger is the proof,
+                    // and nothing goes to a reviewer, so the gate's purpose still holds (Codex on
+                    // #5653; Aris on card 7d044c91, 2026-10-31: 11 acts on a bug 73196f51a fixed).
+                    continuum_base::probe!(
+                        class = "work.closed_by_findings",
+                        card = %short8(card_id.as_uuid()),
+                        "a gated card closed with no change: her ledger records what she established"
+                    );
+                }
                 ChangeVerdict::NoChange => {
                     continuum_base::probe!(
                         class = "work.review.refused_no_write",
@@ -157,8 +170,9 @@ pub async fn advance_card_state_effective(
                     return Err(format!(
                         "done refused: {} has no change since it was staged (clean tree, no new \
                          commit) — there is nothing for a reviewer to review. Write the fix \
-                         (code/edit) and mark done again, or release the card (work/release) \
-                         so another holder can take it.",
+                         (code/edit) and mark done again; or, when no change is needed (already \
+                         fixed, premise gone), record what you established (work/note with known) \
+                         and close it (work/state closed); or release it (work/release).",
                         root.display()
                     ));
                 }
@@ -339,6 +353,23 @@ fn resident_finish(actor: Option<Uuid>, pr_linked: bool, current: &CardState) ->
 /// Post the sibling review card for `parent` into the parent's own room, as the
 /// caller's identity. The card BODY carries the reviewer's role prompt — recipe
 /// data on the card, never a code branch in cognition.
+/// A close with no change in her checkout concludes by findings when her newest ledger on the card
+/// is hers and records what she established (`work/note` with known facts).
+async fn concluded_by_findings(airc: &Arc<Airc>, card_id: WorkCardId, actor: Option<Uuid>) -> bool {
+    use crate::experience::ledger::LedgerStore as _;
+    let Some(actor) = actor else { return false };
+    let Some((room, _)) = card_in_subscribed_rooms(airc, card_id).await else { return false };
+    match crate::experience::ledger::WallLedgerStore::new(airc.clone()).read(&room, card_id.as_uuid()).await {
+        Ok(Some(ledger)) => established_by(&ledger, actor),
+        Ok(None) | Err(_) => false,
+    }
+}
+
+/// PURE: the ledger is hers and holds at least one established fact.
+fn established_by(ledger: &crate::experience::ledger::CardLedger, actor: Uuid) -> bool {
+    ledger.by == actor && ledger.known.iter().any(|fact| !fact.trim().is_empty())
+}
+
 pub(crate) async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCardId, String> {
     let (room, card) = card_in_subscribed_rooms(airc, parent)
         .await
@@ -486,6 +517,26 @@ pub async fn raw_advance(
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches: a findings close admitted on someone else's ledger, or on a ledger that
+    // establishes nothing (an empty note would make the write gate a formality).
+    #[test]
+    fn a_findings_close_needs_her_own_ledger_with_an_established_fact() {
+        let her = Uuid::from_u128(1);
+        let ledger = |by: Uuid, known: Vec<&str>| crate::experience::ledger::CardLedger {
+            card_id: Uuid::from_u128(9),
+            known: known.into_iter().map(String::from).collect(),
+            hypotheses: Vec::new(),
+            unknown: String::new(),
+            next_test: String::new(),
+            decided_fix: None,
+            at_ms: 1,
+            by,
+        };
+        assert!(established_by(&ledger(her, vec!["llm_deliberation_faculty.rs is 931 lines; the cited line 2496 is gone (73196f51a)"]), her));
+        assert!(!established_by(&ledger(Uuid::from_u128(2), vec!["a fact"]), her), "another holder's ledger");
+        assert!(!established_by(&ledger(her, vec!["  "]), her), "a ledger that establishes nothing");
+    }
     use super::*;
 
     // what this catches (card 4356a90f, Codex on #5399): a resident's `closed` after a pass
