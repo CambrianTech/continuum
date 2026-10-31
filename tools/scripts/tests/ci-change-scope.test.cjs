@@ -279,3 +279,18 @@ test('CRLF workspace comments do not become phantom crate members', () => {
   assert.deepEqual(readWorkspace(root).crates, []);
   fs.rmSync(root, { recursive: true });
 });
+
+
+test('selected test features satisfy every declared integration target', () => {
+  const fs = require('node:fs');
+  for (const crate of readWorkspace().crates.filter(c => TESTED_CRATES.includes(c.name))) {
+    const manifest = fs.readFileSync(path.join(crate.dir, 'Cargo.toml'), 'utf8');
+    const enabled = new Set(TEST_FEATURES[crate.name].split(','));
+    for (const section of manifest.split(/(?=^\[)/m).filter(s => s.startsWith('[[test]]'))) {
+      const required = section.match(/required-features\s*=\s*\[([^\]]*)\]/)?.[1];
+      for (const [, feature] of (required ?? '').matchAll(/"([^"]+)"/g)) {
+        assert.ok(enabled.has(feature), `${crate.name} CI omits integration feature ${feature}`);
+      }
+    }
+  }
+});

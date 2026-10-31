@@ -102,7 +102,7 @@ function readPolicy(root = '.') {
 
 // Core is the one crate that tests the call (livekit-webrtc) and 3D-avatar (avatar-3d) paths a
 // node's profile turns on; every other crate builds with its own `test-fixtures` feature, if any.
-const FEATURE_OVERRIDES = { 'continuum-core': 'livekit-webrtc,avatar-3d' };
+const FEATURE_OVERRIDES = { 'continuum-core': 'livekit-webrtc,avatar-3d,test-fixtures' };
 
 // Everything CI derives from the workspace: no crate is listed here. Every `core/` member is
 // tested unless the policy excepts it; the crate job and the cache-warming job both read `features`.
