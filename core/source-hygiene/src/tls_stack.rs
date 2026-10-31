@@ -43,11 +43,14 @@ mod tests {
     fn the_default_build_reaches_no_openssl() {
         let root = crate::repo_root().expect("the workspace root is above this crate");
         let out = std::process::Command::new(env!("CARGO"))
-            .args(["tree", "--workspace", "--target", "all", "-e", "normal,build", "--offline", "--prefix", "none", "-f", "{p}"])
+            .args(["tree", "--workspace", "--target", "all", "-e", "normal,build", "--locked", "--prefix", "none", "-f", "{p}"])
             .current_dir(&root)
             .output()
             .expect("cargo runs");
-        // A failed resolve is a failed check, never "not reached".
+        // A failed resolve is a failed check, never "not reached". `--locked`, not `--offline`: the
+        // graph spans every target, and a runner's cache holds only its own platform's crates
+        // (CI 2026-10-31: `cxxbridge-cmd` missing offline), so cargo may fetch what the lock
+        // names but never change it.
         assert!(out.status.success(), "cargo tree failed, so the graph is unknown: {}", String::from_utf8_lossy(&out.stderr));
         let found = reached(&String::from_utf8_lossy(&out.stdout));
         assert!(
