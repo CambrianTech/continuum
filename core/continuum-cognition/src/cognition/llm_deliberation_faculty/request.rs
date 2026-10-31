@@ -288,10 +288,6 @@ impl LlmDeliberationFaculty {
                 .and_then(|r| r.timing.as_ref())
                 .map(|t| (t.cached_tokens, t.prefill_tokens)),
         );
-        // The render receipt: taken on every outcome, so a failed request's prompt is never
-        // receipted, and delivered only where the request was served.
-        let submitted = self.context_view.lock().as_mut().and_then(continuum_context::view::View::take_submitted);
-        let receipted_request = request_id.clone();
         let receipt = match &gen_result {
             Ok(response) => crate::ai::provenance::GenerationReceipt::from_response(request_id, response),
             Err(error) => crate::ai::provenance::GenerationReceipt::faulted(request_id, error.to_string()),
@@ -300,14 +296,6 @@ impl LlmDeliberationFaculty {
         // window reads: in the window it was served in, whether or not her turn settles soon.
         if matches!(receipt.outcome, crate::ai::provenance::GenerationOutcome::Served { .. }) {
             crate::cognition::resident_service::note_generation(self.persona_id);
-            // A measurement fork's prompts are not hers: they never acknowledge what she was shown.
-            if let (Some(view), false) = (submitted, self.forked) {
-                crate::cognition::render_receipt::deliver(crate::cognition::render_receipt::RenderReceipt {
-                    owner: self.persona_id,
-                    request: receipted_request,
-                    view,
-                });
-            }
         }
         receipts.push(
             receipt
