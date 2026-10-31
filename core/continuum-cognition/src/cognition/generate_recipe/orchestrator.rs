@@ -126,6 +126,7 @@ pub async fn generate_recipe_with_ai(
         // Model owns its length (None → adapter forwards no ceiling). A full
         // RecipeDefinition's JSON envelope bounds the output, not a const of ours.
         max_tokens: None,
+        reasoning_budget: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,

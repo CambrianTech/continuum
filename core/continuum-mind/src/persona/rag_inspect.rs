@@ -445,6 +445,7 @@ async fn run_inference_probe(
         // mid-`<think>` → empty reply. Capable models self-pace; we never
         // pin a tighter value here.
         max_tokens: None,
+        reasoning_budget: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,

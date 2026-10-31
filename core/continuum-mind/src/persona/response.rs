@@ -684,6 +684,7 @@ async fn run_render(
         // Hardcoding 1024 here was clipping qwen3.5 mid-<think>, leaving
         // unterminated reasoning that leaked '<think>' into chat.
         max_tokens: None,
+        reasoning_budget: None,
         top_p: Some(sampling.top_p),
         top_k: Some(sampling.top_k),
         repeat_penalty: Some(sampling.repeat_penalty),

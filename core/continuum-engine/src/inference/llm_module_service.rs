@@ -383,6 +383,7 @@ pub(super) async fn run_adapter_inference(
         provider: None,
         temperature: Some(request.sampling.temperature),
         max_tokens: if request.budget.max_tokens > 0 {
+        reasoning_budget: None,
             Some(request.budget.max_tokens)
         } else {
             None

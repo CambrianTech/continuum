@@ -282,6 +282,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             provider: None,
             temperature: Some(0.0),
             max_tokens: Some(1),
+            reasoning_budget: None,
             top_p: None,
             top_k: None,
             repeat_penalty: None,

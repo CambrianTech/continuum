@@ -230,6 +230,7 @@ async fn messages_handler(
         provider: Some(spec.provider.clone()),
         temperature: req.temperature,
         max_tokens: Some(req.max_tokens),
+        reasoning_budget: None,
         top_p: req.top_p,
         top_k: req.top_k,
         repeat_penalty: req.repeat_penalty,

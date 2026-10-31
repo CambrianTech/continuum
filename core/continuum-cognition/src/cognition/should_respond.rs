@@ -206,6 +206,7 @@ pub async fn evaluate_gating(
         // prompt asks for a short verdict; brevity is the model's to give, not ours
         // to guillotine (a hard cap truncates a reasoning model mid-thought → empty).
         max_tokens: None,
+        reasoning_budget: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,

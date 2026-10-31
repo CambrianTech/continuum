@@ -266,6 +266,7 @@ async fn run_analysis(
         // truncated qwen3.5 mid-reasoning → zero JSON → silent persona failure.
         // The model runs to its own stop token; the JSON envelope is the bound.
         max_tokens: None,
+        reasoning_budget: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,

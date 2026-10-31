@@ -316,7 +316,7 @@ pub enum EmissionStop {
     /// `delib.truncated_not_an_answer`), not the measurement's.
     CutMidThought,
     /// The turn LANDED, but its think stopped AT the reasoning budget the request set
-    /// (three quarters of the allowance, `deliberation_reasoning_budget`). The reasoning
+    /// (the allowance less her measured answer need, `OutputNeed::reasoning_within`). The reasoning
     /// sample is censored: a thinking model fills whatever room it is given, so the
     /// count says only "at least the budget", not her need. Pushed verbatim it would
     /// teach the need ring the budget, and with the 5/4 headroom the next allowance is

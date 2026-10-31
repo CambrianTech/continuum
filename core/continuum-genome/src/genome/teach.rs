@@ -131,6 +131,7 @@ pub async fn teacher_generate(
         temperature: Some(temperature),
         // The model owns its length — no ceiling. A hard cap truncates code mid-fn.
         max_tokens: None,
+        reasoning_budget: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,

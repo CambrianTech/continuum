@@ -375,6 +375,7 @@ impl LlmDeliberationFaculty {
             // window by priority against everything else in it, so the reply gets every
             // token allocated to it — never a const we picked, never an overrun ([[fallbacks-are-illegal-fail-loud]]).
             max_tokens: Some(max_tokens),
+            reasoning_budget: Some(super::reply_claim::reasoning_budget(max_tokens, need)),
             top_p: None,
             top_k: None,
             // `None` here does NOT mean "no repetition penalty" — it defers to the

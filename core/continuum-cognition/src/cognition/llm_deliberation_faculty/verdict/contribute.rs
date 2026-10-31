@@ -132,6 +132,7 @@ impl LlmDeliberationFaculty {
         let mut gen_await_ms = 0u64;
         // The allowance the request actually carried (set where it is built, read at the seam).
         let mut sent_allowance: Option<u32> = None;
+        let mut sent_reasoning_budget: Option<u32> = None;
         // Correct only frozen admitted input, consuming a finite optional unit on
         // every retry. Exact measured progress is required too. No accepted cognition
         // is replayed, and no working-memory or RAG source is re-read or refilled.
@@ -306,6 +307,7 @@ impl LlmDeliberationFaculty {
             // A rebuilt request with no max_tokens keeps the last one sent (the read of the
             // previous value is also what keeps the initializer honest).
             sent_allowance = request.max_tokens.or(sent_allowance);
+            sent_reasoning_budget = request.reasoning_budget.or(sent_reasoning_budget);
             let result = self
                 .generate_for_workspace(ws, &binding, fit_window, request, view.allocation.clone(), receipts)
                 .await?;
@@ -431,13 +433,9 @@ impl LlmDeliberationFaculty {
         // (Cormac on #4409): the classifier records it at the allowance so the need ring
         // never learns the budget and contracts the next allowance geometrically.
         let allowance = sent_allowance.unwrap_or(view.completion_reserve); // unwrap_or: a request built with no max_tokens was bounded by the reserve alone
-        let reasoning_budget = match self.turn_kind(ws) {
-            TurnKind::Pass => crate::inference::request_body::deliberation_reasoning_budget(
-                u64::from(allowance),
-            )
-            .map(|b| b as u32),
-            TurnKind::Act => None,
-        };
+        // The budget the request actually carried (`reply_claim::reasoning_budget`): a think that
+        // stopped AT it was censored by it, whichever kind of turn this was.
+        let reasoning_budget = sent_reasoning_budget;
         // The one classification, from what the response carries (an answer is text or a call;
         // a stream may not report usage), counted here before any await after the generation: a
         // cancellation at the read receipt below must not lose the stop of a generation that

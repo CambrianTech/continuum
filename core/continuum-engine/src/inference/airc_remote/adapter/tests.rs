@@ -24,6 +24,7 @@ fn req(text: &str) -> TextGenerationRequest {
         provider: None,
         temperature: None,
         max_tokens: None,
+        reasoning_budget: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,

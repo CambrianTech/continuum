@@ -223,6 +223,14 @@ pub struct TextGenerationRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub max_tokens: Option<u32>,
+    /// Tokens of reasoning this generation may spend before it must answer, set by whoever
+    /// claimed `max_tokens` (the deliberation faculty: the allowance minus her measured answer
+    /// need). `None` sets no reasoning cap. The one value the request body sends and the cut
+    /// classifier reads; a budget must exist wherever thinking is allowed (no budget meant 287
+    /// tokens and an empty answer on the M5, 2026-09-26).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reasoning_budget: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub top_p: Option<f32>,

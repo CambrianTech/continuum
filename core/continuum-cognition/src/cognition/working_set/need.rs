@@ -37,6 +37,13 @@ impl OutputNeed {
     pub fn total(self) -> u32 {
         self.reasoning.saturating_add(self.answer)
     }
+
+    /// The reasoning a turn may spend within `allowance`: all of it less her measured answer, so
+    /// the answer keeps exactly the room it measurably takes. The request carries it
+    /// (`TextGenerationRequest::reasoning_budget`) and the cut classifier reads the value sent.
+    pub fn reasoning_within(self, allowance: u32) -> u32 {
+        allowance.saturating_sub(self.answer)
+    }
 }
 
 /// The p90 of `samples` (ascending sort, the value at the 90th percentile position).

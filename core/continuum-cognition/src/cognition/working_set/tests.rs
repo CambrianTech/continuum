@@ -439,8 +439,7 @@
         let mut allowance = landed.total();
         let first = allowance;
         for t in 0..(NEED_SAMPLES as u64 + 4) {
-            let budget = crate::inference::request_body::deliberation_reasoning_budget(u64::from(allowance))
-                .expect("an allowance large enough to budget") as u32;
+            let budget = reg.need_of(p(6)).expect("need measured").reasoning_within(allowance);
             let answer = 300u32;
             let stop = EmissionStop::classify_with_budget(false, true, budget, Some(budget), allowance);
             assert_eq!(stop, EmissionStop::ThinkBudgetHit { allowance }, "turn {t}");
@@ -464,7 +463,7 @@
         let mut a2 = reg2.need_of(p(5)).expect("need measured").total();
         let start2 = a2;
         for t in 0..(NEED_SAMPLES as u64 * 10) {
-            let budget = crate::inference::request_body::deliberation_reasoning_budget(u64::from(a2)).expect("budget") as u32;
+            let budget = reg2.need_of(p(5)).expect("need measured").reasoning_within(a2);
             reg2.record_emission_in_memory(p(5), budget + 300, budget, EmissionStop::classify(false, true), 200 + t);
             a2 = reg2.need_of(p(5)).expect("need measured").total();
         }

@@ -415,6 +415,9 @@ fn build_generate_params(
         "provider": provider_id,
         "purpose": crate::inference::request_body::VISION_DESCRIPTION_PURPOSE,
         "maxTokens": max_tokens,
+        // A description needs no reasoning channel: its whole allowance is answer room (a
+        // meaning, not a size; the three-quarters share this replaced is gone).
+        "reasoningBudget": 0,
         "temperature": 0.3,
     })
 }
@@ -566,21 +569,8 @@ mod tests {
                 "aGVsbG8="
             );
             assert_eq!(params["maxTokens"], allowance);
-            let mut body = serde_json::json!({"max_tokens": params["maxTokens"]});
-            let budget = crate::inference::request_body::apply_reasoning_budget(
-                params["purpose"].as_str(),
-                &mut body,
-            )
-            .expect("vision descriptions must reserve answer room");
-            assert_eq!(budget, allowance - allowance / 4);
-            assert_eq!(body["reasoning_budget_tokens"], budget);
+            assert_eq!(params["reasoningBudget"], 0, "a description's whole allowance is answer room");
         }
-        let mut unrelated = serde_json::json!({"max_tokens": 500});
-        assert_eq!(
-            crate::inference::request_body::apply_reasoning_budget(None, &mut unrelated),
-            None
-        );
-        assert!(unrelated.get("reasoning_budget_tokens").is_none());
     }
 
     #[test]

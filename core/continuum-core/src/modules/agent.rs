@@ -750,6 +750,7 @@ async fn call_llm(
         temperature: Some(0.7),
         // Model owns its length (None → adapter forwards no ceiling).
         max_tokens: None,
+        reasoning_budget: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,

@@ -111,6 +111,7 @@ fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
         provider: p.str_opt("provider").map(String::from),
         temperature: p.f32_opt("temperature"),
         max_tokens: p.u64_opt_alias("max_tokens", "maxTokens").map(|t| t as u32),
+        reasoning_budget: None,
         top_p: p.f64_opt_alias("top_p", "topP").map(|t| t as f32),
         top_k: p.u64_opt_alias("top_k", "topK").map(|t| t as u32),
         repeat_penalty: p

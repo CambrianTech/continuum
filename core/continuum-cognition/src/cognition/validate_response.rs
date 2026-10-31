@@ -231,6 +231,7 @@ fn build_validate_generation_request(
         // here guaranteed an empty verdict on any reasoning model (the `<think>` block
         // alone exceeds it); brevity comes from the prompt + JSON response_format.
         max_tokens: None,
+        reasoning_budget: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,

@@ -48,6 +48,7 @@ fn text_request(response_format: Option<ResponseFormat>) -> TextGenerationReques
         provider: None,
         temperature: None,
         max_tokens: None,
+        reasoning_budget: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,
@@ -280,6 +281,7 @@ async fn owned_gene_page_in_changes_output() {
         provider: None,
         temperature: Some(0.0), // greedy — isolate the gene from sampling
         max_tokens: Some(256),
+        reasoning_budget: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,

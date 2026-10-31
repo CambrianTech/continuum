@@ -69,3 +69,11 @@ pub fn reply_claim(
         required: true,
     }
 }
+
+/// The reasoning a turn may spend before it must answer: its allowance less her measured answer
+/// need, so the answer keeps exactly the room it measurably takes and thinking gets the rest. With
+/// no measured answer, the smallest usable reply is kept. One owner: the request carries it
+/// (`TextGenerationRequest::reasoning_budget`) and the cut classifier reads the value sent.
+pub fn reasoning_budget(allowance: u32, need: Option<super::super::working_set::OutputNeed>) -> u32 {
+    need.map_or(allowance.saturating_sub(LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS), |n| n.reasoning_within(allowance)) // map_or: unmeasured keeps the smallest usable reply
+}

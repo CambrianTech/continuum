@@ -417,6 +417,7 @@ pub fn build_response_generation_request(
         // MODEL owns its length (the adapter forwards no cap). We never substitute a
         // const of our own: a hardcoded floor truncated reasoning models mid-thought.
         max_tokens: request.max_tokens,
+        reasoning_budget: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,
