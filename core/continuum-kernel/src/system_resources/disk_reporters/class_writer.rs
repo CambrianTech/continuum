@@ -4,20 +4,23 @@
 //! eviction. A writer that picks its own absolute path is `writes_outside_a_class`, the shape that
 //! filled the M5 (460 GB, 2026-07-13) while every component was green.
 //!
-//! Durability, staging and locking are `continuum_host::durable`'s (the one owner of placing a
-//! file); this module only confines the path to the class.
+//! Confinement is `continuum_host::confine`'s (a held directory handle), durability, staging and
+//! locking are `continuum_host::durable`'s; this module names the class and the owner's scope.
 
-use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
-use std::path::{Component, Path, PathBuf};
+use std::fs::File;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use continuum_host::durable;
+use continuum_host::{confine, durable};
 
 use super::TrackedDir;
 
 /// A writer's hold on one tracked class. Obtained from the class ([`TrackedDir::writer`]), never
 /// built from a path, so every file it makes is under a measured root with an eviction decision.
+/// Every operation opens the class root as a held directory and reaches everything below it
+/// through that handle (`continuum_host::confine`), so a link swapped in anywhere below the root
+/// cannot send a write, a lock or a listing outside it.
 #[derive(Clone)]
 pub struct ClassWriter {
     dir: Arc<TrackedDir>,
@@ -56,17 +59,25 @@ impl ClassWriter {
         ClassWriter { dir: Arc::clone(&self.dir), scope: self.scope.join(owner.to_string()) }
     }
 
+    /// This scope's directory, held open (created on first use).
+    fn held(&self) -> io::Result<confine::Dir> {
+        confine::subdir(&confine::open_root(self.dir.path())?, &self.scope)
+    }
+
+    /// `relative`'s directory, held open, and its file name.
+    fn held_parent<'a>(&self, relative: &'a Path) -> io::Result<(confine::Dir, &'a Path)> {
+        let relative = confine::plain(relative)?;
+        let name = relative.file_name().map(Path::new).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{} names no file", relative.display())))?;
+        let dirs = relative.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{} names no file", relative.display())))?;
+        Ok((confine::subdir(&self.held()?, dirs)?, name))
+    }
+
     /// The owners with a directory in this scope (the mirror of `owned_by`), for a reader that
-    /// rehydrates every owner at boot. An entry whose name is not an owner id is not an owner; a
-    /// class nothing has written yet has none.
+    /// rehydrates every owner at boot, listed through the held directory. An entry whose name is
+    /// not an owner id is not an owner; a class nothing has written yet has none.
     pub fn owners(&self) -> io::Result<Vec<uuid::Uuid>> {
-        let entries = match std::fs::read_dir(self.dir.path().join(&self.scope)) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error),
-        };
         let mut owners = Vec::new();
-        for entry in entries {
+        for entry in self.held()?.entries()? {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
                 if let Some(owner) = entry.file_name().to_str().and_then(|name| uuid::Uuid::parse_str(name).ok()) {
@@ -78,64 +89,42 @@ impl ClassWriter {
         Ok(owners)
     }
 
-    /// Where `relative` lives in this class, by name: refused unless it is plain names (no absolute
-    /// path, `..`, `.`, empty). This is the address only; what is created or opened there goes
-    /// through `continuum_host::confine`, which also refuses a redirect on the way.
+    /// Where `relative` lives in this class, by name, for display and for readers outside this
+    /// type: refused unless it is plain names. Writes never go through it; they go through the
+    /// held directory.
     pub fn path(&self, relative: &Path) -> io::Result<PathBuf> {
-        let mut parts = relative.components().peekable();
-        if parts.peek().is_none() || !parts.all(|part| matches!(part, Component::Normal(_))) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{} is not a path inside disk class {}", relative.display(), self.class()),
-            ));
-        }
-        Ok(self.dir.path().join(&self.scope).join(relative))
-    }
-
-    /// The file's path with its directories created under the class root, every one a real
-    /// directory (no symlink or junction redirects the write out of the measured root).
-    fn prepared(&self, relative: &Path) -> io::Result<PathBuf> {
-        let path = self.path(relative)?;
-        let scoped = self.scope.join(relative);
-        let dirs = scoped.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{} names no file", relative.display())))?;
-        continuum_host::confine::dirs_within(self.dir.path(), dirs)?;
-        Ok(path)
-    }
-
-    /// The content staged beside its destination, ready to place.
-    fn staged(path: &Path, bytes: &[u8]) -> io::Result<durable::Staging> {
-        let dir = path.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{} has no directory", path.display())))?;
-        let mut staging = durable::Staging::new_in(dir)?;
-        staging.file().write_all(bytes)?;
-        Ok(staging)
+        Ok(self.dir.path().join(&self.scope).join(confine::plain(relative)?))
     }
 
     /// Replace a file whole: a reader sees the old bytes or the new ones, never half, and the
-    /// replacement survives power loss.
+    /// replacement survives power loss. Staged and placed in the same held directory.
     pub fn replace(&self, relative: &Path, bytes: &[u8]) -> io::Result<()> {
-        let path = self.prepared(relative)?;
-        Self::staged(&path, bytes)?.replace(&path)
+        let (dir, name) = self.held_parent(relative)?;
+        let mut staging = durable::Staging::new(&dir)?;
+        staging.write_all(bytes)?;
+        staging.replace(name)
     }
 
     /// Publish an immutable file once: `AlreadyExists` if the name is taken, never an overwrite.
     /// A caller that may be replaying compares what is there.
     pub fn publish_new(&self, relative: &Path, bytes: &[u8]) -> io::Result<()> {
-        let path = self.prepared(relative)?;
-        Self::staged(&path, bytes)?.publish_new(&path)
+        let (dir, name) = self.held_parent(relative)?;
+        let mut staging = durable::Staging::new(&dir)?;
+        staging.write_all(bytes)?;
+        staging.publish_new(name)
     }
 
     /// Open a file to append to (a log, a capture stream), creating it on first use.
     pub fn append(&self, relative: &Path) -> io::Result<File> {
-        self.path(relative)?;
-        let mut options = OpenOptions::new();
-        options.create(true).append(true);
-        continuum_host::confine::open_within(self.dir.path(), &self.scope.join(relative), &options)
+        let (dir, name) = self.held_parent(relative)?;
+        Ok(dir.open_with(name, confine::OpenOptions::new().create(true).append(true))?.into_std())
     }
 
     /// Lock `relative` exclusively (a lock file in the class), waiting for a holder when `wait`,
     /// else refusing with `WouldBlock`. Every party to one file's read/write takes the same lock.
     pub fn lock(&self, relative: &Path, wait: bool) -> io::Result<durable::Lock> {
-        durable::lock(&self.prepared(relative)?, wait)
+        let (dir, name) = self.held_parent(relative)?;
+        durable::lock(&dir, name, wait)
     }
 }
 

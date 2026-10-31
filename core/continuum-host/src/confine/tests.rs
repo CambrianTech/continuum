@@ -1,26 +1,33 @@
 use super::*;
 
-// what this catches: a write through a redirect inside the root landing outside it: a linked
-// directory on the way, and a linked final file (Codex on #5651), while plain paths still work.
+// what this catches: a write through a link below the root landing outside it (a linked
+// directory, a linked final file), and a held directory swapped for a link mid-write sending the
+// bytes out (Codex on #5651); plain paths and a not-yet-created root still work.
 #[test]
-fn a_redirect_below_the_root_is_refused_and_plain_paths_work() {
+fn nothing_below_a_held_root_reaches_outside_it() {
+    use std::io::Write;
     let base = tempfile::tempdir().expect("base");
-    let root = base.path().join("not-yet-created");
-    let root = root.as_path();
     let outside = tempfile::tempdir().expect("outside");
-    let mut append = OpenOptions::new();
-    append.create(true).append(true);
-    open_within(root, Path::new("a/b/log"), &append).expect("plain path");
-    assert!(root.join("a/b/log").is_file());
+    let root_path = base.path().join("not-yet-created");
+    let root = open_root(&root_path).expect("root created and held");
+    let a = subdir(&root, Path::new("a/b")).expect("plain path");
+    a.create("log").expect("create").write_all(b"x").expect("write");
+    assert!(root_path.join("a/b/log").is_file());
 
-    link(outside.path(), &root.join("away"));
-    assert!(dirs_within(root, Path::new("away/x")).is_err(), "a linked directory is refused");
-    assert!(open_within(root, Path::new("away/result"), &append).is_err(), "a write through it is refused");
+    link(outside.path(), &root_path.join("away"));
+    assert!(subdir(&root, Path::new("away/x")).is_err(), "a link out of the root is refused");
     std::fs::write(outside.path().join("target"), b"").expect("target");
-    link(&outside.path().join("target"), &root.join("a/file-link"));
-    assert!(open_within(root, Path::new("a/file-link"), &append).is_err(), "a linked final file is refused");
-    assert_eq!(std::fs::read_dir(outside.path()).expect("outside").count(), 1, "nothing was written outside the root");
-    assert!(names(Path::new("../x")).is_err() && names(Path::new("/x")).is_err());
+    link(&outside.path().join("target"), &root_path.join("a/file-link"));
+    assert!(root.open_with("a/file-link", cap_std::fs::OpenOptions::new().append(true)).is_err(), "a linked final file is refused");
+
+    // The swap: hold a/b, move it away and put a link to outside at its old name, then write
+    // through the held handle. The bytes land in the real directory, wherever it now is.
+    std::fs::rename(root_path.join("a/b"), root_path.join("a/moved")).expect("move away");
+    link(outside.path(), &root_path.join("a/b"));
+    a.create("after-swap").expect("create through the held handle");
+    assert!(root_path.join("a/moved/after-swap").is_file(), "the write followed the held directory");
+    assert_eq!(std::fs::read_dir(outside.path()).expect("outside").count(), 1, "nothing written outside the root");
+    assert!(plain(Path::new("../x")).is_err() && plain(Path::new("/x")).is_err() && plain(Path::new("")).is_err());
 }
 
 #[cfg(unix)]

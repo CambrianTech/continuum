@@ -33,3 +33,9 @@ fn move_write_through(from: &Path, to: &Path, flags: u32) -> io::Result<()> {
     }
     Ok(())
 }
+
+/// A directory cannot be opened as a file to sync; flushing the placed file forces the NTFS log,
+/// which holds the rename or link that placed it.
+pub(super) fn sync_placed(dir: &cap_std::fs::Dir, name: &Path) -> io::Result<()> {
+    dir.open_with(name, cap_std::fs::OpenOptions::new().read(true).write(true))?.sync_all()
+}
