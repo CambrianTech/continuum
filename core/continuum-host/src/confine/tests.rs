@@ -21,11 +21,22 @@ fn nothing_below_a_held_root_reaches_outside_it() {
     assert!(root.open_with("a/file-link", cap_std::fs::OpenOptions::new().append(true)).is_err(), "a linked final file is refused");
 
     // The swap: hold a/b, move it away and put a link to outside at its old name, then write
-    // through the held handle. The bytes land in the real directory, wherever it now is.
-    std::fs::rename(root_path.join("a/b"), root_path.join("a/moved")).expect("move away");
-    link(outside.path(), &root_path.join("a/b"));
-    a.create("after-swap").expect("create through the held handle");
-    assert!(root_path.join("a/moved/after-swap").is_file(), "the write followed the held directory");
+    // through the held handle. POSIX lets the move happen and the bytes follow the held
+    // directory wherever it now is; Windows refuses the move outright, because cap-std holds
+    // every directory without FILE_SHARE_DELETE (cap-primitives 4.0.3 windows/fs/dir_utils.rs).
+    // Either way nothing lands outside.
+    match std::fs::rename(root_path.join("a/b"), root_path.join("a/moved")) {
+        Ok(()) => {
+            link(outside.path(), &root_path.join("a/b"));
+            a.create("after-swap").expect("create through the held handle");
+            assert!(root_path.join("a/moved/after-swap").is_file(), "the write followed the held directory");
+        }
+        Err(refused) => {
+            assert!(cfg!(windows), "only Windows refuses moving a held directory: {refused}");
+            a.create("after-swap").expect("create through the held handle");
+            assert!(root_path.join("a/b/after-swap").is_file());
+        }
+    }
     assert_eq!(std::fs::read_dir(outside.path()).expect("outside").count(), 1, "nothing written outside the root");
     assert!(plain(Path::new("../x")).is_err() && plain(Path::new("/x")).is_err() && plain(Path::new("")).is_err());
 }
