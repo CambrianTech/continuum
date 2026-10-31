@@ -16,7 +16,7 @@ impl LlmDeliberationFaculty {
         }
         let style =
             crate::ai::tool_dialect::offer_style_for(Some(self.binding.load().requested_model()));
-        self.surface = ToolSurface::build(persona_tools::native_tool_specs(), |spec| {
+        self.surface = ToolSurface::build(persona_tools::native_tool_specs(), self.tools.clone(), |spec| {
             crate::ai::tool_dialect::to_wire_spec_with(spec, style)
         });
         self.share_vocabulary();
@@ -67,29 +67,32 @@ impl LlmDeliberationFaculty {
         let Some(memory) = self.working_memory.as_deref() else {
             return selected;
         };
-        let Some(cost) = self.act_cost() else {
-            return selected;
-        };
         let binding = self.binding.load();
         let head = memory.tool_head();
-        let next = head.next(
-            ws.now_ms.map_or_else(continuum_base::time::EpochMs::now, continuum_base::time::EpochMs::from_millis), // map_or_else: a workspace that carries no clock reading decides at now
-            Some(ws.room_id),
-            u32::try_from(budget).unwrap_or(u32::MAX), // unwrap_or: a share past u32 bounds nothing a schema set can reach
-            &cost,
-        );
+        // The next head is chosen only with a measured act cost; the verbs help loaded ride the
+        // tail without one (help's "callable on your next act" is its contract, not the head's).
+        let next = self.act_cost().and_then(|cost| {
+            head.next(
+                ws.now_ms.map_or_else(continuum_base::time::EpochMs::now, continuum_base::time::EpochMs::from_millis), // map_or_else: a workspace that carries no clock reading decides at now
+                Some(ws.room_id),
+                u32::try_from(budget).unwrap_or(u32::MAX), // unwrap_or: a share past u32 bounds nothing a schema set can reach
+                &cost,
+            )
+        });
         if !binding.adapter.accepts_tail_tools(binding.requested_model()) {
             return selected;
         }
         let reserve = next.as_ref().map_or(0, |next| next.tokens() as usize); // map_or: no next head reserves nothing beyond this one
-        let Some(held) = head.held() else {
+        let (held, loaded) = (head.held(), head.loaded());
+        if held.is_none() && loaded.is_empty() {
             return selected.reserving(reserve);
-        };
+        }
+        let held = held.unwrap_or_default(); // unwrap_or_default: no adopted head adds no held verbs; help's loads still ride the tail
         let floor: &[crate::ai::types::NativeToolSpec] = match selected.specs.as_deref() {
             Some(specs) => specs,
             None => &[],
         };
-        let learned = self.surface.learned(floor, &held, &head.loaded(), reserve);
+        let learned = self.surface.learned(floor, &held, &loaded, reserve);
         if learned.tokens <= budget {
             return learned;
         }
