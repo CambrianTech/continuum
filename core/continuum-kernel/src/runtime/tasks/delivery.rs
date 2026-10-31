@@ -66,7 +66,7 @@ impl TaskLedger {
         sink: &S,
     ) -> Result<DeliveryPage, DeliveryError<S::Error>> {
         let page = self
-            .pending_page(owner, after, limit.get())
+            .pending_page(owner, after, limit)
             .await
             .map_err(DeliveryError::Read)?;
         if !page.ends.is_empty() {

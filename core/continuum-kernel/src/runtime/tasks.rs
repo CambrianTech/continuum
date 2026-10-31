@@ -7,6 +7,7 @@ use crate::orm::types::{CollectionSchema, FieldType, SchemaField};
 use crate::orm::{adapter::StorageAdapter, entity::OrmEntity, store::OrmStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -251,15 +252,12 @@ impl TaskLedger {
         &self,
         owner: Uuid,
         after: Option<Uuid>,
-        limit: usize,
+        limit: NonZeroUsize,
     ) -> Result<PendingPage, String> {
-        if limit == 0 {
-            return Err("task reconciliation page must be nonempty".into());
-        }
         let mut query = QueryBuilder::new(TaskFact::COLLECTION)
             .filter_eq("owner", owner.to_string())
             .sort_asc("id")
-            .limit(limit);
+            .limit(limit.get());
         if let Some(cursor) = after {
             query = query.filter("id", QueryOperator::Gt(Value::String(cursor.to_string())));
         }
@@ -268,7 +266,7 @@ impl TaskLedger {
             .find_matching(query.build())
             .await
             .map_err(|e| e.to_string())?;
-        let exhausted = rows.len() < limit;
+        let exhausted = rows.len() < limit.get();
         let next = rows.last().map(|(id, _)| *id);
         let mut ends = Vec::new();
         for (id, row) in rows {
@@ -314,7 +312,7 @@ mod tests {
         drop(second);
         let reopened = TaskLedger::new(adapter).await?;
         assert_eq!(reopened.pending(task, owner).await?, Some(winner.clone()));
-        let page = reopened.pending_page(owner, None, 10).await?;
+        let page = reopened.pending_page(owner, None, NonZeroUsize::new(10).ok_or("test page size")?).await?;
         assert_eq!(page.ends, vec![(task, winner.clone())]);
         assert_eq!(reopened.finish(task, owner, TaskEnd::Lost).await?, winner);
         assert!(reopened.pending(task, Uuid::new_v4()).await.is_err());
@@ -369,7 +367,7 @@ mod tests {
         // Five facts for this owner, plus the empty last page. This bound also
         // catches a cursor that fails to advance on an empty-result page.
         for _ in 0..7 {
-            let page = ledger.pending_page(owner, after, 1).await?;
+            let page = ledger.pending_page(owner, after, NonZeroUsize::MIN).await?;
             found.extend(page.ends);
             if page.exhausted {
                 exhausted = true;
@@ -383,7 +381,6 @@ mod tests {
             found,
             vec![(pending, TaskEnd::Done(TaskOutput::Json(Value::Null)))]
         );
-        assert!(ledger.pending_page(owner, None, 0).await.is_err());
         Ok(())
     }
     use crate::orm::gated_adapter::GatedAdapter;
@@ -423,7 +420,7 @@ mod tests {
         assert_eq!(reopened.finish(task, owner, TaskEnd::Lost).await?, winner);
         assert_eq!(reopened.pending(task, owner).await?, None);
         assert!(reopened
-            .pending_page(owner, None, 10)
+            .pending_page(owner, None, NonZeroUsize::new(10).ok_or("test page size")?)
             .await?
             .ends
             .is_empty());
