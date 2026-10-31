@@ -398,6 +398,9 @@ impl LlmDeliberationFaculty {
         sources.push(&streams.conversation);
         sources.extend(streams.blocks.iter().filter(|block| !settled(block)).map(as_source));
         sources.extend(memory.map(|m| &m.thoughts as &dyn Source<ContextMessage>));
+        // A task's state changes within an epoch (running, then its end), so it rides with the
+        // sources that change, where her dispatched list rendered before.
+        sources.extend(memory.map(|m| &m.tasks as &dyn Source<ContextMessage>));
         sources.extend(memory.map(|m| &m.open_views as &dyn Source<ContextMessage>));
         sources.extend(memory.map(|m| &m.notices as &dyn Source<ContextMessage>));
         sources
