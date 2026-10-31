@@ -24,6 +24,6 @@ airc-work.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
+sha2 = { workspace = true }
 tracing.workspace = true
 uuid.workspace = true

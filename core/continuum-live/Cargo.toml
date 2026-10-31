@@ -11,15 +11,15 @@ continuum-engine = { path = "../continuum-engine" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
+ron = { workspace = true }     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
-schemars = { version = "0.8", features = ["uuid1"] }
+schemars = { workspace = true }
 thiserror.workspace = true
-inventory = "0.3"
-toml = "0.8"     # Avatar model manifest parsing
-base64 = "0.22"  # Base64 encoding for audio data
-sha2 = "0.10"   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
+inventory = { workspace = true }
+toml = { workspace = true }     # Avatar model manifest parsing
+base64 = { workspace = true }  # Base64 encoding for audio data
+sha2 = { workspace = true }   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
 airc-core.workspace = true
 airc-blobs.workspace = true
 airc-lib.workspace = true
@@ -27,19 +27,19 @@ async-trait.workspace = true
 parking_lot.workspace = true
 tokio-tungstenite.workspace = true  # WebSocket server for voice calls
 futures-util.workspace = true
-futures = "0.3"  # For VAD block_on in audio thread
-hound = "3.5"  # WAV file reading/writing
+futures = { workspace = true }  # For VAD block_on in audio thread
+hound = { workspace = true }  # WAV file reading/writing
 once_cell.workspace = true
-rubato = "0.15"  # High-quality audio resampling
+rubato = { workspace = true }  # High-quality audio resampling
 ort.workspace = true  # ONNX Runtime for TTS
 ndarray.workspace = true
-num_cpus = "1.16"  # CPU count detection
-dirs = "5.0"  # User directories for model paths
+num_cpus = { workspace = true }  # CPU count detection
+dirs = { workspace = true }  # User directories for model paths
 candle-core.workspace = true
 candle-transformers.workspace = true
 tokenizers = { workspace = true, features = ["onig"] }
 pocket-tts = { version = "0.6", default-features = false, optional = true }  # behind feature `pocket-tts`: 0.6 pulls intel-mkl-src even without its mkl feature
-earshot = "0.1"  # Fast VAD (WebRTC-style)
+earshot = { workspace = true }  # Fast VAD (WebRTC-style)
 tracing.workspace = true
 rand.workspace = true  # For test audio generation
 ts-rs.workspace = true  # TypeScript type generation
@@ -70,18 +70,18 @@ bevy = { version = "0.18", optional = true, default-features = false, features =
 # rides the `avatar-3d` feature with bevy.
 wgpu = { version = "27", optional = true }
 wgpu-hal = { version = "27", optional = true }
-crossbeam-channel = "0.5"  # Frame delivery from Bevy render thread to LiveKit
-image = "0.25"             # RGBA → PNG encoding for avatar snapshots
+crossbeam-channel = { workspace = true }  # Frame delivery from Bevy render thread to LiveKit
+image = { workspace = true }             # RGBA → PNG encoding for avatar snapshots
 
 [target.'cfg(target_os = "macos")'.dependencies]
-metal = "0.32"
-objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal crate
+metal = { workspace = true }
+objc = { workspace = true }    # Objective-C runtime — for Metal APIs not wrapped by metal crate
 
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
-tempfile = "3"                   # Temp directories for code module tests
-futures = "0.3"
+tempfile = { workspace = true }                   # Temp directories for code module tests
+futures = { workspace = true }
 
 [features]
 default = []

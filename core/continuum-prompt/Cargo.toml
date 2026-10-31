@@ -11,7 +11,7 @@ continuum-base = { path = "../continuum-base" }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }
 continuum-text-analysis = { path = "../continuum-text-analysis" }
-dashmap = "6.1"
+dashmap = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

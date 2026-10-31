@@ -15,32 +15,32 @@ serde_json.workspace = true
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
 continuum-git = { path = "../continuum-git" } # a dead git's index.lock in a citizen's workspace (card d7765b90)
-schemars = { version = "0.8", features = ["uuid1"] }
+schemars = { workspace = true }
 reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
-dashmap = "6.1"  # Lock-free concurrent HashMap
-inventory = "0.3"
+dashmap = { workspace = true }  # Lock-free concurrent HashMap
+inventory = { workspace = true }
 airc-core.workspace = true
 airc-lib.workspace = true
 airc-work.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
-futures = "0.3"  # For VAD block_on in audio thread
-sysinfo = "0.33"  # Cross-platform CPU, memory, system resource monitoring
+futures = { workspace = true }  # For VAD block_on in audio thread
+sysinfo = { workspace = true }  # Cross-platform CPU, memory, system resource monitoring
 tracing.workspace = true
 ts-rs.workspace = true  # TypeScript type generation
-similar = "2.6"                  # Unified diff computation
-ignore = "0.4"                   # .gitignore-aware file walking (from ripgrep)
-regex = "1"                      # Regex search for code search
-rustpython-parser = "0.4.0"
-syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
-proc-macro2 = { version = "1.0.107", features = ["span-locations"] }  # Span::start for line numbers in the Rust syntax reader
+similar = { workspace = true }                  # Unified diff computation
+ignore = { workspace = true }                   # .gitignore-aware file walking (from ripgrep)
+regex = { workspace = true }                      # Regex search for code search
+rustpython-parser = { workspace = true }
+syn = { workspace = true, features = ["parsing"] }
+proc-macro2 = { workspace = true, features = ["span-locations"] }  # Span::start for line numbers in the Rust syntax reader
 
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
-tempfile = "3"                   # Temp directories for code module tests
-futures = "0.3"
+tempfile = { workspace = true }                   # Temp directories for code module tests
+futures = { workspace = true }
 
 [features]
 default = []

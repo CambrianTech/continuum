@@ -11,7 +11,7 @@ continuum-base = { path = "../continuum-base" }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }
 async-trait.workspace = true
-dashmap = "6.1"
+dashmap = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 ts-rs.workspace = true
@@ -20,4 +20,4 @@ uuid.workspace = true
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }
-tempfile = "3"
+tempfile = { workspace = true }

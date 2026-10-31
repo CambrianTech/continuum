@@ -21,13 +21,13 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 
 [dev-dependencies]
 # Smoke tests of the fixture itself need the request/reply primitives
 # plus the typed header constants.
 airc-protocol = { workspace = true }
-futures = "0.3"
+futures = { workspace = true }
 
 [features]
 default = []
