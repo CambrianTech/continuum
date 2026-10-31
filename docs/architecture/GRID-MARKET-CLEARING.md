@@ -96,6 +96,21 @@ conversation that has moved on, with no rule written to say so.
 - Gates stay outside the currency: privacy, permission and a live faculty working at all are never bought or sold
   (invariant 1).
 
+**Why this currency works peer to peer** (Joel: "we need something like this especially for grid and definitely
+for its p2p form"). A P2P grid has no one trusted in the middle, so the currency must be something each node can
+measure for itself and no peer can forge:
+- **Every node prices in its own measured time.** How long its person or its minds waited, and whether the
+  outcome verified, are observed locally. There is no global ledger and no shared balance to forge.
+- **A trade is judged by the buyer's measurement.** A peer's offer promises work by a time; the buyer measures
+  what arrived, when, and whether it verified. That measurement is the settlement: promised against delivered
+  becomes the seller's reputation (`capacity/settlement.rs`), and an over-promising peer's future offers are
+  discounted by it. Reciprocity, as in BitTorrent's tit-for-tat, not a token: "market" stays coordination
+  scalars between grid citizens (section "What we are NOT building").
+- **Prices travel by gossip and decisions stay local** (invariant 2): each node clears against last-known quotes;
+  a stale quote is unpriced, never free (invariant 7); a partition falls back to local clearing (invariant 5).
+- **A peer's claim of value is never taken as given.** Only the buyer's own curve prices what it buys; a seller's
+  price is an offer, discounted by its measured reliability.
+
 **In the solver** (`cambrian-flex`, ONE-BUDGET slice 1), a claim's `Value` is in this currency, and its
 increments are the marginal change in expected value per unit of resource, evaluated on its curve at the
 current time. Re-clearing as time passes is what makes a stale claim's price fall to zero.
