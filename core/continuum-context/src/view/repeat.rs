@@ -20,8 +20,8 @@ use crate::cause::{Cause, Content, ContentHash, ElementId, Fingerprint, ToolEffe
 use crate::epoch::Block;
 use crate::source::{Item, Source};
 
-/// `items` with each repeat replaced by its source's repeat block, and for each item the key of
-/// the occurrence it repeats (`None` when it is not one). `whole` answers whether an earlier item
+/// `items` with each repeat replaced by its source's repeat block, and for each item the
+/// occurrence it repeats (`None` when it is not one). `whole` answers whether an earlier item
 /// is held whole in this epoch; `arriving` whether an item is arriving for the first time (an
 /// item already rendered keeps its rendering for the epoch). The block is the item's whole and its
 /// pointer, with no summary and nothing stored: it costs what it says at every level.
@@ -30,17 +30,17 @@ pub(super) fn resolve<T: Block>(
     items: Vec<Item<T>>,
     whole: impl Fn(&Item<T>) -> bool,
     arriving: impl Fn(&Item<T>) -> bool,
-) -> (Vec<Item<T>>, Vec<Option<String>>) {
+) -> (Vec<Item<T>>, Vec<Option<ElementId>>) {
     let ancestors = ancestors(&items, &whole, &arriving);
     let blocks: Vec<Option<T>> = items
         .iter()
         .zip(&ancestors)
         .map(|(item, ancestor)| ancestor.and_then(|at| source.repeat(item, &items[at])))
         .collect();
-    let keys: Vec<Option<String>> = ancestors
+    let repeated_of: Vec<Option<ElementId>> = ancestors
         .iter()
         .zip(&blocks)
-        .map(|(ancestor, block)| block.as_ref().and(*ancestor).map(|at| items[at].key.clone()))
+        .map(|(ancestor, block)| block.as_ref().and(*ancestor).map(|at| items[at].id))
         .collect();
     let repeated = items
         .into_iter()
@@ -55,7 +55,7 @@ pub(super) fn resolve<T: Block>(
             item
         })
         .collect();
-    (repeated, keys)
+    (repeated, repeated_of)
 }
 
 /// For each arriving act, the position of the occurrence it repeats: walking its `Cause::Of` chain

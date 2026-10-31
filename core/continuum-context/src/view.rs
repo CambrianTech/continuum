@@ -262,7 +262,8 @@ impl<T: Block> View<T> {
                 let element = item.id();
                 let item_key = item.key.clone(); // its fingerprint after the level consumed it; once per item per start
                 let text = match level {
-                    Level::Full => Some(crate::source::whole(&**source, item)),
+                    // A start re-renders every item as itself: no repeat is allotted here.
+                    Level::Full | Level::Repeat { .. } => Some(crate::source::whole(&**source, item)),
                     Level::Summary => {
                         view.summarized.insert(id.clone());
                         item.summary
@@ -400,9 +401,14 @@ impl<T: Block> View<T> {
                     self.collapsed.insert(id.clone());
                     Level::Pointer
                 };
+                // A repeat renders its block where its whole would go; the receipt says which.
+                let level = match (level, repeat_of) {
+                    (Level::Full, Some(of)) => Level::Repeat { of },
+                    (level, _) => level,
+                };
                 let element = item.id();
                 let text = match level {
-                    Level::Full => Some(crate::source::whole(&**source, item)),
+                    Level::Full | Level::Repeat { .. } => Some(crate::source::whole(&**source, item)),
                     Level::Summary => item.summary.or(item.pointer),
                     Level::Pointer | Level::Folded => item.pointer,
                 };

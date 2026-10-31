@@ -667,6 +667,11 @@ mod repeats {
         assert!(text.contains("[#2 repeat of #1, outcome unchanged; reopen with tool/output act=1]"), "{text}");
         assert!(view.renders("acts", "1"));
         assert!(!view.renders("acts", "2"), "a repeat is never a read of a whole");
+        // The receipt says so too: #2 was shown as a repeat of #1, never at `Full` (a reader asking
+        // "was this result shown whole?" matches `Full` only).
+        let id = |seq: usize| ElementId::of(&[b"act", &seq.to_be_bytes()]);
+        let levels: Vec<_> = view.receipt().items.iter().filter(|r| r.element.is_some()).map(|r| (r.element, r.level)).collect();
+        assert_eq!(levels, [(Some(id(1)), Level::Full), (Some(id(2)), Level::Repeat { of: id(1) })], "{levels:?}");
     }
 
     // what this catches: the same output from a tool that changes the world read as "nothing
