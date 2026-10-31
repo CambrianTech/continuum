@@ -209,7 +209,7 @@ defined twice.
 | Four fixed slots | the same directory, `engine-58057.log` and `engine-args.txt` | a hot writer cut while other slots idle |
 | 49,152 on another machine | `2026-10-28-working-window/` (the M5 basis), run on a smaller swept profile | turnovers per act on that profile |
 | The 48k to 32k live-rate window | the residents' `.prev` capture segments, 2026-10-28 (no frozen directory) | turnovers per act |
-| Kimi's 100,704-token turn | the 5090 (to be frozen) | act seconds; lane time held |
+| Kimi's 100,704-token turn | **lost to log rotation** (Codex searched every surviving capture, log and probe rotation on the 5090; the oldest ends after 2026-10-30 11:27 local). Until a recurrence is captured it is a labelled **synthetic** workload (P3), built from the measured description: input 335k, output 100,704, window 101,120, about 2 cycles an hour of 8 to 10 minutes | act seconds; lane time held |
 | An unfulfilled act repeated (#5604, resident 75ece751) | her card 6c55f7a7 | repeats of an unfulfilled act |
 
 ## 5. What it measures and what passes
