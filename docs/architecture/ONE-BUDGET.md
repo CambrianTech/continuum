@@ -183,21 +183,28 @@ from, the behaviour model, ts-rs bindings) stay out of it.
   increment is the bundle (one unit of each, priced as the sum of its resources' prices through the explicit
   conversions), so the greedy admits whole bundles or none: one solve, no cross-tier protocol, never a
   half-admission holding one resource while waiting for another (Cormac on #5620).
-- `Grant<U>`: the claim, the amount (and the step, for `Steps`), the tier's price, the tier's epoch and a
-  generation (monotonic per tier, so a stale grant is refused), and a reason: `Floor`, `Cleared`, `Held` (a
-  change was not worth its switch cost), `UnderProvisioned` (a required floor did not fit: an explicit outcome
-  for scheduling, never a clip).
+- `Grant<U>`: the claim, its **target** (what the clearing decided it should hold), its **committed** amount
+  (what it may use now) and the tier's generation, with a state: `Granted` (committed = target), `Held` (a
+  change was not worth its switch cost), `ShrinkRequested { to }` (it holds more than its target and is asked
+  to release), `Waiting` (its next whole block is not yet free while others release), `Unmeasured`
+  (reservation only). A required floor that cannot fit is never a grant: it is the clearing's `Infeasible`
+  outcome (Codex on #5620: one typed outcome; nothing infeasible is presentable as an acquired lease).
 - `Clearing<U>`: one solve's receipt: capacity, each claim's value version, every grant, the price, what is
   unallocated, and any under-provision. The proving ground and the live receipts both read it (R11).
 
 **The algorithm.**
-1. Required floors first, in one pass; if they do not fit, the result is `UnderProvisioned` with the claims
-   named, and nothing optional is granted.
+1. Required floors first, in one pass; if they do not fit, the outcome is `Infeasible` with the claims named,
+   nothing moves, and no grant is issued.
 2. The remaining capacity goes to the next increment of highest value per unit across all claims, one
-   increment at a time, until capacity is spent or no increment's value per unit exceeds zero. For concave
-   values this greedy order is optimal; for `Steps` it is the standard density order, and its gap from optimal
-   is bounded by one step per claim, stated in the receipt.
-3. The price is the value per unit of the last increment admitted.
+   increment at a time, until capacity is spent or no increment's value per unit exceeds zero. For divisible,
+   concave values this greedy order is optimal. Indivisible levels and optional floors make the problem
+   non-convex, so no optimality is claimed for them: every clearing reports the **achieved** value (a feasible
+   lower bound on the optimum) and the value of the same clearing with every indivisible step relaxed to
+   divisible (an upper bound), and their difference is the stated gap. A small domain may be solved exactly
+   instead, with its measured cost reported (Codex).
+3. The price is the scarcity price: the value per unit of the most valuable increment left UNMET, what one
+   more unit of capacity would buy. It is zero whenever every claim's demand was met, idle capacity or not
+   (Codex: "the last increment admitted" could publish a positive price while capacity sat idle).
    **Determinism** (THE-PROVING-GROUND P8): equal value per unit is broken by `ClaimId` order; values compare
    under a total order (`f64::total_cmp`), NaN and infinities are refused on input like non-concavity, and the
    receipt records values at the precision the solve used, so the same inputs give byte-identical grants on
@@ -206,15 +213,25 @@ from, the behaviour model, ts-rs bindings) stay out of it.
    otherwise the grant is `Held`.
 5. If the required floors alone exceed capacity, the outcome is `Infeasible` with the claims named: nothing is
    oversubscribed and nothing defaults (Codex).
-6. **A shrink is a request, and capacity is credited back only on acknowledgement.** A grant reduced by a
-   clearing becomes `ShrinkRequested { to }`; the freed amount is not granted to anyone until the holder
-   acknowledges its release (the generation it released at), so two holders never own the same unit
-   (ONE-BUDGET safety contract 1; Codex).
-7. Grants are fenced by `(epoch, generation)`: a grant from an older generation is refused wherever it is
-   presented.
+6. **Physical ownership is charged before anything grows** (Codex). Each holder's committed amount, including
+   any it was asked to release and has not, stays charged. Targets are decided on the whole capacity (who
+   should hold what); growth toward a target is committed only from capacity no one holds, and only in WHOLE
+   blocks: an indivisible level or an optional floor is acquired entirely or not at all, never as partial
+   custody (Codex on airc#1630: B with a floor of 10 must not receive 4). A hold is applied only when the
+   held amounts plus every reservation fit. In Codex's case (capacity 10, A holds 10, B proposes 10) either
+   A is held and B's target is 0, or A is asked to shrink and B waits holding nothing; B never owns a unit A
+   still holds.
+7. **A release is the holder reporting what it physically holds now,** keyed by its claim: idempotent and
+   monotone (it only ever lowers what is charged, never below the target it was asked for). It is not fenced
+   by the clearing generation, since a release can never overcommit, so a later clearing never invalidates a
+   delayed real release (Codex on airc#1630).
+8. **New commitments are fenced:** a commitment to use more carries the generation it was made at and is
+   refused when stale, so no holder grows on an old decision.
 
-**Nesting.** A tier is itself a claim on its parent: its children's values, summed, are its value curve one
-level up. The parent clears and grants the tier an amount at its price; the tier clears its children within
+**Nesting.** A tier is itself a claim on its parent. Its value curve one level up is its children's
+**achievable optimum** at each amount the parent could grant (the value function of its own clearing, with its
+children's reservations and couplings), not the pointwise sum of their curves (Codex). For divisible, concave
+children that is their increments merged in value order; otherwise it carries the same lower and upper bounds. The parent clears and grants the tier an amount at its price; the tier clears its children within
 that amount. Prices flow down and bids flow up; no tier sees more than its parent's grant and its children's
 claims (GRID-MARKET-CLEARING section 2).
 
@@ -225,10 +242,14 @@ policy loop (L7) refines them from controlled probes. Until a kind has measureme
 population's measurement for the same activity (HOW-A-MIND S9), marked as such in the receipt. The integer
 priorities in `priority::*` are deleted with `flex_allocate`.
 
+**Adversarial fixtures** (Codex): asymmetric bundles and optional floors where greedy is far from optimal, with
+the reported bounds bracketing a brute-forced optimum.
+
 **Validator cases** the airc PR adding the crate carries (airc's NETWORK-AUTHORITY N1 builds on them): two joint
 claims competing for the last unit of one resource never leave either half-granted; the same inputs in any order
-give byte-identical receipts; a shrink is never re-granted before its acknowledged release; a grant from an
-older generation is refused; required floors past capacity are `Infeasible` with the claims named; an
+give byte-identical receipts; a shrink is never re-granted before the holder reports its release; a release reported after
+a later clearing is still credited; growth never commits part of an indivisible block or an optional floor; a
+stale commitment is refused; a fully met demand publishes a zero price; required floors past capacity are `Infeasible` with the claims named; an
 unmeasured claim gets only its floor.
 
 **Migration.** The three callers move to `cambrian-flex` in the PR that adds it, `flex_allocate` and
