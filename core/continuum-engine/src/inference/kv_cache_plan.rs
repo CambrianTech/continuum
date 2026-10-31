@@ -370,13 +370,25 @@ pub fn resolve_from(
     } else {
         KvPlanSource::Override
     };
-    KvCachePlan {
+    let plan = KvCachePlan {
         bytes_per_token_divisor: kv_divisor_for(Some(cache_type.as_str())),
         cache_type,
         flash_attn,
         source,
         backend,
-    }
+    };
+
+    continuum_base::probe!(
+        class = "serving.kv_cache.plan",
+        cache_type = plan.cache_type.as_str(),
+        source = plan.source.as_str(),
+        bytes_per_token_divisor = plan.bytes_per_token_divisor,
+        flash_attn = plan.flash_attn,
+        backend = plan.backend.label(),
+        "the resolved KV cache plan — type, source, and divisor for the lane's budget"
+    );
+
+    plan
 }
 
 /// The host's serving backend, recorded ONCE at the one place that probes it.
