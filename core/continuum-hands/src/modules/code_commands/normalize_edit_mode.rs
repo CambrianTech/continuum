@@ -420,7 +420,6 @@ pub struct CodeSearchParams {
 #[async_trait]
 impl ActionCommand for CodeSearch {
     const NAME: &'static str = "code/search";
-    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Observes;
     const ALIASES: &'static [&'static str] = &["grep", "search_files", "ripgrep", "rg", "search"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =

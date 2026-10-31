@@ -219,7 +219,7 @@ fn her_unchanged_reread_reaches_her_view_as_a_repeat_and_an_undeclared_act_never
     let body = "fn parse(&mut self) -> Result<Tree, Error> { self.step()?; }\n".repeat(40);
     let memory = WorkingMemory::new(8);
     let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
-    let (mut view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap();
+    let (mut view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
     let unsaved = || crate::ai::types::ResultCustody::Unsaved;
     // Each act settles before the next, as her turn does: an act still in flight rides whole
     // after her view, so it enters the actions stream once it is settled.
@@ -235,7 +235,7 @@ fn her_unchanged_reread_reaches_her_view_as_a_repeat_and_an_undeclared_act_never
 
     let memory = WorkingMemory::new(8);
     let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
-    let (mut view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap();
+    let (mut view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
     for _ in 0..2 {
         memory.record_receipt_typed(&[act("code/write", Some("src/parse.rs"))], "wrote 40 lines", None, unsaved());
         memory.record_settlement("wrote", None);

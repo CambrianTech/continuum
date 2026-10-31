@@ -656,7 +656,7 @@ mod repeats {
     #[test]
     fn an_unchanged_read_repeated_mid_epoch_arrives_as_a_repeat() {
         let mut acts = Acts(Vec::new());
-        let (mut view, _) = View::start(vec!["identity".into()], &[&acts], all_full).unwrap();
+        let (mut view, _) = View::start(vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
         acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
         assert_eq!(view.advance(&[&acts]).repeats, 0);
         acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
@@ -676,7 +676,7 @@ mod repeats {
     fn only_a_declared_observation_can_repeat() {
         for effect in [ToolEffect::Changes, ToolEffect::Reopens, ToolEffect::Undeclared] {
             let mut acts = Acts(Vec::new());
-            let (mut view, _) = View::start(vec!["identity".into()], &[&acts], all_full).unwrap();
+            let (mut view, _) = View::start(vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
             acts.push("tool/x", r#"{"line":"a"}"#, effect, "OK");
             view.advance(&[&acts]);
             acts.push("tool/x", r#"{"line":"a"}"#, effect, "OK");
@@ -694,7 +694,7 @@ mod repeats {
         let mut acts = Acts(Vec::new());
         acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
         acts.push("code/read", r#"{"path":"b.rs"}"#, ToolEffect::Observes, &body("b.rs"));
-        let (mut view, start) = View::start(vec!["identity".into()], &[&acts], floors).unwrap();
+        let (mut view, start) = View::start(vec!["identity".into()], &[&acts], floors).unwrap(); // unwrap: one grant per claim cannot mismatch
         assert_eq!(start.collapsed + start.folded, 2, "the start holds both at their floor");
         assert!(!view.renders("acts", "1"));
         acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
@@ -703,7 +703,7 @@ mod repeats {
         acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
         assert_eq!(view.advance(&[&acts]).repeats, 1, "#3 is whole now: #4 repeats it");
         assert!(rendered(&view).contains("[#4 repeat of #3,"));
-        view.turn_over(vec!["identity".into()], &[&acts], all_full).unwrap();
+        view.turn_over(vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
         let text = rendered(&view);
         assert!(!text.contains("repeat of"), "a turnover re-renders every item as itself: {text}");
         assert!(view.renders("acts", "4"));
@@ -716,7 +716,7 @@ mod repeats {
     #[test]
     fn a_rendering_already_sent_is_never_turned_into_a_repeat() {
         let mut acts = Acts(Vec::new());
-        let (mut view, _) = View::start(vec!["identity".into()], &[&acts], all_full).unwrap();
+        let (mut view, _) = View::start(vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
         acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
         acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
         assert_eq!(view.advance(&[&acts]).repeats, 0);

@@ -193,8 +193,6 @@ impl ActionCommand for ToolOutput {
     // aliases can only widen what she can say, never narrow it.
     const ALIASES: &'static [&'static str] =
         &["read_output", "grep_output", "tail_output", "search_output"];
-    // She reopens a whole her view no longer holds: always whole, never a repeat.
-    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Reopens;
     const DESCRIPTION: &'static str =
         "Page or grep a large tool result that was saved to disk because it was too big \
          to show in full. Pass the `outputId` from the elision marker, OR `act` with one of \
