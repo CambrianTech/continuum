@@ -181,6 +181,52 @@ mod tests {
     }
 
     // what this catches (stop-drain S3): an interrupted turn lost, or re-run twice, or told twice.
+    #[tokio::test]
+    async fn failed_receipt_checkpoint_keeps_input_and_effect_obligations_across_restart() {
+        use crate::cognition::act_observe::SettleStep;
+        use crate::cognition::persona_workspace::TaskSinkError;
+        use crate::persona::training_producer::test_support::served_receipt;
+        let home = tempfile::tempdir().expect("test: temporary home");
+        let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
+        let executor = test_store_executor();
+        let (persona, room, name) = (Uuid::new_v4(), Uuid::new_v4(), "checkpoint-custody");
+        let cycle = resident(persona);
+        let untouched = trigger(room, "finish this");
+        let acted = trigger(room, "previous tool batch");
+        let rows = [
+            PersonaObligation::admitted(persona, room, &untouched, Some(Uuid::new_v4()), 10),
+            PersonaObligation {
+                effect_at_ms: Some(21),
+                effects: Some(vec![RecordedEffect::ToolBatch { calls: vec![("call-1".into(), "code/edit".into())] }]),
+                ..PersonaObligation::admitted(persona, room, &acted, None, 20)
+            },
+        ];
+        let obligations = Obligations::new(&executor, persona, name);
+        assert!(obligations.report_interrupted(0).await.is_some());
+        for row in &rows {
+            record(obligations.conn.as_ref(), name, row).await.expect("test: durable row");
+        }
+        let mut pending = PendingInput::for_persona(persona);
+        obligations.recover(30, &mut pending, |_| TurnAttention::default()).await;
+        pending.observe_settlement(
+            &untouched, rows[0].wake_engram, TurnAttention::default(),
+            &SettleStep::ReceiptPersistenceFailed { error: Arc::new(TaskSinkError::OwnerGone(persona)) },
+            &[served_receipt("served before checkpoint failed", "qwen")],
+        );
+        assert_eq!(pending.obligation_for(&untouched), Some(rows[0].id));
+        assert!(pending.take_answered().is_empty(), "served alone cannot retire the effect-marked row");
+        drop(pending);
+        let restarted = Obligations::new(&executor, persona, name);
+        let mut pending = PendingInput::for_persona(persona);
+        assert_eq!(restarted.recover(40, &mut pending, |_| TurnAttention::default()).await.map(|r| r.open), Some(2));
+        assert_eq!(pending.obligation_for(&untouched), Some(rows[0].id));
+        assert_eq!(pending.wake_engram_for(&untouched), rows[0].wake_engram);
+        assert_eq!(pending.obligation_for(&acted), None, "previous effects must not replay");
+        assert_eq!(interrupted_notices(&cycle).len(), 2);
+        assert_eq!(open(restarted.conn.as_ref(), name, persona).await.expect("test: read durable rows").len(), 2);
+    }
+
+    // what this catches (stop-drain S3): an interrupted turn lost, or re-run twice, or told twice.
     // Two untouched rows are each handed back once, with one notice each, and a second start
     // before she settles them still owes exactly those two rows with the same two notices.
     #[tokio::test]
