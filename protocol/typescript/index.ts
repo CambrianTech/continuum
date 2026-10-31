@@ -87,8 +87,6 @@ export type { RecipeTemplateInfo } from './cognition';
 export type { RecipeTurnBatchPlan } from './cognition';
 export type { RecipeTurnBatchRequest } from './cognition';
 export type { RecipeTurnTrigger } from './cognition';
-export type { RedundancyCheckRequest } from './cognition';
-export type { RedundancyDecision } from './cognition';
 export type { ResolutionError } from './cognition';
 export type { ResolvedModel } from './cognition';
 export type { ResourceAdmissionPolicy } from './cognition';

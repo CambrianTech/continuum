@@ -86,8 +86,8 @@ pub trait PersonaResolver: Send + Sync {
 // ── Wire types ────────────────────────────────────────────────────
 
 /// Params for `persona/rag-inspect`. The persona name is the only
-/// required input; everything else has defaults from the canonical
-/// library `defaults_for`. Optional knobs let callers vary the
+/// required input; the window is the one served now unless the caller names one
+/// (`context_window`). Optional knobs let callers vary the
 /// inspection profile (tighter window, deeper fetch, capture
 /// trace).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
@@ -133,7 +133,7 @@ pub struct RagInspectParams {
 }
 
 /// One item the source delivered, with the mechanic-grade rationale
-/// flattened for the wire (content_preview, score, age_s, etc).
+/// flattened for the wire (content, score, age_s, etc).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(
     export,
@@ -147,8 +147,8 @@ pub struct RagInspectItem {
     pub tokens: u32,
     #[ts(type = "number")]
     pub score: f64,
-    pub content_preview: String,
-    pub peer_id_prefix: String,
+    pub content: String,
+    pub peer_id_shown: String,
     #[ts(type = "number")]
     pub lamport: u64,
     #[ts(type = "number")]
@@ -255,8 +255,8 @@ impl RagInspectResult {
                         index: i.index as u32,
                         tokens: i.tokens,
                         score: i.score,
-                        content_preview: i.content_preview,
-                        peer_id_prefix: i.peer_id_prefix,
+                        content: i.content,
+                        peer_id_shown: i.peer_id_shown,
                         lamport: i.lamport,
                         age_s: i.age_s,
                         has_summary: i.has_summary,
@@ -367,11 +367,15 @@ pub(crate) async fn inspect_persona(
     })?;
 
     let now_ms = params.now_ms.unwrap_or_else(|| continuum_base::time::EpochMs::now().millis());
-    let mut request =
-        RagInspectionRequest::defaults_for(resolution.persona_id, params.persona.clone(), now_ms);
-    if let Some(cw) = params.context_window {
-        request.context_window = cw;
-    }
+    // The window she is served now, or the caller's explicit one: never an assumed size.
+    let window = match params.context_window {
+        Some(window) => window,
+        None => match crate::inference::llama_server::current_serving().served_context_window {
+            0 => return Err(format!("{COMMAND_RAG_INSPECT}: no window is served yet; pass context_window")),
+            served => served,
+        },
+    };
+    let mut request = RagInspectionRequest::for_window(resolution.persona_id, params.persona.clone(), now_ms, window);
     if let Some(fetch) = params.airc_fetch_limit {
         request.airc_fetch_limit = fetch as usize;
     }
@@ -395,6 +399,22 @@ pub(crate) async fn inspect_persona(
 
 #[cfg(test)]
 mod tests {
+    /// A test names its window, as any caller with no served window must (nothing is served here).
+    fn windowed() -> RagInspectParams {
+        RagInspectParams { context_window: Some(8_192), ..Default::default() }
+    }
+
+    // what this catches: an inspection run on an assumed window when nothing is served and the
+    // caller named none; it must refuse and say how to proceed.
+    #[tokio::test]
+    async fn no_served_window_and_none_named_refuses() {
+        let m = module_with(vec![make_event(Some("hi"), 1, 990_000)]);
+        let refusal = inspect_persona(&m.resolver, RagInspectParams { persona: "Pax".to_string(), ..Default::default() })
+            .await
+            .expect_err("no window to inspect against");
+        assert!(refusal.contains("pass context_window"), "{refusal}");
+    }
+
     use super::*;
     use crate::commands::persona::rag_inspect::PersonaRagInspect;
     use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
@@ -523,7 +543,7 @@ mod tests {
             &m.resolver,
             RagInspectParams {
                 persona: "".to_string(),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await;
@@ -539,7 +559,7 @@ mod tests {
             &m.resolver,
             RagInspectParams {
                 persona: "Unknown".to_string(),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await;
@@ -556,7 +576,7 @@ mod tests {
             RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await
@@ -579,18 +599,18 @@ mod tests {
             RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await
         .unwrap();
         assert_eq!(result.deliveries[0].items.len(), 2);
         let first = &result.deliveries[0].items[0];
-        assert_eq!(first.content_preview, "hello world");
+        assert_eq!(first.content, "hello world");
         assert!((first.score - 1.0).abs() < 1e-9);
         assert_eq!(first.age_s, 100);
-        // peer_id_prefix is 8 hex chars from the UUID.
-        assert_eq!(first.peer_id_prefix.len(), 8);
+        // peer_id_shown is 8 hex chars from the UUID.
+        assert_eq!(first.peer_id_shown.len(), 8);
     }
 
     #[tokio::test]
@@ -602,7 +622,7 @@ mod tests {
                 persona: "Pax".to_string(),
                 context_window: Some(8_192),
                 now_ms: Some(1_000_000),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await
@@ -626,7 +646,7 @@ mod tests {
                 RagInspectParams {
                     persona: "Paige".to_string(),
                     now_ms: Some(1_000_000),
-                    ..Default::default()
+                    ..windowed()
                 },
             )
             .await
@@ -662,7 +682,7 @@ mod tests {
             RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await
@@ -682,7 +702,7 @@ mod tests {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
                 chain_inference: Some(true),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await
@@ -707,7 +727,7 @@ mod tests {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
                 chain_inference: Some(true),
-                ..Default::default()
+                ..windowed()
             },
         )
         .await
@@ -732,7 +752,7 @@ mod tests {
                     persona: "Paige".to_string(),
                     now_ms: Some(1_000_000),
                     chain_inference: Some(true),
-                    ..Default::default()
+                    ..windowed()
                 },
             )
             .await

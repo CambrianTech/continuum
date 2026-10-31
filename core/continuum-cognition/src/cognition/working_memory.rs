@@ -87,26 +87,6 @@ use crate::cognition::act_observe::Observation;
 pub(crate) type ContextView =
     continuum_context::view::View<crate::cognition::context_streams::ContextMessage>;
 
-/// Clip a full action-result body to [`WM_ACTION_FULL_MAX_CHARS`] for prompt inclusion.
-/// Returns the body unchanged when it fits; otherwise a `char`-boundary-safe head plus
-/// a marker naming exactly how many chars were dropped and how to see them (re-run the
-/// tool with a narrower scope). One place so the render site and its test agree.
-/// One of her earlier thoughts, collapsed to `keep` chars for the trail: the END is
-/// kept, because that is where a thought's decision lives. Kimi, 2026-10-04, asked
-/// which end she needs: "keep the end. The beginning is cheap: six acts I can redo
-/// against the board. The ending is expensive when lost: drop it and I'm tempted back
-/// down paths I already closed." Measured in her rooms the same day: 69 of her last
-/// 89 thoughts OPENED with re-orientation ("Let me organize my state as Kimi") and
-/// ENDED with what she decided, and the head clip kept exactly the re-orientation.
-/// The full text stays in the entry; only this render is bounded.
-pub fn collapse_thought(text: &str, keep: usize) -> String {
-    let total = text.chars().count();
-    if total <= keep {
-        return text.to_string();
-    }
-    let tail: String = text.chars().skip(total - keep).collect();
-    format!("[{} earlier chars — my full thought, collapsed] …{tail}", total - keep)
-}
 
 
 /// Borrowed provenance already carried by the result ring. Displaying a result
@@ -232,6 +212,9 @@ pub struct WorkingMemory {
     /// the deliberation guard still trims the assembled prompt to the real `n_ctx`, so an
     /// unknown window must never be replaced with an invented one.
     entries: Mutex<VecDeque<WmEntry>>,
+    /// The next entry occurrence (`WmEntry::occurrence`): one sequence for every entry, kept in
+    /// the checkpoint so a restore and the next append never share one.
+    next_entry_seq: AtomicU64,
     /// The acting root her receipts are stamped with (set at the work-turn
     /// rooting seam, cleared on restore). See [`WmEntry::scope`].
     scope: Mutex<Option<String>>,
@@ -593,6 +576,15 @@ pub(crate) fn reachable_handles(
 pub struct WmEntry {
     pub kind: WmKind,
     pub text: String,
+    /// This entry's occurrence, stamped once by the one owner of entry identity
+    /// (`WorkingMemory::push_entry`, from `next_entry_seq`): two entries that say the same
+    /// thing are two occurrences, so a settlement that repeats an earlier one is its own item
+    /// in her view (passed, failed, passed reads as passed). Never a content hash. Never in a
+    /// checkpoint: an occurrence names an item within one life's view, a restart begins a new
+    /// epoch that re-renders every item, and restore numbers each entry it brings back from
+    /// the same counter, so the checkpoint's shape does not change.
+    #[serde(skip)]
+    pub occurrence: u64,
     #[serde(default)]
     pub acts: Vec<Observation>,
     /// Original offered tool dialect, before execution normalization. Kept with

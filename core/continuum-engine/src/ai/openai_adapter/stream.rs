@@ -310,7 +310,6 @@ impl OpenAICompatibleAdapter {
                                 rows.sort_by(|a, b| b.1.cmp(&a.1));
                                 let rendered = rows
                                     .iter()
-                                    .take(6)
                                     .map(|(role, tokens)| format!("{role}={tokens}"))
                                     .collect::<Vec<_>>()
                                     .join(" ");
@@ -535,7 +534,7 @@ impl OpenAICompatibleAdapter {
         let mut finish_reason = finish_reason_str
             .as_deref()
             .map(|r| self.map_finish_reason(r))
-            .unwrap_or(FinishReason::Stop);
+            .unwrap_or(FinishReason::Unreported); // no marker arrived: say so, never claim a stop
         let generation_completed =
             finish_reason_str.is_some() && !matches!(finish_reason, FinishReason::Error);
 
@@ -632,10 +631,8 @@ impl OpenAICompatibleAdapter {
                                 tool = t.name.as_str(),
                                 error = e.to_string().as_str(),
                                 arg_len = t.arguments.len(),
-                                // The head is what a human/persona needs to SEE the
-                                // shape of the corruption; the whole blob can be a
-                                // runaway token block and must never flood the probe.
-                                head = t.arguments.chars().take(200).collect::<String>().as_str(),
+                                // The whole blob rides in the call's result below
+                                // (`__malformed_tool_arguments.raw`); the probe names its size.
                                 "model emitted tool arguments that are not valid JSON — the call cannot be honored as written",
                             );
                             // Carry the parse error itself, under a SELF-DESCRIBING key,

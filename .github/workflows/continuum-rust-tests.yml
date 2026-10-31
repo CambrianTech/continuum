@@ -102,9 +102,9 @@ jobs:
       # Integration targets, not part of --lib, in one invocation sharing one build: the signed-grant
       # loop, and the engine log relay as the real `continuum-core-server --log-relay` binary
       # (spawn into the engine's group, readiness, core exit and re-follow; card 1d7d6d4c).
-      - name: integration targets (capability grant trust gate, engine log relay)
+      - name: integration targets (capability grant, engine log relay, remote inference)
         if: matrix.crate == 'continuum-core'
-        run: cargo test --locked -p continuum-core --test capability_grant_e2e --test log_relay_e2e --profile dev-fast --features "$FEATURES"
+        run: cargo test --locked -p continuum-core --test capability_grant_e2e --test log_relay_e2e --test airc_remote_inference_roundtrip --profile dev-fast --features "$FEATURES"
 
       # continuum-host's real-process fixtures fork, so they live in their own test binary, apart from
       # the lib tests' sockets (a fork can carry a socket being created into the child; card 1d7d6d4c).

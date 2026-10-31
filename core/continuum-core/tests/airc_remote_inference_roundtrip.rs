@@ -127,7 +127,7 @@ async fn spawn_ai_generate_responder(
             Some(KIND_PEER),
             "wire header HEADER_COMMAND_KIND must stamp KIND_PEER for ai/generate dispatch"
         );
-        let Some(airc_core::Body::Json(body)) = frame.body() else {
+        let airc_core::Body::Json(body) = frame.body() else {
             panic!("the request body is JSON");
         };
         let request: continuum_airc_protocol::AircCommandRequest =

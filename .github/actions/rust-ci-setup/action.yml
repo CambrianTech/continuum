@@ -23,6 +23,26 @@ outputs:
 runs:
   using: composite
   steps:
+    # The shared target is 24 GB unpacked (warm run 41193606500 at f0f786d19, 2026-10-31: 24G
+    # after pruning 5.79 GB of test executables), restored beside its 5 GiB download, and a crate
+    # job builds its tests on top. Two runner images are in rotation while ubuntu-latest moves to
+    # 26.04 (from 2026-10-19). The 24.04 image's root disk ran out mid-setup and mid-build on
+    # 10-31 (#5638, #5649 twice, #5641: "No space left on device"); it has a separate scratch disk
+    # at /mnt. The 26.04 image has one disk: 145G, 87G free (measured on #5650's run). The build
+    # goes on whichever disk has more room, at ONE path, so the cache restores and saves the same
+    # way on both images.
+    - name: Build where the runner has room
+      shell: bash
+      run: |
+        sudo install -d -o "$(id -u)" -g "$(id -g)" /ci-target
+        root_free=$(df --output=avail -B1 / | tail -1)
+        if mountpoint -q /mnt && [ "$(df --output=avail -B1 /mnt | tail -1)" -gt "$root_free" ]; then
+          sudo install -d -o "$(id -u)" -g "$(id -g)" /mnt/ci-target
+          sudo mount --bind /mnt/ci-target /ci-target
+        fi
+        echo "CARGO_TARGET_DIR=/ci-target" >> "$GITHUB_ENV"
+        df -h / /ci-target
+
     - name: Install Rust toolchain from rust-toolchain.toml
       shell: bash
       run: |
@@ -95,7 +115,7 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: |
-          target
+          /ci-target
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db

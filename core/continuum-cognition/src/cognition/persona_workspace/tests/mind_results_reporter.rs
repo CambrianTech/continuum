@@ -38,6 +38,16 @@ fn saved(handle: &str) -> ResultCustody {
     }
 }
 
+/// The bytes no shed releases: every record's ledger line and summary across `minds`. The memory
+/// owner charges them as pinned (Codex on #5637), and they stay constant through every shed.
+fn lines(minds: &Minds) -> u64 {
+    minds
+        .iter()
+        .flat_map(|(_, memory)| memory.snapshot().actions)
+        .map(|r| [r.head, r.summary].into_iter().flatten().map(|t| t.len() as u64).sum::<u64>())
+        .sum()
+}
+
 /// Which of a mind's results are resident, by the name each body starts with.
 fn resident(memory: &WorkingMemory) -> Vec<String> {
     memory
@@ -70,12 +80,12 @@ fn the_shed_moves_the_oldest_across_minds_down_to_the_allocation() {
     let minds: Minds = vec![(pa, Arc::clone(&a)), (pb, Arc::clone(&b))];
     let proven = Mutex::new(ProvenCopies::default());
     let total = resident_bytes(&minds);
-    assert_eq!(total, 7 * BODY as u64, "precondition: every body resident");
+    assert_eq!(total, 7 * BODY as u64 + lines(&minds), "precondition: every body resident");
 
     shed_to(&minds, total - 2 * BODY as u64, &proven);
     assert_eq!(
         resident_bytes(&minds),
-        5 * BODY as u64,
+        5 * BODY as u64 + lines(&minds),
         "exactly down to the allocation"
     );
     assert_eq!(resident(&a), ["a2", "a3"], "a1 was the oldest received");
@@ -159,7 +169,7 @@ fn a_copy_that_cannot_reproduce_the_body_keeps_it_resident() {
         ["c1", "c2", "c3", "c5"],
         "unprovable copies keep their bodies; c4 moved"
     );
-    assert_eq!(resident_bytes(&minds), 4 * BODY as u64);
+    assert_eq!(resident_bytes(&minds), 4 * BODY as u64 + lines(&minds));
 }
 
 // what this catches (Cormac on #5595): `budget()` touching the filesystem. The monitor calls it
@@ -179,11 +189,11 @@ fn budget_answers_from_the_proof_cache_without_the_filesystem() {
     let unproven = budget_of(&minds, &proven);
     assert_eq!(
         (unproven.min_bytes, unproven.max_bytes),
-        (4 * BODY as u64, 4 * BODY as u64),
+        (4 * BODY as u64 + lines(&minds), 4 * BODY as u64 + lines(&minds)),
         "nothing proven: all pinned"
     );
 
-    shed_to(&minds, 3 * BODY as u64, &proven);
+    shed_to(&minds, 3 * BODY as u64 + lines(&minds), &proven);
     assert_eq!(
         resident(&memory),
         ["d2", "d3", "d4"],
@@ -197,15 +207,15 @@ fn budget_answers_from_the_proof_cache_without_the_filesystem() {
         .to_owned();
     std::fs::remove_dir_all(&dir).expect("test: remove the spill dir");
     let cached = budget_of(&minds, &proven);
-    assert_eq!(cached.max_bytes, 3 * BODY as u64);
+    assert_eq!(cached.max_bytes, 3 * BODY as u64 + lines(&minds));
     assert_eq!(
-        cached.min_bytes, BODY as u64,
+        cached.min_bytes, BODY as u64 + lines(&minds),
         "d2 and d3 proven from the cache; only the newest pinned"
     );
 }
 
 // what this catches: the memory owner reading a wrong total, so it sheds too little or too
-// much. `report()` is the sum of resident body BYTES across every mind (not characters: a
+// much. `report()` is the sum of every record's BYTES across every mind (bodies, lines, summaries) (not characters: a
 // multi-byte body counts its bytes), and moves with every receipt and shed.
 #[test]
 fn report_sums_resident_bytes_across_minds() {
@@ -224,7 +234,7 @@ fn report_sums_resident_bytes_across_minds() {
     b.record_receipt_typed(&[], &wide, None, saved("b1"));
     assert_eq!(
         resident_bytes(&minds),
-        2 * BODY as u64 + wide.len() as u64,
+        2 * BODY as u64 + wide.len() as u64 + lines(&minds),
         "bytes, not chars"
     );
     assert_eq!(

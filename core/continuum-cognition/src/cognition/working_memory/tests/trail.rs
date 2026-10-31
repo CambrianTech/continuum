@@ -26,7 +26,8 @@ fn recent_results_survive_subsequent_acts_and_stay_bounded() {
     for _ in 0..8 {
         record_saved(&wm, &"x".repeat(unit));
     }
-    shed(&wm, 4 * unit);
+    let pinned = line_bytes(&wm);
+    shed(&wm, 4 * unit + pinned);
     let messages = wm.recent_results_messages();
     let kept: Vec<&String> = messages.iter().filter(|m| m.starts_with("[result ")).collect();
     assert!(!kept.is_empty(), "the newest results stay");
@@ -39,7 +40,7 @@ fn recent_results_survive_subsequent_acts_and_stay_bounded() {
         !messages.join("\n").contains("E0601"),
         "the oldest collapse to pointers once shed — bounded, not immortal"
     );
-    assert!(wm.resident_result_bytes() <= 4 * unit as u64, "down to the allocation: {}", wm.resident_result_bytes());
+    assert!(wm.resident_result_bytes() <= (4 * unit + pinned) as u64, "down to the allocation: {}", wm.resident_result_bytes());
     // Between sheds the ring only appends: receipts and settles move nothing, so the head
     // stays byte-identical (the KV divergence audit, 2026-09-13).
     let head_after_collapse = wm.recent_results_messages().get(1).cloned();

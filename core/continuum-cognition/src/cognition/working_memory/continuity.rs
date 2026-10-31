@@ -142,17 +142,15 @@ impl WorkingMemory {
             return;
         }
         let mut e = self.entries.lock();
-        e.push_back(WmEntry {
+        self.push_entry(&mut e, WmEntry {
             disk_change: Default::default(),
             kind: WmKind::Fact,
             text: f.to_string(),
             acts: Vec::new(),
             native_calls: Vec::new(),
             scope: None,
+            occurrence: 0,
         });
-        while e.len() > self.capacity {
-            e.pop_front();
-        }
     }
 
     /// Snapshot the volatile tier for PAUSE/RESUME across deploy reboots — the
@@ -277,10 +275,20 @@ impl WorkingMemory {
             // "restored from a checkpoint saved under a minute ago … rebuilt 480243761 →
             // 374144c34" on every turn for five hours. The notices are pinned for two
             // turns below; any that a snapshot still carries are dropped here.
-            e.extend(snap.entries.into_iter().filter(|w| {
-                !(w.kind == WmKind::Fact
-                    && (w.text.starts_with("[resumed]") || w.text.starts_with("[rebuilt]")))
-            }));
+            // Each restored entry takes its occurrence from the one counter as it arrives
+            // (`WmEntry::occurrence` is never checkpointed), so no two entries share one.
+            e.extend(
+                snap.entries
+                    .into_iter()
+                    .filter(|w| {
+                        !(w.kind == WmKind::Fact
+                            && (w.text.starts_with("[resumed]") || w.text.starts_with("[rebuilt]")))
+                    })
+                    .map(|mut w| {
+                        w.occurrence = self.next_entry_seq.fetch_add(1, Ordering::Relaxed);
+                        w
+                    }),
+            );
             while e.len() > self.capacity {
                 e.pop_front();
             }

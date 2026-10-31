@@ -32,6 +32,8 @@ mod perception;
 mod recency;
 
 mod observation;
+/// The one renderer of a call's arguments, for the tool result's status line (`tool_executor::answer`).
+pub(crate) use observation::call_args;
 pub use observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
 
 mod types;
@@ -250,6 +252,7 @@ pub mod test_support {
     // predicates — they read `acts`, never re-parse the string).
     pub fn receipt(acts: Vec<Observation>) -> WmEntry {
         WmEntry {
+            occurrence: 0,
             disk_change: Default::default(),
             native_calls: Vec::new(),
             kind: WmKind::Receipt { n: 1 },
@@ -261,6 +264,7 @@ pub mod test_support {
 
     pub fn settle() -> WmEntry {
         WmEntry {
+            occurrence: 0,
             disk_change: Default::default(),
             native_calls: Vec::new(),
             kind: WmKind::Settlement,

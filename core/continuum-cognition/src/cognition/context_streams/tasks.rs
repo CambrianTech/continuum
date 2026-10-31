@@ -19,7 +19,8 @@ pub(crate) fn terminal_element(persona: uuid::Uuid, task: uuid::Uuid, fingerprin
 
 /// The one mapping from a task's state to the occurrence her view renders and a render receipt
 /// names: a task's terminal state is its own occurrence, so acknowledging an end never matches the
-/// running line that came before it. The task ledger (#5585) calls this to read a receipt.
+/// running line that came before it. Durable ledger ends use terminal_element instead,
+/// which binds their complete immutable fingerprint.
 pub(crate) fn task_element(persona: uuid::Uuid, task: uuid::Uuid, status: &DispatchStatus) -> ElementId {
     let state = match status {
         DispatchStatus::Running => 0u8,

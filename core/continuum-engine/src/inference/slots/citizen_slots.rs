@@ -23,7 +23,7 @@ pub type SlotPin = PinHandle<PageKey, std::sync::Arc<KvSlotLease>>;
 /// saves its resident before lending that slot transiently; a two-slot server
 /// without scratch stays unpinned. Both use `cache_prompt: false`. The
 /// measured defect this closes: the small sidecar calls (`should_respond`,
-/// `check_redundancy`, `generate_response`) pinned the SAME slot as the turn
+/// `generate_response`) pinned the SAME slot as the turn
 /// and truncated the citizen's ~30k warm tail to their tiny common head —
 /// breaking KV reuse even for a SOLO citizen — while the smoke probe and the
 /// unpinned producers were free to LCP-steal any warm slot.
@@ -67,7 +67,6 @@ pub fn class_for(purpose: Option<&str>) -> SlotClass {
         | Some("persona-respond")
         | Some("persona_decide_and_respond") => SlotClass::Turn,
         Some("cognition/should-respond")
-        | Some("cognition/check-redundancy")
         | Some("cognition/generate-response")
         | Some("cognition/validate-response-decision")
         | Some("resolution-draft")

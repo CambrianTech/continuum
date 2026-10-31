@@ -117,8 +117,6 @@ export type { RecordContentParams } from './RecordContentParams';
 export type { RecordContentResult } from './RecordContentResult';
 export type { RedactMemoryParams } from './RedactMemoryParams';
 export type { RedactMemoryResult } from './RedactMemoryResult';
-export type { RedundancyCheckRequest } from './RedundancyCheckRequest';
-export type { RedundancyDecision } from './RedundancyDecision';
 export type { RegisterDomainKeywordsParams } from './RegisterDomainKeywordsParams';
 export type { RegisterDomainKeywordsResult } from './RegisterDomainKeywordsResult';
 export type { ResolutionError } from './ResolutionError';

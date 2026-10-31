@@ -54,7 +54,6 @@ pub mod channel_digest;
 pub mod channel_digest_region;
 pub mod channel_element;
 pub mod channel_substrate;
-pub mod check_redundancy;
 pub use continuum_prompt::context_budget;
 pub mod deferred_faculty;
 pub mod deliberation_budget;
