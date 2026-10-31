@@ -693,15 +693,12 @@
             all.contains("claim lapsed (was YOURS) — claimable"),
             "the lapsed card renders its lapse honestly: {all}"
         );
-        let closed = all
-            .lines()
-            .find(|line| line.contains("finished work"))
-            .expect("closed card remains visible");
+        // A settled card is counted in the history line, not rendered as a card (#5677).
+        assert!(!all.contains("finished work"), "the closed card is not a card line: {all}");
         assert!(
-            closed.contains("[Closed]") && closed.contains("claim lapsed (was YOURS)"),
-            "{closed}"
+            all.contains("[board history] 1 card(s) merged or closed"),
+            "the closed card is counted in the history line: {all}"
         );
-        assert!(!closed.contains("claimable") && !closed.contains("resume it"), "{closed}");
     }
 
     // what this catches: the exam-bleed regression (glass-boxed live 2026-07-10,
