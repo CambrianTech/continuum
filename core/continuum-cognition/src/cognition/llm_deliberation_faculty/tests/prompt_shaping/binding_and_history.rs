@@ -396,7 +396,7 @@ fn catalog_fits_the_minimum_serving_window() {
     let framing = estimate_guard_tokens(&collapsed);
     // The reply's floor — what the window always holds for it — derived from the
     // claim itself, never re-spelled. Above it the reply grows by priority.
-    let reserve = reply_claim(TurnKind::Pass, None, 0, false, false).floor_tokens as usize;
+    let reserve = reply_claim(TurnKind::Pass, None, 0, false, false, None).floor_tokens as usize;
     assert!(
         framing + reserve < window as usize,
         "framing+menu ({framing}) + reserve ({reserve}) must leave burst room in {window}"

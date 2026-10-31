@@ -118,12 +118,15 @@ impl LlmDeliberationFaculty {
         // its grant travels with the view into `build_request_within` as `max_tokens`.
         let pending_peak = self.working_memory.as_ref()
             .map_or(0, |wm| wm.pending_emission_peak(ws.activity_room_id));
+        let kind = self.turn_kind(ws);
+        let time_term = kind.time_term(crate::inference::decode_knee::rate_for(self.binding.load().requested_model()).tps);
         let reply = reply_claim(
-            self.turn_kind(ws),
+            kind,
             self.working_set.as_ref().and_then(|reg| reg.need_of(self.persona_id)),
             pending_peak,
             Self::holds_live_work(ws),
             ws.directed_at_self(),
+            time_term,
         );
         let desired_reply = reply.max_tokens as usize;
 
