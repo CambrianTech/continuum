@@ -475,6 +475,13 @@
         assert_eq!(recorded.artifact.size_bytes, derived.artifact.size_bytes);
         let empty = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(clean_base), None, &[]).await.err().expect("clean checkout refused");
         assert!(empty.to_string().contains("nothing to submit"));
+        // Regression for Aris's loop (2026-10-31, investigation card 3a8a243a): each "no patch"
+        // refusal names the same open way forward, and the empty-card hint does not send her
+        // back to a submit that has nothing to publish.
+        let empty_card = super::submissions_on_card(&[]);
+        for said in [empty.to_string(), empty_card] {
+            assert!(said.contains("work/note") && said.contains("work/state closed"), "{said}");
+        }
         // Regression for 6dd8befa: a valid empty submission is not malformed
         // arguments. The real refusal reaches her without advice to retry its schema.
         let refusal = format!("work/submit: {empty}");

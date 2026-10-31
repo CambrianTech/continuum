@@ -247,6 +247,14 @@ pub(super) fn followed_room(recorded: &[crate::persona::held_claims::HeldClaim],
     recorded.iter().find(|h| h.card_id == id).map(|h| h.room.clone())
 }
 
+/// How a card concludes when its result is not a patch (an investigation, a question answered):
+/// the one way forward both "no patch" refusals name, so `work/submit` ("nothing to submit") and
+/// `work/submission` ("no submissions yet") never send her to each other. Aris on the M5,
+/// 2026-10-31 11:13-13:22Z: 14 refusals alternating between the two on investigation card
+/// 3a8a243a, whose worktree rightly had no changes.
+pub(super) const CONCLUDE_WITHOUT_A_PATCH: &str =
+    "if this card's result is what you found rather than a change, record it with work/note (known: what you established) and close the card with work/state closed";
+
 /// PURE: where a submission handle comes from, said with the handles themselves. A
 /// refused handle used to name only its SHAPE ("a full UUID or at least 4 leading hex
 /// characters"), and Kimi, wanting a card's submissions, sent `placeholder` (2026-10-05
@@ -255,13 +263,13 @@ pub(super) fn followed_room(recorded: &[crate::persona::held_claims::HeldClaim],
 /// eight hex characters the resolver accepts as a prefix.
 pub(super) fn submissions_on_card(on_card: &[(Uuid, Uuid)]) -> String {
     if on_card.is_empty() {
-        return "this card has no submissions yet; publish yours with work/submit".into();
+        return format!(
+            "this card has no submissions yet: work/submit publishes one once your checkout has changes; {CONCLUDE_WITHOUT_A_PATCH}"
+        );
     }
     let lines: Vec<String> = on_card
         .iter()
-        .map(|(id, publisher)| {
-            format!("{} by {}", &id.simple().to_string()[..8], &publisher.simple().to_string()[..8])
-        })
+        .map(|(id, publisher)| format!("{} by {}", airc_core::shown_id::shown_form(*id), airc_core::shown_id::shown_form(*publisher)))
         .collect();
     format!("submissions on this card: {}", lines.join(", "))
 }
@@ -561,8 +569,8 @@ pub(super) fn past_upstream(checkout: &std::path::Path, created: &str, repo: Opt
         Some((ahead, mb)) if ahead > 0 => {
             continuum_base::probe!(
                 class = "work.submit.base_past_upstream",
-                created = %&created[..created.len().min(9)],
-                base = %&mb[..mb.len().min(9)],
+                created = %created,
+                base = %mb,
                 upstream_commits = ahead,
                 "the worktree merged upstream history since it was created — the submission \
                  diffs from the newest upstream commit she holds, so only her change is published"
@@ -660,10 +668,10 @@ pub(super) async fn derive_submission(
     let patch = benchmark.candidate_diff(checkout, Some(&base))?;
     if patch.trim().is_empty() {
         return Err(CommandError::Invalid(format!(
-            "nothing to submit: {} has no changes since {} (substrate paths excluded) — \
-             a submit publishes a patch, not an intention",
+            "nothing to submit: {} has no changes since {} (substrate paths excluded). A submit publishes a \
+             patch: make the change there first, or, {CONCLUDE_WITHOUT_A_PATCH}",
             checkout.display(),
-            &base_sha[..base_sha.len().min(9)]
+            base_sha
         )));
     }
     // Retain the exact candidate before publishing its identity: the checkout can
