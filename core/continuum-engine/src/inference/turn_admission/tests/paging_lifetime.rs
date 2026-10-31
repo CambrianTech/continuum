@@ -3,6 +3,62 @@
 use super::*;
 use std::time::Duration;
 
+// Sahar's measured generation estimate was 2s while healthy restores took >3s.
+// The production admission policy must let the owned restore finish and admit
+// subsequent useful generation instead of abandoning it on that prediction.
+#[tokio::test]
+async fn healthy_restore_outlives_generation_prediction() -> Result<(), Box<dyn std::error::Error>> {
+    use axum::{extract::Path, routing::post, Json, Router};
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let app = Router::new().route("/slots/{slot}", post({
+        let entered = entered.clone();
+        let release = release.clone();
+        move |Path(slot): Path<u32>, Json(body): Json<serde_json::Value>| {
+            let entered = entered.clone();
+            let release = release.clone();
+            async move {
+                entered.notify_one();
+                release.notified().await;
+                Json(json!({"id_slot": slot, "filename": body["filename"], "n_restored": 42}))
+            }
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let root = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let pool = crate::inference::slots::directory().ensure_pool(&root, 3);
+    let key = PageKey::mind(Uuid::new_v4()).ok_or("activity key")?;
+    pool.note_saved(key);
+    let sem = Arc::new(Semaphore::new(1));
+    let client = reqwest::Client::new();
+    let mut admitting = Box::pin(admit_turn(&sem, Some(key), Some(pool.clone()),
+        &client, &root, 100, AdmissionPatience::for_turn()));
+    tokio::select! {
+        result = &mut admitting => return Err(format!("admitted before restore: {:?}", result.err()).into()),
+        _ = entered.notified() => {}
+    }
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(3)).await;
+    assert!(futures::poll!(&mut admitting).is_pending());
+    assert_eq!(sem.available_permits(), 0);
+    tokio::time::resume();
+    release.notify_one();
+    let admitted = admitting.as_mut().await?;
+    assert!(admitted.page_confirmed);
+    assert!(admitted.slot().is_some());
+    drop(admitted);
+    drop(admitting);
+    let subsequent = admit_turn(&sem, Some(key), Some(pool), &client, &root,
+        100, AdmissionPatience::for_turn()).await?;
+    assert!(subsequent.page_confirmed);
+    drop(subsequent);
+    assert_eq!(sem.available_permits(), 1);
+    server.abort();
+    let _ = server.await;
+    Ok(())
+}
+
 // What this catches: abandonment during evictee SAVE must retain its durable
 // ledger receipt, but must not launch the next RESTORE for a requester who left.
 #[tokio::test]
@@ -155,7 +211,7 @@ async fn abandoned_restore_retains_slot_lane_and_generation_until_terminal_recei
                 &client,
                 &root,
                 100,
-                AdmissionPatience::for_turn(Some(Duration::from_secs(5)), Duration::ZERO),
+                AdmissionPatience::until(tokio::time::Instant::now() + Duration::from_secs(5)),
             ));
             tokio::time::timeout(Duration::from_secs(5), async {
                 tokio::select! {

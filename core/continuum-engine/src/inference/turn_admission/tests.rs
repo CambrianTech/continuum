@@ -495,7 +495,7 @@
         let first = admit_turn(&sem, Some(first_key), Some(old_pool.clone()), &client, &root,
             100, std::time::Duration::ZERO).await?;
         let mut waiting = Box::pin(admit_turn(&sem, Some(waiting_key), Some(old_pool.clone()),
-            &client, &root, 100, AdmissionPatience::for_turn(None, std::time::Duration::ZERO)));
+            &client, &root, 100, AdmissionPatience::for_turn()));
         assert!(futures::poll!(&mut waiting).is_pending());
         // Healthy slot contention outlasts the 240s readiness allowance without
         // spending it. A later engine replacement still gets its readiness hold.
@@ -579,8 +579,7 @@
                 100, std::time::Duration::ZERO).await?;
             let started = tokio::time::Instant::now();
             let waiting = admit_turn(&sem, Some(next_key), Some(pool), &client, &root, 100,
-                AdmissionPatience::for_turn(Some(std::time::Duration::from_secs(10)),
-                    std::time::Duration::from_secs(2)));
+                AdmissionPatience::until(started + std::time::Duration::from_secs(8)));
             assert!(waiting.await.is_err());
             assert_eq!(started.elapsed(), std::time::Duration::from_secs(8));
             assert_eq!(sem.available_permits(), permits - 1);
