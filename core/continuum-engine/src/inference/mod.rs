@@ -48,7 +48,7 @@ pub mod engine_slots;
 pub mod lane_footprint;
 pub mod prefill_knee;
 pub mod prefill_rate;
-pub mod prefill_throttle;
+pub mod prefill_spike;
 pub mod served_window_store;
 pub mod serving_rates;
 pub mod lane_registry;

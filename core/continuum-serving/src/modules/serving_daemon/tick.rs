@@ -80,16 +80,6 @@ impl ServiceModule for ServingDaemonModule {
         // tick, hysteresis-gated; a sustained failure flips not-ready and the next reconcile
         // respawns the lane.
         let _ = self.spawn_health_heartbeat_if_due();
-        // The cheap knob on the reaction ladder (#56): re-derive the concurrent-prefill
-        // grant from the board's LIVE VRAM availability (lock-free watch read, already net
-        // of external pressure + grants). Flexes both directions every tick — the instant
-        // valve for the 2026-07-16 compute-buffer OOM; re-planning above stays the slow,
-        // hysteresis-guarded knob. Ungoverned VRAM (no monitor) → no live number → the
-        // throttle holds at the lane count rather than guessing.
-        if let Some(available) = governed_vram_ceiling(&self.resource_daemon) {
-            // Probes on CHANGE only, inside the throttle — a steady grant is silence.
-            let _granted = crate::inference::prefill_throttle::reconcile(available);
-        }
         // #287: for a ready MoE serve, re-derive the governed host-cache lease from the
         // LIVE working set (KV grows as slots fill) and publish it through the sticky
         // band to the per-port plan file — the actuator her ResidencyCache polls.

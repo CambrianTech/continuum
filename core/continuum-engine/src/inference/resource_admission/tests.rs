@@ -715,22 +715,15 @@ fn the_queues_estimate_is_a_floor_under_her_own_measured_turn_never_a_ceiling() 
     assert!(act > bound, "the act must outlast the lane wait it contains");
 }
 
-// what this catches (the M5, 2026-09-20; Cormac's design word): the reserve is a WAIT
-// guarantee in seconds. A work call is lent the reserved lane only when its occupancy
-// is known and fits the directed budget and nothing directed is pending; an unknown
-// occupancy, a pending directed line, or an occupancy past the budget lends nothing.
-// (The loan itself is a try-acquire on a FREE physical lane — never a park; that lives
-// in `acquire_serving_lane`, where a parked loan would put a directed arrival behind
-// the whole occupancy.)
+// what this catches (the M5, 2026-10-28): a reserved lane idling for a mention while work
+// queues. Lent whenever nothing directed is pending, whatever the call's length (a 71 s
+// median act never fit the old budget, so the reserve was never lent); a pending directed
+// line re-arms it. (The loan itself is a try-acquire on a FREE physical lane, never a park;
+// that lives in `acquire_serving_lane`.)
 #[test]
-fn the_reserved_lane_is_lent_only_to_bounded_work_while_nothing_directed_is_pending() {
-    use std::time::Duration;
-    let budget = Duration::from_secs(60);
-    assert!(reserve_lendable(Some(Duration::from_secs(40)), false, budget));
-    assert!(!reserve_lendable(Some(Duration::from_secs(40)), true, budget), "a pending directed line re-arms the reserve");
-    assert!(!reserve_lendable(Some(Duration::from_secs(154)), false, budget), "a 154 s turn (the M5 tonight) may not take the reserve");
-    assert!(!reserve_lendable(None, false, budget), "unknown occupancy is not a number");
-    assert!(reserve_lendable(Some(budget), false, budget), "exactly the budget fits");
+fn the_reserved_lane_is_lent_to_work_whenever_nothing_directed_is_pending() {
+    assert!(reserve_lendable(false), "no slot idles for a mention that is not pending");
+    assert!(!reserve_lendable(true), "a pending directed line re-arms the reserve");
 }
 
 // what this catches: the health line's directed-wait numbers are nearest-rank

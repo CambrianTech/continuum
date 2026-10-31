@@ -1,7 +1,7 @@
 # Expert Paging — the governor seam
 
 *M5 (Fable) design note for BigMama's paging lane, 2026-07-25. The governor
-machinery is mine (`capacity/lease.rs`, `resources/`, `inference/prefill_throttle.rs`);
+machinery is mine (`capacity/lease.rs`, `resources/`, `inference/prefill_spike.rs`);
 the llama.cpp/CUDA/disk mechanics are BigMama's. This doc is the contract
 between them so we build to one shape.*
 
