@@ -61,6 +61,28 @@ impl ClassWriter {
         ClassWriter { dir: Arc::clone(&self.dir), scope: self.scope.join(owner.to_string()) }
     }
 
+    /// The owners with a directory in this scope (the mirror of `owned_by`), for a reader that
+    /// rehydrates every owner at boot. An entry whose name is not an owner id is not an owner; a
+    /// class nothing has written yet has none.
+    pub fn owners(&self) -> io::Result<Vec<uuid::Uuid>> {
+        let entries = match std::fs::read_dir(self.dir.path().join(&self.scope)) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let mut owners = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                if let Some(owner) = entry.file_name().to_str().and_then(|name| uuid::Uuid::parse_str(name).ok()) {
+                    owners.push(owner);
+                }
+            }
+        }
+        owners.sort();
+        Ok(owners)
+    }
+
     /// Where `relative` lives in this class. Refused unless it names something inside the class
     /// root: no absolute path, no `..`, no `.`, not empty.
     pub fn path(&self, relative: &Path) -> io::Result<PathBuf> {
@@ -188,6 +210,11 @@ mod tests {
             writer.path(Path::new(&owner.to_string())).expect("owner dir").join("emission.json")
         );
         assert!(mine.path(Path::new("../other")).is_err(), "an owner cannot reach a sibling");
+        // The mirror: the owners read back are exactly those written, and a stray file is not one.
+        writer.owned_by(uuid::Uuid::from_u128(3)).replace(Path::new("demand.json"), b"{}").expect("second owner");
+        writer.replace(Path::new("README"), b"not an owner").expect("stray");
+        assert_eq!(writer.owners().expect("owners"), vec![uuid::Uuid::from_u128(3), owner]);
+        assert_eq!(class().1.owners().expect("empty class"), Vec::<uuid::Uuid>::new());
     }
 
     // what this catches: a writer that guesses a directory when its class is not registered.
