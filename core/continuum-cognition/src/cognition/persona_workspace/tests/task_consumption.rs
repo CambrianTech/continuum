@@ -3,6 +3,46 @@ use super::*;
 use continuum_kernel::runtime::tasks::TaskEnd;
 
 #[tokio::test]
+async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use continuum_context::source::Source;
+    use continuum_context::view::View;
+    let home = tempfile::tempdir()?;
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let registry = PersonaWorkspaceRegistry::new();
+    let owner = Uuid::new_v4();
+    registry.register_from_cfg(cfg_for(owner))?;
+    let task = Uuid::new_v4();
+    registry.consume_task_ends(owner, vec![(task, TaskEnd::TimedOut)])?;
+    registry.register_from_cfg(cfg_for(owner))?;
+    let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
+    let source = crate::cognition::context_streams::tasks::Tasks { memory: &memory, persona: owner };
+    let (view, _) = View::start(Vec::new(), &[&source as &dyn Source<_>], |claims| {
+        claims.iter().map(|claim| claim.full_chars).collect()
+    })?;
+    assert!(view.render().any(|message| message.text.contains("timed out task")));
+    let mut receipt = crate::cognition::render_receipt::RenderReceipt {
+        owner, incarnation: memory.incarnation(), request: "submitted-request".to_owned(), view: view.receipt(),
+    };
+    let exact = receipt.clone();
+    for item in &mut receipt.view.items { item.element = None; }
+    assert!(registry.record_rendered_tasks(&receipt)?.is_none());
+    receipt = exact.clone();
+    for item in &mut receipt.view.items { item.level = continuum_context::level::Level::Folded; }
+    assert!(registry.record_rendered_tasks(&receipt)?.is_none());
+    receipt = exact.clone();
+    for item in &mut receipt.view.items { item.retired = true; }
+    assert!(registry.record_rendered_tasks(&receipt)?.is_none());
+    assert_eq!(memory.pending_task_wakes(), vec![task]);
+    assert!(registry.record_rendered_tasks(&exact)?.is_some());
+    assert!(memory.pending_task_wakes().is_empty());
+    let restored = WorkingMemory::new(8);
+    restored.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
+    assert!(restored.pending_task_wakes().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn forgotten_end_is_committed_before_receipt_and_restored_with_wake(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let home = tempfile::tempdir()?;

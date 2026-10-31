@@ -27,6 +27,29 @@ pub enum TaskEnd {
     Lost,
 }
 
+/// The terminal fact without its ledger-owned output. Consumers may project this
+/// status but must not equate it with having read the result body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskEndState {
+    Done,
+    Failed,
+    TimedOut,
+    Stopped,
+    Lost,
+}
+
+impl TaskEnd {
+    pub fn state(&self) -> TaskEndState {
+        match self {
+            Self::Done(_) => TaskEndState::Done,
+            Self::Failed { .. } => TaskEndState::Failed,
+            Self::TimedOut => TaskEndState::TimedOut,
+            Self::Stopped => TaskEndState::Stopped,
+            Self::Lost => TaskEndState::Lost,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 enum Fact {
     Accepted { command: String },

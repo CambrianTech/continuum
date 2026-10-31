@@ -1,17 +1,10 @@
 #![cfg(test)]
 
-    // what this catches: PROVENANCE BEING FILTERED BY ATTENTION. Card 0d51573a.
-    // `ws.broadcast` is the FOCUSED set, so deriving receipts from it would drop the
-    // generations of any faculty attention dropped (the arbiter cut by a count until card
-    // c537d687; it forwards every bid now, and receipts must still not depend on it). Astra found that in my first implementation,
-    // which flat_mapped broadcast; my previous test could not catch it because it
-    // hand-assembled `ws.broadcast` and never ran the arbiter at all.
-    //
-    // THIS TEST DRIVES THE REAL CYCLE so the truncation actually happens. A fault
-    // receipt from a losing faculty is precisely the record worth keeping — a failed
-    // call that got truncated away is invisible exactly when someone needs it.
+    // Every faculty's generation and render evidence returns through the real
+    // cycle. The arbiter now forwards every bid, so this test does not exercise
+    // dropped-bid behavior; collection still reads all_bids, not the broadcast.
     #[tokio::test]
-    async fn a_losing_faculty_keeps_its_receipt_even_though_attention_dropped_its_bid() {
+    async fn the_cycle_returns_every_facultys_generation_and_render_receipts() {
         use crate::ai::provenance::GenerationReceipt;
 
         let mut loud = Contribution::context(FacultyId::Recall, "loud", 0.9, "wins attention");

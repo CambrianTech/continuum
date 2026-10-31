@@ -1,7 +1,7 @@
 //! Owner consumption state. Notification delivery is not wake admission, and
 //! neither an in-memory insertion nor this snapshot alone acknowledges the ledger.
 use super::WorkingMemory;
-use continuum_kernel::runtime::tasks::TaskEnd;
+use continuum_kernel::runtime::tasks::{TaskEnd, TaskEndState};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -18,7 +18,16 @@ pub(crate) struct TaskResults {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ConsumedEnd {
     fingerprint: [u8; 32],
+    state: TaskEndState,
     wake_pending: bool,
+}
+
+/// A published terminal fact. The fingerprint identifies the immutable ledger
+/// result, including its body; it is not merely the coarse Done/Failed status.
+pub(crate) struct TaskTerminal {
+    pub task: Uuid,
+    pub fingerprint: [u8; 32],
+    pub state: TaskEndState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -57,14 +66,14 @@ impl WorkingMemory {
         let mut incoming = BTreeMap::new();
         for (task, end) in ends {
             let fingerprint: [u8; 32] = Sha256::digest(serde_json::to_vec(&end)?).into(); // Disk boundary: persist integrity fingerprints, not duplicate ledger output.
-            if let Some(previous) = incoming.insert(task, fingerprint) {
+            if let Some((previous, _)) = incoming.insert(task, (fingerprint, end.state())) {
                 if previous != fingerprint {
                     return Err(TaskReceiptConflict { task }.into());
                 }
             }
         }
         let mut results = self.task_results.lock();
-        for (task, fingerprint) in &incoming {
+        for (task, (fingerprint, _)) in &incoming {
             if let Some(previous) = results.entries.get(task) {
                 if previous.fingerprint != *fingerprint {
                     return Err(TaskReceiptConflict { task: *task }.into());
@@ -72,10 +81,11 @@ impl WorkingMemory {
             }
         }
         let mut changed = false;
-        for (task, fingerprint) in incoming {
+        for (task, (fingerprint, state)) in incoming {
             if let std::collections::btree_map::Entry::Vacant(entry) = results.entries.entry(task) {
                 entry.insert(ConsumedEnd {
                     fingerprint,
+                    state,
                     wake_pending: true,
                 });
                 changed = true;
@@ -101,6 +111,17 @@ impl WorkingMemory {
             .iter()
             .filter_map(|(task, pending)| pending.then_some(*task))
             .collect()
+    }
+
+    pub(crate) fn task_terminals(&self) -> Vec<TaskTerminal> {
+        let results = self.task_results.lock();
+        results.entries.iter().filter_map(|(task, end)| {
+            results.published.contains_key(task).then_some(TaskTerminal {
+                task: *task,
+                fingerprint: end.fingerprint,
+                state: end.state,
+            })
+        }).collect()
     }
 
     /// Stage retirement only after a successful rendered-context read receipt.

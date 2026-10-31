@@ -9,6 +9,13 @@ use continuum_context::source::{Item, Source};
 
 use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::working_memory::{DispatchStatus, WorkingMemory};
+use continuum_kernel::runtime::tasks::TaskEndState;
+
+/// A durable end is a different occurrence from a streaming dispatch update.
+/// Bind the complete immutable result fingerprint, not just its status label.
+pub(crate) fn terminal_element(persona: uuid::Uuid, task: uuid::Uuid, fingerprint: &[u8; 32]) -> ElementId {
+    element(persona, Producer::Task, &[task.as_bytes().as_slice(), fingerprint.as_slice()].concat())
+}
 
 /// The one mapping from a task's state to the occurrence her view renders and a render receipt
 /// names: a task's terminal state is its own occurrence, so acknowledging an end never matches the
@@ -37,8 +44,11 @@ impl Source<ContextMessage> for Tasks<'_> {
     }
 
     fn items(&self) -> Vec<Item<ContextMessage>> {
-        let tasks = self.memory.dispatched_snapshot();
-        if tasks.is_empty() {
+        let terminals = self.memory.task_terminals();
+        let terminal_ids: std::collections::BTreeSet<_> = terminals.iter().map(|end| end.task).collect();
+        let tasks: Vec<_> = self.memory.dispatched_snapshot().into_iter()
+            .filter(|(task, ..)| !terminal_ids.contains(task)).collect();
+        if tasks.is_empty() && terminals.is_empty() {
             return Vec::new();
         }
         let banner = super::standing(
@@ -60,6 +70,21 @@ impl Source<ContextMessage> for Tasks<'_> {
             Item::whole(task_element(self.persona, task, &status), Cause::Root(Origin::ActivityStart), task.to_string(), ContextMessage::user(whole))
                 .with_summary(summary)
                 .with_pointer(ContextMessage::user(line))
+        }));
+        items.extend(terminals.into_iter().map(|end| {
+            let status = match end.state {
+                TaskEndState::Done => "done",
+                TaskEndState::Failed => "failed",
+                TaskEndState::TimedOut => "timed out",
+                TaskEndState::Stopped => "stopped",
+                TaskEndState::Lost => "lost",
+            };
+            // This item is the terminal notification, not a projection claiming
+            // to contain the ledger's output. Its identity binds that exact end.
+            let line = ContextMessage::user(format!("{status} task {}", end.task));
+            Item::whole(terminal_element(self.persona, end.task, &end.fingerprint),
+                Cause::Root(Origin::ActivityStart), end.task.to_string(), line.clone())
+                .with_pointer(line)
         }));
         items
     }

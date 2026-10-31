@@ -18,6 +18,34 @@ pub enum TaskConsumptionError {
 }
 
 impl PersonaWorkspaceRegistry {
+    /// Only a submitted terminal occurrence can retire a wake. Fold blocks and
+    /// retired entries are not evidence that this end was shown. The checkpoint
+    /// below rechecks incarnation under admission, so replacement during matching
+    /// cannot acknowledge the next resident's memory.
+    pub fn record_rendered_tasks(
+        &self,
+        receipt: &crate::cognition::render_receipt::RenderReceipt,
+    ) -> Result<Option<VolatileReceipt>, TaskConsumptionError> {
+        use continuum_context::level::Level;
+        let memory = self.cycles.lock().get(&receipt.owner)
+            .map(|resident| Arc::clone(&resident.working_memory))
+            .ok_or(TaskConsumptionError::Absent(receipt.owner))?;
+        if memory.incarnation() != receipt.incarnation {
+            return Err(TaskConsumptionError::Replaced(receipt.owner));
+        }
+        let shown: std::collections::BTreeSet<_> = receipt.view.items.iter()
+            .filter(|item| !item.retired && matches!(item.level, Level::Full | Level::Summary | Level::Pointer))
+            .filter_map(|item| item.element).collect();
+        let tasks: Vec<_> = memory.task_terminals().into_iter().filter(|end| {
+            shown.contains(&crate::cognition::context_streams::tasks::terminal_element(
+                receipt.owner, end.task, &end.fingerprint))
+        }).map(|end| end.task).collect();
+        if tasks.is_empty() {
+            return Ok(None);
+        }
+        self.record_task_reads(receipt.owner, receipt.incarnation, &tasks).map(Some)
+    }
+
     /// Success receipts exactly the snapshot containing this end and its wake
     /// obligation. A replay also checkpoints: a prior insertion may have failed IO.
     /// Registration/replacement is excluded until the snapshot is committed; the
