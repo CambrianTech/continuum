@@ -179,8 +179,10 @@ from, the behaviour model, ts-rs bindings) stay out of it.
   units does not compile; a conversion between tiers (a byte's price into a lane-second's) is an explicit,
   measured function, never an implicit cast.
 - **A joint claim** asks for several resources at once (a mind's state needs device memory AND a lane; a
-  relay needs both legs): it is granted atomically across its tiers or not at all, so no half-admission holds
-  one resource while waiting for another.
+  relay needs both legs). It is solved at the lowest tier that is an ancestor of all its resources, where its
+  increment is the bundle (one unit of each, priced as the sum of its resources' prices through the explicit
+  conversions), so the greedy admits whole bundles or none: one solve, no cross-tier protocol, never a
+  half-admission holding one resource while waiting for another (Cormac on #5620).
 - `Grant<U>`: the claim, the amount (and the step, for `Steps`), the tier's price, the tier's epoch and a
   generation (monotonic per tier, so a stale grant is refused), and a reason: `Floor`, `Cleared`, `Held` (a
   change was not worth its switch cost), `UnderProvisioned` (a required floor did not fit: an explicit outcome
@@ -196,6 +198,10 @@ from, the behaviour model, ts-rs bindings) stay out of it.
    values this greedy order is optimal; for `Steps` it is the standard density order, and its gap from optimal
    is bounded by one step per claim, stated in the receipt.
 3. The price is the value per unit of the last increment admitted.
+   **Determinism** (THE-PROVING-GROUND P8): equal value per unit is broken by `ClaimId` order; values compare
+   under a total order (`f64::total_cmp`), NaN and infinities are refused on input like non-concavity, and the
+   receipt records values at the precision the solve used, so the same inputs give byte-identical grants on
+   every machine (Cormac).
 4. A change from a claim's current grant is applied only when its value gain exceeds its `switch_cost`;
    otherwise the grant is `Held`.
 5. If the required floors alone exceed capacity, the outcome is `Infeasible` with the claims named: nothing is
@@ -219,7 +225,13 @@ policy loop (L7) refines them from controlled probes. Until a kind has measureme
 population's measurement for the same activity (HOW-A-MIND S9), marked as such in the receipt. The integer
 priorities in `priority::*` are deleted with `flex_allocate`.
 
-**Migration.** The three callers move to `continuum-flex` in the PR that adds it, `flex_allocate` and
+**Validator cases** the airc PR adding the crate carries (airc's NETWORK-AUTHORITY N1 builds on them): two joint
+claims competing for the last unit of one resource never leave either half-granted; the same inputs in any order
+give byte-identical receipts; a shrink is never re-granted before its acknowledged release; a grant from an
+older generation is refused; required floors past capacity are `Infeasible` with the claims named; an
+unmeasured claim gets only its floor.
+
+**Migration.** The three callers move to `cambrian-flex` in the PR that adds it, `flex_allocate` and
 `RagSourceBudget`'s priority/min/max/grow are deleted, and `context_codec`'s ratchet points at the new owner.
 The behaviour change is proven on the proving ground's T0 against the known-bad suite before it reaches a
 resident.
