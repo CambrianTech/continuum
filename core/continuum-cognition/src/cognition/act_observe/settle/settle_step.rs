@@ -128,7 +128,7 @@ pub async fn settle_step(
         continuum_base::probe!(
             class = "settle.inference_failed",
             room = %room_id,
-            error = &error.to_string()[..error.to_string().len().min(160)],
+            error = %error,
             "deliberation generation FAILED — surfacing before the step returns"
         );
         return (
