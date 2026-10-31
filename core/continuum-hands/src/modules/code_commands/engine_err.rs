@@ -274,6 +274,7 @@ pub struct CodeReadParams {
 #[async_trait]
 impl ActionCommand for CodeRead {
     const NAME: &'static str = "code/read";
+    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Observes;
     const ALIASES: &'static [&'static str] = &["read_file", "view", "cat", "open_file"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =

@@ -50,7 +50,7 @@ fn length_prefixed_digest<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> [u8;
 /// arguments as the tool saw them (`ToolCall::canonical_input`). No argument is excluded here;
 /// an exclusion is named only by the tool's own schema. Two acts with equal fingerprints asked
 /// the same thing; whether the outcome was unchanged is the producer's evidence, never this.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Fingerprint([u8; 32]);
 
 impl Fingerprint {
@@ -62,27 +62,13 @@ impl Fingerprint {
     }
 }
 
-/// What a tool declares its calls do to the world, in its own command descriptor: the producer's
-/// evidence for invariant 4, never inferred from a name or an output.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ToolEffect {
-    /// It only observes: two acts with one fingerprint and one content hash saw the same thing,
-    /// so the later one is "outcome unchanged".
-    Observes,
-    /// It changes the world: every occurrence is its own effect, never a repeat, however alike
-    /// its output (two appends that both answer "OK" made two appends; Codex on MIND-CONTEXT).
-    Changes,
-    /// It reopens a whole she asked to see again (`tool/output act=n`): always whole, never a
-    /// repeat, because she reopens exactly what her view no longer holds (Codex and Fable).
-    Reopens,
-    /// The tool declares none of these: never a repeat, and the replay validator counts these so
-    /// the declarations that are missing are visible.
-    Undeclared,
-}
+/// What a command declares its calls do to the world: one type, on the floor, declared by each
+/// command in the kernel's descriptor and read here.
+pub use continuum_base::tool_effect::ToolEffect;
 
 /// What an act asked for and what its tool declares it does: the producer's half of invariant 4.
 /// Whether its outcome was unchanged is decided by the view, from this and the item's content.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Act {
     pub fingerprint: Fingerprint,
     pub effect: ToolEffect,

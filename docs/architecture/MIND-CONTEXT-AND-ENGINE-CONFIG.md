@@ -403,8 +403,18 @@ reply edges. The view's `Item` gains the same link.
      argument is excluded by default; an exclusion is named only by the tool's own schema, never by the
      view. (Key plus cause cannot catch the loop: each re-read's result is caused by a new act. Cormac's
      review.) A new act whose fingerprint matches a prior act in its chain, and whose outcome content is
-     unchanged, is recorded as an edge back to that ancestor and renders as "repeat of #n, outcome
-     unchanged", never as a fresh element.
+     unchanged, renders as "repeat of #n, outcome unchanged", never as a fresh element, but only while
+     #n's whole is in front of her (Codex and Fable on the design, 2026-10-31):
+     - the view chooses it on the act's first arrival in an epoch, and only when #n is held whole in
+       that epoch (not folded, collapsed, summarized or itself a repeat). Otherwise she needs the
+       content again and it arrives whole, so a repeat never points at what her view lacks and her
+       reopen never answers another repeat;
+     - a turnover re-renders every item as itself; an explicit reopen (`tool/output`) is always whole;
+     - a repeat is never a read of a whole: it never discharges a whole-result obligation;
+     - the effect is the command's own declaration (`CommandSpec::EFFECT`: `Observes`, `Changes`,
+       `Reopens`, `Undeclared`), read from the descriptor of the command the call resolved to, never
+       from a name or an output. `Undeclared` authorizes nothing, and an act mixing effects takes the
+       strongest (a read plus a write is a change).
      - **Same output is not the same effect** (Codex). Two appends or sends can both return "OK" and still
        cause two effects. Every occurrence keeps its own id, order and side-effect receipt, and is never
        erased. Repeated content renders by reference to the earlier occurrence. "Outcome unchanged" is
@@ -448,6 +458,11 @@ reply edges. The view's `Item` gains the same link.
    `continuum-context`, with every source supplying causes. Owner: Fable.
 2. Invariant 4's fingerprint and its replay validator, which builds on the deferred-whole and fold code.
    Owner: Cormac. The validator replays the M5 2026-10-30 captures and must fire on the 8-reads-an-hour case.
+   Built (card dcf95bce): `cause::Fingerprint` over `ToolCall::canonical_input`; `ToolEffect` in
+   `continuum-base`, declared per command (`code/read`, `code/search` observe; `tool/output` reopens);
+   the view's repeat rule (`view/repeat.rs`) and `Source::repeat`; the replay's invariant-4 line
+   (`examples/replay/validate.rs`). On IntelMac's own captures it fires: 8 exact re-reads, 8 unchanged,
+   6 rendered as repeats. The M5 run is Fable's.
 3. Invariant 5 and the overflow rule, together with ONE-BUDGET slice 6's measured claims. Owner: Fable.
 
 Each step lands with its validator and a 15-minute live read.
