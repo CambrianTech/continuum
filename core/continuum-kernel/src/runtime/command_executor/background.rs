@@ -50,12 +50,21 @@ impl CommandExecutor {
                 .await
                 .map_err(DispatchFailure::not_committed)?,
         );
-        let handle = ledger
-            .accept(owner, command.to_string())
-            .await
-            .map_err(DispatchFailure::not_committed)?;
+        // The execution task owns persistence too. Dropping the caller while an
+        // insert is in flight must not strand a committed acceptance without work.
+        let (accepted, receipt) = tokio::sync::oneshot::channel();
         let this = Arc::clone(self);
         tokio::spawn(async move {
+            let handle = match ledger.accept(owner, command.to_string()).await {
+                Ok(handle) => handle,
+                Err(error) => {
+                    let _ = accepted.send(Err(DispatchFailure::not_committed(error)));
+                    return;
+                }
+            };
+            // A forgotten receipt does not cancel accepted work; its durable
+            // terminal remains available to the authenticated owner's replay.
+            let _ = accepted.send(Ok(handle));
             let start = std::time::Instant::now();
             // Keep the existing policy and hands admission scopes inside dispatch.
             // Catch an unwinding handler without detaching a second execution task.
@@ -96,7 +105,9 @@ impl CommandExecutor {
                 Some(handle),
             );
         });
-        Ok(handle)
+        receipt.await.map_err(|_| {
+            DispatchFailure::uncertain("background acceptance owner stopped before reporting".into())
+        })?
     }
 }
 
@@ -146,6 +157,44 @@ mod tests {
                 Value::Null,
             )))
         }
+    }
+
+    #[tokio::test]
+    async fn dropping_acceptance_waiter_does_not_orphan_execution() -> Result<(), String> {
+        let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+        let ledger = Arc::new(TaskLedger::new(adapter).await?);
+        let gate = Arc::new(GatedResult {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            unwind: false,
+        });
+        let bus = Arc::new(MessageBus::new());
+        let mut events = bus.receiver();
+        let executor = Arc::new(
+            CommandExecutor::new(Arc::new(ModuleRegistry::new()))
+                .with_message_bus(bus)
+                .with_interceptor(gate.clone()),
+        );
+        executor.set_task_ledger(ledger.clone())?;
+        let owner = Uuid::new_v4();
+        let caller = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(owner));
+        {
+            let waiting = executor.dispatch_background("test/result", Value::Null, Some(caller));
+            tokio::pin!(waiting);
+            // On this current-thread runtime the new execution task cannot run
+            // during poll: abandon its receipt before it starts acceptance.
+            assert!(futures::poll!(waiting.as_mut()).is_pending());
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await.map_err(|error| error.to_string())?;
+        gate.release.notify_one();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await.map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        let handle = event.payload["handle"].as_str().ok_or("completion has no task handle")?;
+        let handle = Uuid::parse_str(handle).map_err(|error| error.to_string())?;
+        assert!(matches!(ledger.pending(handle, owner).await?, Some(TaskEnd::Done(_))));
+        Ok(())
     }
 
     #[tokio::test]
