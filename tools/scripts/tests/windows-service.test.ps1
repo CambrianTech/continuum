@@ -2473,6 +2473,13 @@ function Mod-LlamaServer {
     }
     Write-Output 'PASS: supervisor reports host exit while a warm descendant remains alive'
 
+    # Regression: rollback must not erase the failed candidate's redirected output.
+    $preserved = @(Get-ChildItem -LiteralPath (Join-Path $logs 'service-attempts') -Directory)
+    if ($preserved.Count -ne 1) { throw 'Restart did not preserve exactly one prior attempt' }
+    if ((Get-Content -LiteralPath (Join-Path $preserved[0].FullName 'service.out.log') -Raw).Trim() -ne "service-host|$core|$socket|$child") { throw 'Restart overwrote prior stdout' }
+    if ((Get-Content -LiteralPath (Join-Path $preserved[0].FullName 'service.err.log') -Raw).Trim() -ne 'child failure receipt') { throw 'Restart overwrote prior failure stderr' }
+    Write-Output 'PASS: restart preserves the preceding failure receipts'
+
     # Published engines use an explicit backend on GPU-less CI and cannot reuse
     # a native-CPU stamp. Extend this fixture without building an engine.
     & {
