@@ -454,6 +454,12 @@ pub(in super::super) fn turnover_due<E>(
     Ok(if would_restore()? { Turnover::Restore } else { Turnover::Keep })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Set by a test: [`start_grants`] answers for one fewer source than it was asked.
+    pub(in super::super) static SHORT_GRANTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Each view source's character grant at a turnover: the start the next epoch re-prefills,
 /// leaving a growth reserve for the acts that follow to append into.
 ///
@@ -480,11 +486,6 @@ pub(in super::super) fn turnover_due<E>(
 /// minimum, which `flex_allocate` serves first in priority order, and the lowest priority
 /// shares what is left. The newest end is never cut: a source keeps its newest items whole
 /// and collapses its oldest first, at the start only ([`View::turn_over`]).
-#[cfg(test)]
-thread_local! {
-    /// Set by a test: [`start_grants`] answers for one fewer source than it was asked.
-    pub(in super::super) static SHORT_GRANTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
 
 pub(in super::super) fn start_grants(
     claims: &[Claim],
