@@ -248,7 +248,7 @@ size.
 | One mind's allocation, every tier's clearing | `cambrian-flex` (airc workspace `crates/flex`), through continuum's shared airc pin | the shared solver (ONE-BUDGET slice 1); the harness never re-implements it |
 | Emission classification | `EmissionStop::classify(hit_cap, answered)` and its one accounting projection (#5616) | pure; no second classifier is extracted into the harness |
 | Admission and lane price | Codex's L5 endpoint admission owner: persistent ticket, atomic eligibility and commitment, blocker-specific progress, directed-input yield, cancellation, terminal outcome | **unavailable** until that owner is callable; no re-modelled policy (`contention.rs`) stands in for it, since a copy cannot validate the production owner (Codex on #5617) |
-| Node capacity | `capacity/sim`'s `AllocationPolicy`, moving to slice 2's typed physical-pool observation | production already |
+| Node capacity | the measured input: slice 2's typed physical-pool observation; the decisions on it are the `ResourceDaemon`'s through `cambrian-flex`, never a policy inside the observation | `capacity/sim`'s `AllocationPolicy` today, replaced by the daemon's clearing as slice 2 lands |
 | Residency | Codex's L4 owner, driving real lease and page custody transitions and observing release acknowledgements, never deleting occupancy when an intent is cancelled | **unavailable** until callable |
 
 A policy that cannot be called without its crate's whole runtime is a seam defect, fixed in that crate (the
