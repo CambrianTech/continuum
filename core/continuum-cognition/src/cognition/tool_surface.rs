@@ -155,8 +155,10 @@ impl ToolSurface {
     ) -> Self {
         raw.sort_by(|a, b| a.name.cmp(&b.name));
         // Her natives are always callable, whatever list `with_tools` was given: the authorized
-        // set is the union, so a verb in her hands is always found in it.
-        authorized.extend(raw.iter().filter(|native| !authorized.iter().any(|a| a.name == native.name)).cloned().collect::<Vec<_>>());
+        // set is her natives plus every other authorized verb, and where both name one verb the
+        // native spec wins, so a verb in her hands is the same spec in the authorized set.
+        authorized.retain(|other| !raw.iter().any(|native| native.name == other.name));
+        authorized.extend(raw.iter().cloned());
         authorized.sort_by(|a, b| a.name.cmp(&b.name));
         let wire = |specs: Vec<NativeToolSpec>| Offer::of(specs.into_iter().map(&to_wire).collect());
         Self {
