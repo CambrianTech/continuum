@@ -123,8 +123,14 @@ The contract as built (Codex, #5585), which this design adopts:
   event is emitted; a late writer can neither replace it nor resurrect delivery. A handler that
   unwinds becomes a failed receipt.
 - **At-least-once delivery to the owner, with acknowledgement.** The owner's sink pages pending
-  ends (`pending_page(owner, after, limit)`) and acknowledges each only after durable, deduplicated
-  consumption (`acknowledge(task, owner)`); replay after a restart needs no remembered handle.
+  ends (`pending_page(owner, after, limit)`) and acknowledges each only once she has PERCEIVED
+  it (`acknowledge(task, owner)`); replay after a restart needs no remembered handle. Filing is
+  not consumption: working memory's dispatched set is volatile (excluded from its checkpoint), so
+  an end acknowledged at filing and lost in a restart before her next prompt would never be
+  redelivered. The acknowledgement is working memory's retirement point (card c537d687): an act
+  recorded after a prompt that showed the end (acts and dispatch events share one sequence).
+  Until then the end stays pending and a restart replays it. The ledger is the one durable owner
+  of whether an end was delivered; working memory stays a projection (Cormac on #5581).
 - **A stop or timeout is a request.** It cannot itself attest that execution ended; only the
   runner's terminal receipt does.
 
@@ -143,7 +149,9 @@ Rules the registry enforces, so no task kind can get them wrong:
 2. **Delivery by owner, not by memory.** The end goes to the owner's mailbox. For a persona
    the mind installs one sink (`TaskOwnerSink`, a trait the kernel defines and `continuum-mind`
    implements, so layering stays downward): the sink files the result into her working
-   memory, which her view renders, and sends her a `Wake::TaskEnded { id }`. Target (T2,
+   memory, which her view renders through the `tasks` source with levels (whole, a summary from
+   `levels::summarize`, a pointer with the call that reads it), so a whole log never enters her
+   view as a block that cannot shrink; and it sends her a `Wake::TaskEnded { id }`. Target (T2,
    durable): a forgotten handle still wakes her, because delivery comes from the ledger's
    ownership, not from her registered handles.
 3. **Durable (target, T1 + T2).** A task row is an ORM entity. On boot, a task whose process is gone ends as
@@ -210,7 +218,9 @@ an interrupt that says *check*, not *stop*.
 
 Thresholds are measured per task kind from its own history (ballpark, with the error bound stated
 and checked on replay), never a constant. The interrupt is a `Wake` carrying the task and the
-reason; she decides: look at its output, stop it, or let it run. Claude Code's agent gets only the
+reason; she decides: look at its output, stop it, or let it run. One interrupt per condition
+episode: like a watch (HER-TOOLS), a detector holds at most one pending wake until she perceives
+it, so a flapping "silent" or "flooding" signal cannot spend her acts. Claude Code's agent gets only the
 end (a hung command waits until someone notices); this is where she goes past it.
 
 ## The act path
