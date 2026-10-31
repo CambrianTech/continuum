@@ -17,18 +17,10 @@ use ts_rs::TS;
 use crate::cognition::tool_executor::spill;
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 
-/// Default context lines around each grep match (like `grep -C2`).
-// context-budget-exempt: grep-style -C lines around a match — a display shape; the rendered slice's total size is window-derived (render_slice_chars)
-const DEFAULT_CONTEXT_LINES: usize = 2;
-/// Default cap on grep match windows — enough to see the failures, bounded so a
-/// pattern that matches everything can't re-flood.
-const DEFAULT_MAX_MATCHES: usize = 50;
-// Char budget for the rendered slice — a fraction of the caller's LIVE served window
-// (`ContextBudget::render_slice_chars`), kept below the result-fold bound so a normal
-// investigation isn't itself re-spilled. Never a constant: the old `RENDER_BUDGET_CHARS =
-// 12_000` clipped a 1M-context mind to the same slice as a 16k one.
-// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
-use crate::cognition::context_budget::ContextBudget;
+// No size is decided here (HER-TOOLS: the view is the only sizer). This command returns the
+// selection she asked for; her view shows it at the level her window allows, with the handle
+// that pages the rest (`fit_newest_result`). The old window fraction, 50-match cap, 2-line
+// context default and 80-line tail each chose for her.
 
 /// Prebuilt failure-hunting filters, so a persona navigates a flood WITHOUT having to
 /// know regex — the PX "hit the ground running" affordance for the overwhelming case
@@ -101,10 +93,10 @@ pub struct ToolOutputParams {
     pub filter: Option<OutputFilter>,
     /// A regex to grep for — the power-user path when a preset isn't specific enough.
     /// e.g. `"error\\[E0308\\]"` for one exact error. Omit to use `filter`, a range,
-    /// or the tail.
+    /// or the whole output.
     #[ts(optional)]
     pub pattern: Option<String>,
-    /// Lines of context to keep around each grep match (default 2, like `grep -C`).
+    /// Lines of context to keep around each grep match (like `grep -C`; none unless asked).
     #[ts(optional)]
     #[ts(type = "number")]
     pub context_lines: Option<usize>,
@@ -116,7 +108,8 @@ pub struct ToolOutputParams {
     #[ts(optional)]
     #[ts(type = "number")]
     pub end_line: Option<usize>,
-    /// Cap on the number of grep match windows returned (default 50).
+    /// Return only the first N grep matches (all of them unless asked); the total count and
+    /// `nextByteOffset` still cover the whole output.
     #[ts(optional)]
     #[ts(type = "number")]
     pub max_matches: Option<usize>,
@@ -125,8 +118,8 @@ pub struct ToolOutputParams {
     #[ts(optional)]
     #[ts(type = "number")]
     pub byte_offset: Option<u64>,
-    /// Requested byte count; a page fits the live render allowance. No bytes are
-    /// discarded when this request spans multiple pages: nextByteOffset continues it.
+    /// Requested byte count; omitted, the read runs to the end. No byte is discarded:
+    /// nextByteOffset continues a page.
     #[ts(optional)]
     #[ts(type = "number")]
     pub byte_length: Option<usize>,
@@ -200,11 +193,11 @@ impl ActionCommand for ToolOutput {
          `filter` to a prebuilt preset — `errors` (what broke?), `warnings`, `failures` \
          (which tests failed?), or `summary` (how did it end?) — no regex needed. For a \
          specific hunt use `pattern` (a regex, e.g. \"error\\[E0308\\]\"). Or read an \
-         exact slice with `startLine`/`endLine`. With none of these, you get the tail \
-         (where build verdicts live). Exact byte pages use byteOffset and optional byteLength; \
-         follow nextByteOffset. Check encoding (utf8 or base64). Line/regex scans examine \
-         the whole file with bounded memory; an oversized line is refused with its byte \
-         offset, never partially searched.";
+         exact slice with `startLine`/`endLine`. With none of these, you get the whole \
+         output, shown at the level your window allows with how to page the rest. Exact byte \
+         pages use byteOffset and optional byteLength (to the end when omitted); follow \
+         nextByteOffset. Check encoding (utf8 or base64). Line and regex scans read every \
+         line whole.";
     // Native: her view folds results and names this verb as the way back to each whole
     // (`perception.rs`, `actions.rs`, the open-views banner). A verb the view names but the
     // surface never offers made her re-read files instead (the M5, 2026-10-31: Aiko 19
@@ -246,7 +239,6 @@ impl ActionCommand for ToolOutput {
             (None, None) => None,
         };
 
-        let budget = ContextBudget::live().render_slice_chars();
         if params.byte_length.is_some() && params.byte_offset.is_none() {
             return Err(CommandError::Invalid(
                 "byteLength requires byteOffset".into(),
@@ -265,7 +257,7 @@ impl ActionCommand for ToolOutput {
         }
         // Disk scanning belongs off the async executor. The same spill owner handles
         // both views; no second content registry or private whole-file retrieval path.
-        tokio::task::spawn_blocking(move || read_saved(&path, handle, params, range, budget))
+        tokio::task::spawn_blocking(move || read_saved(&path, handle, params, range))
             .await
             .map_err(|e| CommandError::Invalid(format!("saved output reader failed: {e}")))?
             .map_err(CommandError::Invalid)
@@ -298,10 +290,9 @@ fn read_saved(
     handle: String,
     params: ToolOutputParams,
     range: Option<(usize, usize)>,
-    budget: usize,
 ) -> Result<ToolOutputResult, String> {
     if let Some(offset) = params.byte_offset {
-        let extent = spill::read_extent(&path, offset, params.byte_length, budget)?;
+        let extent = spill::read_extent(&path, offset, params.byte_length)?;
         return Ok(ToolOutputResult {
             handle,
             total_lines: None,
@@ -323,10 +314,9 @@ fn read_saved(
     let inv = spill::investigate_file(
         &path,
         effective_pattern,
-        params.context_lines.unwrap_or(DEFAULT_CONTEXT_LINES),
+        params.context_lines.unwrap_or_default(), // unwrap_or_default: no context unless she asks
         range,
-        params.max_matches.unwrap_or(DEFAULT_MAX_MATCHES),
-        budget,
+        params.max_matches,
     )?;
     Ok(ToolOutputResult {
         handle,
@@ -468,8 +458,8 @@ mod tests {
         );
     }
 
-    // what this catches: the real command projection preserves exact byte continuation,
-    // split UTF-8 and whole-file regex counts without loading the retained file in memory.
+    // what this catches: the real command projection losing exact byte continuation, split
+    // UTF-8, whole-file regex counts, or reading to the end when she gives no byteLength.
     #[test]
     fn saved_output_pages_round_trip_and_queries_keep_counts() {
         use base64::Engine;
@@ -489,10 +479,8 @@ mod tests {
                     ..Default::default()
                 },
                 None,
-                12,
             )
             .unwrap();
-            assert!(result.content.len() <= 12);
             assert_eq!(result.byte_start, Some(offset));
             assert_eq!(
                 result.total_lines, None,
@@ -524,7 +512,6 @@ mod tests {
                 ..Default::default()
             },
             None,
-            256,
         )
         .unwrap();
         assert_eq!(result.total_lines, Some(4));
@@ -536,19 +523,14 @@ mod tests {
             Some(body.find("error two").unwrap() as u64)
         );
         assert!(result.truncated);
-        std::fs::write(&path, "x".repeat(257)).unwrap();
-        let error = read_saved(
+        let rest = read_saved(
             &path,
             "id".into(),
-            ToolOutputParams {
-                pattern: Some("never".into()),
-                ..Default::default()
-            },
+            ToolOutputParams { byte_offset: Some(3), ..Default::default() },
             None,
-            256,
         )
-        .unwrap_err();
-        assert!(error.contains("byteOffset 0"));
-        assert!(error.contains("not evaluated on a partial line"));
+        .unwrap();
+        assert_eq!(rest.next_byte_offset, None, "no byteLength reads to the end");
+        assert_eq!(rest.byte_end, Some(body.len() as u64));
     }
 }

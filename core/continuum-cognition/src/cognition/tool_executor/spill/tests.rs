@@ -176,7 +176,7 @@
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let inv = investigate(&body, Some("error\\["), 1, None, 50, 8000).expect("ok");
+        let inv = investigate(&body, Some("error\\["), 1, None, None).expect("ok");
         assert_eq!(inv.total_matches, 1);
         assert!(inv.rendered.contains("error[E0432]"));
         assert!(
@@ -194,25 +194,22 @@
     // silent empty result that reads as "no error found".
     #[test]
     fn investigate_bad_regex_is_a_loud_error() {
-        let err = investigate("x", Some("("), 0, None, 10, 100).unwrap_err();
+        let err = investigate("x", Some("("), 0, None, None).unwrap_err();
         assert!(err.contains("invalid search pattern"));
     }
 
-    // what this catches: with neither pattern nor range, the tail is returned
-    // (the verdict lives at the end of a build/test log) with a nudge to grep.
+    // what this catches: with neither pattern nor range, a private tail size (the old 80
+    // lines) deciding what she sees. The whole output returns; her view sizes it, with the
+    // handle that pages the rest (HER-TOOLS: the view is the only sizer).
     #[test]
-    fn investigate_defaults_to_the_tail() {
+    fn investigate_without_a_selector_returns_the_whole_output() {
         let body = (1..=500)
             .map(|n| format!("row {n}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let inv = investigate(&body, None, 0, None, 50, 8000).expect("ok");
-        assert!(inv.rendered.contains("row 500"), "tail present");
-        assert!(!inv.rendered.contains("row 1\n"), "head dropped");
-        assert!(
-            inv.rendered.contains("grep with a `pattern`"),
-            "nudges narrowing"
-        );
+        let inv = investigate(&body, None, 0, None, None).expect("ok");
+        assert!(inv.rendered.contains("     1 row 1\n") && inv.rendered.contains("row 500"));
+        assert!(!inv.result_truncated && inv.next_byte_offset.is_none());
     }
 
     // what this catches: an explicit line range reads exactly that slice,
@@ -223,25 +220,25 @@
             .map(|n| format!("L{n}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let inv = investigate(&body, None, 0, Some((10, 12)), 50, 8000).expect("ok");
+        let inv = investigate(&body, None, 0, Some((10, 12)), None).expect("ok");
         assert!(inv.rendered.contains("    10 L10"));
         assert!(inv.rendered.contains("    12 L12"));
         assert!(!inv.rendered.contains("L13"));
         assert!(!inv.rendered.contains("L9\n"));
     }
 
-    // what this catches: the rendered slice is itself bounded so investigating
-    // can't re-flood the context the spill was meant to protect.
+    // what this catches: her `max_matches` dropping the whole-file count or the place to
+    // continue from; the cap is her selection, never a default.
     #[test]
-    fn investigate_bounds_its_own_output() {
+    fn max_matches_selects_without_losing_the_count_or_the_continuation() {
         let body = (1..=10000)
             .map(|n| format!("matchme {n}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let inv = investigate(&body, Some("matchme"), 0, None, 10000, 500).expect("ok");
+        let inv = investigate(&body, Some("matchme"), 0, None, Some(3)).expect("ok");
+        assert_eq!((inv.total_matches, inv.rendered.lines().count()), (10000, 3));
         assert!(inv.result_truncated);
-        assert!(inv.rendered.len() <= 600, "bounded near the budget");
-        assert!(inv.next_byte_offset.is_some());
+        assert_eq!(inv.next_byte_offset, body.find("matchme 4\n").map(|at| at as u64));
     }
     // what this catches: independent cursors retain one opened source across
     // publication at the same path, and all continue from their own byte offsets.
@@ -280,20 +277,18 @@
         assert_eq!(fs::read_to_string(&path).unwrap(), "original\n");
     }
 
-    // what this catches: unselected huge lines do not block a small range or
-    // tail; regex still refuses to misrepresent a partial-line search as complete.
+    // what this catches: a huge line blocking a small range, or a regex refused on it: every
+    // line is searched whole.
     #[test]
     fn long_unselected_lines_are_counted_without_materialization() {
         let body = format!("{}\n{}", "x".repeat(10000), "short\n".repeat(100));
-        let range = investigate(&body, None, 0, Some((2, 3)), 50, 256).unwrap();
+        let range = investigate(&body, None, 0, Some((2, 3)), None).unwrap();
         assert_eq!(range.total_lines, 101);
         assert_eq!(range.total_bytes, body.len());
         assert!(range.rendered.contains("     2 short"));
-        let tail = investigate(&body, None, 0, None, 50, 256).unwrap();
-        assert!(tail.rendered.contains("short"));
-        assert!(investigate(&body, Some("short"), 0, None, 50, 256)
-            .unwrap_err()
-            .contains("byteOffset 0"));
+        let whole = investigate(&body, None, 0, None, None).unwrap();
+        assert!(whole.rendered.contains("short"));
+        assert_eq!(investigate(&body, Some("x"), 0, None, None).unwrap().total_matches, 1);
     }
 
     // what this catches: the existing pin/remover contract protects staging as

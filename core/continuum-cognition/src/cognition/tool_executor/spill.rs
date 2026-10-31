@@ -348,12 +348,18 @@ fn persona_dir(root: &Path, persona_id: Uuid) -> PathBuf {
     root.join(persona_id.to_string())
 }
 
-/// The content address a result is saved under: 16 hex chars of its SHA-256, known before any
-/// write, which is what lets [`LivePin`] pin a file before it exists.
+/// Hex digits of a content address: 64 bits of SHA-256, an identity's collision space (no
+/// two of one persona's saved results collide in practice), not a size of anything she reads.
+const ADDRESS_HEX_DIGITS: usize = 16;
+
+/// The content address a result is saved under: the leading [`ADDRESS_HEX_DIGITS`] of its
+/// SHA-256, known before any write, which is what lets [`LivePin`] pin a file before it exists.
 fn handle_of(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
-    format!("{:x}", hasher.finalize())[..16].to_string()
+    let mut address = format!("{:x}", hasher.finalize());
+    address.truncate(ADDRESS_HEX_DIGITS);
+    address
 }
 
 fn write_in(
@@ -461,11 +467,12 @@ fn whole_or_handle_in(root: &Path, full: String, persona_id: Uuid, pin: &LivePin
 /// lines is the text itself, not its JSON escape. Any other shape goes on as compact JSON.
 pub fn result_text(value: &serde_json::Value) -> String {
     let compact = value.to_string();
-    // A long result with no text body (an array of cards, of matches) goes on pretty-printed:
-    // one element per lines, so its head shows the first elements and the rest pages by line.
-    // Compact, a board of 776 cards was ONE 198k-char line (the M5, 2026-10-16).
+    // A result with no text body that holds a collection (an array of cards, of matches) goes on
+    // pretty-printed: one element per line, so its summary level shows the first elements and the
+    // rest pages by line. Compact, a board of 776 cards was ONE 198k-char line (the M5,
+    // 2026-10-16). Its shape decides, never its length: flat scalars stay on one line.
     let pretty_when_long = |v: &serde_json::Value, compact: String| {
-        if compact.len() > PRETTY_JSON_OVER_CHARS {
+        if holds_collection(v) {
             serde_json::to_string_pretty(v).unwrap_or(compact) // unwrap_or: a value that serialized compact serializes pretty; the compact form is the fallback
         } else {
             compact
@@ -494,26 +501,25 @@ pub fn result_text(value: &serde_json::Value) -> String {
 
 /// The scalar fields [`result_text`] put on a result's first line (a file read's
 /// `file_path`, `total_lines`, `start_line`…), read back from the text a mind was shown.
-/// A result is handed back whole, so the header is its first line; text shown before the
-/// head cut was removed opened with a one-line pointer, so the second line is read too. `None` for a result that went
-/// on as something other than one JSON object line (pretty-printed, or not an object).
+/// The header is the result's first line. `None` for a result that went on as something other
+/// than one JSON object line (pretty-printed, or not an object).
 pub fn result_scalars(shown: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
-    shown.lines().take(2).find_map(|line| {
-        let line = line.trim_start();
-        if !line.starts_with('{') {
-            return None;
-        }
-        match serde_json::from_str::<serde_json::Value>(line) {
-            Ok(serde_json::Value::Object(map)) => Some(map),
-            _ => None,
-        }
-    })
+    let header = shown.split_once('\n').map_or(shown, |(header, _)| header).trim_start(); // map_or: a one-line result is all header
+    match serde_json::from_str::<serde_json::Value>(header) {
+        Ok(serde_json::Value::Object(map)) => Some(map),
+        _ => None,
+    }
 }
 
-/// A result with no text body longer than this goes on pretty-printed (see [`result_text`]).
-// context-budget-exempt: a readability threshold, not a window bound: compact JSON past a
-// couple of thousand chars is one unreadable line at any window
-const PRETTY_JSON_OVER_CHARS: usize = 2_000;
+/// Whether a value holds elements that page by line: an array, or an object with a nested
+/// array or object (see [`result_text`]).
+fn holds_collection(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Array(_) => true,
+        serde_json::Value::Object(map) => map.values().any(|v| v.is_array() || v.is_object()),
+        _ => false,
+    }
+}
 
 /// [`Fitted::RetentionFailed`]: the failure said first, then the whole result.
 fn unsaved_whole(full: String, error: &std::io::Error) -> Fitted {
@@ -553,29 +559,20 @@ pub struct Investigation {
     /// How many lines matched `pattern` across the WHOLE file (pre-cap), so she
     /// knows if there were more hits than rendered. `0` when not grepping.
     pub total_matches: usize,
-    /// The rendered, line-numbered slice (grep windows, an explicit range, or
-    /// the tail), already bounded to the char budget.
+    /// The rendered, line-numbered selection: grep windows, an explicit range, or the whole
+    /// output. Never sized here: her view shows it at the level her window allows, with the
+    /// handle that reopens it (`fit_newest_result`).
     pub rendered: String,
-    /// `true` when the render allowance or match count leaves content unreturned — a cue
-    /// to narrow the pattern or shrink the range.
+    /// `true` when her `max_matches` left matches unreturned.
     pub result_truncated: bool,
     /// First unrendered selected line or first match beyond max_matches; use byteOffset.
     pub next_byte_offset: Option<u64>,
 }
 
-/// The default tail size (lines) when neither a pattern nor a range is given —
-/// build/test logs put the verdict at the END, so the tail is the useful default.
-const DEFAULT_TAIL_LINES: usize = 80;
-
-/// Read a retained byte extent without consuming a shared cursor. `budget` bounds
-/// the encoded result, including base64 expansion if the extent is not UTF-8.
-/// No byte is discarded: `next_byte_offset` names the next unread source byte.
-pub fn read_extent(
-    path: &Path,
-    offset: u64,
-    length: Option<usize>,
-    budget: usize,
-) -> Result<ByteExtent, String> {
+/// Read a retained byte extent without consuming a shared cursor: `length` bytes from
+/// `offset`, or to the end when she gives no length. No byte is discarded:
+/// `next_byte_offset` names the next unread source byte.
+pub fn read_extent(path: &Path, offset: u64, length: Option<usize>) -> Result<ByteExtent, String> {
     use base64::Engine;
     let file = fs::File::open(path).map_err(|e| format!("open saved output: {e}"))?;
     let total_bytes = file.metadata().map_err(|e| e.to_string())?.len();
@@ -584,17 +581,11 @@ pub fn read_extent(
             "byteOffset {offset} exceeds saved length {total_bytes}"
         ));
     }
-    let capacity = (budget / 4) * 3; // exact worst-case base64 expansion, not a content clip
-    if capacity == 0 || length == Some(0) {
-        return Err(
-            "byte retrieval needs a positive length and an encoding budget of at least four bytes"
-                .into(),
-        );
+    if length == Some(0) {
+        return Err("byteLength must be positive; omit it to read to the end".into());
     }
-    let len = length
-        .unwrap_or(capacity)
-        .min(capacity)
-        .min((total_bytes - offset).min(usize::MAX as u64) as usize);
+    let rest = (total_bytes - offset).min(usize::MAX as u64) as usize;
+    let len = length.map_or(rest, |asked| asked.min(rest)); // map_or: no length asked reads to the end
     let mut bytes = vec![0; len];
     continuum_host::positioned::read_exact_at(&file, &mut bytes, offset)
         .map_err(|e| format!("read saved extent at {offset}: {e}"))?;
@@ -625,20 +616,17 @@ pub struct ByteExtent {
     pub next_byte_offset: Option<u64>,
 }
 
-/// File-backed investigation. Three bounded streaming passes replace the whole
-/// file, line-index and match-index allocations. The count pass examines every
-/// line; the other two render the requested windows with streaming lookahead.
-/// A regex operates on a WHOLE line. A line too large for the scan allowance is
-/// refused with its byte position, never searched as a misleading fragment.
-/// Scan work is O(file bytes), independent of the returned-output allowance:
-/// exact total line/match counts require a full scan. Memory is O(budget).
+/// File-backed investigation. Three streaming passes replace the whole file, line-index and
+/// match-index allocations. The count pass examines every line; the other two render the
+/// selection with streaming lookahead. A regex operates on a WHOLE line. Scan work is
+/// O(file bytes): exact total line/match counts require a full scan. The selection is her
+/// query alone; its size is decided by her view, never here.
 pub fn investigate_file(
     path: &Path,
     pattern: Option<&str>,
     context_lines: usize,
     range: Option<(usize, usize)>,
-    max_matches: usize,
-    budget: usize,
+    max_matches: Option<usize>,
 ) -> Result<Investigation, String> {
     let file = fs::File::open(path).map_err(|e| format!("open saved output: {e}"))?;
     let end = file.metadata().map_err(|e| e.to_string())?.len();
@@ -657,7 +645,6 @@ pub fn investigate_file(
         context_lines,
         range,
         max_matches,
-        budget,
     )
 }
 
@@ -683,7 +670,6 @@ struct Scan<R> {
     reader: R,
     offset: u64,
     line: usize,
-    allowance: usize,
 }
 struct Line {
     text: String,
@@ -705,9 +691,6 @@ impl<R: std::io::BufRead> Scan<R> {
             let newline = chunk.iter().position(|&b| b == b'\n');
             let n = newline.map_or(chunk.len(), |i| i + 1);
             if retain {
-                if n > self.allowance.saturating_sub(bytes.len()) {
-                    return Err(format!("line {} at byteOffset {offset} exceeds scan allowance {} bytes; use tool/output with byteOffset {offset} for exact byte pages (regex was not evaluated on a partial line)", self.line + 1, self.allowance));
-                }
                 bytes.extend_from_slice(&chunk[..n]);
             }
             self.reader.consume(n);
@@ -747,29 +730,21 @@ fn investigate_readers<R: std::io::BufRead>(
     pattern: Option<&str>,
     context: usize,
     range: Option<(usize, usize)>,
-    max_matches: usize,
-    budget: usize,
+    max_matches: Option<usize>,
 ) -> Result<Investigation, String> {
-    if budget == 0 {
-        return Err("investigation needs a positive scan and render allowance".into());
-    }
     let regex = pattern
         .map(Regex::new)
         .transpose()
         .map_err(|e| format!("invalid search pattern: {e}"))?;
-    let scan = |reader| Scan {
-        reader,
-        offset: 0,
-        line: 0,
-        allowance: budget,
-    };
+    let scan = |reader| Scan { reader, offset: 0, line: 0 };
+    let within = |seen: usize| max_matches.is_none_or(|cap| seen < cap);
     let mut count = scan(count);
     let mut total_matches = 0;
     let mut first_unselected = None;
     while let Some(line) = count.next(regex.is_some())? {
         if regex.as_ref().is_some_and(|r| r.is_match(&line.text)) {
             total_matches += 1;
-            if total_matches == max_matches.saturating_add(1) {
+            if first_unselected.is_none() && !within(total_matches - 1) {
                 first_unselected = Some(line.offset);
             }
         }
@@ -781,7 +756,7 @@ fn investigate_readers<R: std::io::BufRead>(
     let mut lookahead = scan(lookahead);
     let mut seen_matches = 0;
     let mut next_match = |lookahead: &mut Scan<R>| -> Result<Option<usize>, String> {
-        if seen_matches >= max_matches || regex.is_none() {
+        if !within(seen_matches) || regex.is_none() {
             return Ok(None);
         }
         while let Some(line) = lookahead.next(true)? {
@@ -795,15 +770,7 @@ fn investigate_readers<R: std::io::BufRead>(
     let mut next = next_match(&mut lookahead)?;
     let mut previous = None::<usize>;
     let mut rendered = String::new();
-    if pattern.is_none() && range.is_none() {
-        rendered = format!("(no pattern or range given — showing the last {} lines; grep with a `pattern` like \"error\" or \"panic\" to find a specific failure)\n", total_lines.min(DEFAULT_TAIL_LINES));
-        if rendered.len() > budget {
-            rendered.clear();
-        }
-    }
     let mut last_rendered = None::<usize>;
-    let mut next_byte_offset = first_unselected;
-    let mut result_truncated = first_unselected.is_some();
     loop {
         let number = render.line + 1;
         while next.is_some_and(|n| n < number) {
@@ -816,7 +783,7 @@ fn investigate_readers<R: std::io::BufRead>(
         } else if let Some((start, end)) = range {
             number >= start.max(1) && number <= end.max(start.max(1))
         } else {
-            number > total_lines.saturating_sub(DEFAULT_TAIL_LINES)
+            true
         };
         // A long unrelated line must not make a later short range/tail unreadable.
         // Counting and skipping use bounded chunks without materializing the line.
@@ -836,13 +803,7 @@ fn investigate_readers<R: std::io::BufRead>(
         } else {
             ' '
         };
-        let row = format!("{separator}{mark}{:>6} {}\n", line.number, line.text);
-        if row.len() > budget.saturating_sub(rendered.len()) {
-            result_truncated = true;
-            next_byte_offset = Some(next_byte_offset.map_or(line.offset, |n| n.min(line.offset)));
-            break;
-        }
-        rendered.push_str(&row);
+        rendered.push_str(&format!("{separator}{mark}{:>6} {}\n", line.number, line.text));
         last_rendered = Some(line.number);
     }
     Ok(Investigation {
@@ -850,8 +811,8 @@ fn investigate_readers<R: std::io::BufRead>(
         total_bytes,
         total_matches,
         rendered,
-        result_truncated,
-        next_byte_offset,
+        result_truncated: first_unselected.is_some(),
+        next_byte_offset: first_unselected,
     })
 }
 
@@ -861,8 +822,7 @@ fn investigate(
     pattern: Option<&str>,
     context: usize,
     range: Option<(usize, usize)>,
-    max_matches: usize,
-    budget: usize,
+    max_matches: Option<usize>,
 ) -> Result<Investigation, String> {
     let reader = || std::io::Cursor::new(content.as_bytes());
     investigate_readers(
@@ -873,7 +833,6 @@ fn investigate(
         context,
         range,
         max_matches,
-        budget,
     )
 }
 
