@@ -42,6 +42,18 @@ try {
         $program = $BashPath
         $childArguments = @('--', ('"' + $WrapperPath + '"'))
     }
+    # Start-Process truncates its redirect targets, so a relaunch would erase the
+    # stderr of the run that just died: Rust's allocation-failure and runtime
+    # aborts print their one line there and nowhere else (three core aborts,
+    # 10-02/10-08/10-13, lost theirs this way). launchd appends; here the previous
+    # run moves to .prev first. An empty log never replaces a kept one, so a fast
+    # failing relaunch cannot erase the crash it followed. Two files, bounded.
+    foreach ($name in 'service.out.log', 'service.err.log') {
+        $current = Join-Path $LogDirectory $name
+        if ((Test-Path -LiteralPath $current) -and (Get-Item -LiteralPath $current).Length -gt 0) {
+            Move-Item -LiteralPath $current -Destination ($current -replace '\.log$', '.prev.log') -Force
+        }
+    }
     $process = Start-Process -FilePath $program `
         -ArgumentList $childArguments `
         -WindowStyle Hidden -PassThru `

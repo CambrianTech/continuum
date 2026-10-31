@@ -2453,25 +2453,32 @@ function Mod-LlamaServer {
     Set-Content -LiteralPath (Join-Path $scratch 'start-livekit-windows.ps1') -Value 'param([string]$BridgeBinary,[string]$LivekitServerBinary); Set-Content -LiteralPath (Join-Path $PSScriptRoot "media-started") -Value $BridgeBinary'
     $core = Join-Path $scratch 'core with spaces.exe'
     $socket = Join-Path $scratch 'socket with spaces.sock'
+    # The run before this one died; its stderr is the only record of an abort.
+    Set-Content -LiteralPath (Join-Path $logs 'service.err.log') -Value 'memory allocation of 1 bytes failed'
     & $shell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File $runner -ExecutablePath $child -CorePath $core -SocketPath $socket -EnginePath $child -LogDirectory $logs
     if ($LASTEXITCODE -ne 7) { throw "Hidden host lost child exit code: $LASTEXITCODE" }
     if ((Get-Content -LiteralPath (Join-Path $scratch 'media-started') -Raw).Trim() -ne (Join-Path $scratch 'livekit-bridge.exe')) { throw 'Prebuilt supervisor did not start its staged media bundle' }
     if ((Get-Content (Join-Path $logs 'service.out.log') -Raw).Trim() -ne "service-host|$core|$socket|$child") { throw 'Hidden host changed argument boundaries' }
     if ((Get-Content (Join-Path $logs 'service.err.log') -Raw).Trim() -ne 'child failure receipt') { throw 'Hidden host lost stderr' }
-    Write-Output 'PASS: native supervisor preserves arguments, both logs, and child exit 7'
+    if ((Get-Content (Join-Path $logs 'service.err.prev.log') -Raw).Trim() -ne 'memory allocation of 1 bytes failed') { throw 'Relaunch erased the previous run''s stderr' }
+    Write-Output 'PASS: native supervisor preserves arguments, both logs, the previous run''s stderr, and child exit 7'
+    # A relaunch that leaves no stderr must not replace the crash record it followed.
+    [IO.File]::WriteAllText((Join-Path $logs 'service.err.log'), '')
 
     $childMarker = Join-Path $scratch 'descendant-ready'
     $childPidFile = Join-Path $scratch 'descendant-pid'
     $elapsed = [Diagnostics.Stopwatch]::StartNew()
     try {
         & $shell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File $runner -ExecutablePath $child -CorePath fork -SocketPath $childMarker -EnginePath $childPidFile -LogDirectory $logs
-        if ($LASTEXITCODE -ne 7 -or $elapsed.Elapsed.TotalSeconds -ge 5) { throw 'Supervisor waited for surviving descendant or lost host exit code' }
+        if ($LASTEXITCODE -ne 7) { throw "Supervisor lost host exit code: $LASTEXITCODE" }
+        if ($elapsed.Elapsed.TotalSeconds -ge 5) { throw ('Supervisor waited for surviving descendant: {0:N1}s' -f $elapsed.Elapsed.TotalSeconds) }
         $descendant = Get-Process -Id ([int](Get-Content $childPidFile)) -ErrorAction Stop
         if ($descendant.HasExited) { throw 'Supervisor killed its surviving inference-shaped child' }
     } finally {
         if ($descendant -and -not $descendant.HasExited) { $descendant.Kill(); $descendant.WaitForExit(); $descendant.Dispose() }
     }
-    Write-Output 'PASS: supervisor reports host exit while a warm descendant remains alive'
+    if ((Get-Content (Join-Path $logs 'service.err.prev.log') -Raw).Trim() -ne 'memory allocation of 1 bytes failed') { throw 'An empty relaunch replaced the kept crash stderr' }
+    Write-Output 'PASS: supervisor reports host exit while a warm descendant remains alive, and an empty relaunch keeps the crash stderr'
 
     # Published engines use an explicit backend on GPU-less CI and cannot reuse
     # a native-CPU stamp. Extend this fixture without building an engine.
