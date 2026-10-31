@@ -21,6 +21,13 @@ impl TurnKind {
         }
     }
 
+    /// The tokens this turn kind decodes within its latency budget at the measured `tps`: the
+    /// time term the allowance reports and the ceiling a reply may test upward to. `None` with no
+    /// measured rate (after a restart the rate reads 0), so nothing grows on a guess.
+    pub(super) fn time_term(self, tps: Option<f64>) -> Option<u32> {
+        tps.filter(|t| t.is_finite() && *t > 0.0).map(|t| (self.latency_budget_secs() * t).round() as u32)
+    }
+
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Act => "act",
@@ -65,9 +72,7 @@ pub(super) fn output_allowance(
     need: Option<super::super::working_set::OutputNeed>,
     allowance: u32,
 ) -> OutputAllowance {
-    let time_term = tps
-        .filter(|t| t.is_finite() && *t > 0.0)
-        .map(|t| (kind.latency_budget_secs() * t).round() as u32);
+    let time_term = kind.time_term(tps);
     let need_term = need.map(|n| n.total());
     let allowance = allowance.max(1);
     OutputAllowance {

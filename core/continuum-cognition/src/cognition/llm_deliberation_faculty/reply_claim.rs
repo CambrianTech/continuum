@@ -35,13 +35,23 @@ pub fn reply_claim(
     pending_peak: u32,
     live_work: bool,
     directed: bool,
+    time_term: Option<u32>,
 ) -> crate::cognition::rag_budget::RagSourceBudget {
     let floor = match (kind, need) {
         (TurnKind::Act, Some(n)) => n.answer.max(LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS),
         _ => LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS,
     };
+    // A recent cut think raises the want toward its lower bound (`reasoning_at_least`, censored
+    // and corrected), only under the measured time term: a thinking model fills whatever room it
+    // gets (8k to 184k in 20 simulated turns), so growth stops at what her latency allows, and
+    // with no measured rate it does not test upward at all (Cormac's design, card b726a311).
+    let tested = match (need.and_then(|n| n.reasoning_at_least.map(|at_least| at_least.saturating_add(n.answer))), time_term) {
+        (Some(upward), Some(ceiling)) => upward.min(ceiling),
+        _ => 0,
+    };
     let wanted = need
         .map_or(LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS, |n| n.total()) // map_or: unmeasured = a REPLY-sized prior, never a window fraction
+        .max(tested)
         .max(pending_peak)
         .max(floor);
     let priority = match kind {

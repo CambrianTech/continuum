@@ -159,20 +159,20 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
     .with_context_window(window)
     .with_working_set(reg.clone());
     let wanted = |who: Uuid, pending: u32| {
-        reply_claim(TurnKind::Pass, reg.need_of(who), pending, false, false).max_tokens
+        reply_claim(TurnKind::Pass, reg.need_of(who), pending, false, false, None).max_tokens
     };
 
     let cold = wanted(persona, 0);
     assert_eq!(cold, LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS);
-    // (a) below the observation bar the prior stands
+    // (a) one landed turn is measured: its p90 is that turn, and it replaces the prior
     reg.record_emission_in_memory(persona, 2_500, 0, EmissionStop::Landed, 1);
+    assert_eq!(wanted(persona, 0), 2_500);
+    // (b) measured: the p90, as measured (the claim's growth is its headroom) — measurement
+    // GROWS a reply-sized prior rather than shaving a half-window default down.
     reg.record_emission_in_memory(persona, 1_200, 0, EmissionStop::Landed, 2);
-    assert_eq!(wanted(persona, 0), cold);
-    // (b) measured: p90 2,500 × 5/4 = 3,125 — measurement GROWS a reply-sized
-    // prior rather than shaving a half-window default down.
     reg.record_emission_in_memory(persona, 2_500, 0, EmissionStop::Landed, 3);
     let measured = wanted(persona, 0);
-    assert_eq!(measured, 3_125);
+    assert_eq!(measured, 2_500);
     assert!(measured > cold);
     // (c) a 40-token ack claims the reply floor, never less
     let quiet = Uuid::new_v4();
@@ -181,11 +181,11 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
     }
     assert_eq!(wanted(quiet, 0), LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS);
     // (d) a turn cut mid-answer at 5,000 records its answer at 10,000: the p90 is
-    // now 12,500 — a citizen who needs the room earns it back within a turn.
+    // now 10,000 — a citizen who needs the room earns it back within a turn.
     reg.record_emission_in_memory(persona, 5_000, 0, EmissionStop::CutMidAnswer, 4);
-    assert_eq!(wanted(persona, 0), 12_500);
+    assert_eq!(wanted(persona, 0), 10_000);
     let view = faculty.prompt_view_within(&Workspace::new("continue"), window);
-    assert!(view.completion_reserve >= 12_500, "the grant holds the grown claim: {}", view.completion_reserve);
+    assert!(view.completion_reserve >= 10_000, "the grant holds the grown claim: {}", view.completion_reserve);
 
     // (e) cf9e: a 2,276-token cut followed by short successful read replies.
     // The existing channel split measured peak 3,587; the concern keeps that
@@ -240,9 +240,9 @@ fn measured_reserve_recovers_past_a_censored_large_reply() {
     for tick in 1..=3 {
         reg.record_emission_in_memory(persona, 16_384, 0, crate::cognition::working_set::EmissionStop::CutMidAnswer, tick);
     }
-    // A censored sample is doubled by the registry; the need adds headroom.
+    // A censored sample is doubled by the registry; the need is that, as measured.
     let need = reg.need_of(persona).expect("three measured turns");
-    assert_eq!(need.total(), 40_960);
+    assert_eq!(need.total(), 32_768);
     for window in [8_192, 16_384, 32_768, 67_072, 131_072] {
         let faculty = LlmDeliberationFaculty::new(
             persona,
