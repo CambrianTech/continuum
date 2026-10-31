@@ -21,7 +21,19 @@ Each machine runs on its own, so each is a different world for the same algorith
 |---|---|---|---|
 | M5 | unified memory (64 GB), Metal, Qwen3.6-35B-A3B, four fixed slots today | Aiko, Aris, Atlas, Benchy | Fable |
 | 5090 | discrete CUDA, Windows | Kimi and the 5090's residents | Codex (with BigMama's measurements) |
-| IntelMac | the low-end GPU floor: i7-8850H, 32 GB RAM, Radeon Pro 560X 4 GB (Metal 2); Qwen2.5-Coder-1.5B, two slots | none until its core returns (stopped since 2026-10-30 00:52Z for incident containment) | Cormac (his node, his lifecycle) |
+| IntelMac | the low-end CPU floor: i7-8850H, 32 GB RAM; Qwen2.5-Coder-1.5B, two slots. Its GPUs lose to its CPU (measured below) | none until its core returns (stopped since 2026-10-30 00:52Z for incident containment) | Cormac (his node, his lifecycle) |
+
+IntelMac's GPUs, measured by Cormac 2026-10-31 01:05Z (fork 08d6d354b scratch builds; Qwen2.5-Coder-1.5B,
+an 840-token prompt, 64 decode tokens, cache off, 3 runs each):
+- CPU: prefill 165-176 tok/s, decode 22.5-22.8 tok/s.
+- Radeon Pro 560X (Metal 2, the system-default Metal device): the macOS AMD driver never returns from its
+  first buffer allocation (`IOAccelResourceCreate` under `newCommandQueue`). This happens at backend
+  registration, so even `--n-gpu-layers 0` hangs, and the process is left unkillable.
+- Intel UHD 630 (Metal 3, unified, 1,536 MB working set): at a 512-token ubatch the macOS GPU watchdog kills
+  the command buffer. At 64 it runs: prefill 12.3 tok/s (14x slower), decode 7.6 tok/s (3x slower).
+
+So the engine's `metal` feature stays off on this node; its rounds work the CPU path. A device is used only
+after an out-of-process probe passes and offload measures faster (THE-PROVING-GROUND tiers).
 
 Receipts: IntelMac read by Cormac 2026-10-30 ~22:40Z; its core needs a canary build with #5603's addressed
 ingress before its first round. Placement across nodes waits until all three
