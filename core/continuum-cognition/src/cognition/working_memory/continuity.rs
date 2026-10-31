@@ -181,13 +181,21 @@ impl WorkingMemory {
             (entries, authored)
         };
         let last_action = self.last_action.lock().clone();
-        let records: Vec<action_log::ActionRecord> = self.actions.lock().records().cloned().collect();
+        let (records, recent_results) = {
+            let actions = self.actions.lock();
+            let recent_results: Vec<(u64, Option<Uuid>, String, String, Option<String>)> = actions
+                .retained()
+                .filter_map(|r| r.result.clone().map(|result| (r.seq, r.room, result, r.operation.clone(), r.handle.clone())))
+                .collect();
+            (actions.records().cloned().collect::<Vec<action_log::ActionRecord>>(), recent_results)
+        };
         VolatileSnapshot {
             pending_emissions: self.pending_emissions.lock().clone(),
             entries,
             action_statements,
             last_action,
             action_fps: self.action_fps.lock().iter().cloned().collect(),
+            recent_results,
             next_action_seq: self.next_action_seq.load(Ordering::Relaxed),
             saved_at_ms: continuum_base::time::EpochMs::now().millis(),
             build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),

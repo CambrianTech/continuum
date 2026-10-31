@@ -262,6 +262,7 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         action_statements: Vec::new(),
         last_action: None,
         action_fps: Vec::new(),
+        recent_results: Vec::new(),
         next_action_seq: 1,
         saved_at_ms: 0, // pre-field snapshot: no save time guessed
         interrupted_dispatches: Vec::new(),

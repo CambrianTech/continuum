@@ -427,6 +427,12 @@ pub struct VolatileSnapshot {
     /// then says nothing rather than guessing a change it cannot see (#165).
     #[serde(default)]
     pub build_sha: String,
+    /// Retained results `(seq, room, result, operation, handle)`, read only by checkpoint
+    /// adoption's validation (`persona_workspace::checkpoint_adoption`). It goes when adoption's
+    /// writes move onto their disk class handle (ONE-BUDGET row 5, card 2b326931; then adoption reads
+    /// `actions`): the one shape is `actions`.
+    #[serde(default)]
+    pub recent_results: Vec<(u64, Option<Uuid>, String, String, Option<String>)>,
     /// Her state at the seam — the whole held card, her ledger, what was staged, what tore
     /// the life (card 49b5e806, Kimi 2026-09-26). Stamped by `save_volatile`, which knows
     /// whose memory this is and why it is being written; rendered FIRST on wake. `None` on

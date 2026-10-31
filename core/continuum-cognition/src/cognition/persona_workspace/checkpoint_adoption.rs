@@ -130,18 +130,18 @@ fn summary(bytes: &[u8]) -> Result<CheckpointSummary, AdoptionError> {
         .as_ref()
         .is_some_and(|(seq, _)| *seq == 0 || *seq >= wm.next_action_seq)
         || wm
-            .action_records()
+            .recent_results
             .iter()
-            .any(|record| record.seq == 0 || record.seq >= wm.next_action_seq)
+            .any(|(seq, _, _, _, _)| *seq == 0 || *seq >= wm.next_action_seq)
     {
         return Err(invalid("receipt sequence must precede next_action_seq"));
     }
     let mut previous = None;
-    for record in wm.action_records() {
-        if previous.is_some_and(|old| old >= record.seq) {
+    for (seq, _, _, _, _) in &wm.recent_results {
+        if previous.is_some_and(|old| old >= *seq) {
             return Err(invalid("result receipt sequences must strictly increase"));
         }
-        previous = Some(record.seq);
+        previous = Some(*seq);
     }
     let utterances = match &persisted.own_speech {
         OwnSpeechPersisted::ByRoom(rooms) => {
@@ -160,7 +160,7 @@ fn summary(bytes: &[u8]) -> Result<CheckpointSummary, AdoptionError> {
         saved_at_ms: wm.saved_at_ms,
         next_action_seq: wm.next_action_seq,
         entries: wm.entries.len(),
-        result_receipts: wm.action_records().iter().filter(|record| record.result.is_some()).count(),
+        result_receipts: wm.recent_results.len(),
         own_utterances: utterances,
         unscoped_own_utterances: match &persisted.own_speech {
             OwnSpeechPersisted::ByRoom(_) => 0,
