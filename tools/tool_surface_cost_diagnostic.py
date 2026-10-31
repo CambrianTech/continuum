@@ -20,7 +20,7 @@ def run(cmd, cwd=None):
 
 
 # Step 1: Find all native tool spec definitions in persona_tools.rs
-PERSONA_TOOLS_PATH = "core/continuum-core/src/test_env/mind_integration/registry/persona_tools.rs"
+PERSONA_TOOLS_PATH = "core/continuum-cognition/src/cognition/persona_tools.rs"
 
 content = open(PERSONA_TOOLS_PATH).read()
 
