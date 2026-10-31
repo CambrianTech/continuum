@@ -170,9 +170,10 @@ fn claimable_hold(hold: Hold, state: airc_work::model::CardState) -> bool {
 /// How a holder with no published name is said in a sentence (see [`CardHolder::display`]).
 pub const UNNAMED_HOLDER: &str = "an unnamed peer";
 
-/// The 8-char short id every surface in the system uses to name a uuid.
+/// A uuid's short form, rendered by its one owner (`airc_core::shown_id`). Its callers move to
+/// `shown_form` directly with #5389's next slice, and this name is deleted then.
 pub fn short8(id: &uuid::Uuid) -> String {
-    id.to_string().chars().take(8).collect()
+    airc_core::shown_id::shown_form(*id)
 }
 
 /// Resolve a card's holder ONCE, for every surface.
