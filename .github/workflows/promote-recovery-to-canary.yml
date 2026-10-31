@@ -1,0 +1,135 @@
+name: promote-recovery-to-canary
+
+# integration/recovery → canary — automated promotion for the batched-integration lane.
+#
+# integration/recovery is a deliberate integration branch where multiple merges are
+# assembled together before promoting to canary, reducing canary churn by batching
+# changes into single promotions (Joel, 2026-10-28). It was created so that several
+# related fixes could land on one branch and promote as a unit rather than each
+# triggering its own canary deployment.
+#
+# This workflow:
+#   - Runs every 6 hours + by manual dispatch (tighter cadence because recovery
+#     merges land in batches, not continuously)
+#   - Compares integration/recovery tip vs canary tip
+#   - Reports staleness when commits sit on recovery un-promoted
+#   - If green and ahead: creates a promote PR (squash merge into canary)
+#   - If red or pending: refuses to promote, logs the reason
+
+on:
+  schedule:
+    # Every 6 hours at :27 past the hour — offset from promote-main's :17 to avoid
+    # two promotions hitting canary simultaneously.
+    - cron: '27 */6 * * *'
+  workflow_dispatch: {}  # manual trigger for immediate promotion
+
+permissions:
+  contents: write   # create PRs and push commits to canary
+  pull-requests: write
+  checks: read      # verify tip check status via API
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ssh-key: ${{ secrets.GH_PUSH_KEY }}  # need push to canary for the PR branch
+
+      - name: Check staleness and promote if green
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SOURCE: integration/recovery
+          TARGET: canary
+        run: |
+          set -euo pipefail
+
+          # Fetch both branches
+          git fetch origin "$SOURCE" "$TARGET"
+
+          source_tip="$(git rev-parse "origin/$SOURCE")"
+          target_tip="$(git rev-parse "origin/$TARGET")"
+
+          # Count commits on recovery not yet on canary (staleness metric)
+          commits_ahead="$(git rev-list --count "origin/$TARGET"..origin/$SOURCE)"
+          oldest_commit=""
+          if [ "$commits_ahead" -gt 0 ]; then
+            oldest_commit="$(git log --format=%H --reverse origin/$TARGET..origin/$SOURCE | head -1)"
+            oldest_age_s=$(( $(date +%s) - $(git log -1 --format=%ct "origin/$SOURCE") ))
+            oldest_age_h=$(( oldest_age_s / 3600 ))
+          fi
+
+          if [ "$source_tip" = "$target_tip" ]; then
+            echo "canary: up to date (recovery == canary)"
+            exit 0
+          fi
+
+          # Report staleness regardless of whether we promote — the receipt matters
+          if [ "$commits_ahead" -gt 0 ]; then
+            echo "::notice::STALE: $commits_ahead commits on integration/recovery not yet promoted to canary (oldest: ${oldest_age_h}h ago)"
+          fi
+
+          # Check if the recovery tip is green
+          repo="$REPO"
+          json="$(gh api "repos/$repo/commits/${source_tip}/check-runs?per_page=100" 2>/dev/null)" || { echo "check: GH API unreachable, refusing deploy"; exit 1; }
+          runs="$(gh api "repos/$repo/actions/runs?head_sha=$source_tip&per_page=100" 2>/dev/null)" || runs='{}'
+
+          verdict=$(python3 - "$json" "$runs" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1]); checks = d.get("check_runs", [])
+w = json.loads(sys.argv[2]).get("workflow_runs")
+if w is not None:
+    own = {r.get("check_suite_id") for r in w
+           if r.get("event") in ("push", "pull_request", "workflow_dispatch")
+           and r.get("path") not in (".github/workflows/promote-main.yml",)}
+    checks = [c for c in checks if (c.get("check_suite") or {}).get("id") in own]
+if not checks: print("unknown"); sys.exit()
+concl = [c.get("conclusion") for c in checks]
+if any(c in ("failure", "timed_out", "cancelled", "action_required") for c in concl): print("red")
+elif any(c.get("status") != "completed" for c in checks): print("pending")
+else: print("green")
+PY
+)
+
+          case "$verdict" in
+            green) ;;
+            pending) echo "canary: recovery tip $source_tip is PENDING — waiting for checks"; exit 0 ;;
+            red)   echo "canary: refusal — recovery tip $source_tip is RED"; exit 1 ;;
+            *)     echo "canary: recovery tip $source_tip checks unknown (GH unreachable or no runs yet)"; exit 0 ;;
+          esac
+
+          # Green and ahead: create a promote PR from canary
+          pr_title="Promote recovery→canary: $commits_ahead commit(s)"
+          pr_body=$(cat <<EOF
+Auto-promoted integration/recovery → canary.
+
+- Commits promoted: $commits_ahead
+- Recovery tip: ${source_tip:0:9}
+- Previous canary tip: ${target_tip:0:9}
+- Staleness at check time: ${oldest_age_h:-0}h (oldest commit)
+
+This is the automated promotion path for the integration/recovery batched-integration lane.
+EOF
+          )
+
+          # Create a branch on canary for the PR
+          git checkout -b "auto/promote-recovery-canary-$(date +%Y%m%d-%H%M%S)" origin/$TARGET
+          git merge --squash "origin/$SOURCE" || { echo "merge conflict — refusing"; exit 1; }
+          git commit -m "$pr_title
+
+$pr_body" || { echo "no changes to promote (empty squash)"; exit 0; }
+          git push origin "auto/promote-recovery-canary-$(date +%Y%m%d-%H%M%S)"
+
+          # Create the PR
+          pr_url=$(gh pr create \
+            --base "$TARGET" \
+            --head "auto/promote-recovery-canary-$(date +%Y%m%d-%H%M%S)" \
+            --title "$pr_title" \
+            --body "$pr_body")
+
+          echo "PR created: $pr_url"
