@@ -395,6 +395,7 @@ impl LlmDeliberationFaculty {
         let mut sources: Vec<&dyn Source<ContextMessage>> =
             streams.blocks.iter().filter(settled).map(as_source).collect();
         sources.extend(memory.map(|m| &m.actions as &dyn Source<ContextMessage>));
+        sources.extend(memory.map(|m| &m.tasks as &dyn Source<ContextMessage>));
         sources.push(&streams.conversation);
         sources.extend(streams.blocks.iter().filter(|block| !settled(block)).map(as_source));
         sources.extend(memory.map(|m| &m.thoughts as &dyn Source<ContextMessage>));
