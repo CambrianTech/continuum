@@ -16,8 +16,25 @@ pub struct RenderReceipt {
     pub view: continuum_context::view::Receipt,
 }
 
-/// Where render receipts go. One per mind, installed at assembly; none installed, a receipt is
-/// dropped (nothing consumes it yet).
+/// Where render receipts go. One per mind, installed at assembly ([`install`]); none installed,
+/// a receipt is dropped (nothing consumes it yet).
 pub trait RenderReceiptSink: Send + Sync {
     fn record(&self, receipt: RenderReceipt);
+}
+
+static SINKS: parking_lot::RwLock<Option<std::collections::HashMap<Uuid, std::sync::Arc<dyn RenderReceiptSink>>>> =
+    parking_lot::RwLock::new(None);
+
+/// Install the one sink `owner`'s receipts go to (the task ledger, #5585). A second install for
+/// the same mind replaces the first.
+pub fn install(owner: Uuid, sink: std::sync::Arc<dyn RenderReceiptSink>) {
+    SINKS.write().get_or_insert_with(Default::default).insert(owner, sink);
+}
+
+/// Hand a served prompt's receipt to its owner's sink, if one is installed.
+pub(crate) fn deliver(receipt: RenderReceipt) {
+    let sink = SINKS.read().as_ref().and_then(|sinks| sinks.get(&receipt.owner).cloned());
+    if let Some(sink) = sink {
+        sink.record(receipt);
+    }
 }

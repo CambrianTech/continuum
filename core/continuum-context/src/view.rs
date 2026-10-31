@@ -21,7 +21,7 @@ use crate::source::{Item, Source};
 mod allot;
 
 use allot::{allot, rank};
-pub use crate::levels::Level;
+pub use crate::level::Level;
 pub use allot::floor;
 
 /// The item key a source's fold block is observed under: no source keys an item with it.

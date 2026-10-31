@@ -84,8 +84,6 @@ impl LlmDeliberationFaculty {
     /// (`slots::PageKey::Fork`). Set only by `fork_eval_cycle`.
     pub fn forked(mut self) -> Self {
         self.forked = true;
-        // A fork's prompts are not hers: they never acknowledge what she was shown.
-        self.receipt_sink = None;
         self
     }
 
@@ -302,8 +300,13 @@ impl LlmDeliberationFaculty {
         // window reads: in the window it was served in, whether or not her turn settles soon.
         if matches!(receipt.outcome, crate::ai::provenance::GenerationOutcome::Served { .. }) {
             crate::cognition::resident_service::note_generation(self.persona_id);
-            if let (Some(view), Some(sink)) = (submitted, self.receipt_sink.as_ref()) {
-                sink.record(crate::cognition::render_receipt::RenderReceipt { owner: self.persona_id, request: receipted_request, view });
+            // A measurement fork's prompts are not hers: they never acknowledge what she was shown.
+            if let (Some(view), false) = (submitted, self.forked) {
+                crate::cognition::render_receipt::deliver(crate::cognition::render_receipt::RenderReceipt {
+                    owner: self.persona_id,
+                    request: receipted_request,
+                    view,
+                });
             }
         }
         receipts.push(

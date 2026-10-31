@@ -38,7 +38,7 @@ pub struct Event<T = String> {
     /// which stands for a range of items.
     pub element: Option<crate::cause::ElementId>,
     /// The level the view rendered it at: what a render receipt reports she was shown.
-    pub level: crate::levels::Level,
+    pub level: crate::level::Level,
     pub version: u32,
     pub text: T,
     /// The source ended with this notice; turnover drops it entirely.
@@ -82,7 +82,7 @@ impl<T: Block> Epoch<T> {
 
     /// Record a source's current rendering. Appends only when it differs from that source's
     /// latest version; never edits an earlier block.
-    pub fn observe(&mut self, source: SourceId, element: Option<crate::cause::ElementId>, level: crate::levels::Level, text: T) -> Observed {
+    pub fn observe(&mut self, source: SourceId, element: Option<crate::cause::ElementId>, level: crate::level::Level, text: T) -> Observed {
         let latest = self.events.iter().rposition(|e| e.source == source);
         if let Some(i) = latest {
             if self.events[i].text == text {
@@ -108,7 +108,7 @@ impl<T: Block> Epoch<T> {
         }
         self.superseded_chars += self.events[i].text.chars();
         let (element, version) = (self.events[i].element, self.events[i].version + 1);
-        self.events.push(Event { source, element, level: crate::levels::Level::Pointer, version, text: notice, retired: true });
+        self.events.push(Event { source, element, level: crate::level::Level::Pointer, version, text: notice, retired: true });
         Observed::Appended { version }
     }
 
@@ -155,7 +155,7 @@ impl<T: Block> Epoch<T> {
 mod tests {
     /// A test block: whole, standing for no particular occurrence.
     fn seen(e: &mut Epoch<String>, source: SourceId, text: String) -> Observed {
-        e.observe(source, None, crate::levels::Level::Full, text)
+        e.observe(source, None, crate::level::Level::Full, text)
     }
 
     use super::*;
