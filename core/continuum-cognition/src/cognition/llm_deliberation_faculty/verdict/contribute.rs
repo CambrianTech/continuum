@@ -408,8 +408,6 @@ impl LlmDeliberationFaculty {
                         response.timing.as_ref().map_or(0, |t| t.cached_tokens),
                         fit_window,
                     );
-                    // Served: counted now in her service window, whether or not this turn settles soon.
-                    crate::cognition::resident_service::note_generation(self.persona_id);
                     break (view, response);
                 }
             }

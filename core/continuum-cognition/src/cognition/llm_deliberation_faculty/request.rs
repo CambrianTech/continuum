@@ -288,16 +288,17 @@ impl LlmDeliberationFaculty {
                 .and_then(|r| r.timing.as_ref())
                 .map(|t| (t.cached_tokens, t.prefill_tokens)),
         );
+        let receipt = match &gen_result {
+            Ok(response) => crate::ai::provenance::GenerationReceipt::from_response(request_id, response),
+            Err(error) => crate::ai::provenance::GenerationReceipt::faulted(request_id, error.to_string()),
+        };
+        // Counted where the served receipt is made, the one producer of the facts her service
+        // window reads: in the window it was served in, whether or not her turn settles soon.
+        if matches!(receipt.outcome, crate::ai::provenance::GenerationOutcome::Served { .. }) {
+            crate::cognition::resident_service::note_generation(self.persona_id);
+        }
         receipts.push(
-            match &gen_result {
-                Ok(response) => {
-                    crate::ai::provenance::GenerationReceipt::from_response(request_id, response)
-                }
-                Err(error) => crate::ai::provenance::GenerationReceipt::faulted(
-                    request_id,
-                    error.to_string(),
-                ),
-            }
+            receipt
             .with_capture(completed.as_deref())
             .with_genes(genes)
             .with_allocation(allocation),
