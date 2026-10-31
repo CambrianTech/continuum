@@ -4,15 +4,15 @@
 //! eviction. A writer that picks its own absolute path is `writes_outside_a_class`, the shape that
 //! filled the M5 (460 GB, 2026-07-13) while every component was green.
 //!
-//! Durability is `continuum_host::durable`'s (rename-then-sync per OS); this module only confines
-//! the path to the class and stages the bytes.
+//! Durability, staging and locking are `continuum_host::durable`'s (the one owner of placing a
+//! file); this module only confines the path to the class.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use fs2::FileExt;
+use continuum_host::durable;
 
 use super::TrackedDir;
 
@@ -23,11 +23,6 @@ pub struct ClassWriter {
     dir: Arc<TrackedDir>,
     /// The owner's directory inside the class (`owned_by`); empty for the class root.
     scope: PathBuf,
-}
-
-/// An exclusive lock on one name in a class, held until dropped.
-pub struct ClassLock {
-    _file: File,
 }
 
 impl TrackedDir {
@@ -104,38 +99,26 @@ impl ClassWriter {
         Ok(path)
     }
 
-    /// Bytes staged beside `path`, synced, then handed to `place`; the staging file never outlives
-    /// a failure.
-    fn staged(path: &Path, bytes: &[u8], place: impl FnOnce(&Path, &Path) -> io::Result<()>) -> io::Result<()> {
-        let mut name = path.as_os_str().to_owned();
-        name.push(format!(".{}.partial", uuid::Uuid::new_v4().simple()));
-        let staging = PathBuf::from(name);
-        let placed = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&staging)
-            .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
-            .and_then(|()| place(&staging, path));
-        if placed.is_err() {
-            if let Err(cleanup) = std::fs::remove_file(&staging) {
-                if cleanup.kind() != io::ErrorKind::NotFound {
-                    tracing::warn!(probe_class = "disk.class_writer", path = %staging.display(), error = %cleanup, "staging file left after a failed write");
-                }
-            }
-        }
-        placed
+    /// The content staged beside its destination, ready to place.
+    fn staged(path: &Path, bytes: &[u8]) -> io::Result<durable::Staging> {
+        let dir = path.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{} has no directory", path.display())))?;
+        let mut staging = durable::Staging::new_in(dir)?;
+        staging.file().write_all(bytes)?;
+        Ok(staging)
     }
 
     /// Replace a file whole: a reader sees the old bytes or the new ones, never half, and the
-    /// replacement survives power loss (`durable::replace`).
+    /// replacement survives power loss.
     pub fn replace(&self, relative: &Path, bytes: &[u8]) -> io::Result<()> {
-        Self::staged(&self.prepared(relative)?, bytes, continuum_host::durable::replace)
+        let path = self.prepared(relative)?;
+        Self::staged(&path, bytes)?.replace(&path)
     }
 
-    /// Publish an immutable file once: `AlreadyExists` if the name is taken, never an overwrite
-    /// (`durable::publish_new`). A caller that may be replaying compares what is there.
+    /// Publish an immutable file once: `AlreadyExists` if the name is taken, never an overwrite.
+    /// A caller that may be replaying compares what is there.
     pub fn publish_new(&self, relative: &Path, bytes: &[u8]) -> io::Result<()> {
-        Self::staged(&self.prepared(relative)?, bytes, continuum_host::durable::publish_new)
+        let path = self.prepared(relative)?;
+        Self::staged(&path, bytes)?.publish_new(&path)
     }
 
     /// Open a file to append to (a log, a capture stream), creating it on first use.
@@ -145,18 +128,8 @@ impl ClassWriter {
 
     /// Lock `relative` exclusively (a lock file in the class), waiting for a holder when `wait`,
     /// else refusing with `WouldBlock`. Every party to one file's read/write takes the same lock.
-    pub fn lock(&self, relative: &Path, wait: bool) -> io::Result<ClassLock> {
-        let path = self.prepared(relative)?;
-        if std::fs::symlink_metadata(&path).is_ok_and(|meta| !meta.is_file()) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("lock {} is not a regular file", path.display())));
-        }
-        let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
-        if wait {
-            file.lock_exclusive()?;
-        } else {
-            file.try_lock_exclusive()?;
-        }
-        Ok(ClassLock { _file: file })
+    pub fn lock(&self, relative: &Path, wait: bool) -> io::Result<durable::Lock> {
+        durable::lock(&self.prepared(relative)?, wait)
     }
 }
 

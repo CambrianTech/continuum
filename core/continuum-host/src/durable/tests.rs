@@ -49,3 +49,37 @@ fn publish_new_refuses_an_occupied_address_and_a_failed_fence_is_an_error() {
     fault_injection::with_failed_fence(|| assert!(fence(&file, &free).is_err()));
     fence(&file, &free).unwrap();
 }
+
+// what this catches: a staging file outliving its write (dropped unplaced, placed by rename, or
+// placed by hard link), and a publish over a taken name changing it.
+#[test]
+fn staging_never_outlives_its_write_and_publish_never_overwrites() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest = dir.path().join("blob");
+    drop(Staging::new_in(dir.path()).expect("staging"));
+    assert_eq!(std::fs::read_dir(dir.path()).expect("dir").count(), 0, "dropped unplaced: removed");
+    let mut first = Staging::new_in(dir.path()).expect("staging");
+    first.file().write_all(b"one").expect("write");
+    first.publish_new(&dest).expect("publish");
+    let mut second = Staging::new_in(dir.path()).expect("staging");
+    second.file().write_all(b"two").expect("write");
+    assert_eq!(second.publish_new(&dest).expect_err("taken").kind(), std::io::ErrorKind::AlreadyExists);
+    fence_existing(&dest).expect("fence the existing name");
+    let mut third = Staging::new_in(dir.path()).expect("staging");
+    third.file().write_all(b"three").expect("write");
+    third.replace(&dest).expect("replace");
+    assert_eq!(std::fs::read(&dest).expect("read"), b"three");
+    assert_eq!(std::fs::read_dir(dir.path()).expect("dir").count(), 1, "only the placed file remains");
+}
+
+// what this catches: two holders of one lock at once.
+#[test]
+fn a_held_lock_refuses_a_second_holder() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(".x.lock");
+    let held = lock(&path, false).expect("first");
+    assert_eq!(lock(&path, false).err().map(|e| e.kind()), Some(std::io::ErrorKind::WouldBlock));
+    drop(held);
+    lock(&path, false).expect("free again");
+}

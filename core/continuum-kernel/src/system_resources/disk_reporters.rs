@@ -199,7 +199,7 @@ mod registry;
 mod class_writer;
 mod standard;
 pub use standard::standard_tracked_dirs;
-pub use class_writer::{ClassLock, ClassWriter};
+pub use class_writer::ClassWriter;
 /// A value an owned child process keeps until its tree has ended (see
 /// `inference::continuum_process::holding`): the cargo-target lease is one. Defined here because
 /// `CargoAdmission::kept` hands it out and this kernel module cannot name the engine.
