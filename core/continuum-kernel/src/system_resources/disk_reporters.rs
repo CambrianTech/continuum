@@ -196,6 +196,8 @@ impl TrackedDir {
 /// writer selects another Cargo root. Boot consumers, durable replay and later
 /// writers all use the same TrackedDir instances and scanner.
 mod registry;
+mod class_writer;
+pub use class_writer::{ClassLock, ClassWriter};
 /// A value an owned child process keeps until its tree has ended (see
 /// `inference::continuum_process::holding`): the cargo-target lease is one. Defined here because
 /// `CargoAdmission::kept` hands it out and this kernel module cannot name the engine.
