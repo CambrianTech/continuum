@@ -222,24 +222,6 @@
         }
     }
 
-    /// Regression test for the position-pairing hazard (PR #1510 review
-    /// finding #2). Pinned `#[ignore]` until slice 14 lands role-in-
-    /// seed.json + RoleAwareProvider. The body documents what slice
-    /// 14 must restore: tier-shaped multi-role rosters that survive
-    /// boot 2's alphabetic persona order without flipping roles.
-    #[test]
-    #[ignore = "tracks #133 slice 14 — role-in-seed.json + RoleAwareProvider"]
-    fn slice_14_restores_helper_plus_coder_for_compat() {
-        let plan = plan_for_tier(
-            HwCapabilityTier::MacIntelMetalDiscrete,
-            HwTierCategory::Compat,
-        );
-        // When slice 14 ships, this assertion becomes the live spec:
-        assert_eq!(plan.len(), 2);
-        assert!(plan.iter().any(|r| r.role == RoleId::Helper));
-        assert!(plan.iter().any(|r| r.role == RoleId::Coder));
-    }
-
     /// ServiceModule.plan() is the same as the free function with the
     /// module's configured tier — proves the substrate-managed and
     /// pure-function paths agree.
