@@ -59,7 +59,6 @@ export type { GatingRagMetadata } from './GatingRagMetadata';
 export type { GatingRecipeStrategy } from './GatingRecipeStrategy';
 export type { GatingTriggerMessage } from './GatingTriggerMessage';
 export type { GenerateRecipeOrchestratorParams } from './GenerateRecipeOrchestratorParams';
-export type { GenerateResponseAdmissionPolicy } from './GenerateResponseAdmissionPolicy';
 export type { GenerateResponseRequest } from './GenerateResponseRequest';
 export type { GenerateResponseResult } from './GenerateResponseResult';
 export type { GetStateParams } from './GetStateParams';
