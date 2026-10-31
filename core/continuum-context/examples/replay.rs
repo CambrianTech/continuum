@@ -128,7 +128,14 @@ impl Source<String> for Captured {
 fn item(key: String, text: String) -> Item<String> {
     let pointer: String = text.lines().next().unwrap_or_default().chars().take(185).collect();
     let pointer = if pointer.len() < text.len() { pointer } else { text.clone() };
-    Item { key, pointer: Some(pointer), summary: None, full: text, stored: None }
+    captured(key, text).with_pointer(pointer)
+}
+
+/// A captured element: a capture records what was sent, never what caused it, so its cause is
+/// `Unrecorded` (counted, never toward closure) and its id comes from its key.
+fn captured(key: String, full: String) -> Item<String> {
+    let id = continuum_context::cause::ElementId::of(&[key.as_bytes()]);
+    Item::whole(id, continuum_context::cause::Cause::Unrecorded, key, full)
 }
 
 /// The one allocation, modelled: every source gets its floor, then the rest of `budget`
@@ -297,7 +304,7 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
             // Its action lines are the action log again; its thoughts are its own items.
             let thoughts = bullets("working-memory", &text)
                 .into_iter()
-                .filter(|item| !item.full.starts_with("- [action #"))
+                .filter(|item| !item.full().starts_with("- [action #"))
                 .collect();
             push("working-memory", thoughts);
         } else if text.starts_with("My own recent thoughts") {
@@ -323,8 +330,8 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
     }
     // A ledger line stands in for an act only when the log holds no rendering of it.
     if let Some(ledger) = sources.remove("ledger") {
-        let held: Vec<String> = sources.get("actions").into_iter().flatten().map(|item| item.key.clone()).collect();
-        let missing = ledger.into_iter().filter(|line| !held.contains(&line.key)).collect::<Vec<_>>();
+        let held: Vec<String> = sources.get("actions").into_iter().flatten().map(|item| item.key().to_owned()).collect();
+        let missing = ledger.into_iter().filter(|line| !held.iter().any(|key| key == line.key())).collect::<Vec<_>>();
         sources.entry("actions".into()).or_default().extend(missing);
     }
     Cut { head, sources, tail, sent, act: validate::act_of(request), said: outline::said(request), reads: paged::reads(request) }
@@ -377,7 +384,7 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
     let mut tails = Vec::new();
     let mut turnover_prefill = Vec::new();
     for cut in cuts {
-        let action_keys: Vec<String> = cut.sources.get("actions").into_iter().flatten().map(|item| item.key.clone()).collect();
+        let action_keys: Vec<String> = cut.sources.get("actions").into_iter().flatten().map(|item| item.key().to_owned()).collect();
         restored.learn(&action_keys, &cut.act);
         let counted = restored.rereads(&cut.act, &previous_view);
         rereads += counted.total;
@@ -400,10 +407,10 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
         tails.push(tail_chars as f64);
         for (name, items) in &cut.sources {
             for item in items {
-                let key = (name.clone(), item.key.clone());
-                if held.get(&key) != Some(&item.full) {
-                    *appended.entry(name.clone()).or_default() += item.full.chars().count();
-                    held.insert(key, item.full.clone());
+                let key = (name.clone(), item.key().to_owned());
+                if held.get(&key) != Some(item.full()) {
+                    *appended.entry(name.clone()).or_default() += item.full().chars().count();
+                    held.insert(key, item.full().clone());
                 }
             }
         }

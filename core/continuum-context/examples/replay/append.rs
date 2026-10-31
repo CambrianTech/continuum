@@ -141,7 +141,7 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
         paging.said(n, &cut.said);
         // The pages her last act needed past a first page: one extra request each, appended.
         let extra_pages = if options.paged { pager.said(n, &cut.said, &cut.reads) } else { Vec::new() };
-        let action_keys: Vec<String> = cut.sources.get("actions").into_iter().flatten().map(|item| item.key.clone()).collect();
+        let action_keys: Vec<String> = cut.sources.get("actions").into_iter().flatten().map(|item| item.key().to_owned()).collect();
         restored.learn(&action_keys, &cut.act);
         let mut sources: Vec<Captured> = cut
             .sources
@@ -254,10 +254,10 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
                 }
                 None => shown.answered().to_owned(),
             };
-            looped.push(Item { key: looped.len().to_string(), pointer: None, summary: None, full, stored: None });
+            looped.push(crate::captured(looped.len().to_string(), full));
         }
         for full in extra_pages {
-            looped.push(Item { key: looped.len().to_string(), pointer: None, summary: None, full, stored: None });
+            looped.push(crate::captured(looped.len().to_string(), full));
         }
         previous_sent = Some(&cut.sent);
         previous_rendered = Some(rendered);

@@ -27,7 +27,11 @@ impl Source<String> for Stream {
     fn items(&self) -> Vec<Item<String>> {
         self.items
             .iter()
-            .map(|(key, text)| Item { key: key.clone(), full: text.clone(), summary: None, pointer: Some(format!("[{key} collapsed]")), stored: None })
+            .map(|(key, text)| {
+                // A fixture turn: its id from its key, its cause unrecorded (this test is about starts).
+                let id = crate::cognition::context_streams::element(uuid::Uuid::nil(), crate::cognition::context_streams::Producer::Turn, key.as_bytes());
+                Item::whole(id, continuum_context::cause::Cause::Unrecorded, key.clone(), text.clone()).with_pointer(format!("[{key} collapsed]"))
+            })
             .collect()
     }
 }

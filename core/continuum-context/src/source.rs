@@ -6,30 +6,38 @@
 //! them. A source that cannot key its state (the clock, this act's ask) is not a source:
 //! it rides the fresh tail after the epoch.
 
+use crate::cause::{Cause, Content, ContentHash, ElementId};
 use crate::epoch::Block;
 
 /// One item of a source's state, in both renderings the view may choose between.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item<T> {
-    /// Stable for the item's life: the same result, file or notice keeps its key.
-    pub key: String,
+    /// Stable for the item's life: the same result, file or notice keeps its key. What the item is
+    /// ABOUT; the occurrence is `id`.
+    pub(crate) key: String,
+    /// This occurrence, named by its producer: two reads of one file share a `key` and have two ids.
+    pub(crate) id: ElementId,
+    /// What this occurrence follows from (`crate::cause`).
+    pub(crate) cause: Cause,
+    /// Its whole's hash, taken once where the whole is held or stored.
+    pub(crate) content: Content,
     /// The item itself.
-    pub full: T,
+    pub(crate) full: T,
     /// A coarser rendering between whole and pointer (a file's outline and the lines she
     /// works in), like a mipmap level: what the view gives an item too large to keep whole
     /// before it gives it only its pointer. `None` when the item has no such level.
-    pub summary: Option<T>,
+    pub(crate) summary: Option<T>,
     /// What it is and how to reopen it: what the item costs once collapsed. `None` when the
     /// item leaves the view entirely once collapsed (a conversation turn whose room history
     /// holds it, where a one-line pointer would cost about what the turn does).
-    pub pointer: Option<T>,
+    pub(crate) pointer: Option<T>,
     /// The whole is stored, not resident: `full` then holds what is in memory (its pointer or
     /// summary) and the view prices the whole level from `stored.chars` without reading it.
     /// Only an item the allocation grants WHOLE is loaded, once per render, through the
     /// render's loader. Residency is not visibility: evicting a body from RAM never changes
     /// what she can see (Cormac's proposal, FLOW plan §2d; the RAM storage budget is by bytes,
     /// from governed RAM, never from the window).
-    pub stored: Option<StoredWhole>,
+    pub(crate) stored: Option<StoredWhole>,
 }
 
 /// Where a non-resident whole lives and what it costs, measured when it was stored.
@@ -39,12 +47,79 @@ pub struct StoredWhole {
     pub chars: usize,
     /// The handle the render's loader opens (a spill path, a result id).
     pub handle: String,
+    /// The whole's hash, taken at spill time with its size so it is compared without reading the
+    /// body back; `Absent` for a whole spilled before hashes were kept (never a minted hash).
+    pub content: Content,
 }
 
-impl<T> Item<T> {
-    /// An item that is resident whole, with no coarser levels yet.
-    pub fn whole(key: impl Into<String>, full: T) -> Self {
-        Self { key: key.into(), full, summary: None, pointer: None, stored: None }
+/// An item's fields are private to this crate: a source builds one through a constructor, which
+/// requires its cause and takes its content hash from bytes, and adds coarser levels with the
+/// builders below. There is no way to replace `full` after it is hashed (Cormac on #5611).
+impl<T: Block> Item<T> {
+    /// An occurrence resident whole, with no coarser levels yet. Its cause is required: a source
+    /// cannot build an element without saying what it follows from.
+    pub fn whole(id: ElementId, cause: Cause, key: impl Into<String>, full: T) -> Self {
+        let content = Content::Hashed(ContentHash::of(full.text()));
+        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None }
+    }
+
+    /// An occurrence whose `full` is a rendering of a whole held elsewhere (a result shown under
+    /// its attribution label): `content` is that whole's hash, taken over its raw bytes where it
+    /// is held, so two equal outcomes compare equal whatever their labels say. `Absent` when the
+    /// whole is not held.
+    pub fn rendered(id: ElementId, cause: Cause, key: impl Into<String>, full: T, content: Content) -> Self {
+        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None }
+    }
+
+    /// Its pointer level: what it costs once collapsed, and how to reopen it. `None` when it
+    /// leaves the view entirely once collapsed.
+    pub fn with_pointer(mut self, pointer: impl Into<Option<T>>) -> Self {
+        self.pointer = pointer.into();
+        self
+    }
+
+    /// Its summary level, between whole and pointer.
+    pub fn with_summary(mut self, summary: Option<T>) -> Self {
+        self.summary = summary;
+        self
+    }
+
+    /// Its whole is stored, not resident (`StoredWhole`).
+    pub fn with_stored(mut self, stored: Option<StoredWhole>) -> Self {
+        self.stored = stored;
+        self
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub fn id(&self) -> ElementId {
+        self.id
+    }
+
+    pub fn cause(&self) -> Cause {
+        self.cause
+    }
+
+    pub fn content(&self) -> Content {
+        self.content
+    }
+
+    pub fn full(&self) -> &T {
+        &self.full
+    }
+
+    pub fn summary(&self) -> Option<&T> {
+        self.summary.as_ref()
+    }
+
+    pub fn pointer(&self) -> Option<&T> {
+        self.pointer.as_ref()
+    }
+
+    pub fn stored(&self) -> Option<&StoredWhole> {
+        self.stored.as_ref()
     }
 }
 

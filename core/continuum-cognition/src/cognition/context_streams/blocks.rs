@@ -14,6 +14,8 @@ use crate::cognition::rag_budget::RagItem;
 use super::{priority, ContextMessage};
 
 pub(crate) struct Grounding {
+    /// Whose block this is (its id, `super::standing`).
+    pub persona: uuid::Uuid,
     pub faculty: String,
     /// The whole block.
     pub text: String,
@@ -26,9 +28,15 @@ pub(crate) struct Grounding {
 
 impl Grounding {
     /// A block with no units that is shown whole or not at all (a contract in force).
-    pub fn atomic(faculty: impl Into<String>, text: impl Into<String>) -> Self {
+    pub fn atomic(persona: uuid::Uuid, faculty: impl Into<String>, text: impl Into<String>) -> Self {
         let text = text.into();
-        Self { faculty: faculty.into(), minimum: text.clone(), text, units: std::sync::Arc::from(Vec::new()) }
+        Self { persona, faculty: faculty.into(), minimum: text.clone(), text, units: std::sync::Arc::from(Vec::new()) }
+    }
+
+    /// The block as a standing item: the root of its activity; a board update is new content, not a
+    /// new identity.
+    fn block(&self, full: ContextMessage, summary: Option<ContextMessage>, pointer: ContextMessage) -> Item<ContextMessage> {
+        super::standing(self.persona, &self.faculty, "block", full).with_summary(summary).with_pointer(pointer)
     }
 
     fn render(&self, body: String) -> ContextMessage {
@@ -56,7 +64,7 @@ impl Source<ContextMessage> for Grounding {
             // reopen it by, so collapsed it is still its truthful minimum, never a one-liner.
             let full = self.render(self.text.clone());
             let pointer = self.render(self.minimum.clone());
-            return vec![Item { key: "block".to_owned(), full, summary: None, pointer: Some(pointer), stored: None }];
+            return vec![self.block(full, None, pointer)];
         }
         let whole = self.at(|unit| &unit.content);
         let summary = self.units.iter().any(|unit| unit.summary.is_some()).then(|| {
@@ -65,13 +73,8 @@ impl Source<ContextMessage> for Grounding {
         let pointer = self.at(|unit| unit.pointer.as_deref().or(unit.summary.as_deref()).unwrap_or(&unit.content)); // the cheapest level each unit offers
         let summary = summary.filter(|summary| *summary != whole);
         let pointer = (pointer != whole).then_some(pointer);
-        vec![Item {
-            key: "block".to_owned(),
-            full: self.render(whole),
-            summary: summary.map(|summary| self.render(summary)),
-            pointer: Some(pointer.map_or_else(|| self.render(self.minimum.clone()), |pointer| self.render(pointer))), // map_or_else: units with no coarser level keep the block's truthful minimum,
-            stored: None,
-        }]
+        let pointer = pointer.map_or_else(|| self.render(self.minimum.clone()), |pointer| self.render(pointer)); // map_or_else: units with no coarser level keep the block's truthful minimum
+        vec![self.block(self.render(whole), summary.map(|summary| self.render(summary)), pointer)]
     }
 }
 
@@ -81,7 +84,7 @@ mod tests {
 
     fn grounding(units: Vec<RagItem>) -> Grounding {
         let text = units.iter().map(|u| u.content.clone()).collect::<Vec<_>>().join("\n");
-        Grounding { faculty: "room-board".into(), minimum: text.clone(), text, units: units.into() }
+        Grounding { persona: uuid::Uuid::nil(), faculty: "room-board".into(), minimum: text.clone(), text, units: units.into() }
     }
 
     // what this catches: a source's levels never reaching her view (the block had only
@@ -96,8 +99,8 @@ mod tests {
         };
         let item = grounding(vec![card("a"), card("b")]).items().remove(0);
         let text = |m: &ContextMessage| m.text.clone();
-        assert_eq!(text(&item.full), "[room-board]\ncard a: a long description of the work\ncard b: a long description of the work");
-        assert_eq!(item.summary.as_ref().map(text).as_deref(), Some("[room-board]\ncard a: short\ncard b: short"));
-        assert_eq!(item.pointer.as_ref().map(text).as_deref(), Some("[room-board]\n[card a]\n[card b]"));
+        assert_eq!(text(item.full()), "[room-board]\ncard a: a long description of the work\ncard b: a long description of the work");
+        assert_eq!(item.summary().map(text).as_deref(), Some("[room-board]\ncard a: short\ncard b: short"));
+        assert_eq!(item.pointer().map(text).as_deref(), Some("[room-board]\n[card a]\n[card b]"));
     }
 }

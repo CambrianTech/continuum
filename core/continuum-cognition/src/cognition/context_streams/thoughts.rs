@@ -1,9 +1,10 @@
 //! Her own recent thoughts and the answers she settled, one item each. Her actions are not
 //! here: they are the action stream, rendered once ([`super::actions`]).
 
+use continuum_context::cause::{Cause, Origin};
 use continuum_context::source::{Item, Source};
 
-use super::{priority, ContextMessage};
+use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::working_memory::{collapse_thought, render_dispatched, WmKind, WorkingMemory};
 
 /// What a collapsed thought keeps: its end, where the decision is.
@@ -11,6 +12,8 @@ const POINTER_KEEP: usize = 200;
 
 pub(crate) struct Thoughts<'a> {
     pub memory: &'a WorkingMemory,
+    /// Whose occurrences these are (`super::element`).
+    pub persona: uuid::Uuid,
 }
 
 impl Source<ContextMessage> for Thoughts<'_> {
@@ -39,26 +42,24 @@ impl Source<ContextMessage> for Thoughts<'_> {
         let banner = ContextMessage::user(
             "My own recent thoughts (working memory, my interior state, not a message from anyone):".to_owned(),
         );
-        let mut items = vec![Item { key: "banner".to_owned(), full: banner.clone(), summary: None, pointer: Some(banner), stored: None }];
+        let mut items = vec![super::standing(self.persona, "thoughts", "banner", banner)];
+        // Her thoughts are one interior chain: each follows the one before it.
+        let mut previous = None;
         items.extend(thoughts.into_iter().map(|text| {
+            let id = element(self.persona, Producer::Thought, text.as_bytes());
+            let cause = previous.replace(id).map_or(Cause::Root(Origin::ActivityStart), Cause::Of);
             // Keyed by what it says: a thought, once recorded, does not change, and neither may
             // its rendering. Full is the whole thought; how much of her thoughts she reads is the
             // one allocation's call at an epoch start (collapsed to `pointer`), never a per-act
             // head here. Cut to a share of the served window, the same thought rendered 1,284
             // chars on one act and 1,445 on the next, so every act re-appended every thought
             // (Benchy on the M5, 2026-10-24 22:3xZ: ~7k chars of unchanged thoughts per act).
-            Item {
-                key: text.clone(),
-                full: ContextMessage::user(format!("- {text}")),
-                summary: None,
-                pointer: Some(ContextMessage::user(format!("- {}", collapse_thought(&text, POINTER_KEEP)))),
-                stored: None,
-            }
+            Item::whole(id, cause, text.clone(), ContextMessage::user(format!("- {text}")))
+                .with_pointer(ContextMessage::user(format!("- {}", collapse_thought(&text, POINTER_KEEP))))
         }));
         // Fresh each event, newest last; one item, so a status change appends one line set.
         items.extend(dispatched.map(|text| {
-            let message = ContextMessage::user(text);
-            Item { key: "dispatched".to_owned(), full: message.clone(), summary: None, pointer: Some(message), stored: None }
+            super::standing(self.persona, "thoughts", "dispatched", ContextMessage::user(text))
         }));
         items
     }

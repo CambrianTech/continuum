@@ -13,15 +13,20 @@ pub struct SourceId(pub String);
 /// What a block holds: plain text, or a caller's richer rendering (a role-tagged message).
 /// The epoch compares blocks for equality and counts their characters; nothing else.
 pub trait Block: Clone + PartialEq + std::hash::Hash {
-    /// Characters this block costs the view, the unit [`Epoch::superseded_chars`] counts.
-    fn chars(&self) -> usize;
+    /// The block's text: what it costs and what its content hash is taken over.
+    fn text(&self) -> &str;
+
+    /// Characters this block costs the view, the unit [`Epoch::superseded_chars`] counts:
+    /// characters, never bytes (bytes would weigh a non-ASCII block heavier than its twin and skew
+    /// the one allocation).
+    fn chars(&self) -> usize {
+        self.text().chars().count()
+    }
 }
 
 impl Block for String {
-    /// Characters, the same unit every block counts in (bytes would weigh a non-ASCII
-    /// block heavier than its twin and skew the one allocation).
-    fn chars(&self) -> usize {
-        self.as_str().chars().count()
+    fn text(&self) -> &str {
+        self
     }
 }
 

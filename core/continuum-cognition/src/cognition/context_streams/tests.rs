@@ -9,7 +9,7 @@ use super::notices::Notices;
 use crate::cognition::working_memory::WorkingMemory;
 
 fn rendered(memory: &WorkingMemory) -> String {
-    Actions { memory, persona: uuid::Uuid::nil() }.items().iter().map(|item| item.full.text.clone()).collect::<Vec<_>>().join("\n")
+    Actions { memory, persona: uuid::Uuid::nil() }.items().iter().map(|item| item.full().text.clone()).collect::<Vec<_>>().join("\n")
 }
 
 // what this catches: her action stream going silent or lying about her acts, the three
@@ -76,10 +76,10 @@ fn an_unsaved_result_never_collapses_to_a_line_nothing_reopens() {
     memory.record_receipt("I ran code/shell(cat Cargo.toml) Result: [package] name = \"x\"");
     memory.record_settlement("read the manifest", None);
     let (acts, _) = memory.action_renderings();
-    let (_, full, _, pointer, stored) = acts.last().expect("the act is on record");
-    assert!(stored.is_none(), "an unsaved result is resident: nothing to load");
-    assert!(full.contains("name = \"x\""), "{full}");
-    assert_eq!(pointer, full, "an unsaved result's pointer is the result itself");
+    let act = acts.last().expect("the act is on record");
+    assert!(act.stored.is_none(), "an unsaved result is resident: nothing to load");
+    assert!(act.full.contains("name = \"x\""), "{}", act.full);
+    assert_eq!(act.pointer, act.full, "an unsaved result's pointer is the result itself");
 }
 
 // what this catches (FOCUS-CONTRACT rule 7, FLOW §2d): RAM storage deciding what she sees. A
@@ -95,17 +95,18 @@ fn an_evicted_result_is_still_seen_whole_through_its_stored_level() {
     memory.record_receipt_typed(&[], &body, None, pin.retain(persona, &body));
     memory.record_receipt_typed(&[], "the newest stays resident", None, pin.retain(persona, "the newest stays resident"));
     let (before, _) = memory.action_renderings();
-    let resident_whole = before.first().map(|act| act.1.clone()).expect("test: the first act");
+    let resident_whole = before.first().map(|act| act.full.clone()).expect("test: the first act");
     memory.evict_resident_results_over(1, &|_, _| true);
     let (acts, _) = memory.action_renderings();
-    let (seq, full, _, pointer, stored) = acts.first().cloned().expect("test: the first act");
+    let act = acts.first().cloned().expect("test: the first act");
+    let (seq, full, pointer, stored) = (act.seq, act.full, act.pointer, act.stored);
     let (chars, _) = stored.expect("evicted to its handle and priced");
     assert_eq!(full, pointer, "what stays resident is its pointer");
     assert_eq!(chars, resident_whole.chars().count(), "priced at exactly the whole it rendered");
     let source = super::actions::Actions { memory: &memory, persona };
     let item = continuum_context::source::Source::items(&source)
         .into_iter()
-        .find(|item| item.key == seq.to_string())
+        .find(|item| item.key() == seq.to_string())
         .expect("test: the act's item");
     assert_eq!(continuum_context::source::whole_chars(&item), chars);
     let whole = continuum_context::source::whole(&source, item);
@@ -124,7 +125,7 @@ fn her_notices_append_once_and_an_ended_one_is_retired() {
     let memory = WorkingMemory::new(8);
     memory.pin_fact("hands", "[hands] your hands stand in the card's checkout");
     memory.record_fact("[rebuilt] the substrate was rebuilt while you were away");
-    let notices = Notices { memory: &memory };
+    let notices = Notices { memory: &memory, persona: uuid::Uuid::nil() };
     let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
     let (mut view, _) = View::start(Vec::new(), &[&notices as &dyn Source<_>], whole).unwrap();
     let text = |view: &View<super::ContextMessage>| view.render().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n");
@@ -159,7 +160,7 @@ fn a_thought_renders_the_same_whatever_the_served_window() {
     let memory = WorkingMemory::new(8);
     memory.record(&"a long line of reasoning about the failing test. ".repeat(80));
     let render = |memory: &WorkingMemory| {
-        Thoughts { memory }.items().into_iter().map(|item| item.full.text).collect::<Vec<_>>()
+        Thoughts { memory, persona: uuid::Uuid::nil() }.items().into_iter().map(|item| item.full().text.clone()).collect::<Vec<_>>()
     };
     memory.set_served_window(32_768);
     let narrow = render(&memory);
@@ -176,7 +177,10 @@ fn a_thought_renders_the_same_whatever_the_served_window() {
 fn her_folded_acts_name_their_range_and_count_in_one_line() {
     let memory = WorkingMemory::new(2);
     let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
-    let item = |key: &str| continuum_context::source::Item::whole(key, super::ContextMessage::user(format!("act {key}")));
+    let item = |key: &str| {
+        let id = super::element(uuid::Uuid::nil(), super::Producer::Act, key.as_bytes());
+        continuum_context::source::Item::whole(id, continuum_context::cause::Cause::Unrecorded, key, super::ContextMessage::user(format!("act {key}")))
+    };
     let run: Vec<_> = (3200..=3330).map(|seq: u64| item(&seq.to_string())).collect();
     let Some(block) = actions.fold(&run) else { panic!("a run with acts folds") };
     assert_eq!(block.text, "[actions #3200-#3330: 131 earlier acts folded; reopen one with tool/output act=<n>]");

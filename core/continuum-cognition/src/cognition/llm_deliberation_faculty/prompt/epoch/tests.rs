@@ -8,7 +8,7 @@ use crate::cognition::context_streams::conversation::{Conversation, Turn};
 use crate::cognition::context_streams::Role;
 
 fn block(faculty: &str, text: &str) -> Grounding {
-    Grounding::atomic(faculty, text)
+    Grounding::atomic(uuid::Uuid::nil(), faculty, text)
 }
 
 fn turn(n: usize) -> Turn {
@@ -20,7 +20,7 @@ fn turn(n: usize) -> Turn {
 /// that says something new every act.
 fn streams(first_turn: usize, recall: &str) -> Streams {
     Streams {
-        conversation: Conversation { turns: (first_turn..first_turn + 6).map(turn).collect() },
+        conversation: Conversation { turns: (first_turn..first_turn + 6).map(turn).collect(), ..Default::default() },
         blocks: vec![
             block("workspace-map", "MAP: src/ tests/ docs/"),
             block("room-kanban", "BOARD: you hold 1 card; 3 claimable"),
