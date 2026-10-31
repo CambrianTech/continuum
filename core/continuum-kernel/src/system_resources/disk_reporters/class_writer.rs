@@ -35,6 +35,19 @@ impl TrackedDir {
 }
 
 impl ClassWriter {
+    /// The writer for a registered class, from the boot registry, resolved when the caller needs
+    /// it (a lazily built global resolves at its first write, not at construction). Refused before
+    /// boot installs the registry or for a class with no row: there is no default directory to
+    /// guess. A test injects `TrackedDir::new(name, temp).writer()` instead.
+    pub fn of(class: &str) -> io::Result<Self> {
+        super::tracked_dir(class).map(|dir| dir.writer()).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("disk class {class} is not registered: boot has not installed the registry, or the class has no row in standard_tracked_dirs"),
+            )
+        })
+    }
+
     pub fn class(&self) -> &'static str {
         self.dir.class()
     }
@@ -151,6 +164,12 @@ mod tests {
         assert_eq!(left.len(), 1, "no staging file left beside it");
         assert_eq!(writer.publish_new(name, b"three").expect_err("taken").kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(&path).expect("read"), b"two", "a refused publish changed nothing");
+    }
+
+    // what this catches: a writer that guesses a directory when its class is not registered.
+    #[test]
+    fn an_unregistered_class_has_no_writer() {
+        assert_eq!(ClassWriter::of("no-such-class").err().map(|e| e.kind()), Some(io::ErrorKind::NotFound));
     }
 
     // what this catches: two holders of one lock at once.
