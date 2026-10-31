@@ -8,6 +8,12 @@
 //! wasted (failed, identical repeats, bad polls). A model learns a format from the examples in
 //! its own context; one shape, every time, is what makes the next call right the first time.
 //!
+//! Why the frame is in the TEXT, when Claude Code's results carry it structurally: her tool
+//! message reaches the engine as `{role: tool, tool_call_id, content}` (inference/request_body.rs,
+//! the OpenAI-style wire has no `is_error`), so the error flag never reaches her model; and Qwen's
+//! chat template renders each result as a bare `<tool_response>` with no call id or name, so in a
+//! parallel batch only the result's own words tie it to its call. Claude gets both from the API.
+//!
 //! Line 1 is always `<status> <tool>(<identifying args>)[ <cause>]`, in the tool name she called;
 //! then the body; then a fixed footer key when one applies. The executor builds every result
 //! through [`render`]; nothing else writes a tool result's frame.
