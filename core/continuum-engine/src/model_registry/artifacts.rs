@@ -15,67 +15,29 @@ pub fn resolve_model_artifacts(model: &mut Model) {
     if let Some(p) = model.mmproj_local_path.take() {
         model.mmproj_local_path = Some(expand_user_path(&p));
     }
-    hydrate_artifact_sizes(model);
-}
-
-/// Stamp the resolved artifacts' sizes onto the row, ONCE, here — where the paths are
-/// discovered. Every residency estimate downstream reads these instead of `stat`ing per
-/// call, which is what keeps filesystem I/O off the governor's accounting tick.
-///
-/// `None` on an unreadable or unresolvable artifact, deliberately: a missing size is
-/// "not known", and a consumer that turns that into `0` is the silent-zero defect this
-/// exists to prevent. Callers that resolve a path by another route (`attach_local_artifact`
-/// after a pull) call this too, so a row never carries a path without its size.
-pub fn hydrate_artifact_sizes(model: &mut Model) {
-    model.weights_bytes = resolve_gguf_for_model(model)
-        .map(|p| total_gguf_bytes(&p))
-        .filter(|n| *n > 0);
-    // `Some(0)` when the model HAS NO PROJECTOR — that is a real, known fact, not a
-    // missing measurement. `None` is reserved for "we could not resolve it", so a
-    // consumer can tell "this model holds no projector bytes" apart from "nobody has
-    // looked yet". Collapsing both to `None` (and then to 0 downstream) is the same
-    // defect as the capacity zero, one field over.
-    model.mmproj_bytes = match resolve_mmproj_for_model(model) {
-        None => Some(0),
-        Some(path) => fs::metadata(path).ok().map(|md| md.len()),
-    };
-}
-
-/// Total on-disk weight bytes for a GGUF artifact — SUMS ALL SHARDS of a split
-/// model. The 2026-08-29 overnight killer: Flash-Next's 28-shard artifact was
-/// sized by shard 1 alone (0.69 GB of a 79 GB set), so the planner believed a
-/// 176B MoE was a toy model, derived kv_per_token ~40x too small, sized a 46848
-/// window past the verified 32k geometry, and every deep solve prefill Metal-
-/// OOM'd for six silent hours. A split shard is named `-NNNNN-of-MMMMM.gguf`;
-/// sum every sibling that shares the prefix. A single-file GGUF is its own size.
-pub fn total_gguf_bytes(first: &std::path::Path) -> u64 {
-    let name = first.file_name().and_then(|n| n.to_str()).unwrap_or(""); // unwrap_or: non-utf8 name = not a split pattern, single-file path below
-    let single = || fs::metadata(first).map(|m| m.len()).unwrap_or(0); // unwrap_or: unstat-able file sizes as 0, caller filters zero out
-    // "-00001-of-00028.gguf" → prefix "…-", suffix "-of-00028.gguf"
-    let Some(idx) = name.rfind("-of-") else { return single() };
-    if idx < 6 || !name.ends_with(".gguf") { return single(); }
-    let (head, _tail) = name.split_at(idx);
-    let Some(dash) = head.rfind('-') else { return single() };
-    if !head[dash + 1..].chars().all(|c| c.is_ascii_digit()) { return single(); }
-    let prefix = &head[..dash + 1];
-    let Some(dir) = first.parent() else { return single() };
-    let Ok(entries) = fs::read_dir(dir) else { return single() };
-    let mut total = 0u64;
-    for e in entries.flatten() {
-        let f = e.file_name();
-        let f = f.to_string_lossy();
-        if f.starts_with(prefix) && f.ends_with(".gguf") {
-            total += e.metadata().map(|m| m.len()).unwrap_or(0); // unwrap_or: unreadable shard adds 0, undercount fails safe (smaller window)
+    // Hydrate artifact sizes from resolved paths
+    if let Some(ref gguf) = model.gguf_local_path {
+        if let Ok(meta) = fs::metadata(gguf) {
+            model.weights_bytes = meta.len().try_into().ok();
         }
     }
-    if total > 0 { total } else { single() }
+    if let Some(ref mmproj) = model.mmproj_local_path {
+        if let Ok(meta) = fs::metadata(mmproj) {
+            model.mmproj_bytes = meta.len().try_into().ok();
+        }
+    }
 }
 
+/// Resolve a GGUF for `model`, respecting its explicit [`Model::active_quant_name`]
+/// (a named file preference that pins which quant in a multi-quant snapshot directory
+/// is the active one). When the field is absent, falls back to mtime-newest — the
+/// historical behaviour.
 pub fn resolve_gguf_for_model(model: &Model) -> Option<PathBuf> {
     resolve_gguf(
         &model.id,
         model.gguf_hint.as_deref(),
         model.gguf_local_path.as_deref(),
+        model.active_quant_name.as_deref(),
     )
 }
 
