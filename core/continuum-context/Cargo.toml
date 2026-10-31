@@ -5,11 +5,15 @@ edition = "2021"
 description = "A mind's model view as an epoch materialization: a stable head, then keyed items that only append; collapse happens once, at an epoch start, by the caller's one allocator (docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md)."
 
 [dependencies]
+continuum-base = { path = "../continuum-base" }
 serde = { workspace = true }
 sha2 = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# The replay validator fingerprints captured calls through the one canonical encoding the core
+# uses (`ToolCall::canonical_input`), so offline and live repeat identity cannot drift.
+continuum-tool-protocol = { path = "../continuum-tool-protocol" }
 
 # The replay validator's tests run with the crate's (`cargo test -p continuum-context`).
 [[example]]

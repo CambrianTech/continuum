@@ -323,6 +323,7 @@ impl WorkingMemory {
                     handle,
                     stored_chars: None,
                     received_ms: Some(continuum_base::time::EpochMs::now().millis()),
+                    act: act_identity(&acts),
                 },
             );
         }
@@ -450,4 +451,20 @@ fn result_summary(result: &str, acts: &[Observation]) -> Option<String> {
             (parts.chars().count() * LEVEL_RATIO <= result.chars().count()).then_some(parts)
         }
     }
+}
+
+/// An act's invariant-4 identity, from her calls as she made them (never the dispatched copy that
+/// carries a page budget): each call resolved through the dispatch seam to the command that runs,
+/// fingerprinted with its canonical arguments, and given that command's declared effect. `None`
+/// for an act with no typed call.
+fn act_identity(acts: &[crate::cognition::act_observe::Observation]) -> Option<continuum_context::cause::Act> {
+    let calls: Vec<(String, Vec<u8>)> = acts
+        .iter()
+        .map(|act| (crate::ai::tool_dialect::resolve_wire_name(&act.call.name), act.call.canonical_input()))
+        .collect();
+    let effect = continuum_base::tool_effect::ToolEffect::of_calls(
+        calls.iter().map(|(command, _)| crate::sdk_codegen::ext::effect_of(command)),
+    )?;
+    let fingerprint = continuum_context::cause::Fingerprint::of(calls.iter().map(|(command, input)| (command.as_str(), input.as_slice())));
+    Some(continuum_context::cause::Act { fingerprint, effect })
 }

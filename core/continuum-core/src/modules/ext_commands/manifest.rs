@@ -334,6 +334,9 @@ impl DynCommand for ProcessCommand {
             wire: WireShape::Bare,
             native: self.manifest.native,
             aliases: &[],
+            // An authored command runs an arbitrary process and its manifest declares no
+            // effect: undeclared, so it is never a repeat and never taken as observing.
+            effect: continuum_base::tool_effect::ToolEffect::Undeclared,
             params: json.clone(),
             params_schema: self.manifest.params.clone(),
             result: json.clone(),

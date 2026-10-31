@@ -106,7 +106,7 @@ the area:
 | # | Change | Owner |
 |---|---|---|
 | 0 | Enforcement first (below) | Fable |
-| 1 | `continuum-flex`: move `flex_allocate` down, generic unit; grounding and the authority both call it; ratchet skeleton | Fable |
+| 1 | `cambrian-flex` (airc workspace `crates/flex`): the one solver cleared by price, generic unit; grounding, the view and the authority call it; `flex_allocate` deleted | Fable |
 | 2 | Authority: `Claim`/`Grant` API on `ResourceDaemon`, one probe trait + adapters; delete GpuMemoryManager's ledger, SystemResourceMonitor, hw_probe free math, the unwired governor, the second PressureLevel and threshold tables; PressureBroker becomes grant publication | Codex (kernel/serving), Fable reviews |
 | 3 | VRAM: serving plan, side lanes, embed, vision sidecar, in-process backend, training (incl. `cuda_train.py` taking its grant as input) become claims; one footprint model incl. LoRA and draft; slots from the KV contract, not cores | Codex (serving/inference), Cormac (training) |
 | 4 | Host RAM: every cache/ring in the RAM inventory takes a `GrantRx`; delete their literals; sentinel watchdog reads its grant | crate owners per the placement map; Fable for cognition/mind |
@@ -140,6 +140,210 @@ Doctrine account (DEVELOPMENT-DOCTRINE.md, "Completion includes deletion and pro
   after.
 - **Limit, stated.** Lexical rules are a backstop. The lasting enforcement is the type: once slice 2 lands,
   a cache, ring or class can only be constructed from a `GrantRx`, so an unbudgeted one does not compile.
+
+### Slice 1 in detail: `cambrian-flex`, the one solver, cleared by price (for review before code)
+
+**Why it changes from `flex_allocate`.** Today's solver (`continuum-grounding/src/rag_budget/flex_allocate.rs`,
+three production callers: the deliberation view, its epoch start, grounding) allocates by integer priorities and
+min/max/grow shares, all picked numbers. HOW-A-MIND-GETS-WHAT-SHE-NEEDS R4 and GRID-MARKET-CLEARING replace that
+with one rule: a claim grows while its measured marginal value exceeds its tier's price, and the price moves with
+measured excess demand. Slice 1 builds that solver once, as a floor crate, and every tier calls it: the
+`ResourceDaemon`'s tiers (slice 2, Codex), the engine's lanes and state (L5), a mind's claims (slice 6).
+
+**Crate.** One solver below both repos (Cormac on #5620): airc's NETWORK-AUTHORITY (airc#1628) needs the same
+types for network grants and must stay separately capable, so the crate depends on nothing but `std` and `serde`
+(ts-rs behind a feature), the same "bubble down" rule as `airc_core::shown_id`. Its home (settled by Cormac in review): its own
+crate in the airc workspace, `crates/flex`, package `cambrian-flex`, named for the pattern and neutral to both
+repos, not inside `airc-core` (which keeps its one job). Continuum depends on it through its existing airc pin;
+airc's NETWORK-AUTHORITY consumes it. Slice 1's code therefore lands as an airc PR. Pure: no I/O, no clock, no randomness (THE-PROVING-GROUND P8). Generic over a unit type each
+consumer defines (`Tokens`, `Bytes`, `LaneSeconds`, bytes in flight); continuum-only pieces (where values come
+from, the behaviour model, ts-rs bindings) stay out of it.
+
+**Types.**
+- `Claim<U>`:
+  - `id: ClaimId` and `owner: OwnerId` (typed ids, never strings);
+  - `floor: Floor<U>`: `Required(U)` is a reservation, granted before anything is traded and never traded
+    (GRID-MARKET-CLEARING invariant 4); `Optional(U)` is the least amount worth having at all;
+  - `value: Value<U>`: what each additional unit is worth, measured and versioned (`ValueVersion`).
+    `Steps` for discrete levels (an item's pointer, summary, whole: each a cost and a value) or `Curve` for a
+    continuous amount (output room, a cache); concave by construction, checked on input;
+  - `switch_cost: Value`: the measured cost of changing this claim's grant (a re-prefill, a page move),
+    so the solver never moves a grant for less than it costs (R7, hysteresis as a measurement);
+  - `current: Option<Grant<U>>`: what it holds now.
+- `Capacity<U>`: the measured amount, its source and time; `Unavailable` when not measured, which clears
+  nothing and says so (never a default).
+- **Every measured input carries provenance** (Codex on #5620): a capacity or a value is `Measured { source,
+  at, version }`, `Stale { last, age }` or `Unmeasured`; the solver treats stale and unmeasured explicitly
+  (an unmeasured value claims only its floor) and the receipt says which inputs were which.
+- **Prices carry their unit:** `Price<U>` is value per unit of `U`. Comparing or summing prices of different
+  units does not compile; a conversion between tiers (a byte's price into a lane-second's) is an explicit,
+  measured function, never an implicit cast.
+- **A joint claim** asks for several resources at once (a mind's state needs device memory AND a lane; a
+  relay needs both legs). It is solved at the lowest tier that is an ancestor of all its resources, where its
+  increment is the bundle (one unit of each, priced as the sum of its resources' prices through the explicit
+  conversions), so the greedy admits whole bundles or none: one solve, no cross-tier protocol, never a
+  half-admission holding one resource while waiting for another (Cormac on #5620).
+- `Grant<U>`: the claim, its **target** (what the clearing decided it should hold), its **committed** amount
+  (what it may use now) and the tier's generation, with a state: `Granted` (committed = target), `Held` (a
+  change was not worth its switch cost), `ShrinkRequested { to }` (it holds more than its target and is asked
+  to release), `Waiting` (its next whole block is not yet free while others release), `Unmeasured`
+  (reservation only). A required floor that cannot fit is never a grant: it is the clearing's `Infeasible`
+  outcome (Codex on #5620: one typed outcome; nothing infeasible is presentable as an acquired lease).
+- `Clearing<U>`: one solve's receipt: capacity, each claim's value version, every grant, the price, what is
+  unallocated, and any under-provision. The proving ground and the live receipts both read it (R11).
+
+**The algorithm.**
+1. Required floors first, in one pass; if they do not fit, the outcome is `Infeasible` with the claims named,
+   nothing moves, and no grant is issued.
+2. The remaining capacity goes to the next increment of highest value per unit across all claims, one
+   increment at a time, until capacity is spent or no increment's value per unit exceeds zero. For divisible,
+   concave values this greedy order is optimal. Indivisible levels and optional floors make the problem
+   non-convex, so no optimality is claimed for them: every clearing reports the **achieved** value (a feasible
+   lower bound on the optimum) and the value of the same clearing with every indivisible step relaxed to
+   divisible (an upper bound), and their difference is the stated gap. A small domain may be solved exactly
+   instead, with its measured cost reported (Codex).
+3. The price is the scarcity price: the value per unit of the most valuable increment left UNMET, what one
+   more unit of capacity would buy. It is zero whenever every claim's demand was met, idle capacity or not
+   (Codex: "the last increment admitted" could publish a positive price while capacity sat idle).
+   **Determinism** (THE-PROVING-GROUND P8): equal value per unit is broken by `ClaimId` order; values compare
+   under a total order (`f64::total_cmp`), NaN and infinities are refused on input like non-concavity, and the
+   receipt records values at the precision the solve used, so the same inputs give byte-identical grants on
+   every machine (Cormac).
+4. A change from a claim's current grant is applied only when its value gain exceeds its `switch_cost`;
+   otherwise the grant is `Held`.
+5. If the required floors alone exceed capacity, the outcome is `Infeasible` with the claims named: nothing is
+   oversubscribed and nothing defaults (Codex).
+6. **Physical ownership is charged before anything grows** (Codex). Each holder's committed amount, including
+   any it was asked to release and has not, stays charged. Targets are decided on the whole capacity (who
+   should hold what); growth toward a target is committed only from capacity no one holds, and only in WHOLE
+   blocks: an indivisible level or an optional floor is acquired entirely or not at all, never as partial
+   custody (Codex on airc#1630: B with a floor of 10 must not receive 4). A hold is applied only when the
+   held amounts plus every reservation fit. In Codex's case (capacity 10, A holds 10, B proposes 10) either
+   A is held and B's target is 0, or A is asked to shrink and B waits holding nothing; B never owns a unit A
+   still holds.
+7. **A release is the holder reporting what it physically holds now,** keyed by its claim, at or below its
+   target as it likes: idempotent and monotone (it only ever lowers what is charged). A holder known to be gone
+   (its process exited or crashed) is **withdrawn** by the authority, freeing everything it owned, so a holder
+   that disappears after a shrink request never strands its units (Cormac on #5620). It is not fenced
+   by the clearing generation, since a release can never overcommit, so a later clearing never invalidates a
+   delayed real release (Codex on airc#1630).
+8. **Capacity measured below what holders own** (the person's game took memory, S4) is reported as
+   `Overcommitted { by }` in the receipt: nothing grows, free capacity is zero (never negative), and shrinks are
+   issued toward targets that fit the new capacity (Cormac).
+9. **New commitments are fenced:** a commitment to use more carries the generation it was made at and is
+   refused when stale, so no holder grows on an old decision.
+
+**Nesting.** A tier is itself a claim on its parent. Its value curve one level up is its children's
+**achievable optimum** at each amount the parent could grant (the value function of its own clearing, with its
+children's reservations and couplings), not the pointwise sum of their curves (Codex). For divisible, concave
+children that is their increments merged in value order; otherwise it carries the same lower and upper bounds. The parent clears and grants the tier an amount at its price; the tier clears its children within
+that amount. Prices flow down and bids flow up; no tier sees more than its parent's grant and its children's
+claims (GRID-MARKET-CLEARING section 2).
+
+**Where values come from: measured, never picked.** A claim's value is measured from outcomes: for a context
+item, how often items of its kind were referenced or faulted when held at each level (Cormac's behaviour model,
+from the reductions); for output room, the measured cost of a cut; for a lane, the measured seconds saved. The
+policy loop (L7) refines them from controlled probes. Until a kind has measurements, its value is the
+population's measurement for the same activity (HOW-A-MIND S9), marked as such in the receipt. The integer
+priorities in `priority::*` are deleted with `flex_allocate`.
+
+**Adversarial fixtures** (Codex): asymmetric bundles and optional floors where greedy is far from optimal, with
+the reported bounds bracketing a brute-forced optimum.
+
+**Validator cases** the airc PR adding the crate carries (airc's NETWORK-AUTHORITY N1 builds on them): two joint
+claims competing for the last unit of one resource never leave either half-granted; the same inputs in any order
+give byte-identical receipts; a shrink is never re-granted before the holder reports its release; a release reported after
+a later clearing is still credited; a withdrawn holder frees everything at once; capacity below what is owned
+is overcommitted and nothing grows; growth never commits part of an indivisible block or an optional floor; a
+stale commitment is refused; a fully met demand publishes a zero price; required floors past capacity are `Infeasible` with the claims named; an
+unmeasured claim gets only its floor.
+
+**Part 2: resource bundles, nesting, and who owns which decision** (part 1 merged as airc#1630; Codex needs this
+shape for slice 2).
+
+*Ownership, so there is one decider.*
+- **The node's `ResourceDaemon` owns one clearing** over the node's resource vector: device bytes, RAM bytes,
+  disk bytes, lane-seconds. Every consumer is a claim on it. The kernel's separate throughput broker and byte
+  ledger stop deciding: their consumers become claims, their decisions are deleted, and the physical custody they
+  tracked stays, held as leases on the daemon's tier (part 1's `report_held` / `withdraw`).
+- **Admission (L5) commits, it does not decide.** A mind's turn is admitted only inside a bundle the clearing has
+  granted; L5 then chooses the exact slot, page and generation within that grant, commits it atomically, and
+  reports physical custody back. A grant it cannot realize (no slot free for the granted state) is reported, and
+  the next clearing re-prices; L5 never grants itself more.
+- **A mind's own claims are a child tier** under her node grant: her view levels, thinking and answer clear
+  inside what the node granted her.
+
+*Resource vectors, typed.* A tier is generic over a resource vector `R`, a consumer-defined struct of typed
+amounts (for example `NodeResources { device: Amount<Bytes>, ram: Amount<Bytes>, lanes: Amount<LaneSeconds> }`)
+implementing a small trait: componentwise add, saturating subtract, `fits_within`, and per-component iteration
+for receipts. Part 1's single-resource tier is the one-component case (`Amount<U>` implements the trait), so
+nothing written for it changes meaning.
+
+*Joint claims.* An increment's size is an `R` (a mind's next state block needs device bytes AND a lane at once),
+and its value is the increment's total value. The clearing admits an increment only if every component fits, so
+a bundle is whole or nothing by construction. Order is by value per priced size: each component's size weighted
+by that component's current price, iterated as prices move (the Lagrangian multi-resource greedy). Because
+multi-resource selection is non-convex, every clearing reports the achieved value and the relaxed upper bound,
+exactly as part 1 does for indivisible steps. The prices are a vector: one `Price<U>` per component, each in its
+own unit.
+
+*Nesting.* A child tier's claim on its parent is its achievable value at each amount the parent could grant: the
+parent asks the child to clear at a measured set of candidate grants (around its current grant, the sizes its
+claims' blocks make meaningful) and the child returns, for each, its achieved value and upper bound. The parent
+treats the result as the child's increments, with the gap carried forward. A child never sees anything but its
+grant; a parent never sees the child's claims.
+
+*Boundaries, made explicit* (Codex on #5620, part 2):
+1. **Pools, not just units.** A component is a typed amount in a **physical pool**: `PoolId` plus unit. Two GPUs
+   are two pools of bytes, never interchangeable; on unified memory the device view and the RAM view are aliases
+   of one pool, normalized to it before clearing. The pool topology is measured and revisioned; a claim or an
+   observation from another topology revision is refused, not mapped. The `NodeResources` struct above is an
+   example, not a schema: a node's vector is built from its measured pools.
+2. **Lanes are concurrency over an interval.** A lane component declares its interval and is constrained in
+   instantaneous concurrency (how many generations run at once, the measured knee), not as a bare total of
+   seconds, so two claims can never be granted overlapping use of the same seat.
+3. **Child quotes are pure.** The parent asks a child for quotes against one immutable snapshot of custody and
+   observations; a quote mints no lease and requests no shrink. The parent selects, and exactly one allocation
+   (parent and child together) commits atomically, fenced to that snapshot; a commit against a stale snapshot is
+   refused. The child's physical occupancy stays charged in the parent until it is really released. The upper
+   bound is certified for the original problem, not only the sampled candidates: the relaxed value is concave in
+   the grant, so at each sampled grant its price (a subgradient) gives a line above the whole curve, and the
+   bound between samples is the lowest such line.
+4. **A grant reserves until it is realized.** From grant to L5's commit, the granted bundle is reserved; no other
+   claimant can use it while slot, page and generation are being chosen. `Unrealizable` is a typed outcome that
+   releases only the unspent reservation; any physical operation that started keeps its custody. Realizations and
+   releases carry a stable lease and incarnation plus an **operation identity**, so a delayed failure or an engine
+   replaced underneath (ABA) can never withdraw a newer bundle.
+5. **Zero prices, ties and termination, in the shared solver.** A component whose price is zero does not
+   constrain, so an increment's priced size counts only priced components; when every price is zero (slack),
+   every positive-value increment that fits is admitted, in value order, ties by `ClaimId`. Each iteration admits
+   or rejects at least one increment, so the solve ends within as many iterations as there are increments; the
+   result is feasible at every step, and the bound is reported. No stopping threshold is picked and nothing loops
+   unbounded on the hot path.
+
+*Validators (part 2's PR).* Two discrete GPUs plus unified-memory aliases; simultaneous time-overlapping lane
+claims; repeated pure child quotes leave custody unchanged; a commit on a stale quote is refused; a failed L5
+realization after paging started keeps its bytes; a delayed failure after a regrant cannot free the new credit;
+zero-price and overload termination; two joint claims competing for the last unit of one component (neither half-granted);
+a bundle that fits on one component and not another (not admitted, priced in the component that bound); a parent
+re-granting a child less (the child's shrinks follow part 1's custody rules); conservation across nested tiers
+under the randomized drivers extended to vectors; L5's report that a granted bundle could not be realized, and
+the next clearing's re-price.
+
+**Migration.** The three callers move to `cambrian-flex` in the PR that adds it, `flex_allocate` and
+`RagSourceBudget`'s priority/min/max/grow are deleted, and `context_codec`'s ratchet points at the new owner.
+The behaviour change is proven on the proving ground's T0 against the known-bad suite before it reaches a
+resident.
+
+**Review questions** (answered so far: the crate depends on nothing in continuum and serves airc too, Cormac;
+provenance, infeasible floors, generation fencing, joint claims, acknowledged shrinks and unit-typed prices,
+Codex).
+1. Codex (slice 2): is `Clearing<U>` with nested tiers the shape the `ResourceDaemon` publishes, and is
+   `generation` enough to fence stale grants across your leases?
+2. Cormac: can the behaviour model produce per-kind level values (reference and fault rates by level) from the
+   reductions for the first slice?
+3. Both: the `Steps` gap bound versus an exact small knapsack per tier, which is affordable at a mind's item
+   counts; is the bound acceptable or should small tiers solve exactly?
 
 ### Slice 6 in detail: a mind's context (the defect live on 2026-10-30)
 

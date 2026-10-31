@@ -6,6 +6,7 @@ description = "The host OS seam: one module per capability whose behaviour diffe
 
 [dependencies]
 tokio = { workspace = true } # local_stream: the async local socket (a Unix domain socket, a Windows named pipe)
+cap-std = "4.0.3" # confine: a held directory handle, so every create/open/rename below a root is resolved against it, never re-walked from a path a concurrent writer can redirect
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2" # process_exit: proc_pidinfo, the only call that tells a macOS zombie from a running process

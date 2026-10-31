@@ -13,6 +13,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use continuum_context::cause::{ContentHash, Fingerprint};
 use continuum_context::levels::{summarize, Shape};
 use continuum_context::source::Item;
 
@@ -27,6 +28,12 @@ pub struct Act {
     /// continues this one only when it is the very next cycle of the same session, so a skipped
     /// capture is a broken chain, never a result filed under the wrong action (Cormac on #5432).
     pub cycle: Option<(String, u64)>,
+    /// What the act asked for (MIND-CONTEXT invariant 4): its calls' fingerprint, through the
+    /// core's one canonical encoding. `None` for an act with no calls.
+    pub fingerprint: Option<Fingerprint>,
+    /// Every call is a read tool: the only acts whose unchanged outcome can be a repeat. Until the
+    /// commands declare their effect this is the validator's read list (`READ_TOOLS`).
+    pub observes: bool,
 }
 
 impl Act {
@@ -60,6 +67,18 @@ pub fn act_of(request: &serde_json::Value) -> Act {
     let calls_of = |m: &serde_json::Value| -> Vec<serde_json::Value> { parts(m).into_iter().filter(|p| p["type"] == "tool_use").collect() };
     let calls = calls_of(messages[last_assistant]);
     let mut act = Act::default();
+    if !calls.is_empty() {
+        let encoded: Vec<(String, Vec<u8>)> = calls
+            .iter()
+            .map(|call| {
+                let name = call["name"].as_str().unwrap_or_default().to_owned(); // unwrap_or_default: a nameless call fingerprints as its arguments alone
+                let canonical = continuum_tool_protocol::ToolCall { id: String::new(), name: name.clone(), input: call["input"].clone() }.canonical_input();
+                (name, canonical)
+            })
+            .collect();
+        act.fingerprint = Some(Fingerprint::of(encoded.iter().map(|(name, input)| (name.as_str(), input.as_slice()))));
+        act.observes = calls.iter().all(|call| call["name"].as_str().is_some_and(|name| READ_TOOLS.contains(&name)));
+    }
     let mut answered = Vec::new();
     for message in &messages[last_assistant + 1..] {
         for part in parts(message) {
@@ -104,6 +123,22 @@ pub struct Restored {
     /// Acts whose result could not be tied to exactly one action: more than one new action
     /// key, or a capture missing between two (Codex on #5432). Counted, never restored.
     pub ambiguous: usize,
+    /// Each earlier observing act: its fingerprint, its result's hash and its result, for
+    /// invariant 4's repeat identity.
+    observed: Vec<(Fingerprint, ContentHash, String)>,
+}
+
+/// One act's invariant-4 identity against the acts before it.
+#[derive(Default, Clone, Copy)]
+pub struct Repeats {
+    /// It asked an earlier observing act's exact request again (equal fingerprint).
+    pub requests: usize,
+    /// ...and got the same outcome (equal result hash): an unchanged observation.
+    pub unchanged: usize,
+    /// ...and that earlier whole was in the prompt she decided this act on: the view renders
+    /// this act as a repeat. An unchanged one whose earlier whole was not in her prompt arrives
+    /// whole, because she needs it again (Codex and Fable on the design).
+    pub rendered: usize,
 }
 
 /// One act's re-reads under a policy.
@@ -162,6 +197,30 @@ impl Restored {
         }
     }
 
+    /// `act`'s invariant-4 identity against every earlier observing act, judged against `prompt`,
+    /// the prompt the act was decided on; then `act` joins the earlier acts. Counts only: no
+    /// text leaves this function (THE-PROVING-GROUND P9).
+    pub fn repeats(&mut self, act: &Act, prompt: &str) -> Repeats {
+        let mut counted = Repeats::default();
+        let (Some(fingerprint), Some(result), true) = (act.fingerprint, act.result.as_deref(), act.observes) else {
+            return counted;
+        };
+        let hash = ContentHash::of(result);
+        let asked: Vec<&(Fingerprint, ContentHash, String)> = self.observed.iter().filter(|(earlier, _, _)| *earlier == fingerprint).collect();
+        if !asked.is_empty() {
+            counted.requests = 1;
+        }
+        let unchanged: Vec<&&(Fingerprint, ContentHash, String)> = asked.iter().filter(|(_, earlier, _)| *earlier == hash).collect();
+        if !unchanged.is_empty() {
+            counted.unchanged = 1;
+        }
+        if unchanged.iter().any(|(_, _, whole)| prompt.contains(whole.as_str())) {
+            counted.rendered = 1;
+        }
+        self.observed.push((fingerprint, hash, result.to_owned()));
+        counted
+    }
+
     /// The re-reads among `act`'s reads, judged against the prompt the act was decided on: held
     /// when that prompt still had the earlier read whole or as its outline.
     pub fn rereads(&self, act: &Act, prompt: &str) -> Rereads {
@@ -215,7 +274,7 @@ mod tests {
     #[test]
     fn ambiguous_batches_and_gaps_are_counted_not_restored() {
         let mut restored = Restored::default();
-        let act = |path: &str, cycle: u64| Act { result: Some(format!("{path} body")), reads: vec![path.to_owned()], cycle: Some(("s".into(), cycle)) };
+        let act = |path: &str, cycle: u64| Act { result: Some(format!("{path} body")), reads: vec![path.to_owned()], cycle: Some(("s".into(), cycle)), ..Act::default() };
         let keys = |n: u32| -> Vec<String> { (1..=n).map(|k| k.to_string()).collect() };
         restored.learn(&keys(1), &act("a.rs", 1));
         restored.learn(&keys(2), &act("b.rs", 2));
@@ -229,5 +288,38 @@ mod tests {
         restored.learn(&keys(5), &act("e.rs", 6));
         assert_eq!(restored.ambiguous, 3, "no new action is ambiguous");
         assert!(["3", "4", "5"].iter().all(|k| !restored.by_seq.contains_key(*k)));
+    }
+
+    fn read(path: &str, result: &str) -> Act {
+        act_of(&request(serde_json::json!([
+            {"role":"assistant","content":[{"type":"tool_use","id":"r","name":"read_file","input":{"file_path": path}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"r","content": result}]}
+        ])))
+    }
+
+    // what this catches: invariant 4's validator counting a repeat it would not render (the
+    // earlier whole was not in her prompt, so she needed it again), missing one it would (the
+    // 2026-10-30 read loop on the M5), or counting a changed outcome or a write as unchanged.
+    #[test]
+    fn a_repeat_is_counted_only_for_an_unchanged_read_whose_earlier_whole_she_had() {
+        let mut restored = Restored::default();
+        let first = read("a.rs", "fn a() {}");
+        assert_eq!(restored.repeats(&first, "").requests, 0);
+        let again = restored.repeats(&read("a.rs", "fn a() {}"), "earlier: fn a() {} still here");
+        assert_eq!((again.requests, again.unchanged, again.rendered), (1, 1, 1));
+        let folded = restored.repeats(&read("a.rs", "fn a() {}"), "[#1 collapsed]");
+        assert_eq!((folded.requests, folded.unchanged, folded.rendered), (1, 1, 0), "not in her prompt: arrives whole");
+        let changed = restored.repeats(&read("a.rs", "fn a() { 1 }"), "fn a() {}");
+        assert_eq!((changed.requests, changed.unchanged, changed.rendered), (1, 0, 0));
+        let write = act_of(&request(serde_json::json!([
+            {"role":"assistant","content":[{"type":"tool_use","id":"w","name":"write_file","input":{"file_path":"a.rs"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"w","content":"fn a() {}"}]}
+        ])));
+        assert_eq!(restored.repeats(&write, "fn a() {}").requests, 0, "a write is never a repeat");
+        let keys_reordered = act_of(&request(serde_json::json!([
+            {"role":"assistant","content":[{"type":"tool_use","id":"r","name":"read_file","input":{"path": "b.rs", "file_path": "a.rs"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"r","content":"x"}]}
+        ])));
+        assert_ne!(keys_reordered.fingerprint, read("a.rs", "x").fingerprint, "every argument is part of the request");
     }
 }

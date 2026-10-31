@@ -39,6 +39,7 @@ crate::action_command! {
     name: "code/git/log",
     access: AiSafe,
     aliases: &["git_log"],
+    effect: Observes,
     params: GitLogParams,
     output: GitLogResult,
     run(this, ctx, p) => {

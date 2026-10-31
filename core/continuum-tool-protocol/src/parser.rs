@@ -27,7 +27,7 @@ use crate::{NativeToolSpec, ToolCall};
 mod resolve_name;
 pub use resolve_name::*;
 mod cli_flag_format;
-pub use cli_flag_format::*;
+use cli_flag_format::*;
 mod narrated_write_format;
 pub use narrated_write_format::*;
 

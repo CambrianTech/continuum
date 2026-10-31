@@ -62,6 +62,8 @@ fn each_self_sizing_shape_is_found_and_owners_are_not() {
     assert_eq!(found(&SelfSized, CONSUMER, "let cap = LANE_COUNT_MAX * SLOT_BYTES;"), 1);
     assert_eq!(found(&SelfSized, CONSUMER, "let (tx, rx) = mpsc::channel(256);"), 1);
     assert_eq!(found(&SelfSized, CONSUMER, "let (tx, rx) = broadcast::channel::<Event>(1024);"), 1);
+    assert_eq!(found(&SelfSized, CONSUMER, "let (tx, rx) = tokio::sync::watch::channel(0u64);"), 0, "a watch channel's argument is its initial value");
+    assert_eq!(found(&SelfSized, CONSUMER, "let (tx, rx) = watch::channel::<u64>(0);"), 0, "nor in the turbofish form (Cormac on #5387)");
     assert_eq!(found(&SelfSized, CONSUMER, "rows.truncate(5);"), 1);
     assert_eq!(found(&SelfSized, CONSUMER, "let shown = budget_chars.min(1_500);"), 1);
     assert_eq!(found(&SelfSized, CONSUMER, "let n = retries.min(3);"), 0, "a .min on a line that names no size");

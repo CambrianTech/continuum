@@ -442,6 +442,14 @@ jobs:
           $output | Write-Output
           if ($result -ne 0) { exit $result }
           if (($output -join "`n") -notmatch 'test result: ok\. [1-9][0-9]* passed;') { throw 'Process fixtures did not execute' }
+      - name: Windows host capability fixtures (durable placement, confinement, file identity, local streams)
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          $output = & cargo test --locked -p continuum-host --lib --profile dev-fast 2>&1
+          $result = $LASTEXITCODE
+          $output | Write-Output
+          if ($result -ne 0) { exit $result }
+          if (($output -join "`n") -notmatch 'test result: ok\. [1-9][0-9]* passed;') { throw 'Host fixtures did not execute' }
       - name: Type-check integration targets using the same headless profile
         if: needs.changes.outputs.rust != 'false'
         run: cargo check --locked -p continuum-core --test '*' --profile dev-fast --features test-fixtures

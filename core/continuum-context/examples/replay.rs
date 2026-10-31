@@ -370,6 +370,7 @@ struct Outcome {
 fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, admit: bool, trace: bool, share: usize) -> Result<Outcome, Box<dyn std::error::Error>> {
     let mut restored = validate::Restored::default();
     let (mut rereads, mut retained) = (0usize, 0usize);
+    let mut repeats = validate::Repeats::default();
     let mut view: Option<View<String>> = None;
     let mut previous_sent: Option<&str> = None;
     let mut previous_head: Option<&str> = None;
@@ -389,6 +390,10 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
         let counted = restored.rereads(&cut.act, &previous_view);
         rereads += counted.total;
         retained += counted.held;
+        let identity = restored.repeats(&cut.act, &previous_view);
+        repeats.requests += identity.requests;
+        repeats.unchanged += identity.unchanged;
+        repeats.rendered += identity.rendered;
         let mut sources: Vec<Captured> = cut
             .sources
             .iter()
@@ -481,6 +486,10 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
     let line: Vec<String> = appended.iter().map(|(name, chars)| format!("{name} {}", chars / acts)).collect();
     println!("  appended per act by source: {}", line.join(", "));
     println!("  her re-reads of a file read before: {rereads}, of which the prompt still held the earlier read whole or as its outline (a retention proxy): {retained}; acts whose result was ambiguous (not restored): {}", restored.ambiguous);
+    println!(
+        "  invariant 4: reads asking an earlier read's exact request again {}, with the outcome unchanged {}, of which the view renders as a repeat (the earlier whole in her prompt) {}",
+        repeats.requests, repeats.unchanged, repeats.rendered
+    );
     Ok(Outcome { turnovers, prefill_chars: view_prefill, rereads, retained, turnover_prefill })
 }
 
