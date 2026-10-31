@@ -76,7 +76,8 @@ pub(super) fn read_device_utilization() -> Option<f32> {
     let percent = utilization_of(service);
     // SAFETY: `service` is a non-zero io_object_t returned above, released once here.
     unsafe { IOObjectRelease(service) };
-    percent.map(|percent| (percent.clamp(0, 100) as f32) / 100.0)
+    // A share outside 0..=100 is not a reading: it is no reading, never clamped into one.
+    percent.filter(|percent| (0..=100).contains(percent)).map(|percent| percent as f32 / 100.0)
 }
 
 fn utilization_of(service: IoObject) -> Option<i64> {
