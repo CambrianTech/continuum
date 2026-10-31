@@ -57,9 +57,9 @@
     }
 
     // what this catches: a card dispatched MINUTES AGO being structurally unshowable.
-    // Only five titles are ever rendered; taken in board order a fresh card lands at the
-    // end and never appears, so the citizen reads an honest "N claimable" above five
-    // titles that are all old. Measured live 2026-08-07: three freshly dispatched bench
+    // Taken in board order a fresh card landed at the end and never appeared (five
+    // titles were rendered), so the citizen read an honest "N claimable" above titles
+    // that were all old. Every live card is now delivered, newest claimable first. Measured live 2026-08-07: three freshly dispatched bench
     // cards sat in every citizen's board cache and in NONE of their prompt windows while
     // the count was correct throughout — the count was never the lie, the sample was.
     #[tokio::test]
@@ -89,12 +89,17 @@
             .find(|i| i.metadata["kind"] == "available-work-lead")
             .expect("available-work lead");
 
+        let first_card = delivery
+            .items
+            .iter()
+            .find(|i| i.key.starts_with("card:"))
+            .expect("the live cards are delivered");
         assert!(
-            lead.content.contains("bench coder-write-eval"),
-            "the just-dispatched card must be VISIBLE, not just counted:\n{}",
-            lead.content
+            first_card.content.contains("bench coder-write-eval"),
+            "the just-dispatched card must be the first card she reads, not just counted:\n{}",
+            first_card.content
         );
-        // The count stays honest — it always was. This fix is about the sample.
+        // The count stays honest — it always was.
         assert_eq!(lead.metadata["open_count"], 9);
     }
 
@@ -438,8 +443,11 @@
             .expect("open cards must produce an available-work lead");
         assert_eq!(lead.metadata["open_count"], 2);
         assert!(lead.content.contains("[available work]"));
-        assert!(lead.content.contains("Compile wordstats"));
         assert!(lead.content.contains("work/claim"));
+        assert!(
+            d.items.iter().any(|i| i.key.starts_with("card:") && i.content.contains("Compile wordstats")),
+            "each claimable card follows the lead whole"
+        );
 
         // A board with only claimed cards → no lead, just the card list.
         let claimed_only = Arc::new(StubReader::new(snapshot(vec![card(
