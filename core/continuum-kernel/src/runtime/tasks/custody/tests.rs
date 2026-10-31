@@ -156,3 +156,42 @@ async fn draining_shutdown_is_exclusive_and_returns_with_no_io_in_flight() {
     assert_eq!(store.attempts.load(Ordering::SeqCst), 3, "one attempt each: nothing outside claimed one while draining");
     assert_eq!(custody.hold(held(12, TaskEnd::Stopped)), Err(CustodyError::Closed), "closed after shutdown");
 }
+
+// what this catches: a flush that shutdown interrupts part-way dropping what it already committed
+// (the refusal returned instead of the report, so a terminal removed from custody was never
+// delivered; Codex on #5664 at b2cbb2913). The flush keeps its committed terminal and says it was
+// closed mid-pass; shutdown commits the rest.
+#[tokio::test]
+async fn a_flush_interrupted_by_shutdown_keeps_what_it_committed() {
+    let custody = TerminalCustody::new();
+    let store = Store::new(0, None, Duration::from_millis(30));
+    custody.hold(held(20, TaskEnd::Stopped)).expect("custody is open"); // test: a fixture step that must succeed
+    custody.hold(held(21, TaskEnd::Stopped)).expect("custody is open"); // test: a fixture step that must succeed
+    let (flushed, report) = tokio::join!(custody.flush(&store), async {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        custody.shutdown(&store).await
+    });
+    let flushed = flushed.expect("the flush began while custody was open"); // test: a fixture step that must succeed
+    assert_eq!(flushed.committed.len(), 1, "the flush delivers the terminal it committed before draining began");
+    assert!(flushed.closed_mid_pass, "and says shutdown took the rest");
+    assert_eq!(report.last_pass.committed.len(), 1, "shutdown committed the other");
+    assert_ne!(flushed.committed[0].held.task, report.last_pass.committed[0].held.task);
+    assert!(report.unresolved.is_empty());
+    assert_eq!(store.attempts.load(Ordering::SeqCst), 2, "one attempt each");
+}
+
+// what this catches: a second shutdown reopening draining after the first closed custody, or both
+// draining at once (Codex on #5664 at b2cbb2913). One owns the drain; the other waits for close.
+#[tokio::test]
+async fn concurrent_shutdowns_have_one_owner_and_stay_closed() {
+    let custody = TerminalCustody::new();
+    let store = Store::new(0, None, Duration::from_millis(20));
+    custody.hold(held(30, TaskEnd::Stopped)).expect("custody is open"); // test: a fixture step that must succeed
+    let (a, b) = tokio::join!(custody.shutdown(&store), custody.shutdown(&store));
+    assert_eq!(a.last_pass.committed.len() + b.last_pass.committed.len(), 1, "exactly one shutdown drained");
+    assert!(a.unresolved.is_empty() && b.unresolved.is_empty());
+    assert_eq!(store.attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(custody.hold(held(31, TaskEnd::Stopped)), Err(CustodyError::Closed), "still closed after both");
+    let late = custody.shutdown(&store).await;
+    assert!(late.last_pass.committed.is_empty() && late.unresolved.is_empty(), "a late shutdown reopens nothing");
+}

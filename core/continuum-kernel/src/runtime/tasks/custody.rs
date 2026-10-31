@@ -73,11 +73,14 @@ pub enum CustodyError {
     Store(String),
 }
 
-/// What one pass over the held terminals did: delivered winners, and every failure with its reason.
+/// What one pass over the held terminals did: delivered winners, every failure with its reason, and
+/// whether shutdown began draining part-way (the rest stay held for shutdown; what this pass already
+/// committed is still here to deliver, never dropped with the refusal).
 #[derive(Debug, Default)]
 pub struct FlushReport {
     pub committed: Vec<Committed>,
     pub failed: Vec<(Uuid, String)>,
+    pub closed_mid_pass: bool,
 }
 
 /// What shutdown did: its final pass, and every terminal still held after it closed.
@@ -168,15 +171,17 @@ impl TerminalCustody {
     /// Try every held terminal not already being committed; committed winners are delivered, failures
     /// reported with their reason, and both stay typed. Called on the existing lifecycle tick.
     pub async fn flush(&self, store: &dyn TerminalStore) -> Result<FlushReport, CustodyError> {
-        self.pass(store, Phase::Open).await
+        if self.state.lock().phase != Phase::Open {
+            return Err(CustodyError::Closed);
+        }
+        Ok(self.pass(store, Phase::Open).await)
     }
 
-    async fn pass(&self, store: &dyn TerminalStore, phase: Phase) -> Result<FlushReport, CustodyError> {
+    /// One pass in `phase`. When the custody leaves `phase` part-way (shutdown began draining), the
+    /// pass stops, keeps what it already committed, and says so; the rest stay held.
+    async fn pass(&self, store: &dyn TerminalStore, phase: Phase) -> FlushReport {
         let tasks: Vec<Uuid> = {
             let state = self.state.lock();
-            if state.phase != phase {
-                return Err(CustodyError::Closed);
-            }
             state.held.keys().filter(|task| !state.committing.contains(task)).copied().collect()
         };
         let mut report = FlushReport::default();
@@ -185,10 +190,13 @@ impl TerminalCustody {
                 Ok(Some(done)) => report.committed.push(done),
                 Ok(None) => {}
                 Err(CustodyError::Store(reason)) => report.failed.push((task, reason)),
-                Err(CustodyError::Closed) => return Err(CustodyError::Closed),
+                Err(CustodyError::Closed) => {
+                    report.closed_mid_pass = true;
+                    break;
+                }
             }
         }
-        Ok(report)
+        report
     }
 
     /// How many terminals are held (committed or not yet).
@@ -196,27 +204,47 @@ impl TerminalCustody {
         self.state.lock().held.len()
     }
 
-    /// Drain exclusively and close: from here outside commits and flushes claim nothing; wait for the
-    /// attempts already in flight; make the final pass; then close and report every terminal still
-    /// held, read under the lock that closes, so a hold either reached this report or was refused.
+    /// Drain exclusively and close. The first shutdown owns it: from here outside commits and flushes
+    /// claim nothing; it waits for the attempts already in flight, makes the final pass, then closes and
+    /// reports every terminal still held, read under the lock that closes, so a hold either reached this
+    /// report or was refused. A concurrent shutdown never reopens draining: it waits for the owner to
+    /// close and reports what is still held.
     pub async fn shutdown(&self, store: &dyn TerminalStore) -> ShutdownReport {
-        self.state.lock().phase = Phase::Draining;
-        loop {
-            // Armed before the check, so a claim released between the check and the await still wakes it.
-            let settled = self.settled.notified();
-            tokio::pin!(settled);
-            settled.as_mut().enable();
-            if self.state.lock().committing.is_empty() {
-                break;
+        let owner = {
+            let mut state = self.state.lock();
+            let open = state.phase == Phase::Open;
+            if open {
+                state.phase = Phase::Draining;
             }
-            settled.await;
+            open
+        };
+        if !owner {
+            self.wait_until(|state| state.phase == Phase::Closed).await;
+            return ShutdownReport { last_pass: FlushReport::default(), unresolved: self.state.lock().held.values().cloned().collect() };
         }
-        let last_pass = self.pass(store, Phase::Draining).await.unwrap_or_default(); // unwrap_or_default: only shutdown moves the phase off Draining, so its own pass cannot be refused
+        self.wait_until(|state| state.committing.is_empty()).await;
+        // Only this owner moves the phase off Draining, so its own pass cannot be refused.
+        let last_pass = self.pass(store, Phase::Draining).await;
         let unresolved = {
             let mut state = self.state.lock();
             state.phase = Phase::Closed;
             state.held.values().cloned().collect()
         };
+        self.settled.notify_waiters();
         ShutdownReport { last_pass, unresolved }
+    }
+
+    /// Wait until `ready` holds, on a notification armed before each check, so a change between the
+    /// check and the await still wakes it.
+    async fn wait_until(&self, ready: impl Fn(&State) -> bool) {
+        loop {
+            let settled = self.settled.notified();
+            tokio::pin!(settled);
+            settled.as_mut().enable();
+            if ready(&self.state.lock()) {
+                return;
+            }
+            settled.await;
+        }
     }
 }
