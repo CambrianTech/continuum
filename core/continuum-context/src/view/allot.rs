@@ -9,7 +9,7 @@
 use crate::epoch::Block;
 use crate::source::{whole_chars, Item, Source};
 
-pub(super) use crate::levels::Level;
+pub(super) use crate::level::Level;
 
 /// How much of an item a level shows, for comparing two levels of one item.
 pub(super) fn rank(level: &Level) -> u8 {

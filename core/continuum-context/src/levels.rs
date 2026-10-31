@@ -131,17 +131,6 @@ fn head(full: &str, budget: usize) -> Option<String> {
     (kept > 0 && more > 0).then(|| format!("{}\n… and {more} more (expand to read them)", lines[..kept].join("\n")))
 }
 
-/// How much of an item the view renders: whole, its summary, its pointer, or inside its
-/// source's one fold block with the rest of the oldest run. The view decides it; the epoch
-/// records it on each block, so a render receipt says what she was actually shown.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum Level {
-    Full,
-    Summary,
-    Pointer,
-    Folded,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,4 +185,3 @@ mod tests {
         assert_eq!(summarize("one\ntwo\n", Shape::List), None);
     }
 }
-
