@@ -62,6 +62,32 @@ impl Fingerprint {
     }
 }
 
+/// What a tool declares its calls do to the world, in its own command descriptor: the producer's
+/// evidence for invariant 4, never inferred from a name or an output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ToolEffect {
+    /// It only observes: two acts with one fingerprint and one content hash saw the same thing,
+    /// so the later one is "outcome unchanged".
+    Observes,
+    /// It changes the world: every occurrence is its own effect, never a repeat, however alike
+    /// its output (two appends that both answer "OK" made two appends; Codex on MIND-CONTEXT).
+    Changes,
+    /// It reopens a whole she asked to see again (`tool/output act=n`): always whole, never a
+    /// repeat, because she reopens exactly what her view no longer holds (Codex and Fable).
+    Reopens,
+    /// The tool declares none of these: never a repeat, and the replay validator counts these so
+    /// the declarations that are missing are visible.
+    Undeclared,
+}
+
+/// What an act asked for and what its tool declares it does: the producer's half of invariant 4.
+/// Whether its outcome was unchanged is decided by the view, from this and the item's content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Act {
+    pub fingerprint: Fingerprint,
+    pub effect: ToolEffect,
+}
+
 /// What an element follows from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cause {

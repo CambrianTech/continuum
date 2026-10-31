@@ -6,7 +6,7 @@
 //! them. A source that cannot key its state (the clock, this act's ask) is not a source:
 //! it rides the fresh tail after the epoch.
 
-use crate::cause::{Cause, Content, ContentHash, ElementId};
+use crate::cause::{Act, Cause, Content, ContentHash, ElementId};
 use crate::epoch::Block;
 
 /// One item of a source's state, in both renderings the view may choose between.
@@ -38,6 +38,9 @@ pub struct Item<T> {
     /// what she can see (Cormac's proposal, FLOW plan §2d; the RAM storage budget is by bytes,
     /// from governed RAM, never from the window).
     pub(crate) stored: Option<StoredWhole>,
+    /// What this occurrence asked for and what its tool declares it does, when it is an act
+    /// (MIND-CONTEXT invariant 4); `None` for an element that is not one (a message, a notice).
+    pub(crate) act: Option<Act>,
 }
 
 /// Where a non-resident whole lives and what it costs, measured when it was stored.
@@ -60,7 +63,7 @@ impl<T: Block> Item<T> {
     /// cannot build an element without saying what it follows from.
     pub fn whole(id: ElementId, cause: Cause, key: impl Into<String>, full: T) -> Self {
         let content = Content::Hashed(ContentHash::of(full.text()));
-        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None }
+        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None }
     }
 
     /// An occurrence whose `full` is a rendering of a whole held elsewhere (a result shown under
@@ -68,7 +71,7 @@ impl<T: Block> Item<T> {
     /// is held, so two equal outcomes compare equal whatever their labels say. `Absent` when the
     /// whole is not held.
     pub fn rendered(id: ElementId, cause: Cause, key: impl Into<String>, full: T, content: Content) -> Self {
-        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None }
+        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None }
     }
 
     /// Its pointer level: what it costs once collapsed, and how to reopen it. `None` when it
@@ -87,6 +90,12 @@ impl<T: Block> Item<T> {
     /// Its whole is stored, not resident (`StoredWhole`).
     pub fn with_stored(mut self, stored: Option<StoredWhole>) -> Self {
         self.stored = stored;
+        self
+    }
+
+    /// It is an act: what it asked for and what its tool declares it does.
+    pub fn with_act(mut self, act: Act) -> Self {
+        self.act = Some(act);
         self
     }
 
@@ -120,6 +129,10 @@ impl<T: Block> Item<T> {
 
     pub fn stored(&self) -> Option<&StoredWhole> {
         self.stored.as_ref()
+    }
+
+    pub fn act(&self) -> Option<Act> {
+        self.act
     }
 }
 
@@ -165,6 +178,15 @@ pub trait Source<T: Block> {
     /// run's pointers, so a source's floor stops growing with every item it ever held. Fixed
     /// for the epoch it starts. The default cannot fold: its items floor at their pointers.
     fn fold(&self, _folded: &[Item<T>]) -> Option<T> {
+        None
+    }
+
+    /// The block `item` renders as when the view finds it repeats `ancestor` (MIND-CONTEXT
+    /// invariant 4: the same request to a tool that only observes, with the same outcome). The
+    /// view decides; the source words it, naming the ancestor and how to reopen it even when the
+    /// ancestor is folded or paged out, never "as above". The default words none, so its items
+    /// always render as themselves.
+    fn repeat(&self, _item: &Item<T>, _ancestor: &Item<T>) -> Option<T> {
         None
     }
 }

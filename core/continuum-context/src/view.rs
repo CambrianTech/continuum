@@ -19,6 +19,7 @@ use crate::motion::{fingerprint, Motion};
 use crate::source::{Item, Source};
 
 mod allot;
+mod repeat;
 
 use allot::{allot, rank};
 pub use crate::level::Level;
@@ -61,6 +62,9 @@ impl std::error::Error for GrantMismatch {}
 pub struct Advance {
     pub items: usize,
     pub chars: usize,
+    /// Arrivals rendered as a repeat of an occurrence held whole (MIND-CONTEXT invariant 4): the
+    /// health line's repeats.
+    pub repeats: usize,
 }
 
 /// What an epoch start rendered: the one full re-prefill an epoch costs.
@@ -110,6 +114,11 @@ pub struct View<T: Block> {
     /// until a start raises them. Absent in a view saved before folding.
     #[serde(default)]
     folded: HashSet<SourceId>,
+    /// Items rendered as a repeat of an occurrence held whole this epoch. A repeat shows its
+    /// content only by reference, so it is never a read of a whole ([`View::renders`]). Absent in
+    /// a view saved before repeats, which held none.
+    #[serde(default)]
+    repeats: HashSet<SourceId>,
     /// Characters each act of this epoch appended, in order.
     appended: Vec<usize>,
     /// How each source moved across this view's starts; carried over every turnover and
@@ -239,6 +248,7 @@ impl<T: Block> View<T> {
             collapsed: HashSet::new(),
             summarized: HashSet::new(),
             folded: HashSet::new(),
+            repeats: HashSet::new(),
             appended: Vec::new(),
             motion: Motion::default(),
             act: None,
@@ -298,7 +308,17 @@ impl<T: Block> View<T> {
     /// (her room cursor) only advances through what this answers true for.
     pub fn renders(&self, source: &str, item: &str) -> bool {
         let id = key(source, item);
-        self.epoch.holds(&id) && !self.collapsed.contains(&id)
+        self.epoch.holds(&id) && !self.collapsed.contains(&id) && !self.repeats.contains(&id)
+    }
+
+    /// Whether `id` is held whole this epoch: rendered at its whole level, not collapsed,
+    /// summarized, folded or a repeat. What a repeat may point at.
+    fn holds_whole(&self, id: &SourceId) -> bool {
+        self.epoch.holds(id)
+            && !self.collapsed.contains(id)
+            && !self.summarized.contains(id)
+            && !self.folded.contains(id)
+            && !self.repeats.contains(id)
     }
 
     pub fn advance(&mut self, sources: &[&dyn Source<T>]) -> Advance {
@@ -344,8 +364,19 @@ impl<T: Block> View<T> {
     fn append(&mut self, sources: &[&dyn Source<T>], limit: Option<(usize, usize)>) -> Advance {
         let mut advance = Advance::default();
         for source in sources {
-            for item in source.items() {
+            let name = source.name();
+            let (items, repeats) = repeat::resolve(
+                &**source,
+                source.items(),
+                |earlier| self.holds_whole(&key(name, &earlier.key)),
+                |item| !self.epoch.holds(&key(name, &item.key)),
+            );
+            for (item, repeat_of) in items.into_iter().zip(repeats) {
                 let id = key(source.name(), &item.key);
+                let repeat = repeat_of.is_some();
+                if repeat {
+                    self.repeats.insert(id.clone());
+                }
                 // A folded item is held by its source's fold block, fixed at the start: it
                 // arrives on its own only when a later start raises it (the prefix never moves).
                 if self.folded.contains(&id) {
@@ -380,6 +411,7 @@ impl<T: Block> View<T> {
                     if let Observed::Appended { .. } = self.epoch.observe(id, Some(element), level, text) {
                         advance.items += 1;
                         advance.chars += chars;
+                        advance.repeats += usize::from(repeat);
                     }
                 }
             }

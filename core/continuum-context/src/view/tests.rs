@@ -91,7 +91,7 @@ fn an_act_appends_only_the_items_that_changed() {
     let (mut view, _) = View::start(vec![], &[&views], all_full).unwrap();
     views.push("b.rs", "b.rs lines 1-40");
     let advance = view.advance(&[&views]);
-    assert_eq!(advance, Advance { items: 1, chars: "b.rs lines 1-40".len() });
+    assert_eq!(advance, Advance { items: 1, chars: "b.rs lines 1-40".len(), repeats: 0 });
     assert_eq!(view.advance(&[&views]), Advance::default(), "nothing changed, nothing appended");
 }
 
@@ -107,7 +107,7 @@ fn a_collapsed_item_stays_collapsed_and_a_new_one_arrives_in_full() {
     let at_start = view.chars();
     actions.push("#2", "short");
     let advance = view.advance(&[&actions]);
-    assert_eq!(advance, Advance { items: 1, chars: "short".len() }, "only the new result, in full");
+    assert_eq!(advance, Advance { items: 1, chars: "short".len(), repeats: 0 }, "only the new result, in full");
     assert!(view.chars() - at_start < 100, "the old result did not come back in full");
 }
 
@@ -556,7 +556,7 @@ fn an_act_appends_one_result_and_neither_turns_over_nor_grows_the_floor() -> Res
     let (mut view, _) = View::start(Vec::new(), &[&actions], |_| vec![grant])?;
     let before = rendered(&view);
     actions.push(1_000);
-    assert_eq!(view.advance(&[&actions]), Advance { items: 1, chars: 1_000 });
+    assert_eq!(view.advance(&[&actions]), Advance { items: 1, chars: 1_000, repeats: 0 });
     assert!(rendered(&view).starts_with(&before), "the act rewrote the prefix");
     assert_eq!(fold_blocks(&view), 1, "the fold block is not re-rendered mid-epoch");
     assert_eq!(claims(&[&actions])[0].floor_chars, floor, "one more act, the same one-block floor");
@@ -591,4 +591,139 @@ fn the_receipt_names_each_shown_occurrence_and_its_level_in_prompt_order() -> Re
     assert_eq!(view.take_submitted(), Some(receipt), "the sent prompt's receipt, taken once");
     assert_eq!(view.take_submitted(), None);
     Ok(())
+}
+
+/// MIND-CONTEXT invariant 4: an unchanged observation arrives as a repeat only while the whole it
+/// repeats is in front of her.
+mod repeats {
+    use super::*;
+    use crate::cause::{Act, ContentHash, Fingerprint, ToolEffect};
+
+    /// Her acts as one chain, each caused by the one before; each act's content is its raw
+    /// output's hash, never its labelled rendering (two equal outputs compare equal).
+    struct Acts(Vec<(&'static str, &'static str, ToolEffect, String)>);
+
+    impl Acts {
+        fn push(&mut self, verb: &'static str, args: &'static str, effect: ToolEffect, output: &str) {
+            self.0.push((verb, args, effect, output.to_owned()));
+        }
+    }
+
+    impl Source<String> for Acts {
+        fn name(&self) -> &str {
+            "acts"
+        }
+        fn priority(&self) -> u8 {
+            5
+        }
+        fn items(&self) -> Vec<Item<String>> {
+            let id = |seq: usize| ElementId::of(&[b"act", &seq.to_be_bytes()]);
+            self.0
+                .iter()
+                .enumerate()
+                .map(|(i, (verb, args, effect, output))| {
+                    let seq = i + 1;
+                    let cause = if seq == 1 { Cause::Root(crate::cause::Origin::ActivityStart) } else { Cause::Of(id(seq - 1)) };
+                    let act = Act { fingerprint: Fingerprint::of([(*verb, args.as_bytes())]), effect: *effect };
+                    Item::rendered(id(seq), cause, seq.to_string(), format!("[#{seq} {verb}] {output}"), Content::Hashed(ContentHash::of(output)))
+                        .with_pointer(format!("[#{seq} {verb}: collapsed; reopen with tool/output act={seq}]"))
+                        .with_act(act)
+                })
+                .collect()
+        }
+        fn repeat(&self, item: &Item<String>, ancestor: &Item<String>) -> Option<String> {
+            Some(format!(
+                "[#{} repeat of #{}, outcome unchanged; reopen with tool/output act={}]",
+                item.key(),
+                ancestor.key(),
+                ancestor.key()
+            ))
+        }
+    }
+
+    /// A file she reads whole: far larger than its collapsed pointer, as a real read is.
+    fn body(name: &str) -> String {
+        format!("// {name}\n") + &"fn parse(&mut self) -> Result<Tree, Error> { self.step()?; }\n".repeat(60)
+    }
+
+    fn floors(claims: &[Claim]) -> Vec<usize> {
+        claims.iter().map(|claim| claim.floor_chars).collect()
+    }
+
+    // what this catches: the M5 2026-10-30 read loop, the same unchanged file arriving whole
+    // again and again while the first copy is still in front of her: the second read arrives as
+    // a repeat naming #1, is counted, and never counts as reading a whole.
+    #[test]
+    fn an_unchanged_read_repeated_mid_epoch_arrives_as_a_repeat() {
+        let mut acts = Acts(Vec::new());
+        let (mut view, _) = View::start(vec!["identity".into()], &[&acts], all_full).unwrap();
+        acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
+        assert_eq!(view.advance(&[&acts]).repeats, 0);
+        acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
+        let advance = view.advance(&[&acts]);
+        assert_eq!(advance.repeats, 1);
+        let text = rendered(&view);
+        assert_eq!(text.matches(&body("a.rs")).count(), 1, "the whole arrives once");
+        assert!(text.contains("[#2 repeat of #1, outcome unchanged; reopen with tool/output act=1]"), "{text}");
+        assert!(view.renders("acts", "1"));
+        assert!(!view.renders("acts", "2"), "a repeat is never a read of a whole");
+    }
+
+    // what this catches: the same output from a tool that changes the world read as "nothing
+    // happened" (Codex: two appends that both answer OK are two appends), and a tool that
+    // declares nothing, or a reopen, ever rendered as a repeat.
+    #[test]
+    fn only_a_declared_observation_can_repeat() {
+        for effect in [ToolEffect::Changes, ToolEffect::Reopens, ToolEffect::Undeclared] {
+            let mut acts = Acts(Vec::new());
+            let (mut view, _) = View::start(vec!["identity".into()], &[&acts], all_full).unwrap();
+            acts.push("tool/x", r#"{"line":"a"}"#, effect, "OK");
+            view.advance(&[&acts]);
+            acts.push("tool/x", r#"{"line":"a"}"#, effect, "OK");
+            assert_eq!(view.advance(&[&acts]).repeats, 0, "{effect:?}");
+            assert!(view.renders("acts", "1") && view.renders("acts", "2"), "{effect:?}: both occurrences whole");
+        }
+    }
+
+    // what this catches: a repeat pointing at a whole that is not in front of her (collapsed by
+    // the start, or gone with a turnover), whose reopen would answer another repeat and trap her
+    // (Codex and Fable on the design). The re-read arrives whole; and a turnover renders an
+    // earlier repeat as itself.
+    #[test]
+    fn a_repeat_needs_its_ancestor_whole_in_this_epoch() {
+        let mut acts = Acts(Vec::new());
+        acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
+        acts.push("code/read", r#"{"path":"b.rs"}"#, ToolEffect::Observes, &body("b.rs"));
+        let (mut view, start) = View::start(vec!["identity".into()], &[&acts], floors).unwrap();
+        assert_eq!(start.collapsed + start.folded, 2, "the start holds both at their floor");
+        assert!(!view.renders("acts", "1"));
+        acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
+        assert_eq!(view.advance(&[&acts]).repeats, 0, "#1 is collapsed: the re-read arrives whole");
+        assert!(view.renders("acts", "3"));
+        acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
+        assert_eq!(view.advance(&[&acts]).repeats, 1, "#3 is whole now: #4 repeats it");
+        assert!(rendered(&view).contains("[#4 repeat of #3,"));
+        view.turn_over(vec!["identity".into()], &[&acts], all_full).unwrap();
+        let text = rendered(&view);
+        assert!(!text.contains("repeat of"), "a turnover re-renders every item as itself: {text}");
+        assert!(view.renders("acts", "4"));
+    }
+
+    // what this catches: an item already sent whole rewritten as a repeat on a later act, which
+    // changes text she was already sent and breaks the prefix every act appends to. Two equal
+    // reads arriving in one append both arrive whole (the first was not yet held), and the second
+    // keeps its whole rendering for the epoch.
+    #[test]
+    fn a_rendering_already_sent_is_never_turned_into_a_repeat() {
+        let mut acts = Acts(Vec::new());
+        let (mut view, _) = View::start(vec!["identity".into()], &[&acts], all_full).unwrap();
+        acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
+        acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
+        assert_eq!(view.advance(&[&acts]).repeats, 0);
+        let before = rendered(&view);
+        acts.push("code/read", r#"{"path":"b.rs"}"#, ToolEffect::Observes, &body("b.rs"));
+        let advance = view.advance(&[&acts]);
+        assert_eq!((advance.items, advance.repeats), (1, 0), "only the new read arrives");
+        assert!(rendered(&view).starts_with(&before));
+    }
 }
