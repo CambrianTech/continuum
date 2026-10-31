@@ -36,70 +36,74 @@ silently; an edit that changes nothing reports success; descriptions and errors 
 does not hold (`code/undo`, `code/glob`, `code/cargo/*`); the shell sentinel and watch code has
 no caller; no reflex exists.
 
-## The contract
+## The contract: two primitives and one ratchet
 
-Nine rules. Each is a property of the substrate, implemented once, so every command gets it.
+Every audit finding is one of two missing shapes. Each lives once in the substrate and every
+command gets it by returning it; nothing below is a per-command behaviour.
 
-**1. Every call is a task with a handle.** One id namespace for every result she can refer back
-to: `act #n` (what she did), and a typed task id for anything that outlives the act (a shell, a
-build, a sentinel, a helper agent). A saved output is the act's, not a second kind: `tool/output
-act=n` is the only reopen form she is taught; the 16-hex content handle stays internal. An id
-that does not resolve is answered with what it is not and the ids she holds ("`3f2a...` is a saved
-output of act #41, not a shell; your running tasks: task 7 `cargo test`"). Reference: grok-build's
-one namespace and "Known task IDs: [...]".
+### `Task`: anything that runs
 
-**2. Completion wakes her, on every exit.** A task that ends (exit, failure, timeout, kill,
-wait error) publishes one completion event with its exit, its duration and its handle, and
-that event is a stimulus to her mind (the event mind's wake), not a note waiting for her next
-perception. A dispatched result says so in her words: "running as task 7; you will be woken
-when it ends; do not poll". Reference: opencode `shell.ts:25`, grok-build's wake plus piggyback.
+```rust
+pub struct Task {
+    pub id: TaskId,            // one namespace: shells, builds, helpers, reflexes, sentinels
+    pub act: ActSeq,           // the act that started it; `act #n` reopens its saved result
+    pub label: String,         // her words for it ("cargo test -p continuum-context")
+    pub output: ClassHandle,   // retained whole under its disk class (ONE-BUDGET); never head-cut
+    pub claim: ClaimId,        // CPU, RAM, disk in the one allocation; no constant limit
+}
+pub enum Ended { Exited(i32), Failed(String), Killed { by: Stopper }, Revoked(GrantId) }
+pub enum Stopper { Her, Authority }
+```
 
-**3. A wait that ends is not a kill.** A call that outlives its wait becomes a background task
-(`moved to the background as task 7`); nothing is killed because a timer chose it. A hard limit
-is a claim in the one allocation (CPU, RAM, disk for its log), never a constant. Only she, or a
-grant revoked by the authority, stops a task, and the completion says which. Reference:
-grok-build `bash/mod.rs:454`.
+Its laws, each a former rule:
+- **One namespace** (was 1). An unresolved id is answered with what it is and the ids she holds.
+- **Completion is a wake** (was 2). Every `Ended` variant publishes `TaskEnded { id, ended,
+  duration }` as a stimulus to her mind; no exit path is silent.
+- **A wait is not a kill** (was 3). A call that outlives the act's wait answers `Running(id)`
+  and keeps running; only `Stopper::Her` or a revoked grant ends it.
+- **Reflex = a task an event starts** (was 8): after a structured edit, the touched crate's
+  diagnostics run as a Task; its `TaskEnded` delivers a capped block.
+- **Sentinel = a condition over a task's stream** (was 9): `Watch { task, until: Condition }`
+  emits one `TaskEnded`-shaped wake when the condition holds, rate-limited by its claim.
 
-**4. A result's size is her grant, and the rest is a handle away.** The command receives the
-newest result's grant from her turn's one allocation through `Ctx` (a typed `ResultGrant`, the
-render budget the view will give this result) and selects to it. No command keeps a char budget,
-a match cap or a line cap of its own (`self_sized` ratchet). Every truncation names the act and
-the next position ("lines 1-400 of 2,311; `tool/output act=41 startLine=401`"). Nothing is cut
-silently, the newest end never (CLAUDE.md goal 7). A task's output is retained whole in its class
-handle; a poll returns what is new since her last look, never everything again.
+### `Answer`: everything a call says back
 
-**5. A result says what changed, including nothing.** Every mutating verb answers with the
-effect it had: `unchanged` (an edit whose replacement equals the text, a join to a room she is
-in, a read of a file whose content hash equals the one she last saw: "unchanged since act #12"),
-`already` (already committed, already applied), or the change itself (sha, bytes, remote and
-branch for a push). An empty output is never a result. Each command declares its `EFFECT`
-(`Reads`, `Reopens`, `Mutates`, `Publishes`; Cormac's invariant 4), and the view's repeat rule
-reads that, not the text.
+```rust
+pub struct Answer {
+    pub effect: Effect,             // what the call did to the world
+    pub body: Selected,             // the part her ResultGrant buys, never self-sized
+    pub rest: Option<Call>,         // the exact call that reads what the grant left out
+    pub fix: Option<Call>,          // on a refusal: the call that would work
+    pub running: Option<TaskId>,    // a call that became a Task
+}
+pub enum Effect { Read { hash: ContentHash, unchanged_since: Option<ActSeq> },
+                  Reopened, Changed(Change), Unchanged, Already(Change), Published(Change), Refused(Why) }
+```
 
-**6. An error carries the fix.** Every refusal names what was wrong and the call that would work:
-the nearest match with its line, "already applied", the closest numbered lines (opencode
-`edit.ts:199-349`, grok-build nearest-match). Edit matching is tiered and still unique-or-fail:
-exact, then trailing whitespace, then Unicode quotes and dashes (Codex `seek_sequence.rs`). A
-stale edit is caught by the content hash of what she last read, never a timestamp. An error never
-carries our history ("Sahar's stack hunk ...").
+Its laws:
+- **Size is her grant** (was 4). `Ctx` carries `ResultGrant`; `Selected` is built only from it,
+  and `rest` names the next position whenever anything was left out.
+- **Say what changed, including nothing** (was 5). An empty output cannot be constructed; a
+  repeat read is `Read { unchanged_since: Some(n) }`; a no-op edit is `Unchanged`. The view's
+  repeat rule reads `Effect`, never text (Cormac's `EFFECT`, invariant 4).
+- **A refusal carries the fix** (was 6). `Refused` without `fix` is allowed only when no call
+  could work, and says why. Edit matching is tiered and unique-or-fail; staleness is a content
+  hash.
 
-**7. Every verb named to her is in her hands.** A tool description, an error, a fold pointer,
-the open-views banner or help text that names a verb names one her surface offers, in the wire
-name she calls it by. `commands/help` loads any authorized verb into her tail, native or not, and
-says exactly that. Ratchet: `named_verbs_offered` (a string in a description/error/view source
-that resolves to a command not on the native registry fails the build).
+### The ratchet: every verb named to her is in her hands (was 7)
 
-**8. Reflexes: cheap automatic reactions, capped, after the act.** After a structured edit, the
-touched crate's diagnostics run as a task (rule 1) and arrive as a capped block on her next
-input (grok-build's `<lsp-diagnostics>`, 10 per file): she learns of a compile error one act
-earlier than a build. A reflex is a task like any other, so it is priced, cancellable and never
-blocks the act. The amygdala is the model: cheap, often wrong, raises an interrupt.
+`fix`, `rest` and every description, banner and fold pointer render `Call`s, typed values over
+the command registry, rendered in her wire dialect. A verb that is not on her surface cannot be
+a `Call`'s target (the type refuses it), and `named_verbs_offered` catches the strings that are
+still prose. `commands/help` loads any authorized verb into her tail.
 
-**9. Sentinels: a watched condition wakes her.** `task/watch` takes a task handle and a condition
-(a pattern on its output, its exit, a file or card changing) and wakes her when it holds; rate
-limited so a chatty watcher cannot drown her (grok-build monitor: debounce plus token bucket).
-The shell's existing line classifier (`ExecutionState.sentinel`, no caller today) becomes the
-condition engine or is deleted.
+### What compresses
+
+Shell poll, shell kill, shell watch, shell sentinel, agent wait, sentinel cancel, the dispatch
+panel's own result shape and the shell's own completion event become `Task` and its four verbs.
+The fold pointers (two formats today), the open-views banner's call syntax, help's "callable
+next act", every error's free-text advice and every command's own size cap become `Answer`
+fields. Two shapes replace roughly a dozen.
 
 ## The verbs
 
