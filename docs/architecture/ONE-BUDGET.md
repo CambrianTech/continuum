@@ -106,7 +106,7 @@ the area:
 | # | Change | Owner |
 |---|---|---|
 | 0 | Enforcement first (below) | Fable |
-| 1 | `continuum-flex`: move `flex_allocate` down, generic unit; grounding and the authority both call it; ratchet skeleton | Fable |
+| 1 | `cambrian-flex` (airc workspace `crates/flex`): the one solver cleared by price, generic unit; grounding, the view and the authority call it; `flex_allocate` deleted | Fable |
 | 2 | Authority: `Claim`/`Grant` API on `ResourceDaemon`, one probe trait + adapters; delete GpuMemoryManager's ledger, SystemResourceMonitor, hw_probe free math, the unwired governor, the second PressureLevel and threshold tables; PressureBroker becomes grant publication | Codex (kernel/serving), Fable reviews |
 | 3 | VRAM: serving plan, side lanes, embed, vision sidecar, in-process backend, training (incl. `cuda_train.py` taking its grant as input) become claims; one footprint model incl. LoRA and draft; slots from the KV contract, not cores | Codex (serving/inference), Cormac (training) |
 | 4 | Host RAM: every cache/ring in the RAM inventory takes a `GrantRx`; delete their literals; sentinel watchdog reads its grant | crate owners per the placement map; Fable for cognition/mind |
@@ -141,7 +141,7 @@ Doctrine account (DEVELOPMENT-DOCTRINE.md, "Completion includes deletion and pro
 - **Limit, stated.** Lexical rules are a backstop. The lasting enforcement is the type: once slice 2 lands,
   a cache, ring or class can only be constructed from a `GrantRx`, so an unbudgeted one does not compile.
 
-### Slice 1 in detail: `continuum-flex`, the one solver, cleared by price (for review before code)
+### Slice 1 in detail: `cambrian-flex`, the one solver, cleared by price (for review before code)
 
 **Why it changes from `flex_allocate`.** Today's solver (`continuum-grounding/src/rag_budget/flex_allocate.rs`,
 three production callers: the deliberation view, its epoch start, grounding) allocates by integer priorities and
@@ -152,9 +152,10 @@ measured excess demand. Slice 1 builds that solver once, as a floor crate, and e
 
 **Crate.** One solver below both repos (Cormac on #5620): airc's NETWORK-AUTHORITY (airc#1628) needs the same
 types for network grants and must stay separately capable, so the crate depends on nothing but `std` and `serde`
-(ts-rs behind a feature), the same "bubble down" rule as `airc_core::shown_id`. Its home is the lowest crate both
-repos can depend on (continuum already depends on airc's crates, so the airc workspace's floor is the candidate;
-settled in review). Pure: no I/O, no clock, no randomness (THE-PROVING-GROUND P8). Generic over a unit type each
+(ts-rs behind a feature), the same "bubble down" rule as `airc_core::shown_id`. Its home (settled by Cormac in review): its own
+crate in the airc workspace, `crates/flex`, package `cambrian-flex`, named for the pattern and neutral to both
+repos, not inside `airc-core` (which keeps its one job). Continuum depends on it through its existing airc pin;
+airc's NETWORK-AUTHORITY consumes it. Slice 1's code therefore lands as an airc PR. Pure: no I/O, no clock, no randomness (THE-PROVING-GROUND P8). Generic over a unit type each
 consumer defines (`Tokens`, `Bytes`, `LaneSeconds`, bytes in flight); continuum-only pieces (where values come
 from, the behaviour model, ts-rs bindings) stay out of it.
 
