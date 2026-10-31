@@ -37,6 +37,11 @@ const LOOP: &str = "act-loop";
 pub struct Options {
     pub outline: Mode,
     pub generational: bool,
+    /// With `generational`: the young generation holds `k` acts of her measured appends, not the
+    /// start's half (an LSM's small level 0): a turnover re-prefills only that young tail, so the
+    /// re-prefill amortizes to about one act's appends whatever `k`; a smaller `k` trades detail
+    /// (more items at their handles, more reopens) for less re-prefill. `None` = the start's half.
+    pub young_acts: Option<usize>,
     /// Unranged reads answer with their first page (`replay/paged.rs`).
     pub paged: bool,
 }
@@ -70,6 +75,9 @@ pub struct Summary {
     pub first_page_held: usize,
     pub used_later: usize,
     pub extra_requests: usize,
+    /// Fresh tokens of every request, for the tail: a rare cascading fold must not hide behind a
+    /// good average (Cormac on 7e113291).
+    pub per_request: Vec<f64>,
 }
 
 /// The tail's pieces not yet in this epoch's view, each once, in the order they were sent.
@@ -203,7 +211,8 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
                 let (asked, grants) = {
                     let every: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
                     let asked = claims(&every);
-                    let grants = start(Rule::Reserved, &asked, available, per_act, share);
+                    let young = young_room(options.young_acts, per_act, available);
+                    let grants = start(Rule::Reserved, &asked, young, per_act, share);
                     (asked, grants)
                 };
                 let by_source = sediment::grants_by_source(&sources, &asked, &grants);
@@ -216,7 +225,8 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
                 available = window.saturating_sub(head_chars + chars(&sent(&tail, options.outline)) + chars(&extra_pages));
             }
             let every: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
-            open.turn_over(sediment.heads(&cut.head), &every, |claims| start(Rule::Reserved, claims, available, per_act, share))?;
+            let young = if options.generational { young_room(options.young_acts, per_act, available) } else { available };
+            open.turn_over(sediment.heads(&cut.head), &every, |claims| start(Rule::Reserved, claims, young, per_act, share))?;
             turnover = true;
         }
         if turnover {
@@ -281,6 +291,7 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
         first_page_held: pager.totals().1,
         used_later: pager.totals().2,
         extra_requests: pager.extra,
+        per_request: rows.iter().map(|row| tokens(row.append)).collect(),
     })
 }
 
@@ -289,8 +300,14 @@ pub fn line(resident: &str, variant: &str, summary: &Summary, tps: f64) -> Strin
     let per_request = summary.tokens / tps / summary.requests.max(1) as f64;
     let per_turnover = summary.turnover_tokens.iter().sum::<f64>() / summary.turnover_tokens.len().max(1) as f64;
     let with_extras = summary.tokens / tps / (summary.requests + summary.extra_requests).max(1) as f64;
+    let mut fresh = summary.per_request.clone();
+    fresh.sort_by(f64::total_cmp);
+    let at = |q: usize| fresh.get((fresh.len() * q / 100).min(fresh.len().saturating_sub(1))).copied().unwrap_or(0.0); // unwrap_or: no requests, no tail
     format!(
-        "TABLE {resident} | {variant} | prefill {:.0} tok | {per_request:.0} s/request ({with_extras:.0} counting extra requests) | {} turnovers | re-prefill {per_turnover:.0} tok/turnover (median {:.0}) | sediment re-renders {} (handles dropped {}) | outlined {}, paged back {} | headroom median {:.0} chars | paged reads {} (first page held every used line in {}; {} used later at all) | extra page requests {}",
+        "TABLE {resident} | {variant} | fresh/request p50 {:.0} p90 {:.0} p99 {:.0} tok | prefill {:.0} tok | {per_request:.0} s/request ({with_extras:.0} counting extra requests) | {} turnovers | re-prefill {per_turnover:.0} tok/turnover (median {:.0}) | sediment re-renders {} (handles dropped {}) | outlined {}, paged back {} | headroom median {:.0} chars | paged reads {} (first page held every used line in {}; {} used later at all) | extra page requests {}",
+        at(50),
+        at(90),
+        at(99),
         summary.tokens,
         summary.turnovers,
         median(summary.turnover_tokens.clone()),
@@ -345,5 +362,14 @@ mod tests {
         let tail = vec!["[work turn] x".to_owned(), "result".to_owned(), "result".to_owned()];
         assert_eq!(unsent(&tail, &held), ["result"]);
         assert_eq!(chars(&unsent(&tail, &HashSet::new())), "[work turn] x\nresult".chars().count());
+    }
+}
+
+/// The young generation's room: `k` acts of her measured appends, never past what is available;
+/// before any act is measured, all of it (the start's own rule decides).
+fn young_room(young_acts: Option<usize>, per_act: Option<usize>, available: usize) -> usize {
+    match (young_acts, per_act) {
+        (Some(k), Some(per_act)) => per_act.saturating_mul(k).min(available),
+        _ => available,
     }
 }

@@ -627,7 +627,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let today = replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share)?;
         let resident = paths.iter().map(|path| path.rsplit('/').next().unwrap_or(path).chars().take(8).collect::<String>()).collect::<Vec<_>>().join("+"); // unwrap_or: rsplit always yields one piece
         let rate = (chars_per_token, tps);
-        let whole = append::Options { outline: outline::Mode::Whole, generational: false, paged: false };
+        let whole = append::Options { outline: outline::Mode::Whole, generational: false, paged: false, young_acts: None };
         let base = append::replay(&label, &cuts, window, share, rate, whole, true)?;
         let tokens = |chars: &[f64]| chars.iter().sum::<f64>() / chars_per_token;
         let per_turnover = tokens(&today.turnover_prefill) / today.turnover_prefill.len().max(1) as f64;
@@ -641,16 +641,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", append::line(&resident, "append-tail", &base, tps));
         let mut variants = Vec::new();
         if outline_results {
-            variants.push(("append-tail + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: false, paged: false }));
-            variants.push(("append-tail + outline strict (own act too)", append::Options { outline: outline::Mode::Strict, generational: false, paged: false }));
+            variants.push(("append-tail + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: false, paged: false, young_acts: None }));
+            variants.push(("append-tail + outline strict (own act too)", append::Options { outline: outline::Mode::Strict, generational: false, paged: false, young_acts: None }));
         }
         if paged_reads {
-            variants.push(("append-tail + paged reads", append::Options { outline: outline::Mode::Whole, generational: false, paged: true }));
-            variants.push(("append-tail + paged reads + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: false, paged: true }));
+            variants.push(("append-tail + paged reads", append::Options { outline: outline::Mode::Whole, generational: false, paged: true, young_acts: None }));
+            variants.push(("append-tail + paged reads + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: false, paged: true, young_acts: None }));
         }
         if generational {
-            variants.push(("append-tail + generational", append::Options { outline: outline::Mode::Whole, generational: true, paged: false }));
-            variants.push(("append-tail + generational + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: true, paged: false }));
+            variants.push(("append-tail + generational", append::Options { outline: outline::Mode::Whole, generational: true, paged: false, young_acts: None }));
+            for (label, k) in [("append-tail + LSM young 2 acts", 2), ("append-tail + LSM young 4 acts", 4), ("append-tail + LSM young 8 acts", 8)] {
+                variants.push((label, append::Options { outline: outline::Mode::Whole, generational: true, paged: false, young_acts: Some(k) }));
+            }
+            variants.push(("append-tail + generational + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: true, paged: false, young_acts: None }));
         }
         for (variant, options) in variants {
             let summary = append::replay(&label, &cuts, window, share, rate, options, false)?;
