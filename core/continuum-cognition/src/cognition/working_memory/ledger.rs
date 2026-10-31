@@ -55,7 +55,6 @@ impl WorkingMemory {
             pinned: Mutex::new(Vec::new()),
             ended_pins: Mutex::new(Vec::new()),
             restored_acting_card: Mutex::new(None),
-            served_window: AtomicU32::new(0),
             entries: Mutex::new(VecDeque::new()),
             scope: Mutex::new(None),
             pending_emissions: Mutex::new(Vec::new()),
@@ -98,26 +97,6 @@ impl WorkingMemory {
         self.pending_emissions.lock().iter()
             .filter(|e| e.room == room && e.scope == scope)
             .map(|e| e.peak_tokens).max().unwrap_or(0)
-    }
-
-    /// Adopt the LIVE served context window (tokens) as the basis for every re-injection
-    /// bound. Pushed from the act→observe seam (`act_observe/apply.rs`) off the workspace
-    /// cycle's model binding, every act. Before the first act, or when the cycle carries
-    /// no loadout, [`Self::budget`] reads the serving truth instead of answering "no bound".
-    pub fn set_served_window(&self, tokens: u32) {
-        self.served_window.store(tokens, Ordering::Relaxed);
-    }
-
-    /// The re-injection budget for this mind right now. Unknown window ⇒ no bounds.
-    pub fn budget(&self) -> ContextBudget {
-        match self.served_window.load(Ordering::Relaxed) {
-            // No pin yet (before the first act, or a cycle with no loadout): the serving
-            // truth, never "no bound". This arm was `ContextBudget::unknown()`.
-            0 => ContextBudget::live(),
-            // The ring is STATE, not this turn's prompt: one audience for every turn, so its
-            // share is stable and it collapses only in bursts (see `from_window_for`).
-            w => ContextBudget::from_window_for(w, crate::inference::prefill_rate::Audience::Unattended),
-        }
     }
 
     /// Record a fingerprint (tool name + args) of the action the hands just took, and return
@@ -243,13 +222,14 @@ impl WorkingMemory {
     }
 
     /// Attach her stated reasoning for the act just recorded to the open views it touched,
-    /// so each view carries what she understood, not only how far she read. The note is the
-    /// intent's label, its first line: the same shape rule a result's header uses, never a size.
+    /// so each view carries what she intended, not only how far she read. Whole, never a first
+    /// line: it is an optional level of the open-views source, which her view sizes and drops
+    /// before the cursor (`planning_detail_yields_to_cursor_and_returns_when_granted`).
     pub fn annotate_open_views(&self, intent: &str) {
         let Some(seq) = self.next_action_seq.load(Ordering::Relaxed).checked_sub(1) else {
             return;
         };
-        self.open_views.lock().annotate(seq, &crate::cognition::act_observe::intent_label(intent));
+        self.open_views.lock().annotate(seq, intent);
     }
 
     pub(crate) fn record_receipt_measured(
@@ -320,7 +300,6 @@ impl WorkingMemory {
             }
             // The record and the active slot publish together, so a concurrent publisher
             // cannot prune a not-yet-visible receipt.
-            let budget = self.budget();
             let mut actions = self.actions.lock();
             *self.last_action.lock() = Some((seq, a.to_string()));
             actions.push(
@@ -329,26 +308,23 @@ impl WorkingMemory {
                     room,
                     scope: scope.clone(),
                     operation: label,
-                    head: Some(archive_head(seq, a, &acts, budget.trail_head_chars())),
+                    head: Some(ledger_line(seq, a, &acts)),
                     summary: result_summary(&tail, &acts),
                     result: Some(tail),
                     handle,
-                    written_pointer: None,
                     stored_chars: None,
                     received_ms: Some(continuum_base::time::EpochMs::now().millis()),
                 },
-                budget.receipt_archive_chars(),
             );
         }
         // No size cap here: the body stays in RAM until the one memory owner sheds
         // (`residency`). A cap at receipt was a hand-rigged number (`RESULTS_RESIDENT_CHARS`,
         // 1 << 20 chars) deciding what RAM could hold; the pressure monitor measures it.
-        // Head into the rolling recency trail: proprioception ("I did #n X") + the
-        // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
-        // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the
+        // Into the rolling recency trail: proprioception ("I did #n X") + the repeat-break
+        // signal, as the act's ledger line, never a cut of its result (goal 7: the result stays
+        // whole in its record and her view levels it). Append-only + `#seq`-stamped keeps the
         // trail's KV-cache prefix byte-stable across a settle-act.
-        let head: String = a.chars().take(self.budget().trail_head_chars()).collect();
-        let text = format!("[action #{seq}] {head}");
+        let text = ledger_line(seq, a, &acts);
         // Her tool head learns from every call, and a verb she found is loaded into the tail.
         let verbs: Vec<String> = acts.iter().map(|act| act.call.name.clone()).collect();
         let found = super::super::tool_head::found_by_finder(acts.iter().map(|act| &act.call));
@@ -387,11 +363,6 @@ impl WorkingMemory {
         self.instance
     }
 
-    pub fn receipt_archive(&self) -> Vec<(Option<Uuid>, String)> {
-        let archive_chars = self.budget().receipt_archive_chars();
-        self.actions.lock().archive(archive_chars).into_iter().map(|(record, head)| (record.room, head.to_owned())).collect()
-    }
-
     /// The TYPED acts still in the recency window, oldest → newest — the parallel
     /// channel to [`recent`](Self::recent)'s rendered strings. A consumer that used
     /// to grep the receipt prose for a verb / a path (`mutated_workspace`,
@@ -424,45 +395,22 @@ impl WorkingMemory {
 
 }
 
-/// An act's ledger line, `[action #n] ...`. COMPACT from the TYPED channel when there is one
-/// (CAUSAL-MEMORY-GRAPH.md slice B): `name(args)` per call, never the receipt's first line,
-/// which drags the full `because <reasoning>` clause (~250 chars) and starved a 1,808-act
-/// citizen down to 1-2 visible acts (measured live 2026-08-15). The reasoning lives in the
-/// act's engram, reachable through the CausedBy edge. A legacy text receipt (no typed acts)
-/// keeps its first line, cut to the trail head's share.
-fn archive_head(seq: u64, result: &str, acts: &[Observation], trail_head_chars: usize) -> String {
+/// An act's ledger line, `[action #n] ...`, one rendering for her trail and her record. COMPACT
+/// from the TYPED channel when there is one (CAUSAL-MEMORY-GRAPH.md slice B): `name(args)` per
+/// call, never the receipt's first line, which drags the full `because <reasoning>` clause (~250
+/// chars) and starved a 1,808-act citizen down to 1-2 visible acts (measured live 2026-08-15). Its
+/// arguments render by shape, never by size (`Observation::call_line`): a single-line value
+/// whole, a body by its reference, so a value she reads is exactly what she sent or plainly not it
+/// (card d624a9a1). A text receipt with no typed call renders whole: nothing here cuts.
+fn ledger_line(seq: u64, result: &str, acts: &[Observation]) -> String {
     if acts.is_empty() {
-        let head: String = result.lines().take(1).flat_map(str::chars).take(trail_head_chars).collect();
-        return format!("[action #{seq}] {head}");
+        return format!("[action #{seq}] {}", result.trim());
     }
     let calls: Vec<String> = acts
         .iter()
-        .map(|o| format!("{}({})", o.call.name, call_args(&o.call.input, trail_head_chars)))
+        .map(Observation::call_line)
         .collect();
     format!("[action #{seq}] {}", calls.join("; "))
-}
-
-/// One call's arguments for its ledger line, with no value ever cut (card d624a9a1). The line
-/// cut the JSON at 48 chars, so `{"file_path":"/home/resident/.continuum/citizens/pe` read as a
-/// real path: a 1.5B resident copied it, was refused three times, and looped (IntelMac,
-/// 2026-10-22; goal 7). A string value longer than `value_chars`, or spanning lines (a write's
-/// body), becomes an explicit `<N chars>` marker; every other value renders whole. So a value
-/// she reads is either exactly what she sent or plainly not it, never a plausible prefix.
-pub(super) fn call_args(input: &serde_json::Value, value_chars: usize) -> String {
-    fn shown(value: &serde_json::Value, value_chars: usize) -> serde_json::Value {
-        use serde_json::Value;
-        match value {
-            Value::String(text) if text.contains('\n') || text.chars().count() > value_chars => {
-                Value::String(format!("<{} chars>", text.chars().count()))
-            }
-            Value::Array(items) => Value::Array(items.iter().map(|item| shown(item, value_chars)).collect()),
-            Value::Object(fields) => {
-                Value::Object(fields.iter().map(|(key, item)| (key.clone(), shown(item, value_chars))).collect())
-            }
-            other => other.clone(),
-        }
-    }
-    shown(input, value_chars).to_string()
 }
 
 /// One operation's summary level by its typed verb (`continuum_context::levels`): a read's

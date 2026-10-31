@@ -6,8 +6,8 @@ use super::*;
 // recorded no-deliverable facts. Fit the actual projection after that eviction.
 #[tokio::test]
 async fn substrate_notices_survive_attention_and_history_pressure_once() {
-    use crate::cognition::working_memory::{WorkingMemory, WorkingMemoryFaculty};
-    use crate::cognition::workspace::{Arbiter, Faculty, FocusContext, SalienceArbiter, Situation};
+    use crate::cognition::working_memory::WorkingMemory;
+    use crate::cognition::workspace::{Arbiter, FocusContext, SalienceArbiter, Situation};
     let wm = Arc::new(WorkingMemory::new(8));
     wm.record("weighing the next step");
     wm.record_fact("[no-deliverable] No workspace change yet.");
@@ -26,23 +26,18 @@ async fn substrate_notices_survive_attention_and_history_pressure_once() {
         Uuid::new_v4(), "T", "You are T.", Arc::new(HeuristicInferenceAdapter::new()),
     ).with_working_memory(Arc::clone(&wm));
     let mut ws = Workspace::new("continue the existing task");
-    let memory = WorkingMemoryFaculty::new(Arc::clone(&wm)).contribute(&ws).await.unwrap();
-    assert!(!memory.content.contains("[no-deliverable]"), "notices have one projection");
-    let mut bids: Vec<_> = (0..6).map(|i| Contribution::context(
+    let bids: Vec<_> = (0..6).map(|i| Contribution::context(
         FacultyId::Custom(format!("source-{i}")), "standing context", 0.9, "fixture",
     )).collect();
-    bids.push(memory.clone());
-    ws.broadcast = SalienceArbiter.focus(bids, 6, &FocusContext {
+    ws.broadcast = SalienceArbiter.focus(bids, &FocusContext {
         world_state: &ws.world_state, situation: Situation::PostAction,
     });
-    assert!(!ws.broadcast.iter().any(|c| c.faculty == memory.faculty));
     // Her notices ride her view as a required source (`context_streams::notices`): the
     // allocation grants their floor before anything optional, and the final fit never cuts
     // her view. So through the production path, at every window from 256 tokens (too small) to roomy,
     // a prompt that would be sent carries each notice exactly once, and a window that
     // cannot hold them says so instead of sending a prompt without them.
-    for keep_memory in [false, true] {
-        if keep_memory { ws.broadcast.push(memory.clone()); }
+    {
         let (mut sent, mut refused) = (0, 0);
         for window in (256u32..=65_536).step_by(2_048) {
             let view = faculty.prompt_view_within(&ws, window);
@@ -71,10 +66,9 @@ async fn substrate_notices_survive_attention_and_history_pressure_once() {
     wm.end_of_work_turn();
     assert!(wm.notice_details().is_empty(), "detail and reference share expiry");
     assert!(!wm.notices().iter().any(|notice| notice.contains("work/get")));
-    // A notice-only memory has no optional thought bid at all.
+    // A notice-only memory still fits: its notices are her view's required source.
     let only = Arc::new(WorkingMemory::new(8));
     only.record_fact("[no-deliverable] No workspace change yet.");
-    assert!(WorkingMemoryFaculty::new(Arc::clone(&only)).contribute(&ws).await.is_none());
     let faculty = LlmDeliberationFaculty::new(
         Uuid::new_v4(), "T", "You are T.", Arc::new(HeuristicInferenceAdapter::new()),
     ).with_working_memory(only);
@@ -153,7 +147,6 @@ async fn own_history_preserves_corrections_at_each_inference_step() {
     let persona = Uuid::new_v4();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let wm = Arc::new(WorkingMemory::new(16));
-    wm.set_served_window(32_768);
     let faculty = LlmDeliberationFaculty::new(
         persona,
         "Anwen",

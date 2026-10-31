@@ -1,10 +1,5 @@
 use super::*;
 
-/// Default bounded workspace capacity — the finite attention "spotlight". Enough
-/// for recall + world-model + affect + roster context to coexist; the arbiter
-/// keeps it bounded so cost stays O(capacity) no matter how many faculties bid.
-pub const DEFAULT_WORKSPACE_CAPACITY: usize = 6;
-
 /// Everything needed to assemble one persona's continuous mind. The `admission`
 /// is the persona's UNIFIED hippocampus (shared with the admission pipeline and
 /// spanning all the persona's rooms); the `adapter` is the shared model backend,
@@ -22,8 +17,6 @@ pub struct PersonaBrainConfig {
     pub system_prompt: String,
     pub admission: Arc<AdmissionState>,
     pub adapter: Arc<dyn AIProviderAdapter>,
-    /// Bounded workspace capacity; `None` → [`DEFAULT_WORKSPACE_CAPACITY`].
-    pub capacity: Option<usize>,
     /// Grounding RagSources lifted into perception-tier faculties via
     /// [`RagSourceFaculty`] (the migration bridge — see its module doc). Each is
     /// paired with a [`SaliencePolicy`]: roster + doctrine are `StandingFraming`
@@ -308,8 +301,8 @@ pub(super) fn assemble_workspace_cycle(
     });
     // Working memory: the persona's recent chain-of-thought AND the head of what its
     // hands just did, carried forward across turns. The deliberator WRITES its
-    // reasoning here after each verdict; the perception-tier `WorkingMemoryFaculty`
-    // (pushed below) READS it into the next tick — so the persona resumes its train of
+    // reasoning here after each verdict; her view's thoughts and actions sources READ it
+    // into the next tick — so the persona resumes its train of
     // thought instead of re-deriving it cold. Volatile scratchpad, distinct from the
     // long-term engram store; self-activates only when thinking is enabled (suppressed
     // turns record nothing). Built HERE (before recall) so recall can share it in and
@@ -426,13 +419,6 @@ pub(super) fn assemble_workspace_cycle(
     } else {
         faculties.push(Arc::new(recall));
     }
-
-    // The perception-tier reader of the working memory built above: each tick it bids
-    // the recent reasoning + act heads into the workspace so the deliberator conditions
-    // on them. (The buffer itself is created before recall so recall can share it in.)
-    faculties.push(Arc::new(WorkingMemoryFaculty::new(Arc::clone(
-        &working_memory,
-    ))));
 
     // Bridge each grounding source into a perception-tier faculty under its
     // salience policy. Standing-framing (roster, doctrine) bids at a high floor so
@@ -561,13 +547,9 @@ pub(super) fn assemble_workspace_cycle(
 
     let cycle = WorkspaceCycle::new(
         faculties,
-        // Situation-aware focuser: on every act→observe re-perception (`PostAction`)
-        // it drops the standing SOCIAL re-grounding so the tool result + working
-        // memory + recall own the window — the persona goes lean and code-first while
-        // heads-down, and fuller-grounded on a fresh ask. This is the wire behind
-        // "straightforward for whatever their current state requires."
+        // Situation-aware focuser: every bid is forwarded, ordered by salience; how much
+        // of each she sees is her view's one allocation.
         Arc::new(SituationFocusArbiter::new()),
-        cfg.capacity.unwrap_or(DEFAULT_WORKSPACE_CAPACITY),
     )
     .with_genome(genome)
     .with_decoding(decoding)
@@ -591,7 +573,7 @@ pub(super) fn assemble_workspace_cycle(
             persona_name: persona_name_for_body,
             executor,
             admission: admission_for_body,
-            // Same buffer the perception-tier WorkingMemoryFaculty reads — the
+            // Same buffer her view's sources read — the
             // organism records each act here so the mind perceives its own hands
             // next tick (proprioception), even when the result is a dedup no-op in
             // long-term memory and thinking is suppressed.

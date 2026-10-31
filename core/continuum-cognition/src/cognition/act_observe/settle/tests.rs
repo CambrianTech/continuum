@@ -242,7 +242,7 @@
                 std::future::pending().await
             }
         }
-        let cycle = WorkspaceCycle::new(vec![Arc::new(Hangs) as Arc<dyn Faculty>], Arc::new(SalienceArbiter), 8);
+        let cycle = WorkspaceCycle::new(vec![Arc::new(Hangs) as Arc<dyn Faculty>], Arc::new(SalienceArbiter));
         let mut conversation = ScriptedConversation::new();
         conversation.prime().await.unwrap(); // unwrap: test fixture
         let room = crate::identity::ActivityRoom::from_uuid(uuid::Uuid::new_v4()).unwrap(); // unwrap: a fresh uuid is a valid room

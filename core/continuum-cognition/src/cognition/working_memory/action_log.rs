@@ -48,10 +48,6 @@ pub(crate) struct ActionRecord {
     /// The saved whole; `None` when the save failed, and then the result never collapses
     /// (nothing else holds its bytes).
     pub handle: Option<String>,
-    /// The pointer exactly as a build before the records wrote it, restored from its
-    /// checkpoint: its operation and workspace live only in that text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub written_pointer: Option<String>,
     /// The result's summary level (`continuum_context::levels`): a numbered read's outline,
     /// else an output's head and tail; what her view gives it when it cannot keep it whole.
     /// Kept after the result collapses, so what she read stays addressable.
@@ -78,9 +74,20 @@ impl ActionRecord {
         super::receipt_key(self.seq, self.handle.as_deref())
     }
 
-    /// The RAM its resident body holds, in bytes: what the memory owner accounts, never a
-    /// character count (that is `stored_chars`, the view's price).
+    /// The RAM this record holds, in bytes: every text it owns (its ledger line, its summary and
+    /// its body while resident), so a line or summary that outlives a shed stays in the memory
+    /// owner's account as pinned charge (Codex on #5637). Never a character count (that is
+    /// `stored_chars`, the view's price).
     pub fn resident_bytes(&self) -> u64 {
+        [&self.head, &self.summary, &self.result]
+            .into_iter()
+            .map(|text| text.as_ref().map_or(0, |text| text.len() as u64))
+            .sum()
+    }
+
+    /// The bytes a shed releases: its resident body. The line and the summary stay with the
+    /// record for as long as her mind lives.
+    pub fn body_bytes(&self) -> u64 {
         self.result.as_ref().map_or(0, |result| result.len() as u64)
     }
 }
@@ -98,18 +105,17 @@ pub(super) struct ActionLog {
 }
 
 impl ActionLog {
-    /// A log from records in any order, bounded to `archive_chars` like a live one.
-    pub fn from_records(mut records: Vec<ActionRecord>, archive_chars: usize) -> Self {
+    /// A log from records in any order. Nothing here bounds it: a record keeps its line and its
+    /// handle for as long as her mind lives, and its body's RAM is the one memory owner's to
+    /// shed (`residency`), never a character cap.
+    pub fn from_records(mut records: Vec<ActionRecord>) -> Self {
         records.sort_by_key(|record| record.seq);
         records.dedup_by_key(|record| record.seq);
-        let mut log = Self { records: records.into() };
-        log.prune(archive_chars);
-        log
+        Self { records: records.into() }
     }
 
-    pub fn push(&mut self, record: ActionRecord, archive_chars: usize) {
+    pub fn push(&mut self, record: ActionRecord) {
         self.records.push_back(record);
-        self.prune(archive_chars);
     }
 
     pub fn get(&self, seq: u64) -> Option<&ActionRecord> {
@@ -139,22 +145,6 @@ impl ActionLog {
         pointers
     }
 
-    /// The newest ledger lines that fit `archive_chars`, oldest first; at least the newest.
-    pub fn archive(&self, archive_chars: usize) -> Vec<(&ActionRecord, &str)> {
-        let mut used = 0usize;
-        let mut kept: Vec<(&ActionRecord, &str)> = Vec::new();
-        for (record, head) in self.records.iter().rev().filter_map(|r| r.head.as_deref().map(|h| (r, h))) {
-            let cost = head.chars().count() + 1;
-            if !kept.is_empty() && used + cost > archive_chars {
-                break;
-            }
-            used += cost;
-            kept.push((record, head));
-        }
-        kept.reverse();
-        kept
-    }
-
     /// Every receipt whose dependencies must stay reachable: each retained result's key and
     /// every handle a record names. A body moved to its handle exists only on disk, so its
     /// handle is live for as long as its record is, however many pointers are newer.
@@ -166,7 +156,7 @@ impl ActionLog {
             .collect()
     }
 
-    /// The RAM every resident body holds, in bytes.
+    /// The RAM every record holds, in bytes: bodies, lines and summaries.
     pub fn resident_bytes(&self) -> u64 {
         self.records.iter().map(ActionRecord::resident_bytes).sum()
     }
@@ -187,7 +177,7 @@ impl ActionLog {
     }
 
     /// Move the oldest evictable bodies to their handles until at most `budget` bytes stay
-    /// resident. Each keeps its measured length (`stored_chars`) and its handle, so her view
+    /// resident, counting every record's line and summary (which no shed releases). Each keeps its measured length (`stored_chars`) and its handle, so her view
     /// still prices and reloads its whole. Exactly to the budget: the memory owner decides
     /// when, so there is no hysteresis here.
     pub fn collapse_over(&mut self, budget: u64, saved: &dyn Fn(u64, &str) -> bool) -> Collapsed {
@@ -200,26 +190,18 @@ impl ActionLog {
             self.evictable(saved)
                 .take_while(|record| {
                     let take = over > 0;
-                    over = over.saturating_sub(record.resident_bytes());
+                    over = over.saturating_sub(record.body_bytes());
                     take
                 })
                 .map(|record| record.seq)
                 .collect()
         };
         for record in self.records.iter_mut().filter(|record| chosen.contains(&record.seq)) {
-            total -= record.resident_bytes();
+            total -= record.body_bytes();
             record.stored_chars = record.result.as_ref().map(|result| result.chars().count());
             record.result = None;
         }
         Collapsed { total }
     }
 
-    /// Drop the records nothing can reach any more: past the ledger's share, no body in RAM,
-    /// and no handle to reload one from. A record naming a handle stays, since its whole is
-    /// reachable through her view (`StoredWhole`) for as long as the record is.
-    fn prune(&mut self, archive_chars: usize) {
-        let keep: HashSet<u64> = self.archive(archive_chars).into_iter().map(|(record, _)| record.seq).collect();
-        self.records
-            .retain(|record| record.result.is_some() || record.handle.is_some() || keep.contains(&record.seq));
-    }
 }

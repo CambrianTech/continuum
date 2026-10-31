@@ -15,7 +15,6 @@ async fn a_huge_legacy_result_arrives_reduced_with_its_handle_never_refused() {
 
     let window = 8_192u32;
     let wm = Arc::new(WorkingMemory::new(8));
-    wm.set_served_window(window);
     let huge: String = (0..6_000).map(|i| format!("line {i} of a very large tool result\n")).collect();
     wm.record_receipt_typed(&[], &huge, None, ResultCustody::Whole { handle: "legacy-evidence".into() });
 
@@ -84,7 +83,6 @@ mod the_newest_result_over_her_window {
     /// The same, served at `window`.
     fn faculty_at(content: &str, adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter>, window: u32) -> LlmDeliberationFaculty {
         let wm = Arc::new(WorkingMemory::new(8));
-        wm.set_served_window(window);
         let room = Uuid::new_v4();
         let call = ToolCall { id: "call-aris".into(), name: "work/submission".into(), input: json!({ "include_staged_evidence": true }) };
         wm.record_native_action_statement("Reading the staged evidence for my submission.", room, std::slice::from_ref(&call));
@@ -100,7 +98,7 @@ mod the_newest_result_over_her_window {
             },
             status: ActStatus::Executed,
         };
-        let rendered = observation.render_recency("");
+        let rendered = observation.render_recency();
         wm.record_receipt_typed(&[observation], &rendered, Some(room), ResultCustody::Whole { handle: HANDLE.into() });
         LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", adapter)
             .with_context_window(window)

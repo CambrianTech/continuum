@@ -514,7 +514,7 @@
             ),
             Arc::new(SeesDoctrine),
         ];
-        let ws = WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter), 6)
+        let ws = WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter))
             .run("is anyone going to merge this?")
             .await;
 
@@ -621,7 +621,6 @@
         let _ = WorkspaceCycle::new(
             faculties,
             Arc::new(SalienceArbiter),
-            DEFAULT_CAPACITY_FOR_TEST,
         )
         .with_capture(sink.clone())
         .run("anything urgent?")
@@ -637,6 +636,3 @@
         );
     }
 
-    /// The production default capacity (mirror of persona_workspace's constant) so
-    /// the canary tests the realistic configuration, not a contrived one.
-    const DEFAULT_CAPACITY_FOR_TEST: usize = 6;

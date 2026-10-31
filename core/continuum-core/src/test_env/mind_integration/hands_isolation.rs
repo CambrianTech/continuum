@@ -259,7 +259,7 @@ async fn a_claims_hands_are_its_own_and_her_default_hands_never_move() {
         card_staging::stage_for_card(home.path(), persona, &gym_card).await,
         card_staging::Staging::Ready { path: workspace.clone() },
     );
-    let cycle = WorkspaceCycle::new(vec![], Arc::new(crate::cognition::workspace::SalienceArbiter), 4)
+    let cycle = WorkspaceCycle::new(vec![], Arc::new(crate::cognition::workspace::SalienceArbiter))
         .with_acting(Arc::new(ActingBody {
             persona_id: persona, persona_name: live.persona_name.clone(),
             executor: live.executor.clone(), working_memory: live.working_memory.clone(),
@@ -440,7 +440,6 @@ fn a_handless_cycle_yields_no_hands() {
     let cycle = crate::cognition::workspace::WorkspaceCycle::new(
         vec![],
         Arc::new(crate::cognition::workspace::SalienceArbiter),
-        4,
     );
     assert!(ActingHands::of(&cycle).is_none());
 }
