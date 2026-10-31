@@ -28,6 +28,7 @@ crate::action_command! {
     access: AiSafe,
     native: true,
     aliases: &["git_status"],
+    effect: Observes,
     params: GitStatusParams,
     output: GitStatusInfo,
     run(this, ctx, _p) => {
