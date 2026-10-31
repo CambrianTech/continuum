@@ -139,12 +139,30 @@ pub async fn advance_card_state_effective(
     // release valve — the reviewer then reviewed nothing and the grade ran on the
     // base commit. Her acting root is the checkout the card staged for her; no
     // change there since staging = nothing to review.
+    // Set when a gated close concludes by findings: it closes outright below, before the
+    // gated-finisher-goes-to-review rule, since a review card with no submission is the same
+    // stall one step later (Cormac on #5653).
+    let mut closed_by_findings = false;
     if (finishing || state == CardState::Review)
         && gated
         && review_parent.is_none()
     {
         if let Some(root) = actor.and_then(crate::cognition::persona_workspace::acting_root_of) {
+            // Read only for a close: whether her ledger records a findings conclusion.
+            let findings = state == CardState::Closed && concluded_by_findings(airc, card_id, actor).await;
             match checkout_change(&root) {
+                ChangeVerdict::NoChange if findings => {
+                    closed_by_findings = true;
+                    // A close needs no write when she established why no change is needed (an
+                    // already-fixed bug, a premise that no longer holds): her ledger is the proof,
+                    // and nothing goes to a reviewer, so the gate's purpose still holds (Codex on
+                    // #5653; Aris on card 7d044c91, 2026-10-31: 11 acts on a bug 73196f51a fixed).
+                    continuum_base::probe!(
+                        class = "work.closed_by_findings",
+                        card = %short8(card_id.as_uuid()),
+                        "a gated card closed with no change: her ledger records what she established"
+                    );
+                }
                 ChangeVerdict::NoChange => {
                     continuum_base::probe!(
                         class = "work.review.refused_no_write",
@@ -157,8 +175,9 @@ pub async fn advance_card_state_effective(
                     return Err(format!(
                         "done refused: {} has no change since it was staged (clean tree, no new \
                          commit) — there is nothing for a reviewer to review. Write the fix \
-                         (code/edit) and mark done again, or release the card (work/release) \
-                         so another holder can take it.",
+                         (code/edit) and mark done again; or, when no change is needed (already \
+                         fixed, premise gone), record what you established (work/note with known) \
+                         and close it (work/state closed); or release it (work/release).",
                         root.display()
                     ));
                 }
@@ -251,6 +270,11 @@ pub async fn advance_card_state_effective(
             return Ok(next);
         }
     }
+    // A findings close ends here: nothing for a reviewer to review, so it never opens one.
+    if closed_by_findings {
+        raw_advance(airc, card_id, CardState::Closed, via).await?;
+        return Ok(CardState::Closed);
+    }
     // A VERDICT is the review's outcome: it closes the parent outright. Every
     // other finisher on a gated card goes to review first.
     if finishing && via != VIA_VERDICT && gated {
@@ -339,6 +363,23 @@ fn resident_finish(actor: Option<Uuid>, pr_linked: bool, current: &CardState) ->
 /// Post the sibling review card for `parent` into the parent's own room, as the
 /// caller's identity. The card BODY carries the reviewer's role prompt — recipe
 /// data on the card, never a code branch in cognition.
+/// A close with no change in her checkout concludes by findings when her newest ledger on the card
+/// is hers and records what she established (`work/note` with known facts).
+async fn concluded_by_findings(airc: &Arc<Airc>, card_id: WorkCardId, actor: Option<Uuid>) -> bool {
+    use crate::experience::ledger::LedgerStore as _;
+    let Some(actor) = actor else { return false };
+    let Some((room, _)) = card_in_subscribed_rooms(airc, card_id).await else { return false };
+    match crate::experience::ledger::WallLedgerStore::new(airc.clone()).read(&room, card_id.as_uuid()).await {
+        Ok(Some(ledger)) => established_by(&ledger, actor),
+        Ok(None) | Err(_) => false,
+    }
+}
+
+/// PURE: the ledger is hers and holds at least one established fact.
+fn established_by(ledger: &crate::experience::ledger::CardLedger, actor: Uuid) -> bool {
+    ledger.by == actor && ledger.known.iter().any(|fact| !fact.trim().is_empty())
+}
+
 pub(crate) async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCardId, String> {
     let (room, card) = card_in_subscribed_rooms(airc, parent)
         .await
@@ -358,7 +399,7 @@ pub(crate) async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Re
         })
         .unwrap_or_else(|| "the owner".to_string()); // unwrap_or: owner not resident = a neutral name in the review body
     let title = crate::recipe::bench_title::review_card_title(parent.as_uuid(), &instance, &owner);
-    let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
+    let p8 = airc_core::shown_id::shown_form(parent.as_uuid());
     let body = format!(
         "Review {owner}'s fix for `{instance}` (card {p8}). You are the fresh pair of \
          eyes: READ-ONLY. Do not edit their tree.\n\n\
@@ -402,8 +443,8 @@ pub async fn open_room_review_card(
                 .map(|rt| rt.agent_name().to_string())
         })
         .unwrap_or_else(|| "the owner".to_string()); // unwrap_or: owner not resident = a neutral name in the review body
-    let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
-    let title: String = format!("review: {}", card.title).chars().take(160).collect();
+    let p8 = airc_core::shown_id::shown_form(parent.as_uuid());
+    let title = format!("review: {}", card.title);
     let body = format!(
         "Review {owner}'s work on card {p8} (\"{}\"). Read the latest submission          (work/submission) and the change it carries, judge it against the card, then give          your verdict with work/review (passed or failed, with evidence). This room's review          policy decides how many passing reviews finish the card and whether the author may          review her own work.",
         card.title
@@ -486,7 +527,95 @@ pub async fn raw_advance(
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches: a findings close admitted on someone else's ledger, or on a ledger that
+    // establishes nothing (an empty note would make the write gate a formality).
+    #[test]
+    fn a_findings_close_needs_her_own_ledger_with_an_established_fact() {
+        let her = Uuid::from_u128(1);
+        let ledger = |by: Uuid, known: Vec<&str>| crate::experience::ledger::CardLedger {
+            card_id: Uuid::from_u128(9),
+            known: known.into_iter().map(String::from).collect(),
+            hypotheses: Vec::new(),
+            unknown: String::new(),
+            next_test: String::new(),
+            decided_fix: None,
+            at_ms: 1,
+            by,
+        };
+        assert!(established_by(&ledger(her, vec!["llm_deliberation_faculty.rs is 931 lines; the cited line 2496 is gone (73196f51a)"]), her));
+        assert!(!established_by(&ledger(Uuid::from_u128(2), vec!["a fact"]), her), "another holder's ledger");
+        assert!(!established_by(&ledger(her, vec!["  "]), her), "a ledger that establishes nothing");
+    }
     use super::*;
+
+    // what this catches (Cormac on #5653 at 6e2b8e7ac): a findings close on a GATED card passed
+    // the write check and then fell into the gated-finisher rule, landing in Review with a review
+    // card that had no submission to review: the same stall one step later. Driven end to end
+    // through a real airc scope: a room declaring a review policy, her ledger with an established
+    // fact, and a clean checkout committed before it was staged.
+    #[tokio::test]
+    async fn a_findings_close_on_a_gated_card_closes_it_and_opens_no_review() {
+        let home = tempfile::tempdir().expect("temp airc home");
+        let airc = Arc::new(
+            airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .expect("a local airc scope opens without a daemon"),
+        );
+        let room = airc.join("gated-room").await.expect("join the gated room");
+        let binding = serde_json::json!({"recipe": "project", "params": {"review": {"required": 1}}});
+        airc.publish_wall_post_in(&room, crate::experience::binding::RECIPE_WALL_CATEGORY.to_string(), binding.to_string(), None)
+            .await
+            .expect("the room declares a review policy");
+        let repo = airc_lib::RepoId::new("github.com/CambrianTech/continuum").expect("repo");
+        let card = airc
+            .create_work_card(airc_lib::CreateWorkCard::new(repo, "is line 2496 still live?", airc_lib::Priority::P1))
+            .await
+            .expect("card");
+        let her = Uuid::new_v4();
+        use crate::experience::ledger::LedgerStore as _;
+        crate::experience::ledger::WallLedgerStore::new(airc.clone())
+            .write(
+                &room,
+                &crate::experience::ledger::CardLedger {
+                    card_id: card.as_uuid(),
+                    known: vec!["the cited line is gone; the file is 931 lines".into()],
+                    hypotheses: Vec::new(),
+                    unknown: String::new(),
+                    next_test: String::new(),
+                    decided_fix: None,
+                    at_ms: 1,
+                    by: her,
+                },
+            )
+            .await
+            .expect("her ledger");
+        // A clean checkout whose HEAD predates its staging: no change to review.
+        let checkout = tempfile::tempdir().expect("checkout");
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-C", &checkout.path().to_string_lossy()])
+                .args(args)
+                .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+                .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
+                .output()
+                .expect("git runs");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q"]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base"]);
+        crate::cognition::persona_workspace::note_acting_root_in(her, None, Some(checkout.path().to_path_buf()));
+        assert_eq!(checkout_change(checkout.path()), ChangeVerdict::NoChange, "the fixture is a clean checkout");
+
+        let landed = advance_card_state_effective(&airc, card, CardState::Closed, "work_state", Some(her))
+            .await
+            .expect("a findings close lands");
+        assert_eq!(landed, CardState::Closed, "a findings close never goes to review");
+        let (_, after) = card_in_subscribed_rooms(&airc, card).await.expect("the card is on her board");
+        assert_eq!(after.state, CardState::Closed);
+        let board = airc.work_board_in(&room).await.expect("board");
+        assert_eq!(board.review_cards_for(card).count(), 0, "no review card was opened for a card with nothing to review");
+    }
 
     // what this catches (card 4356a90f, Codex on #5399): a resident's `closed` after a pass
     // stranded a green PR (airc work merge needs Review), and a close on an already-merged
