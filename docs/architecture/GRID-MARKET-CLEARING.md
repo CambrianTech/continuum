@@ -46,6 +46,60 @@ A market is the **distributed algorithm** for this problem class, with proofs:
 transients and partitions. They compose — prices for placement, queues for the
 next dispatch.
 
+## 1a. The numeraire: one currency, and every claim's own value over time
+
+Joel, 2026-10-30: "find a way of pricing everything using the same metric. Experience is not as simple as raw RAM,
+time, slots, context... everything has a cost. Killing lanes, not having context. Maybe it's all just time." And:
+"It can be worthless in situations like an agent talking so late it's useless, like a stock future expiring. Those
+follow an equation that's a time relation. So maybe everything can have its own function that takes a common
+currency."
+
+**The currency is weighted time to a verified outcome.** Every cost the system pays is time:
+- killing a lane is the reload plus every in-flight turn's lost work;
+- missing context is the acts spent re-reading;
+- thrash is the re-prefill of each turnover;
+- a cut write is the act it wasted;
+- a page is its wait;
+- the grid's cost is latency.
+
+Time is measured the same way on every machine. Two refinements:
+- **Quality is time too:** the clock stops at a *verified* outcome (an edit applied and tested, a PR merged, a
+  message answered; the typed outcomes of HOW-A-MIND-GETS-WHAT-SHE-NEEDS section 7), so a fast wrong act pays the
+  time to discover and redo it.
+- **Whose time:** the one input a person sets (which activity matters now, which conversation is live) weights
+  whose seconds count for more. Everything else is measured.
+
+**Every claim carries its own value function over time**, in that currency: what completing it is worth as a
+function of when it completes. This is the time-utility function of real-time scheduling (Jensen and Locke, 1985;
+utility accrual scheduling), and the reason prices move by themselves:
+
+| Activity | Its value over time |
+|---|---|
+| A reply in a live conversation | high now, decaying to nearly nothing once the conversation has moved on (an option at expiry) |
+| A voice or video frame | a hard deadline: full value until the frame time, none after |
+| A person waiting on a PR review | steady, then falling as they give up and do it themselves |
+| A refactor | flat for hours |
+| Dreaming | low, never zero, flat |
+
+**A resource's price is how far one more unit moves the claims along their curves.** A token of context, a
+lane-second, a byte of state, a page move and a relaunch are each priced by the expected change in value they
+cause: a unit that lets a live reply land before its curve falls is worth much; the same unit to a flat refactor
+is worth little; a unit after a curve has fallen to zero is worth nothing, so the market stops spending on a
+conversation that has moved on, with no rule written to say so.
+
+**What is measured and what is learned.**
+- The curves' shapes come from the activity: a conversation's decay is measured from how long people and peers
+  actually wait before moving on; a deadline is the medium's frame time.
+- The conversions ("how many seconds does this token of context save her") are learned by the policy loop from
+  controlled probes (HOW-A-MIND L7), never guessed. An unmeasured conversion is marked unmeasured, and its claim
+  trades only its floor.
+- Gates stay outside the currency: privacy, permission and a live faculty working at all are never bought or sold
+  (invariant 1).
+
+**In the solver** (`cambrian-flex`, ONE-BUDGET slice 1), a claim's `Value` is in this currency, and its
+increments are the marginal change in expected value per unit of resource, evaluated on its curve at the
+current time. Re-clearing as time passes is what makes a stale claim's price fall to zero.
+
 ## 2. The nested market (one numeraire, three tiers)
 
 The λ chain must ground in ONE value unit or the tiers silently fork. The
