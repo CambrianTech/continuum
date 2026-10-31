@@ -106,6 +106,46 @@ Its laws:
   could work, and says why. Edit matching is tiered and unique-or-fail; staleness is a content
   hash.
 
+### One rendering: every result reads the same way
+
+Joel, 2026-10-31: "Make sure the results are also as robust as yours or other tool calls, highly
+formulaic and consistent, what they expect." Today each command writes its own prose (JSON scalars
+then text, `{"output":""}`, "I dispatched ... I should NOT wait", two fold-pointer formats, an
+error with our history in it). A mid-size model learns a format from the examples in its own
+context; thirty formats teach none. So `Answer` has exactly one renderer, `Answer::render`, and
+every tool result she reads is its output:
+
+```
+<status> <tool>(<the args that identify the call>)
+<body>
+more: <call>
+fix: <call>
+wake: task <id> is running; you will be woken when it ends. Do not poll.
+```
+
+- **Line 1, always.** `status` is one word from a closed set: `ok`, `unchanged`, `already`,
+  `running`, `refused`, `failed`. The call is echoed in her wire name with only the identifying
+  args (`read_file(src/a.rs, lines 1-400 of 2,311)`, `bash(cargo test -p x)`, `edit_file(src/a.rs)`).
+  A failure puts its cause here: `failed bash(cargo test) exit 101`.
+- **Body, by kind, one convention each.** File content: numbered lines in `cat -n` form, the
+  numbers she pages by. Command output: stdout then stderr, each under its own label. A
+  change: the changed lines with their numbers and the sha, bytes or remote it produced. A list:
+  one element per line. The body is whatever her grant buys of the selection; it carries no
+  advice and no prose about itself.
+- **Footer lines, fixed keys, only when they apply.** `more:` when the body left anything out,
+  `fix:` on a refusal, `wake:` when the call became a task. Each `<call>` is an exact native call
+  she can copy: her wire name and its JSON args (`read_file {"file_path":"src/a.rs","start_line":401}`),
+  never a description of one.
+- **A fold is the same shape, smaller.** When her view shows an older result at a summary or
+  pointer level, it keeps line 1 and replaces the body with the level, and keeps `more:`. She
+  always sees what call it was, how it ended, and the exact call that brings it back.
+- **The native pairing stays.** The rendering is the content of the tool message paired with
+  its call id; the envelope the chat template wraps around it is the template's.
+
+Each command supplies only the parts that differ: its body and, on a refusal, its fix. Ratchet:
+`results_outside_the_answer` counts tool-result text built anywhere but `Answer::render`, and
+falls to zero as commands migrate (the view's own fold levels reuse the renderer).
+
 ### The ratchet: every verb named to her is in her hands (was 7)
 
 `fix`, `rest` and every description, banner and fold pointer render `Call`s, typed values over
