@@ -610,8 +610,9 @@ impl ToolExecutor for CommandToolExecutor {
         let results = join_all(dispatches)
             .await
             .into_iter()
-            .enumerate()
-            .map(|(i, (tool_use_id, outcome))| match outcome {
+            // Each result is its call's: zipped, never indexed, so a result can never lack one.
+            .zip(calls.iter())
+            .map(|((tool_use_id, outcome), call)| match outcome {
                 Ok(mut value) => {
                     // THE TOOL'S OWN VERDICT, derived HERE — before the fold, from
                     // the FULL value. Ordering is the contract, not an accident: the
@@ -630,7 +631,7 @@ impl ToolExecutor for CommandToolExecutor {
                     // longer decodes projects `Undecodable` — schema drift, a defect,
                     // and never silently a success (Astra, #4352 review).
                     let canonical =
-                        crate::ai::tool_dialect::resolve_wire_name(&calls[i].name);
+                        crate::ai::tool_dialect::resolve_wire_name(&call.name);
                     let (verdict, dispatch_handle) =
                         crate::sdk_codegen::project_result(&canonical, &value);
                     if verdict == ActVerdict::Undecodable {
@@ -682,8 +683,8 @@ impl ToolExecutor for CommandToolExecutor {
                     let task = dispatch_handle.filter(|_| status == super::answer::Status::Running).map(|h| h.to_string());
                     let full = super::answer::render(
                         status,
-                        &calls[i].name,
-                        &calls[i].input,
+                        &call.name,
+                        &call.input,
                         cause.as_deref(),
                         &crate::cognition::tool_executor::spill::result_text(&value),
                         task.as_deref(),
@@ -714,7 +715,7 @@ impl ToolExecutor for CommandToolExecutor {
                     };
                     // Index back to the call that failed (the OK path never pays
                     // this — names are only needed to build recovery guidance).
-                    let attempted = calls.get(i).map(|c| c.name.as_str()).unwrap_or("");
+                    let attempted = call.name.as_str();
                     // A refusal is a wall in her hands; it must reach the probe stream,
                     // not only her. Kimi's own ledger showed work/create ✗×6 on
                     // 2026-10-05 and nothing on our side could say why without opening
@@ -743,14 +744,13 @@ impl ToolExecutor for CommandToolExecutor {
                         dispatch_handle: None,
                     });
                     // The same custody as a success: saved whole, handed back whole.
-                    // Line 1 names the refusal's kind (`[invalid]`, `[not_found]`) as its cause.
-                    let kind = raw.split_once('[').and_then(|(_, rest)| rest.split_once(']')).map(|(kind, _)| kind.to_owned());
-                    let input = calls.get(i).map_or(&Value::Null, |c| &c.input); // map_or: a result with no call echoes no arguments
+                    // No cause on line 1 yet: a refusal's kind arrives typed with the command's
+                    // refusal enum (HER-TOOLS, the verb macro), never scanned out of its message.
                     let rendered = super::answer::render(
                         super::answer::Status::Refused,
                         attempted,
-                        input,
-                        kind.as_deref(),
+                        &call.input,
+                        None,
                         &persona_tool_error(attempted, raw),
                         None,
                     );
