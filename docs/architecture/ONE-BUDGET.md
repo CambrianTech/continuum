@@ -258,6 +258,47 @@ is overcommitted and nothing grows; growth never commits part of an indivisible 
 stale commitment is refused; a fully met demand publishes a zero price; required floors past capacity are `Infeasible` with the claims named; an
 unmeasured claim gets only its floor.
 
+**Part 2: resource bundles, nesting, and who owns which decision** (part 1 merged as airc#1630; Codex needs this
+shape for slice 2).
+
+*Ownership, so there is one decider.*
+- **The node's `ResourceDaemon` owns one clearing** over the node's resource vector: device bytes, RAM bytes,
+  disk bytes, lane-seconds. Every consumer is a claim on it. The kernel's separate throughput broker and byte
+  ledger stop deciding: their consumers become claims, their decisions are deleted, and the physical custody they
+  tracked stays, held as leases on the daemon's tier (part 1's `report_held` / `withdraw`).
+- **Admission (L5) commits, it does not decide.** A mind's turn is admitted only inside a bundle the clearing has
+  granted; L5 then chooses the exact slot, page and generation within that grant, commits it atomically, and
+  reports physical custody back. A grant it cannot realize (no slot free for the granted state) is reported, and
+  the next clearing re-prices; L5 never grants itself more.
+- **A mind's own claims are a child tier** under her node grant: her view levels, thinking and answer clear
+  inside what the node granted her.
+
+*Resource vectors, typed.* A tier is generic over a resource vector `R`, a consumer-defined struct of typed
+amounts (for example `NodeResources { device: Amount<Bytes>, ram: Amount<Bytes>, lanes: Amount<LaneSeconds> }`)
+implementing a small trait: componentwise add, saturating subtract, `fits_within`, and per-component iteration
+for receipts. Part 1's single-resource tier is the one-component case (`Amount<U>` implements the trait), so
+nothing written for it changes meaning.
+
+*Joint claims.* An increment's size is an `R` (a mind's next state block needs device bytes AND a lane at once),
+and its value is the increment's total value. The clearing admits an increment only if every component fits, so
+a bundle is whole or nothing by construction. Order is by value per priced size: each component's size weighted
+by that component's current price, iterated as prices move (the Lagrangian multi-resource greedy). Because
+multi-resource selection is non-convex, every clearing reports the achieved value and the relaxed upper bound,
+exactly as part 1 does for indivisible steps. The prices are a vector: one `Price<U>` per component, each in its
+own unit.
+
+*Nesting.* A child tier's claim on its parent is its achievable value at each amount the parent could grant: the
+parent asks the child to clear at a measured set of candidate grants (around its current grant, the sizes its
+claims' blocks make meaningful) and the child returns, for each, its achieved value and upper bound. The parent
+treats the result as the child's increments, with the gap carried forward. A child never sees anything but its
+grant; a parent never sees the child's claims.
+
+*Validators (part 2's PR).* Two joint claims competing for the last unit of one component (neither half-granted);
+a bundle that fits on one component and not another (not admitted, priced in the component that bound); a parent
+re-granting a child less (the child's shrinks follow part 1's custody rules); conservation across nested tiers
+under the randomized drivers extended to vectors; L5's report that a granted bundle could not be realized, and
+the next clearing's re-price.
+
 **Migration.** The three callers move to `cambrian-flex` in the PR that adds it, `flex_allocate` and
 `RagSourceBudget`'s priority/min/max/grow are deleted, and `context_codec`'s ratchet points at the new owner.
 The behaviour change is proven on the proving ground's T0 against the known-bad suite before it reaches a
