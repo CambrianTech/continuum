@@ -494,7 +494,7 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
     // concurrency guide: NOTHING may gate the IPC socket bind on a gateway probe
     // (a hanging `/v1/models` call here previously wedged boot before the socket
     // bound) — the lazy embedder keeps that guarantee while giving the
-    // agent-memory bridge + hydrated corpora real SEMANTIC recall, not the
+    // hydrated corpora real SEMANTIC recall, not the
     // lexical word-overlap floor they were silently stuck on. (This is the
     // "separate addressing follow-up" the old comment promised.) The per-persona
     // recall path still resolves its own neural embedder on spawn.

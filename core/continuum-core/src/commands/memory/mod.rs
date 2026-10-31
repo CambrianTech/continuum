@@ -296,9 +296,8 @@ mod tests {
         );
         assert_eq!(persona_db_handle(&"helper".into()), "@persona:helper");
         // First-class citizenship: an explicit kind sentinel passes through to
-        // its OWN bucket, so a Claude Code / Codex agent's /continuum:memory
-        // writes land in agents/<name>/ (durable, own-dir — the amnesia fix),
-        // and a human's in humans/<name>/.
+        // its OWN bucket: an agent's in agents/<name>/, a human's in
+        // humans/<name>/.
         assert_eq!(
             persona_db_handle(&"@agent:claude-code".into()),
             "@agent:claude-code"
