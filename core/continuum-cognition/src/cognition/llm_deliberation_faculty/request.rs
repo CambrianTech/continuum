@@ -214,7 +214,7 @@ impl LlmDeliberationFaculty {
         }
         let gen_result = {
             let _admission = self
-                .admit_generation(ws, &request, adapter.generation_admission(), &mut capture)
+                .admit_generation(ws, &request, adapter.generation_admission())
                 .await?;
             // HER task-positive system is engaged from here: the per-citizen boredom gate
             // (dreams) reads this stamp, never a room wake.

@@ -223,39 +223,26 @@ mod verdicts;
 
 mod turn_bound;
 
-// what this catches (6780e79b): remote calls never poll local lane admission; falling home
-// waits for the lane, and cancelling a waiting admission leaves the lane reusable.
+// what this catches (6780e79b): a remote call never polls local admission; a local call is
+// dispatched without taking a permit (the adapter's turn admission and the slot pool are the
+// one queue in front of the engine, SERVING-ENGINE §1c).
 #[tokio::test]
-async fn remote_admission_bypasses_busy_local_resources_and_home_reacquires() {
+async fn remote_admission_bypasses_local_and_local_takes_no_permit() {
     use super::admission::{admit_target, GenerationAdmission};
     use crate::ai::adapter::GenerationAdmissionOwner;
-    use crate::inference::resource_admission::{LaneAdmission, LanePriority};
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
 
-    let lanes: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
-    lanes.set_served_lane_count(1);
-    let held_lane = lanes.acquire_serving_lane(None, LanePriority::Directed, None).await;
     let polls = std::cell::Cell::new(0);
     let local = || async {
         polls.set(polls.get() + 1);
-        let lane = lanes.acquire_serving_lane(None, LanePriority::Directed, None).await;
-        Some(GenerationAdmission::SharedLocal { _lane: lane })
+        Some(GenerationAdmission::SharedLocal)
     };
     let mut cx = Context::from_waker(Waker::noop());
     let mut remote = Box::pin(admit_target(GenerationAdmissionOwner::Adapter, local()));
     assert!(matches!(remote.as_mut().poll(&mut cx), Poll::Ready(Some(GenerationAdmission::AdapterOwned))));
-    assert_eq!(polls.get(), 0, "remote dispatch must not enter the local queue");
+    assert_eq!(polls.get(), 0, "remote dispatch must not enter the local path");
     drop(remote);
-
     let mut home = Box::pin(admit_target(GenerationAdmissionOwner::SharedLocal, local()));
-    assert!(home.as_mut().poll(&mut cx).is_pending(), "local lane is occupied");
-    drop(home); // cancelled while waiting for the lane
-    drop(held_lane);
-    let admission = admit_target(GenerationAdmissionOwner::SharedLocal, local()).await;
-    assert!(matches!(admission, Some(GenerationAdmission::SharedLocal { .. })));
-    drop(admission);
-    // A completed call leaves the lane reusable.
-    let next = admit_target(GenerationAdmissionOwner::SharedLocal, local()).await;
-    assert!(matches!(next, Some(GenerationAdmission::SharedLocal { .. })));
+    assert!(matches!(home.as_mut().poll(&mut cx), Poll::Ready(Some(GenerationAdmission::SharedLocal))), "local dispatch is ready at once: nothing to wait on");
 }

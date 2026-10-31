@@ -94,7 +94,7 @@ mod prompt;
 pub use self::prompt::*;
 mod request;
 mod admission;
-pub(crate) mod admission_clock;
+pub(crate) mod step_clock;
 use self::request::*;
 mod reply_claim;
 mod read_receipt;
@@ -533,14 +533,6 @@ impl LlmDeliberationFaculty {
             );
         }
         bound
-    }
-
-    fn holds_work_card(ws: &Workspace) -> bool {
-        ws.broadcast
-            .iter()
-            .filter(|c| c.decision.is_none() && !c.trailing)
-            .filter(|c| c.faculty.as_str() == crate::cognition::faculty_ids::ACTIVE_WORK)
-            .any(|c| crate::cognition::faculty_ids::renders_held_card(&c.content))
     }
 }
 

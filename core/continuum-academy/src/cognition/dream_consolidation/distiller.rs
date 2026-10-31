@@ -367,19 +367,15 @@ impl SemanticDistiller {
         // holding the very permit the held solve's next generation needed. Two
         // such dreams drained the whole pool; the solve starved at every tick-2
         // (grants=3/releases=1, both leaks timestamp-paired to dream defers).
-        // The rule every path owes: hold-defer FIRST holding NOTHING, gates second.
+        // The rule every path owes: hold-defer FIRST holding NOTHING, dispatch second.
         crate::inference::measured_hold::defer_while_held(
             crate::inference::slots::class_for(request.purpose.as_deref()),
             persona_id,
             request.purpose.as_deref(),
         )
         .await;
-        let _lane = crate::inference::resource_admission::acquire_serving_lane(
-            persona_id,
-            crate::inference::resource_admission::LanePriority::Ambient,
-            None,
-        )
-        .await;
+        // No lane: the adapter's turn admission classes a dream as background work and
+        // the slot pool places it; a lane here was a second count of the same slots.
         let response = self
             .adapter
             .generate_text(request)
