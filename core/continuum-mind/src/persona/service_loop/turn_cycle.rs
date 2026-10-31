@@ -312,7 +312,7 @@ pub(super) async fn run_turn_cycle(
                         lamport = msg.lamport,
                         reason = "workspace-pass",
                         gated = gated,
-                        pass_reason = %pass_detail.chars().take(240).collect::<String>(),
+                        pass_reason = %pass_detail,
                         "persona chose silence, or a gate converted her draft into a pass (gated) — pass_reason says which"
                     );
                     // THE ACT-QUESTION. Asked here on the PASS path and again after a spoken reply,
