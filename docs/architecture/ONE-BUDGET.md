@@ -150,8 +150,13 @@ with one rule: a claim grows while its measured marginal value exceeds its tier'
 measured excess demand. Slice 1 builds that solver once, as a floor crate, and every tier calls it: the
 `ResourceDaemon`'s tiers (slice 2, Codex), the engine's lanes and state (L5), a mind's claims (slice 6).
 
-**Crate.** `continuum-flex`: pure (no I/O, no clock, no randomness; P8 of THE-PROVING-GROUND), generic over a
-unit (`Tokens`, `Bytes`, `LaneSeconds`), serde and ts-rs for receipts, no dependency above the floor.
+**Crate.** One solver below both repos (Cormac on #5620): airc's NETWORK-AUTHORITY (airc#1628) needs the same
+types for network grants and must stay separately capable, so the crate depends on nothing but `std` and `serde`
+(ts-rs behind a feature), the same "bubble down" rule as `airc_core::shown_id`. Its home is the lowest crate both
+repos can depend on (continuum already depends on airc's crates, so the airc workspace's floor is the candidate;
+settled in review). Pure: no I/O, no clock, no randomness (THE-PROVING-GROUND P8). Generic over a unit type each
+consumer defines (`Tokens`, `Bytes`, `LaneSeconds`, bytes in flight); continuum-only pieces (where values come
+from, the behaviour model, ts-rs bindings) stay out of it.
 
 **Types.**
 - `Claim<U>`:
@@ -166,6 +171,15 @@ unit (`Tokens`, `Bytes`, `LaneSeconds`), serde and ts-rs for receipts, no depend
   - `current: Option<Grant<U>>`: what it holds now.
 - `Capacity<U>`: the measured amount, its source and time; `Unavailable` when not measured, which clears
   nothing and says so (never a default).
+- **Every measured input carries provenance** (Codex on #5620): a capacity or a value is `Measured { source,
+  at, version }`, `Stale { last, age }` or `Unmeasured`; the solver treats stale and unmeasured explicitly
+  (an unmeasured value claims only its floor) and the receipt says which inputs were which.
+- **Prices carry their unit:** `Price<U>` is value per unit of `U`. Comparing or summing prices of different
+  units does not compile; a conversion between tiers (a byte's price into a lane-second's) is an explicit,
+  measured function, never an implicit cast.
+- **A joint claim** asks for several resources at once (a mind's state needs device memory AND a lane; a
+  relay needs both legs): it is granted atomically across its tiers or not at all, so no half-admission holds
+  one resource while waiting for another.
 - `Grant<U>`: the claim, the amount (and the step, for `Steps`), the tier's price, the tier's epoch and a
   generation (monotonic per tier, so a stale grant is refused), and a reason: `Floor`, `Cleared`, `Held` (a
   change was not worth its switch cost), `UnderProvisioned` (a required floor did not fit: an explicit outcome
@@ -183,6 +197,14 @@ unit (`Tokens`, `Bytes`, `LaneSeconds`), serde and ts-rs for receipts, no depend
 3. The price is the value per unit of the last increment admitted.
 4. A change from a claim's current grant is applied only when its value gain exceeds its `switch_cost`;
    otherwise the grant is `Held`.
+5. If the required floors alone exceed capacity, the outcome is `Infeasible` with the claims named: nothing is
+   oversubscribed and nothing defaults (Codex).
+6. **A shrink is a request, and capacity is credited back only on acknowledgement.** A grant reduced by a
+   clearing becomes `ShrinkRequested { to }`; the freed amount is not granted to anyone until the holder
+   acknowledges its release (the generation it released at), so two holders never own the same unit
+   (ONE-BUDGET safety contract 1; Codex).
+7. Grants are fenced by `(epoch, generation)`: a grant from an older generation is refused wherever it is
+   presented.
 
 **Nesting.** A tier is itself a claim on its parent: its children's values, summed, are its value curve one
 level up. The parent clears and grants the tier an amount at its price; the tier clears its children within
@@ -201,7 +223,9 @@ priorities in `priority::*` are deleted with `flex_allocate`.
 The behaviour change is proven on the proving ground's T0 against the known-bad suite before it reaches a
 resident.
 
-**Review questions.**
+**Review questions** (answered so far: the crate depends on nothing in continuum and serves airc too, Cormac;
+provenance, infeasible floors, generation fencing, joint claims, acknowledged shrinks and unit-typed prices,
+Codex).
 1. Codex (slice 2): is `Clearing<U>` with nested tiers the shape the `ResourceDaemon` publishes, and is
    `generation` enough to fence stale grants across your leases?
 2. Cormac: can the behaviour model produce per-kind level values (reference and fault rates by level) from the
