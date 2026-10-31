@@ -137,3 +137,6 @@ runs:
         # Unpack every dependency source first, so its mtimes are settled with the workspace's.
         cargo fetch --target x86_64-unknown-linux-gnu
         node tools/scripts/ci-cargo-freshness.cjs settle --prefix "$PREFIX" --matched-key "$MATCHED_KEY"
+        # Beside the setup notice: the room left after the cache unpacked, so a later disk-full
+        # tells the build's growth from the cache's size (Fable on #5661).
+        echo "::notice title=runner disk after cache::/ci-target $(du -sh /ci-target 2>/dev/null | cut -f1) used, free $(df -h --output=avail /ci-target | tail -1 | tr -d ' ')"
