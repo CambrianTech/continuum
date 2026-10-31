@@ -143,15 +143,23 @@ fn names_a_size_in(code: &str) -> bool {
     names_a_size(&upper)
 }
 
-/// Is `call` (`.take(`, `channel(`, `channel::<T>(`) given a literal?
+/// Is `call` (`.take(`, `channel(`, `channel::<T>(`) given a literal? A `watch::channel(0)`
+/// holds one value and takes its initial value there, not a capacity, so it is not a ceiling.
 fn literal_after(code: &str, call: &str) -> bool {
-    let direct = code.match_indices(call).any(|(at, _)| code[at + call.len()..].trim_start().starts_with(|c: char| c.is_ascii_digit()));
+    let direct = code.match_indices(call).any(|(at, _)| {
+        !(call == "channel(" && code[..at].ends_with("watch::"))
+            && code[at + call.len()..].trim_start().starts_with(|c: char| c.is_ascii_digit())
+    });
     direct || call.strip_suffix('(').is_some_and(|name| turbofish_literal(code, &format!("{name}::<")))
 }
 
-/// `channel::<T>(256)`: a literal capacity after a turbofish.
+/// `channel::<T>(256)`: a literal capacity after a turbofish (never `watch::channel::<T>(0)`,
+/// whose argument is its initial value).
 fn turbofish_literal(code: &str, call: &str) -> bool {
     code.match_indices(call).any(|(at, _)| {
+        if call == "channel::<" && code[..at].ends_with("watch::") {
+            return false;
+        }
         let rest = &code[at + call.len()..];
         rest.find(">(").is_some_and(|close| rest[close + 2..].trim_start().starts_with(|c: char| c.is_ascii_digit()))
     })
