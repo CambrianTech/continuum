@@ -359,6 +359,12 @@ between them?
 | Grid | discovery, trust, routing (airc) | every node | airc + `grid/` |
 | Clients | desktop, web, TUI, phone, MCP: render ViewState, send commands | anywhere | separate, through the generated SDK |
 
+Below every module sits the **base layer**, which imports nothing above itself and which every
+module may import: `continuum-base` (time, config, probes), `continuum-host` (the OS seam: durable
+placement, positioned reads, local streams) and `continuum-pack` (with `continuum-pack-derive`), the
+one load/store every module packs its state through: KV pages, genes, memories, personas, projects
+([PACKAGES.md](PACKAGES.md)). Store's remotes are `continuum-pack` stores.
+
 Rules:
 1. **One binary set, placed by capability.** A node advertises what it has (`grid/nodes` already
    carries compute and VRAM); the governor places modules from that. No machine-specific role in

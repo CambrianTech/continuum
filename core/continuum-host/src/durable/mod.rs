@@ -1,4 +1,4 @@
-//! Durable placement: a file placed here survives a crash or power loss whole, or the call fails.
+//! Durable placement: a file (or directory) placed here survives a crash or power loss whole, or the call fails.
 //! Every write-then-rename in the core goes through `replace` (a mutable file) or `publish_new`
 //! (an immutable, content-addressed one); a caller never renames and syncs by hand.
 //!
@@ -70,7 +70,18 @@ pub fn fence(file: &File, path: &Path) -> io::Result<()> {
     os::sync_entries(parent(path)?)
 }
 
+/// Creates the directory `dir` (its parent must exist) so its entry survives power loss. An
+/// existing directory is `AlreadyExists`, as from `std::fs::create_dir`.
+pub fn create_dir(dir: &Path) -> io::Result<()> {
+    std::fs::create_dir(dir)?;
+    os::sync_entries(parent(dir)?)
+}
+
+/// The directory holding `path`; a bare relative name lives in the current directory.
 fn parent(path: &Path) -> io::Result<&Path> {
-    path.parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{} has no parent directory", path.display())))
+    match path.parent() {
+        Some(p) if p.as_os_str().is_empty() => Ok(Path::new(".")),
+        Some(p) => Ok(p),
+        None => Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{} has no parent directory", path.display()))),
+    }
 }

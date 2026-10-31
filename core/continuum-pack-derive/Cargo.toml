@@ -1,0 +1,13 @@
+[package]
+name = "continuum-pack-derive"
+version = "0.1.0"
+edition = "2021"
+description = "#[derive(Packable)] for continuum-pack: one line per type, #[pack(...)] attributes name each field's part (field, blob, child, requires)."
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

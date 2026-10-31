@@ -1,0 +1,27 @@
+[package]
+name = "continuum-pack"
+version = "0.1.0"
+edition = "2021"
+description = "One load/store layer for everything a mind owns: a type says WHAT it is (Packable), a store says WHERE bytes go (Store); content-addressed Merkle DAG, one ref flip per commit (docs/architecture/PACKAGES.md)."
+
+[dependencies]
+bytes = "1"
+continuum-base = { path = "../continuum-base" }
+# durable placement of blobs, refs and directories (the OS seam).
+continuum-host = { path = "../continuum-host" }
+continuum-pack-derive = { path = "../continuum-pack-derive" }
+serde = { workspace = true }
+# float_roundtrip: a manifest float must parse to the nearest double, or a load/re-save moves its id.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+# continuum_base::probe! expands to ::tracing::event!.
+tracing = { workspace = true }
+
+[features]
+# FaultStore and the generic conformance suite (pack::conformance), for this crate's tests and the
+# tests of every crate whose types implement Packable; production binaries never link it.
+conformance = []
+
+[dev-dependencies]
+tempfile = "3"

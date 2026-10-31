@@ -49,3 +49,14 @@ fn publish_new_refuses_an_occupied_address_and_a_failed_fence_is_an_error() {
     fault_injection::with_failed_fence(|| assert!(fence(&file, &free).is_err()));
     fence(&file, &free).unwrap();
 }
+
+// what this catches: a durable directory creation creates the entry and reports an existing one
+// as AlreadyExists (a racing creator relies on that kind), on this platform's sync arm.
+#[test]
+fn create_dir_creates_once_and_an_existing_one_is_already_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let made = dir.path().join("objects");
+    create_dir(&made).unwrap();
+    assert!(made.is_dir());
+    assert_eq!(create_dir(&made).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+}

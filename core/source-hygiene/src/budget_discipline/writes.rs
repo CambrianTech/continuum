@@ -7,8 +7,14 @@
 use super::{is_vendored, owned_by};
 use crate::{sites, SourceFile, SourceRule, Violation};
 
-/// The owners of persistent bytes: the ORM (stores) and the disk classes.
-const OWNERS: &[&str] = &["core/continuum-kernel/src/orm/", "core/continuum-kernel/src/system_resources/disk_reporters"];
+/// The owners of persistent bytes: the ORM (stores), the disk classes, and continuum-pack's
+/// stores (the content-addressed byte store every layer packs through; it writes only under the
+/// root its caller hands it, so the class claim belongs to that caller, docs/architecture/PACKAGES.md).
+const OWNERS: &[&str] = &[
+    "core/continuum-kernel/src/orm/",
+    "core/continuum-kernel/src/system_resources/disk_reporters",
+    "core/continuum-pack/src/store/",
+];
 
 /// The ways Rust code creates or appends to a file.
 const WRITES: &[&str] = &["fs::write(", "File::create(", "OpenOptions::new()"];

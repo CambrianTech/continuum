@@ -18,6 +18,8 @@ members = [
     "core/continuum-cli-lifecycle",
     "core/continuum-tool-protocol",
     "core/continuum-base",
+    "core/continuum-pack",
+    "core/continuum-pack-derive",
     "core/continuum-git",
     "core/continuum-host",
     "core/continuum-context",
@@ -282,6 +284,11 @@ candle-core = { version = "0.9" }
 candle-nn = { version = "0.9" }
 candle-transformers = { version = "0.9" }
 
+# The base layer's one load/store (docs/architecture/PACKAGES.md): any crate packs its state
+# with `continuum-pack.workspace = true` (trait, derive, stores; `features = ["conformance"]`
+# in dev-dependencies for the generic suite).
+continuum-pack = { path = "core/continuum-pack" }
+
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -509,7 +516,7 @@ longest_first = [
 ]
 # Audited with their crate name as a path prefix (`continuum-base/time/mod.rs`), not unprefixed
 # like the modules cut out of core (source-hygiene lib.rs `audited_files`).
-split_prefixed = ["continuum-base"]
+split_prefixed = ["continuum-base", "continuum-pack", "continuum-pack-derive"]
 # Tested but in no per-file ratchet yet (card 996e3537).
 unaudited = ["continuum-host"]
 # Not counted by the warnings ratchet yet: base (a split crate outside the count), kernel (~13
