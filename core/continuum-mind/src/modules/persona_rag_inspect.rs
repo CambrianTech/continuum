@@ -86,8 +86,8 @@ pub trait PersonaResolver: Send + Sync {
 // ── Wire types ────────────────────────────────────────────────────
 
 /// Params for `persona/rag-inspect`. The persona name is the only
-/// required input; everything else has defaults from the canonical
-/// library `defaults_for`. Optional knobs let callers vary the
+/// required input; the window is the one served now unless the caller names one
+/// (`context_window`). Optional knobs let callers vary the
 /// inspection profile (tighter window, deeper fetch, capture
 /// trace).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
@@ -133,7 +133,7 @@ pub struct RagInspectParams {
 }
 
 /// One item the source delivered, with the mechanic-grade rationale
-/// flattened for the wire (content_preview, score, age_s, etc).
+/// flattened for the wire (content, score, age_s, etc).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(
     export,
@@ -147,7 +147,7 @@ pub struct RagInspectItem {
     pub tokens: u32,
     #[ts(type = "number")]
     pub score: f64,
-    pub content_preview: String,
+    pub content: String,
     pub peer_id_prefix: String,
     #[ts(type = "number")]
     pub lamport: u64,
@@ -255,7 +255,7 @@ impl RagInspectResult {
                         index: i.index as u32,
                         tokens: i.tokens,
                         score: i.score,
-                        content_preview: i.content_preview,
+                        content: i.content,
                         peer_id_prefix: i.peer_id_prefix,
                         lamport: i.lamport,
                         age_s: i.age_s,
@@ -367,11 +367,15 @@ pub(crate) async fn inspect_persona(
     })?;
 
     let now_ms = params.now_ms.unwrap_or_else(|| continuum_base::time::EpochMs::now().millis());
-    let mut request =
-        RagInspectionRequest::defaults_for(resolution.persona_id, params.persona.clone(), now_ms);
-    if let Some(cw) = params.context_window {
-        request.context_window = cw;
-    }
+    // The window she is served now, or the caller's explicit one: never an assumed size.
+    let window = match params.context_window {
+        Some(window) => window,
+        None => match crate::inference::llama_server::current_serving().served_context_window {
+            0 => return Err(format!("{COMMAND_RAG_INSPECT}: no window is served yet; pass context_window")),
+            served => served,
+        },
+    };
+    let mut request = RagInspectionRequest::for_window(resolution.persona_id, params.persona.clone(), now_ms, window);
     if let Some(fetch) = params.airc_fetch_limit {
         request.airc_fetch_limit = fetch as usize;
     }
@@ -586,7 +590,7 @@ mod tests {
         .unwrap();
         assert_eq!(result.deliveries[0].items.len(), 2);
         let first = &result.deliveries[0].items[0];
-        assert_eq!(first.content_preview, "hello world");
+        assert_eq!(first.content, "hello world");
         assert!((first.score - 1.0).abs() < 1e-9);
         assert_eq!(first.age_s, 100);
         // peer_id_prefix is 8 hex chars from the UUID.

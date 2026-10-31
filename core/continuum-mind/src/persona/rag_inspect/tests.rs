@@ -63,10 +63,7 @@ fn make_event(text: Option<&str>, lamport: u64, occurred_at_ms: u64) -> Transcri
 }
 
 fn request(now_ms: u64) -> RagInspectionRequest {
-    let mut req =
-        RagInspectionRequest::defaults_for(persona(), "TestPersona".to_string(), now_ms);
-    req.context_window = 4_096;
-    req
+    RagInspectionRequest::for_window(persona(), "TestPersona".to_string(), now_ms, 4_096)
 }
 
 // ---- TDD tests ----
@@ -103,7 +100,7 @@ async fn inspected_items_carry_score_age_and_peer_prefix() {
     assert_eq!(items.len(), 1);
     let it = &items[0];
     assert_eq!(it.index, 0);
-    assert_eq!(it.content_preview, "hello world");
+    assert_eq!(it.content, "hello world");
     assert!(
         (it.score - 1.0).abs() < 1e-9,
         "first item scores 1.0, got {}",
@@ -118,14 +115,14 @@ async fn inspected_items_carry_score_age_and_peer_prefix() {
 }
 
 #[tokio::test]
-async fn long_content_is_truncated_in_preview_but_tokens_remain_accurate() {
-    // 1000-char message → preview is CONTENT_PREVIEW_CHARS chars; tokens are full message
+async fn long_content_arrives_whole_and_tokens_are_accurate() {
+    // what this catches: a preview cut standing in for the content a mechanic is inspecting.
     let msg: String = "x".repeat(1_000);
     let reader = Arc::new(StubReader::new(vec![make_event(Some(&msg), 1, 1_000_000)]));
     let req = request(1_000_000);
     let result = inspect_persona_rag(&req, reader).await.unwrap();
     let it = &result.deliveries[0].items[0];
-    assert_eq!(it.content_preview.chars().count(), CONTENT_PREVIEW_CHARS);
+    assert_eq!(it.content.chars().count(), 1_000, "the content is whole");
     assert!(
         it.tokens >= 250,
         "1000 chars should cost ~250 tokens, got {}",

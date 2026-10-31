@@ -51,31 +51,10 @@ use crate::persona::rag_capture::{
     JsonlRagCaptureSink, NoopRagCaptureSink, RagCaptureEvent, RagCaptureSink, RecordingRagSource,
 };
 
-/// How many chars of an item's content to keep in the preview. Items
-/// with longer content still report full token cost; this only
-/// controls the human/AI-readable snippet returned in the inspection
-/// result. Replay against the trace gets the full content; the
-/// inspection result is for "look at what the persona would see right
-/// now" mechanic-shop summarization.
-// context-budget-exempt: preview width for the human-facing rag-inspect command output;
-// never text sent to a model
-pub const CONTENT_PREVIEW_CHARS: usize = 200;
 
-/// Assumed window for [`RagInspectionRequest::defaults_for`] — the
-/// DIAGNOSTIC path only, where no inference profile is in hand and the
-/// `persona/rag-inspect` caller can override `context_window` explicitly.
-/// This is NOT a serving decision and never reaches a live turn: live
-/// turns go through [`RagInspectionRequest::for_persona`] with the
-/// profile's real `context_length` (#46/#50 law — the window comes from
-/// the adapter, never a per-tier cap).
-// context-budget-exempt: inspection-command default only, caller-overridable;
-// live turns derive the window from the persona's inference profile
-pub const DEFAULT_INSPECT_WINDOW: u32 = 32_768;
 
-/// Tunable inputs for one inspection. Defaults via `defaults_for`
-/// match the `mid-local (32k)` profile the demo binary uses — a
-/// sensible "what would a typical local persona see right now" probe
-/// when the caller doesn't have stronger opinions.
+/// Tunable inputs for one inspection, built via `for_persona` (her profile's window) or
+/// `for_window` (the served window, or one the caller names).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RagInspectionRequest {
     pub persona_id: Uuid,
@@ -94,21 +73,6 @@ pub struct RagInspectionRequest {
 }
 
 impl RagInspectionRequest {
-    /// Diagnostic defaults for "show me what this persona would see
-    /// right now" when NO inference profile is in hand — the
-    /// `persona/rag-inspect` command path, where the caller can
-    /// override `context_window` explicitly. Same derivation as
-    /// [`Self::for_persona`], seeded with [`DEFAULT_INSPECT_WINDOW`].
-    /// Prefer [`Self::for_persona`] when a profile IS in hand — that
-    /// path threads the profile's actual context_length through so
-    /// the RAG layer never asks for more tokens than the adapter
-    /// can decode. (TODO #46/#50 family: `PersonaResolution` should
-    /// carry the persona's live profile so the inspect command stops
-    /// needing an assumed window at all.)
-    pub fn defaults_for(persona_id: Uuid, persona_name: String, now_ms: u64) -> Self {
-        Self::for_window(persona_id, persona_name, now_ms, DEFAULT_INSPECT_WINDOW)
-    }
-
     /// Derive the inspection request from the persona's inference
     /// profile — the single source of truth for context budgets.
     /// `&PersonaInferenceProfile` is the substrate's persona-shape
@@ -237,7 +201,7 @@ pub struct InspectedItem {
     pub index: usize,
     pub tokens: u32,
     pub score: f64,
-    pub content_preview: String,
+    pub content: String,
     pub peer_id_prefix: String,
     pub lamport: u64,
     pub age_s: u64,
@@ -355,7 +319,7 @@ pub async fn inspect_persona_rag_with_inference(
                 .metadata
                 .get("peer_id")
                 .and_then(|v| v.as_str())
-                .map(|s| s.chars().take(8).collect::<String>())
+                .map(|s| uuid::Uuid::parse_str(s).map_or_else(|_| s.to_owned(), airc_core::shown_id::shown_form)) // map_or_else: a peer id that is not a uuid is shown whole
                 .unwrap_or_else(|| "????".to_string());
             let occurred_at_ms = item
                 .metadata
@@ -367,13 +331,12 @@ pub async fn inspect_persona_rag_with_inference(
             } else {
                 0
             };
-            let content_preview: String =
-                item.content.chars().take(CONTENT_PREVIEW_CHARS).collect();
+            let content = item.content.clone();
             InspectedItem {
                 index: idx,
                 tokens: item.tokens,
                 score,
-                content_preview,
+                content,
                 peer_id_prefix,
                 lamport,
                 age_s,
@@ -510,22 +473,19 @@ async fn run_inference_probe(
     let items_count = items.len();
     let total_item_tokens: u32 = items.iter().map(|i| i.tokens).sum();
     let prompt_chars = prompt_text.chars().count();
-    let last_item_preview: String = items
-        .last()
-        .map(|i| i.content.chars().take(160).collect())
-        .unwrap_or_else(|| "(no items — RAG delivered nothing)".to_string());
+    // Sizes, not a cut of the text: the items themselves are in the prompt capture.
+    let last_item_tokens = items.last().map_or(0, |i| i.tokens); // map_or: no items, nothing delivered
 
     tracing::info!(
         persona = %persona_name,
         items_count,
         total_item_tokens,
         prompt_chars,
-        last_item_preview = %last_item_preview,
+        last_item_tokens,
         "rag_inspect cognition turn — input shape before LLM call"
     );
 
     for (idx, item) in items.iter().enumerate() {
-        let snippet: String = item.content.chars().take(120).collect();
         // Per [[observability-is-half-the-architecture]] this is the
         // mechanic-grade rationale ("why this item, why not that
         // one") and stays callable. INFO would spam ~12 lines per
@@ -536,7 +496,7 @@ async fn run_inference_probe(
             persona = %persona_name,
             idx,
             tokens = item.tokens,
-            content = %snippet,
+            content = %item.content,
             "rag_inspect item delivered to LLM"
         );
     }

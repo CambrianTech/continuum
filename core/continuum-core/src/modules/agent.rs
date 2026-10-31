@@ -300,7 +300,7 @@ impl AgentService {
         max_iterations: u32,
         model: String,
     ) -> String {
-        let handle = format!("agent-{}", &Uuid::new_v4().to_string()[..8]);
+        let handle = format!("agent-{}", airc_core::shown_id::shown_form(Uuid::new_v4()));
         let agents = self.agents.clone();
         let bus = self.bus.get().cloned();
 
@@ -454,7 +454,7 @@ async fn run_agent_loop(
                         tool_name: None,
                         tool_args: None,
                         result: None,
-                        thought: Some(response.chars().take(500).collect()),
+                        thought: Some(response.clone()),
                     });
                 }
             }
