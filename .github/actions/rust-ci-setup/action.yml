@@ -25,18 +25,23 @@ runs:
   steps:
     # The shared target is 24 GB unpacked (warm run 41193606500 at f0f786d19, 2026-10-31: 24G
     # after pruning 5.79 GB of test executables), restored beside its 5 GiB download, and a crate
-    # job builds its tests on top. On the root disk that ran out mid-setup and mid-build (#5638,
-    # #5649 twice, #5641 on 10-31: "No space left on device"). /mnt is the runner's own scratch
-    # disk; the build lives there. Not a separate mount means no room for the cache: say so.
-    - name: Build on the runner's scratch disk
+    # job builds its tests on top. Two runner images are in rotation while ubuntu-latest moves to
+    # 26.04 (from 2026-10-19). The 24.04 image's root disk ran out mid-setup and mid-build on
+    # 10-31 (#5638, #5649 twice, #5641: "No space left on device"); it has a separate scratch disk
+    # at /mnt. The 26.04 image has one disk: 145G, 87G free (measured on #5650's run). The build
+    # goes on whichever disk has more room, at ONE path, so the cache restores and saves the same
+    # way on both images.
+    - name: Build where the runner has room
       shell: bash
       run: |
-        df -h; lsblk -o NAME,SIZE,MOUNTPOINT; cat /etc/os-release | head -3
-        sudo du -sh /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache /usr/share/swift /usr/local/share/powershell /usr/local/share/chromium /opt/microsoft 2>/dev/null || true
-        mountpoint -q /mnt || { echo "::error::/mnt is not a separate disk on this runner; the 24 GB shared target does not fit the root disk"; exit 1; }
-        sudo install -d -o "$(id -u)" -g "$(id -g)" /mnt/target
-        echo "CARGO_TARGET_DIR=/mnt/target" >> "$GITHUB_ENV"
-        df -h / /mnt
+        sudo install -d -o "$(id -u)" -g "$(id -g)" /ci-target
+        root_free=$(df --output=avail -B1 / | tail -1)
+        if mountpoint -q /mnt && [ "$(df --output=avail -B1 /mnt | tail -1)" -gt "$root_free" ]; then
+          sudo install -d -o "$(id -u)" -g "$(id -g)" /mnt/ci-target
+          sudo mount --bind /mnt/ci-target /ci-target
+        fi
+        echo "CARGO_TARGET_DIR=/ci-target" >> "$GITHUB_ENV"
+        df -h / /ci-target
 
     - name: Install Rust toolchain from rust-toolchain.toml
       shell: bash
@@ -110,7 +115,7 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: |
-          /mnt/target
+          /ci-target
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db

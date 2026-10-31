@@ -55,12 +55,12 @@ jobs:
           cargo test --locked -p continuum-core --bin continuum --profile dev-fast --features "$core_features" --no-run --message-format=json >> warm.jsonl
           node tools/scripts/ci-cargo-freshness.cjs prune-test-executables warm.jsonl
           du -sh "$CARGO_TARGET_DIR" ~/.cargo/registry ~/.cargo/git
-          df -h / /mnt
+          df -h / "$CARGO_TARGET_DIR"
       - name: Save the shared target cache
         uses: actions/cache/save@v4
         with:
           path: |
-            /mnt/target
+            /ci-target
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db

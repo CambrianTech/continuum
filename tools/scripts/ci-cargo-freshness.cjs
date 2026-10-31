@@ -124,7 +124,7 @@ function settle({ root, prefix, matchedKey, cargoHome, crateDirs, log = console.
     return { settled: false };
   }
   const work = plan(entries, { kind: kindOf(root), crateDirs });
-  // The build lives on the runner's scratch disk (CARGO_TARGET_DIR, rust-ci-setup), never in the tree.
+  // The build lives outside the tree (CARGO_TARGET_DIR=/ci-target, rust-ci-setup).
   const count = settleTree(root, SETTLED, new Set(['.git']));
   const touch = p => { const full = path.join(root, p); setTime(full, { isSymbolicLink: () => fs.lstatSync(full).isSymbolicLink() }, now); };
   work.files.forEach(touch);
