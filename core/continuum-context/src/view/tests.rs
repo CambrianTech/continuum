@@ -563,3 +563,32 @@ fn an_act_appends_one_result_and_neither_turns_over_nor_grows_the_floor() -> Res
     assert!(!view.start_would_restore(&[&actions], |_| vec![grant])?, "the same grant restores nothing");
     Ok(())
 }
+
+// what this catches: a receipt that cannot say which occurrence she was shown, or at what level,
+// or in what order (the acknowledgement of a task's end reads exactly this, HER-TASKS; the
+// allocator reads it to learn what a grant bought).
+#[test]
+fn the_receipt_names_each_shown_occurrence_and_its_level_in_prompt_order() -> Result<(), GrantMismatch> {
+    let mut results = Fake::new("results", 1);
+    results.push("r1", &"a".repeat(3_000));
+    results.push("r2", "two");
+    let (mut view, _) = View::start(Vec::new(), &[&results as &dyn Source<String>], |_| vec![100])?;
+    results.push("r3", "three");
+    view.advance(&[&results]);
+    let receipt = view.receipt();
+    let id = |k: &str| Some(ElementId::of(&[k.as_bytes()]));
+    let shown: Vec<_> = receipt.items.iter().map(|r| (r.element, r.level)).collect();
+    assert_eq!(shown[shown.len() - 2..], [(id("r2"), Level::Full), (id("r3"), Level::Full)], "{shown:?}");
+    match shown[0] {
+        (element, Level::Pointer) => assert_eq!(element, id("r1")),
+        (None, Level::Folded) => {}
+        other => panic!("the oldest, too large for the grant, is not whole: {other:?}"),
+    }
+    assert_eq!(receipt.epoch, view.epoch_id());
+    assert_eq!(receipt.items.iter().map(|r| r.chars).sum::<usize>(), view.chars(), "the receipt accounts for every block after the head");
+    assert_eq!(view.take_submitted(), None, "nothing was sent yet");
+    view.sent();
+    assert_eq!(view.take_submitted(), Some(receipt), "the sent prompt's receipt, taken once");
+    assert_eq!(view.take_submitted(), None);
+    Ok(())
+}

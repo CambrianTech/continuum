@@ -20,7 +20,8 @@ use crate::source::{Item, Source};
 
 mod allot;
 
-use allot::{allot, rank, Level};
+use allot::{allot, rank};
+pub use crate::level::Level;
 pub use allot::floor;
 
 /// The item key a source's fold block is observed under: no source keys an item with it.
@@ -75,6 +76,26 @@ pub struct Start {
     pub folded: usize,
 }
 
+/// One block she was shown, as the view rendered it (`View::receipt`).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Rendered {
+    pub source: SourceId,
+    /// The occurrence it renders; `None` for a fold block, which stands for a range.
+    pub element: Option<crate::cause::ElementId>,
+    pub level: Level,
+    pub version: u32,
+    /// A superseding notice for a source that ended.
+    pub retired: bool,
+    pub chars: usize,
+}
+
+/// What one submitted prompt showed her, in prompt order (the view's half of the render receipt).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Receipt {
+    pub epoch: u64,
+    pub items: Vec<Rendered>,
+}
+
 /// Serializable, so a mind's view survives her restart with the rest of her volatile state:
 /// restored, it renders the same bytes, and the engine's saved page for it still matches.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -99,6 +120,11 @@ pub struct View<T: Block> {
     /// redoes. Never saved: a restored view has no unsent act.
     #[serde(skip)]
     act: Option<Mark>,
+    /// What the last sent prompt showed her, until the request that carried it is served:
+    /// taken there ([`View::take_submitted`]), so a prompt the engine never accepted is never
+    /// receipted. Never saved: a restored view has nothing in flight.
+    #[serde(skip)]
+    submitted: Option<Receipt>,
 }
 
 fn key(source: &str, item: &str) -> SourceId {
@@ -216,12 +242,14 @@ impl<T: Block> View<T> {
             appended: Vec::new(),
             motion: Motion::default(),
             act: None,
+            submitted: None,
         };
         for ((source, items), grant) in sources.iter().zip(offered).zip(grants) {
             let allot::Allotment { levels, mut fold } = allot(&**source, &items, grant);
             let mut rendered = Vec::with_capacity(items.len());
             for (item, level) in items.into_iter().zip(levels) {
                 let id = key(source.name(), &item.key);
+                let element = item.id();
                 let item_key = item.key.clone(); // its fingerprint after the level consumed it; once per item per start
                 let text = match level {
                     Level::Full => Some(crate::source::whole(&**source, item)),
@@ -239,14 +267,14 @@ impl<T: Block> View<T> {
                         view.folded.insert(id);
                         if let Some(block) = fold.take() {
                             rendered.push((fingerprint(FOLD_KEY, &block), block.chars()));
-                            view.epoch.observe(key(source.name(), FOLD_KEY), block);
+                            view.epoch.observe(key(source.name(), FOLD_KEY), None, Level::Folded, block);
                         }
                         continue;
                     }
                 };
                 if let Some(text) = text {
                     rendered.push((fingerprint(&item_key, &text), text.chars()));
-                    view.epoch.observe(id, text);
+                    view.epoch.observe(id, Some(element), level, text);
                 }
             }
             motion.record(source.name(), rendered);
@@ -304,6 +332,13 @@ impl<T: Block> View<T> {
     /// so nothing may rewind past it and [`View::readmit`] answers `None` until the next act.
     pub fn sent(&mut self) {
         self.act = None;
+        self.submitted = Some(self.receipt());
+    }
+
+    /// The receipt of the last sent prompt, once: the caller takes it where the request that
+    /// carried it was served, and drops it when the request failed.
+    pub fn take_submitted(&mut self) -> Option<Receipt> {
+        self.submitted.take()
     }
 
     fn append(&mut self, sources: &[&dyn Source<T>], limit: Option<(usize, usize)>) -> Advance {
@@ -319,7 +354,7 @@ impl<T: Block> View<T> {
                 // An item with no pointer would leave her view entirely if collapsed (a peer's
                 // new turn), so it always arrives whole: admission never drops what she has
                 // not seen.
-                let fits = |chars: usize| limit.map_or(true, |(limit, _)| self.epoch.chars() + chars <= limit); // map_or: no limit admits every arrival whole
+                let fits = |chars: usize| limit.is_none_or(|(limit, _)| self.epoch.chars() + chars <= limit); // no limit admits every arrival whole
                 let oversized = limit.is_some_and(|(_, oversized)| crate::source::whole_chars(&item) > oversized);
                 let level = if self.collapsed.contains(&id) {
                     Level::Pointer
@@ -334,6 +369,7 @@ impl<T: Block> View<T> {
                     self.collapsed.insert(id.clone());
                     Level::Pointer
                 };
+                let element = item.id();
                 let text = match level {
                     Level::Full => Some(crate::source::whole(&**source, item)),
                     Level::Summary => item.summary.or(item.pointer),
@@ -341,7 +377,7 @@ impl<T: Block> View<T> {
                 };
                 if let Some(text) = text {
                     let chars = text.chars();
-                    if let Observed::Appended { .. } = self.epoch.observe(id, text) {
+                    if let Observed::Appended { .. } = self.epoch.observe(id, Some(element), level, text) {
                         advance.items += 1;
                         advance.chars += chars;
                     }
@@ -362,6 +398,29 @@ impl<T: Block> View<T> {
     /// The view in order: the head, then every item as it arrived.
     pub fn render(&self) -> impl Iterator<Item = &T> {
         self.epoch.render()
+    }
+
+    /// What she is shown, in prompt order: each block after the head with its occurrence, the
+    /// level the view rendered it at, its version and its size. Taken where the prompt is
+    /// SUBMITTED (the caller binds owner, memory incarnation and request there), never at
+    /// rendering: a prompt built but not accepted was not seen (HER-TOOLS, the render receipt).
+    pub fn receipt(&self) -> Receipt {
+        Receipt {
+            epoch: self.epoch.id(),
+            items: self
+                .epoch
+                .events()
+                .iter()
+                .map(|event| Rendered {
+                    source: event.source.clone(),
+                    element: event.element,
+                    level: event.level,
+                    version: event.version,
+                    retired: event.retired,
+                    chars: event.text.chars(),
+                })
+                .collect(),
+        }
     }
 
     /// How each source moved across this view's starts.
