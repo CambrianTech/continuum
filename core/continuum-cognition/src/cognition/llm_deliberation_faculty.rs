@@ -236,6 +236,8 @@ pub struct LlmDeliberationFaculty {
     pub working_set: Option<super::working_set::WorkingSetRegistry>,
     /// Her context view across acts (`prompt/epoch.rs`): one epoch that only appends, turned
     /// over when it outgrows her history's grant.
+    /// Where her render receipts go (`crate::cognition::render_receipt`); `None` drops them.
+    receipt_sink: Option<Arc<dyn crate::cognition::render_receipt::RenderReceiptSink>>,
     context_view: parking_lot::Mutex<
         Option<continuum_context::view::View<crate::cognition::context_streams::ContextMessage>>,
     >,
@@ -272,6 +274,7 @@ impl LlmDeliberationFaculty {
             genome: empty_genome(),
             decoding: relaxed_decoding(),
             working_set: None,
+            receipt_sink: None,
             context_view: parking_lot::Mutex::new(None),
             tools_epoch: parking_lot::Mutex::new(None),
             forked: false,
@@ -353,6 +356,12 @@ impl LlmDeliberationFaculty {
     /// browses, and the model loads any one tool's schema on demand via
     /// `commands/help`. An emitted call becomes a [`Decision::Act`] verdict the
     /// act→observe driver runs (the faculty itself never executes).
+    /// Install the one sink her render receipts go to (the task ledger, #5585).
+    pub fn with_receipt_sink(mut self, sink: Arc<dyn crate::cognition::render_receipt::RenderReceiptSink>) -> Self {
+        self.receipt_sink = Some(sink);
+        self
+    }
+
     pub fn with_tools(mut self, tools: Vec<NativeToolSpec>) -> Self {
         self.tools = tools;
         self.rebuild_tool_surface();

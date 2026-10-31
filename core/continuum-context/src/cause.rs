@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 /// One occurrence, named by the producer that persists it (an act, a message, an engram):
 /// stable across epochs and restarts, never an in-view position. Two reads of one file are two
 /// occurrences with two ids; the file they read is the item's `key`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct ElementId(u128);
 
 impl ElementId {
