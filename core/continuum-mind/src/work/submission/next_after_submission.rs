@@ -168,8 +168,8 @@ impl ActionCommand for WorkSubmit {
                     "card {} already has your submission {} of this exact patch, \
                      so nothing was submitted. Read it with work/submission (submission_id {}); \
                      submit again only after the patch changes.",
-                    airc_core::shown_id::shown_form(card_uuid),
-                    airc_core::shown_id::shown_form(existing),
+                    short8(card_uuid),
+                    short8(existing),
                     existing
                 )));
             }
@@ -542,7 +542,7 @@ impl ActionCommand for WorkReview {
         let review_id = p.review_id.unwrap_or_else(Uuid::new_v4); // unwrap_or: minted here when she named none — the id is ours to give
         continuum_base::probe!(
             class = "work.review.shaped",
-            review_card = %airc_core::shown_id::shown_form(review_uuid),
+            review_card = %short8(review_uuid),
             card = %card_id,
             submission = %submission.submission_id,
             derived = p.submission_id.is_none() || p.artifact.is_none() || p.review_claim_id.is_none() || p.card_id.is_none(),

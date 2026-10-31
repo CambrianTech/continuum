@@ -483,7 +483,7 @@ impl Inner {
             .allocation
             .nodes
             .iter()
-            .map(|n| format!("{}:{}", airc_core::shown_id::shown_form(n.node), n.seats))
+            .map(|n| format!("{}:{}", &n.node.to_string()[..8], n.seats))
             .collect();
         continuum_base::probe!(
             class = "grid.allocation.published",
@@ -529,8 +529,9 @@ impl Inner {
                 class = "grid.mind.unservable",
                 minds = %over_the_grid
                     .iter()
-                    // 8-hex prefixes, the shape a citizen reads on a board line (the one owner,
-                    // airc's shown_form). A receipt must not widen another module's
+                    // 8-hex prefixes, the shape a citizen reads on a board line. Spelled
+                    // here rather than borrowing `modules::work::short8`, which is private
+                    // to that module — a receipt is not a reason to widen someone else's
                     // surface. `need:` when her measured need gated, `wish:` when no held
                     // turn is known and the target did (card 70706a9e) — the reader must
                     // never again mistake a pre-fit wish for a lane width.
@@ -539,7 +540,7 @@ impl Inner {
                             Some(_) => "need",
                             None => "wish",
                         };
-                        format!("{}:{gate}:{w}", airc_core::shown_id::shown_form(*m))
+                        format!("{}:{gate}:{w}", m.to_string().chars().take(8).collect::<String>())
                     })
                     .collect::<Vec<_>>()
                     .join(","),

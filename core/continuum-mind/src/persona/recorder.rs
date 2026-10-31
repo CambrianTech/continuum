@@ -354,7 +354,7 @@ impl Drop for EnvRestore {
 /// to underscores for filesystem safety.
 fn filename_for(persona_name: &str, message_id: Uuid) -> String {
     let safe_name = persona_name.replace(char::is_whitespace, "_");
-    let id_prefix: String = airc_core::shown_id::shown_form(message_id);
+    let id_prefix: String = message_id.to_string().chars().take(8).collect();
     let ts = chrono_like_ts(EpochMs::now().millis());
     format!("{safe_name}-{id_prefix}-{ts}-rust.json")
 }
@@ -363,8 +363,14 @@ fn filename_for(persona_name: &str, message_id: Uuid) -> String {
 /// The trigger id ties the fixture to the consolidated frame without needing
 /// a persona display name at this layer.
 fn turn_frame_filename_for(record: &PersonaTurnFrameReplayRecord) -> String {
-    let persona_prefix: String = airc_core::shown_id::shown_form(record.persona_id);
-    let trigger_prefix: String = airc_core::shown_id::shown_form(record.consolidated_inbox.trigger_message_id);
+    let persona_prefix: String = record.persona_id.to_string().chars().take(8).collect();
+    let trigger_prefix: String = record
+        .consolidated_inbox
+        .trigger_message_id
+        .to_string()
+        .chars()
+        .take(8)
+        .collect();
     let ts = chrono_like_ts(EpochMs::now().millis());
     format!("frame-{persona_prefix}-{trigger_prefix}-{ts}-rust.json")
 }

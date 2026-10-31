@@ -143,8 +143,7 @@ impl ShellSession {
         let target_env = target.to_str()
             .ok_or_else(|| "shell session environment requires a UTF-8 Cargo target; refusing to alter its native path".to_string())?.to_owned();
 
-        let execution_uuid = Uuid::new_v4();
-        let execution_id = execution_uuid.to_string();
+        let execution_id = Uuid::new_v4().to_string();
         let now_ms = continuum_base::time::EpochMs::now().millis();
 
         let notify = Arc::new(Notify::new());
@@ -230,7 +229,7 @@ impl ShellSession {
             "code",
             "shell",
             "Execution {} started: {}",
-            airc_core::shown_id::shown_form(execution_uuid),
+            &execution_id[..8],
             command
         );
         Ok(execution_id)

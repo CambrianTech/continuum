@@ -7,7 +7,7 @@ use airc_lib::{Airc, CardState, ChangeWorkCardState, CreateWorkCard, Priority, W
 use uuid::Uuid;
 
 
-use crate::cognition::card_facts::is_concluded;
+use crate::cognition::card_facts::{is_concluded, short8};
 use super::horizon::{card_in_subscribed_rooms, follow_card_room, room_holding_card};
 use super::events::emit_card_state_changed;
 
@@ -148,7 +148,7 @@ pub async fn advance_card_state_effective(
                 ChangeVerdict::NoChange => {
                     continuum_base::probe!(
                         class = "work.review.refused_no_write",
-                        card = %airc_core::shown_id::shown_form(card_id.as_uuid()),
+                        card = %short8(card_id.as_uuid()),
                         persona = %actor.map(|a| a.to_string()).unwrap_or_default(),  // unwrap_or: probe label; actor is Some on this branch
                         root = %root.display(),
                         "a done on a gated card with no change in her checkout — refused; \
@@ -165,7 +165,7 @@ pub async fn advance_card_state_effective(
                 ChangeVerdict::Changed => {}
                 ChangeVerdict::CouldNotLook(reason) => continuum_base::probe!(
                     class = "work.review.write_check_unknown",
-                    card = %airc_core::shown_id::shown_form(card_id.as_uuid()),
+                    card = %short8(card_id.as_uuid()),
                     root = %root.display(),
                     reason = %reason,
                     "could not read her checkout — the transition proceeds; the reviewer decides"
@@ -186,7 +186,7 @@ pub async fn advance_card_state_effective(
                     if parent_gate.outstanding() {
                         continuum_base::probe!(
                             class = "work.review.awaiting_more",
-                            parent = %airc_core::shown_id::shown_form(parent),
+                            parent = %short8(parent),
                             passed = parent_gate.passed as u64,
                             required = parent_gate.policy.required,
                             "a review closed, but the room's policy asks for more passing reviews — the parent waits"
@@ -208,8 +208,8 @@ pub async fn advance_card_state_effective(
                         }
                         continuum_base::probe!(
                             class = "work.review.passed_awaiting_merge",
-                            review = %airc_core::shown_id::shown_form(card_id.as_uuid()),
-                            parent = %airc_core::shown_id::shown_form(parent),
+                            review = %short8(card_id.as_uuid()),
+                            parent = %short8(parent),
                             "reviewer's pass on a card with an open PR — it stays in Review for \
                              its merge, which moves it to Merged"
                         );
@@ -225,8 +225,8 @@ pub async fn advance_card_state_effective(
             };
             continuum_base::probe!(
                 class = "work.review.verdict",
-                review = %airc_core::shown_id::shown_form(card_id.as_uuid()),
-                parent = %airc_core::shown_id::shown_form(parent),
+                review = %short8(card_id.as_uuid()),
+                parent = %short8(parent),
                 passed,
                 "reviewer's verdict — a pass closes the parent (grade fires), a send-back \
                  returns it to in_progress"
@@ -258,14 +258,14 @@ pub async fn advance_card_state_effective(
         match open_review_card(airc, card_id).await {
             Ok(review) => continuum_base::probe!(
                 class = "work.review.opened",
-                parent = %airc_core::shown_id::shown_form(card_id.as_uuid()),
-                review = %airc_core::shown_id::shown_form(review.as_uuid()),
+                parent = %short8(card_id.as_uuid()),
+                review = %short8(review.as_uuid()),
                 "owner's done became review — a sibling review card is on the deck for a \
                  non-owner; only the reviewer's done closes this card"
             ),
             Err(e) => continuum_base::probe!(
                 class = "work.review.open_failed",
-                parent = %airc_core::shown_id::shown_form(card_id.as_uuid()),
+                parent = %short8(card_id.as_uuid()),
                 error = %e,
                 "the card is in review but no review card could be posted — the next \
                  done retries the gate"
@@ -358,7 +358,7 @@ pub(crate) async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Re
         })
         .unwrap_or_else(|| "the owner".to_string()); // unwrap_or: owner not resident = a neutral name in the review body
     let title = crate::recipe::bench_title::review_card_title(parent.as_uuid(), &instance, &owner);
-    let p8 = airc_core::shown_id::shown_form(parent.as_uuid());
+    let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
     let body = format!(
         "Review {owner}'s fix for `{instance}` (card {p8}). You are the fresh pair of \
          eyes: READ-ONLY. Do not edit their tree.\n\n\
@@ -402,7 +402,7 @@ pub async fn open_room_review_card(
                 .map(|rt| rt.agent_name().to_string())
         })
         .unwrap_or_else(|| "the owner".to_string()); // unwrap_or: owner not resident = a neutral name in the review body
-    let p8 = airc_core::shown_id::shown_form(parent.as_uuid());
+    let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
     let title: String = format!("review: {}", card.title).chars().take(160).collect();
     let body = format!(
         "Review {owner}'s work on card {p8} (\"{}\"). Read the latest submission          (work/submission) and the change it carries, judge it against the card, then give          your verdict with work/review (passed or failed, with evidence). This room's review          policy decides how many passing reviews finish the card and whether the author may          review her own work.",

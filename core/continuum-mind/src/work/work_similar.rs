@@ -29,7 +29,7 @@ pub(super) fn card_candidates(
         .iter()
         .filter(|c| states.is_empty() || states.contains(&c.state))
         .map(|c| continuum_embedding::commands::similar::SimilarCandidate {
-            id: airc_core::shown_id::shown_form(c.card_id.as_uuid()),
+            id: short8(c.card_id.as_uuid()),
             text: card_text(c),
         })
         .collect()
@@ -136,7 +136,7 @@ impl ActionCommand for WorkSimilar {
                     .ok_or_else(|| {
                         CommandError::NotFound(format!("card {id} is not on the board"))
                     })?;
-                let short = airc_core::shown_id::shown_form(card_id.as_uuid());
+                let short = short8(card_id.as_uuid());
                 (short.clone(), card_text(card), Some(short))
             }
             (None, Some(text)) if !text.trim().is_empty() => {
@@ -167,7 +167,7 @@ impl ActionCommand for WorkSimilar {
         let by_id: std::collections::HashMap<String, &WorkCard> = board
             .cards
             .iter()
-            .map(|c| (airc_core::shown_id::shown_form(c.card_id.as_uuid()), c))
+            .map(|c| (short8(c.card_id.as_uuid()), c))
             .collect();
         let hits = ranked
             .results
@@ -282,7 +282,7 @@ impl ActionCommand for WorkDuplicates {
         let title_of: std::collections::HashMap<String, String> = board
             .cards
             .iter()
-            .map(|c| (airc_core::shown_id::shown_form(c.card_id.as_uuid()), c.title.clone()))
+            .map(|c| (short8(c.card_id.as_uuid()), c.title.clone()))
             .collect();
         let groups: Vec<WorkDuplicateGroup> = grouped
             .groups
@@ -428,7 +428,7 @@ impl WorkGet {
         );
         WorkGetResult {
             reviews: Vec::new(),
-            id: airc_core::shown_id::shown_form(card.card_id.as_uuid()),
+            id: short8(card.card_id.as_uuid()),
             room_id: room.channel,
             room: room.name.clone(),
             is_self: holder.is_self,
@@ -441,8 +441,8 @@ impl WorkGet {
             title: card.title.clone(),
             body: card.body.clone(),
             state: state_str(&card.state).to_string(),
-            owner: card.owner.map(|o| airc_core::shown_id::shown_form(o.as_uuid())),
-            claim_id: card.claim_id.map(|c| airc_core::shown_id::shown_form(c.as_uuid())),
+            owner: card.owner.map(|o| short8(o.as_uuid())),
+            claim_id: card.claim_id.map(|c| short8(c.as_uuid())),
             ledger,
             next: None,
         }

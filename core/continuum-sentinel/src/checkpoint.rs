@@ -218,7 +218,7 @@ mod tests {
         ensure_checkpoint_dir_isolated();
         let handle = format!(
             "test-ckpt-{}",
-            airc_core::shown_id::shown_form(uuid::Uuid::new_v4())
+            uuid::Uuid::new_v4().to_string()[..8].to_string()
         );
         let cp = make_test_checkpoint(&handle);
 
@@ -238,7 +238,7 @@ mod tests {
         ensure_checkpoint_dir_isolated();
         let handle = format!(
             "test-list-{}",
-            airc_core::shown_id::shown_form(uuid::Uuid::new_v4())
+            uuid::Uuid::new_v4().to_string()[..8].to_string()
         );
         let cp = make_test_checkpoint(&handle);
         save_checkpoint(&handle, &cp).unwrap();
@@ -254,7 +254,7 @@ mod tests {
         ensure_checkpoint_dir_isolated();
         let handle = format!(
             "test-recover-{}",
-            airc_core::shown_id::shown_form(uuid::Uuid::new_v4())
+            uuid::Uuid::new_v4().to_string()[..8].to_string()
         );
         let cp = make_test_checkpoint(&handle);
         save_checkpoint(&handle, &cp).unwrap();

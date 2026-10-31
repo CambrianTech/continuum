@@ -64,7 +64,7 @@ pub fn parse_card_title(title: &str) -> Option<(String, String)> {
 pub fn review_card_title(parent: uuid::Uuid, instance: &str, owner: &str) -> String {
     format!(
         "[review {}] {instance}: review {owner}'s fix",
-        airc_core::shown_id::shown_form(parent)
+        &parent.simple().to_string()[..8]
     )
 }
 

@@ -13,7 +13,7 @@ use super::*;
 /// them apart (Cormac's condition). The caller's input is reported too, since the gap
 /// between what she asked for and what she got IS the diagnosis.
 pub(super) fn room_label(name: &str, channel: Uuid) -> String {
-    format!("'{name}' ({})", airc_core::shown_id::shown_form(channel))
+    format!("'{name}' ({})", short8(channel))
 }
 
 /// The same content-addressed reference the AIRC submission protocol carries.
@@ -182,7 +182,7 @@ pub(super) async fn room_of_card(
                     continuum_base::probe!(
                         class = "work.room.card_on_two_boards",
                         verb,
-                        card_id = %airc_core::shown_id::shown_form(id.as_uuid()),
+                        card_id = %short8(id.as_uuid()),
                         first = %room.name,
                         second = %other.name,
                         "a card id found on two readable boards: acting in the first"
@@ -194,7 +194,7 @@ pub(super) async fn room_of_card(
                         continuum_base::probe!(
                             class = "work.room.from_card",
                             verb,
-                            card_id = %airc_core::shown_id::shown_form(id.as_uuid()),
+                            card_id = %short8(id.as_uuid()),
                             asked = %asked,
                             used = %room.name,
                             "a card verb named a room that does not hold the card: it acts in the card's room"
@@ -260,7 +260,7 @@ pub(super) fn submissions_on_card(on_card: &[(Uuid, Uuid)]) -> String {
     let lines: Vec<String> = on_card
         .iter()
         .map(|(id, publisher)| {
-            format!("{} by {}", airc_core::shown_id::shown_form(*id), airc_core::shown_id::shown_form(*publisher))
+            format!("{} by {}", &id.simple().to_string()[..8], &publisher.simple().to_string()[..8])
         })
         .collect();
     format!("submissions on this card: {}", lines.join(", "))
@@ -375,7 +375,7 @@ pub(super) async fn stage_for_owner_on_demand(
         Staging::Ready { path } => {
             continuum_base::probe!(
                 class = "work.submit.staged_on_demand",
-                card_id = %airc_core::shown_id::shown_form(card_uuid),
+                card_id = %short8(card_uuid),
                 path = %path.display(),
                 "the owner's checkout was missing at submit time — staged it here, the way her claim would have"
             );
@@ -411,12 +411,12 @@ pub(super) async fn renew_owner_lease(airc: &airc_lib::Airc, card: &airc_lib::Wo
     {
         Ok(()) => continuum_base::probe!(
             class = "work.submit.lease_renewed_by_act",
-            card_id = %airc_core::shown_id::shown_form(card.card_id.as_uuid()),
+            card_id = %short8(card.card_id.as_uuid()),
             "the owner's lease had lapsed between wakes — her submit renewed it"
         ),
         Err(error) => continuum_base::probe!(
             class = "work.submit.lease_renewal_refused",
-            card_id = %airc_core::shown_id::shown_form(card.card_id.as_uuid()),
+            card_id = %short8(card.card_id.as_uuid()),
             error = %error,
             "the wire refused the renewal; the submit proceeds on her ownership"
         ),
@@ -437,7 +437,7 @@ pub(super) fn holder_guard(
     if owner != Some(me) {
         return Err(CommandError::Denied(format!(
             "card {card_id} is held by {}, not by you — only the holder submits",
-            owner.map(|o| airc_core::shown_id::shown_form(o.as_uuid())).unwrap_or_else(|| "nobody".to_string()), // unwrap_or_else: an unclaimed card names that absence
+            owner.map(|o| short8(o.as_uuid())).unwrap_or_else(|| "nobody".to_string()), // unwrap_or_else: an unclaimed card names that absence
         )));
     }
     if board_claim != Some(supplied) {
@@ -445,8 +445,8 @@ pub(super) fn holder_guard(
             "the claim id you passed ({}) is not the live claim on card {card_id} — the \
              board's claim is {}. YOU DO HOLD THIS CARD; omit claim_id and submit again and \
              the live claim is read off the board for you.",
-            airc_core::shown_id::shown_form(supplied.as_uuid()),
-            board_claim.map(|c| airc_core::shown_id::shown_form(c.as_uuid())).unwrap_or_else(|| "none — the card is unclaimed".to_string()), // unwrap_or_else: says which absence it saw
+            short8(supplied.as_uuid()),
+            board_claim.map(|c| short8(c.as_uuid())).unwrap_or_else(|| "none — the card is unclaimed".to_string()), // unwrap_or_else: says which absence it saw
         )));
     }
     Ok(())

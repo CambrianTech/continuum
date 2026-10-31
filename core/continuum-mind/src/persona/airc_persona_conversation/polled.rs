@@ -204,7 +204,8 @@ pub(super) async fn catch_up_from_store(
     let mut first_error: Option<String> = None;
     let mut sample_newest = 0u64;
     let mut sample: Option<(Uuid, u64, u64, usize, String, String, bool)> = None;
-    let room_list = rooms.iter().map(|r| airc_core::shown_id::shown_form(*r)).collect::<Vec<_>>().join(",");
+    let short = |u: &Uuid| u.to_string().chars().take(8).collect::<String>();
+    let room_list = rooms.iter().map(short).collect::<Vec<_>>().join(",");
     let mut empty: Vec<String> = Vec::new();
     for room in rooms {
         // THE CORE'S OWN CHAT STORE is the durable page (see
@@ -229,7 +230,7 @@ pub(super) async fn catch_up_from_store(
         paged += 1;
         events.sort_by_key(|e| e.occurred_at_ms);
         let Some(newest_ms) = events.iter().map(|e| e.occurred_at_ms).max() else {
-            empty.push(airc_core::shown_id::shown_form(room));
+            empty.push(short(&room));
             continue;
         };
         let floor_ms = *seen
@@ -251,7 +252,12 @@ pub(super) async fn catch_up_from_store(
                     floor_ms,
                     newest_ms,
                     events.len(),
-                    airc_core::shown_id::shown_form(e.peer_id.as_uuid()),
+                    e.peer_id
+                        .as_uuid()
+                        .to_string()
+                        .chars()
+                        .take(8)
+                        .collect::<String>(),
                     e.body
                         .as_ref()
                         .and_then(|b| b.as_text().map(|t| t.chars().take(60).collect::<String>()))
