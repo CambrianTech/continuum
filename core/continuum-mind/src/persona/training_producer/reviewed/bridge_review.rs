@@ -136,8 +136,17 @@ pub(crate) async fn verified_review(
         .work_board_in(&room)
         .await
         .map_err(|e| crate::sdk_codegen::CommandError::Internal(e.to_string()))?;
-    check_review(event.peer_id, &review, board.submission_review(review.review_id))
-        .map_err(|refusal| crate::sdk_codegen::CommandError::Invalid(refusal.to_string()))?;
+    check_review(event.peer_id, &review, board.submission_review(review.review_id)).map_err(|refusal| {
+        // The projection keeps WHY it refused a review (lease expired, not the review card's
+        // owner, a settled card...): name it, or say it has not folded the review yet, so a
+        // deferred credit is diagnosable from the probe alone.
+        let why = match board.last_review_rejection(review.card_id).filter(|rejected| rejected.review_id == review.review_id) {
+            Some(rejected) => format!("{refusal}: {}", rejected.reason),
+            None if refusal == ReviewRefusal::NotAccepted => format!("{refusal}: not folded into this projection yet"),
+            None => refusal.to_string(),
+        };
+        crate::sdk_codegen::CommandError::Invalid(why)
+    })?;
     Ok(Some(VerifiedReview { review, room, board }))
 }
 
