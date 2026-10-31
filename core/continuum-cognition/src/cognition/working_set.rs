@@ -379,22 +379,26 @@ pub enum EmissionStop {
 }
 
 impl EmissionStop {
-    /// Classify a finished generation by where the cap fell: `hit_cap` is a
-    /// `FinishReason::Length` stop, `answer_tokens` the share of the server's count that
-    /// was not reasoning. Only a cap hit is a cut.
-    pub fn classify(hit_cap: bool, answer_tokens: u32) -> Self {
-        match (hit_cap, answer_tokens) {
+    /// Classify a finished generation by where the cap fell. `hit_cap` is a
+    /// `FinishReason::Length` stop; `answered` is whether the response CARRIES an answer
+    /// (text or a call), never a token count, which a stream may not report: a cut with an
+    /// answer present and usage missing is a cut in the answer (Codex on #5616). Only a
+    /// cap hit is a cut. This is the one classification: the allowance policy, its probes
+    /// and the hour line's counter ([`Self::counted`]) all read it.
+    pub fn classify(hit_cap: bool, answered: bool) -> Self {
+        match (hit_cap, answered) {
             (false, _) => Self::Landed,
-            (true, 0) => Self::CutMidThought,
-            (true, _) => Self::CutMidAnswer,
+            (true, false) => Self::CutMidThought,
+            (true, true) => Self::CutMidAnswer,
         }
     }
 
     /// [`Self::classify`] with the request's reasoning budget in hand: a landed turn
     /// whose think reached the budget is a `ThinkBudgetHit`, the rest classify as before.
+    /// The reasoning count is a measurement: missing usage reads 0 and so never claims a hit.
     pub fn classify_with_budget(
         hit_cap: bool,
-        answer_tokens: u32,
+        answered: bool,
         reasoning_tokens: u32,
         reasoning_budget: Option<u32>,
         allowance: u32,
@@ -403,7 +407,22 @@ impl EmissionStop {
             Some(budget) if !hit_cap && budget > 0 && reasoning_tokens >= budget => {
                 Self::ThinkBudgetHit { allowance }
             }
-            _ => Self::classify(hit_cap, answer_tokens),
+            _ => Self::classify(hit_cap, answered),
+        }
+    }
+
+    /// The hour line's count of this stop (`health_ledger::Stop`). A landed turn splits by
+    /// what it carries: an answer is landed, reasoning alone ended in thought, nothing is empty.
+    /// `answered` is the same presence [`Self::classify`] was given.
+    pub fn counted(self, answered: bool, reasoned: bool) -> continuum_vitals::health_ledger::Stop {
+        use continuum_vitals::health_ledger::Stop;
+        match self {
+            Self::CutMidAnswer => Stop::CutAnswer,
+            Self::CutMidThought => Stop::CutThink,
+            Self::ThinkBudgetHit { .. } => Stop::ThinkBudget,
+            Self::Landed if answered => Stop::Landed,
+            Self::Landed if reasoned => Stop::ThinkEnded,
+            Self::Landed => Stop::Empty,
         }
     }
 }

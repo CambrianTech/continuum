@@ -269,7 +269,7 @@
         // The closed loop: every turn is a think-only cut at the cap the last need set.
         let mut cap = landed.total();
         for t in 0..(NEED_SAMPLES as u64 + 4) {
-            reg.record_emission_in_memory(p(9), cap, cap, EmissionStop::classify(true, 0), 100 + t);
+            reg.record_emission_in_memory(p(9), cap, cap, EmissionStop::classify(true, false), 100 + t);
             let need = reg.need_of(p(9)).expect("need measured");
             assert_eq!(need, landed, "a think-only cut is not a sample: the need does not move (turn {t})");
             let e = reg.emission_of(p(9)).expect("recorded");
@@ -279,16 +279,16 @@
         }
         // A cut inside the ANSWER is the growth path, on that channel only: the peak is
         // the sum of the channels, not the whole output doubled.
-        reg.record_emission_in_memory(p(8), 7_003, 7_000, EmissionStop::classify(true, 3), 1);
+        reg.record_emission_in_memory(p(8), 7_003, 7_000, EmissionStop::classify(true, true), 1);
         assert_eq!(reg.emission_of(p(8)).expect("recorded").peak_tokens, 7_006, "7,006, not 14,006");
-        reg.record_emission_in_memory(p(7), 7_000, 1_000, EmissionStop::classify(true, 6_000), 1);
+        reg.record_emission_in_memory(p(7), 7_000, 1_000, EmissionStop::classify(true, true), 1);
         let write = reg.emission_of(p(7)).expect("recorded");
         assert_eq!((write.peak_tokens, write.answer_samples[0], write.reasoning_samples[0]), (13_000, 12_000, 1_000));
         // Classification is by channel; only a cap hit is a cut.
-        assert_eq!(EmissionStop::classify(false, 0), EmissionStop::Landed);
-        assert_eq!(EmissionStop::classify(false, 9), EmissionStop::Landed);
-        assert_eq!(EmissionStop::classify(true, 0), EmissionStop::CutMidThought);
-        assert_eq!(EmissionStop::classify(true, 1), EmissionStop::CutMidAnswer);
+        assert_eq!(EmissionStop::classify(false, false), EmissionStop::Landed);
+        assert_eq!(EmissionStop::classify(false, true), EmissionStop::Landed);
+        assert_eq!(EmissionStop::classify(true, false), EmissionStop::CutMidThought);
+        assert_eq!(EmissionStop::classify(true, true), EmissionStop::CutMidAnswer);
     }
 
     #[test]
@@ -439,7 +439,7 @@
             let budget = crate::inference::request_body::deliberation_reasoning_budget(u64::from(allowance))
                 .expect("an allowance large enough to budget") as u32;
             let answer = 300u32;
-            let stop = EmissionStop::classify_with_budget(false, answer, budget, Some(budget), allowance);
+            let stop = EmissionStop::classify_with_budget(false, true, budget, Some(budget), allowance);
             assert_eq!(stop, EmissionStop::ThinkBudgetHit { allowance }, "turn {t}");
             reg.record_emission_in_memory(p(6), budget + answer, budget, stop, 100 + t);
             let next = reg.need_of(p(6)).expect("need measured").total();
@@ -462,7 +462,7 @@
         let start2 = a2;
         for t in 0..(NEED_SAMPLES as u64 * 10) {
             let budget = crate::inference::request_body::deliberation_reasoning_budget(u64::from(a2)).expect("budget") as u32;
-            reg2.record_emission_in_memory(p(5), budget + 300, budget, EmissionStop::classify(false, 300), 200 + t);
+            reg2.record_emission_in_memory(p(5), budget + 300, budget, EmissionStop::classify(false, true), 200 + t);
             a2 = reg2.need_of(p(5)).expect("need measured").total();
         }
         assert!(a2 < start2, "the control: verbatim samples contract ({start2} → {a2})");
@@ -493,3 +493,29 @@
         let never_sent = PersonaDemand { recent: [35_000; RECENT_TURNS], ..PersonaDemand::default() };
         assert_eq!(growth_sample(&never_sent), None);
     }
+
+// what this catches: the allowance policy and the hour line disagreeing on one generation, and a
+// stream that reports no usage read as empty. ONE classification drives both, from presence: a
+// length cut carrying an answer with usage missing is a cut in the answer for the policy AND the
+// counter (Codex on #5616); a landed turn with only reasoning ended in her think, one with nothing
+// is empty, and an answer or call is landed whatever its token counts (Fable and Codex on #5616).
+#[test]
+fn every_completed_generation_maps_to_exactly_one_counted_stop() {
+    use continuum_vitals::health_ledger::Stop;
+    // (length cut, answered, reasoned, reasoning tokens vs a budget of 100) -> (policy, counter)
+    let cases = [
+        (false, true, true, 0, EmissionStop::Landed, Stop::Landed),
+        (false, true, false, 0, EmissionStop::Landed, Stop::Landed),
+        (false, false, true, 0, EmissionStop::Landed, Stop::ThinkEnded),
+        (false, false, false, 0, EmissionStop::Landed, Stop::Empty),
+        (true, true, true, 0, EmissionStop::CutMidAnswer, Stop::CutAnswer),
+        (true, true, false, 0, EmissionStop::CutMidAnswer, Stop::CutAnswer),
+        (true, false, true, 0, EmissionStop::CutMidThought, Stop::CutThink),
+        (false, true, true, 100, EmissionStop::ThinkBudgetHit { allowance: 400 }, Stop::ThinkBudget),
+    ];
+    for (cut, answered, reasoned, reasoning, policy, counter) in cases {
+        let stop = EmissionStop::classify_with_budget(cut, answered, reasoning, Some(100), 400);
+        assert_eq!(stop, policy, "policy class for {:?}", (cut, answered, reasoned, reasoning));
+        assert_eq!(stop.counted(answered, reasoned), counter, "counted class for {:?}", (cut, answered, reasoned, reasoning));
+    }
+}
