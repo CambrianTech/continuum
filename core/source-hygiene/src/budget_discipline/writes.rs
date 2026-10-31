@@ -7,8 +7,13 @@
 use super::{is_vendored, owned_by};
 use crate::{sites, SourceFile, SourceRule, Violation};
 
-/// The owners of persistent bytes: the ORM (stores) and the disk classes.
-const OWNERS: &[&str] = &["core/continuum-kernel/src/orm/", "core/continuum-kernel/src/system_resources/disk_reporters"];
+/// The owners of persistent bytes: the ORM (stores), the disk classes (`ClassWriter`), and the
+/// one primitive both place files through (`continuum_host::durable`: staging, placement, locks).
+const OWNERS: &[&str] = &[
+    "core/continuum-kernel/src/orm/",
+    "core/continuum-kernel/src/system_resources/disk_reporters",
+    "core/continuum-host/src/durable/",
+];
 
 /// The ways Rust code creates or appends to a file.
 const WRITES: &[&str] = &["fs::write(", "File::create(", "OpenOptions::new()"];

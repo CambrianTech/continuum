@@ -14,7 +14,7 @@ continuum-base = { path = "../continuum-base" }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }
 continuum-experience = { path = "../continuum-experience" }
-dashmap = "6.1"  # same pin as continuum-cognition
+dashmap = { workspace = true }  # the workspace pin, shared with continuum-cognition
 parking_lot.workspace = true
 serde.workspace = true
 tokio.workspace = true

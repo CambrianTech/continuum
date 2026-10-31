@@ -44,31 +44,8 @@ pub(crate) struct SearchOutput {
     pub ranked_indices: Vec<usize>,
 }
 
-/// Params for `search/vector` — also the cosine algorithm's direct input.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/search/VectorSearchInput.ts"
-)]
-#[serde(rename_all = "camelCase")]
-pub struct VectorSearchInput {
-    /// The query embedding to rank the corpus against — one vector of floats.
-    pub query_vector: Vec<f64>,
-    /// The corpus embeddings to rank — one float vector per candidate item, each
-    /// the same dimensionality as `queryVector`.
-    pub corpus_vectors: Vec<Vec<f64>>,
-    #[serde(default = "default_true")]
-    pub normalize: bool,
-    #[serde(default)]
-    pub threshold: f64,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-/// The shared result shape for `search/execute` and `search/vector`: which
-/// algorithm ran, the per-document scores, and the best-first ranking.
+/// The result shape for `search/execute`: which algorithm ran, the
+/// per-document scores, and the best-first ranking.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
@@ -425,68 +402,14 @@ impl SearchAlgorithm for Bm25Algorithm {
 // Cosine Similarity Algorithm
 // ============================================================================
 
-pub(crate) struct CosineAlgorithm {
-    pub(crate) normalize: bool,
-    pub(crate) threshold: f64,
+struct CosineAlgorithm {
+    normalize: bool,
+    threshold: f64,
 }
 
 impl CosineAlgorithm {
     fn create() -> Box<dyn SearchAlgorithm> {
         Box::new(Self::default())
-    }
-
-    #[inline]
-    fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
-        if a.len() != b.len() || a.is_empty() {
-            return 0.0;
-        }
-        let mut dot = 0.0;
-        let mut norm_a = 0.0;
-        let mut norm_b = 0.0;
-        for i in 0..a.len() {
-            dot += a[i] * b[i];
-            norm_a += a[i] * a[i];
-            norm_b += b[i] * b[i];
-        }
-        let denominator = (norm_a * norm_b).sqrt();
-        if denominator == 0.0 {
-            0.0
-        } else {
-            dot / denominator
-        }
-    }
-
-    fn l2_normalize(v: &mut [f64]) {
-        let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if norm > 0.0 {
-            for x in v.iter_mut() {
-                *x /= norm;
-            }
-        }
-    }
-
-    pub(crate) fn vector_search(&self, input: &VectorSearchInput) -> SearchOutput {
-        let mut query = input.query_vector.clone();
-        if self.normalize {
-            Self::l2_normalize(&mut query);
-        }
-
-        let mut scores: Vec<f64> = Vec::with_capacity(input.corpus_vectors.len());
-        for corpus_vec in &input.corpus_vectors {
-            let mut cv = corpus_vec.clone();
-            if self.normalize {
-                Self::l2_normalize(&mut cv);
-            }
-            let sim = Self::cosine_similarity(&query, &cv);
-            scores.push(if sim >= self.threshold { sim } else { 0.0 });
-        }
-
-        let mut ranked: Vec<(usize, f64)> = scores.iter().copied().enumerate().collect();
-        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        SearchOutput {
-            scores,
-            ranked_indices: ranked.into_iter().map(|(i, _)| i).collect(),
-        }
     }
 }
 

@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 /// The single-word reply a persona produces when it chooses NOT to
-/// respond on a given turn. Detection in `persona::response::respond_inner`
-/// matches case-insensitively (see [`looks_like_silence_token`]).
+/// respond on a given turn. Detection matches case-insensitively (see
+/// [`looks_like_silence_token`]).
 ///
 /// Why "PASS": short (1 token in most BPE vocabularies including
 /// Qwen's), unambiguous, doesn't collide with natural chat openings,
@@ -178,9 +178,8 @@ pub struct PromptAssemblyInput {
     pub persona_name: String,
     /// Persona's system prompt (from RAG identity)
     pub system_prompt: String,
-    /// The matched angle from SharedAnalysis — grounds the persona's
-    /// contribution in a specific perspective, not generic flavor.
-    /// Empty string if no shared analysis (fallback path).
+    /// A specific angle that grounds the persona's contribution in a
+    /// perspective, not generic flavor. Empty string when none.
     pub matched_angle: String,
     /// Conversation history as (role, name, content) triples.
     /// Already ordered, already trimmed to token budget by RAG builder.
@@ -508,9 +507,8 @@ fn build_messages_name_prefixed(
 /// Verified 2026-04-21: bare flattened transcript (history + new message
 /// with no closing instruction) makes qwen3.5 emit ` *` + `<|endoftext|>`
 /// after 1 token because the model reads it as "summary of a closed
-/// conversation, no question for me." The cognition::analyze prompt that
-/// works ends with explicit "Respond with ..." guidance; the render
-/// prompt needs the same. Token-level diagnostic captured in
+/// conversation, no question for me." A prompt that works ends with
+/// explicit "Respond with ..." guidance; the render prompt needs it. Token-level diagnostic captured in
 /// llamacpp_scheduler.rs (search "scheduler DIAG").
 ///
 /// Caller must pass `persona_name` so the closing cue addresses the

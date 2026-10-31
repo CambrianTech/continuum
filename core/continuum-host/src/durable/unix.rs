@@ -21,3 +21,11 @@ pub(super) fn sync_entries(dir: &Path) -> io::Result<()> {
 pub(super) fn held_by_another_process(_: &io::Error) -> bool {
     false
 }
+
+/// A name placed in a held directory survives power loss once the directory itself is synced.
+/// The held handle cannot be synced on Linux (cap-std holds directories `O_PATH`, which `fsync`
+/// refuses with EBADF; macOS has no `O_PATH`, so only Linux CI showed it), so the directory is
+/// opened for reading through the held handle itself and that descriptor is synced.
+pub(super) fn sync_placed(dir: &cap_std::fs::Dir, _name: &Path) -> io::Result<()> {
+    dir.open_with(".", cap_std::fs::OpenOptions::new().read(true))?.sync_all()
+}

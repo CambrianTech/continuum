@@ -2,8 +2,13 @@
 // Source: generator/generate-rust-bindings.ts
 // Re-generate: npx tsx generator/generate-rust-bindings.ts
 
-export type { PersonaContext } from './PersonaContext';
-export type { RespondRequest } from './RespondRequest';
-export type { Signal } from './Signal';
-export type { SignalKind } from './SignalKind';
-export type { SignalOriginator } from './SignalOriginator';
+export type { CallerRecord } from './CallerRecord';
+export type { Invocation } from './Invocation';
+export type { InvocationState } from './InvocationState';
+export type { RecipeListParams } from './RecipeListParams';
+export type { RecipeListResult } from './RecipeListResult';
+export type { RecipeRunParams } from './RecipeRunParams';
+export type { RecipeRunRef } from './RecipeRunRef';
+export type { RecipeRunResult } from './RecipeRunResult';
+export type { RunCursor } from './RunCursor';
+export type { RunPhase } from './RunPhase';

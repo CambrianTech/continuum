@@ -67,6 +67,65 @@ fn her_view_survives_a_restart_in_her_checkpoint() {
     assert!(restored.take_view().is_none(), "taken once, by the act that resumes it");
 }
 
+// what this catches: the 2026-10-31 M5 outage. #5639 added `level` to the view's events, so every
+// resident's checkpoint (written by the build before) failed to decode and registration refused all
+// four for 32 minutes. A real view with only its `level` fields removed must be dropped (it is
+// derived) while everything authoritative restores and saves again; a corrupt AUTHORITATIVE field
+// must still refuse (Codex on #5659).
+#[test]
+fn a_view_from_an_older_build_is_dropped_and_authoritative_state_survives() {
+    use continuum_context::view::{Claim, View};
+    use crate::cognition::working_memory::VolatileSnapshot;
+
+    let memory = WorkingMemory::new(8);
+    memory.record_receipt("I ran code/list Result: 4 files");
+    memory.record_settlement("listed the four files", None);
+    let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    let (view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap();
+    memory.keep_view(Some(view));
+    // Text, never `serde_json::Value`: the view's element ids are u128, which a Value cannot hold.
+    let good = serde_json::to_string(&memory.snapshot()).expect("encode");
+
+    // The older build's shape: the same real view, its `level` pairs removed and nothing else.
+    let (head, view_and_rest) = good.split_at(good.find("\"context_view\":").expect("the checkpoint carries her view"));
+    let mut older_view = view_and_rest.to_owned();
+    let mut stripped = 0;
+    for variant in ["Full", "Summary", "Pointer", "Folded"] {
+        for pattern in [format!("\"level\":\"{variant}\","), format!(",\"level\":\"{variant}\"")] {
+            stripped += older_view.matches(pattern.as_str()).count();
+            older_view = older_view.replace(pattern.as_str(), "");
+        }
+    }
+    assert!(stripped > 0, "the fixture reproduces the missing-level view");
+    let older = format!("{head}{older_view}");
+
+    let snap: VolatileSnapshot = serde_json::from_str(&older).expect("an older view never refuses the checkpoint");
+    let restored = WorkingMemory::new(8);
+    restored.restore(snap);
+    assert!(restored.take_view().is_none(), "the stale view is dropped: her next act opens a new epoch");
+    assert!(restored.has_receipt(), "her newest result survives");
+    let settled = |m: &WorkingMemory| m.recent_entries().iter().any(|entry| entry.text.contains("listed the four files"));
+    assert!(settled(&restored), "her settlement survives");
+
+    // A VALID view (u128 ids and all) still restores whole: the derived decoder is lossless.
+    let current: VolatileSnapshot = serde_json::from_str(&good).expect("the current view decodes");
+    let resumed = WorkingMemory::new(8);
+    resumed.restore(current);
+    assert!(resumed.take_view().is_some(), "a view that decodes is kept");
+
+    // The next save keeps every authoritative field and carries no view until she renders one.
+    let saved = serde_json::to_string(&restored.snapshot()).expect("encode");
+    assert!(!saved.contains("\"context_view\""));
+    let again = WorkingMemory::new(8);
+    again.restore(serde_json::from_str(&saved).expect("the repaired save decodes"));
+    assert!(again.has_receipt() && settled(&again), "authoritative state survives the repaired save");
+
+    // A corrupt authoritative field is still refused: only the derived view is forgiven.
+    let corrupt = good.replacen("\"next_action_seq\":", "\"next_action_seq\":\"not a number\",\"_was\":", 1);
+    assert!(serde_json::from_str::<VolatileSnapshot>(&corrupt).is_err());
+}
+
 // what this catches (Cormac on #5255): a result kept in memory but never saved under a handle
 // collapsing at a turnover to its one-line ledger head, which nothing can reopen (goal 7). Its
 // collapsed form is the whole result, so the view can only keep it, never cut it.
@@ -241,4 +300,18 @@ fn her_unchanged_reread_reaches_her_view_as_a_repeat_and_an_undeclared_act_never
         memory.record_settlement("wrote", None);
         assert_eq!(view.advance(&[&actions as &dyn Source<_>]).repeats, 0, "an undeclared act is never a repeat");
     }
+
+    // Card 7d7b1ace: the read-only verbs declare it too. `git_status` resolves to `code/git/status`,
+    // declared through action_command!'s `effect:` clause, so an unchanged status is a repeat.
+    let memory = WorkingMemory::new(8);
+    let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
+    let (mut view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
+    let status = "On branch main\nnothing to commit, working tree clean\n".repeat(20);
+    let mut repeats = 0;
+    for _ in 0..2 {
+        memory.record_receipt_typed(&[act("git_status", None)], &status, None, unsaved());
+        memory.record_settlement("checked", None);
+        repeats += view.advance(&[&actions as &dyn Source<_>]).repeats;
+    }
+    assert_eq!(repeats, 1, "an unchanged status, asked again, arrives as a repeat");
 }

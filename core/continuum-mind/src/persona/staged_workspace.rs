@@ -1,16 +1,13 @@
 //! Which on-disk workspace does a citizen's claimed card point at?
 //!
-//! ONE answer, three callers. A staged benchmark instance is a real git checkout under
+//! ONE answer. A staged benchmark instance is a real git checkout under
 //! `<home>/citizens/peers/<peer>/workspace/swe/<instance>`, written by `benchmark/swe-setup`
-//! at dispatch. Three places need to resolve it and, before this module, two of them each
-//! walked that directory themselves:
+//! at dispatch. The places that resolve it:
 //!
-//! - `persona/roster` — reports the staged list as the REUSE signal (dispatch found the
-//!   checkout and skipped cloning)
 //! - `modules/work.rs::dispatch_staged_swe_solve` — matches a claimed card to its instance
 //! - `persona/service_loop` — roots her HANDS at that instance for a work turn
 //!
-//! The third is why this module exists. A citizen working her claimed card must ACT IN THE
+//! The second is why this module exists. A citizen working her claimed card must ACT IN THE
 //! REPO, and the layout knowledge that makes that possible was previously inline in a
 //! benchmark dispatcher — so the live path could not reuse it without importing the
 //! bypass it is meant to replace.

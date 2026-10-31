@@ -631,11 +631,11 @@ impl ServiceModule for MCPModule {
 
     async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
         // Every `mcp/*` verb is now a typed `ActionCommand` that routes via
-        // `route_object` (the catalog family in `crate::commands::mcp` + the
-        // stateless `mcp/refresh`). Reaching this legacy path at all means a
-        // descriptor failed to register — fail loud naming the command rather than
-        // silently re-handling it. (This whole impl is retired wholesale when
-        // Registry A's trait default becomes fail-loud — #63.)
+        // `route_object` (the catalog family in `crate::commands::mcp`). Reaching
+        // this legacy path at all means a descriptor failed to register — fail
+        // loud naming the command rather than silently re-handling it. (This whole
+        // impl is retired wholesale when Registry A's trait default becomes
+        // fail-loud — #63.)
         Err(format!(
             "'{command}' is a migrated, typed mcp command — it must route via the \
              object registry (route_object), not the legacy handle_command path. \
