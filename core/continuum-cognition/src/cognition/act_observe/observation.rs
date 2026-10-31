@@ -226,6 +226,14 @@ impl ActOutcome {
     }
 }
 
+/// A call's arguments as she reads them, by shape and never by size: a single-line value whole,
+/// a multi-line value (a file's body, a heredoc) by its reference, so one line stays one line.
+/// The one argument renderer (`Observation::call_line`, and a result's status line in
+/// `tool_executor::answer`).
+pub(crate) fn call_args(input: &serde_json::Value) -> String {
+    render_call_args(input)
+}
+
 impl Observation {
     /// Execution alone is not success: projected running/failed/undecodable
     /// results do not establish an effect. Legacy unprojected commands retain
@@ -261,7 +269,7 @@ impl Observation {
     /// (`render_call_args`). The one rendering of a call, for its recency trace, its summary part
     /// and its ledger line.
     pub(crate) fn call_line(&self) -> String {
-        format!("{}({})", self.call.name, render_call_args(&self.call.input))
+        format!("{}({})", self.call.name, call_args(&self.call.input))
     }
 
     /// The RECENCY-channel rendering: the FULL trace working memory keeps so the mind can act on
