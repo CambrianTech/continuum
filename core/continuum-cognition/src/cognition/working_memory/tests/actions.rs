@@ -161,7 +161,21 @@ async fn dispatched_commands_stream_back_by_handle() {
     assert_eq!(c.3, DispatchStatus::Done);
     assert_eq!(c.2, "0 errors, 0 warnings");
 
-    // Her view renders each as its own item (context_streams::tasks), tested there.
+    use continuum_context::source::Source;
+    let rendered = crate::cognition::context_streams::tasks::Tasks { memory: &wm, persona: Uuid::nil() }
+        .items().into_iter().map(|item| item.full().text.clone()).collect::<Vec<_>>().join("\n");
+    assert!(
+        rendered.contains("[tasks]"),
+        "the mind sees its sentinels"
+    );
+    assert!(
+        rendered.contains("compile core\n0 errors"),
+        "finished result shown"
+    );
+    assert!(
+        rendered.contains("running task") && rendered.contains("research task"),
+        "in-flight shown"
+    );
 }
 
 // what this catches: a finished background handle dropped before a submitted prompt showed her

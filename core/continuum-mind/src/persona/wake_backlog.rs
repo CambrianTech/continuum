@@ -627,7 +627,7 @@ mod tests {
         use crate::cognition::act_observe::test_support::{admission, body_with_wm, ActThenSpeak, RecordingExecutor};
         use crate::cognition::act_observe::{drive_to_settle_with_input, SettleStep};
         use crate::cognition::working_memory::WorkingMemory;
-        use crate::cognition::workspace::{Burst, SalienceArbiter, TurnAttention, TurnFraming, WorkspaceCycle};
+        use crate::cognition::workspace::{Burst, Faculty, SalienceArbiter, TurnAttention, TurnFraming, WorkspaceCycle};
         use std::sync::{Arc, Mutex};
         use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
         use crate::cognition::conversation::{IncomingMessage, PersonaConversation};

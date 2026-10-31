@@ -13,6 +13,23 @@ use crate::cognition::conversation::IncomingMessage;
 use crate::cognition::workspace::TurnAttention;
 
 impl PendingInput {
+    /// Apply a completed generation to input and notice custody together. A receipt
+    /// checkpoint failure leaves both with their existing owner for restart recovery.
+    pub(crate) fn observe_settlement(
+        &mut self,
+        message: &IncomingMessage,
+        wake_engram: Option<Uuid>,
+        attention: TurnAttention,
+        step: &crate::cognition::act_observe::SettleStep,
+        receipts: &[GenerationReceipt],
+    ) {
+        if matches!(step, crate::cognition::act_observe::SettleStep::ReceiptPersistenceFailed { .. }) {
+            return;
+        }
+        self.settle(message, wake_engram, attention, step);
+        self.notices_read(message.room_id, receipts);
+    }
+
     /// Hand an interrupted, untouched turn back: retried at the next beat with its original
     /// engram (memory already holds the trigger) and its own row id. Idempotent per row.
     pub(crate) fn readmit(&mut self, message: IncomingMessage, engram: Option<Uuid>, attention: TurnAttention, obligation: Uuid) {

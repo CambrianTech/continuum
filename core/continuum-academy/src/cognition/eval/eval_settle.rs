@@ -105,9 +105,9 @@ pub(super) async fn run_pass_team(
         // number. Threading the full re-verify+retry into the two-solver loop is a scoped
         // follow-up. [[proctored-exam-session-dependable-benchmark]]
         if let Some(cause) = r
-            .inference_error
+            .failure
             .clone()
-            .or_else(|| w.inference_error.clone())
+            .or_else(|| w.failure.clone())
         {
             infra_faults += 1;
             if infra_reason.is_none() {
@@ -116,7 +116,7 @@ pub(super) async fn run_pass_team(
             results.push(EvalTaskResult {
                 id: t.id.clone(),
                 ok: false,
-                grade: format!("infra unavailable (lane never recovered): {cause}"),
+                grade: format!("settlement infrastructure unavailable: {cause}"),
                 acts: 0,
                 answer: String::new(),
                 latency_ms: 0,
@@ -180,7 +180,7 @@ pub(super) async fn run_pass_team(
             ok,
             grade,
             acts,
-            answer: answer.chars().take(ANSWER_CAPTURE_CHARS).collect(),
+            answer,
             latency_ms: m.latency_ms,
             output_tokens: m.output_tokens,
             tokens_per_second: m.tokens_per_second(),

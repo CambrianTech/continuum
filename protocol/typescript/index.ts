@@ -53,7 +53,6 @@ export type { GatingRagContext } from './cognition';
 export type { GatingRagMetadata } from './cognition';
 export type { GatingRecipeStrategy } from './cognition';
 export type { GatingTriggerMessage } from './cognition';
-export type { GenerateResponseAdmissionPolicy } from './cognition';
 export type { GenerateResponseRequest } from './cognition';
 export type { GenerateResponseResult } from './cognition';
 export type { HostCapability } from './cognition';

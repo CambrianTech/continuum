@@ -3,4 +3,4 @@
 /**
  * Why a resident's turn ended without completing, or ended parked after progress.
  */
-export type ResidentRefusal = { "class": "prompt_capacity", required_tokens: number, budget_tokens: number, context_window: number | null, } | { "class": "inference_failed" } | { "class": "lane_starved" };
+export type ResidentRefusal = { "class": "prompt_capacity", required_tokens: number, budget_tokens: number, context_window: number | null, } | { "class": "inference_failed" } | { "class": "receipt_persistence_failed" } | { "class": "lane_starved" };

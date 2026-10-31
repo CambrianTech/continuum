@@ -43,6 +43,7 @@ mod arbiter;
 pub use arbiter::*;
 mod workspace_cycle;
 mod workspace_cycle_2;
+mod render_custody;
 
 #[cfg(test)]
 mod tests;

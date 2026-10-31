@@ -15,9 +15,9 @@ pub struct EvalTaskResult {
     /// the act budget mid-action — an honest "did not finish", never fabricated). For a
     /// coder exam the answer IS the code, so this must carry the whole thing: a 200-char
     /// cap stored only the "Sure, I can help..." preamble and made every failure
-    /// undiagnosable AND un-minable for a correction corpus (2026-07-21). Bounded by
-    /// ANSWER_CAPTURE_CHARS against a pathological loop-to-length, which is itself a
-    /// signal worth capturing up to the cap.
+    /// undiagnosable AND un-minable for a correction corpus (2026-07-21). Retain the
+    /// complete answer for the grade-time lesson sink; storage policy cannot cut
+    /// the evidence before that consumer receives it.
     pub answer: String,
     /// Wall-clock latency to SETTLE this task: the summed deliberation-generation
     /// time across every act→observe tick (the model's own measured request time,
@@ -67,7 +67,7 @@ pub struct EvalTaskResult {
 pub struct InfraUnavailable {
     /// Human cause: which axis broke (not-ready / connect-refused / not-the-served-model
     /// / compute-error / stream-idle timeout), naming the task it broke on. Display-only
-    /// — the classification that produced it is [`SettleOutcome::inference_error`], never
+    /// — the classification that produced it is [`SettleOutcome::failure`], never
     /// re-parsed from this string.
     pub reason: String,
     /// How many tasks were attempted before the run aborted. The exam is INCOMPLETE — a

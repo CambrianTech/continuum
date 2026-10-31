@@ -274,6 +274,7 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         context_view: None,
         receipt_children: Default::default(),
         open_views: Vec::new(),
+        task_results: Default::default(),
     });
     assert!(quiet.recent().is_empty(), "an empty snapshot restores an empty window");
     let q = quiet.pinned_facts();
@@ -289,3 +290,4 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         "no fabricated save age on legacy snapshots: {q:?}"
     );
 }
+

@@ -167,6 +167,7 @@ pub struct CommandExecutor {
     /// them inline against the owned `registry` + `interceptors` +
     /// TS bridge.
     remote_transport: Arc<dyn Transport>,
+    task_ledger: tokio::sync::OnceCell<Arc<super::tasks::TaskLedger>>,
 }
 
 impl CommandExecutor {
@@ -177,6 +178,7 @@ impl CommandExecutor {
             bus: None,
             policy: Arc::new(crate::routing::AllowAllPolicy),
             remote_transport: Arc::new(crate::routing::NotImplementedRemoteTransport),
+            task_ledger: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -349,37 +351,6 @@ impl CommandExecutor {
             None, // synchronous: the caller holds the return value
         );
         outcome
-    }
-
-    /// Fire a command in the BACKGROUND: return a handle (UUID) immediately, run the
-    /// dispatch on a spawned task, and on completion emit `command:completed` carrying the
-    /// handle AND the result. A subscriber — e.g. a persona that sent a sentinel, a
-    /// compile, or a debugger away — matches the completion by handle and folds the outcome
-    /// in when it lands, never blocking the turn. This is the fire-and-poll shape (#86): the
-    /// caller does not await the work. The handle is reusable in a follow-up command
-    /// (cancel/query/attach), which is why it's a plain UUID ([[commands-are-agency-algs-are-pathways]]).
-    pub fn dispatch_background(
-        self: &std::sync::Arc<Self>,
-        command: impl Into<CommandUri>,
-        params: Value,
-        caller: Option<crate::routing::CallerIdentity>,
-    ) -> uuid::Uuid {
-        let handle = uuid::Uuid::new_v4();
-        let command: CommandUri = command.into();
-        let this = std::sync::Arc::clone(self);
-        tokio::spawn(async move {
-            let start = std::time::Instant::now();
-            // The caller's hands are bound and admitted inside dispatch, for this task's whole
-            // life: a release that began before its first poll refuses it by name.
-            let outcome = this.dispatch(&command, params, caller.as_ref()).await;
-            this.emit_command_completed(
-                command.path(),
-                &outcome,
-                start.elapsed().as_millis() as u64,
-                Some(handle),
-            );
-        });
-        handle
     }
 
     /// Routing decision on a [`CommandUri`]. Local URIs go through the
@@ -804,6 +775,8 @@ impl CommandExecutor {
 //      already-registered modules)
 //
 // Pure dependency injection. No global. No panic-if-uninitialized.
+
+mod background;
 
 #[cfg(test)]
 mod tests;

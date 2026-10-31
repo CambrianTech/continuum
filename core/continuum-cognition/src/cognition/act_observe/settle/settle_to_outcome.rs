@@ -115,7 +115,7 @@ pub(super) async fn settle_to_outcome<'c>(
     // faulted thought is retried in place, bounded, before the turn is
     // surrendered — the flicker costs one re-generation, not the turn. Only a
     // SUSTAINED fault (budget spent across the turn) ends the turn with
-    // inference_error, exactly as before — 4+ faults in one turn IS a wedge worth
+    // failure, exactly as before — 4+ faults in one turn IS a wedge worth
     // surrendering to, not a flicker. Whole-turn budget, not per-tick.
     const DELIBERATION_RETRY_BUDGET: u32 = 3;
     let mut delib_retries: u32 = 0;
@@ -147,7 +147,7 @@ pub(super) async fn settle_to_outcome<'c>(
                 room_updates: Arc::clone(&burst.room_updates),
                 metrics,
                 generation_receipts: generation_receipts.clone(),
-                inference_error: None,
+                failure: None,
                 deferred_before_dispatch: false,
                 capacity_refusal: None,
                 touched_paths: touched,
@@ -248,7 +248,7 @@ pub(super) async fn settle_to_outcome<'c>(
                         room_updates: Arc::clone(&burst.room_updates),
                         metrics,
                         generation_receipts: generation_receipts.clone(),
-                        inference_error: Some(error),
+                        failure: Some(SettlementFailure::Inference(error)),
                         deferred_before_dispatch: false,
                         capacity_refusal: None,
                         touched_paths: touched,
@@ -480,7 +480,7 @@ pub(super) async fn settle_to_outcome<'c>(
                 ),
                 capacity_refusal: Some(error.clone()),
                 generation_receipts,
-                inference_error: None,
+                failure: None,
                 touched_paths: touched,
                 turn_acts,
             };
@@ -604,7 +604,7 @@ pub(super) async fn settle_to_outcome<'c>(
                     room_updates: Arc::clone(&burst.room_updates),
                     metrics,
                     generation_receipts: generation_receipts.clone(),
-                    inference_error: None,
+                    failure: None,
                     deferred_before_dispatch: false,
                     capacity_refusal: None,
                     touched_paths: touched,
@@ -714,7 +714,7 @@ pub(super) async fn settle_to_outcome<'c>(
                     room_updates: Arc::clone(&burst.room_updates),
                     metrics,
                     generation_receipts: generation_receipts.clone(),
-                    inference_error: None,
+                    failure: None,
                     deferred_before_dispatch: false,
                     capacity_refusal: None,
                     touched_paths: touched,
@@ -731,7 +731,7 @@ pub(super) async fn settle_to_outcome<'c>(
                     room_updates: Arc::clone(&burst.room_updates),
                     metrics,
                     generation_receipts: generation_receipts.clone(),
-                    inference_error: None,
+                    failure: None,
                     deferred_before_dispatch: false,
                     capacity_refusal: None,
                     touched_paths: touched,
@@ -748,6 +748,16 @@ pub(super) async fn settle_to_outcome<'c>(
             }
             SettleStep::DeferredBeforeDispatch => {
                 unreachable!("deferral is a driven-turn disposition, not an individual step");
+            }
+            SettleStep::ReceiptPersistenceFailed { error } => {
+                return SettleOutcome {
+                    room: room_id, decision: Decision::pass(), spoken: None, acts,
+                    world_state: burst.rendered.clone(), room_updates: Arc::clone(&burst.room_updates),
+                    metrics, generation_receipts,
+                    failure: Some(SettlementFailure::ReceiptPersistence(error)),
+                    deferred_before_dispatch: false, capacity_refusal: None,
+                    touched_paths: touched, turn_acts,
+                };
             }
             SettleStep::InferenceFailed { error } => {
                 // A STARVED MIND KEEPS HER BUDGET. This arm's retry budget is for a
@@ -782,7 +792,7 @@ pub(super) async fn settle_to_outcome<'c>(
                         metrics,
                         generation_receipts: generation_receipts.clone(),
                         // Not an inference fault: no inference was ever dispatched.
-                        inference_error: None,
+                        failure: None,
                         deferred_before_dispatch: can_defer_input(generation_receipts.len(), acts, turn_acts.len(), delib_retries),
                         capacity_refusal: None,
                         touched_paths: touched,
@@ -795,7 +805,7 @@ pub(super) async fn settle_to_outcome<'c>(
                 // in place, bounded, and ALWAYS probe so the wedge signal stays
                 // visible to the concurrency investigation (the retry recovers the
                 // turn; it must never HIDE the fault). Only a SUSTAINED fault
-                // (budget spent) surrenders the turn with inference_error, exactly
+                // (budget spent) surrenders the turn with failure, exactly
                 // as before.
                 // A generation the act deadline dropped in flight is no transient fault: its
                 // retry waits out another whole bound on the same engine (up to three, so one
@@ -823,7 +833,7 @@ pub(super) async fn settle_to_outcome<'c>(
                     room_updates: Arc::clone(&burst.room_updates),
                     metrics,
                     generation_receipts: generation_receipts.clone(),
-                    inference_error: Some(error),
+                    failure: Some(SettlementFailure::Inference(error)),
                     deferred_before_dispatch: false,
                     capacity_refusal: None,
                     touched_paths: touched,

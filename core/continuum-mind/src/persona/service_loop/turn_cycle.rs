@@ -6,6 +6,9 @@ pub(super) enum CycleVerdict {
     Spoke(SpokenTurn),
     /// No reply to publish this turn (deferred, acted, silent, failed, or yielded).
     Skip,
+    /// Custody failed after generation. The loop must leave its durable
+    /// obligation open and return to lifecycle supervision, not close a skip.
+    CheckpointFailed(std::sync::Arc<crate::cognition::persona_workspace::TaskSinkError>),
 }
 
 /// The L2 producer's two provenance inputs are BORN inside the cycle — credit on her hands
@@ -301,9 +304,7 @@ pub(super) async fn run_turn_cycle(
                     "deliberation generation cost"
                 );
             }
-            deferred_input.settle(msg, wake_engram, attention, &step);
-            // The room that chose this turn's cycle above, so the notices it read are the ones answered.
-            deferred_input.notices_read(turn_room, &turn_generation_receipts);
+            deferred_input.observe_settlement(msg, wake_engram, attention, &step, &turn_generation_receipts);
             match step {
                 crate::cognition::act_observe::SettleStep::CapacityRefused { .. }
                 | crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch => {
@@ -375,7 +376,7 @@ pub(super) async fn run_turn_cycle(
                         lamport = msg.lamport,
                         reason = "workspace-pass",
                         gated = gated,
-                        pass_reason = %pass_detail.chars().take(240).collect::<String>(),
+                        pass_reason = %pass_detail,
                         "persona chose silence, or a gate converted her draft into a pass (gated) — pass_reason says which"
                     );
                     // THE ACT-QUESTION. Asked here on the PASS path and again after a spoken reply,
@@ -397,6 +398,11 @@ pub(super) async fn run_turn_cycle(
                     deferred_input.settle_work(&work);
                     outcome.turns_skipped += 1;
                     return CycleVerdict::Skip;
+                }
+                crate::cognition::act_observe::SettleStep::ReceiptPersistenceFailed { error } => {
+                    tracing::error!(persona = %ctx.identity.agent_name, lamport = msg.lamport,
+                        error = %error, "render receipt checkpoint failed; generation served, action not executed");
+                    return CycleVerdict::CheckpointFailed(error);
                 }
                 crate::cognition::act_observe::SettleStep::InferenceFailed { error } => {
                     // The model call FAILED (timeout, 5xx, the serving lane

@@ -271,47 +271,15 @@ fn her_acts_survive_ring_churn_and_roundtrip_the_snapshot() {
 }
 
 #[test]
-fn an_old_snapshot_without_acts_restores_without_panic() {
-    // A hand-authored legacy snapshot: entries have NO `acts` key at all.
-    let legacy_json = r#"{
-        "entries": [
-            { "kind": "Thought", "text": "thinking about the tokenizer" },
-            { "kind": { "Receipt": { "n": 1 } }, "text": "[action #1] code/list → ok" }
-        ],
-        "last_action": [1, "code/list → ok"],
-        "action_fps": ["code/list|{}"],
-        "next_action_seq": 2
-    }"#;
-    let snap: VolatileSnapshot =
-        serde_json::from_str(legacy_json).expect("legacy snapshot deserializes");
-    let fresh = WorkingMemory::new(8);
-    fresh.restore(snap);
-    // Both legacy entries survive the round-trip (asserted by content, not a raw
-    // count — restore ALSO appends a `[resumed]` wake-orientation fact by design,
-    // #147/#165: a restore IS an interruption, so she wakes oriented, never blank).
-    let texts = fresh.recent();
-    assert!(
-        texts
-            .iter()
-            .any(|t| t.contains("thinking about the tokenizer")),
-        "the legacy thought restored"
-    );
-    assert!(
-        texts.iter().any(|t| t.contains("[action #1] code/list")),
-        "the legacy receipt restored"
-    );
-    assert!(
-        fresh.pinned_facts().iter().any(|t| t.starts_with("[resumed]")),
-        "restore pins the wake-orientation notice"
-    );
-    assert!(
-        fresh.recent_acts().is_empty(),
-        "a legacy receipt has no typed acts — defaulted empty, never a panic"
-    );
-    assert!(
-        fresh.has_receipt(),
-        "the receipt kind still survives the trip"
-    );
+fn snapshot_without_task_consumption_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+    let memory = WorkingMemory::new(8);
+    memory.record_receipt("code/list completed");
+    let mut encoded = serde_json::to_value(memory.snapshot())?;
+    encoded.as_object_mut().ok_or("snapshot must be an object")?.remove("task_results");
+    let error = serde_json::from_value::<VolatileSnapshot>(encoded)
+        .expect_err("missing durable task state must not silently become an empty mailbox");
+    assert!(error.to_string().contains("task_results"));
+    Ok(())
 }
 
 #[test]

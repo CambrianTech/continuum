@@ -298,6 +298,8 @@ pub struct WorkingMemory {
     /// has read: her cursors, kept here because the history that carried each page is the
     /// first thing a tight window's fit drops ([`super::open_views`]).
     open_views: Mutex<super::open_views::OpenViews>,
+    task_results: Mutex<task_results::TaskResults>,
+    incarnation: Uuid,
     /// Her learned tool head: every call she makes is noted here, and the deliberation faculty
     /// reads and adopts the head at each epoch turnover ([`super::tool_head`]).
     tool_head: Arc<super::tool_head::ToolHead>,
@@ -426,9 +428,9 @@ pub struct VolatileSnapshot {
     /// for another build: this is the first version, Joel 2026-10-31).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) actions: Vec<action_log::ActionRecord>,
-    /// Her context view ([`WorkingMemory`]'s `view`). Absent on snapshots written before it,
-    /// and then her first act after the restore starts a new one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Her context view ([`WorkingMemory`]'s `view`), derived: absent, or no longer decodable
+    /// (`derived_view`), her first act after the restore starts a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "derived_view::or_new_epoch")]
     pub(crate) context_view: Option<ContextView>,
     /// Each retained receipt's per-call dependencies ([`WorkingMemory`]'s `receipt_children`),
     /// so a restart keeps what a restored receipt points at reachable. Empty on snapshots
@@ -440,6 +442,8 @@ pub struct VolatileSnapshot {
     /// written before this field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub open_views: Vec<super::open_views::OpenView>,
+    /// Consumed terminal references and outstanding wake obligations, checkpointed together.
+    pub(crate) task_results: task_results::TaskResults,
 }
 
 impl VolatileSnapshot {
@@ -600,8 +604,11 @@ pub struct WmEntry {
 }
 
 
+mod derived_view;
 mod action_log;
 mod continuity;
+mod task_results;
+pub use task_results::{TaskReceiptConflict, TaskReceiptError};
 mod ledger;
 mod perception;
 mod residency;

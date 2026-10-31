@@ -25,7 +25,10 @@ static LEDGERS: LazyLock<DashMap<Uuid, ResidentLedger>> = LazyLock::new(DashMap:
 pub fn note_settled(persona: Uuid, settled: &SettleOutcome, wall_ms: u64) {
     let turn = turn_of(
         settled.capacity_refusal.as_ref(),
-        settled.inference_error.is_some(),
+        settled.failure.as_ref().map(|failure| match failure {
+            crate::cognition::act_observe::SettlementFailure::Inference(_) => Refusal::InferenceFailed,
+            crate::cognition::act_observe::SettlementFailure::ReceiptPersistence(_) => Refusal::ReceiptPersistenceFailed,
+        }),
         settled.deferred_before_dispatch,
         &settled.generation_receipts,
         &settled.metrics,
@@ -73,7 +76,7 @@ pub fn close_windows(span: Window) -> Vec<(Uuid, ResidentWindow)> {
 /// beside that, so a mind that worked and then parked is both.
 fn turn_of(
     capacity: Option<&CapacityRefusal>,
-    inference_failed: bool,
+    failure: Option<Refusal>,
     deferred_before_dispatch: bool,
     receipts: &[GenerationReceipt],
     metrics: &TurnMetrics,
@@ -102,7 +105,7 @@ fn turn_of(
             budget_tokens: saturating_u32(refusal.budget_tokens),
             context_window: refusal.readiness.as_ref().map(|r| r.observed_window()),
         }),
-        None if inference_failed => Some(Refusal::InferenceFailed),
+        None if failure.is_some() => failure,
         None if deferred_before_dispatch => Some(Refusal::LaneStarved),
         None => None,
     };
@@ -136,18 +139,18 @@ mod tests {
     fn a_refusal_before_inference_is_demand_with_no_completion_and_keeps_its_numbers() {
         let kimi = CapacityRefusal::from(PromptCapacityError { required_tokens: 26_101, budget_tokens: 17_829 });
         let metrics = TurnMetrics::default();
-        let turn = turn_of(Some(&kimi), false, true, &[], &metrics, 0, 2_000);
+        let turn = turn_of(Some(&kimi), None, true, &[], &metrics, 0, 2_000);
         assert_eq!(turn.completion, None);
         assert_eq!(
             turn.refusal,
             Some(Refusal::PromptCapacity { required_tokens: 26_101, budget_tokens: 17_829, context_window: None })
         );
 
-        let worked = turn_of(Some(&kimi), false, false, &[served("qwen3.6-35b-a3b")], &metrics, 2, 90_000);
+        let worked = turn_of(Some(&kimi), None, false, &[served("qwen3.6-35b-a3b")], &metrics, 2, 90_000);
         assert_eq!(worked.completion.map(|c| (c.acts, c.model)), Some((2, "qwen3.6-35b-a3b".to_string())));
         assert!(worked.refusal.is_some());
 
-        let starved = turn_of(None, false, true, &[], &metrics, 0, 600_000);
+        let starved = turn_of(None, None, true, &[], &metrics, 0, 600_000);
         assert_eq!((starved.completion, starved.refusal), (None, Some(Refusal::LaneStarved)));
     }
 }

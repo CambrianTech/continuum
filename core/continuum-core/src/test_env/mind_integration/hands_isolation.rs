@@ -95,7 +95,7 @@ async fn listing(hands: &ActingHands) -> String {
 // CALL's own hands are bound to (Astra on #5026), never her current focus: a turn
 // moving her focus to another claim before the task's first poll cannot move it.
 #[tokio::test]
-async fn command_work_stays_with_its_card_across_background_dispatch() {
+async fn command_work_stays_with_its_card_across_background_dispatch() -> Result<(), String> {
     use crate::persona::cognition_pulse::work_idle_ms;
     let home = tempfile::TempDir::new().unwrap();
     std::fs::write(home.path().join("work.txt"), "work").unwrap();
@@ -113,13 +113,15 @@ async fn command_work_stays_with_its_card_across_background_dispatch() {
     assert!(work_idle_ms(persona, Some(card_a), EpochMs::now().millis()).is_some());
 
     let exec = hands.executor.command_executor().unwrap();
+    let (adapter, _task_directory) = crate::orm::store::fresh_adapter().await;
+    exec.set_task_ledger(Arc::new(continuum_kernel::runtime::tasks::TaskLedger::new(adapter).await?))?;
     let mut rx = exec.message_bus().unwrap().receiver();
     let handle = exec.dispatch_background(
         "code/list",
         serde_json::json!({"path": "."}),
         Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona)).in_hands(claim_a)),
-    );
-    // Current-thread test: the spawned task has not been polled yet. Her focus moves on.
+    ).await.map_err(|e| e.message)?;
+    // Acceptance finished before spawning: her focus moves before the task's first poll.
     let claim_b = crate::identity::hands_context::HandsContext::for_claim(persona, card_b, Uuid::new_v4());
     note_acting_root_in(persona, Some(claim_b), Some(home.path().to_path_buf()));
     note_acting_card_in(persona, Some(claim_b), card_b);
@@ -143,6 +145,7 @@ async fn command_work_stays_with_its_card_across_background_dispatch() {
     set_focus(persona, None);
     note_acting_root_in(persona, Some(claim_a), None);
     note_acting_root_in(persona, Some(claim_b), None);
+    Ok(())
 }
 
 // what this catches (Astra on #5026): admission living in helpers, so a command that

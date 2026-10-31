@@ -8,6 +8,14 @@
 use crate::ai::types::ToolCall;
 use crate::cognition::workspace::{Decision, TurnMetrics};
 
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum SettlementFailure {
+    #[error("inference failed: {0}")]
+    Inference(String),
+    #[error("render receipt persistence failed: {0}")]
+    ReceiptPersistence(std::sync::Arc<crate::cognition::persona_workspace::TaskSinkError>),
+}
+
 /// The result of driving a mind to settlement.
 pub struct SettleOutcome {
     /// EVERY act this turn made, in order: (the intent she stated, the exact calls). The
@@ -39,13 +47,10 @@ pub struct SettleOutcome {
     /// to the accuracy grade — the same number a live turn could surface for the
     /// serving governor.
     pub metrics: TurnMetrics,
-    /// `Some(cause)` when the settle loop stopped because the deliberation model
-    /// call FAILED (timeout, 5xx, a serving lane refusing a model it isn't hosting)
-    /// rather than settling on a verdict. The grader MUST treat this as an
-    /// infrastructure failure — NOT a wrong answer — so an inference hiccup never
-    /// corrupts the accuracy metric ([[self-improvement-is-a-control-loop]]: the
-    /// reward is only as trustworthy as the metric). `None` on every settled turn.
-    pub inference_error: Option<String>,
+    /// Infrastructure prevented settlement. The variant distinguishes a failed
+    /// generation from a served generation whose render receipt could not be
+    /// persisted. Neither is a graded wrong answer or an accepted learning turn.
+    pub failure: Option<SettlementFailure>,
     /// The entire turn stopped at admission before any generation or action.
     /// Callers retain its inbound delivery obligation; this is not a chosen Pass.
     pub deferred_before_dispatch: bool,
@@ -86,7 +91,7 @@ pub struct SettleOutcome {
 impl SettleOutcome {
     /// An infra-failure outcome: no verdict was reached because the deliberation
     /// call failed OR was aborted by a watchdog (e.g. a per-task deadline in the
-    /// eval loop). The grader keys on `inference_error.is_some()` to score this a
+    /// eval loop). The grader keys on `failure.is_some()` to score this a
     /// NAMED infrastructure failure — never a wrong answer — so a serving wedge
     /// never masquerades as a capability miss ([[self-improvement-is-a-control-loop]]).
     /// Zeroed metrics/acts because none accrued meaningfully. `TurnMetrics: Default`.
@@ -99,7 +104,7 @@ impl SettleOutcome {
             world_state: String::new(),
             room_updates: Default::default(),
             metrics: TurnMetrics::default(),
-            inference_error: Some(cause.into()),
+            failure: Some(SettlementFailure::Inference(cause.into())),
             deferred_before_dispatch: false,
             capacity_refusal: None,
             touched_paths: Vec::new(),
@@ -162,6 +167,10 @@ pub enum SettleStep {
     /// tick, the eval grades it an infra failure — never a serene no-op that hides a
     /// broken lane. `error` names the cause verbatim from the adapter.
     InferenceFailed { error: String },
+    /// The generation was served, but its observed task ends could not be
+    /// checkpointed. This step did not apply its command or final speech decision.
+    /// Generation-time streaming may already have exposed provisional tokens.
+    ReceiptPersistenceFailed { error: std::sync::Arc<crate::cognition::persona_workspace::TaskSinkError> },
 }
 
 impl SettleStep {
@@ -171,8 +180,7 @@ impl SettleStep {
     /// result through the one existing turn handler, no parallel match.
     ///
     /// The mapping is total and lossless for the live handler's purposes:
-    ///   • `inference_error` present → `InferenceFailed` (a failed model is never a
-    ///     chosen silence — [[fallbacks-are-illegal-fail-loud]]);
+    ///   • `failure` present → the matching typed failure step;
     ///   • `Speak`/`RaiseUnprompted` → `Spoke` (the prose reaches the room);
     ///   • `Act` → `Acted` — the drive spent its whole act budget without settling on
     ///     speech; the results are already in memory, so the live handler `continue`s
@@ -207,11 +215,14 @@ impl SettleStep {
                 generation_receipts,
             );
         }
-        if let Some(error) = outcome.inference_error {
+        if let Some(error) = outcome.failure {
             // The fault path keeps them too: a turn whose deliberation failed still
             // dispatched generations, and that is precisely when provenance matters.
             return (
-                SettleStep::InferenceFailed { error },
+                match error {
+                    SettlementFailure::Inference(error) => SettleStep::InferenceFailed { error },
+                    SettlementFailure::ReceiptPersistence(error) => SettleStep::ReceiptPersistenceFailed { error },
+                },
                 metrics,
                 generation_receipts,
             );
@@ -262,7 +273,7 @@ mod tests {
         }
     }
 
-    fn outcome_with(decision: Decision, inference_error: Option<String>) -> SettleOutcome {
+    fn outcome_with(decision: Decision, failure: Option<String>) -> SettleOutcome {
         SettleOutcome {
             spoken: match &decision {
                 Decision::Speak { text } | Decision::RaiseUnprompted { text } => Some(text.clone()),
@@ -273,7 +284,7 @@ mod tests {
             world_state: String::new(),
             room_updates: Default::default(),
             metrics: TurnMetrics::default(),
-            inference_error,
+            failure: failure.map(SettlementFailure::Inference),
             deferred_before_dispatch: false,
             capacity_refusal: None,
             touched_paths: Vec::new(),
@@ -335,7 +346,7 @@ mod tests {
             matches!(step, SettleStep::Passed { reason: Some(r) } if r == "done — patch ready")
         );
 
-        // inference_error present → InferenceFailed, REGARDLESS of decision — a
+        // failure present → InferenceFailed, REGARDLESS of decision — a
         // failed model is never a chosen silence.
         let (step, _, _) = SettleStep::from_settled(outcome_with(
             Decision::pass(),

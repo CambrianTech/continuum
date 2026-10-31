@@ -1,6 +1,6 @@
 //! Rust-owned response-generation prompt assembly and admission.
 //!
-//! Rust owns response admission, the response-generation contract,
+//! The shared inference gateway owns admission. This module owns the contract,
 //! prompt assembly, and the identity-reminder template. Host runtimes
 //! may be native Rust, game/live loops, AIRC daemons, or wrappers around
 //! those hosts; none of them own cognition slot coordination for this
@@ -39,14 +39,10 @@
 use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::ResponseFormat;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
-use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
-use crate::inference::resource_admission::{ResourceAdmissionError, ResourceAdmissionGate, ResourceAdmissionGuard, ResourceAdmissionPolicy, ResourceAdmissionRequest};
 use crate::cognition::should_respond::AIDecisionContext;
-use crate::resources::throughput_lease::ThroughputLeaseRevocationPolicy;
 use crate::ai::adapter::global_registry;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
 use std::time::Duration;
 use ts_rs::TS;
 
@@ -83,28 +79,6 @@ const DEFAULT_GENERATE_TEMPERATURE: f32 = 0.7;
 /// ceiling before `tokio::time::timeout` returns Err.
 const DEFAULT_GENERATE_TIMEOUT_MS: u64 = 180_000;
 
-/// Conservative default for local response generation while the
-/// substrate-governor bridge becomes the source of these numbers.
-const DEFAULT_GENERATE_MAX_CONCURRENCY: usize = 4;
-
-/// Cost-unit budget paired with [`DEFAULT_GENERATE_MAX_CONCURRENCY`].
-const DEFAULT_GENERATE_MAX_COST_UNITS: u32 = 4;
-
-/// One response generation claims one local-generation cost unit unless
-/// the caller provides a stricter policy.
-const DEFAULT_GENERATE_COST_UNITS: u32 = 1;
-
-/// Lease TTL must outlive the generation timeout so slow-but-valid work
-/// is not marked reclaimable before `tokio::time::timeout` fires.
-const DEFAULT_GENERATE_LEASE_TTL_PAD_MS: u64 = 5_000;
-
-static GENERATE_RESPONSE_ADMISSION: LazyLock<ResourceAdmissionGate> =
-    LazyLock::new(ResourceAdmissionGate::new);
-
-#[cfg(test)]
-static GENERATE_RESPONSE_TEST_LOCK: LazyLock<std::sync::Mutex<()>> =
-    LazyLock::new(|| std::sync::Mutex::new(()));
-
 // ─── IPC request + response shapes ────────────────────────────────────
 
 /// IPC request: ask the cognition service to assemble a response-prompt
@@ -139,55 +113,6 @@ pub struct GenerateResponseRequest {
     #[ts(optional)]
     #[ts(optional, type = "number")]
     pub timeout_ms: Option<u64>,
-    /// Rust-owned admission policy for this generation. When omitted,
-    /// `evaluate_response` applies the local-generation defaults above.
-    /// Hosts that know tighter resource limits should pass them here;
-    /// they should not coordinate slots outside Rust.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub admission: Option<GenerateResponseAdmissionPolicy>,
-}
-
-/// Per-call local-generation admission policy. This is the contract a
-/// host uses to ask Rust for response-generation capacity instead of
-/// owning slots itself.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/cognition/GenerateResponseAdmissionPolicy.ts"
-)]
-pub struct GenerateResponseAdmissionPolicy {
-    pub target_silicon: TargetSilicon,
-    pub max_concurrency: usize,
-    pub max_cost_units: u32,
-    pub cost_units: u32,
-    #[ts(type = "number")]
-    pub lease_ttl_ms: u64,
-}
-
-impl GenerateResponseAdmissionPolicy {
-    fn with_timeout(timeout_ms: u64) -> Self {
-        Self {
-            target_silicon: TargetSilicon::UnifiedMemory,
-            max_concurrency: DEFAULT_GENERATE_MAX_CONCURRENCY,
-            max_cost_units: DEFAULT_GENERATE_MAX_COST_UNITS,
-            cost_units: DEFAULT_GENERATE_COST_UNITS,
-            lease_ttl_ms: timeout_ms.saturating_add(DEFAULT_GENERATE_LEASE_TTL_PAD_MS),
-        }
-    }
-
-    fn into_resource_policy(self) -> ResourceAdmissionPolicy {
-        ResourceAdmissionPolicy {
-            resource_class: ResourceClass::LocalGeneration,
-            target_silicon: self.target_silicon,
-            max_concurrency: self.max_concurrency,
-            max_cost_units: self.max_cost_units,
-            cost_units: self.cost_units,
-            lease_ttl_ms: self.lease_ttl_ms,
-            revocation_policy: ThroughputLeaseRevocationPolicy::Graceful,
-        }
-    }
 }
 
 /// IPC response: generated text plus timing + token telemetry.
@@ -228,16 +153,6 @@ pub struct TokenUsage {
 /// the Rust caller decides policy explicitly.
 #[derive(Debug, thiserror::Error)]
 pub enum GenerateResponseError {
-    /// Rust admission denied this response before inference began.
-    /// Hosts ask Rust, receive a typed denial, and retry/replan explicitly.
-    #[error(
-        "response generation admission denied for persona={persona_id:?} room={room_id:?}: {reason}"
-    )]
-    AdmissionDenied {
-        persona_id: String,
-        room_id: String,
-        reason: String,
-    },
     /// The provider registry had no adapter capable of serving this
     /// model + provider tuple. No alternate runtime is attempted.
     #[error("no AI adapter available for provider={provider:?} model={model:?}")]
@@ -279,7 +194,7 @@ pub async fn evaluate_response(
 ) -> Result<GenerateResponseResult, GenerateResponseError> {
     let start_ms = continuum_base::time::EpochMs::now().millis();
     let timeout_ms = request.timeout_ms.unwrap_or(DEFAULT_GENERATE_TIMEOUT_MS);
-    let _lease = acquire_generate_response_lease(&request, start_ms, timeout_ms)?;
+    // The llama-server adapter owns admission through the shared turn gateway.
 
     // Bind this turn to the persona's ESTABLISHED inference handle (reused across
     // turns, re-homed if lost — self-healing), bound to the model the engine actually
@@ -350,53 +265,6 @@ pub async fn evaluate_response(
 
     let end_ms = continuum_base::time::EpochMs::now().millis();
     Ok(result_from_response(response, model, start_ms, end_ms))
-}
-
-fn acquire_generate_response_lease(
-    request: &GenerateResponseRequest,
-    now_ms: u64,
-    timeout_ms: u64,
-) -> Result<ResourceAdmissionGuard, GenerateResponseError> {
-    let policy = request
-        .admission
-        .clone()
-        .unwrap_or_else(|| GenerateResponseAdmissionPolicy::with_timeout(timeout_ms));
-
-    GENERATE_RESPONSE_ADMISSION
-        .acquire(ResourceAdmissionRequest {
-            lease_id: generate_response_lease_id(&request.context, now_ms),
-            artifact_key: generate_response_artifact_key(&request.context),
-            holder_id: request.context.persona_id.clone(),
-            policy: policy.into_resource_policy(),
-            now_ms,
-        })
-        .map_err(|err| GenerateResponseError::AdmissionDenied {
-            persona_id: request.context.persona_id.clone(),
-            room_id: request.context.room_id.clone(),
-            reason: format_resource_admission_error(err),
-        })
-}
-
-fn generate_response_lease_id(context: &AIDecisionContext, now_ms: u64) -> String {
-    format!(
-        "cognition/generate-response:{}:{}:{}",
-        context.room_id, context.persona_id, now_ms
-    )
-}
-
-fn generate_response_artifact_key(context: &AIDecisionContext) -> String {
-    format!(
-        "cognition/generate-response:{}:{}:{}",
-        context.room_id, context.persona_id, context.trigger_message.id
-    )
-}
-
-fn format_resource_admission_error(err: ResourceAdmissionError) -> String {
-    match err {
-        ResourceAdmissionError::InvalidPolicy { reason }
-        | ResourceAdmissionError::Denied { reason }
-        | ResourceAdmissionError::Lease { reason } => reason,
-    }
 }
 
 /// Build the `TextGenerationRequest` the adapter consumes.

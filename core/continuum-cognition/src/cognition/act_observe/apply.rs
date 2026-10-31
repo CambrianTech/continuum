@@ -215,7 +215,7 @@ pub async fn apply_act(
             for call in calls {
                 let cmd = call.name.replace('_', "/");
                 if is_long_running(&cmd) {
-                    let handle = exec.dispatch_background(
+                    let accepted = exec.dispatch_background(
                         cmd.clone(),
                         call.input.clone(),
                         // In THESE hands: a long-running command a card turn dispatches runs in
@@ -229,7 +229,14 @@ pub async fn apply_act(
                                 None => identity,
                             }
                         }),
-                    );
+                    ).await;
+                    let handle = match accepted {
+                        Ok(handle) => handle,
+                        Err(error) => {
+                            bg_notes.push(format!("[not run] {cmd}: {}", error.message));
+                            continue;
+                        }
+                    };
                     dispatched_calls.push(call.clone());
                     body.working_memory.record_dispatch_event(
                         handle,

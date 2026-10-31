@@ -267,7 +267,7 @@ impl PersonaWorkspaceRegistry {
         }
         let mut listed: Vec<String> = roster
             .iter()
-            .map(|(id, name)| format!("{name} ({})", &id.to_string()[..8]))
+            .map(|(id, name)| format!("{name} ({id})"))
             .collect();
         listed.sort();
         format!("Online now: {}.", listed.join(", "))
@@ -282,7 +282,7 @@ impl PersonaWorkspaceRegistry {
     /// Checkpoint lock/read/schema failures refuse this registration and leave
     /// an existing resident unchanged. Call from a blocking worker during boot.
     pub fn register_from_cfg(
-        &self,
+        self: &Arc<Self>,
         cfg: PersonaBrainConfig,
     ) -> std::io::Result<Arc<WorkspaceCycle>> {
         let _assembly = self.assembly.lock();
@@ -297,7 +297,7 @@ impl PersonaWorkspaceRegistry {
                 .tool_head()
                 .attach(crate::cognition::tool_head::entity::ToolHeadStore::new(Arc::clone(store), persona_id));
         }
-        let cycle = Arc::new(cycle);
+        let cycle = Arc::new(cycle.with_render_custody(self, persona_id, working_memory.incarnation()));
         // cycles THEN templates (the one canonical lock order).
         let mut cycles = self.cycles.lock();
         self.templates.lock().insert(persona_id, template);
@@ -315,7 +315,7 @@ impl PersonaWorkspaceRegistry {
     /// Lazy-init so a persona's cycle is assembled once and reused across every
     /// room it services (the "one soul" invariant). Also retains the fork-template
     /// (same as [`register_from_cfg`](Self::register_from_cfg)).
-    pub fn get_or_build(&self, cfg: PersonaBrainConfig) -> std::io::Result<Arc<WorkspaceCycle>> {
+    pub fn get_or_build(self: &Arc<Self>, cfg: PersonaBrainConfig) -> std::io::Result<Arc<WorkspaceCycle>> {
         let persona_id = cfg.persona_id;
         if let Some(existing) = self.get(&persona_id) {
             return Ok(existing);
@@ -333,7 +333,7 @@ impl PersonaWorkspaceRegistry {
                 .tool_head()
                 .attach(crate::cognition::tool_head::entity::ToolHeadStore::new(Arc::clone(store), persona_id));
         }
-        let cycle = Arc::new(cycle);
+        let cycle = Arc::new(cycle.with_render_custody(self, persona_id, working_memory.incarnation()));
         // cycles THEN templates (the one canonical lock order).
         let mut cycles = self.cycles.lock();
         self.templates.lock().insert(persona_id, template);
@@ -349,7 +349,7 @@ impl PersonaWorkspaceRegistry {
 
     /// Periodic crash checkpoint. A busy writer coalesces this tick; no queue
     /// of blocking jobs accumulates behind slow storage.
-    pub fn checkpoint_volatile_all(&self) -> Vec<(Uuid, std::io::Result<()>)> {
+    pub fn checkpoint_volatile_all(&self) -> Vec<(Uuid, std::io::Result<VolatileReceipt>)> {
         let Some(stopped) = self.checkpoint_stopped.try_lock() else {
             return Vec::new();
         };
@@ -360,7 +360,7 @@ impl PersonaWorkspaceRegistry {
     }
 
     /// Explicit save is repeatable and leaves periodic persistence running.
-    pub fn flush_volatile_all(&self) -> Vec<(Uuid, std::io::Result<()>)> {
+    pub fn flush_volatile_all(&self) -> Vec<(Uuid, std::io::Result<VolatileReceipt>)> {
         let _checkpoint = self.checkpoint_stopped.lock();
         self.write_volatile_all(SaveReason::Seam)
     }
@@ -369,7 +369,7 @@ impl PersonaWorkspaceRegistry {
     /// then snapshot CURRENT residents. The caller must quiesce mutation first.
     /// Blocking work can outlive an async timeout; callers must receipt that as
     /// uncertain, never successful. No later periodic write can overtake this one.
-    pub fn stop_volatile_checkpoints(&self) -> Vec<(Uuid, std::io::Result<()>)> {
+    pub fn stop_volatile_checkpoints(&self) -> Vec<(Uuid, std::io::Result<VolatileReceipt>)> {
         let mut stopped = self.checkpoint_stopped.lock();
         *stopped = true;
         self.write_volatile_all(SaveReason::Seam)
@@ -377,7 +377,7 @@ impl PersonaWorkspaceRegistry {
 
     // Only called under checkpoint_stopped. The cycle lookup lock is released
     // before snapshot/serialization/IO, keeping room turns and roster reads free.
-    pub(super) fn write_volatile_all(&self, reason: SaveReason) -> Vec<(Uuid, std::io::Result<()>)> {
+    pub(super) fn write_volatile_all(&self, reason: SaveReason) -> Vec<(Uuid, std::io::Result<VolatileReceipt>)> {
         // ONE staged-read budget for the whole seam, shared by every resident, so the save
         // phase is bounded by the phase and not by resident count; a periodic write has none.
         let staged_deadline = matches!(reason, SaveReason::Seam)
@@ -438,7 +438,7 @@ impl PersonaWorkspaceRegistry {
                 let test_home = crate::paths::NativeHomeOverride::current();
                 #[cfg(test)]
                 let test_home = &test_home;
-                let results: Vec<(Uuid, std::io::Result<()>)> = std::thread::scope(|scope| {
+                let results: Vec<(Uuid, std::io::Result<VolatileReceipt>)> = std::thread::scope(|scope| {
                     let handles: Vec<_> = residents
                         .into_iter()
                         .map(|(id, memory)| {

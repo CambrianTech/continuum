@@ -413,6 +413,12 @@ pub(super) async fn serve_persona_loop_inner(
         .await
         {
             CycleVerdict::Spoke(spoken) => spoken,
+            CycleVerdict::CheckpointFailed(error) => {
+                // The admitted row and its pre-effect marks remain durable. The
+                // existing recovery owner distinguishes untouched input from
+                // work that already acted; never replay it here as a fresh turn.
+                return Err(format!("receipt checkpoint failed for obligation {obligation}: {error}"));
+            }
             CycleVerdict::Skip => {
                 // A refused or deferred input is still owed: PendingInput retains it for a
                 // retry, so its row stays open with it (Codex on #5480). Only a finished

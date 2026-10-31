@@ -26,7 +26,7 @@
 //!
 //! ### What the response looks like
 //!
-//! `[heuristic:<8-char-hash>] ack: "<last-200-chars-of-last-user-message>"`
+//! `[heuristic:<sha256>] ack: "<last-user-message>"`
 //!
 //! Enough to prove (a) the inference command surface is wired,
 //! (b) the prompt actually reached the adapter, (c) the response is
@@ -68,11 +68,6 @@ pub const HEURISTIC_PROVIDER_ID: &str = "heuristic";
 /// the response carries the model field so callers can verify which
 /// adapter handled the request.
 pub const HEURISTIC_DEFAULT_MODEL: &str = "heuristic-echo-v1";
-
-/// Echo length cap — last N chars of the most recent user message
-/// surfaces in the response.
-// context-budget-exempt: a TEST-ONLY canned adapter's echo width (gated behind test-fixtures); never a live bound
-const ECHO_CHARS: usize = 200;
 
 /// The adapter struct itself. No mutable state, no clock access, no
 /// external resources — instances are cheap and interchangeable.
@@ -226,7 +221,7 @@ impl HeuristicInferenceAdapter {
         String::new()
     }
 
-    /// Compute a deterministic 8-char hex prefix tying the response
+    /// Compute a deterministic SHA-256 fingerprint tying the response
     /// to its inputs. Same canonical inputs → same hash → same
     /// response text. This is the replay contract.
     fn determinism_prefix(req: &TextGenerationRequest) -> String {
@@ -267,8 +262,7 @@ impl HeuristicInferenceAdapter {
             }
         }
         let digest = hasher.finalize();
-        let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
-        hex
+        format!("{digest:x}")
     }
 
     /// Build the response text from the request. Pure function —
@@ -287,15 +281,7 @@ impl HeuristicInferenceAdapter {
     /// algorithms."
     pub fn build_response_text(req: &TextGenerationRequest) -> String {
         let prefix = Self::determinism_prefix(req);
-        let last = Self::last_user_text(&req.messages);
-        let echoed: String = last
-            .chars()
-            .rev()
-            .take(ECHO_CHARS)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
+        let echoed = Self::last_user_text(&req.messages);
         let plain = if echoed.is_empty() {
             format!("[heuristic:{prefix}] ack: (no user text in prompt)")
         } else {
@@ -622,18 +608,19 @@ mod tests {
 
     #[tokio::test]
     async fn response_echoes_last_user_message_with_heuristic_prefix() {
+        let latest = format!("keep the beginning {} and the end", "wide unicode 界".repeat(40));
         let adapter = HeuristicInferenceAdapter::new();
         let resp = adapter
             .generate_text(req_with(vec![
                 system_msg("you are nice"),
                 user_msg("first question"),
                 assistant_msg("first answer"),
-                user_msg("second question — please answer this"),
+                user_msg(&latest),
             ]))
             .await
             .unwrap();
         assert!(
-            resp.text.contains("second question — please answer this"),
+            resp.text.contains(&latest),
             "must echo the LATEST user message, got: {}",
             resp.text
         );

@@ -16,7 +16,7 @@
             world_state: world_state.to_string(),
             room_updates: Default::default(),
             metrics: TurnMetrics::default(),
-            inference_error: None,
+            failure: None,
             deferred_before_dispatch: false,
         capacity_refusal: None,
             touched_paths: Vec::new(),
@@ -233,6 +233,14 @@
             lived_fault.grade.contains("inference fault"),
             "the fault cause is named in the grade"
         );
+        let mut persistence_failed = faulted;
+        persistence_failed.failure = Some(crate::cognition::act_observe::SettlementFailure::ReceiptPersistence(
+            std::sync::Arc::new(crate::cognition::persona_workspace::TaskSinkError::OwnerGone(peer.as_uuid())),
+        ));
+        let lived_persistence = ExperienceRecord::from_lived_turn("ping", &persistence_failed);
+        assert!(!lived_persistence.ok, "checkpoint failure is not accepted experience");
+        assert!(lived_persistence.grade.contains("receipt persistence fault"));
+        assert!(!lived_persistence.grade.contains("inference fault"));
 
         // NON-CONVERGENCE: the drive-loop ran out its action budget mid-Act and never
         // reached a verdict — the lived analog of the eval's "did not finish". A
@@ -248,7 +256,7 @@
             world_state: "budget exhausted after 8 acts".into(),
             room_updates: Default::default(),
             metrics: TurnMetrics::default(),
-            inference_error: None,
+            failure: None,
             deferred_before_dispatch: false,
         capacity_refusal: None,
             touched_paths: Vec::new(),
@@ -464,7 +472,7 @@
             world_state: String::new(),
             room_updates: Default::default(),
             metrics: TurnMetrics::default(),
-            inference_error: None,
+            failure: None,
             deferred_before_dispatch: false,
         capacity_refusal: None,
             touched_paths: Vec::new(),
