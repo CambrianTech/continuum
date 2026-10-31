@@ -5,7 +5,7 @@ use continuum_context::cause::{Cause, Origin};
 use continuum_context::source::{Item, Source};
 
 use super::{element, priority, ContextMessage, Producer};
-use crate::cognition::working_memory::{render_dispatched, WmKind, WorkingMemory};
+use crate::cognition::working_memory::{WmKind, WorkingMemory};
 
 pub(crate) struct Thoughts<'a> {
     pub memory: &'a WorkingMemory,
@@ -30,8 +30,7 @@ impl Source<ContextMessage> for Thoughts<'_> {
             .filter(|entry| matches!(entry.kind, WmKind::Thought | WmKind::Settlement))
             .map(|entry| (entry.occurrence, entry.text))
             .collect();
-        let dispatched = render_dispatched(&self.memory.dispatched_snapshot());
-        if thoughts.is_empty() && dispatched.is_none() {
+        if thoughts.is_empty() {
             return Vec::new();
         }
         // First person, explicitly not a message (#264: a second-person header read as a
@@ -55,10 +54,6 @@ impl Source<ContextMessage> for Thoughts<'_> {
             let summary = continuum_context::levels::summarize(&text, continuum_context::levels::Shape::Output)
                 .map(|summary| ContextMessage::user(format!("- {summary}")));
             Item::whole(id, cause, format!("thought#{occurrence}"), ContextMessage::user(format!("- {text}"))).with_summary(summary)
-        }));
-        // Fresh each event, newest last; one item, so a status change appends one line set.
-        items.extend(dispatched.map(|text| {
-            super::standing(self.persona, "thoughts", "dispatched", ContextMessage::user(text))
         }));
         items
     }

@@ -161,20 +161,7 @@ async fn dispatched_commands_stream_back_by_handle() {
     assert_eq!(c.3, DispatchStatus::Done);
     assert_eq!(c.2, "0 errors, 0 warnings");
 
-    // Her view's thoughts source surfaces both dispatched handles through this rendering.
-    let rendered = render_dispatched(&wm.dispatched_snapshot()).expect("dispatched work renders");
-    assert!(
-        rendered.contains("Commands you dispatched"),
-        "the mind sees its sentinels"
-    );
-    assert!(
-        rendered.contains("compile core [done]: 0 errors"),
-        "finished result shown"
-    );
-    assert!(
-        rendered.contains("research task [running]"),
-        "in-flight shown"
-    );
+    // Her view renders each as its own item (context_streams::tasks), tested there.
 }
 
 // what this catches: a finished background handle dropped before a submitted prompt showed her
