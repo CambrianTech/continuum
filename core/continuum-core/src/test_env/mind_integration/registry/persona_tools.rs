@@ -299,4 +299,24 @@ fn no_live_tool_schema_carries_a_boolean_subschema() {
             );
         }
     }
+// Diagnostic test: measure serialized token cost per native tool. 
+// Runs with: cargo test --lib persona_tools::tool_surface_cost_diagnostic -- --nocapture
+#[test]
+fn tool_surface_cost_diagnostic() {
+    let specs = native_tool_specs();
+    println!("\n=== Tool Surface Cost Diagnostic ===");
+    println!("Total tools: {}", specs.len());
+    
+    let mut total_chars: usize = 0;
+    for spec in &specs {
+        let json = serde_json::to_string(spec).unwrap();
+        let chars = json.chars().count();
+        total_chars += chars;
+        // Rough token estimate: ~4 chars per token for JSON
+        println!("{:35} {:6} chars ({:.0} tokens)", spec.name, chars, chars as f64 / 4.0);
+    }
+    
+    let est_tokens = total_chars as f64 / 4.0;
+    println!("\nTotal serialized size: {} chars (~{} tokens estimated)", total_chars, est_tokens.round() as usize);
 }
+} // end of mod tests
