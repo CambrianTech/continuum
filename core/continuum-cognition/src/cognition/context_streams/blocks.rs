@@ -74,8 +74,11 @@ impl Source<ContextMessage> for Grounding {
         });
         let pointer = self.units.iter().filter_map(|unit| unit.pointer.as_deref()).collect::<Vec<_>>().join("\n");
         let summary = summary.filter(|summary| *summary != whole);
-        let pointer = (!pointer.is_empty() && pointer != whole).then_some(pointer);
-        let pointer = pointer.map_or_else(|| self.render(self.minimum.clone()), |pointer| self.render(pointer)); // map_or_else: units with no coarser level keep the block's truthful minimum
+        // The units' own pointers stand even when they equal the whole (a strip whose lines are their
+        // own pointers stays as it is); only a block that keeps nothing collapses to its minimum
+        // (Codex and Cormac on #5681).
+        let pointer = (!pointer.is_empty()).then_some(pointer);
+        let pointer = pointer.map_or_else(|| self.render(self.minimum.clone()), |pointer| self.render(pointer)); // map_or_else: a block that keeps no unit collapses to its truthful minimum
         vec![self.block(self.render(whole), summary.map(|summary| self.render(summary)), pointer)]
     }
 }
@@ -117,6 +120,13 @@ mod tests {
         let block = Grounding { persona: uuid::Uuid::nil(), faculty: "room-board".into(), minimum: "minimum".into(), text: String::new(), units: vec![held, other.clone()].into() };
         let item = block.items().remove(0);
         assert_eq!(item.pointer().map(|m| m.text.clone()).as_deref(), Some("[room-board]\n[card a]"));
+        let own = RagItem::whole("c", "continue the migration", serde_json::Value::Null).with_pointer("continue the migration");
+        let strip = Grounding { persona: uuid::Uuid::nil(), faculty: "awareness".into(), minimum: "a different minimum".into(), text: String::new(), units: vec![own].into() };
+        assert_eq!(
+            strip.items().remove(0).pointer().map(|m| m.text.clone()).as_deref(),
+            Some("[awareness]\ncontinue the migration"),
+            "units that are their own pointers stay as they are, never swapped for the minimum"
+        );
         let none = Grounding { persona: uuid::Uuid::nil(), faculty: "room-board".into(), minimum: "minimum".into(), text: String::new(), units: vec![other].into() };
         assert_eq!(none.items().remove(0).pointer().map(|m| m.text.clone()).as_deref(), Some("[room-board]\nminimum"));
     }
