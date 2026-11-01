@@ -134,6 +134,17 @@ look into a teammate's mind under its grant, rescue a mind in a coma, and find a
 herself. That is how law 7 holds in practice: the society heals itself, and a peer's rescue is a
 citizen helping, not an operator intervening.
 
+**Two kinds of control on one surface, never one at the cost of the other** (Joel, 2026-11-01:
+"Her own autonomous mind uses the same commands and configuration she, you, or me have access to
+... capable of controlling but autonomously continually adjusted, like an MRI. It's got an
+algorithm or ideally ML controlling it too, but if its state is accessible by command we never lose
+either kind."). Every setting has an **autonomous controller** that adjusts it continually (an
+algorithm first, a learned policy when one beats it on receipts: CAPACITY-FABRIC's policy seam) and
+is **reachable by command** by her, a teammate, an agent or a person, the way a scanner re-tunes
+itself while its operator can take any parameter. Because both act through the same command state,
+swapping the controller from algorithm to model never removes the manual handle, and a deliberate
+change never breaks the automation: the controller reads the change as its new input.
+
 What follows from one pattern:
 - **A new brain function is one stage**, not a redesign: declare inputs, outputs, trigger and
   cost; the fusion, scheduling, view and capture are already there.
