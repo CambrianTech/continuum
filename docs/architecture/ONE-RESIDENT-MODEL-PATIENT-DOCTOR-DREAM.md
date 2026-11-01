@@ -284,6 +284,25 @@ The dream consumer is one stage on the stage contract (STAGE-CONTRACT.md, #5692/
 - A typed final refusal (`unsupported_backward`, `never_fits`) is surfaced as refused.
 - Any other failure that repeats on the same example is non-progress evidence: she perceives a stuck example. It is neither retried forever nor skipped silently (Fable on #5695).
 
+**A lost reply (Codex on #5695).** An engine step can commit while its reply, or the task's terminal write, is lost. A missing completion is not proof the step never ran, and dispatching the example again would apply the update twice. Every step is therefore bound to an identity, and reconciled before any redispatch.
+
+- **Binding.** Each dispatched step carries its **execution id**: the task id that Codex's task ledger records durably before dispatch.
+  - The engine's receipt for it is `{execution, engine incarnation, shadow (its file), input revision (the experience id and cursor), step, loss}`.
+  - Within one engine incarnation, the engine keeps receipts by execution id. A `/learn` naming an execution that already committed is answered with that receipt and steps nothing.
+  - The receipt table is bounded: an entry stays until the core acknowledges it.
+- **Reconciliation.** A new run that finds an open task for an example asks, in order:
+  1. Does the task owner hold its terminal? Adopt it.
+  2. Otherwise, does the engine hold a receipt for the execution, and is it the same incarnation? Adopt it exactly once: the cursor accepts the example, and the provenance records the step.
+  3. Same incarnation, no receipt, and no live execution with that id? It never committed: dispatch again.
+  4. The engine incarnation changed? Its receipts are gone, and so are the shadow's in-memory steps since her last durable snapshot or checkpoint. The shadow reloads from it, and the cursor rewinds to its provenance, so the examples after it are learned again. That is correct, not a duplicate, because the restored weights do not contain them.
+  5. If no durable state binds (no snapshot, or provenance that disagrees with the cursor), the outcome is explicit `unresolved`. She perceives a stuck dream; it is never a silent retry.
+- **Crash boundaries.**
+  - Core dies after dispatch, before the engine commits: case 2 or 3.
+  - Engine commits, the reply is lost, the core restarts: case 2, adopted once.
+  - Engine restarts after a commit and before a snapshot: case 4.
+  - Core dies after the cursor accepts and before the task's terminal write: acceptance is idempotent (the cursor only rises), and the task owner adopts.
+- **Validator case (shared validator).** The engine commits, the reply is lost, and the core restarts. The original commit is adopted exactly once, and the next useful step runs. An engine restart with its receipt unavailable surfaces `unresolved` (or rewinds to a binding snapshot); it never silently retries.
+
 **Yield points and stops.**
 - The chunk is ONE engine step. It is non-preemptible: 962 ms median measured on CPU, Qwen2.5-0.5B, fork 832d78cb1, 2026-11-01. That is measured on this hardware, not a bound elsewhere. Pause, yield and cancel land at the step boundary, after the in-flight step's outcome arrives (quiescence).
 - `Paused`: shadow and moments resident, charged.
@@ -312,6 +331,7 @@ The dream consumer is one stage on the stage contract (STAGE-CONTRACT.md, #5692/
 | the grant ledger | #87, draft |
 
 Still open:
+- the execution id on `/learn`, the receipt table keyed by it, and the duplicate-execution answer (the lost-reply binding above);
 - the checkpoint (moments plus cursor, for resume across a restart);
 - learning a past example on an idle slot (S4 (f): the served prompt prefilled through the ordinary serving path, `n_predict` 0);
 - a step shorter than ~1 s, which needs splitting the graph across layers (deferred until the M5 measures its own step).
