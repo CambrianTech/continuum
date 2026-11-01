@@ -287,6 +287,16 @@ once, before its exam (ONE-RESIDENT §2.1 says it must not). The core never send
 training on the engine freezes the serving daemon's reconfigure for the whole run. That is an
 MLOps pipeline, and it would give us an MLOps prospect.
 
+**She can also choose to learn** (Joel, 2026-11-01: "You can choose to go to sleep which would
+definitely be more like a long training process but it's still really just higher focus on a
+valuable task. It's still entirely autonomous. You might choose to go into the academy to learn a
+deep skill, like a college course. This could be your priority and it's also an activity like all
+environments."). Choosing to sleep is the same dreaming with her focus on it: it runs deeper and
+longer, like a long training run. Choosing the academy is entering an activity (a room, like every
+environment) whose work is a course. Her choice raises the priority; the substrate still runs it
+autonomously, and she can leave when she chooses. Learning is autonomic when she does not think of
+it and volitional when she does, on the same machinery.
+
 **The design:** every settled experience adds to her sleep pressure; dream steps refine the genes
 she is using, on her shadow copy, between decode batches whenever pressure meets opportunity; the
 evidence of her own work (outcomes, corrections) moves a change toward stable or lets it fade,
