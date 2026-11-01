@@ -297,6 +297,15 @@ environment) whose work is a course. Her choice raises the priority; the substra
 autonomously, and she can leave when she chooses. Learning is autonomic when she does not think of
 it and volitional when she does, on the same machinery.
 
+In data flow terms there is no sleep "mode" to enter or leave. Each mind has one continuous value,
+her **dream share**, read by the scheduler on every decode step. Sleep pressure and opportunity set
+it autonomically; choosing to sleep or to study raises its **setpoint** (a priority boost on the
+same background task, like a thermostat or a DVFS governor's target); and she can **snap out** at
+any depth through the one reflex path: a line trips, she glances, and if she decides to wake the
+setpoint drops at once and the dream task is preempted at its next chunk boundary. One task, one
+value, one interrupt: waking from chosen deep sleep and from a daydream differ only in how high the
+setpoint was.
+
 **The design:** every settled experience adds to her sleep pressure; dream steps refine the genes
 she is using, on her shadow copy, between decode batches whenever pressure meets opportunity; the
 evidence of her own work (outcomes, corrections) moves a change toward stable or lets it fade,
