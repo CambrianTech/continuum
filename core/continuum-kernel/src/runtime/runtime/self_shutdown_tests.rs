@@ -109,3 +109,67 @@ async fn storage_unwind_cannot_release_custody_as_a_clean_shutdown() -> Result<(
     assert_eq!(module.saves.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+struct FailTerminalWrite(Arc<crate::orm::gated_adapter::GatedAdapter>);
+
+#[async_trait::async_trait]
+impl CommandInterceptor for FailTerminalWrite {
+    fn name(&self) -> &'static str {
+        "fail-terminal-write"
+    }
+
+    async fn try_route(
+        &self,
+        _: &str,
+        _: &serde_json::Value,
+        _: Option<&crate::routing::CallerIdentity>,
+    ) -> Result<InterceptorOutcome, String> {
+        // Acceptance has already committed. Fail only the terminal write after
+        // a successful handler result, outside the handler unwind boundary.
+        self.0.unwind_next_write();
+        Ok(InterceptorOutcome::Handled(CommandResult::Json(
+            serde_json::Value::Null,
+        )))
+    }
+}
+
+#[tokio::test]
+async fn terminal_storage_unwind_neither_announces_completion_nor_allows_shutdown(
+) -> Result<(), String> {
+    let runtime = Arc::new(Runtime::new());
+    let (module, _) = RecordingModule::new("terminal-unwind", Vec::new());
+    runtime.register(module.clone());
+    let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+    let adapter = Arc::new(crate::orm::gated_adapter::GatedAdapter::new(adapter));
+    let ledger = Arc::new(crate::runtime::tasks::TaskLedger::new(adapter.clone()).await?);
+    let mut events = runtime.bus.receiver();
+    let executor = Arc::new(
+        CommandExecutor::new(runtime.registry.clone())
+            .with_message_bus(runtime.bus.clone())
+            .with_interceptor(Arc::new(FailTerminalWrite(adapter))),
+    );
+    executor.set_task_ledger(ledger.clone())?;
+    let owner = uuid::Uuid::new_v4();
+    let caller =
+        crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(owner));
+    let handle = executor
+        .dispatch_background("test/result", serde_json::Value::Null, Some(caller))
+        .await
+        .map_err(|error| error.message)?;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        runtime.registry.task_admission.close_and_wait(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    assert_eq!(ledger.pending(handle, owner).await?, None);
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    let receipt = runtime.shutdown().await;
+    assert!(matches!(receipt.tasks, DrainOutcome::Unknown { .. }));
+    assert!(receipt.modules.is_empty());
+    assert_eq!(module.saves.load(Ordering::SeqCst), 0);
+    Ok(())
+}
