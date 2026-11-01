@@ -97,3 +97,33 @@ publisher timestamp, can be skipped.
 - The contract points shared with the dream consumer and the task owner (stage identity and
   incarnation, completion and acknowledgement, grant custody) are defined once, in the M0 stage
   contract design; this document is its perception adapter.
+
+## P2: the drain (open for review)
+
+P1 (#5694) made the store complete and commit-ordered for message lines. The consumer P2 serves is
+the conversation's admission pipeline (`airc_persona_conversation::admit_event`), which today takes
+a stream of `Arc<TranscriptEvent>` from `perception_feed`'s in-process channel (`INBOX_CAPACITY`,
+`TrySendError::Full` drop) for EVERY conversation kind, receipts and attachments included, while the
+store holds rows only for messages. One choice decides P2's shape:
+
+- **(a) The store keeps every conversation event.** The arrival covers every `ArrivalKind`; the row
+  keeps the event whole (typed header columns, body opaque), and the drain hands `admit_event` the
+  same event it takes today. Admission is unchanged; the store becomes the conversation transcript's
+  one projection (chat/poll reads the message kind of it).
+- **(b) Admission consumes arrivals natively.** The drain yields `Arrival` + message row; receipts
+  and attachments become their own typed rows. Admission is rewritten around the typed header.
+
+Recommendation: (a) now, because it moves the delivery guarantee without rewriting the consumer
+(one change at a time), and (b) later as the consumer's own cleanup, once admission routes on the
+header alone.
+
+The drain under (a):
+- a per-mind cursor entity (`mind`, `incarnation`, `through: ArrivalSeq`), advanced only through the
+  contiguous durably accepted prefix and refused for a stale incarnation;
+- a page is `arrivalSeq > through` in her rooms, ordered by `arrivalSeq`, bounded by the page the
+  consumer asks for (her intake, not a constant), round-robin across rooms within the page;
+- her own rows advance the cursor and are never delivered;
+- the outcome is `Drained::Rows(Vec<Arrived>) | Drained::Gap { from, through, reason } | Drained::Empty`;
+- the wake is the store's `sequence_revision` watch (P1), armed before the final empty check;
+- deleted when it lands: `events_tx`, `INBOX_CAPACITY`, the `Full` drop, and the newest-page-above-floor
+  catch-up.
