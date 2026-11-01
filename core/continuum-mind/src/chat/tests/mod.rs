@@ -208,6 +208,20 @@
         );
     }
 
+    // what this catches: an append reply that does not say whether it created the arrival being
+    // read as a duplicate, vouching for a line nobody confirmed (Codex on #5694).
+    #[tokio::test]
+    pub(super) async fn an_append_reply_without_freshness_is_an_error() {
+        let data = StubDataModule::new(|_command, _params| Ok(json!({ "success": true, "data": [{ "success": true }, { "success": true, "seq": 3 }] })));
+        let chat = chat_with_stubs(vec![Arc::new(data)]);
+        let line = imported_line("unconfirmed");
+        let err = chat
+            .commit_line(&line, crate::chat::line_store::LineWrite::Import, None, json!({ "text": line.text }))
+            .await
+            .expect_err("a reply without freshness is malformed");
+        assert!(err.contains("did not say whether it was fresh"), "named: {err}");
+    }
+
     // what this catches: a store refusal swallowed as a calm skip. The import is awaited by the
     // inbound seam so the attach watermark never passes a line the store lacks; a refusal must
     // therefore be an error the seam sees, never a quiet probe.

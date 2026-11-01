@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::arrival::{Arrival, ArrivalKind};
 use super::chat_data_handle::{now_iso, ChatModule, CHAT_DATA_HANDLE};
-use super::import_watermark::ImportWatermark;
+use super::import_watermark::{ImportHistory, ImportWatermark, ImportedThrough};
 use super::types::CHAT_MESSAGES_COLLECTION;
 use crate::orm::types::{BatchOperation, BatchOperationType};
 use crate::runtime::late_bound::LateBound;
@@ -58,10 +58,13 @@ pub trait LineImporter: Send + Sync {
     async fn import(&self, line: PostedLine) -> Result<Imported, String>;
 
     /// How far the store has imported `room` from airc; `None` when it never has.
-    async fn watermark(&self, room: RoomId) -> Result<Option<ImportWatermark>, String>;
+    async fn watermark(&self, room: RoomId) -> Result<Option<ImportedThrough>, String>;
 
     /// Record how far the store has imported `room` (a position already delivered and imported).
     async fn advance_watermark(&self, room: RoomId, mark: ImportWatermark) -> Result<(), String>;
+
+    /// Record a position migrated from the pre-store cursor file: unvouched through it.
+    async fn migrate_watermark(&self, room: RoomId, mark: ImportWatermark) -> Result<(), String>;
 }
 
 /// The chat store, as the inbound seam's importer: the installed chat module, resolved at each
@@ -76,12 +79,16 @@ impl LineImporter for ChatStore {
             .await
     }
 
-    async fn watermark(&self, room: RoomId) -> Result<Option<ImportWatermark>, String> {
+    async fn watermark(&self, room: RoomId) -> Result<Option<ImportedThrough>, String> {
         installed()?.import_watermark(room).await
     }
 
     async fn advance_watermark(&self, room: RoomId, mark: ImportWatermark) -> Result<(), String> {
         installed()?.advance_import_watermark(room, mark).await
+    }
+
+    async fn migrate_watermark(&self, room: RoomId, mark: ImportWatermark) -> Result<(), String> {
+        installed()?.migrate_import_watermark(room, mark).await
     }
 }
 
@@ -96,7 +103,7 @@ fn installed() -> Result<std::sync::Arc<ChatModule>, String> {
 #[derive(Default)]
 pub struct RecordingImporter(
     pub std::sync::Mutex<Vec<PostedLine>>,
-    pub std::sync::Mutex<std::collections::HashMap<RoomId, ImportWatermark>>,
+    pub std::sync::Mutex<std::collections::HashMap<RoomId, ImportedThrough>>,
 );
 
 #[cfg(any(test, feature = "test-fixtures"))]
@@ -110,7 +117,7 @@ impl LineImporter for RecordingImporter {
         })
     }
 
-    async fn watermark(&self, room: RoomId) -> Result<Option<ImportWatermark>, String> {
+    async fn watermark(&self, room: RoomId) -> Result<Option<ImportedThrough>, String> {
         Ok(self
             .1
             .lock()
@@ -120,10 +127,33 @@ impl LineImporter for RecordingImporter {
     }
 
     async fn advance_watermark(&self, room: RoomId, mark: ImportWatermark) -> Result<(), String> {
-        self.1
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(room, mark); // test fixture: a poisoned lock still holds the marks
+        let mut marks = self.1.lock().unwrap_or_else(|p| p.into_inner()); // test fixture: a poisoned lock still holds the marks
+        let history = marks
+            .get(&room)
+            .map_or(ImportHistory::Complete, |m| m.history);
+        marks.insert(
+            room,
+            ImportedThrough {
+                position: mark,
+                history,
+            },
+        );
+        Ok(())
+    }
+
+    async fn migrate_watermark(&self, room: RoomId, mark: ImportWatermark) -> Result<(), String> {
+        let history = ImportHistory::UnvouchedThrough {
+            epoch: mark.epoch,
+            counter: mark.counter,
+            event_id: mark.event_id,
+        };
+        self.1.lock().unwrap_or_else(|p| p.into_inner()).insert(
+            room,
+            ImportedThrough {
+                position: mark,
+                history,
+            },
+        ); // test fixture: a poisoned lock still holds the marks
         Ok(())
     }
 }
@@ -187,10 +217,13 @@ impl ChatModule {
             .get("seq")
             .and_then(Value::as_u64)
             .ok_or("chat line: the arrival carried no sequence")?;
-        Ok(match appended.get("fresh").and_then(Value::as_bool) {
-            Some(true) => Imported::Fresh { arrival_seq },
-            _ => Imported::Duplicate { arrival_seq },
-        })
+        match appended.get("fresh").and_then(Value::as_bool) {
+            Some(true) => Ok(Imported::Fresh { arrival_seq }),
+            Some(false) => Ok(Imported::Duplicate { arrival_seq }),
+            // An append that does not say whether it created the arrival is a malformed reply, never a
+            // duplicate: reading it as one would vouch for a line nobody confirmed (Codex on #5694).
+            None => Err("chat line: the arrival did not say whether it was fresh".to_string()),
+        }
     }
 }
 
@@ -205,11 +238,15 @@ impl LineImporter for RefusingImporter {
         Err("test: the store refused the line".to_string())
     }
 
-    async fn watermark(&self, _room: RoomId) -> Result<Option<ImportWatermark>, String> {
+    async fn watermark(&self, _room: RoomId) -> Result<Option<ImportedThrough>, String> {
         Err("test: the store cannot read".to_string())
     }
 
     async fn advance_watermark(&self, _room: RoomId, _mark: ImportWatermark) -> Result<(), String> {
+        Err("test: the store refused the watermark".to_string())
+    }
+
+    async fn migrate_watermark(&self, _room: RoomId, _mark: ImportWatermark) -> Result<(), String> {
         Err("test: the store refused the watermark".to_string())
     }
 }

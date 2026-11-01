@@ -141,7 +141,8 @@ pub fn spawn_daemon_attach(
 /// it vouches for (`chat::import_watermark`, Slice P), written through the ORM; every line up to
 /// it has already been imported, because the seam awaits each import before the next frame.
 async fn load_cursor(lines: &dyn LineImporter, channel: &RoomId) -> Result<Option<IpcCursor>, String> {
-    if let Some(mark) = lines.watermark(*channel).await? {
+    if let Some(imported) = lines.watermark(*channel).await? {
+        let mark = imported.position;
         return Ok(Some(IpcCursor { epoch: mark.epoch, counter: mark.counter, event_id: airc_core::EventId::from_uuid(mark.event_id) }));
     }
     migrate_legacy_cursor(lines, channel).await
@@ -149,8 +150,10 @@ async fn load_cursor(lines: &dyn LineImporter, channel: &RoomId) -> Result<Optio
 
 /// One-time migration: a node that persisted its watermark as a JSON file before the store owned
 /// it (`state/airc-attach-cursor-<room>.json`) hands it to the store and removes the file, so the
-/// first attach after the upgrade resumes where the last one stopped. A missing or corrupt file is
-/// a first attach (one page), never an error.
+/// first attach after the upgrade resumes where the last one stopped. That file advanced
+/// independently of the old lossy writer, so it does NOT vouch that the lines before it were
+/// stored: the store records it as unvouched through that position (`ImportHistory`), and a reader
+/// of that history perceives a gap (Codex on #5694). A missing or corrupt file is a first attach.
 async fn migrate_legacy_cursor(lines: &dyn LineImporter, channel: &RoomId) -> Result<Option<IpcCursor>, String> {
     let Ok(home) = crate::paths::continuum_home() else {
         return Ok(None);
@@ -159,7 +162,7 @@ async fn migrate_legacy_cursor(lines: &dyn LineImporter, channel: &RoomId) -> Re
     let Some(cursor) = std::fs::read_to_string(&path).ok().and_then(|raw| serde_json::from_str::<IpcCursor>(&raw).ok()) else { // storage boundary: the legacy cursor file's JSON
         return Ok(None);
     };
-    lines.advance_watermark(*channel, mark_of(&cursor)).await?;
+    lines.migrate_watermark(*channel, mark_of(&cursor)).await?;
     if let Err(error) = std::fs::remove_file(&path) {
         warn!("migrated the airc attach cursor into the store but could not remove {}: {error}", path.display());
     }

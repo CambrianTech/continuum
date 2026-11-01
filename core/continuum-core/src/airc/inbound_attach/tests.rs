@@ -477,3 +477,26 @@ async fn the_attach_watermark_round_trips_through_the_store() {
         "an unreadable store is retried, never treated as a first attach"
     );
 }
+
+// what this catches: the pre-store cursor file (which advanced while the old lossy writer could drop
+// lines) being migrated as if it vouched that every earlier line is stored (Codex on #5694). An old
+// cursor beyond a line the store never got: the migrated watermark resumes the attach there, records
+// its history as unvouched through that point, and keeps that history as the watermark advances.
+#[tokio::test]
+async fn a_migrated_cursor_never_vouches_for_the_lines_before_it() {
+    use continuum_mind::chat::import_watermark::ImportHistory;
+    let lines = continuum_mind::chat::line_store::RecordingImporter::default();
+    let room = RoomId::from_u128(0x5694);
+    let old = IpcCursor { epoch: 7, counter: 900, event_id: EventId::from_u128(0x900) };
+    let state = crate::paths::continuum_home().expect("test: the per-process home").join("state"); // test: a fixture step that must succeed
+    std::fs::create_dir_all(&state).expect("test: the state dir"); // test: a fixture step that must succeed
+    let file = state.join(format!("airc-attach-cursor-{}.json", room.as_uuid()));
+    std::fs::write(&file, serde_json::to_string(&old).expect("test: the cursor serializes")).expect("test: the legacy file"); // test: writing the legacy fixture the migration reads
+    assert_eq!(load_cursor(&lines, &room).await.expect("the store answers"), Some(old), "the attach resumes at the old cursor");
+    assert!(!file.exists(), "the migrated file is removed");
+    let unvouched = ImportHistory::UnvouchedThrough { epoch: 7, counter: 900, event_id: old.event_id.as_uuid() };
+    let history = |lines: &continuum_mind::chat::line_store::RecordingImporter| lines.1.lock().expect("test: the fixture lock").get(&room).map(|m| m.history); // test: a fixture step that must succeed
+    assert_eq!(history(&lines), Some(unvouched), "the line the old writer dropped is not vouched for");
+    persist_cursor(&lines, &room, &IpcCursor { epoch: 7, counter: 950, event_id: EventId::from_u128(0x950) }).await;
+    assert_eq!(history(&lines), Some(unvouched), "advancing never launders the unvouched history");
+}
