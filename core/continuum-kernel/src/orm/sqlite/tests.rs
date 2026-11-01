@@ -369,3 +369,186 @@
         };
         assert!(adapter.create(more).await.success, "the store still writes");
     }
+
+    /// The sequenced append and the store-owned revision it publishes (Slice P's arrival order).
+    mod sequenced {
+        use super::*;
+        use crate::orm::types::{FieldType, SchemaField, SequenceSpec};
+
+        fn field(name: &str, field_type: FieldType) -> SchemaField {
+            SchemaField {
+                name: name.to_string(),
+                field_type,
+                indexed: true,
+                unique: false,
+                nullable: false,
+                max_length: None,
+                foreign_key: None,
+            }
+        }
+
+        async fn arrivals() -> (SqliteAdapter, tempfile::TempDir) {
+            let (adapter, dir) = setup_adapter().await;
+            let schema = CollectionSchema {
+                collection: "arrivals".to_string(),
+                fields: vec![
+                    field("messageId", FieldType::String),
+                    field("arrivalSeq", FieldType::Number),
+                ],
+                indexes: vec![],
+            };
+            assert!(
+                adapter.ensure_schema(schema).await.success,
+                "test: the schema registers"
+            ); // test: a fixture step that must succeed
+            let lines = CollectionSchema {
+                collection: "lines".to_string(),
+                fields: vec![field("text", FieldType::String)],
+                indexes: vec![],
+            };
+            assert!(
+                adapter.ensure_schema(lines).await.success,
+                "test: the line schema registers"
+            ); // test: a fixture step that must succeed
+            (adapter, dir)
+        }
+
+        fn append(id: &str, message: &str) -> BatchOperation {
+            BatchOperation {
+                operation_type: BatchOperationType::Append(SequenceSpec {
+                    sequence: "arrivalSeq".into(),
+                    unique: "messageId".into(),
+                }),
+                collection: "arrivals".to_string(),
+                id: Some(id.to_string()),
+                data: Some(json!({"messageId": message})),
+            }
+        }
+
+        fn seq_of(result: &StorageResult<Vec<Value>>) -> (u64, bool) {
+            let last = result
+                .data
+                .as_ref()
+                .and_then(|v| v.last())
+                .expect("test: the batch reported its append"); // test: the assertion failing loudly
+            (
+                last["seq"].as_u64().expect("test: a sequence"),
+                last["fresh"].as_bool().expect("test: a freshness flag"),
+            ) // test: the assertion failing loudly
+        }
+
+        // what this catches: an arrival order that is not commit order, or a duplicate import
+        // minting a second arrival for one message (the replay cursor would deliver it twice).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn appends_number_in_commit_order_and_a_duplicate_reuses_its_arrival() {
+            let (adapter, _dir) = arrivals().await;
+            assert_eq!(
+                seq_of(&adapter.batch(vec![append("a1", "m1")]).await),
+                (1, true)
+            );
+            assert_eq!(
+                seq_of(&adapter.batch(vec![append("a2", "m2")]).await),
+                (2, true)
+            );
+            assert_eq!(
+                seq_of(&adapter.batch(vec![append("a3", "m1")]).await),
+                (1, false),
+                "the duplicate reuses m1's arrival"
+            );
+            assert!(
+                !adapter.read("arrivals", &"a3".to_string()).await.success,
+                "no second row for m1"
+            );
+            assert_eq!(
+                seq_of(&adapter.batch(vec![append("a4", "m3")]).await),
+                (3, true),
+                "no gap from the duplicate"
+            );
+        }
+
+        // what this catches: an import of a line already stored failing the whole batch (so a
+        // replay after a crash could never commit), or minting a second row or arrival for it.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn an_ensured_row_and_its_append_are_idempotent_together() {
+            let (adapter, _dir) = arrivals().await;
+            let line = |arrival: &str| {
+                vec![
+                    BatchOperation {
+                        operation_type: BatchOperationType::Ensure,
+                        collection: "lines".into(),
+                        id: Some("m1".into()),
+                        data: Some(json!({"text": "hi"})),
+                    },
+                    append(arrival, "m1"),
+                ]
+            };
+            let first = adapter.batch(line("a1")).await;
+            assert_eq!(
+                first.data.as_ref().map(|v| v[0]["created"].clone()),
+                Some(json!(true))
+            );
+            assert_eq!(seq_of(&first), (1, true));
+            let again = adapter.batch(line("a2")).await;
+            assert!(again.success, "the replay commits: {:?}", again.error);
+            assert_eq!(
+                again.data.as_ref().map(|v| v[0]["created"].clone()),
+                Some(json!(false)),
+                "the stored line is untouched"
+            );
+            assert_eq!(seq_of(&again), (1, false), "and its arrival is reused");
+        }
+
+        // what this catches: a rolled-back batch consuming a sequence or announcing a revision
+        // for a row that never committed (a consumer would wait for, or skip over, a ghost).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn a_rolled_back_append_neither_numbers_nor_announces() {
+            let (adapter, _dir) = arrivals().await;
+            let revision = adapter.sequence_revision("arrivals");
+            let broken = BatchOperation {
+                operation_type: BatchOperationType::Create,
+                collection: "arrivals".into(),
+                id: Some("x".into()),
+                data: None,
+            };
+            assert!(
+                !adapter
+                    .batch(vec![append("a1", "m1"), broken])
+                    .await
+                    .success
+            );
+            assert_eq!(
+                *revision.borrow(),
+                0,
+                "nothing committed, nothing announced"
+            );
+            assert_eq!(
+                seq_of(&adapter.batch(vec![append("a1", "m1")]).await),
+                (1, true),
+                "the rolled-back sequence is reused"
+            );
+            assert_eq!(*revision.borrow(), 1);
+        }
+
+        // what this catches: a committed row stranded unannounced because its writer was
+        // dropped at the commit await (Codex at 2abfa3c3). The future is polled once (the
+        // blocking write is spawned) and dropped; the revision still rises.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn a_writer_dropped_at_the_commit_await_still_announces_its_row() {
+            let (adapter, _dir) = arrivals().await;
+            let mut revision = adapter.sequence_revision("arrivals");
+            let mut write = Box::pin(adapter.batch(vec![append("a1", "m1")]));
+            let _ = futures::poll!(&mut write); // the first poll spawns the blocking write; whether it has finished does not matter
+            drop(write);
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                revision.wait_for(|high| *high == 1),
+            )
+            .await
+            .expect("test: the dropped writer's commit is announced") // test: the assertion failing loudly
+            .expect("test: the revision stays owned by the store"); // test: the assertion failing loudly
+            assert!(
+                adapter.read("arrivals", &"a1".to_string()).await.success,
+                "and the row is there"
+            );
+        }
+    }

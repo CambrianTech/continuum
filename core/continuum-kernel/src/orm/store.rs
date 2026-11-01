@@ -49,7 +49,7 @@ use uuid::Uuid;
 use crate::orm::adapter::StorageAdapter;
 use crate::orm::entity::OrmEntity;
 use crate::orm::query::{QueryBuilder, StorageQuery};
-use crate::orm::types::{BatchOperation, BatchOperationType, DataRecord, RecordMetadata, StorageResult};
+use crate::orm::types::{BatchOperation, BatchOperationType, DataRecord, RecordMetadata, SequenceSpec, Sequenced, StorageResult};
 
 /// Typed failure modes for OrmStore operations. Per [[no-fallbacks-
 /// ever]] + the typed-error pattern: every failure mode is named so
@@ -259,6 +259,27 @@ where
         })
     }
 
+    /// The sequenced append of a new row ([`BatchOperationType::Append`]), as the last operation
+    /// of an atomic [`commit_appending`].
+    pub fn append_op(
+        &self,
+        id: Uuid,
+        entity: &T,
+        spec: SequenceSpec,
+    ) -> Result<BatchOperation, OrmStoreError> {
+        Ok(BatchOperation {
+            operation_type: BatchOperationType::Append(spec),
+            collection: T::COLLECTION.to_string(),
+            id: Some(id.to_string()),
+            data: Some(row_data(entity)?),
+        })
+    }
+
+    /// The committed high-water of this collection's sequence: wakes when an append commits.
+    pub fn sequence_revision(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.adapter.sequence_revision(T::COLLECTION)
+    }
+
     /// Save `entity` as row `id` unless that row already holds a GREATER `field`: ONE
     /// atomic backend operation ([`StorageAdapter::upsert_monotonic`]), so the compare
     /// can never be separated from the write. Returns whether it was written.
@@ -297,6 +318,32 @@ pub async fn commit(adapter: &Arc<dyn StorageAdapter>, operations: Vec<BatchOper
     let result = adapter.batch(operations).await;
     unwrap_adapter(result, "batch", "atomic commit")?;
     Ok(())
+}
+
+/// Apply `prior` and then `append` ATOMICALLY (a row and the sequenced record of it, written
+/// together), returning what the append did: the sequence it was given, or the existing row's
+/// when its unique value was already there.
+pub async fn commit_appending(
+    adapter: &Arc<dyn StorageAdapter>,
+    mut prior: Vec<BatchOperation>,
+    append: BatchOperation,
+) -> Result<Sequenced, OrmStoreError> {
+    let collection = append.collection.clone();
+    prior.push(append);
+    let values = unwrap_adapter(adapter.batch(prior).await, "batch", "atomic append")?;
+    values
+        .last()
+        .and_then(|v| {
+            Some(Sequenced {
+                seq: v.get("seq")?.as_u64()?,
+                fresh: v.get("fresh")?.as_bool()?,
+            })
+        })
+        .ok_or(OrmStoreError::AdapterFailed {
+            operation: "append",
+            collection,
+            detail: "the adapter's append result carried no sequence".to_string(),
+        })
 }
 
 /// Generic StorageResult unwrap for adapter CRUD operations.

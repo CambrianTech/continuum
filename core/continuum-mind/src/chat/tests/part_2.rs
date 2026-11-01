@@ -6,7 +6,7 @@ use super::*;
     pub(super) async fn send_with_airc_failure_returns_warning_and_null_event_id() {
         let chat = chat_with_stubs(vec![
             Arc::new(StubDataModule::new(|_cmd, _p| {
-                Ok(json!({ "success": true }))
+                Ok(batch_ok())
             })),
             Arc::new(StubAircModule::err(
                 "airc daemon socket unreachable: ENOENT",
@@ -70,7 +70,7 @@ use super::*;
             .expect_err("data executor failure must propagate as command-level Err");
 
         assert!(
-            err.contains("chat/send: data/create failed"),
+            err.contains("chat/send: chat line: data/batch failed"),
             "error must name the failing surface: {err}"
         );
         assert!(
@@ -112,7 +112,7 @@ use super::*;
             .expect_err("success=false from data must propagate as Err");
 
         assert!(
-            err.contains("success=false"),
+            err.contains("the store refused the line"),
             "error must name the failure mode: {err}"
         );
         assert!(
@@ -139,10 +139,10 @@ use super::*;
 
         let chat = chat_with_stubs(vec![
             Arc::new(StubDataModule::new(move |cmd, _p| {
-                if cmd == "data/create" {
-                    data_log.lock().unwrap().push("data/create");
+                if cmd == "data/batch" {
+                    data_log.lock().unwrap().push("data/batch");
                 }
-                Ok(json!({ "success": true }))
+                Ok(batch_ok())
             })),
             Arc::new(StubAircModule::with(move |_p| {
                 airc_log.lock().unwrap().push("airc/realtime-publish");
@@ -157,7 +157,7 @@ use super::*;
         let calls = call_log.lock().unwrap().clone();
         assert_eq!(
             calls,
-            vec!["data/create", "airc/realtime-publish"],
+            vec!["data/batch", "airc/realtime-publish"],
             "data MUST be called before airc — the dual-write ordering invariant"
         );
     }
@@ -178,10 +178,10 @@ use super::*;
 
         let chat = chat_with_stubs(vec![
             Arc::new(StubDataModule::new(move |cmd, params| {
-                if cmd == "data/create" {
+                if cmd == "data/batch" {
                     *observer.lock().unwrap() = Some(params);
                 }
-                Ok(json!({ "success": true }))
+                Ok(batch_ok())
             })),
             Arc::new(StubAircModule::ok(airc_ok_response("evt-wire-001"))),
         ]);
@@ -201,20 +201,20 @@ use super::*;
             .lock()
             .unwrap()
             .clone()
-            .expect("data/create must have been called");
+            .expect("data/batch must have been called");
 
         assert_eq!(
             create["dbPath"], "main",
             "writes go to the main adapter handle"
         );
-        assert_eq!(create["collection"], "chat_messages");
+        assert_eq!(create["operations"][0]["collection"], "chat_messages");
         assert_eq!(
-            create["id"],
+            create["operations"][0]["id"],
             result.message_id.to_string(),
             "create.id matches the returned message_id"
         );
 
-        let entity = &create["data"];
+        let entity = &create["operations"][0]["data"];
         assert_eq!(entity["id"], result.message_id.to_string());
         assert_eq!(entity["roomId"], room_id.to_string());
         assert_eq!(entity["senderId"], sender_id.to_string());
@@ -250,7 +250,7 @@ use super::*;
 
         let chat = chat_with_stubs(vec![
             Arc::new(StubDataModule::new(|_cmd, _p| {
-                Ok(json!({ "success": true }))
+                Ok(batch_ok())
             })),
             Arc::new(StubAircModule::with(move |params| {
                 *observer.lock().unwrap() = Some(params);
@@ -366,12 +366,12 @@ use super::*;
 
             let chat = chat_with_stubs(vec![
                 Arc::new(StubDataModule::new(move |cmd, params| {
-                    if cmd == "data/create" {
-                        let id_str = params["id"].as_str().expect("data/create must carry an id");
+                    if cmd == "data/batch" {
+                        let id_str = params["operations"][0]["id"].as_str().expect("data/batch must carry the message id");
                         let id = Uuid::parse_str(id_str).expect("id must be a UUID");
                         writes_tracker.lock().unwrap().push(id);
                     }
-                    Ok(json!({ "success": true }))
+                    Ok(batch_ok())
                 })),
                 Arc::new(StubAircModule::ok(airc_ok_response("evt-conc-001"))),
             ]);
@@ -410,7 +410,7 @@ use super::*;
             assert_eq!(
                 writes.lock().unwrap().len(),
                 PARALLEL,
-                "every concurrent send must have called data/create exactly once"
+                "every concurrent send must have called data/batch exactly once"
             );
 
             // Returned ids are all distinct.
@@ -435,7 +435,7 @@ use super::*;
 
         /// Per-call ordering invariant under concurrency: even when N
         /// concurrent calls interleave globally, EACH call's own
-        /// `data/create` must precede its own `airc/realtime-publish`. The
+        /// `data/batch` must precede its own `airc/realtime-publish`. The
         /// dual-write design's bad-divergence safety net depends on this.
         ///
         /// Strategy: tag every observation with the `message_id` (== the
@@ -451,12 +451,12 @@ use super::*;
 
             let chat = chat_with_stubs(vec![
                 Arc::new(StubDataModule::new(move |cmd, params| {
-                    if cmd == "data/create" {
-                        let id_str = params["id"].as_str().unwrap();
+                    if cmd == "data/batch" {
+                        let id_str = params["operations"][0]["id"].as_str().unwrap();
                         let id = Uuid::parse_str(id_str).unwrap();
-                        data_log.lock().unwrap().push((id, "data/create"));
+                        data_log.lock().unwrap().push((id, "data/batch"));
                     }
-                    Ok(json!({ "success": true }))
+                    Ok(batch_ok())
                 })),
                 Arc::new(StubAircModule::with(move |params| {
                     let inline_id = params["envelope"]["payload"]["payload"]["inline"]["messageId"]
@@ -502,7 +502,7 @@ use super::*;
                 let mut sorted = events.clone();
                 sorted.sort_by_key(|(idx, _)| *idx);
                 assert_eq!(
-                sorted[0].1, "data/create",
+                sorted[0].1, "data/batch",
                 "per-call ordering: data MUST come before airc for id={id}, observed={sorted:?}"
             );
                 assert_eq!(
@@ -526,7 +526,7 @@ use super::*;
 
             let chat = chat_with_stubs(vec![
                 Arc::new(StubDataModule::new(|_cmd, _p| {
-                    Ok(json!({ "success": true }))
+                    Ok(batch_ok())
                 })),
                 Arc::new(StubAircModule::with(|params| {
                     // Drive the airc outcome from the inline message text.

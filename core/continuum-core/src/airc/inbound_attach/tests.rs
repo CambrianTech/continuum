@@ -113,7 +113,7 @@ async fn valid_continuum_event_reaches_message_bus() {
         headers_for_envelope(&envelope),
     );
 
-    publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
+    publish_transcript_event(&Arc::new(event), &bus, &continuum_mind::chat::line_store::RecordingImporter::default()).await.unwrap();
 
     let delivered = timeout(Duration::from_millis(200), receiver.recv())
         .await
@@ -167,7 +167,7 @@ async fn chat_transcript_envelope_projects_chat_posted() {
         headers_for_envelope(&envelope),
     );
 
-    publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
+    publish_transcript_event(&Arc::new(event), &bus, &continuum_mind::chat::line_store::RecordingImporter::default()).await.unwrap();
 
     let delivered = timeout(Duration::from_millis(200), receiver.recv())
         .await
@@ -202,7 +202,7 @@ async fn non_continuum_body_is_ignored() {
         Default::default(),
     );
 
-    publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
+    publish_transcript_event(&Arc::new(event), &bus, &continuum_mind::chat::line_store::RecordingImporter::default()).await.unwrap();
 
     assert!(timeout(Duration::from_millis(20), receiver.recv())
         .await
@@ -224,7 +224,7 @@ async fn plain_chat_message_projects_thin_chat_posted() {
     let mut receiver = bus.receiver();
     let event = transcript_event(Some(Body::text("hello room")), Default::default());
 
-    publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
+    publish_transcript_event(&Arc::new(event), &bus, &continuum_mind::chat::line_store::RecordingImporter::default()).await.unwrap();
 
     let delivered = timeout(Duration::from_millis(200), receiver.recv())
         .await
@@ -259,7 +259,7 @@ async fn non_message_kind_does_not_project_chat() {
     let mut event = transcript_event(None, Default::default());
     event.kind = TranscriptKind::Receipt;
 
-    publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
+    publish_transcript_event(&Arc::new(event), &bus, &continuum_mind::chat::line_store::RecordingImporter::default()).await.unwrap();
 
     assert!(timeout(Duration::from_millis(20), receiver.recv())
         .await
@@ -281,7 +281,7 @@ async fn wall_post_event_projects_thin_wall_changed_signal() {
     let mut event = transcript_event(None, Default::default());
     event.kind = TranscriptKind::WallPostPublished;
 
-    publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
+    publish_transcript_event(&Arc::new(event), &bus, &continuum_mind::chat::line_store::RecordingImporter::default()).await.unwrap();
 
     let delivered = timeout(Duration::from_millis(200), receiver.recv())
         .await
@@ -324,7 +324,7 @@ async fn work_board_event_projects_thin_kanban_changed_signal() {
     let mut event = transcript_event(Some(body), headers);
     event.kind = TranscriptKind::System;
 
-    publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
+    publish_transcript_event(&Arc::new(event), &bus, &continuum_mind::chat::line_store::RecordingImporter::default()).await.unwrap();
 
     let delivered = timeout(Duration::from_millis(200), receiver.recv())
         .await
@@ -347,7 +347,7 @@ async fn malformed_continuum_body_is_ignored() {
         headers_for_envelope(&envelope),
     );
 
-    publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
+    publish_transcript_event(&Arc::new(event), &bus, &continuum_mind::chat::line_store::RecordingImporter::default()).await.unwrap();
 
     assert!(timeout(Duration::from_millis(20), receiver.recv())
         .await
@@ -398,14 +398,14 @@ async fn a_peer_command_in_a_room_never_reaches_a_mind_and_room_speech_still_doe
     command.kind = TranscriptKind::Command;
     command.room_id = RoomId::from_uuid(ROOM);
     command.target = MentionTarget::Peer(PeerId::from_uuid(persona));
-    publish_transcript_event(&Arc::new(command), &bus)
+    publish_transcript_event(&Arc::new(command), &bus, &continuum_mind::chat::line_store::RecordingImporter::default())
         .await
         .expect("a protocol frame is routed, not an error");
     assert!(wakes.try_recv().is_err(), "a peer command is not something she perceives");
 
     let mut speech = transcript_event(Some(Body::text("@Aiko how is it going?")), airc_core::Headers::new());
     speech.room_id = RoomId::from_uuid(ROOM);
-    publish_transcript_event(&Arc::new(speech), &bus)
+    publish_transcript_event(&Arc::new(speech), &bus, &continuum_mind::chat::line_store::RecordingImporter::default())
         .await
         .expect("room speech is fed");
     let woke = matches!(
@@ -414,4 +414,66 @@ async fn a_peer_command_in_a_room_never_reaches_a_mind_and_room_speech_still_doe
     );
     crate::persona::perception_feed::unregister(persona);
     assert!(woke, "a line addressed to her in her room still wakes her");
+}
+
+// what this catches: a room line reaching minds and screens without being in the durable store
+// (the old lossy bus writer dropped lines under lag), or its routing header being lost on the way:
+// the seam imports each line once, typed, with its addressee, before anything else consumes it.
+#[tokio::test]
+async fn a_room_line_is_imported_with_its_header_before_it_is_projected() {
+    let bus = MessageBus::new();
+    let lines = continuum_mind::chat::line_store::RecordingImporter::default();
+    let mut event = transcript_event(
+        Some(Body::text("@Aiko the build is green")),
+        airc_core::Headers::new(),
+    );
+    event.target = MentionTarget::Peer(PeerId::from_u128(7));
+    publish_transcript_event(&Arc::new(event), &bus, &lines)
+        .await
+        .expect("the line is stored and projected");
+    let imported = lines.0.lock().expect("test: the fixture lock").clone(); // test: a fixture step that must succeed
+    assert_eq!(imported.len(), 1, "imported exactly once");
+    assert_eq!(imported[0].message_id, EventId::from_u128(1).as_uuid());
+    assert_eq!(
+        imported[0].direct_to,
+        Some(PeerId::from_u128(7)),
+        "the addressee rides the header"
+    );
+    assert_eq!(imported[0].text, "@Aiko the build is green");
+}
+
+// what this catches: a line the store refused being acknowledged anyway. The seam must return an
+// error, which ends the attach before the watermark passes the line, so the re-attach replays it.
+#[tokio::test]
+async fn a_refused_import_ends_the_attach_so_the_line_replays() {
+    let bus = MessageBus::new();
+    let event = transcript_event(Some(Body::text("hello")), airc_core::Headers::new());
+    let err = publish_transcript_event(
+        &Arc::new(event),
+        &bus,
+        &continuum_mind::chat::line_store::RefusingImporter,
+    )
+    .await
+    .expect_err("a refused line is an error at the seam");
+    assert!(
+        err.contains("re-attaching to replay it"),
+        "the error says what happens next: {err}"
+    );
+}
+
+// what this catches: the attach watermark living anywhere but the store that holds the lines it
+// vouches for (it was a hand-written JSON file), or a store that cannot answer being read as "never
+// attached" (which would replay a whole first attach instead of retrying): the cursor round-trips
+// through the injected store, and an unreadable store is an error the attach retries on.
+#[tokio::test]
+async fn the_attach_watermark_round_trips_through_the_store() {
+    let lines = continuum_mind::chat::line_store::RecordingImporter::default();
+    let room = RoomId::from_u128(2);
+    let cursor = IpcCursor { epoch: 3, counter: 42, event_id: EventId::from_u128(9) };
+    persist_cursor(&lines, &room, &cursor).await;
+    assert_eq!(load_cursor(&lines, &room).await.expect("the store answers"), Some(cursor));
+    assert!(
+        load_cursor(&continuum_mind::chat::line_store::RefusingImporter, &room).await.is_err(),
+        "an unreadable store is retried, never treated as a first attach"
+    );
 }

@@ -59,6 +59,10 @@ pub const CHAT_POSTED: &str = "chat:posted";
 
 use types::{ChatPollParams, ChatPollResult, ChatSendParams, ChatSendResult, CHAT_MESSAGES_COLLECTION, DEFAULT_POLL_LIMIT};
 
+pub mod arrival;
+pub mod line_store;
+pub mod import_watermark;
+pub mod orm_entities;
 mod chat_data_handle;
 pub use chat_data_handle::*;
 mod chat_module;

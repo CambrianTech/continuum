@@ -11,10 +11,21 @@ pub fn wire_substrate_orm_entities() -> Result<usize, String> {
     let registry = crate::orm::OrmEntityRegistry::global();
     crate::persona::register_substrate_orm_entities(registry)
         .map_err(|e| format!("substrate ORM entity registration conflict — boot refused: {e}"))?;
-    Ok(crate::persona::SUBSTRATE_ORM_COLLECTIONS
+    continuum_mind::chat::orm_entities::register_chat_orm_entities(registry)
+        .map_err(|e| format!("chat ORM entity registration conflict — boot refused: {e}"))?;
+    Ok(substrate_collections()
         .iter()
         .filter(|c| registry.resolve(c).is_some())
         .count())
+}
+
+/// Every collection the boot wiring registers: the persona substrate's and the chat store's.
+fn substrate_collections() -> Vec<&'static str> {
+    crate::persona::SUBSTRATE_ORM_COLLECTIONS
+        .iter()
+        .chain(continuum_mind::chat::orm_entities::CHAT_ORM_COLLECTIONS)
+        .copied()
+        .collect()
 }
 
 /// The data module as this core boots it: the store's module with the substrate's entities.
@@ -34,8 +45,8 @@ mod tests {
     #[test]
     fn boot_wiring_makes_every_substrate_collection_resolvable_on_the_global_registry() {
         let n = wire_substrate_orm_entities().expect("no conflict on a fresh or repeated wiring"); // JUSTIFIED: the invariant under test
-        assert_eq!(n, crate::persona::SUBSTRATE_ORM_COLLECTIONS.len(), "every substrate collection resolves");
-        for c in crate::persona::SUBSTRATE_ORM_COLLECTIONS {
+        assert_eq!(n, substrate_collections().len(), "every substrate collection resolves");
+        for c in substrate_collections() {
             assert!(crate::orm::OrmEntityRegistry::global().resolve(c).is_some(), "{c} must resolve");
         }
         assert!(crate::orm::OrmEntityRegistry::global().resolve("staged_credit").is_some());
