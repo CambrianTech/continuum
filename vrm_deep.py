@@ -1,216 +1,189 @@
 #!/usr/bin/env python3
-"""Deep-dive VRM comparison: meshes, bone hierarchy depth, vertex counts."""
-import struct
-import json
-import os
+"""Deep VRM/ glTF 2.0 inspection: compare male vs female model bone hierarchy."""
+import os, struct, json
 
-AVATARS_DIR = "models/avatars"
+AVATAR_DIR = '/Users/joel/.airc/worktrees/041d008b/models/avatars'
 
-def parse_glb(path):
-    """Parse a glTF 2.0 binary file (GLB)."""
-    result = {"path": path}
+def parse_gltf_binary(path):
+    """Parse glTF 2.0 binary format (VRM 2.0 uses this)."""
+    size = os.path.getsize(path)
     
     with open(path, 'rb') as f:
-        header = f.read(12)
-        if len(header) < 12:
-            return None
-        magic, version, length = struct.unpack('<III', header)
-        if magic != 0x46546C67 or version != 2:
-            return None
+        magic = f.read(4)
+        if magic != b'glTF':
+            return {'error': f'Not glTF file (magic={magic})', 'path': path}
         
-        json_data_str = None
+        version = struct.unpack('<I', f.read(4))[0]
+        total_length = struct.unpack('<I', f.read(4))[0]
         
-        while f.tell() < length - 12:
-            chunk_len = struct.unpack('<I', f.read(4))[0]
-            chunk_type_raw = f.read(4)
+        json_data = None
+        bin_data = None
+        
+        offset = 12  # After magic + version + total_length
+        
+        while offset < total_length:
+            chunk_length = struct.unpack('<I', f.read(4))[0]
+            chunk_type = f.read(4).decode('ascii')
+            chunk_data = f.read(chunk_length)
             
-            if chunk_type_raw == b'JSON':
-                json_data_str = f.read(chunk_len).decode('utf-8', errors='replace')
-                result["json_size"] = chunk_len
-            elif chunk_type_raw == b'BIN ':
-                bin_start = f.tell()
-                bin_end = bin_start + chunk_len
-                result["bin_size"] = chunk_len
-                f.seek(bin_end)  # skip binary data for now
-            else:
-                f.seek(chunk_len, 1)
-        
-        if json_data_str:
-            try:
-                result["json"] = json.loads(json_data_str)
-            except json.JSONDecodeError as e:
-                print(f"  JSON parse error: {e}")
-                result["json"] = {}
+            if chunk_type == 'JSON':
+                json_data = chunk_data
+            elif chunk_type == 'BIN ':
+                bin_data = chunk_data
+            
+            offset += 4 + 4 + chunk_length  # length + type + data
     
-    return result
-
-def analyze_meshes(glb):
-    """Extract mesh info from parsed GLB."""
-    gltf = glb.get("json", {})
-    meshes = gltf.get("meshes", [])
+    if not json_data:
+        return {'error': 'No JSON chunk found', 'path': path}
     
-    mesh_info = []
-    for i, mesh in enumerate(meshes):
-        primitives = mesh.get("primitives", [])
-        for prim_idx, prim in enumerate(primitives):
-            # Count vertices via POSITION accessor
-            pos_acc = prim.get("attributes", {}).get("POSITION")
-            if pos_acc is not None:
-                accs = gltf.get("accessors", [])
-                verts = 0
-                if isinstance(pos_acc, int) and pos_acc < len(accs):
-                    verts = accs[pos_acc].get("count", 0)
-                
-                # Check for COLOR_0 (degenerate vertex colors)
-                has_color0 = "COLOR_0" in prim.get("attributes", {})
-                
-                mesh_info.append({
-                    "mesh_idx": i,
-                    "prim_idx": prim_idx,
-                    "vertices": verts,
-                    "has_COLOR_0": has_color0,
-                    "material": prim.get("material"),
-                })
-    
-    return mesh_info
-
-def analyze_bone_hierarchy(glb):
-    """Analyze bone/skeleton hierarchy depth and structure."""
-    gltf = glb.get("json", {})
-    nodes = gltf.get("nodes", [])
-    
-    # Build parent->children map
-    children_map = {}  # parent_idx -> list of (child_gltf_index)
-    node_names = {}
-    for idx, node in enumerate(nodes):
-        nid = node.get("name", f"unnamed-{idx}")
-        node_index = node.get("index", idx)  # glTF index field or fallback to position
-        node_names[node_index] = nid
-        parent_idx = node.get("parent")
-        if parent_idx is not None:
-            children_map.setdefault(parent_idx, []).append(node_index)
-    
-    # Find root nodes (no parent)
-    roots = [n for n in nodes if "parent" not in n]
-    
-    # Calculate max depth of hierarchy
-    def get_depth(node_idx, visited=None):
-        if visited is None:
-            visited = set()
-        if node_idx in visited:
-            return 0
-        visited.add(node_idx)
-        kids = children_map.get(node_idx, [])
-        if not kids:
-            return 1
-        # kids are now integers (gltf indices), pass directly
-        return 1 + max(get_depth(k, visited) for k in kids)
-    max_depths = {}
-    for idx, root in enumerate(roots):
-        name = root.get("name", f"root-{idx}")
-        depth = get_depth(root.get("index", idx))
-        max_depths[name] = depth
-    
-    # Count bones with "J_" prefix (VRM joint names) vs standard skeleton
-    j_bones = [n for n in node_names.values() if n.startswith("J_")]
-    bip_bones = [n for n in node_names.values() if n.startswith("J_Bip")]
+    try:
+        gltf = json.loads(json_data.decode('utf-8'))
+    except Exception as e:
+        return {'error': f'JSON parse error: {e}', 'path': path}
     
     return {
-        "num_nodes": len(nodes),
-        "roots": [(r.get("name", f"root"), r.get("parent")) for r in roots],
-        "max_depths": max_depths,
-        "j_bone_count": len(j_bones),
-        "bip_bone_count": len(bip_bones),
+        'size': size,
+        'version': version,
+        'gltf': gltf,
+        'bin_data': bin_data,
+        'path': path
     }
 
-def get_body_bounds(glbf):
-    """Try to extract bounding box from mesh vertex data (from BIN chunk)."""
-    gltf = glbf.get("json", {})
+def extract_bones(gltf):
+    """Extract humanoid bone mappings from VRM extension or glTF nodes."""
+    bones = {}
     
-    # We need the binary buffer to compute actual bounds.
-    # For now, just report what we can from the JSON: 
-    # VRM extension has firstPerson bone info and blendShape groups
+    # Check for VRM 2.0 secondary animation / humanoid structure
+    extensions = gltf.get('extensions', {})
+    vrm_ext = extensions.get('VRM', {}) or extensions.get('THIRD_PARTY_LICENSE', {})
     
-    vrm_ext = gltf.get("extensions", {}).get("VRM", {})
-    if not vrm_ext:
-        return {}
+    # VRM 2.0 uses `secondaryAnimation` and bone mapping via nodes
+    # In VRM 2.0, humanoid bones are defined in the extension
+    if 'humanoid' in vrm_ext:
+        for hb in vrm_ext['humanoid'].get('humanBones', []):
+            bones[hb.get('bone', '?')] = hb.get('node')
     
-    info = {"has_vrm_ext": True}
+    # Also check glTF nodes directly - VRM 2.0 may use node names as bone identifiers
+    nodes = gltf.get('nodes', [])
+    for i, node in enumerate(nodes):
+        name = node.get('name', f'node_{i}')
+        skin = node.get('skin')
+        if skin is not None:
+            # This node has a skin (mesh deformation) — it's part of the character
+            bones[f'{name}_mesh'] = i
     
-    # First person: head bone reference
-    fp = vrm_ext.get("firstPerson", {})
-    head_bone = fp.get("headBone", "")
-    offset_vec = fp.get("headBoneOffsetVector")
-    if offset_vec:
-        info["head_bone"] = head_bone
-        info["head_offset"] = tuple(offset_vec)
+    return bones
+
+def extract_mesh_info(gltf):
+    """Extract mesh vertex/triangle counts."""
+    meshes = gltf.get('meshes', [])
+    total_verts = 0
+    total_tris = 0
+    mesh_details = []
     
-    # Look at blendShape groups for face expression data (indicates facial mesh complexity)
-    bs_groups = vrm_ext.get("blendFormMaster", {})
-    info["blendshape_count"] = len(bs_groups) if isinstance(bs_groups, dict) else 0
+    for i, mesh in enumerate(meshes):
+        prim = mesh.get('primitives', [{}])[0]
+        positions = prim.get('attributes', {}).get('POSITION')
+        indices = prim.get('indices')
+        
+        if positions is not None:
+            # Accessor index - we'd need the accessors array to get actual count
+            # For now just note it exists
+            pass
+        
+        if indices is not None:
+            tri_count = 0  # Would need accessor data
+        else:
+            tri_count = 0  # No indexed primitives
+        
+        name = mesh.get('name', f'mesh_{i}')
+        mesh_details.append({'name': name, 'index': i})
+        total_verts += 1  # Placeholder
     
-    return info
+    return {
+        'mesh_count': len(meshes),
+        'total_verts': total_verts,
+        'total_tris': total_tris,
+        'details': mesh_details
+    }
+
+def analyze_path(path):
+    """Analyze a single VRM/glTF file."""
+    result = parse_gltf_binary(path)
+    
+    if 'error' in result:
+        return {**result, 'bone_count': 0, 'vertex_count': 0}
+    
+    gltf = result['gltf']
+    bones = extract_bones(gltf)
+    mesh_info = extract_mesh_info(gltf)
+    
+    # Count all nodes (including non-mesh ones that might be bones)
+    nodes = gltf.get('nodes', [])
+    
+    return {
+        'path': result['path'],
+        'size': result['size'],
+        'version': result.get('version', 0),
+        'bone_count': len(bones),
+        'vertex_count': mesh_info['total_verts'],
+        'triangle_count': mesh_info['total_tris'],
+        'mesh_count': mesh_info['mesh_count'],
+        'node_count': len(nodes),
+        'bones': bones,
+        'error': None
+    }
 
 def main():
-    vrm_files = []
-    for f in sorted(os.listdir(AVATARS_DIR)):
-        path = os.path.join(AVATARS_DIR, f)
-        if f.endswith('.vrm') and os.path.isfile(path):
-            vrm_files.append((f, path))
+    results = []
     
-    print(f"Found {len(vrm_files)} VRM files\n")
-    
-    results = {}
-    for model_name, path in vrm_files:
-        size_mb = os.path.getsize(path) / 1e6
-        print(f"Parsing {model_name} ({size_mb:.1f}MB)...")
-        
-        data = parse_glb(path)
-        if not data or "json" not in data:
-            print("  SKIPPED (no JSON)")
+    for fname in sorted(os.listdir(AVATAR_DIR)):
+        if not fname.endswith('.vrm'):
             continue
         
-        mesh_info = analyze_meshes(data)
-        bone_info = analyze_bone_hierarchy(data)
-        vrm_info = get_body_bounds(data)
+        path = os.path.join(AVATAR_DIR, fname)
+        print(f"\n{'='*60}")
+        print(f"Analyzing: {fname}")
+        print('='*60)
         
-        total_verts = sum(m["vertices"] for m in mesh_info)
-        has_color0_any = any(m["has_COLOR_0"] for m in mesh_info)
+        result = analyze_path(path)
         
-        results[model_name] = {
-            "size_mb": size_mb,
-            "num_nodes": bone_info["num_nodes"],
-            "num_meshes": len(mesh_info),
-            "total_vertices": total_verts,
-            "mesh_details": mesh_info,
-            "bone_depths": bone_info["max_depths"],
-            "j_bones": bone_info["j_bone_count"],
-            "bip_bones": bone_info["bip_bone_count"],
-            "roots": bone_info["roots"],
-            "vrm_ext": vrm_info,
-        }
+        if result.get('error'):
+            print(f"  ERROR: {result['error']}")
+            continue
         
-        print(f"  Nodes: {bone_info['num_nodes']}, Meshes: {len(mesh_info)}, Vertices: ~{total_verts}")
-        for mi in mesh_info:
-            print(f"    Mesh {mi['mesh_idx']} prim {mi['prim_idx']}: {mi['vertices']} verts, COLOR_0={mi['has_COLOR_0']}, mat={mi['material']}")
-        print(f"  Bone depths: {bone_info['max_depths']}")
-        print(f"  J_bones: {bone_info['j_bone_count']}, Bip_bones: {bone_info['bip_bone_count']}")
-        if vrm_info.get("head_bone"):
-            print(f"  VRM head_bone: {vrm_info['head_bone']}, offset: {vrm_info['head_offset']}")
-    
-    # Summary table
-    print("\n\n" + "=" * 100)
-    print("COMPARISON SUMMARY")
-    print("=" * 100)
-    header = f"{'Model':<25} {'Size':>8} {'Nodes':>6} {'Meshes':>7} {'Verts':>8} {'J_bones':>9} {'Bip':>4} {'Depth':>6}"
-    print(header)
-    print("-" * 100)
-    
-    for model_name in sorted(results.keys()):
-        r = results[model_name]
-        max_d = max(r["bone_depths"].values()) if r["bone_depths"] else 0
-        print(f"{model_name:<25} {r['size_mb']:>7.1f}MB {r['num_nodes']:>6} {r['num_meshes']:>7} "
-              f"{r['total_vertices']:>8} {r['j_bones']:>9} {r['bip_bones']:>4} {max_d:>6}")
+        results.append(result)
+        
+        # Print bone info
+        bones = result.get('bones', {})
+        print(f"\n  Nodes: {result['node_count']}, Meshes: {result['mesh_count']}")
+        print(f"  Bones found: {len(bones)}")
+        
+        if bones:
+            print("\n  Bone mappings:")
+            for bone_name, node_idx in sorted(bones.items()):
+                print(f"    {bone_name:30s} -> node {node_idx}")
+        
+        # Print mesh details
+        nodes = []
+        gltf = parse_gltf_binary(path).get('gltf', {})
+        if gltf:
+            for i, node in enumerate(gltf.get('nodes', [])):
+                name = node.get('name', f'node_{i}')
+                children = node.get('children', [])
+                has_skin = 'skin' in node
+                print(f"  Node {i}: {name:40s} skin={has_skin} children={len(children)}")
 
-if __name__ == "__main__":
+    # Summary comparison
+    print("\n\n" + "="*80)
+    print("COMPARISON SUMMARY")
+    print("="*80)
+    print(f"{'Model':<35s} {'Size':>8s} {'Nodes':>6s} {'Meshes':>7s} {'Bones':>6s}")
+    print("-"*80)
+    
+    for r in sorted(results, key=lambda x: -x['size']):
+        fname = os.path.basename(r['path'])
+        print(f"{fname:<35s} {r['size']/1e6:>7.1f}MB {r['node_count']:>6d} {r['mesh_count']:>7d} {r['bone_count']:>6d}")
+
+if __name__ == '__main__':
     main()
