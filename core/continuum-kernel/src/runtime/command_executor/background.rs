@@ -7,7 +7,8 @@ use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
-// Custody is unresolved until acceptance is refused or a terminal is durable.
+// Custody is unresolved until a terminal is durable. A storage error alone
+// cannot certify that acceptance did not commit.
 // An unexpected unwind/drop in storage must not turn a released permit into a
 // successful shutdown. Handler unwinds still produce their ordinary terminal.
 struct PersistenceCustody<'a> {
@@ -84,8 +85,7 @@ impl CommandExecutor {
             let handle = match ledger.accept(owner, command.to_string()).await {
                 Ok(handle) => handle,
                 Err(error) => {
-                    persistence.settled = true;
-                    let _ = accepted.send(Err(DispatchFailure::not_committed(error)));
+                    let _ = accepted.send(Err(DispatchFailure::uncertain(error)));
                     return;
                 }
             };

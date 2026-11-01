@@ -33,15 +33,20 @@ pub(crate) struct GatedAdapter {
     inner: Arc<dyn StorageAdapter>,
     next: Mutex<Option<PausedWrite>>,
     unwind_next: std::sync::atomic::AtomicBool,
+    fail_after_create: std::sync::atomic::AtomicBool,
 }
 
 impl GatedAdapter {
     pub(crate) fn new(inner: Arc<dyn StorageAdapter>) -> Self {
-        Self { inner, next: Mutex::new(None), unwind_next: std::sync::atomic::AtomicBool::new(false) }
+        Self { inner, next: Mutex::new(None), unwind_next: std::sync::atomic::AtomicBool::new(false), fail_after_create: std::sync::atomic::AtomicBool::new(false) }
     }
 
     pub(crate) fn unwind_next_write(&self) {
         self.unwind_next.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn fail_after_next_create(&self) {
+        self.fail_after_create.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Hold the next write at a gate. Only that one write is held.
@@ -96,7 +101,13 @@ impl StorageAdapter for GatedAdapter {
         Err("the gated fixture does not own its adapter".to_string())
     }
     async fn create(&self, record: DataRecord) -> StorageResult<DataRecord> {
-        self.write(move |a| Box::pin(async move { a.create(record).await })).await
+        let fail = self.fail_after_create.swap(false, std::sync::atomic::Ordering::SeqCst);
+        let result = self.write(move |a| Box::pin(async move { a.create(record).await })).await;
+        if fail && result.success {
+            StorageResult::err("injected loss of write acknowledgement after commit")
+        } else {
+            result
+        }
     }
     async fn read(&self, collection: &str, id: &UUID) -> StorageResult<DataRecord> {
         self.inner.read(collection, id).await
