@@ -119,7 +119,10 @@ is a server behind commands, and its state and settings are commands too (her dr
 setpoint, an association's gain, her focus, a sentinel's dispatch), discoverable through
 `commands/list` like every verb. The autonomic loop, she herself, an agent and a person steer her
 mind through the same commands, so her autonomy needs no special path: what her subconscious can
-do, she can do, and nothing is reserved for an operator.
+do, she can do, and nothing is reserved for an operator. The same commands reach **her own mind
+and other minds** (Joel, 2026-11-01): she can inspect and steer herself, and read or steer another
+mind through the same verbs, under that mind's own grant (privacy of thought: a mind's interior is
+hers to share), the way any citizen, agent or person does.
 
 What follows from one pattern:
 - **A new brain function is one stage**, not a redesign: declare inputs, outputs, trigger and
