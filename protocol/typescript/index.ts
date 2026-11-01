@@ -78,7 +78,6 @@ export type { RecipeTurnBatchRequest } from './cognition';
 export type { RecipeTurnTrigger } from './cognition';
 export type { ResolutionError } from './cognition';
 export type { ResolvedModel } from './cognition';
-export type { ResourceAdmissionPolicy } from './cognition';
 export type { ResourceClass } from './cognition';
 export type { ResponseDecision } from './cognition';
 export type { ResponseProposal } from './cognition';

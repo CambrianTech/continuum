@@ -115,7 +115,6 @@ export type { RegisterDomainKeywordsParams } from './RegisterDomainKeywordsParam
 export type { RegisterDomainKeywordsResult } from './RegisterDomainKeywordsResult';
 export type { ResolutionError } from './ResolutionError';
 export type { ResolvedModel } from './ResolvedModel';
-export type { ResourceAdmissionPolicy } from './ResourceAdmissionPolicy';
 export type { ResourceClass } from './ResourceClass';
 export type { ResponseDecision } from './ResponseDecision';
 export type { ResponseProposal } from './ResponseProposal';
