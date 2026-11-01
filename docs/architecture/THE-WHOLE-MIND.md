@@ -75,6 +75,21 @@ Companions, each the owner of its chapter: [CBAR-SUBSTRATE-ARCHITECTURE](CBAR-SU
      lane above its clamp, a resting mind is nudged toward active on a schedule, so the upward path
      never rusts unseen.
 
+### How to use these laws
+
+Some of this is a guiding light, not this month's work (Joel, 2026-11-01: "Some of this is
+idealism I get it. But if you design with these milestones as guiding lights for your architectural
+decisions, proper abstractions: commands, adapters/consumers and interfaces, into modules and crates
+elegantly, we enable this richness as we develop and aren't rewriting to build it."). Each slice
+picks the abstractions that keep the room open:
+- **state and settings as commands**, never a private field, an env var or a constant;
+- **a controller behind a trait**, an algorithm now and a learned policy later, never welded in;
+- **sources and consumers as adapters**, so a new sense, model tier or node plugs in at the seam;
+- **one function per module or crate on the placement map**, typed messages at its seam, the same
+  in process or across the grid.
+
+A reviewer asks of every change: which law does this serve, and what does it leave room for?
+
 ## 1. Three timescales, one organism
 
 | Loop | Time | Brain | RTOS | Here | State |
