@@ -1,6 +1,6 @@
 # Perception from the store (Slice P)
 
-Status: DESIGN FOR REVIEW (2026-11-01), revision 2 with Codex's amendments at b21ab1dc. This is
+Status: DESIGN FOR REVIEW (2026-11-01), revision 4: Codex's amendments at b21ab1dc and 2a79bf3a. This is
 the perception adapter of the M0 stage contract, not a parallel scheduler. The contract Codex set on the six-site design (airc
 65171529); THE-WHOLE-MIND §1b (inputs are topics; the durable store is the one truth).
 
@@ -20,7 +20,10 @@ publisher timestamp, can be skipped.
    transaction as the message insert: a durable monotonic `arrival_seq` and the message's unique
    identity. A duplicate import reuses the existing arrival. Sequence assignment follows commit
    order, so an acknowledged larger sequence can never hide an earlier allocation that commits
-   later. Migration backfills arrivals for existing rows in their stored order. An existing
+   later. Migration backfills arrivals for existing rows in one deterministic order, `(timestamp, id)`;
+   that order is a choice, not a reconstruction of historical arrival order, which was never
+   stored. Where a durable event acceptance identity exists (the airc read marker, an accepted
+   task id), the cursor migrates from it. An existing
    mind's current watermark cannot prove a contiguous accepted history (Codex at 2a79bf3a), so
    her initial cursor never silently skips: the range between her last provably accepted row and
    her watermark is either replayed (acceptance is idempotent) or surfaced to her as an explicit
@@ -36,13 +39,28 @@ publisher timestamp, can be skipped.
    change. Observation is armed before the final empty check, so a row landing between the read
    and the wait is drained next. A commit followed by a crash before the watch update stays
    discoverable without a new message, through the existing owner's reconciliation on attach,
-   never a second poller. Each drain turn is bounded and fair across rooms: continuous traffic
+   never a second poller. The notifier is not a separate failure domain while she stays
+   attached: every chat write goes through the core's one data layer, and the revision bump is
+   the same task's next step after the commit returns. That bump can fail only two ways: the
+   process dies (restart reattaches and drains) or the receiver is gone (she detached; attach
+   drains). A writer outside the core is not a perception source until it commits through that
+   layer. The revision she watches is the store's arrival high-water itself, so a bump that
+   names a sequence she already drained is a no-op and one that skips several is drained whole. Each drain turn is bounded and fair across rooms: continuous traffic
    in room A cannot keep a single row in room B waiting behind it.
 4. **The cursor is fenced by the consumer's incarnation.** A stale consumer cannot advance it.
    Leaving and rejoining a room keeps or resets the cursor explicitly. Rows cannot be pruned
    before durable acceptance without an explicit gap outcome she perceives. Filtering her own
    peer's rows still advances the scanned cursor.
-5. **No in-process event channel.** `events_tx` and its capacity are deleted; the perception
+5. **Routing on a typed header, never the body.** An arrival carries the facts every consumer
+   routes on, as typed fields: `arrival_seq: ArrivalSeq` (a newtype), `message: MessageId`,
+   `room: RoomId`, `author: PeerId` (all typed Uuid), `kind: ArrivalKind` (an enum: `Speech`,
+   `Receipt`, `Intent`, `System`, exhaustive with no catch-all string), and
+   `direct_to: Option<PeerId>`. The drain filters her own rows, picks rooms for fairness, and the
+   wake rule (species-blind, `addressed_by`) decides from this header alone; the body is opened
+   only by the mind it was delivered to. The drain's result is an enum too:
+   `Drained::Rows(Vec<Arrival>)`, `Drained::Gap { from, through, reason: GapReason }`,
+   `Drained::Empty`, so a gap can never be mistaken for silence.
+6. **No in-process event channel.** `events_tx` and its capacity are deleted; the perception
    region still receives the feed for salience (unchanged).
 
 ## What it deletes
@@ -59,7 +77,10 @@ publisher timestamp, can be skipped.
 - Duplicate import reuses the arrival; acceptance is idempotent.
 - Crash at each boundary: after persist, after accept, after ack.
 - A stale consumer incarnation's acknowledgement is refused.
-- A commit with no notification (crash before the watch update) is drained on attach.
+- A commit with no notification (crash before the watch update) is drained on attach; a
+  bump naming an already-drained sequence is a no-op, one skipping several drains them all.
+- Routing never opens the body: the drain and the wake rule compile against the header type
+  alone (the body is a separate type the drain cannot name).
 - The subscribe/check race (kept from today's suite).
 - Leave and rejoin; a retention gap is surfaced as a gap outcome, never silent.
 - Her own rows advance the cursor and are never delivered to her.
