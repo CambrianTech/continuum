@@ -299,6 +299,9 @@ The dream consumer is one stage on the stage contract (STAGE-CONTRACT.md, #5692/
 **Her shadow is her file.** The engine deduplicates adapter loads by path, so two minds loading one shadow file share one adapter. Before her first step, the dream gives each mind her own copy of her stable gene.
 - That copy is disk with an owner. It is written through a disk class (`ClassWriter`) with an eviction decision: a `TrackedDir` row and a `disk_eviction` owner.
 - So N minds times the adapter size is measured and bounded, and `every_cache_class_has_a_decided_eviction_story` holds (Fable on #5695).
+- Where they live: the engine loads only bare names inside its `--train-dir` (`engine-train`), so her shadow is `shadow-<mind>.gguf` and each snapshot is `snapshot-<mind>-<step>.gguf` there.
+- `engine-train`'s decided eviction ("delete every `<uuid>.gguf` whose job is not live on the TrainingJobBoard"; not implemented as of 2026-11-01) must never reach them. A bare `<mind-uuid>.gguf` would match its pattern, which is why the names carry a prefix.
+- The dream is their eviction owner. It keeps each mind's live shadow, every snapshot a gene trial still holds, and her last K snapshots, and it is bounded by bytes. The `engine-train` decision text names both owners.
 
 **Engine verbs (fork):**
 
