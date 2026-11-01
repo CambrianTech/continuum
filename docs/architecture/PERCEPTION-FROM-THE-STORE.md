@@ -146,3 +146,10 @@ eviction decision, not after: a `TrackedDir` row and an owner in `disk_eviction`
 first. Pruning is safe by construction: the sequence high-water (#5694) never re-issues a number, and
 a mind whose cursor sits below the pruned floor drains `Drained::Gap { from, through, reason:
 Retention }`, which she perceives, never silence.
+
+### P2 decided (Codex, 2026-11-01): (a)
+One durable conversation-event record for every admitted kind: a typed routing header plus the
+opaque original payload. `admit_event` stays the consuming boundary; there is no dual `events_tx`
+path and no routing that scans a body. Retention distinguishes replayable conversation history
+(byte-bounded, oldest first, loss surfaced as `Gap`) from unacknowledged task terminal obligations,
+which stay with the task owner until durable acceptance and are never ordinary byte eviction.
