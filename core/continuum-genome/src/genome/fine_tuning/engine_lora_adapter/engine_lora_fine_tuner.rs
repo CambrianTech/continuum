@@ -104,7 +104,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             examples: request.dataset.examples.iter().map(engine_example).collect(),
             out: out.clone(),
             rank: lora.rank,
-            alpha: lora.alpha,
+            alpha: lora.alpha as f32,
             targets: targets.clone(),
             window,
             epochs: schedule.epochs,
@@ -114,7 +114,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             top_layers: depth,
             memory_budget_mib: None,
             max_slowdown_ppm: TRAINING_MAX_SLOWDOWN_PPM,
-            fit: "middle",
+            fit: Fit::Middle,
             exact: false,
             walk_host_budget_mib: None,
             chunk: None,
@@ -386,7 +386,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             // an example's full and smallest lengths do not depend on the window, so under
             // "middle" its fit at a smaller window is arithmetic, not another ~5 s render each
             // (Cormac on #4940); the run's skipped_indices stay the authority on what trained
-            Ok(rows) if body.fit == "middle" => Ok(refit_middle(rows, window)),
+            Ok(rows) if body.fit == Fit::Middle => Ok(refit_middle(rows, window)),
             Ok(_) => measure_examples(&http, &lane, &body.examples, body.fit, window).await,
             Err(e) => Err(e),
         };

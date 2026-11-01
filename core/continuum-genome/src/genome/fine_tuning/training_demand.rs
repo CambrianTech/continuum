@@ -208,7 +208,8 @@ mod tests {
     // trained; and a reservation priced for one window read as the price of another.
     #[test]
     fn only_a_trained_example_clears_and_a_price_holds_only_for_its_window() {
-        use crate::inference::planning::training_plan::{ExampleFit, MeasuredExample, NeedSource};
+        use crate::inference::planning::training_plan::NeedSource;
+        use continuum_engine_protocol::{ExampleFit, MeasuredExample};
         let dir = tempfile::tempdir().expect("test: dir");
         let demand = TrainingDemand::at(dir.path().join("kimi.json"));
         assert_eq!(demand.reservation(), None, "nothing parked, nothing reserved");

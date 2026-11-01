@@ -334,19 +334,15 @@ pub(super) async fn measure_examples(
     http: &reqwest::Client,
     lane: &str,
     examples: &[EngineExample],
-    fit: &str,
+    fit: Fit,
     window: u32,
 ) -> Result<Vec<MeasuredExample>, MeasureError> {
     use MeasureError::{Failed, NotReady};
-    #[derive(Deserialize)]
-    struct Reply {
-        examples: Vec<MeasuredExample>,
-    }
     let mut rows = Vec::with_capacity(examples.len());
     for (batch_index, batch) in examples.chunks(MEASURE_BATCH).enumerate() {
         let r = http
             .post(format!("{lane}/train/measure"))
-            .json(&json!({"examples": batch, "window": window, "fit": fit}))
+            .json(&MeasureRequest { examples: batch.to_vec(), window, fit: Some(fit) })
             .timeout(MEASURE_TIMEOUT)
             .send()
             .await
@@ -360,7 +356,7 @@ pub(super) async fn measure_examples(
             let why = format!("POST /train/measure on {lane}: HTTP {code}: {why}");
             return Err(if code == reqwest::StatusCode::SERVICE_UNAVAILABLE { NotReady(why) } else { Failed(why) });
         }
-        let reply: Reply = r.json().await.map_err(|e| Failed(format!("POST /train/measure on {lane}: {e}")))?;
+        let reply: MeasureReply = r.json().await.map_err(|e| Failed(format!("POST /train/measure on {lane}: {e}")))?;
         if reply.examples.len() != batch.len() {
             return Err(Failed(format!(
                 "POST /train/measure on {lane}: {} rows for {} examples",
@@ -837,114 +833,6 @@ pub(super) fn walk_request(available_bytes: Option<u64>) -> (bool, Option<u64>) 
     match exact_walk_host_budget_mib(available_bytes) {
         Some(mib) => (true, Some(mib)),
         None => (false, None),
-    }
-}
-
-/// `POST /train`'s body: the engine's wire contract (fork `tools/server/server-train.h`), stated
-/// ONCE here instead of assembled field by field at the call site.
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct TrainRequest {
-    pub(super) examples: Vec<EngineExample>,
-    /// a bare `<job>.gguf` name; the engine writes it inside the lane's `--train-dir`
-    pub(super) out: String,
-    pub(super) rank: u32,
-    pub(super) alpha: u32,
-    /// GGUF module names, comma-separated
-    pub(super) targets: String,
-    pub(super) window: u32,
-    pub(super) epochs: u32,
-    pub(super) lr: f64,
-    pub(super) val_split: f32,
-    pub(super) seed: u32,
-    /// adapt only the last K blocks (fork #27); omitted = every block
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) top_layers: Option<u32>,
-    /// what training may add on the GPU: the job's governed lease, which the engine enforces
-    /// before allocating (the driver's own free figure is not physical on Windows)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) memory_budget_mib: Option<u64>,
-    /// The bound on her decode slowdown while training runs, parts per million (fork #36).
-    /// Sent INSTEAD of the time share (the engine refuses both). An engine before #36 ignores
-    /// the key and paces by its own default share, which is what this core sent before.
-    pub(super) max_slowdown_ppm: u32,
-    /// "middle" (fork #29): at the served window a lived example trains whole; only a
-    /// conversation longer than serving's own window drops its OLDEST history exchanges, and
-    /// always keeps the system and tool head and her reply, the context serving always has
-    /// (Cormac on #29). An engine before #29 ignores it.
-    pub(super) fit: &'static str,
-    /// The exact walk (fork #47): ONE optimizer step per window, on the gradient of the window's
-    /// whole loss carried back through every chunk's cached K/V and a hybrid's recurrent state,
-    /// instead of a step per chunk with the gradient stopped at each chunk boundary (the plain
-    /// walk's step agreed with the true one at cosine 0.81; the exact walk's at 0.998). The engine
-    /// shrinks its gradient horizon to fit the device and reports it. An engine before #47
-    /// ignores the key and trains the plain walk, as this core asked before.
-    pub(super) exact: bool,
-    /// The exact walk's host memory per window (see `TRAINING_HOST_SHARE`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) walk_host_budget_mib: Option<u64>,
-    /// The training chunk (one batch, one ubatch), chosen with the lease it fits
-    /// ([`choose_chunk`]). An engine before the key ignores it and takes 512.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) chunk: Option<u32>,
-    /// Per-layer recompute (fork #37): the backward pass keeps the layer outputs as checkpoints
-    /// and rebuilds each layer's activations from them, so a chunk holds one layer's
-    /// activations instead of every layer's. It is the memory a large model's chunk graph is
-    /// made of (see [`Shape::recompute`]), and it takes the same step: fork #50 measures the
-    /// exact walk with and without it at cosine 1.0000, norm ratio 1.0000. An engine before
-    /// #37 ignores the key.
-    pub(super) recompute: bool,
-}
-
-/// One `/train` example: a prompt/completion pair, or a served conversation (OpenAI message
-/// shape exactly as serving's `wire_messages` framed it, with the tools she was offered).
-#[derive(Debug, Clone, Serialize)]
-#[serde(untagged)]
-pub(super) enum EngineExample {
-    Pair {
-        prompt: String,
-        completion: String,
-    },
-    Conversation {
-        messages: Vec<Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        tools: Option<Value>,
-    },
-}
-
-/// `GET /train`'s run state. A state this core does not know is `Unknown`, never guessed into
-/// a known one (it counts as possibly running: see `EngineRun::running_ours`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum TrainState {
-    Idle,
-    /// claimed and preparing its examples, before it is accepted (fork #55)
-    Preparing,
-    Starting,
-    Running,
-    Done,
-    Cancelled,
-    Error,
-    #[serde(other)]
-    Unknown,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub(super) struct EpochReport {
-    pub(super) train_loss: f64,
-    /// null when no held-out token was evaluated (fork #31); an engine before it reports 0.0
-    #[serde(default)]
-    pub(super) eval_loss: Option<f64>,
-}
-
-impl TrainStatus {
-    /// What the run adds on the device: its graph and its context (fork #52), the footprint a
-    /// lease of this shape must cover. 0 when the engine reported no graph (nothing measured);
-    /// an engine before #52 reports no context, and its rows are the graph alone, as before.
-    pub(super) fn run_bytes(&self) -> u64 {
-        match self.graph_mib {
-            Some(graph) => ((graph + self.context_mib.unwrap_or(0.0)) * 1024.0 * 1024.0) as u64, // unwrap_or: an engine before #52 reports no context
-            None => 0,
-        }
     }
 }
 
