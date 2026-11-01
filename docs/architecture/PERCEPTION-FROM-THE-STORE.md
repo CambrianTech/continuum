@@ -20,9 +20,11 @@ publisher timestamp, can be skipped.
    transaction as the message insert: a durable monotonic `arrival_seq` and the message's unique
    identity. A duplicate import reuses the existing arrival. Sequence assignment follows commit
    order, so an acknowledged larger sequence can never hide an earlier allocation that commits
-   later. Migration backfills arrivals for existing rows in their stored order; an existing
-   mind's initial cursor is the arrival of the newest row she had perceived (from her current
-   watermark), never zero. (Keyset paging by `(timestamp, id)` stays for display.)
+   later. Migration backfills arrivals for existing rows in their stored order. An existing
+   mind's current watermark cannot prove a contiguous accepted history (Codex at 2a79bf3a), so
+   her initial cursor never silently skips: the range between her last provably accepted row and
+   her watermark is either replayed (acceptance is idempotent) or surfaced to her as an explicit
+   gap outcome, never dropped and never treated as accepted. (Keyset paging by `(timestamp, id)` stays for display.)
 2. **Acknowledge on durable acceptance.** A drained row is acknowledged once it is durably
    accepted into her pending perception or task state (the shared task delivery owner), not
    on a volatile buffer write and not necessarily after the whole turn settles. The cursor
