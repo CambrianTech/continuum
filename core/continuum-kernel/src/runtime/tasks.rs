@@ -396,6 +396,34 @@ mod tests {
     }
     use crate::orm::gated_adapter::GatedAdapter;
 
+    #[tokio::test]
+    async fn lost_terminal_and_delivery_replies_survive_reopen_without_duplicate_facts(
+    ) -> Result<(), String> {
+        use crate::orm::adapter::StorageAdapter;
+        let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+        let adapter = Arc::new(GatedAdapter::new(adapter));
+        let ledger = TaskLedger::new(adapter.clone()).await?;
+        let owner = Uuid::new_v4();
+        let task = ledger.accept(owner, "test/reply-loss".into()).await?;
+        adapter.fail_after_next_create();
+        assert_eq!(ledger.finish(task, owner, TaskEnd::Stopped).await?, TaskEnd::Stopped);
+        drop(ledger);
+        let reopened = TaskLedger::new(adapter.clone()).await?;
+        assert_eq!(reopened.pending(task, owner).await?, Some(TaskEnd::Stopped));
+        adapter.fail_after_next_create();
+        reopened.acknowledge(task, owner).await?;
+        drop(reopened);
+        let reopened = TaskLedger::new(adapter.clone()).await?;
+        assert_eq!(reopened.pending(task, owner).await?, None);
+        assert_eq!(reopened.finish(task, owner, TaskEnd::Lost).await?, TaskEnd::Stopped);
+        reopened.acknowledge(task, owner).await?;
+        assert_eq!(reopened.pending(task, owner).await?, None);
+        let count = adapter.count(QueryBuilder::new(TaskFact::COLLECTION).build()).await;
+        assert!(count.success);
+        assert_eq!(count.data, Some(3), "one acceptance, one end, one delivery fact");
+        Ok(())
+    }
+
     async fn notified(signal: &tokio::sync::Notify) -> Result<(), String> {
         tokio::time::timeout(std::time::Duration::from_secs(5), signal.notified())
             .await
