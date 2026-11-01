@@ -32,7 +32,7 @@
     /// Stub data module: handles any `data/*` command by returning a
     /// canned response built by the test's closure. The closure
     /// receives BOTH the command name and the params so tests can
-    /// branch on command (`data/query` vs `data/create` etc.) or
+    /// branch on command (`data/query` vs `data/batch` etc.) or
     /// inspect the inbound shape.
     ///
     /// `chat/poll` tests use the params-only `Self::query_only`
@@ -102,131 +102,146 @@
     }
 
     // ── config + dispatch ────────────────────────────────────────────
-    // what this catches: #140/#177 — the durable-transcript writer. A projected
-    // chat:posted line (a persona's spoken reply — the shape that was an
-    // airc+positron-only ghost, invisible to chat/poll, LIGHTHOUSE diagnosis
-    // 2026-07-16) must land in the chat store as a ChatMessageEntity row under the
-    // projection's messageId, with the logical sender and ISO timestamp. If this
-    // write disappears, persona speech stops surviving the process again.
+    /// The `data/batch` reply the store gives a committed line: the message row, then its
+    /// arrival at sequence 1. ONE construction site for every chat test's data stub.
+    pub(super) fn batch_ok() -> Value {
+        json!({ "success": true, "data": [{ "success": true }, { "success": true, "seq": 1, "fresh": true }] })
+    }
+
+    fn imported_line(text: &str) -> crate::chat::line_store::PostedLine {
+        crate::chat::line_store::PostedLine {
+            message_id: Uuid::new_v4(),
+            room: airc_core::RoomId::new(),
+            author: airc_core::PeerId::new(),
+            kind: crate::chat::arrival::ArrivalKind::Message,
+            direct_to: Some(airc_core::PeerId::new()),
+            occurred_at_ms: 1_784_227_923_000,
+            text: text.to_string(),
+        }
+    }
+
+    // what this catches: #140/#177 and Slice P — a room line imported from the inbound seam
+    // must land as ONE atomic batch: the ChatMessageEntity row (ensured, so a replay is
+    // idempotent) and its arrival carrying the typed routing header. If either half goes
+    // missing, persona speech stops surviving the process or stops being perceivable in order.
     #[tokio::test]
-    pub(super) async fn chat_posted_event_persists_a_persona_line_into_the_store() {
+    pub(super) async fn an_imported_line_commits_its_row_and_arrival_in_one_batch() {
         let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
         let seen_in = seen.clone();
         let data = StubDataModule::new(move |command, params| {
-            assert_eq!(command, "data/create", "persist path must write, not query");
+            assert_eq!(command, "data/batch", "a line is one atomic batch");
             seen_in.lock().unwrap().push(params);
-            Ok(json!({ "success": true }))
+            Ok(batch_ok())
         });
         let chat = chat_with_stubs(vec![Arc::new(data)]);
-
-        let message_id = Uuid::new_v4();
-        let sender = Uuid::new_v4();
-        let room = Uuid::new_v4();
-        chat.persist_posted(json!({
-            "messageId": message_id,
-            "roomId": room,
-            "senderId": sender,
-            "content": "I see the word LIGHTHOUSE in the room.",
-            "timestamp": 1_784_227_923_000u64,
-        }))
-        .await
-        .expect("persist path succeeds");
-
+        let line = imported_line("I see the word LIGHTHOUSE in the room.");
+        let imported = chat
+            .commit_line(
+                &line,
+                crate::chat::line_store::LineWrite::Import,
+                None,
+                json!({ "text": line.text }),
+            )
+            .await
+            .expect("the import commits");
+        assert_eq!(
+            imported,
+            crate::chat::line_store::Imported::Fresh { arrival_seq: 1 }
+        );
         let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 1, "exactly one durable write per line");
+        let [row, arrival] = calls[0]["operations"]
+            .as_array()
+            .expect("operations")
+            .as_slice()
+        else {
+            panic!("a line is exactly its row and its arrival: {}", calls[0]);
+        };
         assert_eq!(
-            calls.len(),
-            1,
-            "exactly one durable write per projected line"
+            row["operationType"], "ensure",
+            "an import never fails on a line already stored"
         );
-        let p = &calls[0];
-        assert_eq!(p["collection"], CHAT_MESSAGES_COLLECTION);
-        assert_eq!(p["id"], message_id.to_string());
+        assert_eq!(row["collection"], CHAT_MESSAGES_COLLECTION);
+        assert_eq!(row["data"]["senderId"], line.author.as_uuid().to_string());
         assert_eq!(
-            p["data"]["senderId"],
-            sender.to_string(),
-            "logical speaker attributed"
-        );
-        assert_eq!(
-            p["data"]["content"]["text"],
+            row["data"]["content"]["text"],
             "I see the word LIGHTHOUSE in the room."
         );
-        assert!(
-            p["data"]["timestamp"]
-                .as_str()
-                .unwrap_or("")
-                .starts_with("2026-"),
-            "airc occurred_at_ms rendered as the ISO timestamp the entity carries: {}",
-            p["data"]["timestamp"]
+        assert!(row["data"]["timestamp"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("2026-"));
+        assert_eq!(arrival["collection"], "chat_arrivals");
+        assert_eq!(arrival["data"]["messageId"], line.message_id.to_string());
+        assert_eq!(arrival["data"]["kind"], "message");
+        assert_eq!(
+            arrival["data"]["directTo"],
+            json!(line.direct_to.map(|p| p.as_uuid())),
+            "the addressee rides the header"
         );
     }
 
-    // what this catches: idempotence of the two-writer convergence. A HUMAN line is
-    // stored by send() first and then arrives again via its own projection under the
-    // SAME messageId — the store refuses the duplicate (success=false) and the
-    // projector must treat that as the expected no-op, never an error (an erroring
-    // projector would fire on every human message and drown real faults).
+    // what this catches: the two-writer convergence. A human line stored by send() arrives
+    // again through its own projection under the SAME id: the import commits and reports the
+    // existing arrival, never an error and never a second arrival.
     #[tokio::test]
-    pub(super) async fn duplicate_projection_of_a_sent_message_is_a_calm_no_op() {
-        let data = StubDataModule::new(move |command, _params| {
-            assert_eq!(command, "data/create");
-            Ok(json!({ "success": false, "error": "unique constraint: id exists" }))
+    pub(super) async fn a_duplicate_import_reports_its_existing_arrival() {
+        let data = StubDataModule::new(|_command, _params| {
+            Ok(
+                json!({ "success": true, "data": [{ "success": true, "created": false }, { "success": true, "seq": 7, "fresh": false }] }),
+            )
         });
         let chat = chat_with_stubs(vec![Arc::new(data)]);
-        chat.persist_posted(json!({
-            "messageId": Uuid::new_v4(),
-            "roomId": Uuid::new_v4(),
-            "senderId": Uuid::new_v4(),
-            "content": "already stored by send()",
-            "timestamp": 1_784_227_923_000u64,
-        }))
-        .await
-        .expect("a duplicate row is an EXPECTED no-op, not an error");
+        let line = imported_line("already stored by send()");
+        let imported = chat
+            .commit_line(
+                &line,
+                crate::chat::line_store::LineWrite::Import,
+                None,
+                json!({ "text": line.text }),
+            )
+            .await
+            .expect("a duplicate is a committed import");
+        assert_eq!(
+            imported,
+            crate::chat::line_store::Imported::Duplicate { arrival_seq: 7 }
+        );
     }
 
-    // what this catches: THE WIRING, not just the logic (the dead-subscription trap this
-    // slice nearly shipped). `chat:posted` is published via `publish_async_only`, which
-    // NEVER dispatches module event_subscriptions — so the durable-transcript writer must
-    // be a live bus-receiver task. This publishes through the exact same call the
-    // projector uses and asserts the row write actually happens. If someone "simplifies"
-    // the listener back into event_subscriptions, this goes red instead of persona speech
-    // silently going ghost again.
+    // what this catches: an append reply that does not say whether it created the arrival being
+    // read as a duplicate, vouching for a line nobody confirmed (Codex on #5694).
     #[tokio::test]
-    pub(super) async fn persist_listener_receives_async_published_chat_posted() {
-        use std::time::Duration;
-        let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
-        let seen_in = seen.clone();
-        let data = StubDataModule::new(move |command, params| {
-            assert_eq!(command, "data/create");
-            seen_in.lock().unwrap().push(params);
-            Ok(json!({ "success": true }))
+    pub(super) async fn an_append_reply_without_freshness_is_an_error() {
+        let data = StubDataModule::new(|_command, _params| Ok(json!({ "success": true, "data": [{ "success": true }, { "success": true, "seq": 3 }] })));
+        let chat = chat_with_stubs(vec![Arc::new(data)]);
+        let line = imported_line("unconfirmed");
+        let err = chat
+            .commit_line(&line, crate::chat::line_store::LineWrite::Import, None, json!({ "text": line.text }))
+            .await
+            .expect_err("a reply without freshness is malformed");
+        assert!(err.contains("did not say whether it was fresh"), "named: {err}");
+    }
+
+    // what this catches: a store refusal swallowed as a calm skip. The import is awaited by the
+    // inbound seam so the attach watermark never passes a line the store lacks; a refusal must
+    // therefore be an error the seam sees, never a quiet probe.
+    #[tokio::test]
+    pub(super) async fn a_refused_import_is_an_error() {
+        let data = StubDataModule::new(|_command, _params| {
+            Ok(json!({ "success": false, "error": "disk full" }))
         });
-        let chat = Arc::new(chat_with_stubs(vec![Arc::new(data)]));
-        let bus = Arc::new(crate::runtime::message_bus::MessageBus::new());
-        // receiver created before publish; the tokio::test runtime is the handle
-        spawn_persist_listener(&tokio::runtime::Handle::current(), bus.clone(), chat);
-
-        bus.publish_async_only(
-            crate::chat::CHAT_POSTED,
-            json!({
-                "messageId": Uuid::new_v4(),
-                "roomId": Uuid::new_v4(),
-                "senderId": Uuid::new_v4(),
-                "content": "spoken by a persona",
-                "timestamp": 1_784_227_923_000u64,
-            }),
-        );
-
-        for _ in 0..100 {
-            if !seen.lock().unwrap().is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert_eq!(
-            seen.lock().unwrap().len(),
-            1,
-            "the listener must persist the async-published room line"
-        );
+        let chat = chat_with_stubs(vec![Arc::new(data)]);
+        let line = imported_line("lost?");
+        let err = chat
+            .commit_line(
+                &line,
+                crate::chat::line_store::LineWrite::Import,
+                None,
+                json!({ "text": line.text }),
+            )
+            .await
+            .expect_err("a refusal is an error");
+        assert!(err.contains("disk full"), "the cause is named: {err}");
     }
 
     #[test]
@@ -599,10 +614,10 @@
         let chat = chat_with_stubs(vec![
             Arc::new(StubDataModule::new(|cmd, _p| {
                 assert_eq!(
-                    cmd, "data/create",
+                    cmd, "data/batch",
                     "happy path only writes (no other data ops)"
                 );
-                Ok(json!({ "success": true }))
+                Ok(batch_ok())
             })),
             Arc::new(StubAircModule::ok(airc_ok_response("evt-happy-001"))),
         ]);
@@ -641,10 +656,10 @@
         let sent = media.clone();
         let chat = chat_with_stubs(vec![
             Arc::new(StubDataModule::new(move |cmd, p| {
-                assert_eq!(cmd, "data/create");
-                assert_eq!(p["data"]["content"]["media"], json!([stored]));
-                assert_eq!(p["data"]["content"]["text"], "Look at the page");
-                Ok(json!({ "success": true }))
+                assert_eq!(cmd, "data/batch");
+                assert_eq!(p["operations"][0]["data"]["content"]["media"], json!([stored]));
+                assert_eq!(p["operations"][0]["data"]["content"]["text"], "Look at the page");
+                Ok(batch_ok())
             })),
             Arc::new(StubAircModule::with(move |p| {
                 assert_eq!(p["envelope"]["payload"]["payload"]["inline"]["media"], json!([sent]));

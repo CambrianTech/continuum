@@ -136,6 +136,12 @@ pub trait StorageAdapter: Send + Sync {
     /// vector. The returned values describe operations that all committed.
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>>;
 
+    /// The committed high-water of a collection written by
+    /// [`super::types::BatchOperationType::Append`]: rises when an append commits, published by
+    /// the committing write itself (cancellation-safe for the caller). A hint to drain from a
+    /// cursor, never the data.
+    fn sequence_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64>;
+
     // ─── Schema Operations ───────────────────────────────────────────────────
 
     /// Ensure collection schema exists

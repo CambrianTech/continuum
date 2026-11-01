@@ -11,15 +11,9 @@ impl ServiceModule for ChatModule {
             // legacy path that TS commands still use today and will
             // keep working through this module while consumers migrate.
             command_prefixes: &["chat/", "collaboration/chat/"],
-            // Chat doesn't use module event_subscriptions. The durable-
-            // transcript writer (#140) rides `spawn_persist_listener` (a bus
-            // receiver task, same shape as cognition::dispatch_listener)
-            // because `chat:posted` is published via `publish_async_only`,
-            // which feeds ONLY the broadcast channel — module subscriptions
-            // are dispatched exclusively by the synchronous `publish(...,
-            // registry)` path, so a subscription here would be dead wiring
-            // (verified against message_bus.rs before wiring; the
-            // "deferred tier" its docs mention is not built).
+            // Chat doesn't use module event_subscriptions: the durable-transcript writer
+            // (#140) is the inbound seam's awaited import (`line_store::import`), never a
+            // bus subscription that could lag and drop a line.
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -28,15 +22,10 @@ impl ServiceModule for ChatModule {
     }
 
     async fn initialize(&self, ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
-        // #140: the durable-transcript writer — persists every `chat:posted`
-        // projection (persona say + human chat/send, the one seam both cross).
-        // Spawned here (inside the runtime) rather than at registration, which
-        // runs on a non-tokio thread. `from_slot` shares this module's
-        // late-bound executor, filled by install_executor_on_all before any
-        // event can arrive from a live room.
-        spawn_persist_listener(
+        // #140: the durable-transcript writer is the inbound seam's awaited import through this
+        // module (`line_store::import`); `from_slot` shares this module's late-bound executor.
+        install_line_importer(
             &ctx.runtime,
-            ctx.bus.clone(),
             Arc::new(ChatModule::from_slot(self.executor_slot.clone())),
         );
         Ok(())

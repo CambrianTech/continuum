@@ -246,13 +246,38 @@ impl StorageAdapter for SqliteAdapter {
         };
         let pressure = self.last_pressure_check.clone();
         let declared = self.declared.read().map(|d| d.clone()).unwrap_or_default(); // unwrap_or: a poisoned lock reads as "nothing declared" — the legacy sniff, never a refused batch
+        let sequences = Arc::clone(&self.sequences);
+        let appends: Vec<(usize, String)> = operations
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| matches!(op.operation_type, BatchOperationType::Append(_)))
+            .map(|(index, op)| (index, op.collection.clone()))
+            .collect();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             apply_memory_pressure(&conn, &pressure);
-            do_batch(&conn, operations, &declared)
+            let result = do_batch(&conn, operations, &declared);
+            // Published inside the committing write, after COMMIT: the revision has the
+            // commit's custody, so a caller dropped at the await cannot strand the row.
+            if let Some(values) = result.data.as_ref().filter(|_| result.success) {
+                for (index, collection) in &appends {
+                    if let Some(seq) = values
+                        .get(*index)
+                        .and_then(|v| v.get("seq"))
+                        .and_then(Value::as_u64)
+                    {
+                        sequences.publish(collection, seq);
+                    }
+                }
+            }
+            result
         })
         .await
         .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+    }
+
+    fn sequence_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64> {
+        self.sequences.subscribe(collection)
     }
 
     async fn ensure_schema(&self, schema: CollectionSchema) -> StorageResult<bool> {
