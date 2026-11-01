@@ -113,6 +113,14 @@ does the rest:
 | **yield points**: where its work may be interrupted | the reflex interrupt (`unless_directed` today) and the wake latency bound |
 | **view items**, if what it knows should reach her prompt | the context codec: epoch, levels, admission, collapse at seams |
 
+**A microkernel of commands** (Joel, 2026-11-01: "only a matter of defining it all as a microkernel
+command based infra"). The kernel is small: scheduling, the mind bus, buffers, grants. Every stage
+is a server behind commands, and its state and settings are commands too (her dream share and its
+setpoint, an association's gain, her focus, a sentinel's dispatch), discoverable through
+`commands/list` like every verb. The autonomic loop, she herself, an agent and a person steer her
+mind through the same commands, so her autonomy needs no special path: what her subconscious can
+do, she can do, and nothing is reserved for an operator.
+
 What follows from one pattern:
 - **A new brain function is one stage**, not a redesign: declare inputs, outputs, trigger and
   cost; the fusion, scheduling, view and capture are already there.
