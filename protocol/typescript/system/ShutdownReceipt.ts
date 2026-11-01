@@ -10,7 +10,8 @@ import type { ModuleStop } from "./ModuleStop";
  * 0 whether every module had saved or none had. A stop whose result only exists in the
  * log of the process that just exited is not a result anybody can act on.
  */
-export type ShutdownReceipt = { /**
+export type ShutdownReceipt = { 
+/**
  * Background acceptance and terminal persistence must settle before modules stop.
  */
 tasks: DrainOutcome, modules: Array<ModuleStop>, total_ms: number, };

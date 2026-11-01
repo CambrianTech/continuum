@@ -7,6 +7,42 @@ mod background_custody_tests {
     use std::sync::atomic::Ordering;
 
     #[tokio::test(start_paused = true)]
+    async fn shutdown_owner_retries_withheld_custody_without_repeating_module_stop(
+    ) -> Result<(), String> {
+        let runtime = Arc::new(Runtime::new());
+        let (module, _) = RecordingModule::new("retry-custody-store", Vec::new());
+        runtime.register(module.clone());
+        let custody = runtime
+            .registry
+            .task_admission
+            .admit_owned()
+            .ok_or("admission refused")?;
+        let operation = ShutdownOperation::new();
+        let mut first = operation.begin(Some(runtime.clone()), std::time::Duration::ZERO);
+        first.changed().await.map_err(|error| error.to_string())?;
+        let receipt = first
+            .borrow_and_update()
+            .clone()
+            .ok_or("missing withheld receipt")?;
+        assert!(!receipt.tasks.is_quiet());
+        assert_eq!(module.saves.load(Ordering::SeqCst), 0);
+        drop(first);
+        drop(custody);
+        let mut retry = operation.begin(Some(runtime.clone()), std::time::Duration::ZERO);
+        assert!(retry.borrow().is_none());
+        retry.changed().await.map_err(|error| error.to_string())?;
+        let receipt = retry
+            .borrow_and_update()
+            .clone()
+            .ok_or("missing completed receipt")?;
+        assert!(receipt.state_is_durable());
+        let again = operation.begin(Some(runtime), std::time::Duration::ZERO);
+        assert_eq!(again.borrow().as_ref(), Some(&receipt));
+        assert_eq!(module.saves.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn unfinished_custody_withholds_module_stop_and_a_later_drain_can_finish(
     ) -> Result<(), String> {
         let runtime = Runtime::new();

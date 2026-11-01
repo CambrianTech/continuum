@@ -224,14 +224,14 @@ impl ShutdownReceipt {
 /// tests drift into testing something adjacent.
 pub(super) struct ShutdownOperation {
     pub(super) result: tokio::sync::watch::Sender<Option<ShutdownReceipt>>,
-    pub(super) started: std::sync::atomic::AtomicBool,
+    pub(super) started: Arc<parking_lot::Mutex<bool>>,
 }
 
 impl ShutdownOperation {
     pub(super) fn new() -> Self {
         Self {
             result: tokio::sync::watch::channel(None).0,
-            started: std::sync::atomic::AtomicBool::new(false),
+            started: Arc::new(parking_lot::Mutex::new(false)),
         }
     }
 
@@ -239,6 +239,8 @@ impl ShutdownOperation {
     /// result. Idempotent: a second caller — a signal racing the stop verb, a retried
     /// request — joins the first broadcast rather than running `save_state` twice over
     /// the same state.
+    /// A custody refusal stops no modules and permits an explicit new attempt;
+    /// once module shutdown starts its receipt remains the single retained result.
     ///
     /// `settle` is how long the citizens' turns may still finish before the modules drain
     /// (card 32fa22ba): the turns' measured remaining time, never more than this. ZERO =
@@ -249,10 +251,16 @@ impl ShutdownOperation {
         rt: Option<Arc<Runtime>>,
         settle: std::time::Duration,
     ) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
-        if !self.started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        let mut running = self.started.lock();
+        if !*running {
+            *running = true;
+            // A retry is permitted only after custody withheld every module stop.
+            // Do not hand its caller the previous attempt's terminal receipt.
+            self.result.send_replace(None);
             match rt {
                 Some(rt) => {
                     let tx = self.result.clone();
+                    let started = Arc::clone(&self.started);
                     // Detached ON PURPOSE: this is the task whose whole point is that no
                     // connection owns it. A socket handler is cancelled when its client
                     // goes away, and a shutdown cancelled after ingress closed leaves the
@@ -271,7 +279,15 @@ impl ShutdownOperation {
                         // receipt in precisely the case this design exists for. A later
                         // subscriber would then wait forever on a `None` that never
                         // changes.
+                        // Serialize publication with a new begin: a caller that
+                        // observes the withheld receipt can immediately retry,
+                        // without racing an old publisher over its new attempt.
+                        let mut running = started.lock();
+                        let withheld = !receipt.tasks.is_quiet();
                         let _ = tx.send_replace(Some(receipt));
+                        if withheld {
+                            *running = false;
+                        }
                     });
                 }
                 None => {
