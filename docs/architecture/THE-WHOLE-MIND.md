@@ -227,6 +227,27 @@ and the engine (`mind_gate` FIFO, `LaneAdmission` semaphores with Directed/Work/
 `KvSlotPool` pin, the fork's own slot queue); priority is three static classes and nothing ages by
 temperature.
 
+### 4.2b Traffic lights, not a line
+
+> Joel, 2026-11-01: "In a contentious system this can mean she's asked the RTOS for that deep work
+> but has to wait her turn. The systems have the priorities of everyone and everything in mind.
+> It's traffic light to the minds."
+
+Under contention her deep work waits; she does not. The request is a task with a handle; while it
+waits she keeps talking and working from the fast sources, and the grant wakes her. What decides
+the order is the priorities of everyone, not arrival:
+
+| Traffic engineering | Here |
+|---|---|
+| adaptive signals (SCATS, SCOOT) timed from road sensors | grants timed from measured demand: each mind's temperature and sleep pressure, the lane's load |
+| emergency-vehicle preemption | a human waiting, a reflex trip: everything else yields |
+| fair cycles: no side road waits forever | aging: a waiting request's priority rises with its wait |
+| green wave along a route | a deep task's prefill, decode and tools granted in sequence, not stopped at each intersection |
+| ramp metering | dreaming and background work admitted at the rate the main flow absorbs |
+
+This is the difference from the FIFOs the plan removes: a FIFO blocks the mind and orders by
+arrival; a light blocks only the request and orders by everyone's priorities.
+
 ### 4.3 One live engine
 
 Weights load once; slots and windows change live (`/reconfigure`, on a fork branch, not pinned and
