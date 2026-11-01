@@ -1,7 +1,86 @@
 use super::*;
 
-impl Runtime {
+#[cfg(test)]
+mod background_custody_tests {
+    use super::*;
+    use crate::runtime::runtime::piece_2_pr3_dispatch_tests::RecordingModule;
+    use std::sync::atomic::Ordering;
 
+    #[tokio::test(start_paused = true)]
+    async fn unfinished_custody_withholds_module_stop_and_a_later_drain_can_finish(
+    ) -> Result<(), String> {
+        let runtime = Runtime::new();
+        let (module, _) = RecordingModule::new("custody-store", Vec::new());
+        runtime.register(module.clone());
+        let custody = runtime
+            .registry
+            .task_admission
+            .admit_owned()
+            .ok_or("admission refused")?;
+        let receipt = runtime
+            .shutdown_within(std::time::Duration::from_millis(10))
+            .await;
+        assert!(!receipt.state_is_durable());
+        assert!(!receipt.tasks.is_quiet());
+        assert!(receipt.modules.is_empty());
+        assert_eq!(module.saves.load(Ordering::SeqCst), 0);
+        assert!(runtime.registry.task_admission.admit_owned().is_none());
+        drop(custody);
+        let receipt = runtime
+            .shutdown_within(std::time::Duration::from_millis(10))
+            .await;
+        assert!(receipt.state_is_durable());
+        assert_eq!(module.saves.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelling_shutdown_wait_does_not_release_task_custody() -> Result<(), String> {
+        let runtime = Runtime::new();
+        let (module, _) = RecordingModule::new("cancel-custody-store", Vec::new());
+        runtime.register(module.clone());
+        let custody = runtime
+            .registry
+            .task_admission
+            .admit_owned()
+            .ok_or("admission refused")?;
+        {
+            let stop = runtime.shutdown_within(std::time::Duration::from_secs(1));
+            tokio::pin!(stop);
+            assert!(futures::poll!(stop.as_mut()).is_pending());
+        }
+        assert_eq!(module.saves.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime.registry.task_admission.in_flight(), 1);
+        assert!(runtime.registry.task_admission.admit_owned().is_none());
+        drop(custody);
+        assert!(runtime
+            .shutdown_within(std::time::Duration::from_secs(1))
+            .await
+            .state_is_durable());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_terminal_persistence_is_not_a_quiet_runtime() {
+        let runtime = Runtime::new();
+        let (module, _) = RecordingModule::new("failed-custody-store", Vec::new());
+        runtime.register(module.clone());
+        // Inject the execution owner's terminal-write failure fact; this tests
+        // shutdown's consumption of it, not the storage adapter's fault handling.
+        runtime
+            .registry
+            .task_persistence_failed
+            .store(true, Ordering::Release);
+        let receipt = runtime
+            .shutdown_within(std::time::Duration::from_secs(1))
+            .await;
+        assert!(!receipt.state_is_durable());
+        assert_eq!(module.saves.load(Ordering::SeqCst), 0);
+        assert!(receipt.summary().contains("terminal persistence failed"));
+    }
+}
+
+impl Runtime {
     /// `shutdown`, with the per-phase bound passed IN.
     ///
     /// A parameter rather than a constant because the TIMEOUT arms could not otherwise be
@@ -10,12 +89,30 @@ impl Runtime {
     /// handling here would have left every one of those tests green — the outcomes were
     /// described by the suite and never produced by it. Found by IntelMac.
     pub(super) async fn shutdown_within(&self, per_phase: std::time::Duration) -> ShutdownReceipt {
+        let started = std::time::Instant::now();
+        // The same registry is held by every executor. Close before waiting so
+        // acceptance cannot race past a zero count. Cancellation leaves it closed.
+        let tasks = match tokio::time::timeout(per_phase, self.registry.task_admission.close_and_wait()).await {
+            Err(_) => DrainOutcome::Unknown {
+                reason: format!("background task custody did not settle within {}ms; modules remain running", per_phase.as_millis()),
+            },
+            Ok(()) if self.registry.task_persistence_failed.load(std::sync::atomic::Ordering::Acquire) => DrainOutcome::Unknown {
+                reason: "background terminal persistence failed; durable acceptances require reconciliation".into(),
+            },
+            Ok(()) => DrainOutcome::Drained,
+        };
+        if !tasks.is_quiet() {
+            return ShutdownReceipt {
+                tasks,
+                modules: Vec::new(),
+                total_ms: started.elapsed().as_millis() as u64,
+            };
+        }
         let modules = self.registry.list_modules();
         info!(
             "Stopping {} modules (drain → save → join, parallel, 2s bound per phase)...",
             modules.len()
         );
-        let started = std::time::Instant::now();
         let futs = modules.iter().filter_map(|name| {
             self.registry.get_by_name(name).map(|module| {
                 // Deref, not clone: `list_modules` yields `Vec<&'static str>`, so `name`
@@ -72,6 +169,7 @@ impl Runtime {
             })
         });
         let receipt = ShutdownReceipt {
+            tasks,
             modules: futures::future::join_all(futs).await,
             total_ms: started.elapsed().as_millis() as u64,
         };
@@ -153,7 +251,6 @@ impl Runtime {
         );
         Ok(())
     }
-
 }
 
 /// Quarantine threshold for the per-module tick loop. After this many
@@ -450,7 +547,11 @@ pub struct ModuleSpec {
 }
 
 impl ModuleSpec {
-    pub(super) const fn new(name: &'static str, group: ServiceGroup, category: ModuleCategory) -> Self {
+    pub(super) const fn new(
+        name: &'static str,
+        group: ServiceGroup,
+        category: ModuleCategory,
+    ) -> Self {
         Self {
             name,
             group,

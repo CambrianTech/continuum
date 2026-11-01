@@ -159,6 +159,8 @@ impl ModuleStop {
     export_to = "../../../protocol/typescript/system/ShutdownReceipt.ts"
 )]
 pub struct ShutdownReceipt {
+    /// Background acceptance and terminal persistence must settle before modules stop.
+    pub tasks: DrainOutcome,
     pub modules: Vec<ModuleStop>,
     #[ts(type = "number")]
     pub total_ms: u64,
@@ -176,11 +178,17 @@ impl ShutdownReceipt {
 
     /// Every module drained, saved, and completed its final shutdown flush.
     pub fn state_is_durable(&self) -> bool {
-        self.unsaved().is_empty()
+        self.tasks.is_quiet() && self.unsaved().is_empty()
     }
 
     /// One line a human can act on, without reading the process's log after it exited.
     pub fn summary(&self) -> String {
+        if !self.tasks.is_quiet() {
+            return format!(
+                "module shutdown withheld: background task custody {:?}",
+                self.tasks
+            );
+        }
         let unsaved = self.unsaved();
         if unsaved.is_empty() {
             return format!(
@@ -271,6 +279,7 @@ impl ShutdownOperation {
                     // Publishing an empty receipt says exactly that, rather than leaving
                     // every observer waiting on a broadcast that will never run.
                     let _ = self.result.send_replace(Some(ShutdownReceipt {
+                        tasks: DrainOutcome::Drained,
                         modules: Vec::new(),
                         total_ms: 0,
                     }));
@@ -298,7 +307,9 @@ pub(super) fn process_shutdown() -> &'static ShutdownOperation {
 ///
 /// Delegates to the process's single [`ShutdownOperation`]. See that type for why the
 /// operation is owned rather than free-standing.
-pub fn begin_shutdown(settle: std::time::Duration) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+pub fn begin_shutdown(
+    settle: std::time::Duration,
+) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
     process_shutdown().begin(signal_runtime(), settle)
 }
 

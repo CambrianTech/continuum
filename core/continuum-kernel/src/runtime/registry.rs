@@ -18,6 +18,7 @@ pub struct ModuleRegistry {
     /// Background acceptance, execution and terminal persistence share custody
     /// with this runtime's module registry, including across executor instances.
     pub(crate) task_admission: Arc<super::admission_gate::AdmissionGate>,
+    pub(crate) task_persistence_failed: std::sync::atomic::AtomicBool,
     /// Modules by name: "voice" -> Arc<dyn ServiceModule>
     modules: DashMap<&'static str, Arc<dyn ServiceModule>>,
 
@@ -61,6 +62,7 @@ impl ModuleRegistry {
     pub fn new() -> Self {
         let registry = Self {
             task_admission: Arc::new(super::admission_gate::AdmissionGate::new()),
+            task_persistence_failed: std::sync::atomic::AtomicBool::new(false),
             modules: DashMap::new(),
             configs: DashMap::new(),
             metrics: DashMap::new(),

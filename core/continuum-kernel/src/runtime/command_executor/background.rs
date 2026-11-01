@@ -98,6 +98,9 @@ impl CommandExecutor {
                 Ok(winner) => winner,
                 Err(error) => {
                     tracing::error!(%handle, %owner, %error, "task ended but terminal persistence failed; acceptance remains unresolved");
+                    this.registry
+                        .task_persistence_failed
+                        .store(true, std::sync::atomic::Ordering::Release);
                     return;
                 }
             };

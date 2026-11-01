@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn commit_requires_same_instance_and_completed_received_receipt() {
         let current = ShutdownTarget { pid: 42, instance: "first".into() };
-        let receipt = ShutdownReceipt { modules: vec![], total_ms: 19 };
+        let receipt = ShutdownReceipt { tasks: crate::runtime::DrainOutcome::Drained, modules: vec![], total_ms: 19 };
         let mut params = ShutdownCommitParams { target: current.clone(), receipt_sha256: shutdown_receipt_digest(&receipt).unwrap() };
         assert!(validate_commit(&params, &current, None).is_err());
         assert!(validate_commit(&params, &current, Some(&receipt)).is_ok());
