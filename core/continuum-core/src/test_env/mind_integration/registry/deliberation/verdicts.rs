@@ -52,11 +52,11 @@ async fn a_writing_turn_after_a_cut_gets_its_reply_on_a_46848_window() {
 
 // what this catches: priority not deciding. One workspace, one measured want (a
 // pending cut doubled), two turns: an ambient pass (priority 4) and an act after the
-// cut (priority 10). The act's reply grows at history's expense; the required input
-// is identical in both (never part of the trade); and the plan is deterministic —
+// cut (priority 10). The act's reply grows from the growth reserve and her history is
+// the same on both; the required input is identical in both; and the plan is deterministic —
 // two runs of the act are byte-identical.
 #[test]
-fn reply_priority_trades_history_not_required_input() {
+fn reply_priority_grows_the_reply_not_at_history_or_required_input() {
     use crate::cognition::working_memory::WorkingMemory;
     let window = 16_384u32;
     let persona = Uuid::new_v4();
@@ -78,8 +78,10 @@ fn reply_priority_trades_history_not_required_input() {
 
     let required = |ws: &Workspace| faculty.messages_unfitted(ws, None).required_tokens();
     assert_eq!(required(&pass), required(&act), "the same required input on both turns");
+    // Turns kept, not messages: the view may fold several turns into one message.
     let history = |view: &DeliberationPromptView| {
-        view.messages.iter().filter(|m| m.content_text().contains("distinct_history_")).count()
+        let text: String = view.messages.iter().map(|m| m.content_text()).collect();
+        (0..200).filter(|i| text.contains(&format!("distinct_history_{i} "))).count()
     };
     // Each turn on its own faculty: her view carries an epoch from one prompt to the next,
     // so the act on the pass's faculty would inherit the pass's epoch. What this test
@@ -108,12 +110,10 @@ fn reply_priority_trades_history_not_required_input() {
         act_view.completion_reserve,
         pass_view.completion_reserve
     );
-    assert!(
-        history(&act_view) < history(&pass_view),
-        "history pays for the act's reply: {} vs {} messages",
-        history(&act_view),
-        history(&pass_view)
-    );
+    // An epoch start sizes history against the reply's runaway bound, the same on both
+    // turns (`fit_view`, epoch.rs), so one turn's priority never reshuffles her prefix:
+    // the act's larger reply comes out of the growth reserve, not out of her history.
+    assert_eq!(history(&act_view), history(&pass_view), "the act's reply leaves her history as it was");
     let again = act_faculty.prompt_view_within(&act, window);
     assert_eq!(
         format!("{:?} {:?} {}", again.system, again.messages, again.completion_reserve),
