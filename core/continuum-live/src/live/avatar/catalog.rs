@@ -41,6 +41,9 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
         ),
         source_kind: "vroid-zip",
         license: "CC0",
+        receipt_frame: Some(
+            r#"{"expected_render":"full-body anime character","known_issues":[],"body_present":true,"vertex_count_approx":90713,"meshes":2,"skins":2,"nodes":21}"#
+        ),
     },
     AvatarModel {
         id: "vroid-male-base",
@@ -58,6 +61,9 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
         ),
         source_kind: "vroid-zip",
         license: "CC0",
+        receipt_frame: Some(
+            r#"{"expected_render":"full-body anime character","known_issues":[],"body_present":true,"vertex_count_approx":90958,"meshes":2,"skins":2,"nodes":21}"#
+        ),
     },
     AvatarModel {
         id: "vroid-sakurada",
