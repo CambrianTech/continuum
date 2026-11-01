@@ -1,6 +1,6 @@
 # Perception from the store (Slice P)
 
-Status: DESIGN FOR REVIEW (2026-11-01), revision 4: Codex's amendments at b21ab1dc and 2a79bf3a. This is
+Status: DESIGN FOR REVIEW (2026-11-01), revision 5: Codex's amendments at b21ab1dc, 2a79bf3a and 2abfa3c3. This is
 the perception adapter of the M0 stage contract, not a parallel scheduler. The contract Codex set on the six-site design (airc
 65171529); THE-WHOLE-MIND §1b (inputs are topics; the durable store is the one truth).
 
@@ -40,10 +40,12 @@ publisher timestamp, can be skipped.
    and the wait is drained next. A commit followed by a crash before the watch update stays
    discoverable without a new message, through the existing owner's reconciliation on attach,
    never a second poller. The notifier is not a separate failure domain while she stays
-   attached: every chat write goes through the core's one data layer, and the revision bump is
-   the same task's next step after the commit returns. That bump can fail only two ways: the
-   process dies (restart reattaches and drains) or the receiver is gone (she detached; attach
-   drains). A writer outside the core is not a perception source until it commits through that
+   attached: the store itself publishes the revision, inside the same blocking write that runs
+   `COMMIT`, on the same writer connection, right after it (Codex at 2abfa3c3: a caller's
+   future dropped at the commit await must not strand a committed row). A blocking write runs to
+   completion whether or not its caller still awaits it, so the bump has the commit's custody,
+   not the caller's. It can then fail only two ways: the process dies (restart reattaches and
+   drains) or no receiver exists (she detached; attach drains). A writer outside the core is not a perception source until it commits through that
    layer. The revision she watches is the store's arrival high-water itself, so a bump that
    names a sequence she already drained is a no-op and one that skips several is drained whole. Each drain turn is bounded and fair across rooms: continuous traffic
    in room A cannot keep a single row in room B waiting behind it.
@@ -77,6 +79,8 @@ publisher timestamp, can be skipped.
 - Duplicate import reuses the arrival; acceptance is idempotent.
 - Crash at each boundary: after persist, after accept, after ack.
 - A stale consumer incarnation's acknowledgement is refused.
+- A writer cancelled at the commit await, with no new message after it: the attached
+  consumer still drains the committed row (Codex's deterministic validator on #5691).
 - A commit with no notification (crash before the watch update) is drained on attach; a
   bump naming an already-drained sequence is a no-op, one skipping several drains them all.
 - Routing never opens the body: the drain and the wake rule compile against the header type
