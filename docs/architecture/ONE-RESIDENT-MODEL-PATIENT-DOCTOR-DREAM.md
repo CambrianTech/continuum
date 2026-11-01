@@ -257,6 +257,73 @@ Engine surface (fork): load or save a mind's session state into the lane's step 
 3. A snapshot opens a gene trial with no relaunch, and her next cards draw arms.
 4. A deploy seam: checkpoints are written, the next core resumes them at their step counts, and a format mismatch opens from the stable gene.
 
+### 9.6 The dream as a stage (M0, owner Cormac, 2026-11-01)
+
+The dream consumer is one stage on the stage contract (STAGE-CONTRACT.md, #5692/#5693), per mind. It is not a loop, a job or a tick: the substrate gives it delivery, scheduling, interruption and capture once, as it does every stage. Joel: "dreaming must be in place, not batch". The tick passes of #5676 are what this replaces.
+
+**Inputs.**
+- Her **settled-experience topic** is replayable: each settled turn, with a durable experience id. She reads it through the per-mind cursor that perception uses (#5691's drain: fenced by incarnation, `Rows | Gap | Empty`, the store's sequence revision as the wake). There is no second cursor.
+- Her **dream share** is a replaceable snapshot: the scheduler's setpoint from sleep pressure and opportunity (SLEEP-AND-WAKE-AT-EVERY-SCALE).
+
+**Triggers.** Either input moved, or a step she dispatched completed. There is no cadence floor: a mind with nothing settled does not dream.
+
+**Cost.**
+- Execution is a **learning share**: a grant from the one resource authority {grant, engine incarnation, period, share}, debited on the engine's ledger (fork #87). It is not a model tier.
+- Residency is her shadow adapter plus its optimizer moments, in bytes.
+- An uncontended step is free but still held custody, the ledger's outstanding reservation.
+
+**A run.**
+1. With no grant, or a share of zero, the run is `Idle`.
+2. Otherwise it takes the next settled example after her cursor and dispatches ONE learn step to the engine through the task owner: `/learn` on her own shadow, under her grant. The run returns `Dispatched`.
+3. The completion carries `{step, loss, n_labels}` (fork #86: the shadow's committed step) and re-triggers the stage.
+4. One step at a time per mind: no queue in front of the engine.
+
+**Commit and acknowledgement.**
+- The cursor advances through an example only when the step that consumed it reports a committed step. Admission is not acknowledgement.
+- A step that failed or was refused leaves the cursor where it was. The example is retried, or surfaced as refused when the refusal is typed and final: `unsupported_backward`, `never_fits`.
+
+**Yield points and stops.**
+- The chunk is ONE engine step. It is non-preemptible: 962 ms median measured on CPU, Qwen2.5-0.5B, fork 832d78cb1, 2026-11-01. That is measured on this hardware, not a bound elsewhere. Pause, yield and cancel land at the step boundary, after the in-flight step's outcome arrives (quiescence).
+- `Paused`: shadow and moments resident, charged.
+- `Yielded`: execution released. Residency drops to zero only after a durable snapshot AND the engine's release receipt (unload releases her optimizer, fork #85); the snapshot file stays in custody.
+- `Cancelled.committed_effects`: the steps this run committed.
+- A reflex trip is a stimulus during work. The dream yields within one step, with a receipt (§4 of the contract's shared validator).
+
+**Snapshots.**
+- At a yield, and every N committed steps, her shadow is written as an immutable gene candidate (fork #86's `/lora-adapters/snapshot`).
+- Its provenance is the experience-cursor range it consumed, so a card that judges snapshot *k* was never consumed by it (§9.3).
+- The candidate goes to the gene trial (S5). Nothing is promoted automatically.
+
+**Her shadow is her file.** The engine deduplicates adapter loads by path, so two minds loading one shadow file share one adapter. Before her first step, the dream gives each mind her own copy of her stable gene.
+
+**Engine verbs (fork):**
+
+| Verb | State |
+|---|---|
+| `/learn` on any loaded shadow, one optimizer per shadow | #85 |
+| snapshot plus committed step | #86 |
+| the grant ledger | #87, draft |
+
+Still open:
+- the checkpoint (moments plus cursor, for resume across a restart);
+- learning a past example on an idle slot (S4 (f): the served prompt prefilled through the ordinary serving path, `n_predict` 0);
+- a step shorter than ~1 s, which needs splitting the graph across layers (deferred until the M5 measures its own step).
+
+**Depends on:**
+- Codex's task owner (typed `Dispatched` registration and completion);
+- #5691/#5694's drain;
+- the authority's grant issuance.
+
+**What retires.** The genome trainer's batch dispatch from the trigger bucket, the tick passes, and `LEARN_DUTY` / `/train`'s `share_ppm` (replaced by the one ledger).
+
+**The dream leg of the shared validator.**
+- Recall, reflex and dream run under contention on one replayed engine.
+- A stimulus during a dream gets a yield within one step, with a receipt.
+- A late or duplicate completion commits once.
+- A restart mid-step adopts the completion.
+- A revoked grant stops new steps; started ones still settle.
+- Useful work follows each case: her next turn, and the next dream step.
+
 ## 10. Coursework is a room, not a runner (mapped 2026-09-28)
 
 Joel, relayed by Codex on 2026-09-28: academy, benchmarks, simulations and learning follow the same runtime and room state, with as few differences from inference as possible.
