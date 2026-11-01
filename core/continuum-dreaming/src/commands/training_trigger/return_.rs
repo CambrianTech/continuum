@@ -278,7 +278,7 @@ pub(crate) async fn return_parked_remainder(
 /// overlap, `with_run_skipped`): the measure must have kept it, so its row, when rows were
 /// recorded, says Kept. An example sent and not parked trained, and is never returned.
 fn remainder_of(partition: &crate::inference::planning::training_plan::Partition, examples: usize) -> Result<Vec<usize>, String> {
-    use crate::inference::planning::training_plan::ExampleFit;
+    use continuum_engine_protocol::ExampleFit;
     for (name, set) in [("sent", &partition.sent), ("parked", &partition.parked)] {
         if let Some(i) = set.iter().copied().find(|&i| i >= examples) {
             return Err(format!("its partition's {name} names request index {i}, but its request holds {examples} examples"));
@@ -305,12 +305,10 @@ fn remainder_of(partition: &crate::inference::planning::training_plan::Partition
     Ok(partition.parked.clone())
 }
 
-/// Write the receipt whole or not at all: to a sibling, then renamed over.
+/// Write the receipt whole or not at all.
 fn write_receipt(dir: &std::path::Path, receipt: &RemainderReceipt) -> Result<(), String> {
     let body = serde_json::to_vec(receipt).map_err(|e| e.to_string())?; // file on disk: the job dir's remainder receipt, read by the next pass after a restart
-    let staged = dir.join(format!("{REMAINDER_RECEIPT}.partial"));
-    std::fs::write(&staged, body).map_err(|e| e.to_string())?;
-    std::fs::rename(&staged, dir.join(REMAINDER_RECEIPT)).map_err(|e| e.to_string())
+    continuum_host::durable::replace_with(&dir.join(REMAINDER_RECEIPT), &body).map_err(|e| e.to_string())
 }
 
 fn refuse_trained_job(job: Uuid, dir: &std::path::Path) -> Result<(), CommandError> {

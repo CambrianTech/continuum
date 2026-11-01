@@ -1,0 +1,342 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TrainStatus",
+  "description": "`GET /train`'s body. `state` is required: a body without one does not parse, and an unparsable status is retried like a lost one, never read as \"not ours\".",
+  "type": "object",
+  "required": [
+    "state"
+  ],
+  "properties": {
+    "batch": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "batch_max": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "chunk": {
+      "description": "the chunk the engine trained at: the shape its footprint is filed under",
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "context_mib": {
+      "description": "what the training context itself held on the device (fork #52)",
+      "default": null,
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "decode_tps_in_window": {
+      "default": null,
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "decode_tps_no_window": {
+      "default": null,
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "epochs": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/EpochReport"
+      }
+    },
+    "error": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "eval_trainable_tokens": {
+      "description": "the held-out trainable tokens the eval loss is measured over (fork #31)",
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "examples": {
+      "description": "examples kept, cut from the front to fit the window, and skipped (fork #29)",
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "examples_skipped": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "examples_truncated": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "graph_mib": {
+      "description": "the training graph the engine measured before allocating it",
+      "default": null,
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "layers_adapted": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "max_slowdown_ppm": {
+      "description": "the slowdown bound and the measured rates (fork #36)",
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "n_layer": {
+      "description": "the model's block count and the blocks this run adapts (fork #27)",
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "out": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pause_requested": {
+      "description": "fork #28: a pause asked for, and one the worker has reached",
+      "default": false,
+      "type": "boolean"
+    },
+    "paused": {
+      "default": false,
+      "type": "boolean"
+    },
+    "share_ppm": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "skipped_indices": {
+      "description": "which examples the run skipped, by their index in what the core sent (fork #51)",
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "uint",
+        "minimum": 0.0
+      }
+    },
+    "slowdown_ppm_realized": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "state": {
+      "$ref": "#/definitions/TrainState"
+    },
+    "trainable_tokens": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "waiting_for_serving": {
+      "default": false,
+      "type": "boolean"
+    },
+    "window": {
+      "description": "the window the engine's training graph actually used (fork #30)",
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "window_ms_last": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "window_ms_max": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "window_ms_p50": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "window_ms_p95": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "windows": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "windows_while_busy": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "yielded_ms": {
+      "description": "the share the run took of the lane (fork #32)",
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    }
+  },
+  "definitions": {
+    "EpochReport": {
+      "type": "object",
+      "required": [
+        "train_loss"
+      ],
+      "properties": {
+        "eval_loss": {
+          "description": "null when no held-out token was evaluated (fork #31)",
+          "default": null,
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "train_loss": {
+          "type": "number",
+          "format": "double"
+        }
+      }
+    },
+    "TrainState": {
+      "description": "`GET /train`'s run state. A state this core does not know is `Unknown`, never guessed into a known one (it counts as possibly running).",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "idle",
+            "starting",
+            "running",
+            "done",
+            "cancelled",
+            "error",
+            "unknown"
+          ]
+        },
+        {
+          "description": "claimed and preparing its examples, before it is accepted (fork #55)",
+          "type": "string",
+          "enum": [
+            "preparing"
+          ]
+        },
+        {
+          "description": "the server has no trainer (started without `--train-dir`)",
+          "type": "string",
+          "enum": [
+            "unavailable"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -11,6 +11,7 @@ repository = "https://github.com/CambrianTech/continuum"
 # re-exports `genome` under its old path.
 
 [dependencies]
+continuum-engine-protocol = { path = "../continuum-engine-protocol" }
 continuum-process = { path = "../continuum-process" }
 continuum-kernel = { path = "../continuum-kernel" }  # the ORM derive names it (recall decisions)
 continuum-engine = { path = "../continuum-engine" }

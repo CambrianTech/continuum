@@ -1,88 +1,6 @@
 use super::*;
 
-/// `GET /train`'s body. `state` is required: a body without one does not parse, and an
-/// unparsable status is retried like a lost one, never read as "not ours".
-#[derive(Debug, Clone, Deserialize)]
-pub(super) struct TrainStatus {
-    pub(super) state: TrainState,
-    #[serde(default)]
-    pub(super) out: Option<String>,
-    #[serde(default)]
-    pub(super) batch: Option<u64>,
-    #[serde(default)]
-    pub(super) batch_max: Option<u64>,
-    #[serde(default)]
-    pub(super) epochs: Vec<EpochReport>,
-    #[serde(default)]
-    pub(super) trainable_tokens: Option<u64>,
-    /// the held-out trainable tokens the eval loss is measured over (fork #31); absent on an
-    /// engine before it
-    #[serde(default)]
-    pub(super) eval_trainable_tokens: Option<u64>,
-    /// the training graph the engine measured before allocating it
-    #[serde(default)]
-    pub(super) graph_mib: Option<f64>,
-    /// what the training context itself held on the device (K/V for the window, compute buffers;
-    /// fork #52), allocated outside the graph's budget; absent on an engine before it
-    #[serde(default)]
-    pub(super) context_mib: Option<f64>,
-    /// The chunk the engine trained at (`state["chunk"]`): the shape its footprint is filed
-    /// under. An engine before the key reports none and the core mirrors its rule.
-    #[serde(default)]
-    pub(super) chunk: Option<u32>,
-    /// fork #28: a pause asked for, and one the worker has reached (a pause is real only when
-    /// both are true); waiting on serving slots is a separate, automatic yield
-    #[serde(default)]
-    pub(super) pause_requested: bool,
-    #[serde(default)]
-    pub(super) paused: bool,
-    #[serde(default)]
-    pub(super) waiting_for_serving: bool,
-    /// the share the run took of the lane (fork #32): windows run, windows taken while a
-    /// serving slot was busy, and the time yielded to serving; absent on an engine before it
-    #[serde(default)]
-    pub(super) yielded_ms: Option<u64>,
-    #[serde(default)]
-    pub(super) windows: Option<u64>,
-    #[serde(default)]
-    pub(super) windows_while_busy: Option<u64>,
-    #[serde(default)]
-    pub(super) share_ppm: Option<u64>,
-    /// the slowdown bound and her measured rates (fork #36): tokens/s with no window running
-    /// and while one ran, over the run, and the slowdown they realized; absent before #36
-    #[serde(default)]
-    pub(super) max_slowdown_ppm: Option<u64>,
-    #[serde(default)]
-    pub(super) decode_tps_no_window: Option<f64>,
-    #[serde(default)]
-    pub(super) decode_tps_in_window: Option<f64>,
-    #[serde(default)]
-    pub(super) slowdown_ppm_realized: Option<u64>,
-    /// the model's block count and the blocks this run adapts (fork #27); absent on an engine
-    /// that predates `top_layers`, which adapts every block
-    #[serde(default)]
-    pub(super) n_layer: Option<u32>,
-    #[serde(default)]
-    pub(super) layers_adapted: Option<u32>,
-    /// examples kept, cut from the front to fit the window, and skipped because her last
-    /// reply alone did not fit (fork #29); absent on an engine before it
-    #[serde(default)]
-    pub(super) examples: Option<u64>,
-    #[serde(default)]
-    pub(super) examples_truncated: Option<u64>,
-    #[serde(default)]
-    pub(super) examples_skipped: Option<u64>,
-    /// WHICH examples the run skipped, by their index in what this core sent (fork #51); absent
-    /// on an engine before it
-    #[serde(default)]
-    pub(super) skipped_indices: Vec<usize>,
-    /// the window the engine's training graph actually used (fork #30: the longest fitted
-    /// example rounded up to 256, never above the window sent); absent on an engine before it
-    #[serde(default)]
-    pub(super) window: Option<u32>,
-    #[serde(default)]
-    pub(super) error: Option<String>,
-}
+pub(super) use continuum_engine_protocol::{EngineExample, ExampleFit, Fit, JobRef, MeasureReply, MeasureRequest, MeasuredExample, TrainRequest, TrainState, TrainStatus};
 
 /// Where the lane serving `base` answers, if one does on this node.
 /// The live lane serving a base: its url and the per-slot window it was launched with (0 =
@@ -587,7 +505,7 @@ impl EngineRun {
         let _ = self
             .http
             .post(format!("{}/train/{verb}", self.lane))
-            .json(&json!({ "out": self.out }))
+            .json(&JobRef { out: self.out.clone() })
             .timeout(Duration::from_secs(10))
             .send()
             .await; // the status decides whether it took; a failure is retried on the next tick
@@ -610,8 +528,9 @@ pub(super) fn progress_of(s: &TrainStatus, epochs: u32) -> (f32, u32) {
     let done = s.epochs.len() as f32;
     let batch = s.batch.unwrap_or(0) as f32; // unwrap_or: absent before the first batch — zero of this epoch is the truth
     let max = s.batch_max.unwrap_or(0) as f32; // unwrap_or: absent before the first batch
-    let frac = if max > 0.0 { (batch / max).min(1.0) } else { 0.0 };
-    let pct = if epochs == 0 { 0.0 } else { ((done + frac) / epochs as f32 * 100.0).min(100.0) };
+    // A batch past the epoch's last is that epoch done; completed epochs past the run's are the run done.
+    let frac = if max > 0.0 { batch.min(max) / max } else { 0.0 };
+    let pct = if epochs == 0 { 0.0 } else { (done + frac).min(epochs as f32) / epochs as f32 * 100.0 };
     (pct, done as u32)
 }
 
@@ -826,7 +745,9 @@ impl EngineRun {
                             slowdown_ppm_realized = s.slowdown_ppm_realized.map(|v| v as i64).unwrap_or(-1), // -1 = not measured: no busy stretch both with and without a window, or an engine before #36
                             decode_tps_no_window = s.decode_tps_no_window.unwrap_or(-1.0), // -1 = not measured, never a 0 that reads as her stopping
                             decode_tps_in_window = s.decode_tps_in_window.unwrap_or(-1.0), // -1 = not measured, never a 0 that reads as her stopping
-                            "the in-engine run finished: how many windows it took beside busy serving, how long it yielded, and what it cost her decoding against the bound"
+                            window_ms_max = s.window_ms.max.map(|v| v as i64).unwrap_or(-1), // -1 = an engine that does not report window times
+                            window_ms_p95 = s.window_ms.p95.map(|v| v as i64).unwrap_or(-1), // -1 = an engine that does not report window times
+                            "the in-engine run finished: how many windows it took beside busy serving, how long it yielded, what it cost her decoding against the bound, and the longest she could not wake (a pause lands only between windows)"
                         ),
                         _ => continuum_base::probe!(
                             class = "training.run.share",
@@ -890,8 +811,9 @@ impl EngineRun {
                     }
                     return InPlaceEnd::Failed(format!("the engine's training run failed: {why}"));
                 }
-                // idle while ours is named, or a state this core does not know: not a known end
-                TrainState::Idle | TrainState::Unknown => {
+                // idle while ours is named, a server with no trainer, or a state this core does not
+                // know: not a known end
+                TrainState::Idle | TrainState::Unavailable | TrainState::Unknown => {
                     return self.failed(format!("the engine reports training state {:?} for this job", s.state)).await
                 }
             }

@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LearnRequest",
+  "description": "`POST /learn`'s body (fork `server-context.cpp`): one optimizer step on a loaded (shadow) adapter, on a reply, in the slot that served it. The reply is given as a conversation whose last message is the assistant's (`messages`), as token ids after a prefix (`reply_tokens` + `n_prefix`), or as text after a prefix (`reply` + `n_prefix`).\n\nThe core has no caller yet: the in-place dream stage (ONE-RESIDENT-MODEL §8.1, S4) is the first, and its open fork items (a per-mind shadow, learning a past example in a scratch slot, a duty budget on the wire, a snapshot) are tracked on MIND-DATAFLOW-OVERHAUL row 6.",
+  "type": "object",
+  "anyOf": [
+    {
+      "description": "at least two messages, the last one the assistant's; rendered with the chat template",
+      "type": "object",
+      "required": [
+        "messages"
+      ],
+      "properties": {
+        "messages": {
+          "type": "array",
+          "items": true
+        },
+        "tools": true
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "n_prefix",
+        "reply_tokens"
+      ],
+      "properties": {
+        "n_prefix": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "reply_tokens": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "n_prefix",
+        "reply"
+      ],
+      "properties": {
+        "n_prefix": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "reply": {
+          "type": "string"
+        }
+      }
+    }
+  ],
+  "required": [
+    "id_slot",
+    "lora_id"
+  ],
+  "properties": {
+    "id_slot": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "lora_id": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "lr": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "float"
+    }
+  }
+}

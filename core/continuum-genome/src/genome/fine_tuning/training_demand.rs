@@ -116,9 +116,8 @@ impl TrainingDemand {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&now).map_err(std::io::Error::other)?)?; // disk boundary: training-demand/<persona>.json, read back by serving's requirements_for
-        continuum_host::durable::replace(&tmp, path)
+        let body = serde_json::to_vec(&now).map_err(std::io::Error::other)?; // disk boundary: training-demand/<persona>.json, read back by serving's requirements_for
+        continuum_host::durable::replace_with(path, &body)
     }
 
     /// Settle `keys` strictly: a store that cannot be read or parsed (or no store) is an error,
@@ -137,9 +136,8 @@ impl TrainingDemand {
         if now == before {
             return Ok(());
         }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&now).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", tmp.display()))?; // disk boundary: training-demand/<persona>.json, read back by serving's requirements_for
-        continuum_host::durable::replace(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+        let body = serde_json::to_vec(&now).map_err(|e| e.to_string())?; // disk boundary: training-demand/<persona>.json, read back by serving's requirements_for
+        continuum_host::durable::replace_with(path, &body).map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// The largest window an outstanding example needs. `None` when nothing waits.
@@ -208,7 +206,8 @@ mod tests {
     // trained; and a reservation priced for one window read as the price of another.
     #[test]
     fn only_a_trained_example_clears_and_a_price_holds_only_for_its_window() {
-        use crate::inference::planning::training_plan::{ExampleFit, MeasuredExample, NeedSource};
+        use crate::inference::planning::training_plan::NeedSource;
+        use continuum_engine_protocol::{ExampleFit, MeasuredExample};
         let dir = tempfile::tempdir().expect("test: dir");
         let demand = TrainingDemand::at(dir.path().join("kimi.json"));
         assert_eq!(demand.reservation(), None, "nothing parked, nothing reserved");

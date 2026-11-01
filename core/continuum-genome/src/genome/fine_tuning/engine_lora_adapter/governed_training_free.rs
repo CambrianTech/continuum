@@ -224,11 +224,9 @@ pub(crate) const PARTITION_FILE: &str = "partition.json";
 
 pub(super) fn write_partition(job_dir: &Path, partition: &Partition) -> Result<(), String> {
     std::fs::create_dir_all(job_dir).map_err(|e| format!("{}: {e}", job_dir.display()))?;
-    let path = job_dir.join(PARTITION_FILE);
-    let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_vec(partition).map_err(|e| e.to_string())?; // file on disk: the job dir's partition.json, read back by `return` after a restart
-    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    continuum_host::durable::replace(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
+    let path = job_dir.join(PARTITION_FILE);
+    continuum_host::durable::replace_with(&path, &text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// What `job_dir` records about its partition. `Ok(None)` only when the file is confirmed absent
@@ -334,19 +332,15 @@ pub(super) async fn measure_examples(
     http: &reqwest::Client,
     lane: &str,
     examples: &[EngineExample],
-    fit: &str,
+    fit: Fit,
     window: u32,
 ) -> Result<Vec<MeasuredExample>, MeasureError> {
     use MeasureError::{Failed, NotReady};
-    #[derive(Deserialize)]
-    struct Reply {
-        examples: Vec<MeasuredExample>,
-    }
     let mut rows = Vec::with_capacity(examples.len());
     for (batch_index, batch) in examples.chunks(MEASURE_BATCH).enumerate() {
         let r = http
             .post(format!("{lane}/train/measure"))
-            .json(&json!({"examples": batch, "window": window, "fit": fit}))
+            .json(&MeasureRequest { examples: batch.to_vec(), window, fit: Some(fit) })
             .timeout(MEASURE_TIMEOUT)
             .send()
             .await
@@ -360,7 +354,7 @@ pub(super) async fn measure_examples(
             let why = format!("POST /train/measure on {lane}: HTTP {code}: {why}");
             return Err(if code == reqwest::StatusCode::SERVICE_UNAVAILABLE { NotReady(why) } else { Failed(why) });
         }
-        let reply: Reply = r.json().await.map_err(|e| Failed(format!("POST /train/measure on {lane}: {e}")))?;
+        let reply: MeasureReply = r.json().await.map_err(|e| Failed(format!("POST /train/measure on {lane}: {e}")))?;
         if reply.examples.len() != batch.len() {
             return Err(Failed(format!(
                 "POST /train/measure on {lane}: {} rows for {} examples",
@@ -381,9 +375,9 @@ pub(super) const LEGACY_REFUSAL_FILE: &str = "refusal.json";
 
 pub(super) fn write_returnable(job_dir: &Path, returnable: &Returnable) -> Result<(), String> {
     std::fs::create_dir_all(job_dir).map_err(|e| format!("{}: {e}", job_dir.display()))?;
-    let path = job_dir.join(RETURNABLE_FILE);
     let text = serde_json::to_string(returnable).map_err(|e| e.to_string())?; // file on disk: the job dir's returnable.json, read back by the trigger after a restart
-    std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
+    let path = job_dir.join(RETURNABLE_FILE);
+    continuum_host::durable::replace_with(&path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// What `job_dir` records about a return, if anything: `returnable.json`, else #4904's
@@ -456,7 +450,8 @@ pub struct SplitPpm(pub(super) u32);
 
 impl From<f32> for SplitPpm {
     fn from(share: f32) -> Self {
-        Self((share.clamp(0.0, 1.0) * 1_000_000.0).round() as u32)
+        // Its one producer bounds the held-out share to [0, 0.5] (`validation_split`).
+        Self((share * 1_000_000.0).round() as u32)
     }
 }
 
@@ -648,10 +643,9 @@ impl Footprints {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(all).map_err(std::io::Error::other)?)?;
-        // a scanner holding the new temp must not lose the measurement (the 5090, 2026-10-10)
-        continuum_host::durable::replace(&tmp, path)
+        let body = serde_json::to_vec_pretty(all).map_err(std::io::Error::other)?; // file on disk: the footprint store, read back by the next run on this machine
+        // a scanner holding the new file must not lose the measurement (the 5090, 2026-10-10)
+        continuum_host::durable::replace_with(path, &body)
     }
     pub(super) fn get(&self, shape: &Shape) -> Option<u64> {
         self.read_all().get(&shape.key()).filter(|r| r.whole_run && self.measured_here(r)).map(|r| r.bytes)
@@ -803,15 +797,6 @@ impl Footprints {
     }
 }
 
-/// How much slower her decoding may run while training runs on her lane, parts per million.
-/// The bound the substrate means (Joel: "negligible impact on inference latency ... a slowdown
-/// if clever can be unnoticed"); a time share only said how often a window ran, and a 25%
-/// share took Kimi from 52 to 23 tok/s. The engine (fork #36) measures her decode rate with and
-/// without a window running and sizes each yield to hold this. The lane's lease is where it
-/// belongs once the lease registry carries it (INFERENCE-LANES-REALISTIC.md); until then ONE
-/// value here, sent explicitly so the engine's own default is never load-bearing. Not an env var.
-pub const TRAINING_MAX_SLOWDOWN_PPM: u32 = 100_000;
-
 /// The share of the host memory free at admission that the exact walk may keep per training
 /// window (its K/V gradient and a recurrent model's state checkpoints, fork #47), as a fraction
 /// of `memory_pressure::current_available_bytes()`. The other half stays free for the serving
@@ -837,114 +822,6 @@ pub(super) fn walk_request(available_bytes: Option<u64>) -> (bool, Option<u64>) 
     match exact_walk_host_budget_mib(available_bytes) {
         Some(mib) => (true, Some(mib)),
         None => (false, None),
-    }
-}
-
-/// `POST /train`'s body: the engine's wire contract (fork `tools/server/server-train.h`), stated
-/// ONCE here instead of assembled field by field at the call site.
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct TrainRequest {
-    pub(super) examples: Vec<EngineExample>,
-    /// a bare `<job>.gguf` name; the engine writes it inside the lane's `--train-dir`
-    pub(super) out: String,
-    pub(super) rank: u32,
-    pub(super) alpha: u32,
-    /// GGUF module names, comma-separated
-    pub(super) targets: String,
-    pub(super) window: u32,
-    pub(super) epochs: u32,
-    pub(super) lr: f64,
-    pub(super) val_split: f32,
-    pub(super) seed: u32,
-    /// adapt only the last K blocks (fork #27); omitted = every block
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) top_layers: Option<u32>,
-    /// what training may add on the GPU: the job's governed lease, which the engine enforces
-    /// before allocating (the driver's own free figure is not physical on Windows)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) memory_budget_mib: Option<u64>,
-    /// The bound on her decode slowdown while training runs, parts per million (fork #36).
-    /// Sent INSTEAD of the time share (the engine refuses both). An engine before #36 ignores
-    /// the key and paces by its own default share, which is what this core sent before.
-    pub(super) max_slowdown_ppm: u32,
-    /// "middle" (fork #29): at the served window a lived example trains whole; only a
-    /// conversation longer than serving's own window drops its OLDEST history exchanges, and
-    /// always keeps the system and tool head and her reply, the context serving always has
-    /// (Cormac on #29). An engine before #29 ignores it.
-    pub(super) fit: &'static str,
-    /// The exact walk (fork #47): ONE optimizer step per window, on the gradient of the window's
-    /// whole loss carried back through every chunk's cached K/V and a hybrid's recurrent state,
-    /// instead of a step per chunk with the gradient stopped at each chunk boundary (the plain
-    /// walk's step agreed with the true one at cosine 0.81; the exact walk's at 0.998). The engine
-    /// shrinks its gradient horizon to fit the device and reports it. An engine before #47
-    /// ignores the key and trains the plain walk, as this core asked before.
-    pub(super) exact: bool,
-    /// The exact walk's host memory per window (see `TRAINING_HOST_SHARE`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) walk_host_budget_mib: Option<u64>,
-    /// The training chunk (one batch, one ubatch), chosen with the lease it fits
-    /// ([`choose_chunk`]). An engine before the key ignores it and takes 512.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) chunk: Option<u32>,
-    /// Per-layer recompute (fork #37): the backward pass keeps the layer outputs as checkpoints
-    /// and rebuilds each layer's activations from them, so a chunk holds one layer's
-    /// activations instead of every layer's. It is the memory a large model's chunk graph is
-    /// made of (see [`Shape::recompute`]), and it takes the same step: fork #50 measures the
-    /// exact walk with and without it at cosine 1.0000, norm ratio 1.0000. An engine before
-    /// #37 ignores the key.
-    pub(super) recompute: bool,
-}
-
-/// One `/train` example: a prompt/completion pair, or a served conversation (OpenAI message
-/// shape exactly as serving's `wire_messages` framed it, with the tools she was offered).
-#[derive(Debug, Clone, Serialize)]
-#[serde(untagged)]
-pub(super) enum EngineExample {
-    Pair {
-        prompt: String,
-        completion: String,
-    },
-    Conversation {
-        messages: Vec<Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        tools: Option<Value>,
-    },
-}
-
-/// `GET /train`'s run state. A state this core does not know is `Unknown`, never guessed into
-/// a known one (it counts as possibly running: see `EngineRun::running_ours`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum TrainState {
-    Idle,
-    /// claimed and preparing its examples, before it is accepted (fork #55)
-    Preparing,
-    Starting,
-    Running,
-    Done,
-    Cancelled,
-    Error,
-    #[serde(other)]
-    Unknown,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub(super) struct EpochReport {
-    pub(super) train_loss: f64,
-    /// null when no held-out token was evaluated (fork #31); an engine before it reports 0.0
-    #[serde(default)]
-    pub(super) eval_loss: Option<f64>,
-}
-
-impl TrainStatus {
-    /// What the run adds on the device: its graph and its context (fork #52), the footprint a
-    /// lease of this shape must cover. 0 when the engine reported no graph (nothing measured);
-    /// an engine before #52 reports no context, and its rows are the graph alone, as before.
-    pub(super) fn run_bytes(&self) -> u64 {
-        match self.graph_mib {
-            Some(graph) => ((graph + self.context_mib.unwrap_or(0.0)) * 1024.0 * 1024.0) as u64, // unwrap_or: an engine before #52 reports no context
-            None => 0,
-        }
     }
 }
 
