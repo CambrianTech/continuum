@@ -145,7 +145,7 @@ never a failure.
 5. **Merge and delete are equal.** Duplicates merge into one track; a track nothing confirms
    decays and falls off. A mind that only accumulates is as broken as one that only forgets.
 
-**Incubation: the eureka is a background thread coming back** (Joel, 2026-11-01: "a real mind
+**Incubation: the eureka is a sentinel coming back** (Joel, 2026-11-01: "a real mind
 finds a eureka or an apt statement subconsciously. It's like many threads were dispatched and the
 consortium comes back as she's talking or working."). Her current focus seeds speculative threads
 at background priority without her asking: recall of related engrams, an association search over
@@ -154,6 +154,14 @@ ready-buffers and most fall off unseen; the arbiter promotes one into her awaren
 salience against what she is doing now crosses the line ("this is just like last week's bug").
 They are metered like dreaming: admitted at the rate the main flow absorbs, the first dropped under
 contention.
+
+These threads are **sentinels**, the name we already use (GENOME-FOUNDRY-SENTINEL; the training
+and fitness sentinels in code; "her work runs as tasks, sentinels and helper agents"). A sentinel
+is what a helper agent is to Claude Code: dispatched with a brief, it works on its own and returns
+a **conclusion sized for her attention**, never its transcript. A sentinel can run on **any base
+model**: recall and association on a tiny model or none, research on a mid-size one, a second take
+on the plan on the big one, each placed wherever on the grid has the capacity (small-model
+sentinels on a spare GPU while the main node serves), each under the same traffic lights (§4.2b).
 
 **What exists:** the parts, scattered. Engrams with salience and decay (merge-by-recall, decay
 sweeps), `Continuation` with an `Expectation` (a prediction a later perception confirms or
