@@ -25,9 +25,9 @@ pub struct TrainRequest {
     /// before allocating
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_budget_mib: Option<u64>,
-    /// The bound on her decode slowdown while training runs, parts per million (fork #36). Sent
-    /// instead of the time share (the engine refuses both).
-    pub max_slowdown_ppm: u32,
+    /// The bound on her decode slowdown while training runs (fork #36). Sent instead of the time
+    /// share (the engine refuses both).
+    pub max_slowdown_ppm: SlowdownPpm,
     /// How an example longer than the window is fitted (fork #29).
     pub fit: Fit,
     /// The exact walk (fork #47): one optimizer step per window on the gradient carried back
@@ -41,6 +41,47 @@ pub struct TrainRequest {
     pub chunk: Option<u32>,
     /// Per-layer recompute (fork #37): a chunk holds one layer's activations, not every layer's.
     pub recompute: bool,
+}
+
+/// How much slower her decoding may run while training runs, parts per million of her rate
+/// without it: an integer in [1, 999_999], the range the engine accepts. The engine measures her
+/// rate with and without a window and yields after each window to hold the bound, only while a
+/// slot is decoding; an idle lane trains unpaced. So [`SlowdownPpm::IDLE_ONLY`] means "train in
+/// serving's idle gaps", never "do not train".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "u32", into = "u32")]
+pub struct SlowdownPpm(#[schemars(range(min = 1, max = 999_999))] u32);
+
+impl SlowdownPpm {
+    /// The smallest bound: every window waits until serving is idle.
+    pub const IDLE_ONLY: Self = Self(1);
+    pub const MAX: Self = Self(999_999);
+
+    /// `None` outside [1, 999_999].
+    pub const fn new(ppm: u32) -> Option<Self> {
+        if ppm >= Self::IDLE_ONLY.0 && ppm <= Self::MAX.0 {
+            Some(Self(ppm))
+        } else {
+            None
+        }
+    }
+
+    pub const fn ppm(self) -> u32 {
+        self.0
+    }
+}
+
+impl TryFrom<u32> for SlowdownPpm {
+    type Error = String;
+    fn try_from(ppm: u32) -> Result<Self, String> {
+        Self::new(ppm).ok_or_else(|| format!("max_slowdown_ppm {ppm} is outside [1, 999999]"))
+    }
+}
+
+impl From<SlowdownPpm> for u32 {
+    fn from(s: SlowdownPpm) -> u32 {
+        s.0
+    }
 }
 
 /// How an example longer than the window is fitted (fork #29).

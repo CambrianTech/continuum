@@ -797,15 +797,6 @@ impl Footprints {
     }
 }
 
-/// How much slower her decoding may run while training runs on her lane, parts per million.
-/// The bound the substrate means (Joel: "negligible impact on inference latency ... a slowdown
-/// if clever can be unnoticed"); a time share only said how often a window ran, and a 25%
-/// share took Kimi from 52 to 23 tok/s. The engine (fork #36) measures her decode rate with and
-/// without a window running and sizes each yield to hold this. The lane's lease is where it
-/// belongs once the lease registry carries it (INFERENCE-LANES-REALISTIC.md); until then ONE
-/// value here, sent explicitly so the engine's own default is never load-bearing. Not an env var.
-pub const TRAINING_MAX_SLOWDOWN_PPM: u32 = 100_000;
-
 /// The share of the host memory free at admission that the exact walk may keep per training
 /// window (its K/V gradient and a recurrent model's state checkpoints, fork #47), as a fraction
 /// of `memory_pressure::current_available_bytes()`. The other half stays free for the serving

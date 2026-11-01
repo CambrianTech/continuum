@@ -1,5 +1,6 @@
 #![cfg(test)]
 use super::*;
+use continuum_engine_protocol::SlowdownPpm;
 
     // Codex's three cases on #4988, through the same create_job: (1) the useful window EQUAL to
     // the planned one (the floor): a measured no-fit there still parks; (2) examples whose WHOLE
@@ -193,7 +194,11 @@ use super::*;
         assert!(body.get("text").is_none(), "examples, never a text corpus (the engine masks the prompts)");
         // what this catches (fork #36): the bound on her slowdown goes out INSTEAD of the time
         // share; the engine refuses a body carrying both, so sending both fails every run
-        assert_eq!(body["max_slowdown_ppm"].as_u64(), Some(u64::from(TRAINING_MAX_SLOWDOWN_PPM)));
+        assert_eq!(
+            body["max_slowdown_ppm"].as_u64(),
+            Some(u64::from(continuum_engine::inference::learn_grant::grant_for("ggml-org/Qwen3.8-27B-GGUF").max_slowdown.ppm())),
+            "the bound is the learning grant read from this box's decode curve"
+        );
         assert!(body.get("share_ppm").is_none(), "the share and the slowdown bound pace the same windows: one is sent");
         // what this catches (fork #47, Fable on #4841): the walk the job asks for follows the
         // monitor; here no monitor runs, so the plain walk, with no unbounded exact walk
@@ -384,7 +389,7 @@ use super::*;
                 seed: 1,
                 top_layers: None,
                 memory_budget_mib: None,
-                max_slowdown_ppm: 0,
+                max_slowdown_ppm: SlowdownPpm::IDLE_ONLY,
                 fit: Fit::Middle,
                 exact: false,
                 walk_host_budget_mib: None,

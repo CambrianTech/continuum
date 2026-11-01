@@ -89,13 +89,16 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             )));
         }
         let window = train_window(served_window);
+        let grant = continuum_engine::inference::learn_grant::grant_for(&request.base_model);
         continuum_base::probe!(
             class = "training.job.window",
             requested = schedule.sequence_length as u64,
             served = u64::from(served_window),
             sent = window as u64,
-            max_slowdown_ppm = u64::from(TRAINING_MAX_SLOWDOWN_PPM),
-            "the training window: the matched lane's served per-slot window as the CEILING (the engine sizes the context to the longest example, fork #30), rounded to the engine's 256 granularity; the request's length never decides it; and the bound on her decode slowdown while training runs"
+            max_slowdown_ppm = u64::from(grant.max_slowdown.ppm()),
+            decode_tps = grant.rate.tps.unwrap_or(-1.0), // -1 = no decode measured on this box: the grant is idle gaps only
+            decode_rate_source = grant.rate.source.label(),
+            "the training window: the matched lane's served per-slot window as the CEILING (the engine sizes the context to the longest example, fork #30), rounded to the engine's 256 granularity; the request's length never decides it; and the learning grant, the decode headroom above the floor her measured rate leaves (inference::learn_grant)"
         );
         // 0 blocks is no depth at all: every block, as omitted (the engine refuses 0 at parse)
         let depth = lora.top_layers.filter(|&k| k > 0);
@@ -113,7 +116,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             seed: 42,
             top_layers: depth,
             memory_budget_mib: None,
-            max_slowdown_ppm: TRAINING_MAX_SLOWDOWN_PPM,
+            max_slowdown_ppm: grant.max_slowdown,
             fit: Fit::Middle,
             exact: false,
             walk_host_budget_mib: None,

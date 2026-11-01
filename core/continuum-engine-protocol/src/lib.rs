@@ -16,6 +16,6 @@ mod train;
 pub use error::{EngineError, EngineErrorBody, ErrorType};
 pub use learn::{LearnOutcome, LearnReply, LearnRequest};
 pub use measure::{ExampleFit, MeasureReply, MeasureRequest, MeasuredExample};
-pub use train::{EngineExample, EpochReport, Fit, JobRef, TrainRequest, TrainState, TrainStatus};
+pub use train::{EngineExample, EpochReport, Fit, JobRef, SlowdownPpm, TrainRequest, TrainState, TrainStatus};
 
 pub mod schema;
