@@ -176,7 +176,8 @@ mod background_custody_tests {
             .await;
         assert!(!receipt.state_is_durable());
         assert_eq!(module.saves.load(Ordering::SeqCst), 0);
-        assert!(receipt.summary().contains("terminal persistence failed"));
+        assert!(matches!(receipt.tasks, DrainOutcome::Unknown { .. }));
+        assert!(receipt.modules.is_empty());
     }
 }
 
