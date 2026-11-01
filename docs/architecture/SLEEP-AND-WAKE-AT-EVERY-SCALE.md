@@ -102,6 +102,22 @@ costs nothing anyone notices; a short slowdown she cannot leave costs a waiting 
   (allowed for tuning, labelled as such) and is fitted on receipts: her retention of corrections
   (learning gate, plan path step 3) against act latency and wake latency (path step 1).
 
+## 3b. The OS realm: continual maintenance, never stop-the-world
+
+Joel, 2026-11-01: "Everything in an organism and efficient OS needs to be continual. The system
+cannot afford to ever waste resources or be static. It must take care of itself." The OS world
+learned the same lesson as the brain and named it; where the fit is close we use the name.
+
+| OS mechanism | What it teaches | Here |
+|---|---|---|
+| `kswapd` watermarks | reclaim starts in the background at a low watermark and stops at a high one, before anyone runs out | dreaming starts before the debt hurts and stops when it is paid (hysteresis, never a threshold flap) |
+| Go's GC pacer and mutator assists | collection is paced by the allocation rate; a goroutine allocating faster than the collector keeps up pays assist work in proportion to its debt | the sleep tax: a mind running up debt faster than night pays it in daydreams, proportionally, never all at once |
+| LSM compaction (RocksDB write stalls) | writes only append; merging runs continually; a lagging compaction slows writes, never stops them | urgency pushes through while the debt grows, slowed but never blocked, up to a ceiling |
+| `kcompactd` | memory compaction runs continually at low priority so a large allocation never waits for a full pass | her next epoch's collapse is prepared in the background; she sees it only at the epoch seam (double buffering), so her prompt cache stays valid. Continual maintenance, visible only at seams. |
+
+The anti-pattern every one of these replaced: wait until full, then stop the world and rewrite
+(the batch job, the 16-example threshold, a context compacted only when it overflows).
+
 ## 4. One homeostat, three scales
 
 | | A mind | A lane (one engine, many minds) | The grid |
