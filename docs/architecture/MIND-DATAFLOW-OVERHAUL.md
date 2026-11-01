@@ -85,21 +85,41 @@ validator that proves it in seconds, then the live read.
 - Owner: Fable (wake, checkpoint), Codex (plan, gap feed). Validator: idle core CPU near zero; wakes
   per hour equal changes per hour.
 
-### 6. Learning: a fold over her stream (learning map; rebuild #12)
-- Today: only an airc `WorkSubmissionReviewed` under a review-card claim settles credit (agents'
-  GitHub reviews and merges settle nothing); a reviewed correction settled as a plain pass into a
-  bucket of 16 (fixed in #5672: a failed review marks rows rejected, the later pass is `Corrected`,
-  one example trains); refusals did not say why (fixed in #5672); the trainer cannot train the served
-  MoE base (fork #82, CPU half done); dreams wait for 90 s idle that busy residents never reach, and
-  write engrams only; buckets and recovery run on ticks.
-- Becomes: every review source (airc review, a GitHub review on a card's PR, a merge, a grade) is an
-  event that refines her credit; a correction trains at once; dreams a low-duty stage on the serving
-  engine between decode steps, consolidating and producing examples; genes keyed to the served base by
-  a typed model identity.
-- Owner: Fable (the loop, the acceptance test), Cormac (trainer 14b64aa9, dreams' duty cycle).
-  Validator: THE acceptance test, a reviewed correction applied on unseen tasks, retained after
-  restart, beating the same base without the gene; live: settled credits, jobs and genes in turns, per
-  hour.
+### 6. Learning: in place, on arrival (learning map; rebuild #12)
+Joel, 2026-11-01: "Dreaming is supposed to be in place not batch, typically, or deep dream ... It's sort
+of the whole deal with how to do continual learning." The design is written:
+ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md §8.1 (learn on arrival) and §8.2 (sleep is the audit), slices
+S3b/S4/S5, gates §0 (never dark, fast, exact). This row is conformance to it.
+- Today:
+  - Credit settles only from an airc review under a review-card claim; GitHub reviews and merges settle
+    nothing. A reviewed correction now trains as `Corrected` with one example (#5672).
+  - Dreams (#5676) are tick-launched passes: a separate generation per pass over fresh episodes, at an
+    ambient lane priority, writing engrams only. They run now (0 in 12 h before), but this is the BATCH
+    shape. It is replaced by the stage below, not extended.
+  - The served MoE base has a training backward since fork #82/#83 (pinned by #5679); the rest of the Metal
+    backward set (§6: cross-entropy, rms_norm, rope, silu, softmax, repeat) is unverified on the 35B-A3B.
+- Becomes:
+  - Every settled source (airc review, a GitHub review or merge on a card's PR, a grade) is an event in her
+    stream.
+  - Each settled example takes one optimizer micro-step on her SHADOW adapter, inside the serving engine,
+    between decode batches, under the governor's duty budget. A directed turn waits at most one micro-step.
+    Her stable adapter keeps serving.
+  - Shadow and stable swap only at a boundary, after the held-out check and a smoke turn.
+  - Deep dream (sleep) is the same stage at high duty when she is idle: dedupe, re-evaluate, promote. Not a
+    second mechanism.
+  - Engrams consolidate on append (row 4), not by sweeping passes. The tick-launched passes are deleted.
+- Next, in order:
+  1. `/train/measure` on the 35B-A3B on the M5: does the gradient graph build with every op backed?
+     Owner: Cormac. Ops it names missing become S3b kernels.
+  2. S4: a train-step verb in the fork's server, interleaved by the slot scheduler at a declared duty.
+     Validator (seconds, any node): decode tok/s and directed-turn latency at duty 0/5/10/20% against the
+     §0 gate. Owner: Cormac (engine), Fable (scheduler seam).
+  3. The core fold: settled examples stream to the stage as events; the bucket threshold and tick passes
+     go. Owner: Fable.
+  4. S5: shadow/stable gate and the epoch header on turns served mid-learning.
+- Validator: THE acceptance test, a reviewed correction applied on unseen tasks, retained after restart,
+  beating the same base without the gene; live: settled examples, micro-steps and promotions per hour,
+  with her act latency flat.
 
 ### 7. Clients: deltas out (rebuild #13)
 - Today: every chat or vitals event rebuilds a 100-message view and the roster, compares and publishes
@@ -119,6 +139,6 @@ On the hourly health line, beside acts/hour, and the "done when" of every row ab
 ## Order
 
 Rows 1 and 6 first (the engine's line, measured at 75-90 s of an act, and the learning loop, measured
-at zero output); then 3 and 5 (CPU and copies per act); 2, 4 and 7 as their owners free up. Every
+at zero output; row 6 is the product: continual learning in place); then 3 and 5 (CPU and copies per act); 2, 4 and 7 as their owners free up. Every
 row is measured before it is built: a row whose measured cost is small waits. One change per crate at a time, each
 with its validator first and its live read after, merged as it lands.
