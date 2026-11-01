@@ -40,7 +40,7 @@ impl From<TaskOutput> for CommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::tasks::{TaskEnd, TaskLedger};
+    use crate::runtime::tasks::{TaskEnd, TaskExecution, TaskLedger};
     use uuid::Uuid;
 
     #[tokio::test]
@@ -60,8 +60,20 @@ mod tests {
             "producer::Result",
         ))?;
         assert!(matches!(&handle, TaskOutput::Handle(_)));
-        let binary_task = ledger.accept(owner, "producer/binary".into()).await?;
-        let handle_task = ledger.accept(owner, "producer/handle".into()).await?;
+        let binary_task = ledger
+            .accept(
+                owner,
+                "producer/binary".into(),
+                TaskExecution::new_command_executor(),
+            )
+            .await?;
+        let handle_task = ledger
+            .accept(
+                owner,
+                "producer/handle".into(),
+                TaskExecution::new_command_executor(),
+            )
+            .await?;
         ledger
             .finish(binary_task, owner, TaskEnd::Done(binary.clone()))
             .await?;

@@ -13,6 +13,8 @@ use uuid::Uuid;
 
 mod output;
 pub use output::TaskOutput;
+mod execution;
+pub use execution::TaskExecution;
 mod delivery;
 pub use delivery::{DeliveryError, DeliveryPage, TaskOwnerSink};
 
@@ -53,7 +55,10 @@ impl TaskEnd {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 enum Fact {
-    Accepted { command: String },
+    Accepted {
+        command: String,
+        execution: TaskExecution,
+    },
     Ended(TaskEnd),
     Delivered,
 }
@@ -114,12 +119,17 @@ impl TaskLedger {
         })
     }
 
-    pub async fn accept(&self, owner: Uuid, command: String) -> Result<Uuid, String> {
+    pub async fn accept(
+        &self,
+        owner: Uuid,
+        command: String,
+        execution: TaskExecution,
+    ) -> Result<Uuid, String> {
         let task = Uuid::new_v4();
         let acceptance = TaskFact {
             task,
             owner,
-            fact: Fact::Accepted { command },
+            fact: Fact::Accepted { command, execution },
         };
         match self.facts.save(task, &acceptance).await {
             Ok(()) => Ok(task),
@@ -139,7 +149,9 @@ impl TaskLedger {
         }
     }
 
-    async fn authorize(&self, task: Uuid, owner: Uuid) -> Result<(), String> {
+    /// Recover the exact execution owner without guessing from a forgotten handle
+    /// or a process snapshot. Only the recipient may inspect this registration.
+    pub async fn execution(&self, task: Uuid, owner: Uuid) -> Result<TaskExecution, String> {
         match self
             .facts
             .find_by_id(task)
@@ -149,10 +161,14 @@ impl TaskLedger {
             Some(TaskFact {
                 task: stored_task,
                 owner: stored,
-                fact: Fact::Accepted { .. },
-            }) if stored == owner && stored_task == task => Ok(()),
+                fact: Fact::Accepted { execution, .. },
+            }) if stored == owner && stored_task == task => Ok(execution),
             _ => Err("task is absent or belongs to another owner".into()),
         }
+    }
+
+    async fn authorize(&self, task: Uuid, owner: Uuid) -> Result<(), String> {
+        self.execution(task, owner).await.map(|_| ())
     }
 
     /// Only a supervisor that has observed execution ending calls this. A cancellation
@@ -304,12 +320,38 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn accepted_execution_survives_reopen_and_is_not_replaced_by_new_executor(
+    ) -> Result<(), String> {
+        let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+        let ledger = TaskLedger::new(adapter.clone()).await?;
+        let owner = Uuid::new_v4();
+        let execution = TaskExecution::new_command_executor();
+        let task = ledger.accept(owner, "code/shell".into(), execution).await?;
+        drop(ledger);
+        let replacement = TaskExecution::new_command_executor();
+        assert_ne!(execution, replacement);
+        let reopened = TaskLedger::new(adapter).await?;
+        assert_eq!(reopened.execution(task, owner).await?, execution);
+        assert!(reopened.execution(task, Uuid::new_v4()).await.is_err());
+        assert_eq!(reopened.pending(task, owner).await?, None);
+        // An old incarnation is unresolved, not automatically Lost at reopen.
+        assert_eq!(reopened.terminal(task, owner).await?, None);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn concurrent_ends_survive_reopen_and_delivery_retry() -> Result<(), String> {
         let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
         let first = TaskLedger::new(adapter.clone()).await?;
         let second = TaskLedger::new(adapter.clone()).await?;
         let owner = Uuid::new_v4();
-        let task = first.accept(owner, "code/shell".into()).await?;
+        let task = first
+            .accept(
+                owner,
+                "code/shell".into(),
+                TaskExecution::new_command_executor(),
+            )
+            .await?;
         assert!(first.acknowledge(task, owner).await.is_err());
         let (a, b) = tokio::join!(
             first.finish(task, owner, TaskEnd::Done(TaskOutput::Json(Value::Null))),
@@ -338,7 +380,13 @@ mod tests {
         let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
         let ledger = TaskLedger::new(adapter).await?;
         let owner = Uuid::new_v4();
-        let task = ledger.accept(owner, "code/shell".into()).await?;
+        let task = ledger
+            .accept(
+                owner,
+                "code/shell".into(),
+                TaskExecution::new_command_executor(),
+            )
+            .await?;
         ledger.finish(task, owner, TaskEnd::Stopped).await?;
         ledger
             .facts
@@ -363,14 +411,32 @@ mod tests {
         let ledger = TaskLedger::new(adapter).await?;
         let owner = Uuid::new_v4();
         let foreign = Uuid::new_v4();
-        let consumed = ledger.accept(owner, "consumed".into()).await?;
+        let consumed = ledger
+            .accept(
+                owner,
+                "consumed".into(),
+                TaskExecution::new_command_executor(),
+            )
+            .await?;
         ledger.finish(consumed, owner, TaskEnd::Stopped).await?;
         ledger.acknowledge(consumed, owner).await?;
-        let pending = ledger.accept(owner, "pending".into()).await?;
+        let pending = ledger
+            .accept(
+                owner,
+                "pending".into(),
+                TaskExecution::new_command_executor(),
+            )
+            .await?;
         ledger
             .finish(pending, owner, TaskEnd::Done(TaskOutput::Json(Value::Null)))
             .await?;
-        let other = ledger.accept(foreign, "other".into()).await?;
+        let other = ledger
+            .accept(
+                foreign,
+                "other".into(),
+                TaskExecution::new_command_executor(),
+            )
+            .await?;
         ledger.finish(other, foreign, TaskEnd::Stopped).await?;
         let mut after = None;
         let mut found = Vec::new();
@@ -404,9 +470,18 @@ mod tests {
         let adapter = Arc::new(GatedAdapter::new(adapter));
         let ledger = TaskLedger::new(adapter.clone()).await?;
         let owner = Uuid::new_v4();
-        let task = ledger.accept(owner, "test/reply-loss".into()).await?;
+        let task = ledger
+            .accept(
+                owner,
+                "test/reply-loss".into(),
+                TaskExecution::new_command_executor(),
+            )
+            .await?;
         adapter.fail_after_next_create();
-        assert_eq!(ledger.finish(task, owner, TaskEnd::Stopped).await?, TaskEnd::Stopped);
+        assert_eq!(
+            ledger.finish(task, owner, TaskEnd::Stopped).await?,
+            TaskEnd::Stopped
+        );
         drop(ledger);
         let reopened = TaskLedger::new(adapter.clone()).await?;
         assert_eq!(reopened.pending(task, owner).await?, Some(TaskEnd::Stopped));
@@ -415,12 +490,21 @@ mod tests {
         drop(reopened);
         let reopened = TaskLedger::new(adapter.clone()).await?;
         assert_eq!(reopened.pending(task, owner).await?, None);
-        assert_eq!(reopened.finish(task, owner, TaskEnd::Lost).await?, TaskEnd::Stopped);
+        assert_eq!(
+            reopened.finish(task, owner, TaskEnd::Lost).await?,
+            TaskEnd::Stopped
+        );
         reopened.acknowledge(task, owner).await?;
         assert_eq!(reopened.pending(task, owner).await?, None);
-        let count = adapter.count(QueryBuilder::new(TaskFact::COLLECTION).build()).await;
+        let count = adapter
+            .count(QueryBuilder::new(TaskFact::COLLECTION).build())
+            .await;
         assert!(count.success);
-        assert_eq!(count.data, Some(3), "one acceptance, one end, one delivery fact");
+        assert_eq!(
+            count.data,
+            Some(3),
+            "one acceptance, one end, one delivery fact"
+        );
         Ok(())
     }
 
@@ -438,7 +522,13 @@ mod tests {
         let delayed = Arc::new(TaskLedger::new(gated.clone()).await?);
         let current = TaskLedger::new(adapter.clone()).await?;
         let owner = Uuid::new_v4();
-        let task = current.accept(owner, "code/shell".into()).await?;
+        let task = current
+            .accept(
+                owner,
+                "code/shell".into(),
+                TaskExecution::new_command_executor(),
+            )
+            .await?;
         let pause = gated.pause_next_write();
         let writer = tokio::spawn(async move { delayed.finish(task, owner, TaskEnd::Lost).await });
         notified(&pause.entered).await?;

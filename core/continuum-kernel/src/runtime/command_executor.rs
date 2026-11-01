@@ -81,11 +81,17 @@ pub struct DispatchFailure {
 
 impl DispatchFailure {
     pub(crate) fn not_committed(message: String) -> Self {
-        Self { outcome: DispatchOutcome::NotCommitted, message }
+        Self {
+            outcome: DispatchOutcome::NotCommitted,
+            message,
+        }
     }
 
     fn uncertain(message: String) -> Self {
-        Self { outcome: DispatchOutcome::Uncertain, message }
+        Self {
+            outcome: DispatchOutcome::Uncertain,
+            message,
+        }
     }
 }
 
@@ -168,6 +174,7 @@ pub struct CommandExecutor {
     /// TS bridge.
     remote_transport: Arc<dyn Transport>,
     task_ledger: tokio::sync::OnceCell<Arc<super::tasks::TaskLedger>>,
+    task_execution: super::tasks::TaskExecution,
 }
 
 impl CommandExecutor {
@@ -179,13 +186,17 @@ impl CommandExecutor {
             policy: Arc::new(crate::routing::AllowAllPolicy),
             remote_transport: Arc::new(crate::routing::NotImplementedRemoteTransport),
             task_ledger: tokio::sync::OnceCell::new(),
+            task_execution: super::tasks::TaskExecution::new_command_executor(),
         }
     }
 
     /// The trust this executor's policy resolves for `caller`: the same policy its gate uses
     /// ([`AuthPolicy::caller_trust`](crate::routing::AuthPolicy::caller_trust)). `None` when the
     /// policy cannot resolve it, which an owner-only handler treats as a refusal.
-    pub fn caller_trust(&self, caller: Option<&crate::routing::CallerIdentity>) -> Option<crate::routing::trust_level::TrustLevel> {
+    pub fn caller_trust(
+        &self,
+        caller: Option<&crate::routing::CallerIdentity>,
+    ) -> Option<crate::routing::trust_level::TrustLevel> {
         self.policy.caller_trust(caller)
     }
 
@@ -394,7 +405,8 @@ impl CommandExecutor {
         // Around-dispatch concerns (a caller's hands admission, the cognition pulse's work
         // accounting) are installed by their owners at boot (`dispatch_hook`); one refusal
         // ends the dispatch with nothing committed.
-        let scopes = super::dispatch_hook::enter_all(caller).map_err(DispatchFailure::not_committed)?;
+        let scopes =
+            super::dispatch_hook::enter_all(caller).map_err(DispatchFailure::not_committed)?;
         let in_command = scopes.clone();
         let decision = route(command);
         // Local in-process dispatches pass `None` — substrate's own
@@ -418,7 +430,9 @@ impl CommandExecutor {
             // proceeds to transport selection.
             match verdict {
                 Verdict::Forbidden { reason } => {
-                    return Err(DispatchFailure::not_committed(format!("forbidden: {reason}")));
+                    return Err(DispatchFailure::not_committed(format!(
+                        "forbidden: {reason}"
+                    )));
                 }
                 Verdict::Deferred {
                     reason,
@@ -593,7 +607,10 @@ impl CommandExecutor {
             command_name: command.to_string(),
             duration_ms,
             success: outcome.is_ok(),
-            error: outcome.as_ref().err().map(|failure| failure.message.clone()),
+            error: outcome
+                .as_ref()
+                .err()
+                .map(|failure| failure.message.clone()),
             handle,
             result,
         };

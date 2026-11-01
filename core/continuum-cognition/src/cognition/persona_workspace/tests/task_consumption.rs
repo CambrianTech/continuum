@@ -17,27 +17,55 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
     registry.consume_task_ends(owner, vec![(task, TaskEnd::TimedOut)])?;
     let cycle = registry.register_from_cfg(cfg_for(owner))?;
     let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
-    let source = crate::cognition::context_streams::tasks::Tasks { memory: &memory, persona: owner };
-    let (view, _) = View::<crate::cognition::context_streams::ContextMessage>::start(Vec::new(), &[&source as &dyn Source<_>], |claims| {
-        claims.iter().map(|claim| claim.full_chars).collect()
-    })?;
-    assert!(view.render().any(|message| message.text.contains("timed_out task")));
+    let source = crate::cognition::context_streams::tasks::Tasks {
+        memory: &memory,
+        persona: owner,
+    };
+    let (view, _) = View::<crate::cognition::context_streams::ContextMessage>::start(
+        Vec::new(),
+        &[&source as &dyn Source<_>],
+        |claims| claims.iter().map(|claim| claim.full_chars).collect(),
+    )?;
+    assert!(view
+        .render()
+        .any(|message| message.text.contains("timed_out task")));
     let mut receipt = crate::cognition::render_receipt::RenderReceipt {
-        owner, incarnation: memory.incarnation(), request: "submitted-request".to_owned(), view: view.receipt(),
+        owner,
+        incarnation: memory.incarnation(),
+        request: "submitted-request".to_owned(),
+        view: view.receipt(),
     };
     let exact = receipt.clone();
     let isolated = registry.mind_cycle(&owner).ok_or("private cycle absent")?;
-    isolated.persist_render_receipts(vec![exact.clone()]).await?;
-    assert_eq!(memory.pending_task_wakes(), vec![task], "private cycles have no live checkpoint authority");
+    isolated
+        .persist_render_receipts(vec![exact.clone()])
+        .await?;
+    assert_eq!(
+        memory.pending_task_wakes(),
+        vec![task],
+        "private cycles have no live checkpoint authority"
+    );
     let mut foreign = exact.clone();
     foreign.incarnation = Uuid::new_v4();
-    assert!(matches!(cycle.persist_render_receipts(vec![exact.clone(), foreign]).await,
-        Err(TaskSinkError::CustodyMismatch { .. })));
-    assert_eq!(memory.pending_task_wakes(), vec![task], "validate the whole batch before retirement");
-    for item in &mut receipt.view.items { item.element = None; }
+    assert!(matches!(
+        cycle
+            .persist_render_receipts(vec![exact.clone(), foreign])
+            .await,
+        Err(TaskSinkError::CustodyMismatch { .. })
+    ));
+    assert_eq!(
+        memory.pending_task_wakes(),
+        vec![task],
+        "validate the whole batch before retirement"
+    );
+    for item in &mut receipt.view.items {
+        item.element = None;
+    }
     assert!(sink.record_rendered(receipt).await?.is_none());
     receipt = exact.clone();
-    for item in &mut receipt.view.items { item.level = continuum_context::level::Level::Folded; }
+    for item in &mut receipt.view.items {
+        item.level = continuum_context::level::Level::Folded;
+    }
     assert!(sink.record_rendered(receipt).await?.is_none());
     receipt = exact.clone();
     for item in &mut receipt.view.items {
@@ -45,15 +73,25 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
         item.level = continuum_context::level::Level::Repeat { of };
     }
     assert!(sink.record_rendered(receipt).await?.is_none());
-    assert_eq!(memory.pending_task_wakes(), vec![task], "repeat is not a newly perceived terminal end");
+    assert_eq!(
+        memory.pending_task_wakes(),
+        vec![task],
+        "repeat is not a newly perceived terminal end"
+    );
     receipt = exact.clone();
-    for item in &mut receipt.view.items { item.retired = true; }
+    for item in &mut receipt.view.items {
+        item.retired = true;
+    }
     assert!(sink.record_rendered(receipt).await?.is_none());
     assert_eq!(memory.pending_task_wakes(), vec![task]);
     let obstruction = volatile_path(owner)?.with_extension("json.tmp");
     std::fs::create_dir(&obstruction)?;
-    assert!(matches!(sink.record_rendered(exact.clone()).await,
-        Err(TaskSinkError::Consumption(TaskConsumptionError::Checkpoint(_)))));
+    assert!(matches!(
+        sink.record_rendered(exact.clone()).await,
+        Err(TaskSinkError::Consumption(
+            TaskConsumptionError::Checkpoint(_)
+        ))
+    ));
     assert_eq!(memory.pending_task_wakes(), vec![task]);
     let before_retry = WorkingMemory::new(8);
     before_retry.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
@@ -64,13 +102,18 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
     let checkpoint = std::fs::read(volatile_path(owner)?)?;
     assert!(sink.record_rendered(exact.clone()).await?.is_none());
     assert_eq!(std::fs::read(volatile_path(owner)?)?, checkpoint);
-    assert!(source.items().is_empty(), "a consumed end must not leave a standing task banner");
+    assert!(
+        source.items().is_empty(),
+        "a consumed end must not leave a standing task banner"
+    );
     let restored = WorkingMemory::new(8);
     restored.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
     assert!(restored.pending_task_wakes().is_empty());
     registry.register_from_cfg(cfg_for(owner))?;
-    assert!(matches!(cycle.persist_render_receipts(vec![exact.clone()]).await,
-        Err(TaskSinkError::Consumption(TaskConsumptionError::Replaced(id))) if id == owner));
+    assert!(
+        matches!(cycle.persist_render_receipts(vec![exact.clone()]).await,
+        Err(TaskSinkError::Consumption(TaskConsumptionError::Replaced(id))) if id == owner)
+    );
     // Retaining a cycle must not retain its registry through a reference cycle.
     let weak = Arc::downgrade(&registry);
     drop(sink);
@@ -189,7 +232,7 @@ async fn failed_checkpoint_returns_no_receipt_and_replay_commits_staged_end(
 #[tokio::test]
 async fn ledger_ack_requires_perception_and_restart_replays_unread_ends(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use continuum_kernel::runtime::tasks::{TaskLedger, TaskOutput};
+    use continuum_kernel::runtime::tasks::{TaskExecution, TaskLedger, TaskOutput};
     let home = tempfile::tempdir()?;
     let _native = crate::paths::NativeHomeOverride::install(home.path());
     let (adapter, _database) = continuum_kernel::orm::store::fresh_adapter().await;
@@ -197,7 +240,13 @@ async fn ledger_ack_requires_perception_and_restart_replays_unread_ends(
     let registry = Arc::new(PersonaWorkspaceRegistry::new());
     let sink = ResidentTaskSink::new(Arc::clone(&registry));
     let owner = Uuid::new_v4();
-    let task = ledger.accept(owner, "test/result".into()).await?;
+    let task = ledger
+        .accept(
+            owner,
+            "test/result".into(),
+            TaskExecution::new_command_executor(),
+        )
+        .await?;
     let end = TaskEnd::Done(TaskOutput::Json(
         serde_json::json!({"result":"useful result"}),
     ));
@@ -244,27 +293,53 @@ async fn ledger_ack_requires_perception_and_restart_replays_unread_ends(
     assert_eq!(reopened.pending(task, owner).await?, Some(end.clone()));
     let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
     use continuum_context::{source::Source, view::View};
-    let source = crate::cognition::context_streams::tasks::Tasks { memory: &memory, persona: owner };
+    let source = crate::cognition::context_streams::tasks::Tasks {
+        memory: &memory,
+        persona: owner,
+    };
     let (view, _) = View::<crate::cognition::context_streams::ContextMessage>::start(
-        Vec::new(), &[&source as &dyn Source<_>], |claims| claims.iter().map(|claim| claim.full_chars).collect()
+        Vec::new(),
+        &[&source as &dyn Source<_>],
+        |claims| claims.iter().map(|claim| claim.full_chars).collect(),
     )?;
     let receipt = crate::cognition::render_receipt::RenderReceipt {
-        owner, incarnation: memory.incarnation(), request: "served-task-result".into(), view: view.receipt(),
+        owner,
+        incarnation: memory.incarnation(),
+        request: "served-task-result".into(),
+        view: view.receipt(),
     };
     std::fs::create_dir(&obstruction)?;
     assert!(sink.record_rendered(receipt.clone()).await.is_err());
-    assert!(reopened.deliver_page(owner, None, limit, &sink).await.is_err());
+    assert!(reopened
+        .deliver_page(owner, None, limit, &sink)
+        .await
+        .is_err());
     assert_eq!(reopened.pending(task, owner).await?, Some(end.clone()));
     std::fs::remove_dir(&obstruction)?;
     sink.record_rendered(receipt).await?;
     // Crash after the perception checkpoint but before ACK: replay uses the
     // restored exact receipt, without prompting her again or remembering a handle.
     registry.register_from_cfg(cfg_for(owner))?;
-    assert_eq!(reopened.deliver_page(owner, None, limit, &sink).await?.acknowledged, 1);
+    assert_eq!(
+        reopened
+            .deliver_page(owner, None, limit, &sink)
+            .await?
+            .acknowledged,
+        1
+    );
     assert_eq!(reopened.pending(task, owner).await?, None);
     registry.register_from_cfg(cfg_for(owner))?;
-    assert_eq!(reopened.deliver_page(owner, None, limit, &sink).await?.acknowledged, 0);
-    assert!(registry.cycles.lock()[&owner].working_memory.pending_task_wakes().is_empty());
+    assert_eq!(
+        reopened
+            .deliver_page(owner, None, limit, &sink)
+            .await?
+            .acknowledged,
+        0
+    );
+    assert!(registry.cycles.lock()[&owner]
+        .working_memory
+        .pending_task_wakes()
+        .is_empty());
     assert_eq!(reopened.terminal(task, owner).await?, Some(end));
     Ok(())
 }

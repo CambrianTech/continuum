@@ -82,7 +82,7 @@ impl CommandExecutor {
                 unresolved: &this.registry.task_persistence_failed,
                 settled: false,
             };
-            let handle = match ledger.accept(owner, command.to_string()).await {
+            let handle = match ledger.accept(owner, command.to_string(), this.task_execution).await {
                 Ok(handle) => handle,
                 Err(error) => {
                     let _ = accepted.send(Err(DispatchFailure::uncertain(error)));

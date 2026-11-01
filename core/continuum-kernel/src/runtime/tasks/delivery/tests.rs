@@ -1,6 +1,7 @@
 //! The delivery boundary cannot acknowledge an unconsumed terminal result.
 #![cfg(test)]
 use super::*;
+use crate::runtime::tasks::TaskExecution;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
@@ -23,20 +24,42 @@ async fn only_page_scoped_perception_can_ack_and_invalid_batch_has_no_partial_ef
     let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
     let ledger = TaskLedger::new(adapter).await?;
     let owner = Uuid::new_v4();
-    let first = ledger.accept(owner, "first".into()).await?;
-    let second = ledger.accept(owner, "second".into()).await?;
+    let first = ledger
+        .accept(owner, "first".into(), TaskExecution::new_command_executor())
+        .await?;
+    let second = ledger
+        .accept(
+            owner,
+            "second".into(),
+            TaskExecution::new_command_executor(),
+        )
+        .await?;
     ledger.finish(first, owner, TaskEnd::Stopped).await?;
     ledger.finish(second, owner, TaskEnd::Lost).await?;
     let sink = PerceptionSink(Default::default());
     let limit = NonZeroUsize::new(32).ok_or("invalid fixture page")?;
-    assert_eq!(ledger.deliver_page(owner, None, limit, &sink).await?.acknowledged, 0);
+    assert_eq!(
+        ledger
+            .deliver_page(owner, None, limit, &sink)
+            .await?
+            .acknowledged,
+        0
+    );
     let foreign = Uuid::new_v4();
     sink.0.lock().extend([first, foreign]);
-    assert!(matches!(ledger.deliver_page(owner, None, limit, &sink).await,
-        Err(DeliveryError::InvalidReceipt { task }) if task == foreign));
+    assert!(
+        matches!(ledger.deliver_page(owner, None, limit, &sink).await,
+        Err(DeliveryError::InvalidReceipt { task }) if task == foreign)
+    );
     assert_eq!(ledger.pending(first, owner).await?, Some(TaskEnd::Stopped));
     sink.0.lock().remove(&foreign);
-    assert_eq!(ledger.deliver_page(owner, None, limit, &sink).await?.acknowledged, 1);
+    assert_eq!(
+        ledger
+            .deliver_page(owner, None, limit, &sink)
+            .await?
+            .acknowledged,
+        1
+    );
     assert_eq!(ledger.pending(first, owner).await?, None);
     assert_eq!(ledger.pending(second, owner).await?, Some(TaskEnd::Lost));
     Ok(())
@@ -53,7 +76,11 @@ struct Sink {
 impl TaskOwnerSink for Sink {
     type Error = std::io::Error;
 
-    async fn consume(&self, owner: Uuid, ends: &[(Uuid, TaskEnd)]) -> Result<BTreeSet<Uuid>, Self::Error> {
+    async fn consume(
+        &self,
+        owner: Uuid,
+        ends: &[(Uuid, TaskEnd)],
+    ) -> Result<BTreeSet<Uuid>, Self::Error> {
         for (task, end) in ends {
             let pending = self
                 .ledger
@@ -79,7 +106,9 @@ async fn refused_consumption_remains_pending_and_replay_needs_no_registered_hand
     let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
     let ledger = Arc::new(TaskLedger::new(adapter.clone()).await?);
     let owner = Uuid::new_v4();
-    let task = ledger.accept(owner, "build".into()).await?;
+    let task = ledger
+        .accept(owner, "build".into(), TaskExecution::new_command_executor())
+        .await?;
     ledger.finish(task, owner, TaskEnd::Stopped).await?;
     let sink = Sink {
         ledger: ledger.clone(),
@@ -122,8 +151,16 @@ async fn page_delivery_keeps_owner_isolation_and_crosses_empty_pages(
     let ledger = Arc::new(TaskLedger::new(adapter).await?);
     let owner = Uuid::new_v4();
     let foreign = Uuid::new_v4();
-    let mine = ledger.accept(owner, "mine".into()).await?;
-    let theirs = ledger.accept(foreign, "theirs".into()).await?;
+    let mine = ledger
+        .accept(owner, "mine".into(), TaskExecution::new_command_executor())
+        .await?;
+    let theirs = ledger
+        .accept(
+            foreign,
+            "theirs".into(),
+            TaskExecution::new_command_executor(),
+        )
+        .await?;
     ledger.finish(mine, owner, TaskEnd::Lost).await?;
     ledger.finish(theirs, foreign, TaskEnd::Stopped).await?;
     let sink = Sink {
@@ -166,8 +203,16 @@ async fn one_owner_page_is_consumed_once_before_its_acknowledgements(
     let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
     let ledger = Arc::new(TaskLedger::new(adapter).await?);
     let owner = Uuid::new_v4();
-    let first = ledger.accept(owner, "first".into()).await?;
-    let second = ledger.accept(owner, "second".into()).await?;
+    let first = ledger
+        .accept(owner, "first".into(), TaskExecution::new_command_executor())
+        .await?;
+    let second = ledger
+        .accept(
+            owner,
+            "second".into(),
+            TaskExecution::new_command_executor(),
+        )
+        .await?;
     ledger.finish(first, owner, TaskEnd::Stopped).await?;
     ledger.finish(second, owner, TaskEnd::Lost).await?;
     let sink = Sink {
