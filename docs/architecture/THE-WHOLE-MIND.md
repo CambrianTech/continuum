@@ -31,8 +31,10 @@ Companions, each the owner of its chapter: [CBAR-SUBSTRATE-ARCHITECTURE](CBAR-SU
    hard budget. We mirror a solution where it pays and replace it where silicon does better
    (exact copies, snapshots, migration) or worse (storage, bandwidth). Names are a little more than
    metaphor: each names a quantity we measure and a rule that moves it.
-2. **Continual, never stop-the-world.** Nothing waits until full and then rewrites: not memory, not
-   learning, not context, not placement. Maintenance runs in the background (`kcompactd`); its
+2. **Continual and autonomic, never stop-the-world.** Every subsystem assembles, refines, discovers
+   and prunes itself all the time, from the state of the minds: memory, genome, context, placement,
+   the engine. Nothing waits until full and then rewrites, and nothing waits for someone to schedule
+   it. Maintenance runs in the background (`kcompactd`); its
    result becomes visible only at a seam (double buffering).
 3. **One budget, demand pulls.** One budget per resource, held by one owner; demand draws on it
    where it arises and pressure pushes back (neurovascular coupling, not a central planner). No
@@ -255,14 +257,29 @@ summaries; storage tiers with an eviction owner because silicon pays for the poi
 sleep pressure and the two-process model (SLEEP-AND-WAKE); synaptic downscaling (a dream also
 forgets: the adoption gate, decay, retirement).
 
-**Today:** settled examples fill a bucket of 16; job-create sends `/train` to a second context; a
-sentinel polls the job board; the gene is adopted as a trial and serves at once, before its exam
-(ONE-RESIDENT §2.1 says it must not). The core never sends `/learn`. Training on the engine freezes
-the serving daemon's reconfigure for the whole run.
+**The genome is alive the same way, not a pipeline** (Joel, 2026-11-01: "It's the same way the
+genome dynamically assembles, learns, relearns on the same LoRA weights or finds more in the
+background. Everything is doing this. If you keep using the status quo we will have the status quo
+prospect."). Four autonomic motions, all continual, none scheduled:
+- **Assembles for the moment:** which genes are active and how strongly follows what she perceives
+  now (the composer weights genes by distance to her perception: live, `genome::composer::compose`).
+- **Learns and relearns on the same weights:** small steps on the genes in use as experience
+  arrives, under sleep pressure; a gene is never "finished".
+- **Finds more in the background:** what she perceives activates genes she does not hold, in her
+  store, on the grid, in the commons, the way association surfaces a memory; the useful ones arrive
+  and join the composition.
+- **Prunes:** a gene that stops helping her work fades in the composition and falls off.
 
-**Design:** every settled example adds to her sleep pressure; dream steps on her shadow gene run
-between decode batches whenever pressure meets opportunity; a snapshot is a candidate gene; the
-exam gates the swap shadow → stable; wake latency is one dream chunk.
+**The status quo to leave behind:** settled examples fill a bucket of 16; job-create sends `/train`
+to a second context; a sentinel polls the job board; a gene is adopted as a trial and serves at
+once, before its exam (ONE-RESIDENT §2.1 says it must not). The core never sends `/learn`, and
+training on the engine freezes the serving daemon's reconfigure for the whole run. That is an
+MLOps pipeline, and it would give us an MLOps prospect.
+
+**The design:** every settled experience adds to her sleep pressure; dream steps refine the genes
+she is using, on her shadow copy, between decode batches whenever pressure meets opportunity; the
+evidence of her own work (outcomes, corrections) moves a change toward stable or lets it fade,
+continually; wake latency is one dream chunk.
 
 ## 4. GPU and compute: the substrate
 
