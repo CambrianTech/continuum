@@ -258,23 +258,28 @@ members = [
 # classified by a header string or a body. BLOCKED: the core's command receiver also
 # needs the addressed module (AddressedInbox / VerifiedAddressed / reply bound to the
 # request) that lands on top of it; bump again to that rev when it publishes.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
-airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
-airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
+# Bump d26713bf -> 762adeb2 (land-identity-custody, card 2a0d34cf): airc canary head
+# + the identity custody fix — a READ never mints; init --as mints explicitly. The
+# c7083d04 BLOCKED note above is satisfied: d26713bf already carries #1623 (sealed
+# progress / terminal reply lifecycle); 762adeb2 adds #1618, #1624, #1630, #1633,
+# #1635 on top.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "762adeb27867247f8a69fc2258d5a76043508ff7" }
+airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "762adeb27867247f8a69fc2258d5a76043508ff7" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "762adeb27867247f8a69fc2258d5a76043508ff7" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "762adeb27867247f8a69fc2258d5a76043508ff7" }
+airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "762adeb27867247f8a69fc2258d5a76043508ff7" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "762adeb27867247f8a69fc2258d5a76043508ff7" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "762adeb27867247f8a69fc2258d5a76043508ff7" }
 # airc-trust: the peer trust store's tier writes. Test fixtures only: TwoAircLoopback
 # enrols its two peers at `own_account`, the tier the command ingress contract requires.
-airc-trust = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
+airc-trust = { git = "https://github.com/CambrianTech/airc", rev = "762adeb27867247f8a69fc2258d5a76043508ff7" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "762adeb27867247f8a69fc2258d5a76043508ff7" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
