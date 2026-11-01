@@ -240,3 +240,31 @@
             "the only surviving `true` is the keyword boolean"
         );
     }
+
+    #[test]
+    fn tool_surface_token_cost_breakdown() {
+        // Serialize all native tool specs and measure their real token cost
+        let specs = super::native_tool_specs();
+        println!("\n=== Tool Surface Cost Diagnostic ===");
+        println!("Tools found: {}", specs.len());
+
+        let mut total_chars = 0usize;
+        let mut results: Vec<(String, usize, usize)> = Vec::new();
+
+        for spec in &specs {
+            let json_str = serde_json::to_string_pretty(spec).unwrap_or_default();
+            let chars = json_str.chars().count();
+            // char/4+1 heuristic (same as continuum_base's estimate)
+            let tokens = chars / 4 + 1;
+            results.push((spec.name.clone(), chars, tokens));
+            total_chars += chars;
+        }
+
+        println!("\nPer-tool breakdown:");
+        for (name, chars, tokens) in &results {
+            println!("  {:50} : {} chars = ~{} tokens", name, chars, tokens);
+        }
+
+        let total_tokens = total_chars / 4 + 1;
+        println!("\nTotal: {} chars = ~{} tokens for {} tools", total_chars, total_tokens, specs.len());
+    }
