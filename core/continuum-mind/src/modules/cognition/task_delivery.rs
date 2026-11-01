@@ -76,7 +76,7 @@ impl CognitionModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use continuum_kernel::runtime::tasks::TaskEnd;
+    use continuum_kernel::runtime::tasks::{TaskEnd, TaskExecution};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     // Scheduling fixture only; real durable consumption is tested by cognition's
@@ -88,7 +88,11 @@ mod tests {
     #[async_trait::async_trait]
     impl TaskOwnerSink for Sink {
         type Error = std::io::Error;
-        async fn consume(&self, owner: Uuid, ends: &[(Uuid, TaskEnd)]) -> Result<BTreeSet<Uuid>, Self::Error> {
+        async fn consume(
+            &self,
+            owner: Uuid,
+            ends: &[(Uuid, TaskEnd)],
+        ) -> Result<BTreeSet<Uuid>, Self::Error> {
             if owner == self.refused && self.refuse.load(Ordering::SeqCst) {
                 Err(std::io::Error::other("injected owner refusal"))
             } else {
@@ -104,9 +108,10 @@ mod tests {
         let ledger = TaskLedger::new(adapter).await?;
         let refused = Uuid::new_v4();
         let healthy = Uuid::new_v4();
-        let blocked = ledger.accept(refused, "blocked".into()).await?;
-        let ready = ledger.accept(healthy, "ready".into()).await?;
-        let running = ledger.accept(healthy, "running".into()).await?;
+        let execution = TaskExecution::new_command_executor();
+        let blocked = ledger.accept(refused, "blocked".into(), execution).await?;
+        let ready = ledger.accept(healthy, "ready".into(), execution).await?;
+        let running = ledger.accept(healthy, "running".into(), execution).await?;
         ledger.finish(blocked, refused, TaskEnd::Stopped).await?;
         ledger.finish(ready, healthy, TaskEnd::Stopped).await?;
         let sink = Sink {
