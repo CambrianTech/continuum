@@ -229,7 +229,12 @@ absorbs, the first dropped under contention.
 The mechanism underneath is what we called **sentinels** (GENOME-FOUNDRY-SENTINEL; the training
 and fitness sentinels in code): a unit of background work with a brief in and a conclusion out,
 on any base model (none for recall, small for association, larger for a second take), placed
-wherever on the grid has capacity. Sentinels are the substrate's plumbing, never her chore.
+wherever on the grid has capacity. Her subconscious runs its own sentinels without her; she can
+also dispatch sentinels deliberately, as tools (a research sentinel, a second opinion, a watcher on
+a build), and steer her own mind (raise her focus, choose to sleep). Nothing disallows either;
+only the subconscious ones never wait for her (Joel, 2026-11-01: "She can schedule sentinels man.
+She will. She can control her own mind too or use them as tools. We don't disallow this. I mean
+this only for her own mind's subconscious.").
 
 **What exists:** the parts, scattered. Engrams with salience and decay (merge-by-recall, decay
 sweeps), `Continuation` with an `Expectation` (a prediction a later perception confirms or
