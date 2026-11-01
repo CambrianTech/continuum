@@ -45,6 +45,11 @@ impl CommandExecutor {
         })?;
         let owner = caller.peer_id.as_uuid();
         let command: CommandUri = command.into();
+        // Admission precedes the first storage await. A close either refuses
+        // this request without effects or sees custody throughout acceptance.
+        let custody = self.registry.task_admission.admit_owned().ok_or_else(|| {
+            DispatchFailure::not_committed("runtime is draining background tasks".into())
+        })?;
         let ledger = Arc::clone(
             self.task_ledger()
                 .await
@@ -55,6 +60,7 @@ impl CommandExecutor {
         let (accepted, receipt) = tokio::sync::oneshot::channel();
         let this = Arc::clone(self);
         tokio::spawn(async move {
+            let _custody = custody;
             let handle = match ledger.accept(owner, command.to_string()).await {
                 Ok(handle) => handle,
                 Err(error) => {
@@ -106,7 +112,9 @@ impl CommandExecutor {
             );
         });
         receipt.await.map_err(|_| {
-            DispatchFailure::uncertain("background acceptance owner stopped before reporting".into())
+            DispatchFailure::uncertain(
+                "background acceptance owner stopped before reporting".into(),
+            )
         })?
     }
 }
@@ -128,6 +136,27 @@ mod tests {
     use crate::runtime::{
         CommandInterceptor, CommandResult, InterceptorOutcome, MessageBus, ModuleRegistry,
     };
+
+    #[tokio::test]
+    async fn closed_runtime_refuses_before_resolving_storage() -> Result<(), String> {
+        let registry = Arc::new(ModuleRegistry::new());
+        registry.task_admission.close();
+        // No data module or injected ledger: a request that gets past admission
+        // would fail at storage resolution with a different error.
+        let executor = Arc::new(CommandExecutor::new(registry.clone()));
+        let caller =
+            CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(Uuid::new_v4()));
+        let result = executor
+            .dispatch_background("test/result", Value::Null, Some(caller))
+            .await;
+        let Err(error) = result else {
+            return Err("closed runtime admitted background work".into());
+        };
+        assert_eq!(error.message, "runtime is draining background tasks");
+        assert_eq!(error.outcome, DispatchOutcome::NotCommitted);
+        assert_eq!(registry.task_admission.in_flight(), 0);
+        Ok(())
+    }
 
     struct GatedResult {
         entered: tokio::sync::Notify,
@@ -186,14 +215,29 @@ mod tests {
             assert!(futures::poll!(waiting.as_mut()).is_pending());
         }
         tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
-            .await.map_err(|error| error.to_string())?;
+            .await
+            .map_err(|error| error.to_string())?;
+        assert_eq!(executor.registry.task_admission.in_flight(), 1);
+        let drain = executor.registry.task_admission.close_and_wait();
+        tokio::pin!(drain);
+        assert!(futures::poll!(drain.as_mut()).is_pending());
         gate.release.notify_one();
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
-            .await.map_err(|error| error.to_string())?
+            .await
+            .map_err(|error| error.to_string())?
             .map_err(|error| error.to_string())?;
-        let handle = event.payload["handle"].as_str().ok_or("completion has no task handle")?;
+        let handle = event.payload["handle"]
+            .as_str()
+            .ok_or("completion has no task handle")?;
         let handle = Uuid::parse_str(handle).map_err(|error| error.to_string())?;
-        assert!(matches!(ledger.pending(handle, owner).await?, Some(TaskEnd::Done(_))));
+        assert!(matches!(
+            ledger.pending(handle, owner).await?,
+            Some(TaskEnd::Done(_))
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), drain)
+            .await
+            .map_err(|error| error.to_string())?;
+        assert_eq!(executor.registry.task_admission.in_flight(), 0);
         Ok(())
     }
 

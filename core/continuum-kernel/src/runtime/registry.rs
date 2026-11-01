@@ -15,6 +15,9 @@ use std::any::TypeId;
 use std::sync::Arc;
 
 pub struct ModuleRegistry {
+    /// Background acceptance, execution and terminal persistence share custody
+    /// with this runtime's module registry, including across executor instances.
+    pub(crate) task_admission: Arc<super::admission_gate::AdmissionGate>,
     /// Modules by name: "voice" -> Arc<dyn ServiceModule>
     modules: DashMap<&'static str, Arc<dyn ServiceModule>>,
 
@@ -57,6 +60,7 @@ impl Default for ModuleRegistry {
 impl ModuleRegistry {
     pub fn new() -> Self {
         let registry = Self {
+            task_admission: Arc::new(super::admission_gate::AdmissionGate::new()),
             modules: DashMap::new(),
             configs: DashMap::new(),
             metrics: DashMap::new(),
@@ -400,7 +404,8 @@ mod tests {
     struct StubSpec;
     impl crate::sdk_codegen::CommandSpec for StubSpec {
         const NAME: &'static str = "test/stub-descriptor";
-        const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+        const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel =
+            crate::sdk_codegen::AccessLevel::AiSafe;
         const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Bare;
         type Params = StubParams;
         type Result = StubResult;
@@ -547,5 +552,4 @@ mod tests {
         let found = registry.module_of_type::<TestModule>();
         assert!(found.is_some());
     }
-
 }
