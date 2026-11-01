@@ -230,9 +230,22 @@ impl Faculty for DeferredFaculty {
         // memory into this turn. A same-room-but-stale finding is REPROJECTED
         // forward (slice 3, below); a different-room finding is simply not ours.
         let cold = {
-            let latest = self.runner.latest().and_then(|published| published.output);
-            match latest.as_ref() {
-                Some(found)
+            // The outer Option is "has a run published?"; the inner is "did it find anything?".
+            // A published empty finding is WARM (Codex at d627b8af): it serves nothing, and never
+            // re-pays the synchronous cold start on every tick after an empty recall.
+            let published = self.runner.latest().map(|published| published.output);
+            match published.as_ref().map(Option::as_ref) {
+                Some(None) => {
+                    continuum_base::probe!(
+                        class = "deferred.serve",
+                        faculty = %self.id.as_str(),
+                        mode = "last-good-empty",
+                        found = false,
+                        "deferred lane served"
+                    );
+                    return None;
+                }
+                Some(Some(found))
                     if found.room_id == ws.room_id
                         && found.activity_room_id == ws.activity_room_id =>
                 {
@@ -246,7 +259,7 @@ impl Faculty for DeferredFaculty {
                     );
                     return served;
                 }
-                Some(_) => {
+                Some(Some(_)) => {
                     continuum_base::probe!(
                         class = "deferred.serve",
                         faculty = %self.id.as_str(),
@@ -415,6 +428,60 @@ mod tests {
             );
             finding.cycle = ws.cycle;
             Some(finding)
+        }
+    }
+
+    /// A perception faculty that finds nothing, counting how often it ran.
+    struct EmptyRecall(std::sync::atomic::AtomicUsize);
+    #[async_trait]
+    impl Faculty for EmptyRecall {
+        fn id(&self) -> FacultyId {
+            FacultyId::Recall
+        }
+        async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
+            // Counted at the END of a run that takes a while: an inline run has counted before
+            // contribute() returns; a background run cannot have finished by then.
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
+    }
+
+    // what this catches: a published EMPTY finding read as "never ran", so every ambient tick
+    // after an empty recall re-pays the synchronous cold start (Codex at d627b8af). The first
+    // tick runs inline once; later ambient ticks serve the warm empty without an inline run.
+    #[tokio::test]
+    async fn an_empty_recall_is_warm_and_never_repeats_the_cold_start() {
+        let inner = Arc::new(EmptyRecall(std::sync::atomic::AtomicUsize::new(0)));
+        let deferred = DeferredFaculty::spawn(Arc::clone(&inner) as Arc<dyn Faculty>);
+        let room = Uuid::new_v4();
+        assert!(deferred
+            .contribute(&Workspace::in_room("first", room).with_cycle(CycleId(1)))
+            .await
+            .is_none());
+        assert_eq!(
+            inner.0.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the cold start ran inline once"
+        );
+        let mut published = deferred.runner.subscribe();
+        for cycle in 2..5 {
+            let before = inner.0.load(std::sync::atomic::Ordering::Relaxed);
+            assert!(deferred
+                .contribute(&Workspace::in_room("again", room).with_cycle(CycleId(cycle)))
+                .await
+                .is_none());
+            // Each ambient tick submits to the background run and returns at once: the inner
+            // count rises only when the background run lands, never inside contribute().
+            assert_eq!(
+                inner.0.load(std::sync::atomic::Ordering::Relaxed),
+                before,
+                "no inline cold start on tick {cycle}"
+            );
+            tokio::time::timeout(std::time::Duration::from_secs(2), published.changed())
+                .await
+                .expect("test: the background run publishes") // test: the assertion failing loudly
+                .expect("test: the runner stays alive"); // test: the assertion failing loudly
         }
     }
 
