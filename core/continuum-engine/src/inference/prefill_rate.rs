@@ -154,6 +154,11 @@ impl crate::inference::decode_knee::OwnRate for PrefillPoint {
 
 /// The prompt (tokens) a turn may cost at `tps` inside the audience's TTFT budget,
 /// clamped to `[floor, served]`. Pure — the one rule.
+///
+/// On slow hardware (~30–40 tps) with an interactive TTFT of 60 s this yields
+/// ~1800–2400 tokens; fast GPU nodes (1000+ tps) reach 60 k+. The guard files in
+/// `source-hygiene` once described the clip as a product of two constants, but the
+/// multiplication is `tps * audience.ttft()` where TPS is observed from hardware.
 pub fn affordable_prompt_tokens(tps: f64, floor: u32, served: u32, audience: Audience) -> u32 {
     let raw = (tps * audience.ttft().as_secs_f64()).floor();
     let raw = if raw.is_finite() && raw > 0.0 { raw as u32 } else { 0 };

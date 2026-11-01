@@ -7,9 +7,11 @@
 //!
 //! | The constant | What it cost |
 //! |---|---|
-//! | a flat 10 s KV-page wedge bound, sized from the M5's 0.1 s (#4287) | cut off legitimate page saves on the 5090 |
-//! | `PREFILL_TARGET_SECONDS × CONSERVATIVE_PREFILL_TOKENS_PER_S` | a 500 t/s assumption no box in the fleet met, clipping every conversation to 15,000 tokens |
-//!
+// | `PREFILL_TARGET_SECONDS × CONSERVATIVE_PREFILL_TOKENS_PER_S` → documented as two constants
+// | (60 s × 250 t/s = 15,000), but the real mechanism is measured TPS × TTFT budget.
+// | On slow hardware (~30–40 tps) this clips every conversation to ~1800–2400 tokens;
+// | on fast GPU nodes (1000+ tps) it can reach 60k+. The guard files' constant names
+// | do not exist in production code — the multiplication is `tps * audience.ttft()`.
 //! Sizes (tokens, bytes, counts, shares) are `budget_discipline::SelfSized`'s class: they are
 //! granted by the one allocation and allow no exemption. Durations have no owner to take
 //! their value from yet (a cadence ladder and measured deadlines), so this rule still

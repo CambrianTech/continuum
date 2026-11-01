@@ -1,9 +1,11 @@
 //! `self_sized`: a consumer deciding how much of a resource it gets, instead of taking it
 //! from its grant. The shapes, each found at many sites on canary 365f70fe4:
 //!
-//! - a sized constant (`EMBEDDING_CACHE_MAX = 20_000`, `KEEP = 8`, `ECHOED_ARG_CHARS = 600`);
-//! - a product of constants (`PREFILL_TARGET_SECONDS × CONSERVATIVE_PREFILL_TOKENS_PER_S`
-//!   clipped every machine's conversation to a flat 15,000 tokens);
+// | a measured rate × TTFT (`tps * audience.ttft()`) — documented as a constant
+// | product but the TPS is observed from hardware, not fixed; on slow boxes (~30–40 tps)
+// | context drops to ~1800–2400 tokens while fast GPUs (1000+ tps) reach 60k+. The guard
+// | files' constant names (`PREFILL_TARGET_SECONDS × CONSERVATIVE_PREFILL_TOKENS_PER_S`)
+// | do not exist in production code — the multiplication is `tps * ttft()`.
 //! - a literal ceiling (`.take(8)`, `.truncate(5)`, `.min(1_500)`, `channel(256)`);
 //! - a head cut of text she will read (`.chars().take(`): it drops what happened last, so
 //!   she acts as if time never moved and repeats herself (Benchy, 125 identical acts, 10-20);
