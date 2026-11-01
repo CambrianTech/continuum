@@ -113,8 +113,7 @@ async fn storage_unwind_cannot_release_custody_as_a_clean_shutdown() -> Result<(
 struct FailTerminalWrite(Arc<crate::orm::gated_adapter::GatedAdapter>);
 
 #[tokio::test]
-async fn lost_acceptance_acknowledgement_is_uncertain_and_withholds_shutdown() -> Result<(), String>
-{
+async fn verified_acceptance_readback_recovers_lost_acknowledgement() -> Result<(), String> {
     use crate::orm::adapter::StorageAdapter;
     let runtime = Arc::new(Runtime::new());
     let (module, _) = RecordingModule::new("acceptance-ack-loss", Vec::new());
@@ -123,31 +122,28 @@ async fn lost_acceptance_acknowledgement_is_uncertain_and_withholds_shutdown() -
     let adapter = Arc::new(crate::orm::gated_adapter::GatedAdapter::new(adapter));
     let ledger = Arc::new(crate::runtime::tasks::TaskLedger::new(adapter.clone()).await?);
     let executor = Arc::new(CommandExecutor::new(runtime.registry.clone()));
-    executor.set_task_ledger(ledger)?;
+    executor.set_task_ledger(ledger.clone())?;
     adapter.fail_after_next_create();
-    let caller = crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(
-        uuid::Uuid::new_v4(),
-    ));
-    let result = executor
+    let owner = uuid::Uuid::new_v4();
+    let caller =
+        crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(owner));
+    let handle = executor
         .dispatch_background("test/result", serde_json::Value::Null, Some(caller))
-        .await;
-    let Err(error) = result else {
-        return Err("lost acceptance acknowledgement was reported as success".into());
-    };
-    assert_eq!(
-        error.outcome,
-        crate::runtime::command_executor::DispatchOutcome::Uncertain
-    );
+        .await
+        .map_err(|error| error.message)?;
+    let receipt = runtime.shutdown().await;
+    assert!(receipt.state_is_durable());
+    assert_eq!(module.saves.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        ledger.pending(handle, owner).await?,
+        Some(crate::runtime::tasks::TaskEnd::Failed { .. })
+    ));
     // The adapter really committed the acceptance before losing its reply.
     let count = adapter
         .count(crate::orm::query::QueryBuilder::new("kernel_task_facts").build())
         .await;
     assert!(count.success);
-    assert_eq!(count.data, Some(1));
-    let receipt = runtime.shutdown().await;
-    assert!(matches!(receipt.tasks, DrainOutcome::Unknown { .. }));
-    assert!(receipt.modules.is_empty());
-    assert_eq!(module.saves.load(Ordering::SeqCst), 0);
+    assert_eq!(count.data, Some(2));
     Ok(())
 }
 

@@ -116,18 +116,27 @@ impl TaskLedger {
 
     pub async fn accept(&self, owner: Uuid, command: String) -> Result<Uuid, String> {
         let task = Uuid::new_v4();
-        self.facts
-            .save(
-                task,
-                &TaskFact {
-                    task,
-                    owner,
-                    fact: Fact::Accepted { command },
-                },
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(task)
+        let acceptance = TaskFact {
+            task,
+            owner,
+            fact: Fact::Accepted { command },
+        };
+        match self.facts.save(task, &acceptance).await {
+            Ok(()) => Ok(task),
+            Err(write_error) => {
+                // A failed acknowledgement does not prove the write failed.
+                // Resolve this exact attempted acceptance, without a second
+                // insert or execution owner. Only an identical durable fact
+                // authorizes execution; absence or read failure stays uncertain.
+                match self.facts.find_by_id(task).await {
+                    Ok(Some(stored)) if stored == acceptance => Ok(task),
+                    Ok(_) => Err(write_error.to_string()),
+                    Err(read_error) => Err(format!(
+                        "acceptance write failed: {write_error}; readback failed: {read_error}"
+                    )),
+                }
+            }
+        }
     }
 
     async fn authorize(&self, task: Uuid, owner: Uuid) -> Result<(), String> {
@@ -312,7 +321,9 @@ mod tests {
         drop(second);
         let reopened = TaskLedger::new(adapter).await?;
         assert_eq!(reopened.pending(task, owner).await?, Some(winner.clone()));
-        let page = reopened.pending_page(owner, None, NonZeroUsize::new(10).ok_or("test page size")?).await?;
+        let page = reopened
+            .pending_page(owner, None, NonZeroUsize::new(10).ok_or("test page size")?)
+            .await?;
         assert_eq!(page.ends, vec![(task, winner.clone())]);
         assert_eq!(reopened.finish(task, owner, TaskEnd::Lost).await?, winner);
         assert!(reopened.pending(task, Uuid::new_v4()).await.is_err());
