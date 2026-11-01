@@ -25,7 +25,7 @@ Companions, each the owner of its chapter: [CBAR-SUBSTRATE-ARCHITECTURE](CBAR-SU
 (learning), [SLEEP-AND-WAKE-AT-EVERY-SCALE](SLEEP-AND-WAKE-AT-EVERY-SCALE.md) (when she dreams),
 [GRID-MARKET-CLEARING](GRID-MARKET-CLEARING.md) (the economy).
 
-## 0. Seven laws
+## 0. Eight laws
 
 1. **Both realms.** Biology, operating systems and networks each solved a version of this under a
    hard budget. We mirror a solution where it pays and replace it where silicon does better
@@ -62,6 +62,18 @@ Companions, each the owner of its chapter: [CBAR-SUBSTRATE-ARCHITECTURE](CBAR-SU
    hand, a training-trigger submit, a hold, a reboot to recover) marks a defect to remove, not a
    procedure to keep. The gate: a node runs for a week with residents learning and working, and the
    only interventions in its log are the volitional ones (someone talking to a mind).
+8. **Both ways, or not at all** (Joel, 2026-11-01: "you usually screw it up and they go into a coma.
+   Like it never goes both ways, more active from rest or snap out, respond. Everything trends
+   toward shit"). Every mechanism that can turn a mind down (rest, sleep, page-out, a lower share, a
+   hold, a smaller window) ships with the one that turns her back up (wake, page-in, raise, release,
+   grow), and both directions run in the same validator and are shown in the same PR. A one-way
+   ratchet is how a system drifts to its floor. Two more rules make the way up stay real:
+   - **A coma is a loud defect, measured all the time:** a mind addressed who has not glanced
+     within the wake latency, a mind with rising pressure and no dreaming, a mind with work and no
+     act: each is a probe and a count on the health line, never a quiet state.
+   - **The way up is exercised even when nothing asks for it:** as the decode knee explores one
+     lane above its clamp, a resting mind is nudged toward active on a schedule, so the upward path
+     never rusts unseen.
 
 ## 1. Three timescales, one organism
 
@@ -419,6 +431,9 @@ live eviction goes to disk or re-prefill); a shared prefix is copied, never re-p
 | "Dream" | engram consolidation and LoRA training share the word | dreaming = both, as two stages of one sleep (consolidate facts, train genes), under one sleep pressure |
 
 ## 8. Build order, each with a validator first
+
+Every step below carries law 8's validator: the downward and the upward transition it adds, run
+both ways, and the coma probe for anything it can hold down.
 
 0. **The one pattern (§1b) first, by migration:** the stage contract and the mind bus, proven on
    two outliers (outlier A: recall, already a deferred faculty; outlier B: the reflex, an event
