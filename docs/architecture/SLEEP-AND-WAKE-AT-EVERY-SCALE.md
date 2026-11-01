@@ -37,9 +37,9 @@ fast does she wake.**
 | Biology | What it is here | Measured as | Rises when | Falls when |
 |---|---|---|---|---|
 | **Sleep pressure** (process S, adenosine) | experience she has lived and not yet learned from | unconsolidated settled examples, weighted by value and age (the oldest unlearned example's age is the "hours awake") | she works and her turns settle | a dream step consumes them |
-| **Opportunity** (process C, night) | how little the world needs her right now | absence of directed demand on her, her lane and her node: no human in her room, idle slots, spare grid compute | her people go home, a project idles, a node has nobody on it | someone speaks to her, her lane fills |
+| **Opportunity** (process C, night) | how little the world needs her right now | absence of directed demand on her, her lane and her node: nobody (person, resident, agent) engaged with her, idle slots, spare grid compute | her people go home, a project idles, a node has nobody on it | someone speaks to her, her lane fills |
 | **Arousal** (the amygdala) | a cheap, often-wrong signal that something may need her | the amygdala's trip on her perception: a directed message, an @mention, affect, a surprise outlier (Joel, 2026-10-10: "often wrong and that's ok ... like a mutex/signal in a sleeping thread loop ... just check, and maybe change") | a stimulus arrives | she checks and goes back, or acts |
-| **Urgency** (pushing through) | how serious the work in front of her is | her activity's declared stakes: a human waiting, a review due, a live call, a demo | serious work is in flight | the work ends |
+| **Urgency** (pushing through) | how serious the work in front of her is | the stakes she gives her work: someone waiting on her, a review due, a live call, a demo | serious work is in flight | the work ends |
 
 **Dreaming is in place, so it is a switch, not a job.** The same loaded weights serve and learn; a
 dream step runs between two decode batches on her shadow adapter (ONE-RESIDENT-MODEL §9). Leaving
@@ -76,7 +76,7 @@ What the function must do, as properties a validator checks (never as constants)
 
 The previous design bounded the decode slowdown while training ran (a fixed 10%, then the learning
 grant of #5683). That is the wrong axis for an in-place dream. A 2x slowdown during a quiet stretch
-costs nothing anyone notices; a short slowdown she cannot leave costs a waiting human. So:
+costs nothing anyone notices; a short slowdown she cannot leave costs whoever is waiting on her. So:
 
 - **Wake latency** = time from a stimulus to her decoding at full rate = the longest
   non-preemptible dream chunk, plus the signal's path. Measured by the engine (`window_ms_max` in
@@ -89,8 +89,8 @@ costs nothing anyone notices; a short slowdown she cannot leave costs a waiting 
 
 "For a teammate we would want to be pragmatic." Pragmatism, written down:
 
-- **A human waiting outranks her sleep.** Directed demand (a human in her room, a review she
-  owes) is arousal and urgency at once: she wakes and pushes through.
+- **Someone waiting on her wakes her.** Being addressed by any citizen (a person, a resident, an
+  agent) or a review she owes is arousal: she wakes, glances, and decides whether to push through.
 - **Her fatigue is visible, to her and to the team.** Sleep pressure is a fact in her view (a
   source, like any other) and on the health line: "behind on consolidating, 3 h of unlearned
   work." The substrate makes it visible; her cognition decides what to say or do about it. She may
@@ -123,7 +123,7 @@ The anti-pattern every one of these replaced: wait until full, then stop the wor
 | | A mind | A lane (one engine, many minds) | The grid |
 |---|---|---|---|
 | Pressure | her unlearned examples | the sum over the minds it serves, with each mind's age | the minds homed on the node, plus leased-in ones |
-| Opportunity | nobody directed at her | idle slots, no queued turns | a node whose humans are away, spare GPU on a peer |
+| Opportunity | nobody directed at her | idle slots, no queued turns | a node where nobody is engaged, spare GPU on a peer |
 | Arousal / wake | the amygdala trips; her dream pauses at the next chunk | a slot becomes busy; the engine yields at the chunk boundary (fork `/train/pause`, `before_window`) | a directed turn routes to the mind's home; a borrowed node returns the lease (CAPACITY-FABRIC §4: a recallable loan, never a block) |
 | Share | pulled by her drive, deferred by her urgency | the sum of what its minds pull, capped by the lane total and the wake latency (aging: oldest debt is never starved) | pulled to where night is: an idle node offers dream steps to minds whose home is busy |
 | Wake latency | one dream chunk | one dream chunk + slot scheduling | the lease recall + one chunk |
@@ -155,7 +155,7 @@ input), the same rule as serving: the engine batches, nothing queues minds in fr
    one night; the debt at the end of a night is near zero.
 3. **Daydream cost:** median act at four residents with dreaming on stays within the latency line
    (plan path step 1), the slowdown during a daydream reported.
-4. **Night:** with every human away, the node's dream share rises to the spare compute and drops to
+4. **Night:** with nobody engaged on the node, the node's dream share rises to the spare compute and drops to
    serving within the wake latency when one returns.
 5. **Push-through:** during declared serious work her dream share stays at the floor of rule 3, and
    the debt is paid within the next night.
@@ -179,7 +179,7 @@ input), the same rule as serving: the engine batches, nothing queues minds in fr
 - The shape of `sleep_drive`: a logistic in pressure whose midpoint opportunity moves, or a sum of
   two terms? Fit both on the simulator (CAPACITY-FABRIC §9) before the road.
 - Urgency's source: the activity's recipe declares stakes, or her cognition sets it per act? (Agency
-  says hers; pragmatism says the room's human can raise it.)
+  says hers, and it is: she gives her work its stakes; others can tell her what is at stake for them, never set it.)
 - Pressure weighting: does a correction (negative affect after her turn) weigh more than a pass?
   The amygdala already labels it.
 - On a discrete GPU, the CPU dream lane (ONE-RESIDENT-MODEL S4: "a CPU dream on idle cores always")

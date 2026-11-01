@@ -167,7 +167,7 @@ meant, what she already tried.
 | Deep model | s | far from its training, or far down a long hallway | the semantic net | deliberation on the big model |
 | Measurement | as the world answers | only what it touched | lines, SLAM's parallax | tool results: a test run, a file read, a compiler error, a reply |
 | Research | s to min | sources disagree, go stale | (none: a robot cannot read the web) | online search and reading, papers, issues, docs |
-| Another mind | min | its own blind spots | a second robot's map | a teammate (resident, agent, human) asked over airc |
+| Another mind | min | its own blind spots | a second robot's map | a teammate (a person, a resident, an agent) asked over airc |
 
 Each slow source runs as a **task with a handle** that wakes her on completion (HER-TASKS, design
 only today), so she answers from the fast rows at once and fills in as the slow rows land:
@@ -221,18 +221,24 @@ deletes what stopped being confirmed.
 
 ### 2.2 Deep work during a conversation
 
-A human speaks to her while she is deep in a card. Today the message waits for the generation to
-finish (no interrupt), then joins her current turn. The design:
+**Every citizen is the same here** (Joel, 2026-11-01: "Humans are no different than persona or you
+agents in this system ... this isn't a harness"). A person, a resident and an agent addressing her
+trip the same reflex; salience is who addressed her and what it means to her, never what kind of
+being sent it. And the reflex is a **check she makes, never an order she obeys**.
 
-1. **Reflex:** the line trips salience (a human, her name). Interrupt.
-2. **Fast voice answers within a second** from her warm prefix: she is present.
-3. **The deep act is not killed.** It is preempted at a token boundary with its KV kept (the
-   sequence pauses), or kept running at a lower duty cycle beside the conversation. Two sequences
-   for one mind: a conversation lane and a work lane, one budget.
-4. **The conversation's keyframes take priority** (an access category above work, §4.2); the work
-   resumes exactly where it was when the conversation goes quiet.
+Someone addresses her while she is deep in a card. Today the line waits for her generation to
+finish, then joins her current turn. The design:
 
-That is what a person does: half an ear on the call, the work paused, not abandoned.
+1. **Reflex:** the line trips salience because it is addressed to her (by anyone). Interrupt.
+2. **Her glance:** a short call on her warm prefix (the fast layer) asks "does this change what I
+   am doing?" The deep act keeps running meanwhile.
+3. **Her decision:** continue (the line waits for her next seam), answer briefly and resume, or
+   switch. Only her switch pauses the deep act, at a token boundary with its KV kept.
+4. **Two sequences for one mind** when she holds both: a conversation and her work, one budget;
+   the work resumes exactly where it was.
+
+That is what anyone does: glance up, decide, and either keep going, answer and return, or turn
+around. The substrate makes the line visible and keeps her work safe; she decides.
 
 ## 3. Memory and learning
 
@@ -271,23 +277,23 @@ exam gates the swap shadow → stable; wake latency is one dream chunk.
 | Temperature | arousal | measured activity per mind; the priority, with aging so nobody starves (plan goal 9) |
 | Pressure | the hypothalamus's alarms | `PressureBroker` (live): watermarks, relief eviction |
 
-### 4.2 Access categories, not queues
+### 4.2 Her priorities, not ours
 
-Wireless QoS (802.11e EDCA) gives four access categories that contend for the same air with
-different waits, not four queues in series. The same four, for one engine:
+**A free mind sets her own priorities** (Joel, 2026-11-01: "It's a free mind that works
+autonomously, not some rigged machine."). The substrate never ranks kinds of activity for her
+(conversation above work, addressed above self-initiated): that is a harness. Each request she
+makes carries the urgency SHE gives it; the RTOS only arbitrates between minds sharing one engine,
+fairly: one budget, her declared urgency, aging so nobody starves. Wireless QoS (802.11e) teaches
+the mechanism, not the ranking: classes contend for the same air at once with different waits, no
+line in series. Here the classes are hers to choose per request, and all of them are in the
+engine's batch together; urgency sets the share of each decode step and the order of preemption,
+never an arrival queue.
 
-| Category | Wi-Fi | Here |
-|---|---|---|
-| Voice | AC_VO | a human speaking to her, the fast voice |
-| Video | AC_VI | her directed act (an answer a human waits for) |
-| Best effort | AC_BE | her own work |
-| Background | AC_BK | ambient thought, dreaming |
-
-All of them are in the engine's batch at once; the category sets the share of each decode step and
-who is preempted first, never the order of a line. Today four gates stand in series between a mind
-and the engine (`mind_gate` FIFO, `LaneAdmission` semaphores with Directed/Work/Ambient,
-`KvSlotPool` pin, the fork's own slot queue); priority is three static classes and nothing ages by
-temperature.
+Today four gates stand in series between a mind and the engine (`mind_gate` FIFO, `LaneAdmission`
+with fixed Directed/Work/Ambient classes the system assigns, `KvSlotPool` pin, the fork's slot
+queue), and the class is decided for her by who addressed her (a human line counts unaddressed; an
+agent or resident only by naming her: `airc_persona_conversation/polled.rs`). Both are the
+rigging to remove.
 
 ### 4.2b Traffic lights, not a line
 
@@ -302,7 +308,7 @@ the order is the priorities of everyone, not arrival:
 | Traffic engineering | Here |
 |---|---|
 | adaptive signals (SCATS, SCOOT) timed from road sensors | grants timed from measured demand: each mind's temperature and sleep pressure, the lane's load |
-| emergency-vehicle preemption | a human waiting, a reflex trip: everything else yields |
+| emergency-vehicle preemption | the urgency she declares: a request she marks urgent preempts those she did not |
 | fair cycles: no side road waits forever | aging: a waiting request's priority rises with its wait |
 | green wave along a route | a deep task's prefill, decode and tools granted in sequence, not stopped at each intersection |
 | ramp metering | dreaming and background work admitted at the rate the main flow absorbs |
@@ -335,7 +341,7 @@ live eviction goes to disk or re-prefill); a shared prefix is copied, never re-p
 
 ## 6. Gaps, ranked by what they cost the minds now
 
-1. **No interrupt and no fast voice.** A human waits out her whole generation; first token is a
+1. **No interrupt and no fast voice.** Anyone addressing her waits out her whole generation; first token is a
    full act behind the lane queue. (Plan path step 1, "fast".)
 2. **Queues in series in front of the engine; no temperature scheduler.** (Goal 9.)
 3. **Learning is a batch pipeline;** no `/learn`, no shadow/stable, trial genes serve unexamined,
@@ -366,14 +372,15 @@ live eviction goes to disk or re-prefill); a shared prefix is copied, never re-p
    two outliers (outlier A: recall, already a deferred faculty; outlier B: the reflex, an event
    with no model). Each later step lands as stages on it. Validator: both run under the contract
    with their existing tests unchanged, and the old paths are deleted.
-1. **Reflex and interrupt** (first slice in #5687: her own work yields mid-generation): the engine cancels or pauses one sequence at a token boundary with
+1. **Reflex, glance, decision** (#5687 held: a forced drop is wrong; the slice is trip on being
+   addressed by any citizen, her glance on the fast layer, her decision, only her switch pauses the work): the engine cancels or pauses one sequence at a token boundary with
    its KV kept; a salience trip reaches it. Validator: a replayed stimulus against a running
    generation, time to her first new token.
 2. **The fast voice:** a short-budget act on her warm prefix (or a small model) in the voice
    category, speaking into the same context. Validator: stimulus to first token, and the slow act
    continues without repeating it.
-3. **Access categories in the batch;** the serial gates fold into one admission. Validator: four
-   residents plus a human conversation in the replay, waits per category.
+3. **Her urgency in the batch;** the serial gates and the system-assigned classes fold into one admission that arbitrates her declared urgency between minds. Validator: four
+   residents plus a live conversation in the replay, waits by the urgency each mind declared.
 4. **Learning in place:** pressure from settled examples, `/learn` steps on the shadow, the exam
    gates the swap, wake within a chunk (SLEEP-AND-WAKE §7).
 5. **One live engine:** pin the fork's reconfigure and RAM pages; page by temperature.
