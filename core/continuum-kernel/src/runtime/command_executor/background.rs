@@ -7,6 +7,23 @@ use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
+// Custody is unresolved until acceptance is refused or a terminal is durable.
+// An unexpected unwind/drop in storage must not turn a released permit into a
+// successful shutdown. Handler unwinds still produce their ordinary terminal.
+struct PersistenceCustody<'a> {
+    unresolved: &'a std::sync::atomic::AtomicBool,
+    settled: bool,
+}
+
+impl Drop for PersistenceCustody<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.unresolved
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
 impl CommandExecutor {
     /// Explicit storage injection for an embedded executor or an isolated fixture.
     pub fn set_task_ledger(&self, ledger: Arc<TaskLedger>) -> Result<(), String> {
@@ -60,9 +77,14 @@ impl CommandExecutor {
         let (accepted, receipt) = tokio::sync::oneshot::channel();
         let this = Arc::clone(self);
         tokio::spawn(custody.scope(async move {
+            let mut persistence = PersistenceCustody {
+                unresolved: &this.registry.task_persistence_failed,
+                settled: false,
+            };
             let handle = match ledger.accept(owner, command.to_string()).await {
                 Ok(handle) => handle,
                 Err(error) => {
+                    persistence.settled = true;
                     let _ = accepted.send(Err(DispatchFailure::not_committed(error)));
                     return;
                 }
@@ -97,12 +119,10 @@ impl CommandExecutor {
                 Ok(winner) => winner,
                 Err(error) => {
                     tracing::error!(%handle, %owner, %error, "task ended but terminal persistence failed; acceptance remains unresolved");
-                    this.registry
-                        .task_persistence_failed
-                        .store(true, std::sync::atomic::Ordering::Release);
                     return;
                 }
             };
+            persistence.settled = true;
             // A competing supervisor may have persisted a different terminal first.
             // Every delivery must project that durable winner, never this writer's loser.
             let outcome = completion(winner);

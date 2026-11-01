@@ -32,11 +32,16 @@ pub(crate) struct PausedWrite {
 pub(crate) struct GatedAdapter {
     inner: Arc<dyn StorageAdapter>,
     next: Mutex<Option<PausedWrite>>,
+    unwind_next: std::sync::atomic::AtomicBool,
 }
 
 impl GatedAdapter {
     pub(crate) fn new(inner: Arc<dyn StorageAdapter>) -> Self {
-        Self { inner, next: Mutex::new(None) }
+        Self { inner, next: Mutex::new(None), unwind_next: std::sync::atomic::AtomicBool::new(false) }
+    }
+
+    pub(crate) fn unwind_next_write(&self) {
+        self.unwind_next.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Hold the next write at a gate. Only that one write is held.
@@ -55,6 +60,9 @@ impl GatedAdapter {
         &self,
         write: impl FnOnce(Arc<dyn StorageAdapter>) -> BoxFuture<'static, R> + Send + 'static,
     ) -> R {
+        if self.unwind_next.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            std::panic::resume_unwind(Box::new("injected storage unwind"));
+        }
         let gate = self.next.lock().expect("gate lock").take(); // test fixture: a poisoned gate means an earlier test thread panicked
         let inner = Arc::clone(&self.inner);
         tokio::spawn(async move {

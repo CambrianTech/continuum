@@ -210,7 +210,7 @@ impl Runtime {
                 reason: format!("background task custody did not settle within {}ms; modules remain running", per_phase.as_millis()),
             },
             Ok(()) if self.registry.task_persistence_failed.load(std::sync::atomic::Ordering::Acquire) => DrainOutcome::Unknown {
-                reason: "background terminal persistence failed; durable acceptances require reconciliation".into(),
+                reason: "background task persistence did not settle; durable acceptances require reconciliation".into(),
             },
             Ok(()) => DrainOutcome::Drained,
         };
