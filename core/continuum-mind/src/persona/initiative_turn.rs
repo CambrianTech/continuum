@@ -106,7 +106,7 @@ pub(crate) async fn drive_initiative_turn(
     // forever. Her held card's turn, exactly as a room turn drives it; with no card held this
     // is her default hands and no capture, as before. Bookkeeping on her own act: it changes
     // neither her framing nor what she is told.
-    let (settled, _) = crate::persona::card_hands::drive_in_held_card(
+    let (settled, _, sync) = crate::persona::card_hands::drive_in_held_card(
         cycle,
         ctx.identity.peer_id.as_uuid(),
         &ctx.identity.agent_name,
@@ -117,6 +117,7 @@ pub(crate) async fn drive_initiative_turn(
         conversation,
     )
     .await;
+    sync.run().await;
     let acts = settled.acts;
     let (step, _, _) = SettleStep::from_settled(settled);
     let capacity = match &step {
