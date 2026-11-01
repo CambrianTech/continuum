@@ -27,14 +27,16 @@ runs:
     # notices on run 41233178745, c59624407, 2026-10-31), and one crate's test build filled the
     # rest; the worker then died writing its own log on / (canary 107e10ddc, #5673), and those
     # jobs keep no annotation at all. The image's preinstalled toolchains are ~25-30 GB that no
-    # Rust job here reads (Android SDK, .NET, GHC, Boost, CodeQL): removed in the background, so
-    # the deletion overlaps the cache restore instead of adding to the job's wall clock.
+    # Rust job here reads (Android SDK, .NET, GHC, Boost, CodeQL): removed in the background
+    # while the toolchain and system packages install, and awaited before the cache restore
+    # needs the room (below).
     - name: Free the runner's preinstalled toolchains
       shell: bash
       run: |
         df -h /
         sudo nohup rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
           /usr/local/share/boost /opt/hostedtoolcache/CodeQL > /dev/null 2>&1 &
+        echo "FREE_TOOLCHAINS_PID=$!" >> "$GITHUB_ENV"
 
     # The shared target is 24 GB unpacked (warm run 41193606500 at f0f786d19, 2026-10-31: 24G
     # after pruning 5.79 GB of test executables), restored beside its 5 GiB download, and a crate
@@ -126,6 +128,17 @@ runs:
       with:
         path: ~/apt-archives
         key: ${{ steps.apt-cache.outputs.cache-primary-key }}
+
+    # A 26.04 runner with a 72G disk started with 19G free, and the restore (24 GB unpacked beside
+    # its 5 GiB download) filled it 43 s after the deletion began, still running (#5681's
+    # continuum-dreaming job, run 41261287633, ubuntu26 20261018.50.1, 2026-11-01 01:32Z). The
+    # room the deletion makes is only room once it has finished.
+    - name: Wait for the freed toolchains
+      shell: bash
+      run: |
+        start=$SECONDS
+        while ps -p "$FREE_TOOLCHAINS_PID" > /dev/null; do sleep 2; done
+        echo "::notice title=toolchains freed::waited $((SECONDS - start)) s; / free $(df -h --output=avail / | tail -1 | tr -d ' ')"
 
     - name: Restore the shared target cache
       id: target-cache
