@@ -91,14 +91,15 @@ impl RagSource for AwarenessRagSource {
             return RagDelivery::empty(AWARENESS);
         }
         // The heading is its own first item: the lines read as nothing without it. Each
-        // line follows, loudest first, as its own unit for the view to level.
+        // line follows, loudest first, as its own unit for the view to level. Each is its own
+        // pointer: there is no verb to reopen the strip, so collapsed it stays as it is.
         let meta = serde_json::json!({
             "live_activities": snapshot.load.live_activities,
             "unread_total": snapshot.load.unread_total,
         });
         let mut items = Vec::with_capacity(lines.len() + 1);
-        items.push(RagItem::whole("heading", HEADING, meta.clone()));
-        items.extend(lines.iter().map(|(key, line)| RagItem::whole(key.clone(), line.clone(), meta.clone())));
+        items.push(RagItem::whole("heading", HEADING, meta.clone()).with_pointer(HEADING));
+        items.extend(lines.iter().map(|(key, line)| RagItem::whole(key.clone(), line.clone(), meta.clone()).with_pointer(line.clone())));
         let delivery = RagDelivery::of(AWARENESS, items, false);
         continuum_base::probe!(
             class = "mind.strip.delivered",

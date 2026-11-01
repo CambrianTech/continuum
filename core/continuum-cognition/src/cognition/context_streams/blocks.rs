@@ -2,8 +2,10 @@
 //! source of one item: what it says now. A block that changes appends its new version.
 //!
 //! Its levels come from the source's own units (FLOW-IMPLEMENTATION-PLAN §2d): whole is
-//! every unit whole, summary every unit at its summary, pointer every unit at the cheapest
-//! level it offers. The block stays one item because each item renders as its own message;
+//! every unit whole, summary every unit at its summary, pointer every unit's pointer. A unit
+//! with no pointer leaves the collapsed block, as `RagItem::pointer` says (`None`: a collapsed
+//! item leaves her view entirely); a block none of whose units keep a pointer collapses to its
+//! truthful minimum. The block stays one item because each item renders as its own message;
 //! choosing a level per unit (keep the best card whole, collapse the rest) waits on merging
 //! adjacent items at render.
 
@@ -70,9 +72,9 @@ impl Source<ContextMessage> for Grounding {
         let summary = self.units.iter().any(|unit| unit.summary.is_some()).then(|| {
             self.at(|unit| unit.summary.as_deref().unwrap_or(&unit.content)) // a unit with no summary level is its own summary
         });
-        let pointer = self.at(|unit| unit.pointer.as_deref().or(unit.summary.as_deref()).unwrap_or(&unit.content)); // the cheapest level each unit offers
+        let pointer = self.units.iter().filter_map(|unit| unit.pointer.as_deref()).collect::<Vec<_>>().join("\n");
         let summary = summary.filter(|summary| *summary != whole);
-        let pointer = (pointer != whole).then_some(pointer);
+        let pointer = (!pointer.is_empty() && pointer != whole).then_some(pointer);
         let pointer = pointer.map_or_else(|| self.render(self.minimum.clone()), |pointer| self.render(pointer)); // map_or_else: units with no coarser level keep the block's truthful minimum
         vec![self.block(self.render(whole), summary.map(|summary| self.render(summary)), pointer)]
     }
@@ -102,5 +104,20 @@ mod tests {
         assert_eq!(text(item.full()), "[room-board]\ncard a: a long description of the work\ncard b: a long description of the work");
         assert_eq!(item.summary().map(text).as_deref(), Some("[room-board]\ncard a: short\ncard b: short"));
         assert_eq!(item.pointer().map(text).as_deref(), Some("[room-board]\n[card a]\n[card b]"));
+    }
+
+    // what this catches: a collapsed block that kept every unit, a unit with no pointer falling
+    // back to its whole content: 592 one-line card pointers were Benchy's collapsed board (the M5,
+    // 2026-11-01). A unit with no pointer leaves the collapsed block; a block that would keep
+    // nothing collapses to its minimum.
+    #[test]
+    fn a_unit_without_a_pointer_leaves_the_collapsed_block() {
+        let held = RagItem::whole("a", "card a: hers, long", serde_json::Value::Null).with_pointer("[card a]");
+        let other = RagItem::whole("b", "card b: someone else's, long", serde_json::Value::Null);
+        let block = Grounding { persona: uuid::Uuid::nil(), faculty: "room-board".into(), minimum: "minimum".into(), text: String::new(), units: vec![held, other.clone()].into() };
+        let item = block.items().remove(0);
+        assert_eq!(item.pointer().map(|m| m.text.clone()).as_deref(), Some("[room-board]\n[card a]"));
+        let none = Grounding { persona: uuid::Uuid::nil(), faculty: "room-board".into(), minimum: "minimum".into(), text: String::new(), units: vec![other].into() };
+        assert_eq!(none.items().remove(0).pointer().map(|m| m.text.clone()).as_deref(), Some("[room-board]\nminimum"));
     }
 }

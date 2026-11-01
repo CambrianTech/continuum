@@ -682,7 +682,7 @@ impl Faculty for RecallFaculty {
         // Each memory a unit at its levels, so her view can show the block at gists or
         // handles when it cannot hold every memory whole; the frame stays whole.
         let units: Vec<crate::cognition::rag_budget::RagItem> = std::iter::once(
-            crate::cognition::rag_budget::RagItem::whole("frame", RECALL_MEMORY_FRAME, serde_json::Value::Null),
+            crate::cognition::rag_budget::RagItem::whole("frame", RECALL_MEMORY_FRAME, serde_json::Value::Null).with_pointer(RECALL_MEMORY_FRAME),
         )
         .chain(rendered.iter().map(|(engram, line)| memory_unit(engram, line)))
         .collect();
