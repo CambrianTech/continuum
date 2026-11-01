@@ -127,3 +127,14 @@ The drain under (a):
 - the wake is the store's `sequence_revision` watch (P1), armed before the final empty check;
 - deleted when it lands: `events_tx`, `INBOX_CAPACITY`, the `Full` drop, and the newest-page-above-floor
   catch-up.
+
+### Routing never opens the body (Joel, 2026-11-01: "routing is everything... header enums, never parsed bodies")
+Two routing decisions read the body today, and P2 moves both onto headers:
+- **The logical sender.** A human `chat/send` is relayed by a transport peer, so the seam (P1's
+  `posted_from_envelope`) and admission's self-skip both recover the real author from the
+  `chat_transcript` JSON body. `chat/send` must stamp the logical sender as a typed header at
+  publish time; the arrival's `author`, the seam and the self-skip read the header alone.
+- **The decode-failure probe's body preview** is diagnostics on an already-refused event, not
+  routing; it stays, bounded, until the decoder needs no guess.
+Opening the body remains the addressed consumer's act only: her perception decodes the line she was
+delivered.
