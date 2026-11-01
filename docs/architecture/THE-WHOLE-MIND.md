@@ -25,7 +25,7 @@ Companions, each the owner of its chapter: [CBAR-SUBSTRATE-ARCHITECTURE](CBAR-SU
 (learning), [SLEEP-AND-WAKE-AT-EVERY-SCALE](SLEEP-AND-WAKE-AT-EVERY-SCALE.md) (when she dreams),
 [GRID-MARKET-CLEARING](GRID-MARKET-CLEARING.md) (the economy).
 
-## 0. Six laws
+## 0. Seven laws
 
 1. **Both realms.** Biology, operating systems and networks each solved a version of this under a
    hard budget. We mirror a solution where it pays and replace it where silicon does better
@@ -55,6 +55,13 @@ Companions, each the owner of its chapter: [CBAR-SUBSTRATE-ARCHITECTURE](CBAR-SU
    short acts with the world pushing back between them (a test, a compile, a reply) over one long
    act that tries to be right at once; that is the path to a median act under 60 s. For beliefs,
    genes, the engine's geometry and placement: refined continually, never computed once.
+7. **It never needs intervention** (Joel, 2026-11-01). No autonomic process waits for a person, an
+   agent or a command to start it, tune it, unstick it or restart it: dreaming, association,
+   consolidation, gene composition and discovery, paging, placement, recovery from a dead engine
+   or node. Each manual command an operator or agent runs on one of them today (job-create by
+   hand, a training-trigger submit, a hold, a reboot to recover) marks a defect to remove, not a
+   procedure to keep. The gate: a node runs for a week with residents learning and working, and the
+   only interventions in its log are the volitional ones (someone talking to a mind).
 
 ## 1. Three timescales, one organism
 
