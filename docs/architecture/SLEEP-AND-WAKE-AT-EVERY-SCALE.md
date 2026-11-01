@@ -15,6 +15,16 @@
 These are not metaphors. Each term below names a quantity we measure, a rule that moves it, and
 the code that owns it. The same rule runs at three scales; only the measurements differ.
 
+**Both realms, never purism** (Joel, 2026-11-01: "It's using what biology has figured out as a
+lesson and mirroring it when it makes sense but using the best of both worlds. It's a mistake to
+think such severely different structural architectures need to match."). Biology is evidence that
+a design works under a hard budget, not a structure to copy. Where silicon is cheaper (exact
+copies, snapshots, rewinding a dream, moving a mind across the grid) we use it; where it is dearer
+(storage, bandwidth, wiring) we pay for it explicitly. Example: the hippocampus indexes rather than
+compresses (a pointer reactivates the whole episode), and we mirror that with handles she can
+expand; but a pointer is only as good as the storage behind it, so episodes live in tiers with an
+eviction owner and the last copy is never evicted, a concern the brain never had.
+
 Companions: [ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md)
 (the DREAM stage, §8-9), [CONCURRENT-MIND-AND-GOVERNOR](CONCURRENT-MIND-AND-GOVERNOR.md),
 [BEING-SOCIETY-GOVERNOR](BEING-SOCIETY-GOVERNOR.md), [CAPACITY-FABRIC-AND-GOVERNOR](CAPACITY-FABRIC-AND-GOVERNOR.md),
@@ -99,12 +109,16 @@ costs nothing anyone notices; a short slowdown she cannot leave costs a waiting 
 | Pressure | her unlearned examples | the sum over the minds it serves, with each mind's age | the minds homed on the node, plus leased-in ones |
 | Opportunity | nobody directed at her | idle slots, no queued turns | a node whose humans are away, spare GPU on a peer |
 | Arousal / wake | the amygdala trips; her dream pauses at the next chunk | a slot becomes busy; the engine yields at the chunk boundary (fork `/train/pause`, `before_window`) | a directed turn routes to the mind's home; a borrowed node returns the lease (CAPACITY-FABRIC §4: a recallable loan, never a block) |
-| Share decided by | her drive vs her urgency | the lane splits its dream share across minds by pressure (aging: oldest debt first) | the fabric places dreams where night is: an idle node dreams for minds whose home is busy |
+| Share | pulled by her drive, deferred by her urgency | the sum of what its minds pull, capped by the lane total and the wake latency (aging: oldest debt is never starved) | pulled to where night is: an idle node offers dream steps to minds whose home is busy |
 | Wake latency | one dream chunk | one dream chunk + slot scheduling | the lease recall + one chunk |
 
-A mind does not own compute; it owns pressure. The lane turns the pressure of its minds into dream
-steps; the grid moves pressure to where there is night. Each scale reads the one below as a single
-number with a timestamp (the same watch-channel shape as every other governor input).
+A mind does not own compute; it owns pressure. **Demand pulls, the budget pushes back**: the brain
+holds one global budget (the glucose supply) but no central scheduler hands it out; blood flow
+follows local activity (neurovascular coupling) within seconds. So no planner decides each mind's
+dream share in advance. A mind's pressure draws dream steps where it builds; the lane enforces only
+its total and the wake latency; the grid offers night where it has it. Each scale reads the one
+below as a single number with a timestamp (the same watch-channel shape as every other governor
+input), the same rule as serving: the engine batches, nothing queues minds in front of it.
 
 ## 5. What exists, and what each piece becomes
 
