@@ -139,6 +139,43 @@ impl InFlight {
             crate::cognition::health_ledger::note_generation_outcome(false);
         }
     }
+
+    /// The generation was let go on purpose: a directed line arrived and her own work yielded
+    /// to it (the reflex interrupt). Not a drop and not a fault: reported with what she had
+    /// produced, so the cost of an interrupt is measured, never counted on the loss ledger.
+    pub fn yielded(&mut self) {
+        if !std::mem::take(&mut self.armed) {
+            return;
+        }
+        let (observed, partial) = self.drain();
+        continuum_base::probe!(
+            class = "persona.generation.yielded",
+            persona = %self.persona,
+            elapsed_ms = self.started.elapsed().as_millis() as u64,
+            observed = observed,
+            answer_chars = partial.answer_chars as u64,
+            reasoning_chars = partial.reasoning_chars as u64,
+            prefill_processed = partial.prefill_processed,
+            prefill_total = partial.prefill_total,
+            "her own work yielded mid-generation to a directed line: the engine's task ends, the slot keeps the prompt's KV for the resume"
+        );
+    }
+
+    /// What the stream had delivered, when this path owned it: `(false, empty)` when the caller
+    /// took the chunks. The adapter's future (and its sender) is gone by now, so the channel is
+    /// closed and `try_recv` drains it without blocking.
+    fn drain(&mut self) -> (bool, PartialOutput) {
+        match self.chunks.take() {
+            Some(mut rx) => {
+                let mut chunks = Vec::new();
+                while let Ok(chunk) = rx.try_recv() {
+                    chunks.push(chunk);
+                }
+                (true, partial_from_chunks(chunks))
+            }
+            None => (false, PartialOutput::default()),
+        }
+    }
 }
 
 impl Drop for InFlight {
@@ -147,19 +184,7 @@ impl Drop for InFlight {
             return;
         }
         crate::cognition::health_ledger::note_generation_outcome(true);
-        let observed = self.chunks.is_some();
-        let partial = match self.chunks.take() {
-            Some(mut rx) => {
-                let mut chunks = Vec::new();
-                // The adapter's future (and its sender) dropped before this witness, so
-                // the channel is closed and `try_recv` drains it without blocking.
-                while let Ok(chunk) = rx.try_recv() {
-                    chunks.push(chunk);
-                }
-                partial_from_chunks(chunks)
-            }
-            None => PartialOutput::default(),
-        };
+        let (observed, partial) = self.drain();
         let (bound, source) = crate::inference::turn_bound::effective_bound_with_source(
             Duration::ZERO,
             self.turn_bound,

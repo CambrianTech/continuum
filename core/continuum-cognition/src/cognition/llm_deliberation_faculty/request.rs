@@ -267,7 +267,26 @@ impl LlmDeliberationFaculty {
                     turn_bound,
                     Some(receiver),
                 );
-                let result = adapter.generate_stream_checked(request, sink).await;
+                let generation = adapter.generate_stream_checked(request, sink);
+                // THE REFLEX INTERRUPT (THE-WHOLE-MIND §2.2): her own work yields mid-generation
+                // when a human addresses her, as the lane wait above already did before dispatch.
+                // Dropping the call ends the engine's task; the slot keeps the prompt's KV, so the
+                // work resumes on a warm prefix. A directed act is never interrupted by the next
+                // directed line, and a live spoken stream (the branch above) is not cut mid-sentence.
+                let result = if ws.attention.requires_priority() {
+                    generation.await
+                } else {
+                    match crate::cognition::directed_pending::unless_directed(self.persona_id, generation).await {
+                        Some(result) => result,
+                        None => {
+                            witness.yielded();
+                            if let Some(lease) = capture.as_mut() {
+                                lease.abandon("yielded in flight: a directed line arrived and she answers first");
+                            }
+                            return None;
+                        }
+                    }
+                };
                 witness.disarm();
                 result
             }

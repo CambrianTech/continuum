@@ -140,9 +140,9 @@ impl LlmDeliberationFaculty {
         let _lane = if ws.attention.requires_priority() {
             admission.await
         } else {
-            tokio::select! {
-                lane = admission => lane,
-                _ = crate::cognition::directed_pending::wait(self.persona_id) => {
+            match crate::cognition::directed_pending::unless_directed(self.persona_id, admission).await {
+                Some(lane) => lane,
+                None => {
                     continuum_base::probe!(
                         class = "delib.gate.yielded_to_directed",
                         persona = %self.persona_name,

@@ -95,12 +95,41 @@ pub async fn wait(persona: Uuid) {
     }
 }
 
+/// Run `work` unless a directed line for `persona` arrives first: `None` = she yielded to it.
+/// The reflex interrupt every wait and every in-flight act of her own work shares: the request
+/// waits, she does not (THE-WHOLE-MIND §2.2). A result ready at the same instant wins, so
+/// finished work is never thrown away.
+pub async fn unless_directed<F: std::future::Future>(persona: Uuid, work: F) -> Option<F::Output> {
+    tokio::select! {
+        biased;
+        out = work => Some(out),
+        _ = wait(persona) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // what this catches: a line that arrived BEFORE the wait began must still
     // preempt (the flag, not only the wake, carries the fact).
+    // what this catches: her own work running on while a human waits for her (the in-flight
+    // generation had no interrupt; a directed line waited out the whole act)
+    #[tokio::test]
+    async fn a_directed_line_interrupts_work_and_finished_work_is_kept() {
+        let p = Uuid::new_v4();
+        let interrupted = tokio::spawn(unless_directed(p, std::future::pending::<()>()));
+        tokio::task::yield_now().await;
+        signal(p);
+        let out = tokio::time::timeout(std::time::Duration::from_millis(200), interrupted)
+            .await
+            .expect("the signal must interrupt at once") // test: a fixture step that must succeed
+            .expect("the task ran"); // test: a fixture step that must succeed
+        assert_eq!(out, None, "pending work yields to the directed line");
+        assert_eq!(unless_directed(p, async { 7 }).await, Some(7), "a result ready with the signal still pending wins");
+        clear(p);
+    }
+
     #[tokio::test]
     async fn a_signal_before_the_wait_resolves_immediately() {
         let p = Uuid::new_v4();
