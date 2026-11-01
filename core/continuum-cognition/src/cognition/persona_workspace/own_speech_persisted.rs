@@ -98,6 +98,7 @@ pub(super) fn save_volatile(
         perceived_tasks: snapshot.task_results.perceived_ids(),
     };
     let task_publication = snapshot.task_results.publication();
+    let perception_publication = snapshot.pending_perception.publication();
     let persisted = PersistedVolatile {
         wm: snapshot,
         own_speech: OwnSpeechPersisted::ByRoom(
@@ -111,6 +112,7 @@ pub(super) fn save_volatile(
         &serde_json::to_vec(&persisted)?,
     )?;
     wm.publish_task_checkpoint(task_publication);
+    wm.publish_perception_checkpoint(perception_publication);
     Ok(receipt)
 }
 

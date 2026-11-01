@@ -213,6 +213,7 @@ impl WorkingMemory {
             receipt_children: self.receipt_children.lock().clone(),
             open_views: self.open_views.lock().saved(),
             task_results: self.task_results.lock().clone(),
+            pending_perception: self.pending_perception.lock().clone(),
         }
     }
 
@@ -245,6 +246,9 @@ impl WorkingMemory {
             let mut results = snap.task_results.clone();
             results.publish_restored();
             *self.task_results.lock() = results;
+            let mut perception = snap.pending_perception.clone();
+            perception.publish_restored();
+            *self.pending_perception.lock() = perception;
         }
         // Read before any field moves out of the snapshot below.
         let records = snap.action_records();

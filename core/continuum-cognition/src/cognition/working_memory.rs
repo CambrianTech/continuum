@@ -299,6 +299,7 @@ pub struct WorkingMemory {
     /// first thing a tight window's fit drops ([`super::open_views`]).
     open_views: Mutex<super::open_views::OpenViews>,
     task_results: Mutex<task_results::TaskResults>,
+    pending_perception: Mutex<perception_pending::PendingPerception>,
     incarnation: Uuid,
     /// Her learned tool head: every call she makes is noted here, and the deliberation faculty
     /// reads and adopts the head at each epoch turnover ([`super::tool_head`]).
@@ -444,6 +445,10 @@ pub struct VolatileSnapshot {
     pub open_views: Vec<super::open_views::OpenView>,
     /// Consumed terminal references and outstanding wake obligations, checkpointed together.
     pub(crate) task_results: task_results::TaskResults,
+    /// Room lines accepted from the store and not yet shown, with the source cursor and gap
+    /// receipts, checkpointed together (P2). Empty on snapshots written before this field.
+    #[serde(default)]
+    pub(crate) pending_perception: perception_pending::PendingPerception,
 }
 
 impl VolatileSnapshot {
@@ -608,6 +613,8 @@ mod derived;
 mod action_log;
 mod continuity;
 mod task_results;
+mod perception_pending;
+pub use perception_pending::{AcceptedPage, PerceptionAcceptError, PerceptionGap, PerceptionRef};
 pub use task_results::{TaskReceiptConflict, TaskReceiptError};
 mod ledger;
 mod perception;

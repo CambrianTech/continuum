@@ -22,3 +22,4 @@ mod gated_grounding;
 use gated_grounding::*;
 
 mod task_consumption;
+mod perception_consumption;

@@ -68,6 +68,7 @@ impl WorkingMemory {
             active_from_seq: AtomicU64::new(0),
             open_views: Mutex::new(Default::default()),
             task_results: Mutex::new(Default::default()),
+            pending_perception: Mutex::new(Default::default()),
             incarnation: Uuid::new_v4(),
             tool_head: Default::default(),
         }

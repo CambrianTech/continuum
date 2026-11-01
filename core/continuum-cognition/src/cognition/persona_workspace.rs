@@ -62,6 +62,8 @@ pub use root_acting_workspace::*;
 mod owner_checkpoint;
 pub use owner_checkpoint::OwnerCheckpointError;
 mod task_consumption;
+mod perception_consumption;
+pub use perception_consumption::PerceptionConsumptionError;
 pub use task_consumption::{ResidentTaskSink, TaskConsumptionError, TaskSinkError};
 mod own_speech_persisted;
 pub use own_speech_persisted::VolatileReceipt;
