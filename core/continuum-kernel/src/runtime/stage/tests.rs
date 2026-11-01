@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -90,6 +91,7 @@ struct Counting;
 
 #[async_trait]
 impl Stage for Counting {
+    type Input = ();
     type Output = u64;
     fn id(&self) -> StageId {
         StageId::named("counting")
@@ -103,12 +105,17 @@ impl Stage for Counting {
     fn cost(&self, _input: &[InputRevision]) -> Cost {
         Cost {
             execution: ExecutionCost::Cpu {
-                estimated: Duration::from_millis(1),
+                measured: Some(Duration::from_millis(1)),
             },
             residency: ResidencyCost::default(),
         }
     }
-    async fn run(&self, ctx: &StageContext, input: &[InputRevision]) -> RunOutcome<u64> {
+    async fn run(
+        &self,
+        ctx: &StageContext,
+        _input: &(),
+        input: &[InputRevision],
+    ) -> RunOutcome<u64> {
         for _ in 0..3 {
             match ctx.requested() {
                 ControlRequest::Continue => {}
@@ -154,7 +161,7 @@ async fn a_stage_honours_control_with_the_receipt_that_proves_it() {
     let input = [rev("numbers", 4)];
     let (tx, rx) = tokio::sync::watch::channel(ControlRequest::Continue);
     let ctx = StageContext { run, control: rx };
-    match Counting.run(&ctx, &input).await {
+    match Counting.run(&ctx, &(), &input).await {
         RunOutcome::Produced(out) => assert_eq!(
             out[0].1,
             Provenance {
@@ -167,16 +174,136 @@ async fn a_stage_honours_control_with_the_receipt_that_proves_it() {
     tx.send(ControlRequest::Yield)
         .expect("test: the receiver is alive"); // test: a fixture step that must succeed
     assert!(matches!(
-        Counting.run(&ctx, &input).await,
+        Counting.run(&ctx, &(), &input).await,
         RunOutcome::Stopped(StopReceipt::Yielded { .. })
     ));
     tx.send(ControlRequest::Pause)
         .expect("test: the receiver is alive"); // test: a fixture step that must succeed
     assert!(matches!(
-        Counting.run(&ctx, &input).await,
+        Counting.run(&ctx, &(), &input).await,
         RunOutcome::Stopped(StopReceipt::Refused {
             refusal: StopRefusal::PauseUnsupported,
             ..
         })
     ));
+}
+
+/// A stage that echoes its input, or panics when asked to.
+struct Echo;
+
+#[async_trait]
+impl Stage for Echo {
+    type Input = i64;
+    type Output = i64;
+    fn id(&self) -> StageId {
+        StageId::named("echo")
+    }
+    fn triggers(&self) -> Triggers {
+        Triggers {
+            inputs: vec![TopicName("numbers")],
+            ..Triggers::default()
+        }
+    }
+    fn cost(&self, _revisions: &[InputRevision]) -> Cost {
+        Cost {
+            execution: ExecutionCost::Cpu {
+                measured: Some(Duration::from_millis(1)),
+            },
+            residency: ResidencyCost::default(),
+        }
+    }
+    async fn run(
+        &self,
+        ctx: &StageContext,
+        input: &i64,
+        revisions: &[InputRevision],
+    ) -> RunOutcome<i64> {
+        assert!(*input >= 0, "test: a negative input panics the run"); // test: the deliberate panic under test
+        RunOutcome::Produced(vec![(
+            *input,
+            Provenance {
+                by: ctx.run,
+                from: revisions.to_vec(),
+            },
+        )])
+    }
+}
+
+async fn published(runner: &StageRunner<Echo>, want: i64) -> PublishedOutput<i64> {
+    let mut sub = runner.subscribe();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(out) = sub.borrow_and_update().clone() {
+                if out.output == want {
+                    return out;
+                }
+            }
+            sub.changed().await.expect("test: the runner is alive"); // test: a fixture step that must succeed
+        }
+    })
+    .await
+    .expect("test: the output is published in time") // test: the assertion failing loudly
+}
+
+// what this catches: a stage's output landing without provenance, or a late output derived from
+// older input replacing a newer one (the deferred lane's stale-finding guard, now the one rule).
+#[tokio::test]
+async fn the_runner_publishes_with_provenance_and_refuses_older_input() {
+    let runner = StageRunner::spawn(Arc::new(Echo), incarnation(1));
+    runner.submit(5, vec![rev("numbers", 5)]);
+    let out = published(&runner, 5).await;
+    assert_eq!(out.provenance.from, vec![rev("numbers", 5)]);
+    assert_eq!(out.provenance.by.incarnation, incarnation(1));
+    runner.submit(3, vec![rev("numbers", 3)]); // older input, arriving late
+    runner.submit(9, vec![rev("numbers", 9)]);
+    assert_eq!(
+        published(&runner, 9).await.provenance.from,
+        vec![rev("numbers", 9)]
+    );
+    assert_eq!(
+        runner.latest().map(|o| o.output),
+        Some(9),
+        "the older input never replaced the newer"
+    );
+}
+
+// what this catches: a stage whose backend keeps failing taking the mind down, or losing its last
+// good output; both ways: a panic is survived, and three in a row quarantine it on its last good.
+#[tokio::test]
+async fn a_panicking_stage_is_quarantined_on_its_last_good_output() {
+    let runner = StageRunner::spawn(Arc::new(Echo), incarnation(1));
+    runner.submit(1, vec![rev("numbers", 1)]);
+    published(&runner, 1).await;
+    for (n, through) in [(-1, 2), (-2, 3), (-3, 4)] {
+        runner.submit(n, vec![rev("numbers", through)]);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    runner.submit(7, vec![rev("numbers", 5)]);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        runner.latest().map(|o| o.output),
+        Some(1),
+        "quarantined: serves its last good, runs no more"
+    );
+}
+
+// what this catches: a caller's inline run (an addressed turn's orienting response, a cold
+// start) publishing around the one rule: it lands like a background run, and an inline run on
+// input older than what is published is refused (both ways).
+#[tokio::test]
+async fn an_inline_run_publishes_under_the_same_rule() {
+    let runner = StageRunner::spawn(Arc::new(Echo), incarnation(1));
+    assert_eq!(runner.run_inline(&4, &[rev("numbers", 4)]).await, vec![4]);
+    assert_eq!(runner.latest().map(|o| o.output), Some(4));
+    assert!(
+        runner.run_inline(&2, &[rev("numbers", 2)]).await.is_empty(),
+        "older input refused inline too"
+    );
+    assert_eq!(runner.latest().map(|o| o.output), Some(4));
+    runner.submit(6, vec![rev("numbers", 6)]);
+    assert_eq!(
+        published(&runner, 6).await.provenance.by.seq,
+        3,
+        "inline and background runs share one sequence"
+    );
 }

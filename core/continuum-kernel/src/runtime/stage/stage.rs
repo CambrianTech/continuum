@@ -40,9 +40,17 @@ pub enum RunOutcome<O> {
 /// completion re-triggers the stage.
 #[async_trait]
 pub trait Stage: Send + Sync + 'static {
-    type Output: Send;
+    /// The typed payload a run reads (a snapshot it was handed, or a page drained from an event
+    /// topic); its revisions say exactly which versions it is.
+    type Input: Send + Sync + Clone + 'static;
+    type Output: Send + Sync + Clone + 'static;
     fn id(&self) -> StageId;
     fn triggers(&self) -> Triggers;
-    fn cost(&self, input: &[InputRevision]) -> Cost;
-    async fn run(&self, ctx: &StageContext, input: &[InputRevision]) -> RunOutcome<Self::Output>;
+    fn cost(&self, revisions: &[InputRevision]) -> Cost;
+    async fn run(
+        &self,
+        ctx: &StageContext,
+        input: &Self::Input,
+        revisions: &[InputRevision],
+    ) -> RunOutcome<Self::Output>;
 }

@@ -11,10 +11,11 @@ pub enum ModelTier {
     Large,
 }
 
-/// Executing: CPU time (with its measured estimate, never free) or a model call at a tier.
+/// Executing: CPU time (its measured cost, `None` until measured: never claimed free, never a
+/// guessed number) or a model call at a tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionCost {
-    Cpu { estimated: Duration },
+    Cpu { measured: Option<Duration> },
     Model { tier: ModelTier },
 }
 
