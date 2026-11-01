@@ -1,7 +1,8 @@
 //! The sequenced append: a row numbered by a commit-ordered sequence, deduplicated by a unique
 //! field. Runs only inside [`do_batch`](super::open_connection)'s `BEGIN IMMEDIATE` transaction
 //! on the single writer connection, so the `max + 1` read and the insert can never interleave
-//! with another writer: sequence order is commit order.
+//! with another writer: sequence order is commit order. Numbers come from a durable high-water,
+//! so pruning rows never re-issues one.
 
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -39,13 +40,22 @@ pub(super) fn append_sequenced(
             fresh: false,
         });
     }
+    // The next sequence comes from a durable per-collection high-water that only rises, never from
+    // MAX over surviving rows: a pruned newest row (or a collection pruned to empty) must not
+    // re-issue a sequence a cursor already passed (Cormac on #5694). First use seeds it from any
+    // existing rows. Same transaction as the insert, so a rollback returns the number.
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS orm_sequence_heads (collection TEXT PRIMARY KEY, high INTEGER NOT NULL)")
+        .map_err(|e| format!("append: preparing the sequence heads failed: {e}"))?;
     let next: i64 = conn
         .query_row(
-            &format!("SELECT COALESCE(MAX({seq_col}), 0) + 1 FROM {table}"),
-            [],
+            &format!(
+                "INSERT INTO orm_sequence_heads (collection, high) VALUES (?1, (SELECT COALESCE(MAX({seq_col}), 0) + 1 FROM {table})) \
+                 ON CONFLICT(collection) DO UPDATE SET high = high + 1 RETURNING high"
+            ),
+            [&table],
             |row| row.get(0),
         )
-        .map_err(|e| format!("append: reading the sequence failed: {e}"))?;
+        .map_err(|e| format!("append: advancing the sequence failed: {e}"))?;
     match &mut record.data {
         Value::Object(fields) => {
             fields.insert(spec.sequence.clone(), json!(next));

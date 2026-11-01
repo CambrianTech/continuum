@@ -498,6 +498,20 @@
             assert_eq!(seq_of(&again), (1, false), "and its arrival is reused");
         }
 
+        // what this catches: a pruned newest row (or a collection pruned to empty) re-issuing a
+        // sequence a cursor already passed, so the cursor silently skips the new row (Cormac on #5694).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn pruning_never_reissues_a_sequence() {
+            let (adapter, _dir) = arrivals().await;
+            assert_eq!(seq_of(&adapter.batch(vec![append("a1", "m1")]).await), (1, true));
+            assert_eq!(seq_of(&adapter.batch(vec![append("a2", "m2")]).await), (2, true));
+            assert!(adapter.delete("arrivals", &"a2".to_string()).await.success, "test: prune the newest"); // test: a fixture step that must succeed
+            assert_eq!(seq_of(&adapter.batch(vec![append("a3", "m3")]).await), (3, true), "2 is never re-issued");
+            assert!(adapter.delete("arrivals", &"a1".to_string()).await.success);
+            assert!(adapter.delete("arrivals", &"a3".to_string()).await.success, "test: prune to empty"); // test: a fixture step that must succeed
+            assert_eq!(seq_of(&adapter.batch(vec![append("a4", "m4")]).await), (4, true), "an emptied collection does not restart at 1");
+        }
+
         // what this catches: a rolled-back batch consuming a sequence or announcing a revision
         // for a row that never committed (a consumer would wait for, or skip over, a ghost).
         #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
