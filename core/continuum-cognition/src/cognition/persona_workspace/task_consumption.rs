@@ -5,16 +5,12 @@ use continuum_kernel::runtime::tasks::TaskEnd;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TaskConsumptionError {
-    #[error("resident checkpoint admission is closed")]
-    Stopped,
-    #[error("task owner {0} is not a registered resident")]
-    Absent(Uuid),
+    #[error(transparent)]
+    Owner(#[from] OwnerCheckpointError),
     #[error("task read receipt belongs to a replaced memory incarnation for {0}")]
     Replaced(Uuid),
     #[error(transparent)]
     Receipt(#[from] super::super::working_memory::TaskReceiptError),
-    #[error("task consumption checkpoint failed: {0}")]
-    Checkpoint(#[from] std::io::Error),
 }
 
 impl PersonaWorkspaceRegistry {
@@ -27,23 +23,42 @@ impl PersonaWorkspaceRegistry {
         receipt: &crate::cognition::render_receipt::RenderReceipt,
     ) -> Result<Option<VolatileReceipt>, TaskConsumptionError> {
         use continuum_context::level::Level;
-        let memory = self.cycles.lock().get(&receipt.owner)
+        let memory = self
+            .cycles
+            .lock()
+            .get(&receipt.owner)
             .map(|resident| Arc::clone(&resident.working_memory))
-            .ok_or(TaskConsumptionError::Absent(receipt.owner))?;
+            .ok_or(OwnerCheckpointError::Absent(receipt.owner))?;
         if memory.incarnation() != receipt.incarnation {
             return Err(TaskConsumptionError::Replaced(receipt.owner));
         }
-        let shown: std::collections::BTreeSet<_> = receipt.view.items.iter()
-            .filter(|item| !item.retired && matches!(item.level, Level::Full | Level::Summary | Level::Pointer))
-            .filter_map(|item| item.element).collect();
-        let tasks: Vec<_> = memory.task_terminals().into_iter().filter(|end| end.wake_pending).filter(|end| {
-            shown.contains(&crate::cognition::context_streams::tasks::terminal_element(
-                receipt.owner, end.task, &end.fingerprint))
-        }).map(|end| end.task).collect();
+        let shown: std::collections::BTreeSet<_> = receipt
+            .view
+            .items
+            .iter()
+            .filter(|item| {
+                !item.retired && matches!(item.level, Level::Full | Level::Summary | Level::Pointer)
+            })
+            .filter_map(|item| item.element)
+            .collect();
+        let tasks: Vec<_> = memory
+            .task_terminals()
+            .into_iter()
+            .filter(|end| end.wake_pending)
+            .filter(|end| {
+                shown.contains(&crate::cognition::context_streams::tasks::terminal_element(
+                    receipt.owner,
+                    end.task,
+                    &end.fingerprint,
+                ))
+            })
+            .map(|end| end.task)
+            .collect();
         if tasks.is_empty() {
             return Ok(None);
         }
-        self.record_task_reads(receipt.owner, receipt.incarnation, &tasks).map(Some)
+        self.record_task_reads(receipt.owner, receipt.incarnation, &tasks)
+            .map(Some)
     }
 
     /// Success receipts exactly the snapshot containing this end and its wake
@@ -55,7 +70,7 @@ impl PersonaWorkspaceRegistry {
         owner: Uuid,
         ends: Vec<(Uuid, TaskEnd)>,
     ) -> Result<VolatileReceipt, TaskConsumptionError> {
-        self.commit_task_state(owner, |memory| {
+        self.commit_owner_state(owner, |memory| {
             memory.stage_task_ends(ends)?;
             Ok(())
         })
@@ -69,36 +84,13 @@ impl PersonaWorkspaceRegistry {
         incarnation: Uuid,
         tasks: &[Uuid],
     ) -> Result<VolatileReceipt, TaskConsumptionError> {
-        self.commit_task_state(owner, |memory| {
+        self.commit_owner_state(owner, |memory| {
             if memory.incarnation() != incarnation {
                 return Err(TaskConsumptionError::Replaced(owner));
             }
             memory.stage_task_reads(tasks)?;
             Ok(())
         })
-    }
-
-    /// One admission and persistence owner for task arrivals and rendered reads.
-    fn commit_task_state(
-        &self,
-        owner: Uuid,
-        stage: impl FnOnce(
-            &super::super::working_memory::WorkingMemory,
-        ) -> Result<(), TaskConsumptionError>,
-    ) -> Result<VolatileReceipt, TaskConsumptionError> {
-        let stopped = self.checkpoint_stopped.lock();
-        if *stopped {
-            return Err(TaskConsumptionError::Stopped);
-        }
-        let _assembly = self.assembly.lock();
-        let memory = self
-            .cycles
-            .lock()
-            .get(&owner)
-            .map(|resident| Arc::clone(&resident.working_memory))
-            .ok_or(TaskConsumptionError::Absent(owner))?;
-        stage(&memory)?;
-        Ok(save_volatile(owner, SaveReason::Periodic, None, &memory)?)
     }
 }
 
@@ -118,13 +110,15 @@ impl ResidentTaskSink {
         &self,
         receipt: crate::cognition::render_receipt::RenderReceipt,
     ) -> Result<Option<VolatileReceipt>, TaskSinkError> {
-        self.commit(move |registry| registry.record_rendered_tasks(&receipt)).await
+        self.commit(move |registry| registry.record_rendered_tasks(&receipt))
+            .await
     }
 
     async fn commit<R: Send + 'static>(
         &self,
         operation: impl FnOnce(&PersonaWorkspaceRegistry) -> Result<R, TaskConsumptionError>
-            + Send + 'static,
+            + Send
+            + 'static,
     ) -> Result<R, TaskSinkError> {
         let registry = Arc::clone(&self.0);
         // Carry the existing test filesystem scope onto the blocking worker.
@@ -136,7 +130,8 @@ impl ResidentTaskSink {
                 .as_deref()
                 .map(crate::paths::NativeHomeOverride::install);
             operation(&registry)
-        }).await??)
+        })
+        .await??)
     }
 }
 
@@ -156,10 +151,20 @@ pub enum TaskSinkError {
 impl continuum_kernel::runtime::tasks::TaskOwnerSink for ResidentTaskSink {
     type Error = TaskSinkError;
 
-    async fn consume(&self, owner: Uuid, ends: &[(Uuid, TaskEnd)]) -> Result<std::collections::BTreeSet<Uuid>, Self::Error> {
+    async fn consume(
+        &self,
+        owner: Uuid,
+        ends: &[(Uuid, TaskEnd)],
+    ) -> Result<std::collections::BTreeSet<Uuid>, Self::Error> {
         let offered: std::collections::BTreeSet<_> = ends.iter().map(|(task, _)| *task).collect();
         let ends = ends.to_vec();
-        let receipt = self.commit(move |registry| registry.consume_task_ends(owner, ends)).await?;
-        Ok(receipt.perceived_tasks().intersection(&offered).copied().collect())
+        let receipt = self
+            .commit(move |registry| registry.consume_task_ends(owner, ends))
+            .await?;
+        Ok(receipt
+            .perceived_tasks()
+            .intersection(&offered)
+            .copied()
+            .collect())
     }
 }

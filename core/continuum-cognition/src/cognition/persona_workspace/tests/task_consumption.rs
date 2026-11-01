@@ -88,9 +88,9 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
     std::fs::create_dir(&obstruction)?;
     assert!(matches!(
         sink.record_rendered(exact.clone()).await,
-        Err(TaskSinkError::Consumption(
-            TaskConsumptionError::Checkpoint(_)
-        ))
+        Err(TaskSinkError::Consumption(TaskConsumptionError::Owner(
+            OwnerCheckpointError::Checkpoint(_)
+        )))
     ));
     assert_eq!(memory.pending_task_wakes(), vec![task]);
     let before_retry = WorkingMemory::new(8);
@@ -165,7 +165,7 @@ async fn absent_conflicting_and_shutdown_consumption_are_explicit_refusals(
     let owner = Uuid::new_v4();
     let task = Uuid::new_v4();
     assert!(
-        matches!(registry.consume_task_ends(owner, vec![(task, TaskEnd::Lost)]), Err(TaskConsumptionError::Absent(id)) if id == owner)
+        matches!(registry.consume_task_ends(owner, vec![(task, TaskEnd::Lost)]), Err(TaskConsumptionError::Owner(OwnerCheckpointError::Absent(id))) if id == owner)
     );
     registry.register_from_cfg(cfg_for(owner))?;
     registry.consume_task_ends(owner, vec![(task, TaskEnd::Lost)])?;
@@ -182,7 +182,7 @@ async fn absent_conflicting_and_shutdown_consumption_are_explicit_refusals(
     let before = std::fs::read(&path)?;
     assert!(matches!(
         registry.consume_task_ends(owner, vec![(Uuid::new_v4(), TaskEnd::Lost)]),
-        Err(TaskConsumptionError::Stopped)
+        Err(TaskConsumptionError::Owner(OwnerCheckpointError::Stopped))
     ));
     assert_eq!(std::fs::read(&path)?, before);
     Ok(())
@@ -208,7 +208,9 @@ async fn failed_checkpoint_returns_no_receipt_and_replay_commits_staged_end(
     std::fs::create_dir(&obstruction)?;
     assert!(matches!(
         registry.consume_task_ends(owner, vec![(task, TaskEnd::Lost)]),
-        Err(TaskConsumptionError::Checkpoint(_))
+        Err(TaskConsumptionError::Owner(
+            OwnerCheckpointError::Checkpoint(_)
+        ))
     ));
     assert_eq!(std::fs::read(&path)?, before);
     let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
@@ -400,7 +402,9 @@ async fn task_read_receipt_rejects_replaced_memory_and_retries_failed_commit(
     std::fs::create_dir(&obstruction)?;
     assert!(matches!(
         registry.record_task_reads(owner, current.incarnation(), &[task]),
-        Err(TaskConsumptionError::Checkpoint(_))
+        Err(TaskConsumptionError::Owner(
+            OwnerCheckpointError::Checkpoint(_)
+        ))
     ));
     assert_eq!(current.pending_task_wakes(), vec![task]);
     std::fs::remove_dir(&obstruction)?;
@@ -460,7 +464,7 @@ async fn served_read_arriving_after_shutdown_preserves_restart_delivery(
     let before = std::fs::read(&path)?;
     assert!(matches!(
         registry.record_task_reads(owner, memory.incarnation(), &[task]),
-        Err(TaskConsumptionError::Stopped)
+        Err(TaskConsumptionError::Owner(OwnerCheckpointError::Stopped))
     ));
     assert_eq!(std::fs::read(&path)?, before);
     let restored = WorkingMemory::new(8);
