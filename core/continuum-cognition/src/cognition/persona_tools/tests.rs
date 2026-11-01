@@ -240,4 +240,3 @@
             "the only surviving `true` is the keyword boolean"
         );
     }
-
