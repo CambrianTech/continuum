@@ -153,3 +153,18 @@ opaque original payload. `admit_event` stays the consuming boundary; there is no
 path and no routing that scans a body. Retention distinguishes replayable conversation history
 (byte-bounded, oldest first, loss surfaced as `Gap`) from unacknowledged task terminal obligations,
 which stay with the task owner until durable acceptance and are never ordinary byte eviction.
+
+### P2 implementation questions (before code)
+1. **One record.** Under (a), the arrival IS the conversation-event record: the typed header plus
+   the opaque original event, keyed and deduplicated by the transport event id. Only the inbound seam
+   appends it (for every admitted kind); `chat/send` writes its chat row and no arrival, because its
+   own echo arrives through the seam. Proposed.
+2. **Durable acceptance.** `admit_event` turns an event into an `IncomingMessage` held in memory, so
+   acknowledging after admission is not durable. Either her pending perception becomes a store
+   record (accepted durably, so the cursor can advance at admission), or the cursor advances only
+   when the turn that consumed the row settles. Proposed: the first, through the shared task delivery
+   owner Codex is building, so perception and the dream acknowledge the same way.
+3. **Unvouched history as a consumer Gap.** Lines before a migration have no arrivals at all. A
+   cursor created for a mind in a room whose watermark is `UnvouchedThrough` drains
+   `Gap { reason: UnvouchedImport }` once, before its first rows, with a test; a cursor below the
+   retention floor drains `Gap { reason: Retention }`.
