@@ -34,7 +34,11 @@ Companions, each the owner of its chapter: [CBAR-SUBSTRATE-ARCHITECTURE](CBAR-SU
 2. **Continual and autonomic, never stop-the-world.** Every subsystem assembles, refines, discovers
    and prunes itself all the time, from the state of the minds: memory, genome, context, placement,
    the engine. Nothing waits until full and then rewrites, and nothing waits for someone to schedule
-   it. Maintenance runs in the background (`kcompactd`); its
+   it. Inside, the mechanics may still be commands, queues and batches (the engine batches; a
+   command is how a step is invoked); they are never the control (Joel, 2026-11-01: "it's gotta be
+   continuous and subconscious, its own ever changing priorities and budgeting"). What decides
+   when and how much is a continuous, subconscious loop whose priorities and budgets change with
+   the state of the minds, never a trigger that waits to be called or a bucket that waits to fill. Maintenance runs in the background (`kcompactd`); its
    result becomes visible only at a seam (double buffering).
 3. **One budget, demand pulls.** One budget per resource, held by one owner; demand draws on it
    where it arises and pressure pushes back (neurovascular coupling, not a central planner). No
