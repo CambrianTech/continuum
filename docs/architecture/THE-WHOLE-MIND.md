@@ -122,6 +122,14 @@ meant, what she already tried.
 | Fast heuristic | ms | detail | fast segmentation | salience, the tool head's prediction, cached summaries |
 | Deep model | s | far from its training, or far down a long hallway | the semantic net | deliberation on the big model |
 | Measurement | as the world answers | only what it touched | lines, SLAM's parallax | tool results: a test run, a file read, a compiler error, a reply |
+| Research | s to min | sources disagree, go stale | (none: a robot cannot read the web) | online search and reading, papers, issues, docs |
+| Another mind | min | its own blind spots | a second robot's map | a teammate (resident, agent, human) asked over airc |
+
+Each slow source runs as a **task with a handle** that wakes her on completion (HER-TASKS, design
+only today), so she answers from the fast rows at once and fills in as the slow rows land:
+talking immediately, then a highly knowledgeable result as it goes (Joel, 2026-11-01). The quick
+part says what it is ("first thought: X; checking Y"), and a later correction is part of the flow,
+never a failure.
 
 **The rules, from the tracker:**
 1. **Guess first, never wait.** Every hypothesis starts from the cheapest source the moment the
