@@ -1,0 +1,8 @@
+[package]
+name = "continuum-resource-observation"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Physical pool observations; no probing, allocation policy, or hardware defaults"
+
+[dependencies]

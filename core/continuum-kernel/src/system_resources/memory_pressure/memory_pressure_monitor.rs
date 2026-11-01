@@ -246,7 +246,7 @@ impl MemoryPressureMonitor {
             CURRENT_PRESSURE_LEVEL.store(level.to_u8(), Ordering::Relaxed);
             // Publish the honest free-physical-bytes number too, so a subsystem sizing
             // a large elective allocation can veto against real headroom, not the ratio.
-            CURRENT_AVAILABLE_BYTES.store(available, Ordering::Relaxed);
+            publish_memory_measurement(total, st.sys.used_memory());
 
             // Hysteresis.
             if level == st.prev_level {
@@ -274,7 +274,8 @@ impl MemoryPressureMonitor {
             // opens — held zero rows while swap was full. A row on every level change,
             // and every 30 polls (60 s) while High or Critical.
             let should_probe = consecutive_at_level == 1
-                || (level.to_u8() >= PressureLevel::High.to_u8() && st.log_counter.is_multiple_of(30));
+                || (level.to_u8() >= PressureLevel::High.to_u8()
+                    && st.log_counter.is_multiple_of(30));
             if should_probe {
                 continuum_base::probe!(
                     class = "memory.pressure",
@@ -307,7 +308,8 @@ impl MemoryPressureMonitor {
                     // named pid 48653 (a rustc stopped at ~17:15Z) at 18:05Z with its last
                     // RSS — a sensor reading with no age, and two peers chased it. A dead
                     // process holds nothing; the table must say so before the scan reads it.
-                    st.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+                    st.sys
+                        .refresh_processes(sysinfo::ProcessesToUpdate::All, true);
                     let floor = total / 4;
                     let mut named = 0u32;
                     for (pid, proc) in st.sys.processes() {

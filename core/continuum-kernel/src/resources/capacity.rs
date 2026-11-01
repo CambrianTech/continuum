@@ -129,37 +129,11 @@ pub trait HostMemoryReader: Send + Sync {
     fn available_bytes(&self) -> Option<u64>;
 }
 
-/// Reads the live host through the [`MemoryPressureMonitor`]'s already-published numbers.
-///
-/// Total is probed ONCE at construction (`sysinfo::total_memory()`) because physical RAM is a
-/// stable fact about the machine, and available comes from
-/// [`current_available_bytes`](crate::system_resources::memory_pressure::current_available_bytes)
-/// — a lock-free atomic the monitor loop refreshes every 2s. Both reads satisfy the module's
-/// non-blocking contract; neither touches the reporter list (`budget_snapshot()` DOES — it locks
-/// and calls `budget()`/`report()` on every reporter, which must never happen on the daemon's
-/// hot tick with the accounting lock held).
+/// Host reader backed exclusively by the shared memory monitor publication.
+/// Construction measures topology; hot reads never perform hardware I/O or
+/// substitute a retained sample after a failed observation.
 pub struct LiveHostMemory {
     total: u64,
-    /// Last good free-bytes reading, from EITHER source. 0 = never read.
-    ///
-    /// # Why a fallback exists at all (regression, found live 2026-08-19)
-    ///
-    /// This first shipped reading ONLY `current_available_bytes()`, on the reasoning that
-    /// an unset atomic means "the monitor has not polled yet" — a couple of seconds at
-    /// boot, during which reporting `used = 0` is the sanctioned degradation.
-    ///
-    /// That reasoning was wrong in one specific and dangerous way: the atomic being 0
-    /// does not only mean "not yet". It also means "that monitor is not publishing",
-    /// which is unbounded. And because the unified pool routes BOTH axes through this one
-    /// reader, a single silent monitor made the governor believe the whole machine was
-    /// empty. Measured on this box: `system/resources` reported 54.2 GB used and 12.3 GB
-    /// of swap in use, while the board reported 51.84 GB available. Before unified
-    /// memory the VRAM axis read the GPU monitor independently and could not be blinded
-    /// this way — collapsing the axes created the single point of failure.
-    ///
-    /// Erring toward "plenty free" is the worst direction to err: it over-grants into a
-    /// machine that is already swapping.
-    last_known_free: AtomicU64,
 }
 
 impl Default for LiveHostMemory {
@@ -174,23 +148,6 @@ impl LiveHostMemory {
         sys.refresh_memory();
         Self {
             total: sys.total_memory(),
-            last_known_free: AtomicU64::new(
-                crate::system_resources::memory_pressure::available_from(&sys),
-            ),
-        }
-    }
-
-    /// A direct host sample — the SAME `host_statistics64` read `MemoryPressureMonitor`
-    /// makes on its own 2s cadence, so it is not a new class of work, and it is what
-    /// `system/resources` already serves from. Used only when the monitor's atomic is
-    /// unset; the daemon's tick is ~1Hz, so this is at most one cheap syscall per tick
-    /// on the degraded path and ZERO on the healthy one.
-    fn direct_sample(&self) -> Option<u64> {
-        let mut sys = sysinfo::System::new();
-        sys.refresh_memory();
-        match crate::system_resources::memory_pressure::available_from(&sys) {
-            0 => None,
-            n => Some(n),
         }
     }
 }
@@ -200,27 +157,10 @@ impl HostMemoryReader for LiveHostMemory {
         self.total
     }
 
-    /// Free bytes, from the monitor if it is publishing, else a direct sample, else the
-    /// last value either source gave. `None` ONLY if nothing has ever produced a reading
-    /// — which after a successful `new()` means the host itself reported nothing.
     fn available_bytes(&self) -> Option<u64> {
-        if let Some(n) = crate::system_resources::memory_pressure::current_available_bytes() {
-            self.last_known_free.store(n, Ordering::Relaxed);
-            return Some(n);
-        }
-        if let Some(n) = self.direct_sample() {
-            self.last_known_free.store(n, Ordering::Relaxed);
-            return Some(n);
-        }
-        // Stale is FAR better than fabricated-empty: a slightly old number keeps the
-        // governor conservative, whereas 0-used invites it to over-grant a full machine.
-        match self.last_known_free.load(Ordering::Relaxed) {
-            0 => None,
-            n => Some(n),
-        }
+        crate::system_resources::memory_pressure::current_available_bytes()
     }
 }
-
 /// HOST RAM as a governed axis (#56).
 ///
 /// # Why this did not exist until 2026-08-19, and what it cost
@@ -280,9 +220,7 @@ impl<R: HostMemoryReader> CapacitySource for HostRamCapacitySource<R> {
     }
 
     fn ceiling_bytes(&self) -> u64 {
-        self.reader
-            .total_bytes()
-            .saturating_sub(self.reserve_bytes)
+        self.reader.total_bytes().saturating_sub(self.reserve_bytes)
     }
 
     fn used_bytes(&self) -> u64 {
@@ -651,7 +589,10 @@ mod tests {
                 views: &[Arc<dyn CapacitySource>],
                 kind: ResourceKind,
             ) -> &Arc<dyn CapacitySource> {
-                views.iter().find(|v| v.kind() == kind).expect("view exists")
+                views
+                    .iter()
+                    .find(|v| v.kind() == kind)
+                    .expect("view exists")
             }
 
             // what this catches: THE DEFECT, with the numbers it was found with. Before this
@@ -739,7 +680,10 @@ mod tests {
                 ));
                 for view in pool.views() {
                     assert_eq!(view.used_bytes(), 0, "unknown is not 'all spoken for'");
-                    assert!(view.ceiling_bytes() > 0, "the ceiling must not wait on a poll");
+                    assert!(
+                        view.ceiling_bytes() > 0,
+                        "the ceiling must not wait on a poll"
+                    );
                 }
             }
         }
