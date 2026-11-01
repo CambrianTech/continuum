@@ -81,6 +81,9 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
         ),
         source_kind: "vroid-zip",
         license: "CC0",
+        receipt_frame: Some(
+            r#"{"expected_render":"full-body anime character","known_issues":["COLOR_0 vertex colors are all zero (black) - skin renders as black silhouette; mesh_fixup strips these resulting in unlit appearance"],"body_present":true,"vertex_count_approx":1680000,"meshes":3,"skins":3,"nodes":29}"#
+        ),
     },
     AvatarModel {
         id: "vroid-shino",
