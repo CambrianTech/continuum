@@ -8,7 +8,6 @@
 //! host is eligible for a base only with one learning context reserved beside serving (card
 //! 3b8fb153), and that reserve must be THIS calculation, not a second estimate. Storage (the
 //! footprint rows) stays with its owner and is passed in.
-use continuum_engine_protocol::{ExampleFit, MeasuredExample};
 use serde::{Deserialize, Serialize};
 
 /// The engine's own default chunk when a caller sends none (`server-train.cpp`,
@@ -457,6 +456,27 @@ pub struct Partition {
     pub parked: Vec<usize>,
     /// every example's measurement, by request index
     pub rows: Vec<MeasuredExample>,
+}
+
+/// One example as `/train/measure` reports it (fork #51).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MeasuredExample {
+    pub index: usize,
+    /// rendered tokens before anything is dropped
+    pub tokens_full: u64,
+    /// the smallest window it trains in: the head plus her last exchange
+    pub tokens_min: u64,
+    /// tokens as it would train at this window (0 when skipped)
+    pub tokens_trained: u64,
+    pub fit: ExampleFit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExampleFit {
+    Kept,
+    Truncated,
+    Skipped,
 }
 
 /// PURE: the partition a measurement at `window` implies. Only an example that trains WHOLE at

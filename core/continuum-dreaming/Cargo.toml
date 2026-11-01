@@ -16,7 +16,6 @@ build = "../continuum-core/build.rs"
 # re-exports every moved module under its old path.
 
 [dependencies]
-continuum-engine-protocol = { path = "../continuum-engine-protocol" }
 continuum-mind = { path = "../continuum-mind" }
 continuum-academy = { path = "../continuum-academy" }
 continuum-genome = { path = "../continuum-genome" }

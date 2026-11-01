@@ -36,28 +36,11 @@ const IN_USE_FIRST_WAIT: Duration = Duration::from_millis(25);
 /// Moves `from` onto `to`, replacing `to` if it exists, so the move survives power loss. `from` is
 /// a file the caller wrote and synced (or a directory it filled).
 pub fn replace(from: &Path, to: &Path) -> io::Result<()> {
-    retry_while_held(|| os::move_onto(from, to))?;
-    os::sync_entries(parent(to)?)
-}
-
-/// Writes `bytes` as the whole of `to`, replacing it: staged beside it, synced, then moved over
-/// it, so a reader sees the old file or the new one and never a part.
-pub fn replace_with(to: &Path, bytes: &[u8]) -> io::Result<()> {
-    let name = to
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{} has no file name", to.display())))?;
-    let mut staged = Staging::new_in(parent(to)?)?;
-    staged.write_all(bytes)?;
-    staged.replace(Path::new(name))
-}
-
-/// Runs a move, asking again while another process holds the file (see `IN_USE_RETRIES`).
-fn retry_while_held(mut attempt_move: impl FnMut() -> io::Result<()>) -> io::Result<()> {
     let mut wait = IN_USE_FIRST_WAIT;
     let mut attempt = 0;
     loop {
-        match attempt_move() {
-            Ok(()) => return Ok(()),
+        match os::move_onto(from, to) {
+            Ok(()) => break,
             Err(e) if attempt < IN_USE_RETRIES && os::held_by_another_process(&e) => {
                 std::thread::sleep(wait);
                 wait *= 2;
@@ -66,6 +49,7 @@ fn retry_while_held(mut attempt_move: impl FnMut() -> io::Result<()>) -> io::Res
             Err(e) => return Err(e),
         }
     }
+    os::sync_entries(parent(to)?)
 }
 
 /// Publishes a synced staging file at an immutable address, refusing (`AlreadyExists`) to replace
