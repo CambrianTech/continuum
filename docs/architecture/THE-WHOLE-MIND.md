@@ -62,6 +62,50 @@ Companions, each the owner of its chapter: [CBAR-SUBSTRATE-ARCHITECTURE](CBAR-SU
 All four run at once. A mind is never "in" one loop: she daydreams between acts, a reflex can
 interrupt any of them, and maintenance never stops.
 
+## 1b. The one pattern: every brain function is a stage on one substrate
+
+> Joel, 2026-11-01: "We need to take it on like we did our crate divisions, as a highly optimized
+> and clever RTOS, with significant work on standardized patterns akin to CBAR's data flow, easy to
+> add new features and brain function without major redesign. Able to optimize one area and
+> contribute to all. You can't do this when it's disjoint."
+
+The surveys (§6-7) found a disjoint mind: regions tick on a cadence (`BrainRegion::tick`), the
+view has its own contract (`continuum-context` `Source`), ready-buffers are a third store, each
+sentinel and tool has its own lifecycle, and four admission gates each decide priority their own
+way. Optimizing one helps none of the others. CBAR's answer was fixed plumbing and short blocks:
+the stages share buffers, scheduling and capture, so a better scheduler or buffer speeds every
+stage at once. The mind gets the same.
+
+**A stage** (a region, a faculty, a sentinel, a reflex, a dream step) declares, and the substrate
+does the rest:
+
+| A stage declares | The substrate gives it, once for all |
+|---|---|
+| **inputs**: typed topics on the mind bus, routed by header (never by reading the body) | delivery as events, double-buffered snapshots, no polling |
+| **outputs**: the ready-buffer it writes (a tracked hypothesis with confidence, age and provenance, §2.1b) | fusion with every other estimator: merge, consensus, decay and delete |
+| **trigger**: event, salience threshold, cadence floor, or the completion of a task it dispatched | wake-ups, aging, and the never-comatose floor |
+| **cost**: CPU, or a model call at a tier (none, small, mid, the big model), with an access category | the traffic lights: grants by everyone's priorities, preemption, green waves, placement anywhere on the grid with capacity |
+| **yield points**: where its work may be interrupted | the reflex interrupt (`unless_directed` today) and the wake latency bound |
+| **view items**, if what it knows should reach her prompt | the context codec: epoch, levels, admission, collapse at seams |
+
+What follows from one pattern:
+- **A new brain function is one stage**, not a redesign: declare inputs, outputs, trigger and
+  cost; the fusion, scheduling, view and capture are already there.
+- **Optimize once, every stage gains**: a better batcher, buffer, grant policy or cache in the
+  substrate speeds every region, sentinel and dream step.
+- **Observability for free**: every stage's grants, waits, yields and outputs are probed and
+  captured the same way, so replay and the simulator see all of them.
+- **The same stage runs on any node** (the placement map): its inputs and outputs are typed
+  messages, in process or over airc.
+
+What exists to build it from (and converge, never parallel): `BrainRegion` + `RegionContext` +
+`SubstrateGovernor` (the stage and its scheduler, today cadence-only), `ReadyBuffer` (the
+outputs), `continuum-context` `Source` (view items), `directed_pending` (the first reflex topic),
+the training and fitness sentinels (the task model), `LaneAdmission` and its siblings (the first
+traffic lights), the `probe!` and capture sinks (observability). The contract extends
+`BrainRegion` where it lives (`continuum-kernel/src/runtime/`), with a derive and a generator so a
+new stage is scaffolded the same way every time (CBAR-SUBSTRATE's "for free" triplet).
+
 ## 2. The data flow of one mind
 
 ```
@@ -318,7 +362,11 @@ live eviction goes to disk or re-prefill); a shared prefix is copied, never re-p
 
 ## 8. Build order, each with a validator first
 
-1. **Reflex and interrupt:** the engine cancels or pauses one sequence at a token boundary with
+0. **The one pattern (§1b) first, by migration:** the stage contract and the mind bus, proven on
+   two outliers (outlier A: recall, already a deferred faculty; outlier B: the reflex, an event
+   with no model). Each later step lands as stages on it. Validator: both run under the contract
+   with their existing tests unchanged, and the old paths are deleted.
+1. **Reflex and interrupt** (first slice in #5687: her own work yields mid-generation): the engine cancels or pauses one sequence at a token boundary with
    its KV kept; a salience trip reaches it. Validator: a replayed stimulus against a running
    generation, time to her first new token.
 2. **The fast voice:** a short-budget act on her warm prefix (or a small model) in the voice
