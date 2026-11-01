@@ -138,3 +138,11 @@ Two routing decisions read the body today, and P2 moves both onto headers:
   routing; it stays, bounded, until the decoder needs no guess.
 Opening the body remains the addressed consumer's act only: her perception decodes the line she was
 delivered.
+
+### Retention (Cormac, 2026-11-01)
+Storing every conversation event makes the chat store grow without bound, so P2 lands WITH its
+eviction decision, not after: a `TrackedDir` row and an owner in `disk_eviction` (the
+`every_cache_class_has_a_decided_eviction_story` test), bounded by bytes, pruning oldest arrivals
+first. Pruning is safe by construction: the sequence high-water (#5694) never re-issues a number, and
+a mind whose cursor sits below the pruned floor drains `Drained::Gap { from, through, reason:
+Retention }`, which she perceives, never silence.
