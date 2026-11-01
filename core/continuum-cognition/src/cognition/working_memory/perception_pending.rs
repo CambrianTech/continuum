@@ -35,7 +35,10 @@ pub enum PerceptionGap {
 #[derive(Clone, Debug, PartialEq)]
 pub enum AcceptedPage {
     /// Rows to perceive and the sequence the page scanned through (her own rows included).
-    Rows { rows: Vec<PerceptionRef>, scanned_through: u64 },
+    Rows {
+        rows: Vec<PerceptionRef>,
+        scanned_through: u64,
+    },
     /// A gap she is told about; accepting it moves the cursor to its end.
     Gap(PerceptionGap),
 }
@@ -60,10 +63,16 @@ struct PendingLine {
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PerceptionAcceptError {
-    #[error("page scans through {scanned} but the cursor is already through {through}: not contiguous")]
+    #[error(
+        "page scans through {scanned} but the cursor is already through {through}: not contiguous"
+    )]
     Behind { scanned: u64, through: u64 },
     #[error("row {row} is outside the page (cursor {through}, scanned through {scanned})")]
-    OutsidePage { row: u64, through: u64, scanned: u64 },
+    OutsidePage {
+        row: u64,
+        through: u64,
+        scanned: u64,
+    },
     #[error("arrival {0} has no published acceptance")]
     Unpublished(u64),
 }
@@ -98,16 +107,32 @@ impl WorkingMemory {
                 pending.gaps.push(gap);
                 Ok(true)
             }
-            AcceptedPage::Rows { rows, scanned_through } => {
+            AcceptedPage::Rows {
+                rows,
+                scanned_through,
+            } => {
                 if scanned_through <= pending.through {
                     return Ok(false); // replay of an accepted page
                 }
                 let through = pending.through;
-                if let Some(row) = rows.iter().find(|r| r.arrival_seq <= through || r.arrival_seq > scanned_through) {
-                    return Err(PerceptionAcceptError::OutsidePage { row: row.arrival_seq, through, scanned: scanned_through });
+                if let Some(row) = rows
+                    .iter()
+                    .find(|r| r.arrival_seq <= through || r.arrival_seq > scanned_through)
+                {
+                    return Err(PerceptionAcceptError::OutsidePage {
+                        row: row.arrival_seq,
+                        through,
+                        scanned: scanned_through,
+                    });
                 }
                 for line in rows {
-                    pending.entries.entry(line.arrival_seq).or_insert(PendingLine { line, wake_pending: true });
+                    pending
+                        .entries
+                        .entry(line.arrival_seq)
+                        .or_insert(PendingLine {
+                            line,
+                            wake_pending: true,
+                        });
                 }
                 pending.through = scanned_through;
                 Ok(true)
@@ -121,7 +146,9 @@ impl WorkingMemory {
         pending
             .entries
             .iter()
-            .filter(|(seq, line)| line.wake_pending && pending.published.get(seq).copied().unwrap_or(false))
+            .filter(|(seq, line)| {
+                line.wake_pending && pending.published.get(seq) == Some(&true)
+            })
             .map(|(_, line)| line.line)
             .collect()
     }
@@ -130,7 +157,10 @@ impl WorkingMemory {
     /// unpublished lines cannot be retired.
     pub fn stage_perception_reads(&self, seqs: &[u64]) -> Result<bool, PerceptionAcceptError> {
         let mut pending = self.pending_perception.lock();
-        if let Some(seq) = seqs.iter().find(|s| !pending.published.contains_key(s) || !pending.entries.contains_key(s)) {
+        if let Some(seq) = seqs
+            .iter()
+            .find(|s| !pending.published.contains_key(s) || !pending.entries.contains_key(s))
+        {
             return Err(PerceptionAcceptError::Unpublished(*seq));
         }
         let mut changed = false;
@@ -160,10 +190,19 @@ pub(crate) struct PerceptionPublication(BTreeMap<u64, bool>);
 impl PendingPerception {
     /// A restored snapshot was saved, so every entry it holds is published as saved.
     pub(crate) fn publish_restored(&mut self) {
-        self.published = self.entries.iter().map(|(seq, line)| (*seq, line.wake_pending)).collect();
+        self.published = self
+            .entries
+            .iter()
+            .map(|(seq, line)| (*seq, line.wake_pending))
+            .collect();
     }
 
     pub(crate) fn publication(&self) -> PerceptionPublication {
-        PerceptionPublication(self.entries.iter().map(|(seq, line)| (*seq, line.wake_pending)).collect())
+        PerceptionPublication(
+            self.entries
+                .iter()
+                .map(|(seq, line)| (*seq, line.wake_pending))
+                .collect(),
+        )
     }
 }

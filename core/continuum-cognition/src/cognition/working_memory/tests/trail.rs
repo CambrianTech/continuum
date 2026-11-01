@@ -275,6 +275,7 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         receipt_children: Default::default(),
         open_views: Vec::new(),
         task_results: Default::default(),
+        pending_perception: Default::default(),
     });
     assert!(quiet.recent().is_empty(), "an empty snapshot restores an empty window");
     let q = quiet.pinned_facts();

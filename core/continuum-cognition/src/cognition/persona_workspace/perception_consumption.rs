@@ -2,8 +2,8 @@
 //! 773d34a4): a drained page is staged into her working memory (references, source cursor, gap
 //! receipts and wake obligations together) and only the saved snapshot authorizes a wake. Replays
 //! are idempotent and still checkpoint (an earlier staging may have survived a failed write).
-use super::*;
 use super::super::working_memory::{AcceptedPage, PerceptionAcceptError};
+use super::*;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PerceptionConsumptionError {
