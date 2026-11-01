@@ -115,9 +115,19 @@ once; every kind of task is only its difference.
 
 The contract as built (Codex, #5585), which this design adopts:
 
-- **Accept, durably, before spawning.** Starting a task is fallible: acceptance is written to
-  the ledger (an ORM entity) first, and only an accepted task runs. A refused start is said, never
-  silently retried in the foreground.
+- **Accept, durably, before executing the command.** Starting a task is fallible. The shared
+  runtime admission gate takes custody before the first storage await. The existing execution
+  task owns acceptance, execution and terminal persistence; the caller observes its acceptance
+  receipt. Dropping that observer during a write cannot abandon committed acceptance. Only after
+  the ledger accepts does the command execute. A refused start is said, never silently retried
+  in the foreground.
+- **Shutdown retains that custody through terminal persistence.** The same runtime gate closes
+  admission and waits for accepted work before modules drain, save or stop. An observation
+  deadline or terminal-write failure withholds module shutdown and process exit, with an explicit
+  nonquiet task receipt. Cancelling an observer never reopens admission. An explicit subsequent
+  shutdown request rejoins the existing operation or retries its custody-withheld attempt; it
+  does not create a second shutdown owner. This does not yet establish restart reconciliation or
+  adoption: the process-incarnation and execution-kind contracts below remain required.
 - **One terminal outcome, first writer wins.** The ledger stores an immutable terminal receipt
   (output kept whole, binary and typed handles included, with its effect certainty) before any
   event is emitted; a late writer can neither replace it nor resurrect delivery. A handler that
