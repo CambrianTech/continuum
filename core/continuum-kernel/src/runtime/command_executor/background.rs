@@ -59,8 +59,7 @@ impl CommandExecutor {
         // insert is in flight must not strand a committed acceptance without work.
         let (accepted, receipt) = tokio::sync::oneshot::channel();
         let this = Arc::clone(self);
-        tokio::spawn(async move {
-            let _custody = custody;
+        tokio::spawn(custody.scope(async move {
             let handle = match ledger.accept(owner, command.to_string()).await {
                 Ok(handle) => handle,
                 Err(error) => {
@@ -113,7 +112,7 @@ impl CommandExecutor {
                 start.elapsed().as_millis() as u64,
                 Some(handle),
             );
-        });
+        }));
         receipt.await.map_err(|_| {
             DispatchFailure::uncertain(
                 "background acceptance owner stopped before reporting".into(),

@@ -251,6 +251,11 @@ impl ShutdownOperation {
         rt: Option<Arc<Runtime>>,
         settle: std::time::Duration,
     ) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+        // Check before spawning: a spawned shutdown owner no longer carries the
+        // requesting command's execution scope. Refusal must precede turn settle.
+        if let Some(receipt) = rt.as_ref().and_then(|rt| rt.self_shutdown_refusal()) {
+            return tokio::sync::watch::channel(Some(receipt)).1;
+        }
         let mut running = self.started.lock();
         if !*running {
             *running = true;

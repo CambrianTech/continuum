@@ -1,6 +1,10 @@
 use super::*;
 
 #[cfg(test)]
+#[path = "self_shutdown_tests.rs"]
+mod self_shutdown_tests;
+
+#[cfg(test)]
 mod background_custody_tests {
     use super::*;
     use crate::runtime::runtime::piece_2_pr3_dispatch_tests::RecordingModule;
@@ -184,7 +188,20 @@ impl Runtime {
     /// were only ever constructed as literals and asserted on. Deleting the timeout
     /// handling here would have left every one of those tests green — the outcomes were
     /// described by the suite and never produced by it. Found by IntelMac.
+    pub(super) fn self_shutdown_refusal(&self) -> Option<ShutdownReceipt> {
+        self.registry.task_admission.held_by_current_task().then(|| ShutdownReceipt {
+            tasks: DrainOutcome::Unknown {
+                reason: "an admitted task cannot shut down its own runtime; request shutdown outside its execution scope".into(),
+            },
+            modules: Vec::new(),
+            total_ms: 0,
+        })
+    }
+
     pub(super) async fn shutdown_within(&self, per_phase: std::time::Duration) -> ShutdownReceipt {
+        if let Some(receipt) = self.self_shutdown_refusal() {
+            return receipt;
+        }
         let started = std::time::Instant::now();
         // The same registry is held by every executor. Close before waiting so
         // acceptance cannot race past a zero count. Cancellation leaves it closed.

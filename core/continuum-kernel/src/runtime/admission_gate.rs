@@ -33,7 +33,17 @@ pub struct AdmissionGate {
     idle: Notify,
 }
 
+tokio::task_local! {
+    // Execution context, not a second owner: the RAII permit still owns the count.
+    static EXECUTING_GATES: Vec<Arc<AdmissionGate>>;
+}
+
 impl AdmissionGate {
+    pub(crate) fn held_by_current_task(&self) -> bool {
+        EXECUTING_GATES
+            .try_with(|gates| gates.iter().any(|gate| std::ptr::eq(gate.as_ref(), self)))
+            .is_ok_and(|held| held)
+    }
     /// A new, OPEN gate with nothing in flight. `const` so it can be a `static` without
     /// a lazy initialiser.
     pub const fn new() -> Self {
@@ -198,6 +208,21 @@ impl Drop for Permit<'_> {
 #[must_use = "retain the permit until the admitted work and its persistence finish"]
 pub struct OwnedPermit {
     gate: Arc<AdmissionGate>,
+}
+
+impl OwnedPermit {
+    /// Carry custody through the future and mark its causal scope, so it cannot
+    /// synchronously shut down the runtime that must wait for this same future.
+    pub(crate) async fn scope<F: std::future::Future>(self, work: F) -> F::Output {
+        let mut gates = match EXECUTING_GATES.try_with(Clone::clone) {
+            Ok(gates) => gates,
+            Err(_) => Vec::new(), // No enclosing admitted execution on this task.
+        };
+        gates.push(Arc::clone(&self.gate));
+        let result = EXECUTING_GATES.scope(gates, work).await;
+        drop(self);
+        result
+    }
 }
 
 impl Drop for OwnedPermit {
