@@ -25,7 +25,7 @@ Companions, each the owner of its chapter: [CBAR-SUBSTRATE-ARCHITECTURE](CBAR-SU
 (learning), [SLEEP-AND-WAKE-AT-EVERY-SCALE](SLEEP-AND-WAKE-AT-EVERY-SCALE.md) (when she dreams),
 [GRID-MARKET-CLEARING](GRID-MARKET-CLEARING.md) (the economy).
 
-## 0. Five laws
+## 0. Six laws
 
 1. **Both realms.** Biology, operating systems and networks each solved a version of this under a
    hard budget. We mirror a solution where it pays and replace it where silicon does better
@@ -42,6 +42,13 @@ Companions, each the owner of its chapter: [CBAR-SUBSTRATE-ARCHITECTURE](CBAR-SU
    at 0.5-3 s shown at 30 fps by tracking, optical flow and refinement between their frames).
 5. **Learning never needs inference idle.** She learns while she works, in place, under sleep
    pressure, and wakes within one step.
+6. **Decisions never end; it is a ball of clay** (Joel, 2026-11-01: "decisions are never ending.
+   You're not ever batch, you're always refining the environment and you have 'infinite attempts'
+   to get the right result."). No output is final, so no single attempt must be right, so each can
+   be cheap: quality comes from the rate of refinement, not the weight of one pass. For acts: many
+   short acts with the world pushing back between them (a test, a compile, a reply) over one long
+   act that tries to be right at once; that is the path to a median act under 60 s. For beliefs,
+   genes, the engine's geometry and placement: refined continually, never computed once.
 
 ## 1. Three timescales, one organism
 
