@@ -262,7 +262,7 @@ Engine surface (fork): load or save a mind's session state into the lane's step 
 The dream consumer is one stage on the stage contract (STAGE-CONTRACT.md, #5692/#5693), per mind. It is not a loop, a job or a tick: the substrate gives it delivery, scheduling, interruption and capture once, as it does every stage. Joel: "dreaming must be in place, not batch". The tick passes of #5676 are what this replaces.
 
 **Inputs.**
-- Her **settled-experience topic** is replayable: each settled turn, with a durable experience id. She reads it through the per-mind cursor that perception uses (#5691's drain: fenced by incarnation, `Rows | Gap | Empty`, the store's sequence revision as the wake). There is no second cursor.
+- Her **settled-experience topic** is replayable: each settled turn, with a durable experience id. She reads it through perception's cursor MECHANISM (#5691's drain: fenced by incarnation, `Rows | Gap | Empty`, the store's sequence revision as the wake), keyed by `(mind, topic)`. That means one entity, one drain and one fencing rule, with a position per topic. Perception's position over her room lines and the dream's position over her settled experiences never share a value, or acknowledging a perceived line would acknowledge an unconsumed example (Fable on #5695).
 - Her **dream share** is a replaceable snapshot: the scheduler's setpoint from sleep pressure and opportunity (SLEEP-AND-WAKE-AT-EVERY-SCALE).
 
 **Triggers.** Either input moved, or a step she dispatched completed. There is no cadence floor: a mind with nothing settled does not dream.
@@ -280,7 +280,9 @@ The dream consumer is one stage on the stage contract (STAGE-CONTRACT.md, #5692/
 
 **Commit and acknowledgement.**
 - The cursor advances through an example only when the step that consumed it reports a committed step. Admission is not acknowledgement.
-- A step that failed or was refused leaves the cursor where it was. The example is retried, or surfaced as refused when the refusal is typed and final: `unsupported_backward`, `never_fits`.
+- A step that failed or was refused leaves the cursor where it was. Only a typed-retryable failure is retried (Slice A's rule): `budget_exhausted` after its `retry_after_ms`, or a busy slot.
+- A typed final refusal (`unsupported_backward`, `never_fits`) is surfaced as refused.
+- Any other failure that repeats on the same example is non-progress evidence: she perceives a stuck example. It is neither retried forever nor skipped silently (Fable on #5695).
 
 **Yield points and stops.**
 - The chunk is ONE engine step. It is non-preemptible: 962 ms median measured on CPU, Qwen2.5-0.5B, fork 832d78cb1, 2026-11-01. That is measured on this hardware, not a bound elsewhere. Pause, yield and cancel land at the step boundary, after the in-flight step's outcome arrives (quiescence).
@@ -295,6 +297,8 @@ The dream consumer is one stage on the stage contract (STAGE-CONTRACT.md, #5692/
 - The candidate goes to the gene trial (S5). Nothing is promoted automatically.
 
 **Her shadow is her file.** The engine deduplicates adapter loads by path, so two minds loading one shadow file share one adapter. Before her first step, the dream gives each mind her own copy of her stable gene.
+- That copy is disk with an owner. It is written through a disk class (`ClassWriter`) with an eviction decision: a `TrackedDir` row and a `disk_eviction` owner.
+- So N minds times the adapter size is measured and bounded, and `every_cache_class_has_a_decided_eviction_story` holds (Fable on #5695).
 
 **Engine verbs (fork):**
 
