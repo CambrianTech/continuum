@@ -67,6 +67,11 @@ pub fn shutdown_receipt_digest(receipt: &ShutdownReceipt) -> Result<String, crat
 
 fn validate_commit(params: &ShutdownCommitParams, current: &ShutdownTarget, receipt: Option<&ShutdownReceipt>) -> Result<(), crate::sdk_codegen::CommandError> {
     validate_target(&params.target, current)?;
+    if receipt.is_some_and(|receipt| !receipt.tasks.is_quiet()) {
+        return Err(crate::sdk_codegen::CommandError::Invalid(
+            "shutdown withheld while background custody is unresolved; no process exit was committed".into(),
+        ));
+    }
     if receipt.map(shutdown_receipt_digest).transpose()?.as_deref() != Some(params.receipt_sha256.as_str()) {
         return Err(crate::sdk_codegen::CommandError::Invalid(
             "shutdown commit requires the completed save receipt from this process".into(),
@@ -240,6 +245,23 @@ mod tests {
         params.target = current.clone();
         params.receipt_sha256.push('0');
         assert!(validate_commit(&params, &current, Some(&receipt)).is_err());
+    }
+
+    #[test]
+    fn matching_receipt_hash_cannot_authorize_exit_with_unresolved_custody() -> Result<(), crate::sdk_codegen::CommandError> {
+        let current = ShutdownTarget { pid: 42, instance: "withheld".into() };
+        for tasks in [
+            crate::runtime::DrainOutcome::Incomplete { in_flight: 1 },
+            crate::runtime::DrainOutcome::Unknown { reason: "terminal persistence failed".into() },
+        ] {
+            let receipt = ShutdownReceipt { tasks, modules: Vec::new(), total_ms: 1 };
+            let params = ShutdownCommitParams {
+                target: current.clone(),
+                receipt_sha256: shutdown_receipt_digest(&receipt)?,
+            };
+            assert!(validate_commit(&params, &current, Some(&receipt)).is_err());
+        }
+        Ok(())
     }
 
     // Exercise the real exit in an isolated test child, never the serving core.
