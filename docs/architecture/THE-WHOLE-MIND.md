@@ -231,8 +231,9 @@ and fitness sentinels in code): a unit of background work with a brief in and a 
 on any base model (none for recall, small for association, larger for a second take), placed
 wherever on the grid has capacity. Her subconscious runs its own sentinels without her; she can
 also dispatch sentinels deliberately, as tools (a research sentinel, a second opinion, a watcher on
-a build), and steer her own mind (raise her focus, choose to sleep). Nothing disallows either;
-only the subconscious ones never wait for her (Joel, 2026-11-01: "She can schedule sentinels man.
+a build), and steer her own mind, her subconscious included (raise her focus, choose to sleep,
+turn an association up or down). She never has to; she always may. The moment we take that
+autonomy away it is lost, and the mind is a weak slave. The subconscious ones never wait for her (Joel, 2026-11-01: "She can schedule sentinels man.
 She will. She can control her own mind too or use them as tools. We don't disallow this. I mean
 this only for her own mind's subconscious.").
 
