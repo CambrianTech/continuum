@@ -93,6 +93,55 @@ Two rules keep the fast layer honest: it speaks from the same context (so the sl
 it said), and it never claims what only the slow layer can know ("let me look at that" is
 autopilot; an answer is a keyframe). Most conversation is autopilot; the keyframes are rare.
 
+### 2.1b The orchestra: every estimator at its own speed, fused all the time
+
+> Joel, 2026-11-01, on CBAR's mapping: "A wall or floor surface needing segmentation would be first
+> guessed from past work or fast algs as it became visible in space. You can't wait for parallax of
+> SLAM. You hit that long hallway first with a cheap guess then a deep network, lines, then later
+> SLAM all happening together as an orchestra. Yeah that deep semantic network was off by meters at
+> the end of the hallway, but SLAM's parallax during that rotation was wrong. I was running RANSAC
+> continuously." "My lines might not come back ideal in one frame, but seconds later other parts
+> would. We'd track and assemble it all together. For all surfaces, all objects. All the time."
+> "They'd merge and fall off. Deleting was as important as merging."
+
+No single source is right; each is wrong in a different place and at a different time, and the
+model of the world is what survives their consensus. For a mind, the "surfaces and objects" are
+what she believes about her situation: what the card needs, how this code works, what this person
+meant, what she already tried.
+
+| Estimator | Speed | Wrong where | In CBAR | Here |
+|---|---|---|---|---|
+| Prior from past work | instant | anything new | the guess from the last map | recall: her engrams and settled examples of the same shape |
+| Fast heuristic | ms | detail | fast segmentation | salience, the tool head's prediction, cached summaries |
+| Deep model | s | far from its training, or far down a long hallway | the semantic net | deliberation on the big model |
+| Measurement | as the world answers | only what it touched | lines, SLAM's parallax | tool results: a test run, a file read, a compiler error, a reply |
+
+**The rules, from the tracker:**
+1. **Guess first, never wait.** Every hypothesis starts from the cheapest source the moment the
+   situation appears, and acts on it; a deeper source revises it when it lands.
+2. **Each source carries its confidence and its age.** A hypothesis is a tracked object with
+   provenance, not a sentence in a prompt.
+3. **Consensus rejects outliers continuously** (RANSAC): a belief two measurements contradict is
+   dropped however confident the model was; one the deep model and a measurement agree on is
+   kept. This is the defense against a model confidently wrong at the end of the hallway, and
+   against a loop that re-asserts its own last output as progress.
+4. **Partial results assemble over time.** A file read gives one part, a test another, a reply a
+   third; the tracker joins them, so no single act must get it all.
+5. **Merge and delete are equal.** Duplicates merge into one track; a track nothing confirms
+   decays and falls off. A mind that only accumulates is as broken as one that only forgets.
+
+**What exists:** the parts, scattered. Engrams with salience and decay (merge-by-recall, decay
+sweeps), `Continuation` with an `Expectation` (a prediction a later perception confirms or
+breaks), `SurpriseTally` (prediction error), the epoch's keyed items that only append (a track's
+history). **The gap:** no world-model owner that holds tracked beliefs with confidence and
+provenance, fuses sources, rejects outliers by consensus, and merges and deletes as one pass
+(the world-model faculty is an enum name mapped to `None` in `faculty_pulse.rs`).
+
+The same orchestra runs below the mind: the engine's own estimates (decode knee, prefill rate,
+footprints) are tracked measurements with EMAs, freshness and explore-above; the grid's beacons
+merge by peer and fall off at 30 s/120 s. Each scale fuses fast guesses and slow measurements, and
+deletes what stopped being confirmed.
+
 ### 2.2 Deep work during a conversation
 
 A human speaks to her while she is deep in a card. Today the message waits for the generation to
@@ -195,7 +244,7 @@ live eviction goes to disk or re-prefill); a shared prefix is copied, never re-p
    training freezes engine reconfigure. (Path step 3.)
 4. **Every geometry change relaunches;** no RAM page tier, no prefix sharing in the pinned fork.
 5. **The mind is one serial loop;** regions are thin (three in the governor), no typed mind bus,
-   tools are not tasks that wake her.
+   tools are not tasks that wake her, and no world model fuses her estimators (§2.1b).
 6. **A mind's home cannot move;** node identity and trust are not joined across gossip, router
    and airc (#2228, #38).
 7. **Dreaming is not a grid workload;** no night in the beacon.
@@ -226,8 +275,12 @@ live eviction goes to disk or re-prefill); a shared prefix is copied, never re-p
 4. **Learning in place:** pressure from settled examples, `/learn` steps on the shadow, the exam
    gates the swap, wake within a chunk (SLEEP-AND-WAKE §7).
 5. **One live engine:** pin the fork's reconfigure and RAM pages; page by temperature.
-6. **Grid:** home migration (care-of address), night in the beacon, dream leases.
-7. **Convergence deletions** ride along with whichever step touches each owner.
+6. **The world model (§2.1b):** tracked beliefs with confidence and provenance, fused from
+   recall, deliberation and tool results, consensus outlier rejection, merge and delete in one
+   pass. Validator: replayed acts where the model asserts what a tool result contradicts; the
+   belief must fall, and a repeated act must not count as progress.
+7. **Grid:** home migration (care-of address), night in the beacon, dream leases.
+8. **Convergence deletions** ride along with whichever step touches each owner.
 
 Surveys (2026-11-01, canary 7147aa088): mind (`continuum-mind/src/persona/service_loop/*`,
 `continuum-vitals/src/directed_pending.rs`, `cognition/conversation/salience.rs`); serving
