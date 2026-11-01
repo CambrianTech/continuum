@@ -39,11 +39,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use uuid::Uuid;
 use continuum_kernel::runtime::stage::{
-    Cost, ExecutionCost, InputRevision, Provenance, ResidencyCost, RunOutcome, Stage, StageContext, StageId,
-    StageIncarnation, StageRunner, TopicName, Triggers, MindId,
+    Cost, ExecutionCost, InputRevision, MindId, Provenance, Ran, ResidencyCost, RunOutcome, Stage,
+    StageContext, StageId, StageIncarnation, StageRunner, TopicName, Triggers,
 };
+use uuid::Uuid;
 
 use crate::cognition::workspace::{Contribution, CycleId, Faculty, FacultyId, Workspace};
 
@@ -82,28 +82,52 @@ impl Stage for FacultyStage {
     }
 
     fn triggers(&self) -> Triggers {
-        Triggers { inputs: vec![WORLD], ..Triggers::default() }
+        Triggers {
+            inputs: vec![WORLD],
+            ..Triggers::default()
+        }
     }
 
     fn cost(&self, _revisions: &[InputRevision]) -> Cost {
-        Cost { execution: ExecutionCost::Cpu { measured: None }, residency: ResidencyCost::default() }
+        Cost {
+            execution: ExecutionCost::Cpu { measured: None },
+            residency: ResidencyCost::default(),
+        }
     }
 
-    async fn run(&self, ctx: &StageContext, ws: &Workspace, revisions: &[InputRevision]) -> RunOutcome<Option<StampedFinding>> {
+    async fn run(
+        &self,
+        ctx: &StageContext,
+        ws: &Workspace,
+        revisions: &[InputRevision],
+    ) -> RunOutcome<Option<StampedFinding>> {
         let finding = self.inner.contribute(ws).await.map(|mut c| {
             // Stamp with the cycle it reasoned against AND the room it reasoned about: the late
             // finding carries its own moment and its own place, so the hot path can refuse to
             // serve it into a different context.
             c.cycle = ws.cycle;
-            StampedFinding { room_id: ws.room_id, activity_room_id: ws.activity_room_id, contribution: c }
+            StampedFinding {
+                room_id: ws.room_id,
+                activity_room_id: ws.activity_room_id,
+                contribution: c,
+            }
         });
-        RunOutcome::Produced(vec![(finding, Provenance { by: ctx.run, from: revisions.to_vec() })])
+        RunOutcome::Produced(vec![(
+            finding,
+            Provenance {
+                by: ctx.run,
+                from: revisions.to_vec(),
+            },
+        )])
     }
 }
 
 /// The input revision a workspace is: the world as of its cycle.
 fn world_revision(ws: &Workspace) -> Vec<InputRevision> {
-    vec![InputRevision { topic: WORLD, through: ws.cycle.0 }]
+    vec![InputRevision {
+        topic: WORLD,
+        through: ws.cycle.0,
+    }]
 }
 
 /// A faculty whose inner work is taken off the cognition hot path (see module docs): the inner
@@ -122,20 +146,31 @@ impl DeferredFaculty {
     /// `reacts_to_broadcast() == false` to keep it in the perception phase regardless.
     pub fn spawn(inner: Arc<dyn Faculty>) -> Self {
         let id = inner.id();
-        let stage = FacultyStage { id: StageId::named(&format!("deferred.{}", id.as_str())), inner };
-        let incarnation = StageIncarnation { stage: stage.id, mind: MindId(Uuid::nil()), epoch: 0 };
-        Self { id, runner: StageRunner::spawn(Arc::new(stage), incarnation) }
+        let stage = FacultyStage {
+            id: StageId::named(&format!("deferred.{}", id.as_str())),
+            inner,
+        };
+        let incarnation = StageIncarnation {
+            stage: stage.id,
+            mind: MindId(Uuid::nil()),
+            epoch: 0,
+        };
+        Self {
+            id,
+            runner: StageRunner::spawn(Arc::new(stage), incarnation),
+        }
     }
 
     /// Run the inner faculty on this workspace now, under the stage's publication rule.
     async fn run_now(&self, ws: &Workspace) -> Option<Contribution> {
-        self.runner
-            .run_inline(ws, &world_revision(ws))
-            .await
-            .into_iter()
-            .flatten()
-            .next()
-            .map(|found| found.contribution)
+        match self.runner.run_inline(ws, &world_revision(ws)).await {
+            Ran::Produced { accepted, .. } => accepted
+                .into_iter()
+                .flatten()
+                .next()
+                .map(|found| found.contribution),
+            _ => None,
+        }
     }
 }
 
@@ -177,8 +212,10 @@ impl Faculty for DeferredFaculty {
         // skipped here, said, and never submitted: this lane degrades, it never panics.
         match crate::identity::ActivityRoom::from_uuid(ws.room_id) {
             Ok(room) if ws.cycle != CycleId::UNSTAMPED => {
-                let mut minimal = Workspace::from_burst(crate::cognition::workspace::Burst::raw_in(room, ws.world_state.clone()))
-                    .with_cycle(ws.cycle);
+                let mut minimal = Workspace::from_burst(
+                    crate::cognition::workspace::Burst::raw_in(room, ws.world_state.clone()),
+                )
+                .with_cycle(ws.cycle);
                 minimal.activity_room_id = ws.activity_room_id;
                 self.runner.submit(minimal, world_revision(ws));
             }
@@ -501,7 +538,9 @@ mod tests {
         original.activity_room_id = activity;
         let mut completed = deferred.runner.subscribe();
         // Exercise the actual background run without a synchronous cold-start seed.
-        deferred.runner.submit(original.clone(), world_revision(&original));
+        deferred
+            .runner
+            .submit(original.clone(), world_revision(&original));
         let mut switched =
             Workspace::in_room("new activity, same wake", wake).with_cycle(CycleId(2));
         switched.activity_room_id = Uuid::new_v4();

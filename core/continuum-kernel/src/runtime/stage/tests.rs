@@ -233,7 +233,7 @@ async fn published(runner: &StageRunner<Echo>, want: i64) -> PublishedOutput<i64
     let mut sub = runner.subscribe();
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let Some(out) = sub.borrow_and_update().clone() {
+            if let Some(out) = sub.borrow_and_update().latest.clone() {
                 if out.output == want {
                     return out;
                 }
@@ -293,11 +293,21 @@ async fn a_panicking_stage_is_quarantined_on_its_last_good_output() {
 #[tokio::test]
 async fn an_inline_run_publishes_under_the_same_rule() {
     let runner = StageRunner::spawn(Arc::new(Echo), incarnation(1));
-    assert_eq!(runner.run_inline(&4, &[rev("numbers", 4)]).await, vec![4]);
+    assert_eq!(
+        runner.run_inline(&4, &[rev("numbers", 4)]).await,
+        Ran::Produced {
+            accepted: vec![4],
+            refused: 0
+        }
+    );
     assert_eq!(runner.latest().map(|o| o.output), Some(4));
-    assert!(
-        runner.run_inline(&2, &[rev("numbers", 2)]).await.is_empty(),
-        "older input refused inline too"
+    assert_eq!(
+        runner.run_inline(&2, &[rev("numbers", 2)]).await,
+        Ran::Produced {
+            accepted: vec![],
+            refused: 1
+        },
+        "older input refused inline too, and the refusal is reported"
     );
     assert_eq!(runner.latest().map(|o| o.output), Some(4));
     runner.submit(6, vec![rev("numbers", 6)]);
@@ -306,4 +316,70 @@ async fn an_inline_run_publishes_under_the_same_rule() {
         3,
         "inline and background runs share one sequence"
     );
+}
+
+// what this catches: the publication compare-and-set and the visible output separating, so two
+// publishers accept in one order and become visible in the other (Codex at f5611b59). Many
+// concurrent inline publishers in a fixed shuffled order: the visible output never moves
+// backwards and ends on the newest input.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_publishers_never_expose_an_older_output() {
+    let runner = Arc::new(StageRunner::spawn(Arc::new(Echo), incarnation(1)));
+    let mut watcher = runner.subscribe();
+    let seen = tokio::spawn(async move {
+        let mut high = 0i64;
+        while watcher.changed().await.is_ok() {
+            let now = watcher
+                .borrow_and_update()
+                .latest
+                .as_ref()
+                .map_or(0, |o| o.output);
+            assert!(
+                now >= high,
+                "visible output moved backwards: {high} -> {now}"
+            );
+            high = now;
+            if high == 200 {
+                break;
+            }
+        }
+        high
+    });
+    let mut order: Vec<i64> = (1..=200).collect();
+    order.reverse();
+    order.rotate_left(73);
+    let runs: Vec<_> = order
+        .into_iter()
+        .map(|n| {
+            let runner = Arc::clone(&runner);
+            tokio::spawn(async move { runner.run_inline(&n, &[rev("numbers", n as u64)]).await })
+        })
+        .collect();
+    for run in runs {
+        run.await.expect("test: a publisher task completes"); // test: a fixture step that must succeed
+    }
+    assert_eq!(runner.latest().map(|o| o.output), Some(200));
+    let high = tokio::time::timeout(Duration::from_secs(2), seen)
+        .await
+        .expect("test: the watcher sees the newest in time"); // test: the assertion failing loudly
+    assert_eq!(high.expect("test: the watcher completes"), 200); // test: the assertion failing loudly
+}
+
+// what this catches: an inline run escaping the panic boundary the background path has (Codex
+// at f5611b59): an inline panic is caught, counts toward the one quarantine, and a quarantined
+// stage refuses inline runs too.
+#[tokio::test]
+async fn an_inline_panic_is_caught_and_counts_toward_the_quarantine() {
+    let runner = StageRunner::spawn(Arc::new(Echo), incarnation(1));
+    for (n, consecutive) in [(-1, 1), (-2, 2), (-3, 3)] {
+        assert_eq!(
+            runner.run_inline(&n, &[rev("numbers", 1)]).await,
+            Ran::Panicked { consecutive }
+        );
+    }
+    assert_eq!(
+        runner.run_inline(&5, &[rev("numbers", 5)]).await,
+        Ran::Quarantined
+    );
+    assert_eq!(runner.latest(), None, "nothing was ever published");
 }

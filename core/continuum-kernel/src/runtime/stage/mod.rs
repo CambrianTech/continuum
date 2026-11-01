@@ -22,7 +22,7 @@ pub use control::{ControlRequest, StopReceipt, StopRefusal};
 pub use cost::{Cost, ExecutionCost, ModelTier, ResidencyCost};
 pub use identity::{MindId, RunId, StageId, StageIncarnation};
 pub use publication::{Publication, Published};
-pub use runner::{PublishedOutput, StageRunner};
+pub use runner::{PublishedOutput, PublishedState, Ran, StageRunner};
 pub use stage::{RunOutcome, Stage, StageContext};
 pub use topic::{InputRevision, Provenance, TopicKind, TopicName};
 pub use triggers::Triggers;
