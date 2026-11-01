@@ -104,6 +104,9 @@ struct State {
     held: HashMap<Uuid, HeldTerminal>,
     committing: HashSet<Uuid>,
     phase: Phase,
+    /// A shutdown owns the drain. Separate from `phase`: the phase only latches forward (outside
+    /// commits stay refused once draining began), while ownership is released by a cancelled owner.
+    drain_owned: bool,
 }
 
 #[derive(Default)]
@@ -125,20 +128,18 @@ impl Drop for Claim<'_> {
     }
 }
 
-/// Owns draining for one shutdown. Dropped before it closes (the shutdown future was cancelled), it
-/// returns the phase to `Open` and wakes the waiters, so the next shutdown can own the drain instead
-/// of waiting forever for a `Closed` nobody will set (Codex on #5664 at 0efc9cf44).
+/// Owns the drain for one shutdown. Dropped before it closes (the shutdown future was cancelled), it
+/// releases ownership and wakes the waiters, so the next shutdown owns the drain instead of waiting
+/// forever for a `Closed` nobody will set (Codex on #5664 at 0efc9cf44). It releases ownership only,
+/// never admission: the phase stays `Draining`, so outside commits and flushes stay refused (Codex at
+/// 69156925d).
 struct Drain<'a> {
     custody: &'a TerminalCustody,
 }
 
 impl Drop for Drain<'_> {
     fn drop(&mut self) {
-        let mut state = self.custody.state.lock();
-        if state.phase == Phase::Draining {
-            state.phase = Phase::Open;
-        }
-        drop(state);
+        self.custody.state.lock().drain_owned = false;
         self.custody.settled.notify_waiters();
     }
 }
@@ -226,25 +227,24 @@ impl TerminalCustody {
     /// claim nothing; it waits for the attempts already in flight, makes the final pass, then closes and
     /// reports every terminal still held, read under the lock that closes, so a hold either reached this
     /// report or was refused. A concurrent shutdown waits for the owner: when it closes, it reports what is
-    /// still held; when it is cancelled first, its guard reopens the phase and the waiter owns the drain.
+    /// still held; when it is cancelled first, its guard releases ownership (admission stays closed) and the
+    /// waiter owns the drain.
     pub async fn shutdown(&self, store: &dyn TerminalStore) -> ShutdownReport {
-        // Own the drain, or wait while another shutdown owns it: it either closes (return its outcome)
-        // or is cancelled, and its guard reopens the phase for this one to claim.
+        // Latch admission closed, then own the drain or wait while another shutdown owns it: it either
+        // closes (return its outcome) or is cancelled, and its guard releases ownership for this one.
         let _drain = loop {
             {
                 let mut state = self.state.lock();
-                match state.phase {
-                    Phase::Open => {
-                        state.phase = Phase::Draining;
-                        break Drain { custody: self };
-                    }
-                    Phase::Closed => {
-                        return ShutdownReport { last_pass: FlushReport::default(), unresolved: state.held.values().cloned().collect() };
-                    }
-                    Phase::Draining => {}
+                if state.phase == Phase::Closed {
+                    return ShutdownReport { last_pass: FlushReport::default(), unresolved: state.held.values().cloned().collect() };
+                }
+                state.phase = Phase::Draining;
+                if !state.drain_owned {
+                    state.drain_owned = true;
+                    break Drain { custody: self };
                 }
             }
-            self.wait_until(|state| state.phase != Phase::Draining).await;
+            self.wait_until(|state| state.phase == Phase::Closed || !state.drain_owned).await;
         };
         self.wait_until(|state| state.committing.is_empty()).await;
         // Only this owner moves the phase off Draining, so its own pass cannot be refused.

@@ -196,26 +196,43 @@ async fn concurrent_shutdowns_have_one_owner_and_stay_closed() {
     assert!(late.last_pass.committed.is_empty() && late.unresolved.is_empty(), "a late shutdown reopens nothing");
 }
 
-// what this catches (Codex on #5664 at 0efc9cf44): a shutdown cancelled after it set Draining left
-// the phase there with no owner, so every later shutdown waited forever for a Closed nobody would set.
-// The owner's guard reopens the phase on drop; the next shutdown owns the drain and closes.
+// what this catches (Codex on #5664 at 0efc9cf44 and 69156925d): a shutdown cancelled after draining
+// began either left the drain with no owner (every later shutdown waited forever for Closed) or, when
+// its guard reopened the phase, re-admitted outside commits and flushes after shutdown had begun. A
+// cancelled owner releases ownership only: admission stays closed, and the next shutdown owns the
+// drain and closes. Cancelled at both await points: waiting for an outside commit already in flight,
+// and inside its own store write.
 #[tokio::test]
-async fn a_cancelled_shutdown_hands_the_drain_to_the_next_one() {
-    let custody = TerminalCustody::new();
-    let store = Store::new(0, None, Duration::from_millis(40));
-    custody.hold(held(30, TaskEnd::Stopped)).expect("custody is open"); // test: a fixture step that must succeed
-    {
-        let first = custody.shutdown(&store);
-        tokio::pin!(first);
-        // Cancelled mid-pass: draining began and its commit of task 30 is in flight.
-        assert!(tokio::time::timeout(Duration::from_millis(10), first.as_mut()).await.is_err(), "the first shutdown is still draining");
-        assert_eq!(custody.state.lock().phase, Phase::Draining);
+async fn a_cancelled_shutdown_keeps_admission_closed_and_hands_the_drain_on() {
+    async fn refused_outside(custody: &TerminalCustody, store: &Store, task: u128) {
+        assert!(matches!(custody.commit(store, Uuid::from_u128(task)).await, Err(CustodyError::Closed)), "an outside commit stays refused");
+        assert!(matches!(custody.flush(store).await, Err(CustodyError::Closed)), "an outside flush stays refused");
     }
-    assert_eq!(custody.state.lock().phase, Phase::Open, "the dropped owner reopened the phase");
-    let report = tokio::time::timeout(Duration::from_secs(5), custody.shutdown(&store))
-        .await
-        .expect("the next shutdown owns the drain instead of waiting forever"); // test: a fixture step that must succeed
-    assert_eq!(report.last_pass.committed.iter().map(|c| c.held.task).collect::<Vec<_>>(), vec![Uuid::from_u128(30)]);
-    assert!(report.unresolved.is_empty());
-    assert_eq!(custody.hold(held(31, TaskEnd::Stopped)), Err(CustodyError::Closed), "closed after the second shutdown");
+    for case in ["waiting for an outside commit", "inside its own store write"] {
+        let custody = TerminalCustody::new();
+        let store = Store::new(0, None, Duration::from_millis(40));
+        custody.hold(held(30, TaskEnd::Stopped)).expect("custody is open"); // test: a fixture step that must succeed
+        custody.hold(held(31, TaskEnd::Stopped)).expect("custody is open"); // test: a fixture step that must succeed
+        let outside = async {
+            if case == "waiting for an outside commit" {
+                custody.commit(&store, Uuid::from_u128(30)).await.expect("began while open").expect("committed"); // test: a fixture step that must succeed
+            }
+        };
+        let cancelled = async {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            let first = custody.shutdown(&store);
+            tokio::pin!(first);
+            assert!(tokio::time::timeout(Duration::from_millis(10), first.as_mut()).await.is_err(), "{case}: the first shutdown is still draining");
+        };
+        tokio::join!(outside, cancelled);
+        assert_eq!(custody.state.lock().phase, Phase::Draining, "{case}: admission stays closed after the owner is cancelled");
+        assert!(!custody.state.lock().drain_owned, "{case}: the cancelled owner released the drain");
+        refused_outside(&custody, &store, 31).await;
+        let report = tokio::time::timeout(Duration::from_secs(5), custody.shutdown(&store))
+            .await
+            .expect("the next shutdown owns the drain instead of waiting forever"); // test: a fixture step that must succeed
+        assert!(report.unresolved.is_empty(), "{case}: the drain completed");
+        assert_eq!(custody.held(), 0, "{case}: every terminal was committed");
+        assert_eq!(custody.hold(held(32, TaskEnd::Stopped)), Err(CustodyError::Closed), "{case}: closed after the second shutdown");
+    }
 }
