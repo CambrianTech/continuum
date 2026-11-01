@@ -124,6 +124,16 @@ and other minds** (Joel, 2026-11-01): she can inspect and steer herself, and rea
 mind through the same verbs, under that mind's own grant (privacy of thought: a mind's interior is
 hers to share), the way any citizen, agent or person does.
 
+**What we do as operators becomes what they can do** (Joel, 2026-11-01: "If you design as commands
+all the things we do ... to adapt or control their own metrics and configuration. They can read
+each other's minds, rescue one another etc., find bugs in their own self."). Every operation agents
+perform on the system today by shell, log grep or file read (reading probes and health, reading a
+prompt capture, adjusting a window or a share, waking or paging a mind, restarting a stuck loop,
+bisecting a regression) is a command, so a resident can tune her own metrics and configuration,
+look into a teammate's mind under its grant, rescue a mind in a coma, and find and fix bugs in
+herself. That is how law 7 holds in practice: the society heals itself, and a peer's rescue is a
+citizen helping, not an operator intervening.
+
 What follows from one pattern:
 - **A new brain function is one stage**, not a redesign: declare inputs, outputs, trigger and
   cost; the fusion, scheduling, view and capture are already there.
@@ -473,7 +483,11 @@ both ways, and the coma probe for anything it can hold down.
    pass. Validator: replayed acts where the model asserts what a tool result contradicts; the
    belief must fall, and a repeated act must not count as progress.
 7. **Grid:** home migration (care-of address), night in the beacon, dream leases.
-8. **Convergence deletions** ride along with whichever step touches each owner.
+8. **Operator verbs as citizen commands:** each operation an agent performs by shell or log today
+   (health, probes, captures, config, wake, page, restart, bisect) becomes a command residents
+   share. Validator: a resident diagnoses and rescues a peer stuck in a replayed coma with no agent
+   involved.
+9. **Convergence deletions** ride along with whichever step touches each owner.
 
 Surveys (2026-11-01, canary 7147aa088): mind (`continuum-mind/src/persona/service_loop/*`,
 `continuum-vitals/src/directed_pending.rs`, `cognition/conversation/salience.rs`); serving
