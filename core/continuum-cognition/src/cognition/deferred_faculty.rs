@@ -7,15 +7,16 @@
 //! last-good result (reprojected forward via feature-history). This is the
 //! cognition analog, at the faculty layer.
 //!
-//! A [`DeferredFaculty`] wraps an inner [`Faculty`] so that the inner's
-//! expensive work runs on its **own** `tokio` task, while the hot-path
-//! `contribute()` is non-blocking:
+//! A [`DeferredFaculty`] wraps an inner [`Faculty`] as a stage on the kernel's stage runner
+//! (`continuum_kernel::runtime::stage`, the M0 stage contract): the inner's expensive work runs
+//! on the stage's **own** task, while the hot-path `contribute()` is non-blocking:
 //!
-//! 1. `contribute()` publishes the current world at the background task through a
-//!    `watch` channel (always-latest, never blocks, never drops the newest), and
-//! 2. returns the inner faculty's **most recent finding** from another `watch`
-//!    snapshot — already stamped with the (possibly older) [`CycleId`] it was
-//!    computed against — or `None` until the first compute lands.
+//! 1. `contribute()` submits the current world to the stage (latest wins, never blocks,
+//!    never drops the newest), and
+//! 2. returns the stage's **most recent published finding** — stamped with the (possibly
+//!    older) [`CycleId`] it was computed against, published under the stage contract's rule
+//!    that an output from older input never replaces a newer one — or `None` until the first
+//!    run lands.
 //!
 //! So a slow faculty sits in the SAME `faculties` Vec as the fast ones and the
 //! per-tick `join_all` barrier in [`WorkspaceCycle::run_in_room`] never waits on
@@ -31,33 +32,24 @@
 //! every tick; the slow lane lands late, honestly stamped, and is merged in
 //! rather than blocking the spoken turn.
 //!
-//! Conforms to `docs/architecture/CONCURRENCY-STYLE-GUIDE.md`: own `tokio::spawn`
-//! task, `catch_unwind` around the loop body, `watch` for state in BOTH
-//! directions (no `Arc<Mutex>` across `await`), event-triggered (not a
-//! sleep-loop), and a quarantine after repeated inner panics.
+//! The concurrency discipline (own task, `catch_unwind` around each run, `watch` in both
+//! directions, event-triggered, quarantine after repeated panics) is the stage runner's, once,
+//! for every stage.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures_util::FutureExt;
-use tokio::sync::watch;
+use continuum_kernel::runtime::stage::{
+    Cost, ExecutionCost, InputRevision, MindId, Provenance, Ran, ResidencyCost, RunOutcome, Stage,
+    StageContext, StageId, StageIncarnation, StageRunner, TopicName, Triggers,
+};
 use uuid::Uuid;
 
 use crate::cognition::workspace::{Contribution, CycleId, Faculty, FacultyId, Workspace};
 
-/// The slice of world-state the background task recomputes against. Carried
-/// through a `watch` so the hot path always overwrites with the latest (no
-/// backlog, no dropped-newest) and the worker chews the freshest burst it can.
-#[derive(Debug, Clone)]
-struct DeferredInput {
-    world_state: String,
-    room_id: Uuid,
-    activity_room_id: Uuid,
-    /// The cycle this input belongs to — the worker stamps its finding with it,
-    /// so a finding always carries the moment it reasoned about, not the moment
-    /// it finished.
-    cycle: CycleId,
-}
+/// The topic a deferred faculty reads: the world as of a cycle (a replaceable snapshot; only the
+/// newest matters, and its revision is the cycle).
+const WORLD: TopicName = TopicName("cognition.world");
 
 /// A finding tagged with both wake and resolved activity rooms so
 /// the hot path can refuse to serve it into a DIFFERENT room. This is the
@@ -73,134 +65,111 @@ pub(crate) struct StampedFinding {
     contribution: Contribution,
 }
 
-/// A faculty whose inner work is taken off the cognition hot path (see module
-/// docs). Drops the background task when dropped.
-pub struct DeferredFaculty {
-    id: FacultyId,
-    /// Hot path reads the inner faculty's last-good finding here, lock-free.
-    latest: watch::Receiver<Option<StampedFinding>>,
-    /// Hot path pushes the current world here for the worker to recompute against.
-    world_tx: watch::Sender<Option<DeferredInput>>,
-    /// The wrapped faculty, retained for the DIRECTED-turn bypass: an addressed
-    /// question runs the inner faculty SYNCHRONOUSLY on ITS OWN burst (the
-    /// orienting response — acute stimulus interrupts), because the deferred
-    /// lane structurally serves the PREVIOUS turn's finding, so an acute
-    /// question could never benefit from its own recall (glass-boxed live
-    /// 2026-07-10: the fact surfaced at z=5.5σ one turn too late; the rendered
-    /// prompt had no [recall]; she confabulated "port 3001" and her peer
-    /// absorbed it as shared truth). Ambient turns keep the cheap lane.
+/// A perception faculty as a stage: its input is the world as of a cycle, its output the finding
+/// stamped with the cycle and rooms it reasoned about.
+struct FacultyStage {
     inner: Arc<dyn Faculty>,
-    /// The cold-start self-warm's publish handle: the FIRST tick's synchronous
-    /// finding lands in `latest` through this, so subsequent ambient ticks
-    /// serve it as last-good instead of re-paying the synchronous cost until
-    /// the background worker's first publish.
-    warm_tx: watch::Sender<Option<StampedFinding>>,
-    /// Owns the worker task so it's aborted when this faculty is dropped — no
-    /// orphaned compute outliving the mind it served.
-    _worker: DropGuard,
+    id: StageId,
 }
 
-/// Aborts the held task on drop. Keeps the worker's lifetime tied to the faculty.
-struct DropGuard(tokio::task::JoinHandle<()>);
-impl Drop for DropGuard {
-    fn drop(&mut self) {
-        self.0.abort();
+#[async_trait]
+impl Stage for FacultyStage {
+    type Input = Workspace;
+    type Output = Option<StampedFinding>;
+
+    fn id(&self) -> StageId {
+        self.id
+    }
+
+    fn triggers(&self) -> Triggers {
+        Triggers {
+            inputs: vec![WORLD],
+            ..Triggers::default()
+        }
+    }
+
+    fn cost(&self, _revisions: &[InputRevision]) -> Cost {
+        Cost {
+            execution: ExecutionCost::Cpu { measured: None },
+            residency: ResidencyCost::default(),
+        }
+    }
+
+    async fn run(
+        &self,
+        ctx: &StageContext,
+        ws: &Workspace,
+        revisions: &[InputRevision],
+    ) -> RunOutcome<Option<StampedFinding>> {
+        let finding = self.inner.contribute(ws).await.map(|mut c| {
+            // Stamp with the cycle it reasoned against AND the room it reasoned about: the late
+            // finding carries its own moment and its own place, so the hot path can refuse to
+            // serve it into a different context.
+            c.cycle = ws.cycle;
+            StampedFinding {
+                room_id: ws.room_id,
+                activity_room_id: ws.activity_room_id,
+                contribution: c,
+            }
+        });
+        RunOutcome::Produced(vec![(
+            finding,
+            Provenance {
+                by: ctx.run,
+                from: revisions.to_vec(),
+            },
+        )])
     }
 }
 
-/// After this many consecutive inner panics the worker stops recomputing and the
-/// faculty just serves its last-good (or `None`) — a bad backend degrades the
-/// lane to stale, it never crashes the mind. Matches the guide's quarantine
-/// discipline (the monitor's 3-strike rule).
-const QUARANTINE_AFTER: u32 = 3;
+/// The input revision a workspace is: the world as of its cycle.
+fn world_revision(ws: &Workspace) -> Vec<InputRevision> {
+    vec![InputRevision {
+        topic: WORLD,
+        through: ws.cycle.0,
+    }]
+}
+
+/// A faculty whose inner work is taken off the cognition hot path (see module docs): the inner
+/// faculty runs as a stage on the kernel's stage runner (own task, latest-wins input, the
+/// publication rule, panic quarantine), and the hot path reads its last published finding.
+pub struct DeferredFaculty {
+    id: FacultyId,
+    runner: StageRunner<FacultyStage>,
+}
 
 impl DeferredFaculty {
-    /// Wrap `inner` and spawn its background worker. The inner faculty must be a
-    /// **perception-tier** faculty (`reacts_to_broadcast() == false`): the worker
-    /// reconstructs a minimal [`Workspace`] from the raw world-state, with an
-    /// empty broadcast, so a deliberation-tier inner (which reads the assembled
-    /// broadcast) would run blind. We force `reacts_to_broadcast() == false` on
-    /// the wrapper to keep it in the perception phase regardless.
+    /// Wrap `inner` and start its stage. The inner faculty must be a **perception-tier**
+    /// faculty (`reacts_to_broadcast() == false`): background runs see a minimal [`Workspace`]
+    /// rebuilt from the raw world-state, with an empty broadcast, so a deliberation-tier inner
+    /// (which reads the assembled broadcast) would run blind. The wrapper reports
+    /// `reacts_to_broadcast() == false` to keep it in the perception phase regardless.
     pub fn spawn(inner: Arc<dyn Faculty>) -> Self {
         let id = inner.id();
-        let (world_tx, mut world_rx) = watch::channel::<Option<DeferredInput>>(None);
-        let (latest_tx, latest) = watch::channel::<Option<StampedFinding>>(None);
-        let warm_tx = latest_tx.clone();
-
-        let inner_for_hot_path = Arc::clone(&inner);
-        let worker = tokio::spawn(async move {
-            let mut consecutive_panics: u32 = 0;
-            // Event-triggered, not a sleep-loop: wake only when the hot path
-            // publishes a new world. `changed()` skips the initial sentinel.
-            while world_rx.changed().await.is_ok() {
-                if consecutive_panics >= QUARANTINE_AFTER {
-                    // Quarantined: stop recomputing, keep the last-good. Draining
-                    // the receiver here would spin; just stop reacting.
-                    break;
-                }
-                // Take the freshest burst (watch already coalesced to latest).
-                let Some(input) = world_rx.borrow_and_update().clone() else {
-                    continue; // no published burst yet
-                };
-                if input.cycle == CycleId::UNSTAMPED {
-                    continue; // sentinel / not a real burst
-                }
-                // A real burst always carries a real room (#425 — the sentinel was
-                // already skipped above). If a nil somehow arrives, skip the tick and
-                // say so: this lane degrades, it never panics (concurrency guide).
-                let Ok(room) = crate::identity::ActivityRoom::from_uuid(input.room_id) else {
-                    continuum_base::probe!(
-                        class = "cognition.deferred.roomless_input_skipped",
-                        "deferred faculty received a nil-room input — tick skipped (#425)",
-                    );
-                    continue;
-                };
-                let mut ws = Workspace::from_burst(crate::cognition::workspace::Burst::raw_in(
-                    room,
-                    input.world_state,
-                ))
-                .with_cycle(input.cycle);
-                ws.activity_room_id = input.activity_room_id;
-
-                // The inner faculty's contribute is async (real inference/IPC).
-                // Catch a panic so a flawed backend degrades the lane to stale,
-                // never kills the runtime (guide: catch_unwind around the body).
-                let outcome = AssertUnwindSafeFut(inner.contribute(&ws))
-                    .catch_unwind()
-                    .await;
-
-                match outcome {
-                    Ok(finding) => {
-                        consecutive_panics = 0;
-                        // Stamp with the cycle it reasoned against AND the room it
-                        // reasoned about — the late finding carries its own moment
-                        // (cycle) and its own place (room), so the hot path can
-                        // refuse to serve it into a different context.
-                        let stamped = finding.map(|mut c| {
-                            c.cycle = input.cycle;
-                            StampedFinding {
-                                room_id: room.as_uuid(),
-                                activity_room_id: input.activity_room_id,
-                                contribution: c,
-                            }
-                        });
-                        // Ignore send error: no receivers left = faculty dropped.
-                        let _ = latest_tx.send(stamped);
-                    }
-                    Err(_) => {
-                        consecutive_panics += 1;
-                    }
-                }
-            }
-        });
-
+        let stage = FacultyStage {
+            id: StageId::named(&format!("deferred.{}", id.as_str())),
+            inner,
+        };
+        let incarnation = StageIncarnation {
+            stage: stage.id,
+            mind: MindId(Uuid::nil()),
+            epoch: 0,
+        };
         Self {
             id,
-            warm_tx,
-            latest,
-            world_tx,
-            inner: inner_for_hot_path,
-            _worker: DropGuard(worker),
+            runner: StageRunner::spawn(Arc::new(stage), incarnation),
+        }
+    }
+
+    /// Run the inner faculty on this workspace now, under the stage's publication rule.
+    async fn run_now(&self, ws: &Workspace) -> Option<Contribution> {
+        match self.runner.run_inline(ws, &world_revision(ws)).await {
+            Ran::Produced { accepted, .. } => accepted
+                .into_iter()
+                .flatten()
+                .next()
+                .map(|found| found.contribution),
+            _ => None,
         }
     }
 }
@@ -226,16 +195,9 @@ impl Faculty for DeferredFaculty {
             // outcome — glass-boxed 2026-07-10: a directed silver-harbor question
             // 30s after boot produced NO recall bid and the seam was dark; whether
             // the inner ran-and-found-nothing vs never-ran was unattributable.
-            let found = self.inner.contribute(ws).await;
-            if let Some(c) = &found {
-                // A directed run's fresh finding seeds last-good too — the next
-                // ambient tick serves it non-blocking instead of a cold miss.
-                let _ = self.warm_tx.send(Some(StampedFinding {
-                    room_id: ws.room_id,
-                    activity_room_id: ws.activity_room_id,
-                    contribution: c.clone(),
-                }));
-            }
+            // A directed run's fresh finding is published as last-good too: the next ambient
+            // tick serves it non-blocking instead of a cold miss.
+            let found = self.run_now(ws).await;
             continuum_base::probe!(
                 class = "deferred.serve",
                 faculty = %self.id.as_str(),
@@ -245,23 +207,45 @@ impl Faculty for DeferredFaculty {
             );
             return found;
         }
-        // Publish the current world for the worker (always-latest, never blocks).
-        // Ignore send error: worker gone = serve whatever last-good we have.
-        let _ = self.world_tx.send(Some(DeferredInput {
-            world_state: ws.world_state.clone(),
-            room_id: ws.room_id,
-            activity_room_id: ws.activity_room_id,
-            cycle: ws.cycle,
-        }));
+        // Hand the current world to the stage's background run (latest wins, never blocks). A
+        // real burst always carries a real room and a stamped cycle (#425); anything else is
+        // skipped here, said, and never submitted: this lane degrades, it never panics.
+        match crate::identity::ActivityRoom::from_uuid(ws.room_id) {
+            Ok(room) if ws.cycle != CycleId::UNSTAMPED => {
+                let mut minimal = Workspace::from_burst(
+                    crate::cognition::workspace::Burst::raw_in(room, ws.world_state.clone()),
+                )
+                .with_cycle(ws.cycle);
+                minimal.activity_room_id = ws.activity_room_id;
+                self.runner.submit(minimal, world_revision(ws));
+            }
+            _ => continuum_base::probe!(
+                class = "cognition.deferred.roomless_input_skipped",
+                "deferred faculty received an unstamped or nil-room world — not submitted (#425)",
+            ),
+        }
         // Context guard: serve the last-good ONLY if it was computed for the room
         // the mind is in NOW, including its resolved activity. A different scope is
         // irrelevant — withhold it rather than inject a cross-context
         // memory into this turn. A same-room-but-stale finding is REPROJECTED
         // forward (slice 3, below); a different-room finding is simply not ours.
         let cold = {
-            let guard = self.latest.borrow();
-            match guard.as_ref() {
-                Some(found)
+            // The outer Option is "has a run published?"; the inner is "did it find anything?".
+            // A published empty finding is WARM (Codex at d627b8af): it serves nothing, and never
+            // re-pays the synchronous cold start on every tick after an empty recall.
+            let published = self.runner.latest().map(|published| published.output);
+            match published.as_ref().map(Option::as_ref) {
+                Some(None) => {
+                    continuum_base::probe!(
+                        class = "deferred.serve",
+                        faculty = %self.id.as_str(),
+                        mode = "last-good-empty",
+                        found = false,
+                        "deferred lane served"
+                    );
+                    return None;
+                }
+                Some(Some(found))
                     if found.room_id == ws.room_id
                         && found.activity_room_id == ws.activity_room_id =>
                 {
@@ -275,7 +259,7 @@ impl Faculty for DeferredFaculty {
                     );
                     return served;
                 }
-                Some(_) => {
+                Some(Some(_)) => {
                     continuum_base::probe!(
                         class = "deferred.serve",
                         faculty = %self.id.as_str(),
@@ -297,16 +281,9 @@ impl Faculty for DeferredFaculty {
         // faculty synchronously ONCE (the same move the orienting response
         // makes for directed turns); the bg worker takes over from tick 2.
         // Boot pays one slow first tick; the room keeps its continuity.
-        let found = self.inner.contribute(ws).await;
-        if let Some(c) = &found {
-            // Publish the warm finding as last-good so the NEXT ambient tick
-            // serves it non-blocking — the cold cost is paid exactly once.
-            let _ = self.warm_tx.send(Some(StampedFinding {
-                room_id: ws.room_id,
-                activity_room_id: ws.activity_room_id,
-                contribution: c.clone(),
-            }));
-        }
+        // The warm finding is published as last-good, so the NEXT ambient tick serves it
+        // non-blocking: the cold cost is paid exactly once.
+        let found = self.run_now(ws).await;
         continuum_base::probe!(
             class = "deferred.serve",
             faculty = %self.id.as_str(),
@@ -427,24 +404,6 @@ fn lexical_relevance(finding: &str, current: &str) -> f32 {
     hits as f32 / f.len() as f32
 }
 
-/// `Future` adapter that asserts unwind-safety so an async body can be
-/// `catch_unwind`'d. The captured `&Workspace` and `Arc<dyn Faculty>` are only
-/// read across the await, so this is sound for our use.
-struct AssertUnwindSafeFut<F>(F);
-impl<F: std::future::Future> std::future::Future for AssertUnwindSafeFut<F> {
-    type Output = F::Output;
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        // SAFETY: structural pin projection of the single field; we never move it.
-        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
-        inner.poll(cx)
-    }
-}
-impl<F> std::panic::UnwindSafe for AssertUnwindSafeFut<F> {}
-impl<F> std::panic::RefUnwindSafe for AssertUnwindSafeFut<F> {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,6 +428,60 @@ mod tests {
             );
             finding.cycle = ws.cycle;
             Some(finding)
+        }
+    }
+
+    /// A perception faculty that finds nothing, counting how often it ran.
+    struct EmptyRecall(std::sync::atomic::AtomicUsize);
+    #[async_trait]
+    impl Faculty for EmptyRecall {
+        fn id(&self) -> FacultyId {
+            FacultyId::Recall
+        }
+        async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
+            // Counted at the END of a run that takes a while: an inline run has counted before
+            // contribute() returns; a background run cannot have finished by then.
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
+    }
+
+    // what this catches: a published EMPTY finding read as "never ran", so every ambient tick
+    // after an empty recall re-pays the synchronous cold start (Codex at d627b8af). The first
+    // tick runs inline once; later ambient ticks serve the warm empty without an inline run.
+    #[tokio::test]
+    async fn an_empty_recall_is_warm_and_never_repeats_the_cold_start() {
+        let inner = Arc::new(EmptyRecall(std::sync::atomic::AtomicUsize::new(0)));
+        let deferred = DeferredFaculty::spawn(Arc::clone(&inner) as Arc<dyn Faculty>);
+        let room = Uuid::new_v4();
+        assert!(deferred
+            .contribute(&Workspace::in_room("first", room).with_cycle(CycleId(1)))
+            .await
+            .is_none());
+        assert_eq!(
+            inner.0.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the cold start ran inline once"
+        );
+        let mut published = deferred.runner.subscribe();
+        for cycle in 2..5 {
+            let before = inner.0.load(std::sync::atomic::Ordering::Relaxed);
+            assert!(deferred
+                .contribute(&Workspace::in_room("again", room).with_cycle(CycleId(cycle)))
+                .await
+                .is_none());
+            // Each ambient tick submits to the background run and returns at once: the inner
+            // count rises only when the background run lands, never inside contribute().
+            assert_eq!(
+                inner.0.load(std::sync::atomic::Ordering::Relaxed),
+                before,
+                "no inline cold start on tick {cycle}"
+            );
+            tokio::time::timeout(std::time::Duration::from_secs(2), published.changed())
+                .await
+                .expect("test: the background run publishes") // test: the assertion failing loudly
+                .expect("test: the runner stays alive"); // test: the assertion failing loudly
         }
     }
 
@@ -590,17 +603,11 @@ mod tests {
         let activity = Uuid::new_v4();
         let mut original = Workspace::in_room("original activity", wake).with_cycle(CycleId(1));
         original.activity_room_id = activity;
-        let mut completed = deferred.latest.clone();
-        // Exercise the actual worker without a synchronous cold-start seed.
+        let mut completed = deferred.runner.subscribe();
+        // Exercise the actual background run without a synchronous cold-start seed.
         deferred
-            .world_tx
-            .send(Some(DeferredInput {
-                world_state: original.world_state.clone(),
-                room_id: wake,
-                activity_room_id: activity,
-                cycle: original.cycle,
-            }))
-            .unwrap();
+            .runner
+            .submit(original.clone(), world_revision(&original));
         let mut switched =
             Workspace::in_room("new activity, same wake", wake).with_cycle(CycleId(2));
         switched.activity_room_id = Uuid::new_v4();

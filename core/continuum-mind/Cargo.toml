@@ -75,6 +75,7 @@ continuum-positron = { path = "../continuum-positron", features = ["test-fixture
 continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
 continuum-rooms = { path = "../continuum-rooms", features = ["test-fixtures"] }
 continuum-experience = { path = "../continuum-experience", features = ["test-fixtures"] }
+continuum-cognition = { path = "../continuum-cognition", features = ["test-fixtures"] }  # the shared TranscriptEvent fixture (channel_digest::test_event_in)
 # The real store, so loop tests write obligations through the same data module production uses
 # (stop-drain S2: a turn runs only on a confirmed obligation). The store sits below the mind.
 continuum-store = { path = "../continuum-store", features = ["test-fixtures"] }

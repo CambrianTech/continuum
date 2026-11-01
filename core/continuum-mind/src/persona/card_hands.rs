@@ -400,9 +400,32 @@ pub(crate) async fn end_card_turn(card: &CardHands, acts: usize) {
     crate::persona::card_carry::request();
 }
 
+/// A held card's end-of-turn sync (commit and push, up to `SYNC_BOUND`), handed back to the
+/// turn's owner instead of awaited inside the drive, so her reply is published first and the
+/// sync still runs before anything else touches the checkout (LOCKS-AND-FIFOS-AUDIT.md row 11).
+#[must_use = "run the card sync before her next act touches the checkout"]
+pub(crate) struct CardSync {
+    hands: Option<CardHands>,
+    acts: usize,
+}
+
+impl CardSync {
+    /// No sync owed: the turn held no card, or its sync already ran.
+    pub(crate) fn done() -> Self {
+        Self { hands: None, acts: 0 }
+    }
+
+    /// Commit and push what the turn did in the card's checkout.
+    pub(crate) async fn run(self) {
+        if let Some(hands) = &self.hands {
+            end_card_turn(hands, self.acts).await;
+        }
+    }
+}
+
 /// One turn in the hands of the card she holds, start to end (card 959f3d5c): rooted at
 /// the held card, its credit captured on her act, driven in the card claim's hands, and its
-/// work synced to the card's branch. A room turn and her own-time turn are the same turn
+/// card sync returned for the caller to run after it publishes what she said. A room turn and her own-time turn are the same turn
 /// here; with no card held it drives in her default hands with no capture. The credit is
 /// returned from the CARD, not her hands (see [`HeldCardTurn::credit`]).
 pub(crate) async fn drive_in_held_card(
@@ -417,6 +440,7 @@ pub(crate) async fn drive_in_held_card(
 ) -> (
     crate::cognition::act_observe::SettleOutcome,
     Option<crate::persona::training_producer::CapturedCredit>,
+    CardSync,
 ) {
     let held = root_at_held_card(cycle, persona_id, &*conversation).await;
     // Her credit follows the card she holds through the turn (card 12ddd78f): a turn that
@@ -435,10 +459,9 @@ pub(crate) async fn drive_in_held_card(
         Some(&mut capture as &mut dyn crate::cognition::act_observe::TurnCredit),
     )
     .await;
-    if let Some(hands) = &held.hands {
-        end_card_turn(hands, outcome.acts).await;
-    }
-    (outcome, capture.into_credit())
+    let credit = capture.into_credit();
+    let sync = CardSync { hands: held.hands, acts: outcome.acts };
+    (outcome, credit, sync)
 }
 
 impl HeldCardTurn {

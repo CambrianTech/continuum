@@ -222,62 +222,28 @@ impl ChatModule {
     /// Step 1 of a send: persist the message row (ground truth). Returns the
     /// minted message id and the timestamp the row carries.
     pub(super) async fn persist(&self, params: &ChatSendParams) -> Result<(Uuid, u64), String> {
-        let executor = self.executor()?;
         let message_id = Uuid::new_v4();
         let now_ms = continuum_base::time::EpochMs::now().millis();
-        let now_iso = now_iso(now_ms);
-
-        // ── Step 1: persist locally (ground truth) ───────────────────
-        //
-        // Build the entity payload matching `ChatMessageEntity`'s
-        // expected shape on the TS side — text-only content for this
-        // first migration, `metadata.source: "user"`, status sent.
-        // Media + replyToId threading + system messages are deferred.
-        let entity_data = json!({
-            "id": message_id.to_string(),
-            "roomId": params.room_id.to_string(),
-            "senderId": params.sender_id.to_string(),
-            "timestamp": now_iso,
-            "content": { "text": params.text, "media": params.media },
-            "replyToId": params.reply_to_id.map(|u| u.to_string()),
-            "metadata": { "source": "user" },
-            "status": "sent",
-        });
-
-        let create_params = json!({
-            "dbPath": CHAT_DATA_HANDLE,
-            "collection": CHAT_MESSAGES_COLLECTION,
-            "id": message_id.to_string(),
-            "data": entity_data,
-        });
-
-        // Hard failure: data layer didn't store the message. No airc
-        // publish is attempted — the message doesn't exist locally,
-        // so broadcasting it would create the bad-divergence case.
-        // Surface as command-level Err.
-        let create_result = executor
-            .execute_json("data/create", create_params)
-            .await
-            .map_err(|e| format!("chat/send: data/create failed: {e}"))?;
-
-        // The data module's `data/create` returns
-        // `{success: true|false, error?: "..."}`. A success=false
-        // path is the "stored the request but the write didn't land"
-        // case (validation, unique constraint, etc.) — still hard
-        // failure from chat's perspective.
-        if !create_result
-            .get("success")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            let inner = create_result
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("data module returned success=false without an error message");
-            return Err(format!(
-                "chat/send: data/create returned success=false: {inner}"
-            ));
-        }
+        // Ground truth first: the row and its arrival commit together, or the send fails and no
+        // airc publish is attempted (broadcasting a line the store lacks would diverge).
+        let line = super::line_store::PostedLine {
+            message_id,
+            room: airc_core::RoomId::from_uuid(params.room_id),
+            author: airc_core::PeerId::from_uuid(params.sender_id),
+            kind: super::arrival::ArrivalKind::Message,
+            direct_to: None,
+            occurred_at_ms: now_ms,
+            text: params.text.clone(),
+        };
+        let content = json!({ "text": params.text, "media": params.media });
+        self.commit_line(
+            &line,
+            super::line_store::LineWrite::New,
+            params.reply_to_id,
+            content,
+        )
+        .await
+        .map_err(|e| format!("chat/send: {e}"))?;
         Ok((message_id, now_ms))
     }
 
@@ -340,76 +306,6 @@ impl ChatModule {
         }
     }
 
-    /// Persist one `chat:posted` projection into the durable chat store (#140).
-    ///
-    /// The projection is the ONE seam every room line crosses — a persona's
-    /// `say()` and a human/web `chat/send` alike — so persisting here makes the
-    /// transcript durable for BOTH speakers with one writer. Idempotent by id:
-    /// a human line was already stored by `send()` under the same `messageId`
-    /// (the envelope carries it through the projection), so the second write
-    /// reports `success=false` (unique id) and is skipped with a probe — an
-    /// EXPECTED duplicate, never an error. A persona line's id is airc's
-    /// `event_id` (stable across replay), so restarts can't double-store either.
-    pub async fn persist_posted(&self, payload: Value) -> Result<(), String> {
-        let executor = self.executor()?;
-        let field = |k: &str| -> Result<String, String> {
-            payload
-                .get(k)
-                .and_then(Value::as_str)
-                .map(String::from)
-                .ok_or_else(|| format!("chat:posted payload missing `{k}`: {payload}"))
-        };
-        let message_id = field("messageId")?;
-        let room_id = field("roomId")?;
-        let sender_id = field("senderId")?;
-        let content = field("content")?;
-        let occurred_at_ms = payload
-            .get("timestamp")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| format!("chat:posted payload missing `timestamp`: {payload}"))?;
-        let iso = now_iso(occurred_at_ms);
-
-        // Same ChatMessageEntity shape `send()` writes — one entity, two writers
-        // converging on one row id. `metadata.source: "user"` for both: personas
-        // are citizens (users), not system lines; WHO spoke is `senderId`.
-        let entity_data = json!({
-            "id": message_id,
-            "roomId": room_id,
-            "senderId": sender_id,
-            "timestamp": iso,
-            "content": { "text": content },
-            "replyToId": null,
-            "metadata": { "source": "user" },
-            "status": "sent",
-        });
-        let create_params = json!({
-            "dbPath": CHAT_DATA_HANDLE,
-            "collection": CHAT_MESSAGES_COLLECTION,
-            "id": message_id,
-            "data": entity_data,
-        });
-        let result = executor
-            .execute_json("data/create", create_params)
-            .await
-            .map_err(|e| format!("chat:posted persist: data/create failed: {e}"))?;
-        if result.get("success").and_then(Value::as_bool) != Some(true) {
-            // Almost always the send()-already-stored duplicate (same id). Keep it
-            // visible-but-calm: one probe line, never a hard error — a projector
-            // that errors on every human message would drown real faults.
-            let detail = result
-                .get("error")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("success=false");
-            continuum_base::probe!(
-                class = "chat.persist.skipped",
-                message_id = message_id.as_str(),
-                detail = detail,
-                "chat:posted row not written (duplicate id or store refusal)"
-            );
-        }
-        Ok(())
-    }
-
     /// #265: seed the repetition-perception speech rings from the durable
     /// transcript at boot. The rings (`record_room_speech` /
     /// `record_own_speech`) are in-process statics, so a reboot wipes them at
@@ -417,7 +313,7 @@ impl ChatModule {
     /// every persona re-emits its greeting 2+ times with the repetition and
     /// [settled] facts blind (observed live 2026-07-30, twice). The durable
     /// store (#140) already holds the history; this replays the latest
-    /// `RING_HYDRATION_SCAN` lines (chronological, all rooms — each ring keeps
+    /// lines of one `chat/poll` page (chronological, all rooms — each ring keeps
     /// only its own bounded tail) so the facts have priors from the first tick.
     ///
     /// Waits boundedly for the executor slot — this runs from the persist
@@ -425,7 +321,6 @@ impl ChatModule {
     /// `install_executor_on_all` (the #201 ordering); a missing executor here
     /// is a not-yet, not a bug, so we poll the slot instead of panicking.
     pub async fn hydrate_speech_rings(&self) -> Result<(), String> {
-        const RING_HYDRATION_SCAN: usize = 200;
         const EXECUTOR_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
         const EXECUTOR_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -444,13 +339,14 @@ impl ChatModule {
                 room_id: None,
                 after_message_id: None,
                 before_message_id: None,
-                limit: Some(RING_HYDRATION_SCAN),
+                // One page, the poll's own (each ring keeps only its own bounded tail).
+                limit: None,
             })
             .await?;
 
         let mut seeded = 0usize;
         for msg in &result.messages {
-            // Stored ChatMessageEntity shape (see `persist_posted`): roomId,
+            // Stored ChatMessageEntity shape (see `line_store::commit_line`): roomId,
             // senderId, content.text. Malformed rows are skipped, not fatal —
             // hydration is best-effort priors, never a boot gate.
             let room = msg
@@ -498,52 +394,21 @@ impl Default for ChatModule {
     }
 }
 
-/// Spawn the durable-transcript writer (#140): a bus-receiver task (same shape as
-/// `cognition::dispatch_listener::spawn`) that persists every `chat:posted` projection —
-/// the ONE seam a persona's `say()` and a human/web `chat/send` both cross — into the
-/// chat store via [`ChatModule::persist_posted`]. This is a receiver task rather than a
-/// module `event_subscription` because `chat:posted` is published with
-/// `publish_async_only`, which feeds only the broadcast channel; module subscriptions
-/// are dispatched exclusively by the synchronous `publish(..., registry)` path.
+/// Install the chat module as the inbound seam's line importer and seed the repetition-fact
+/// speech rings from the durable transcript (#265). The importer is the durable-transcript writer
+/// now: the inbound seam AWAITS each line's import (`line_store::import`), where it used to ride
+/// a lossy broadcast receiver whose lag silently dropped lines from the store.
 ///
-/// Spawned from `ChatModule::initialize` on the ModuleContext's runtime HANDLE —
-/// registration runs on a non-tokio thread, and a bare `tokio::spawn` there panics the
-/// boot ("no reactor running", observed live 2026-07-16). Idempotent per process:
-/// initialize runs once per module.
-pub fn spawn_persist_listener(
-    handle: &tokio::runtime::Handle,
-    bus: Arc<crate::runtime::message_bus::MessageBus>,
-    module: Arc<ChatModule>,
-) {
-    let mut rx = bus.receiver();
+/// Spawned from `ChatModule::initialize` on the ModuleContext's runtime HANDLE (registration runs
+/// on a non-tokio thread; a bare `tokio::spawn` there panics the boot, 2026-07-16).
+pub fn install_line_importer(handle: &tokio::runtime::Handle, module: Arc<ChatModule>) {
+    super::line_store::install_importer(Arc::clone(&module));
     handle.spawn(async move {
-        // #265: seed the repetition-fact speech rings from the durable
-        // transcript BEFORE consuming live events — a reboot wipes the
-        // in-process rings exactly when the wake-greeting round needs them.
-        // The subscription above is already live, so no line is missed while
-        // we hydrate; a hydration failure degrades to cold rings, loudly.
         if let Err(error) = module.hydrate_speech_rings().await {
             tracing::warn!(
                 error,
                 "speech-ring hydration failed — repetition facts start cold this boot (#265)"
             );
-        }
-        loop {
-            let event = match rx.recv().await {
-                Ok(e) => e,
-                // Lagged (slow consumer) — keep going; a persisted line missed under lag
-                // is recoverable on the next send, and the store is not the wire.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-            };
-            if event.name != crate::chat::CHAT_POSTED {
-                continue;
-            }
-            if let Err(error) = module.persist_posted((*event.payload).clone()).await { // persist consumes an owned Value; one copy at the boundary
-                // Loud but non-fatal: one malformed payload must not kill the
-                // transcript writer for the rest of the process lifetime.
-                tracing::warn!(error, "chat:posted persist failed (#140)");
-            }
         }
     });
 }

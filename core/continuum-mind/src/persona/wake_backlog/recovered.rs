@@ -17,23 +17,37 @@ impl PendingInput {
     /// checkpoint failure leaves both with their existing owner for restart recovery.
     pub(crate) fn observe_settlement(
         &mut self,
+        turn_room: Uuid,
         message: &IncomingMessage,
         wake_engram: Option<Uuid>,
         attention: TurnAttention,
         step: &crate::cognition::act_observe::SettleStep,
         receipts: &[GenerationReceipt],
     ) {
-        if matches!(step, crate::cognition::act_observe::SettleStep::ReceiptPersistenceFailed { .. }) {
+        if matches!(
+            step,
+            crate::cognition::act_observe::SettleStep::ReceiptPersistenceFailed { .. }
+        ) {
             return;
         }
         self.settle(message, wake_engram, attention, step);
-        self.notices_read(message.room_id, receipts);
+        self.notices_read(turn_room, receipts);
     }
 
     /// Hand an interrupted, untouched turn back: retried at the next beat with its original
     /// engram (memory already holds the trigger) and its own row id. Idempotent per row.
-    pub(crate) fn readmit(&mut self, message: IncomingMessage, engram: Option<Uuid>, attention: TurnAttention, obligation: Uuid) {
-        if self.inputs.iter().any(|input| input.obligation == Some(obligation)) {
+    pub(crate) fn readmit(
+        &mut self,
+        message: IncomingMessage,
+        engram: Option<Uuid>,
+        attention: TurnAttention,
+        obligation: Uuid,
+    ) {
+        if self
+            .inputs
+            .iter()
+            .any(|input| input.obligation == Some(obligation))
+        {
             return;
         }
         self.inputs.push_back(RetainedInput {
@@ -62,16 +76,22 @@ impl PendingInput {
     /// The step's kind is not evidence the model read anything; a served receipt is (Codex on
     /// #5497: a failed inference must never answer a row she was never shown).
     pub(crate) fn notices_read(&mut self, room: Uuid, receipts: &[GenerationReceipt]) {
-        if !receipts.iter().any(|r| matches!(r.outcome, GenerationOutcome::Served { .. })) {
+        if !receipts
+            .iter()
+            .any(|r| matches!(r.outcome, GenerationOutcome::Served { .. }))
+        {
             return;
         }
         let Some(persona) = self.persona else { return };
         let private = crate::cognition::mind_room::is_private_room(persona, room);
         let (answered, owed): (Vec<_>, Vec<_>) = std::mem::take(&mut self.uncertain)
             .into_iter()
-            .partition(|(_, held)| crate::cognition::mind_room::is_private_room(persona, *held) == private);
+            .partition(|(_, held)| {
+                crate::cognition::mind_room::is_private_room(persona, *held) == private
+            });
         self.uncertain = owed;
-        self.answered.extend(answered.into_iter().map(|(row, _)| row));
+        self.answered
+            .extend(answered.into_iter().map(|(row, _)| row));
     }
 }
 
@@ -115,11 +135,49 @@ mod tests {
         pending.hold_uncertain(row, public);
         pending.notices_read(public, &[receipt("faulted")]);
         pending.notices_read(public, &[]);
-        assert!(pending.take_answered().is_empty(), "nothing served: the model read nothing");
+        assert!(
+            pending.take_answered().is_empty(),
+            "nothing served: the model read nothing"
+        );
         let private = crate::cognition::mind_room::mind_room_id(persona);
         pending.notices_read(private, &[served_receipt("mind", "m")]);
-        assert!(pending.take_answered().is_empty(), "her mind cycle never saw the live cycle's notice");
-        pending.notices_read(Uuid::new_v4(), &[receipt("faulted"), served_receipt("live", "m")]);
-        assert_eq!(pending.take_answered(), vec![row], "held once, answered once");
+        assert!(
+            pending.take_answered().is_empty(),
+            "her mind cycle never saw the live cycle's notice"
+        );
+        pending.notices_read(
+            Uuid::new_v4(),
+            &[receipt("faulted"), served_receipt("live", "m")],
+        );
+        assert_eq!(
+            pending.take_answered(),
+            vec![row],
+            "held once, answered once"
+        );
+    }
+    // A recovered trigger's original room need not be the cycle selected for this turn.
+    #[test]
+    fn settlement_uses_the_selected_cycle_room_for_notice_receipts() {
+        use crate::cognition::act_observe::SettleStep;
+        use crate::persona::training_producer::test_support::served_receipt;
+        let persona = Uuid::new_v4();
+        let public = Uuid::new_v4();
+        let private = crate::cognition::mind_room::mind_room_id(persona);
+        let public_row = Uuid::new_v4();
+        let private_row = Uuid::new_v4();
+        let mut pending = PendingInput::for_persona(persona);
+        pending.hold_uncertain(public_row, public);
+        pending.hold_uncertain(private_row, private);
+        pending.observe_settlement(
+            private,
+            &message(public),
+            None,
+            TurnAttention::default(),
+            &SettleStep::Spoke("settled".into()),
+            &[served_receipt("mind", "m")],
+        );
+        assert_eq!(pending.take_answered(), vec![private_row]);
+        pending.notices_read(public, &[served_receipt("live", "m")]);
+        assert_eq!(pending.take_answered(), vec![public_row]);
     }
 }

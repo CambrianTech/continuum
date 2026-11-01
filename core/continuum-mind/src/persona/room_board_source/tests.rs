@@ -186,8 +186,9 @@
     // what this catches: the board delivering a SLICE. Sources no longer take a size or a
     // count cap (the one allocation in her prompt view picks each item's level), so a
     // 41-card board delivers 41 keyed cards in relevance order — her OWN card first even
-    // when it is the oldest — each with a pointer to collapse to, and the headline still
-    // reports the true totals.
+    // when it is the oldest — her card with a pointer to collapse to and every other card
+    // leaving a collapsed board (the M5, 2026-11-01: 592 one-line pointers were her collapsed
+    // board), and the headline still reports the true totals.
     #[tokio::test]
     async fn a_large_board_delivers_every_card_keyed_with_her_own_first() {
         let mut cards: Vec<WorkCard> = Vec::new();
@@ -220,7 +221,8 @@
         );
         let keys: std::collections::HashSet<_> = rendered.iter().map(|i| i.key.as_str()).collect();
         assert_eq!(keys.len(), total, "one stable key per card");
-        assert!(rendered.iter().all(|i| i.pointer.as_deref().is_some_and(|p| p.contains("work/list"))));
+        assert!(rendered[0].pointer.as_deref().is_some_and(|p| p.contains("work/list")), "her card keeps its pointer");
+        assert!(rendered[1..].iter().all(|i| i.pointer.is_none()), "every other card leaves a collapsed board");
         assert!(!delivery.truncated);
         let headline = &delivery.items[0];
         assert_eq!(headline.key, "headline");
@@ -323,7 +325,7 @@
             "the headline must LEAD"
         );
         assert_eq!(first.key, "headline");
-        assert!(first.pointer.is_none(), "the headline is its own shortest statement");
+        assert_eq!(first.pointer.as_deref(), Some(first.content.as_str()), "the headline is its own shortest statement, kept collapsed");
         assert!(first.content.contains("hold 1"), "{}", first.content);
         assert!(first.content.contains("2 claimable"), "{}", first.content);
         // Cheap enough that any budget delivering grounding at all delivers BOTH

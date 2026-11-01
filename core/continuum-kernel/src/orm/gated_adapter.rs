@@ -141,6 +141,9 @@ impl StorageAdapter for GatedAdapter {
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
         self.write(move |a| Box::pin(async move { a.batch(operations).await })).await
     }
+    fn sequence_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.sequence_revision(collection)
+    }
     async fn upsert_monotonic(&self, record: DataRecord, field: &str) -> StorageResult<bool> {
         let field = field.to_string();
         self.write(move |a| Box::pin(async move { a.upsert_monotonic(record, &field).await })).await

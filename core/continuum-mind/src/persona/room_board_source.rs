@@ -534,17 +534,21 @@ impl RoomBoardSource {
                 held = mine.len(),
                 avail = open.len(),
             );
-            // No pointer: the headline is itself the shortest statement of the board.
-            items.push(RagItem::whole(
-                "headline",
-                headline,
-                json!({
-                    "kind": "board-headline",
-                    "held_count": mine.len(),
-                    "open_count": open.len(),
-                    "open_lead_suppressed": working,
-                }),
-            ));
+            // Its own pointer: the headline is itself the shortest statement of the board, so a
+            // collapsed board still says what she holds and what is claimable in this room.
+            items.push(
+                RagItem::whole(
+                    "headline",
+                    headline.clone(),
+                    json!({
+                        "kind": "board-headline",
+                        "held_count": mine.len(),
+                        "open_count": open.len(),
+                        "open_lead_suppressed": working,
+                    }),
+                )
+                .with_pointer(headline),
+            );
         }
 
         // The focused candidate's next action/evidence handle rides ahead of incidental
@@ -669,14 +673,18 @@ impl RoomBoardSource {
             let content = Self::render(card, &board, self.persona_id, now_ms, &names, focused_submission != Some(card.card_id));
             let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
             // The pointer keeps what a teammate decides on (the card and its takeable /
-            // held tag) once the line collapses; the title returns with `work/list`.
+            // held tag) once the line collapses; the title returns with `work/list`. Only a card she
+            // owns keeps one: every other card leaves a collapsed board, where the headline and the
+            // available-work lead count it and `work/list` lists it (Benchy, the M5, 2026-11-01: 592
+            // one-line card pointers, 21k chars, were her collapsed board).
             let tag = crate::cognition::card_holder::holder(card, self.persona_id, now_ms, &names).state_tag();
+            let hers = card.owner.map(|o| o.as_uuid()) == Some(self.persona_id);
             items.push(RagItem {
                 key: format!("card:{}", card.card_id.as_uuid()),
                 tokens: continuum_base::token_estimate::estimate_prompt_tokens(&content),
                 content,
                 summary: None,
-                pointer: Some(format!("[card {id8}] [{tag}] — work/list")),
+                pointer: hers.then(|| format!("[card {id8}] [{tag}] — work/list")),
                 metadata: json!({
                     "card_id": card.card_id.as_uuid().to_string(),
                     // Serde, NOT `format!("{:?}")`. Debug output is a developer convenience

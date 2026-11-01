@@ -67,6 +67,7 @@ pub mod runtime;
 pub mod service_module;
 pub mod share_controller;
 pub mod shared_compute;
+pub mod stage;
 pub mod storage_provider;
 pub mod params;
 

@@ -51,10 +51,10 @@ pub use continuum_orm_derive::Entity;
 pub use migration::{MigrationEngine, MigrationHandle};
 pub use query::{QueryBuilder, QueryOperator, SortDirection, StorageQuery};
 pub use sqlite::{IndexFailure, IndexPass, SqliteAdapter};
-pub use store::{OrmStore, OrmStoreError};
+pub use store::{commit_appending, OrmStore, OrmStoreError};
 pub use types::{
     CascadeRule, CollectionSchema, DataRecord, FieldType, ForeignKeyRef, RecordMetadata,
-    SchemaField, SchemaIndex, StorageResult,
+    SchemaField, SchemaIndex, SequenceSpec, Sequenced, StorageResult,
 };
 pub use vector::{
     BackfillVectorsProgress, BackfillVectorsRequest, EmbeddingModel, GenerateEmbeddingRequest,

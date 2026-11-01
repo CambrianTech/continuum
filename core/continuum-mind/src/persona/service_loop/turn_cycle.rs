@@ -20,6 +20,8 @@ pub(super) struct SpokenTurn {
     pub(super) response_text: String,
     pub(super) turn_credit: Option<crate::persona::training_producer::CapturedCredit>,
     pub(super) turn_generation_receipts: Vec<crate::ai::provenance::GenerationReceipt>,
+    /// Her held card's sync, run right after the reply is published.
+    pub(super) card_sync: crate::persona::card_hands::CardSync,
 }
 
 /// What the cycle needs beyond the trigger: the burst it reasons over and the engram of
@@ -62,7 +64,9 @@ pub(super) async fn run_turn_cycle(
             // flip clears her KV). Unreadable: the genome she has. The receipt names the
             // genes that ran (GenerationReceipt::genes).
             let need = crate::cognition::recall_faculty::focused_query(&workspace_burst.rendered);
-            if let Some(phenotype) = crate::genome::composer::compose(ctx.identity.peer_id.as_uuid(), need).await {
+            if let Some(phenotype) =
+                crate::genome::composer::compose(ctx.identity.peer_id.as_uuid(), need).await
+            {
                 continuum_base::probe!(
                     class = "persona.genome.turn_genes",
                     persona = %ctx.identity.agent_name,
@@ -181,12 +185,12 @@ pub(super) async fn run_turn_cycle(
                 Some(ctx.identity.peer_id.to_string()),
             );
             let turn_act_count;
-            let (step, turn_metrics, settled_receipts, turn_credit) = {
+            let (step, turn_metrics, settled_receipts, turn_credit, card_sync) = {
                 // A citizen holding a card works at that repo, in a ROOM turn too: the turn
                 // is bound to her card claim's hands (card fc9e9fd7), its credit captured on
                 // her act, and its work synced to the card's branch, by the one owner her
                 // own-time turn uses as well (card 959f3d5c).
-                let (outcome, credit) = crate::persona::card_hands::drive_in_held_card(
+                let (outcome, credit, card_sync) = crate::persona::card_hands::drive_in_held_card(
                     &cycle,
                     ctx.identity.peer_id.as_uuid(),
                     &ctx.identity.agent_name,
@@ -204,8 +208,9 @@ pub(super) async fn run_turn_cycle(
                 // and got no record, so nothing on disk ever described a lived turn.
                 // The driver stays a driver: no learning policy at any call site.
                 turn_act_count = outcome.acts;
-                let (step, metrics, receipts) = crate::cognition::act_observe::SettleStep::from_settled(outcome);
-                (step, metrics, receipts, credit)
+                let (step, metrics, receipts) =
+                    crate::cognition::act_observe::SettleStep::from_settled(outcome);
+                (step, metrics, receipts, credit, card_sync)
             };
             // The credit is the turn's held CARD, captured with it, NOT read back out of
             // `acting_card_of`, a mutable persona-global that a later focus rebind would
@@ -241,7 +246,21 @@ pub(super) async fn run_turn_cycle(
                     "deliberation generation cost"
                 );
             }
-            deferred_input.observe_settlement(msg, wake_engram, attention, &step, &turn_generation_receipts);
+            deferred_input.observe_settlement(
+                turn_room,
+                msg,
+                wake_engram,
+                attention,
+                &step,
+                &turn_generation_receipts,
+            );
+            // A turn with a reply hands its card sync to the publish; any other runs it now.
+            let card_sync = if matches!(step, crate::cognition::act_observe::SettleStep::Spoke(_)) {
+                card_sync
+            } else {
+                card_sync.run().await;
+                crate::persona::card_hands::CardSync::done()
+            };
             match step {
                 crate::cognition::act_observe::SettleStep::CapacityRefused { .. }
                 | crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch => {
@@ -249,9 +268,10 @@ pub(super) async fn run_turn_cycle(
                 }
                 crate::cognition::act_observe::SettleStep::Spoke(text) => {
                     CycleVerdict::Spoke(SpokenTurn {
-                    response_text: text,
-                    turn_credit,
-                    turn_generation_receipts,
+                        response_text: text,
+                        turn_credit,
+                        turn_generation_receipts,
+                        card_sync,
                     })
                 }
                 crate::cognition::act_observe::SettleStep::Acted { calls, intent } => {
