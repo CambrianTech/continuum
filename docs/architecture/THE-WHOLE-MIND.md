@@ -145,6 +145,16 @@ never a failure.
 5. **Merge and delete are equal.** Duplicates merge into one track; a track nothing confirms
    decays and falls off. A mind that only accumulates is as broken as one that only forgets.
 
+**Incubation: the eureka is a background thread coming back** (Joel, 2026-11-01: "a real mind
+finds a eureka or an apt statement subconsciously. It's like many threads were dispatched and the
+consortium comes back as she's talking or working."). Her current focus seeds speculative threads
+at background priority without her asking: recall of related engrams, an association search over
+her past work, a cheap research query, a second take on the plan. Their results land in
+ready-buffers and most fall off unseen; the arbiter promotes one into her awareness only when its
+salience against what she is doing now crosses the line ("this is just like last week's bug").
+They are metered like dreaming: admitted at the rate the main flow absorbs, the first dropped under
+contention.
+
 **What exists:** the parts, scattered. Engrams with salience and decay (merge-by-recall, decay
 sweeps), `Continuation` with an `Expectation` (a prediction a later perception confirms or
 breaks), `SurpriseTally` (prediction error), the epoch's keyed items that only append (a track's
