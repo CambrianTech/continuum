@@ -224,11 +224,9 @@ pub(crate) const PARTITION_FILE: &str = "partition.json";
 
 pub(super) fn write_partition(job_dir: &Path, partition: &Partition) -> Result<(), String> {
     std::fs::create_dir_all(job_dir).map_err(|e| format!("{}: {e}", job_dir.display()))?;
-    let path = job_dir.join(PARTITION_FILE);
-    let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_vec(partition).map_err(|e| e.to_string())?; // file on disk: the job dir's partition.json, read back by `return` after a restart
-    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    continuum_host::durable::replace(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
+    let path = job_dir.join(PARTITION_FILE);
+    continuum_host::durable::replace_with(&path, &text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// What `job_dir` records about its partition. `Ok(None)` only when the file is confirmed absent
@@ -377,9 +375,9 @@ pub(super) const LEGACY_REFUSAL_FILE: &str = "refusal.json";
 
 pub(super) fn write_returnable(job_dir: &Path, returnable: &Returnable) -> Result<(), String> {
     std::fs::create_dir_all(job_dir).map_err(|e| format!("{}: {e}", job_dir.display()))?;
-    let path = job_dir.join(RETURNABLE_FILE);
     let text = serde_json::to_string(returnable).map_err(|e| e.to_string())?; // file on disk: the job dir's returnable.json, read back by the trigger after a restart
-    std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
+    let path = job_dir.join(RETURNABLE_FILE);
+    continuum_host::durable::replace_with(&path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// What `job_dir` records about a return, if anything: `returnable.json`, else #4904's
@@ -452,7 +450,8 @@ pub struct SplitPpm(pub(super) u32);
 
 impl From<f32> for SplitPpm {
     fn from(share: f32) -> Self {
-        Self((share.clamp(0.0, 1.0) * 1_000_000.0).round() as u32)
+        // Its one producer bounds the held-out share to [0, 0.5] (`validation_split`).
+        Self((share * 1_000_000.0).round() as u32)
     }
 }
 
@@ -644,10 +643,9 @@ impl Footprints {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(all).map_err(std::io::Error::other)?)?;
-        // a scanner holding the new temp must not lose the measurement (the 5090, 2026-10-10)
-        continuum_host::durable::replace(&tmp, path)
+        let body = serde_json::to_vec_pretty(all).map_err(std::io::Error::other)?; // file on disk: the footprint store, read back by the next run on this machine
+        // a scanner holding the new file must not lose the measurement (the 5090, 2026-10-10)
+        continuum_host::durable::replace_with(path, &body)
     }
     pub(super) fn get(&self, shape: &Shape) -> Option<u64> {
         self.read_all().get(&shape.key()).filter(|r| r.whole_run && self.measured_here(r)).map(|r| r.bytes)

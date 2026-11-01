@@ -3073,6 +3073,7 @@ dependencies = [
  "continuum-base",
  "continuum-client",
  "continuum-engine",
+ "continuum-engine-protocol",
  "continuum-genome",
  "continuum-host",
  "continuum-kernel",
@@ -3123,6 +3124,7 @@ dependencies = [
  "continuum-airc-protocol",
  "continuum-base",
  "continuum-cli-lifecycle",
+ "continuum-engine-protocol",
  "continuum-host",
  "continuum-kernel",
  "continuum-process",
@@ -3157,6 +3159,15 @@ dependencies = [
  "uuid",
  "wide",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "continuum-engine-protocol"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3208,6 +3219,7 @@ dependencies = [
  "candle-nn",
  "continuum-base",
  "continuum-engine",
+ "continuum-engine-protocol",
  "continuum-host",
  "continuum-kernel",
  "continuum-process",

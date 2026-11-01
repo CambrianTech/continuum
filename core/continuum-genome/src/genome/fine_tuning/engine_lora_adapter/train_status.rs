@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) use continuum_engine_protocol::{EngineExample, EpochReport, ExampleFit, Fit, JobRef, MeasureReply, MeasureRequest, MeasuredExample, TrainRequest, TrainState, TrainStatus};
+pub(super) use continuum_engine_protocol::{EngineExample, ExampleFit, Fit, JobRef, MeasureReply, MeasureRequest, MeasuredExample, TrainRequest, TrainState, TrainStatus};
 
 /// Where the lane serving `base` answers, if one does on this node.
 /// The live lane serving a base: its url and the per-slot window it was launched with (0 =
@@ -528,8 +528,9 @@ pub(super) fn progress_of(s: &TrainStatus, epochs: u32) -> (f32, u32) {
     let done = s.epochs.len() as f32;
     let batch = s.batch.unwrap_or(0) as f32; // unwrap_or: absent before the first batch — zero of this epoch is the truth
     let max = s.batch_max.unwrap_or(0) as f32; // unwrap_or: absent before the first batch
-    let frac = if max > 0.0 { (batch / max).min(1.0) } else { 0.0 };
-    let pct = if epochs == 0 { 0.0 } else { ((done + frac) / epochs as f32 * 100.0).min(100.0) };
+    // A batch past the epoch's last is that epoch done; completed epochs past the run's are the run done.
+    let frac = if max > 0.0 { batch.min(max) / max } else { 0.0 };
+    let pct = if epochs == 0 { 0.0 } else { (done + frac).min(epochs as f32) / epochs as f32 * 100.0 };
     (pct, done as u32)
 }
 

@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LearnOutcome",
+  "description": "What a learn step reports, on `POST /learn` and as the `learn` field of a completion that carried one (`learn_outcome`, server-task.cpp). A refusal inside the step (no such slot, no loaded adapter, a missing backward) is `success: false` with `failure`, not an HTTP error.",
+  "type": "object",
+  "required": [
+    "loss",
+    "n_labels",
+    "success",
+    "t_ms"
+  ],
+  "properties": {
+    "deferred": {
+      "description": "the duty budget had no room: retry after `retry_after_ms`",
+      "default": false,
+      "type": "boolean"
+    },
+    "failure": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "loss": {
+      "type": "number",
+      "format": "double"
+    },
+    "n_labels": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "retry_after_ms": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "t_ms": {
+      "type": "number",
+      "format": "double"
+    }
+  }
+}

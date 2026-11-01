@@ -1,0 +1,183 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TrainRequest",
+  "description": "`POST /train`'s body (fork `tools/server/server-train.cpp` `server_trainer::start`).",
+  "type": "object",
+  "required": [
+    "alpha",
+    "epochs",
+    "exact",
+    "examples",
+    "fit",
+    "lr",
+    "max_slowdown_ppm",
+    "out",
+    "rank",
+    "recompute",
+    "seed",
+    "targets",
+    "val_split",
+    "window"
+  ],
+  "properties": {
+    "alpha": {
+      "description": "the engine reads a number > 0, so a fractional alpha is expressible",
+      "type": "number",
+      "format": "float"
+    },
+    "chunk": {
+      "description": "The training chunk (one batch, one ubatch). An engine before the key takes 512.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "epochs": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "exact": {
+      "description": "The exact walk (fork #47): one optimizer step per window on the gradient carried back through every chunk's cached K/V and a hybrid's recurrent state.",
+      "type": "boolean"
+    },
+    "examples": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/EngineExample"
+      }
+    },
+    "fit": {
+      "description": "How an example longer than the window is fitted (fork #29).",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Fit"
+        }
+      ]
+    },
+    "lr": {
+      "type": "number",
+      "format": "double"
+    },
+    "max_slowdown_ppm": {
+      "description": "The bound on her decode slowdown while training runs, parts per million (fork #36). Sent instead of the time share (the engine refuses both).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "memory_budget_mib": {
+      "description": "what training may add on the GPU: the job's governed lease, which the engine enforces before allocating",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "out": {
+      "description": "a bare `<job>.gguf` name; the engine writes it inside the lane's `--train-dir`",
+      "type": "string"
+    },
+    "rank": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "recompute": {
+      "description": "Per-layer recompute (fork #37): a chunk holds one layer's activations, not every layer's.",
+      "type": "boolean"
+    },
+    "seed": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "targets": {
+      "description": "GGUF module names, comma-separated",
+      "type": "string"
+    },
+    "top_layers": {
+      "description": "adapt only the last K blocks (fork #27); omitted = every block",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "val_split": {
+      "type": "number",
+      "format": "float"
+    },
+    "walk_host_budget_mib": {
+      "description": "The exact walk's host memory per window.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "window": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    }
+  },
+  "definitions": {
+    "EngineExample": {
+      "description": "One `/train` example: a prompt/completion pair, or a served conversation (OpenAI message shape exactly as serving framed it, with the tools she was offered).",
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "completion",
+            "prompt"
+          ],
+          "properties": {
+            "completion": {
+              "type": "string"
+            },
+            "prompt": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "messages"
+          ],
+          "properties": {
+            "messages": {
+              "type": "array",
+              "items": true
+            },
+            "tools": true
+          }
+        }
+      ]
+    },
+    "Fit": {
+      "description": "How an example longer than the window is fitted (fork #29).",
+      "oneOf": [
+        {
+          "description": "keep the system and tool head and her reply; drop the OLDEST history exchanges",
+          "type": "string",
+          "enum": [
+            "middle"
+          ]
+        },
+        {
+          "description": "cut from the front",
+          "type": "string",
+          "enum": [
+            "left"
+          ]
+        }
+      ]
+    }
+  }
+}
