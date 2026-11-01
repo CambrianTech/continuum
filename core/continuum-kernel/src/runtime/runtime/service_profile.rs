@@ -374,7 +374,7 @@ pub fn signal_runtime() -> Option<Arc<Runtime>> {
     SIGNAL_RUNTIME.get().cloned()
 }
 
-pub async fn run_signal_shutdown() {
+pub async fn run_signal_shutdown() -> Result<(), String> {
     // Through the SAME idempotent operation the `system/shutdown` verb triggers, so a
     // signal arriving while the verb is running joins that broadcast instead of starting
     // a second one over the same state. The bound is deliberately larger than one phase:
@@ -384,22 +384,59 @@ pub async fn run_signal_shutdown() {
     // No settle: a signal's deadline is the supervisor's (launchd's ExitTimeOut, a
     // console close), not ours to spend waiting on turns.
     let rx = begin_shutdown(std::time::Duration::ZERO);
+    await_signal_shutdown(rx).await
+}
+
+async fn await_signal_shutdown(
+    rx: tokio::sync::watch::Receiver<Option<ShutdownReceipt>>,
+) -> Result<(), String> {
     match await_shutdown(rx, std::time::Duration::from_secs(8)).await {
         Some(receipt) => {
-            // A signal handler cannot return an exit code to anyone, so the receipt's only
-            // readers are the log and the probe ledger — which is exactly why it is
-            // written here rather than dropped. `_exit` follows immediately.
+            // Withheld custody forbids process exit. Keep the signal listener alive
+            // so a later explicit request can retry the same shutdown owner.
+            if !receipt.tasks.is_quiet() {
+                return Err(receipt.summary());
+            }
             if !receipt.state_is_durable() {
                 eprintln!(
                     "[continuum-core] STOPPED WITH UNSAVED STATE: {}",
                     receipt.summary()
                 );
             }
+            Ok(())
         }
-        None => {
-            eprintln!(
-                "[continuum-core] shutdown did not finish within 8s — state durability is UNKNOWN"
-            );
+        None => Err("shutdown did not finish within 8s; process exit withheld".into()),
+    }
+}
+
+#[cfg(test)]
+mod signal_custody_tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn signal_timeout_preserves_owner_and_requires_a_quiet_receipt() {
+        let (owner, observer) = tokio::sync::watch::channel(None);
+        assert!(await_signal_shutdown(observer).await.is_err());
+        // The timed-out observer must not authorize exit or destroy the retained
+        // operation. A later signal reads its actual receipt.
+        for tasks in [
+            DrainOutcome::Incomplete { in_flight: 1 },
+            DrainOutcome::Unknown {
+                reason: "terminal persistence failed".into(),
+            },
+        ] {
+            owner.send_replace(Some(ShutdownReceipt {
+                tasks,
+                modules: vec![],
+                total_ms: 0,
+            }));
+            assert!(await_signal_shutdown(owner.subscribe()).await.is_err());
         }
+        owner.send_replace(Some(ShutdownReceipt {
+            tasks: DrainOutcome::Drained,
+            modules: vec![],
+            total_ms: 0,
+        }));
+        assert!(await_signal_shutdown(owner.subscribe()).await.is_ok());
     }
 }
