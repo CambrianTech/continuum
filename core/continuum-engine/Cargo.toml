@@ -5,7 +5,6 @@ edition = "2021"
 publish = false
 
 [dependencies]
-continuum-engine-protocol = { path = "../continuum-engine-protocol" }
 continuum-process = { path = "../continuum-process" }
 tempfile = { workspace = true, optional = true }
 continuum-kernel = { path = "../continuum-kernel" }

@@ -24,7 +24,7 @@
 //!   #4438), and is a [`ArtifactFormat::GgufLora`].
 use super::native_jobs::{default_lora, default_schedule, job_dir_for, Execution, InPlaceEnd, InPlaceRun, NativeJobs, PreparedJob, RunProgress};
 use super::{ArtifactFormat, FineTuningAdapter, FineTuningCapabilities, FineTuningError, JobHandle, JobMetrics, ReattachOutcome, TrainerHardware, TrainingArtifact, TrainingExample, TrainingJobRequest, TrainingStatus};
-use crate::inference::planning::training_plan::{calibration_floor, choose_chunk, choose_depth, choose_window, shallower_depths, default_chunk, exact_ruled_out, partition_of, refit_middle, train_chunk_for, train_window, window_for_need, with_run_skipped, GraphModel, need, Need, NeedSource, Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN};
+use crate::inference::planning::training_plan::{calibration_floor, choose_chunk, choose_depth, choose_window, shallower_depths, default_chunk, exact_ruled_out, partition_of, refit_middle, train_chunk_for, train_window, window_for_need, with_run_skipped, ExampleFit, GraphModel, MeasuredExample, need, Need, NeedSource, Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN};
 
 use async_trait::async_trait;
 

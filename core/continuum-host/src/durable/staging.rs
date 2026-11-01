@@ -65,7 +65,7 @@ impl Staging {
     /// Sync and move over `name` in the same directory, replacing what is there.
     pub fn replace(self, name: &Path) -> io::Result<()> {
         self.file.sync_all()?;
-        super::retry_while_held(|| self.dir.rename(&self.name, &self.dir, name))?;
+        self.dir.rename(&self.name, &self.dir, name)?;
         super::os::sync_placed(&self.dir, name)
     }
 
