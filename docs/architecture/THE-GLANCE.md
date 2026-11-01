@@ -28,9 +28,10 @@ addressing her does not thereby gain authority over her execution settings.
    return a typed paused/quiescent receipt: sequence identity, generation epoch, model and
    adapter identity. Resume continues THAT execution. A dropped stream plus a cached prefix is a
    new generation, not a resume, and is never reported as one: cancellation, lost work and
-   replay stay explicit. Until the fork provides per-sequence pause and resume, `switch`
-   is unavailable and is offered as `answer_and_return` or `continue`; the glance still
-   ships (Codex on #5690).
+   replay stay explicit. The decisions the system supports are advertised to her before her
+   glance generates. Until the fork proves per-sequence pause and resume of the same
+   execution, `switch` is not advertised; a `switch` she issues anyway, or a stale one, gets a
+   typed refusal, never a silent translation into another choice. Her work keeps running.
 2. **Two-sequence admission (the scheduler).** Her glance is a second sequence admitted through
    the existing scheduler and physical capacity authority, never by pausing her work to make
    room. The prefix is shared immutably with separate continuation state, or copied; its memory
