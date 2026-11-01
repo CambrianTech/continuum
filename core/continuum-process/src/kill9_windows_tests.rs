@@ -1,4 +1,4 @@
-use super::terminate_windows_handle;
+use super::{terminate_windows_handle, windows_handle_has_exited};
 use continuum_kernel::system_resources::process_tree::ProcessIdentity;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::process::{Child, Stdio};
@@ -66,5 +66,26 @@ fn live_process_access_denial_remains_a_refusal() -> Result<(), Box<dyn std::err
     assert!(observed
         .is_err_and(|error| error.contains("TerminateProcess") && error.contains("os error 5")));
     assert!(still_live, "denial must leave the live child intact");
+    Ok(())
+}
+
+#[test]
+fn observation_without_synchronize_right_is_unknown() -> Result<(), Box<dyn std::error::Error>> {
+    let mut child = waiting_child()?;
+    // SAFETY: query-only access deliberately omits the right required to wait.
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, child.id()) };
+    let observed = if raw.is_null() {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        // SAFETY: successful OpenProcess transferred one owned handle.
+        let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+        windows_handle_has_exited(&handle)
+    };
+    let still_live = child.try_wait()?.is_none();
+    drop(child.stdin.take());
+    child.wait()?;
+    assert!(!raw.is_null(), "fixture must acquire a query-only handle");
+    assert!(observed.is_err_and(|error| error.contains("WaitForSingleObject")));
+    assert!(still_live);
     Ok(())
 }
