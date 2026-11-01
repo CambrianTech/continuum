@@ -745,7 +745,9 @@ impl EngineRun {
                             slowdown_ppm_realized = s.slowdown_ppm_realized.map(|v| v as i64).unwrap_or(-1), // -1 = not measured: no busy stretch both with and without a window, or an engine before #36
                             decode_tps_no_window = s.decode_tps_no_window.unwrap_or(-1.0), // -1 = not measured, never a 0 that reads as her stopping
                             decode_tps_in_window = s.decode_tps_in_window.unwrap_or(-1.0), // -1 = not measured, never a 0 that reads as her stopping
-                            "the in-engine run finished: how many windows it took beside busy serving, how long it yielded, and what it cost her decoding against the bound"
+                            window_ms_max = s.window_ms.max.map(|v| v as i64).unwrap_or(-1), // -1 = an engine that does not report window times
+                            window_ms_p95 = s.window_ms.p95.map(|v| v as i64).unwrap_or(-1), // -1 = an engine that does not report window times
+                            "the in-engine run finished: how many windows it took beside busy serving, how long it yielded, what it cost her decoding against the bound, and the longest she could not wake (a pause lands only between windows)"
                         ),
                         _ => continuum_base::probe!(
                             class = "training.run.share",

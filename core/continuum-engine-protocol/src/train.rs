@@ -84,6 +84,21 @@ impl From<SlowdownPpm> for u32 {
     }
 }
 
+/// How long the run's training windows took, ms. The engine reaches a pause only between windows,
+/// so the longest window is the longest a stimulus waits for her to wake from a dream
+/// (SLEEP-AND-WAKE-AT-EVERY-SCALE.md). Absent until a window has finished.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WindowTimes {
+    #[serde(default, rename = "window_ms_last")]
+    pub last: Option<u64>,
+    #[serde(default, rename = "window_ms_max")]
+    pub max: Option<u64>,
+    #[serde(default, rename = "window_ms_p50")]
+    pub p50: Option<u64>,
+    #[serde(default, rename = "window_ms_p95")]
+    pub p95: Option<u64>,
+}
+
 /// How an example longer than the window is fitted (fork #29).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -184,6 +199,9 @@ pub struct TrainStatus {
     pub windows: Option<u64>,
     #[serde(default)]
     pub windows_while_busy: Option<u64>,
+    /// how long each training window held the lane: the wake latency's evidence
+    #[serde(flatten)]
+    pub window_ms: WindowTimes,
     #[serde(default)]
     pub share_ppm: Option<u64>,
     /// the slowdown bound and the measured rates (fork #36)

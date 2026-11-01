@@ -49,6 +49,12 @@ mod tests {
         )
         .expect("the M5's GET /train body at 02:00Z parses"); // test: a fixture step that must succeed
         assert_eq!(status.state, crate::TrainState::Starting);
+        // the window times status() adds once a window has finished: the wake latency's evidence
+        let timed: crate::TrainStatus = serde_json::from_str(
+            r#"{"state":"running","windows":3,"windows_while_busy":1,"window_ms_last":8600,"window_ms_max":8600,"window_ms_p50":4100,"window_ms_p95":8600}"#,
+        )
+        .expect("a status with window times"); // test: a fixture step that must succeed
+        assert_eq!(timed.window_ms, crate::WindowTimes { last: Some(8600), max: Some(8600), p50: Some(4100), p95: Some(8600) });
         let none: crate::TrainStatus = serde_json::from_str(r#"{"state":"unavailable"}"#).expect("a server with no trainer"); // test: a fixture step that must succeed
         assert_eq!(none.state, crate::TrainState::Unavailable);
         let refused: crate::LearnOutcome =
