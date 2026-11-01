@@ -84,7 +84,7 @@ does the rest:
 | **inputs**: typed topics on the mind bus, routed by header (never by reading the body) | delivery as events, double-buffered snapshots, no polling |
 | **outputs**: the ready-buffer it writes (a tracked hypothesis with confidence, age and provenance, §2.1b) | fusion with every other estimator: merge, consensus, decay and delete |
 | **trigger**: event, salience threshold, cadence floor, or the completion of a task it dispatched | wake-ups, aging, and the never-comatose floor |
-| **cost**: CPU, or a model call at a tier (none, small, mid, the big model), with an access category | the traffic lights: grants by everyone's priorities, preemption, green waves, placement anywhere on the grid with capacity |
+| **cost**: CPU, or a model call at a tier (none, small, mid, the big model) | the traffic lights: grants from every mind's state, preemption, green waves, placement anywhere on the grid with capacity |
 | **yield points**: where its work may be interrupted | the reflex interrupt (`unless_directed` today) and the wake latency bound |
 | **view items**, if what it knows should reach her prompt | the context codec: epoch, levels, admission, collapse at seams |
 
@@ -189,23 +189,22 @@ never a failure.
 5. **Merge and delete are equal.** Duplicates merge into one track; a track nothing confirms
    decays and falls off. A mind that only accumulates is as broken as one that only forgets.
 
-**Incubation: the eureka is a sentinel coming back** (Joel, 2026-11-01: "a real mind
-finds a eureka or an apt statement subconsciously. It's like many threads were dispatched and the
-consortium comes back as she's talking or working."). Her current focus seeds speculative threads
-at background priority without her asking: recall of related engrams, an association search over
-her past work, a cheap research query, a second take on the plan. Their results land in
-ready-buffers and most fall off unseen; the arbiter promotes one into her awareness only when its
-salience against what she is doing now crosses the line ("this is just like last week's bug").
-They are metered like dreaming: admitted at the rate the main flow absorbs, the first dropped under
-contention.
+**Incubation: association manages itself** (Joel, 2026-11-01: "a real mind finds a eureka or an
+apt statement subconsciously. It's like many threads were dispatched and the consortium comes back
+as she's talking or working." And: "She doesn't schedule sentinels for her thoughts. Do human minds
+think I'm going to set up a task to think about Missouri River plains people when we're talking
+about bison meat at dinner? ... It manages itself."). Nobody dispatches these threads, not she and
+not us. What she perceives activates what it resembles (spreading activation): her engrams, her
+past work, what her caches and the grid hold, and the substrate follows those activations on its
+own, at background cost, invisibly to her. Most fade unseen; one surfaces into her awareness only
+when it resonates strongly with what she is doing now, and she simply finds herself thinking it
+("this is just like last week's bug"). Metered like dreaming: admitted at the rate the main flow
+absorbs, the first dropped under contention.
 
-These threads are **sentinels**, the name we already use (GENOME-FOUNDRY-SENTINEL; the training
-and fitness sentinels in code; "her work runs as tasks, sentinels and helper agents"). A sentinel
-is what a helper agent is to Claude Code: dispatched with a brief, it works on its own and returns
-a **conclusion sized for her attention**, never its transcript. A sentinel can run on **any base
-model**: recall and association on a tiny model or none, research on a mid-size one, a second take
-on the plan on the big one, each placed wherever on the grid has the capacity (small-model
-sentinels on a spare GPU while the main node serves), each under the same traffic lights (§4.2b).
+The mechanism underneath is what we called **sentinels** (GENOME-FOUNDRY-SENTINEL; the training
+and fitness sentinels in code): a unit of background work with a brief in and a conclusion out,
+on any base model (none for recall, small for association, larger for a second take), placed
+wherever on the grid has capacity. Sentinels are the substrate's plumbing, never her chore.
 
 **What exists:** the parts, scattered. Engrams with salience and decay (merge-by-recall, decay
 sweeps), `Continuation` with an `Expectation` (a prediction a later perception confirms or
@@ -277,17 +276,23 @@ exam gates the swap shadow → stable; wake latency is one dream chunk.
 | Temperature | arousal | measured activity per mind; the priority, with aging so nobody starves (plan goal 9) |
 | Pressure | the hypothalamus's alarms | `PressureBroker` (live): watermarks, relief eviction |
 
-### 4.2 Her priorities, not ours
+### 4.2 Autonomic, not rigged and not a form to fill
 
-**A free mind sets her own priorities** (Joel, 2026-11-01: "It's a free mind that works
-autonomously, not some rigged machine."). The substrate never ranks kinds of activity for her
-(conversation above work, addressed above self-initiated): that is a harness. Each request she
-makes carries the urgency SHE gives it; the RTOS only arbitrates between minds sharing one engine,
-fairly: one budget, her declared urgency, aging so nobody starves. Wireless QoS (802.11e) teaches
-the mechanism, not the ranking: classes contend for the same air at once with different waits, no
-line in series. Here the classes are hers to choose per request, and all of them are in the
-engine's batch together; urgency sets the share of each decode step and the order of preemption,
-never an arrival queue.
+**A free mind that manages itself** (Joel, 2026-11-01: "It's a free mind that works autonomously,
+not some rigged machine." "It manages itself."). Two levels, as in a body:
+- **Volitional, hers:** what she does and says, the work she takes on, whether a line changes
+  what she is doing.
+- **Autonomic, nobody's to schedule:** association, consolidation, dreaming, arousal, and how
+  compute is shared. Neither we nor she schedule these; they follow her state.
+
+So urgency is neither a ranking the substrate assigns to kinds of activity (conversation above
+work, addressed above self-initiated: a harness) nor a priority she fills in per request (a form).
+It arises from her state, the way arousal does: how engaged she is, what is at stake in what she
+perceives, how long something has waited. The RTOS shares one engine between minds from those
+states, fairly: one budget, aging so nobody starves. Wireless QoS (802.11e) teaches the mechanism,
+not a ranking: classes contend for the same air at once, with different waits and no line in
+series. All of a mind's work is in the engine's batch together; her state sets the share of each
+decode step and the order of preemption, never an arrival queue.
 
 Today four gates stand in series between a mind and the engine (`mind_gate` FIFO, `LaneAdmission`
 with fixed Directed/Work/Ambient classes the system assigns, `KvSlotPool` pin, the fork's slot
@@ -301,14 +306,14 @@ rigging to remove.
 > but has to wait her turn. The systems have the priorities of everyone and everything in mind.
 > It's traffic light to the minds."
 
-Under contention her deep work waits; she does not. The request is a task with a handle; while it
+Under contention her deep work waits; she does not. The work is a task with a handle; while it
 waits she keeps talking and working from the fast sources, and the grant wakes her. What decides
-the order is the priorities of everyone, not arrival:
+the order is the state of every mind, not arrival:
 
 | Traffic engineering | Here |
 |---|---|
 | adaptive signals (SCATS, SCOOT) timed from road sensors | grants timed from measured demand: each mind's temperature and sleep pressure, the lane's load |
-| emergency-vehicle preemption | the urgency she declares: a request she marks urgent preempts those she did not |
+| emergency-vehicle preemption | arousal: a mind whose state spikes (a line that matters to her) is let through first |
 | fair cycles: no side road waits forever | aging: a waiting request's priority rises with its wait |
 | green wave along a route | a deep task's prefill, decode and tools granted in sequence, not stopped at each intersection |
 | ramp metering | dreaming and background work admitted at the rate the main flow absorbs |
@@ -379,8 +384,8 @@ live eviction goes to disk or re-prefill); a shared prefix is copied, never re-p
 2. **The fast voice:** a short-budget act on her warm prefix (or a small model) in the voice
    category, speaking into the same context. Validator: stimulus to first token, and the slow act
    continues without repeating it.
-3. **Her urgency in the batch;** the serial gates and the system-assigned classes fold into one admission that arbitrates her declared urgency between minds. Validator: four
-   residents plus a live conversation in the replay, waits by the urgency each mind declared.
+3. **Her state in the batch;** the serial gates and the system-assigned classes fold into one admission that shares the engine by each mind's state (arousal, engagement, age). Validator: four
+   residents plus a live conversation in the replay, waits by each mind's state, no class assigned.
 4. **Learning in place:** pressure from settled examples, `/learn` steps on the shadow, the exam
    gates the swap, wake within a chunk (SLEEP-AND-WAKE §7).
 5. **One live engine:** pin the fork's reconfigure and RAM pages; page by temperature.
