@@ -147,6 +147,52 @@ async fn verified_acceptance_readback_recovers_lost_acknowledgement() -> Result<
     Ok(())
 }
 
+#[tokio::test]
+async fn unreadable_committed_acceptance_retains_custody_without_execution() -> Result<(), String> {
+    use crate::orm::adapter::StorageAdapter;
+    let runtime = Arc::new(Runtime::new());
+    let (module, _) = RecordingModule::new("acceptance-readback-failure", Vec::new());
+    runtime.register(module.clone());
+    let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+    let adapter = Arc::new(crate::orm::gated_adapter::GatedAdapter::new(adapter));
+    let ledger = Arc::new(crate::runtime::tasks::TaskLedger::new(adapter.clone()).await?);
+    let mut events = runtime.bus.receiver();
+    let executor = Arc::new(
+        CommandExecutor::new(runtime.registry.clone()).with_message_bus(runtime.bus.clone()),
+    );
+    executor.set_task_ledger(ledger)?;
+    adapter.fail_after_next_create();
+    adapter.fail_next_query();
+    let caller = crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(
+        uuid::Uuid::new_v4(),
+    ));
+    let error = executor
+        .dispatch_background("test/result", serde_json::Value::Null, Some(caller))
+        .await
+        .err()
+        .ok_or("unverified acceptance incorrectly authorized execution")?;
+    assert_eq!(
+        error.outcome,
+        crate::runtime::command_executor::DispatchOutcome::Uncertain
+    );
+    let receipt = runtime.shutdown().await;
+    assert!(matches!(receipt.tasks, DrainOutcome::Unknown { .. }));
+    assert!(receipt.modules.is_empty());
+    assert_eq!(module.saves.load(Ordering::SeqCst), 0);
+    // The failed acknowledgement and failed read must not erase the committed
+    // acceptance, authorize a second insert, or publish a false completion.
+    let count = adapter
+        .count(crate::orm::query::QueryBuilder::new("kernel_task_facts").build())
+        .await;
+    assert!(count.success);
+    assert_eq!(count.data, Some(1));
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl CommandInterceptor for FailTerminalWrite {
     fn name(&self) -> &'static str {
