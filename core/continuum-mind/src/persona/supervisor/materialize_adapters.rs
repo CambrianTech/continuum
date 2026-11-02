@@ -496,7 +496,7 @@ pub async fn materialize_adapters(
                 // reprojections (measured 2026-09-01: both his captures
                 // carried "[reprojected … held]"). A source this cheap
                 // never gets a fallback ([[fallbacks-are-illegal-fail-loud]]).
-                crate::cognition::persona_workspace::GroundingSource::framing(roster_source),
+                crate::cognition::persona_workspace::GroundingSource::framing(roster_source).shared_rooms_only(),
                 // Doctrine — WHAT the room is for: the PARTICIPATION GATE. This
                 // one stays SYNCHRONOUS (ColdStartCritical): a cold-start `None`
                 // would let the persona speak in a room it shouldn't on turn one,

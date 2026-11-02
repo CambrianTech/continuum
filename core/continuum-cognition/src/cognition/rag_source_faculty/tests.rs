@@ -82,15 +82,25 @@
         // abstains silently and a second live path carried the same content. The
         // tier whose absence is a WRONG turn must not be able to be quietly
         // absent. Powers of two: 1,2,4,8 report; 3,5,6,7 do not.
-        // what this catches: a shared-room source's absence in her mind room reported as a WRONG
+        // what this catches: a SHARED-ROOM source's absence in her mind room reported as a WRONG
         // turn (live 2026-11-02: Atlas's private turns raised rag.coldstart.absent for the roster
         // every streak): the room is private by design, so nothing there is absent.
         #[tokio::test]
         async fn her_mind_room_is_never_a_cold_start_absence() {
-            let faculty = critical(Arc::new(StubSource::new("roster", &[])));
+            let faculty = critical(Arc::new(StubSource::new("roster", &[]))).in_scope(RoomScope::SharedRoomsOnly);
             let mind = crate::cognition::mind_room::mind_room_id(persona());
             let reported: Vec<Option<u32>> = (0..4).map(|_| faculty.note_absence(mind)).collect();
             assert_eq!(reported, vec![None; 4], "her mind room's empty roster is privacy, not absence");
+        }
+
+        // what this catches: privacy taken as proof every critical source is inapplicable (Codex
+        // on #5699): a source that applies everywhere (doctrine, participation) and comes up
+        // empty in her mind room is still a wrong turn, and still says so.
+        #[tokio::test]
+        async fn an_applicable_critical_source_empty_in_her_mind_room_still_reports() {
+            let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
+            let mind = crate::cognition::mind_room::mind_room_id(persona());
+            assert_eq!(faculty.note_absence(mind), Some(1), "an Everywhere source's absence is reported in any room");
         }
 
         #[tokio::test]
