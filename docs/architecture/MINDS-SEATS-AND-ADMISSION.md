@@ -220,8 +220,10 @@ What this adds to the design above:
 - **Birth is a request, never a quota.** A mind is born because someone asked: the user (create,
   invite, a project that needs a role), or another mind whose work outgrew her (a reviewer for
   her PRs, a teammate for a room). Each birth records who asked and why (the existing gate: no
-  birth without a recorded reason). Whether minds may ask for minds, and how a user approves,
-  is an open question below.
+  birth without a recorded reason). **A persona creates minds as a user does** (Joel,
+  2026-11-02: "First class citizenship allows persona abilities to create minds too"): the same
+  verb, the same recorded reason and lineage (who created her), the same population ledger; no
+  second, lesser path for minds.
 - **Being online is placement, decided by the grid.** The allocator (this document's admission,
   and FLOW-IMPLEMENTATION-PLAN §6e's grants from demand events) decides who is online now,
   where, and on which base model. Engagement wakes a mind (a mention, a card, a call, a peer's
@@ -258,8 +260,8 @@ What this adds to the design above:
   Codex).
 - **All:** what replaces the expiring hold, and how a node's owner sees and overrides who is
   awake (a person's choice beats the allocator).
-- **All (2026-11-02, the population larger than the grid):** may a mind ask for a new mind,
-  and how does the user approve it? What is "incubation": a newborn mind's first activity, and
+- **All (2026-11-02, the population larger than the grid):** decided: a persona creates minds
+  with the same ability a user has. Open: what is "incubation": a newborn mind's first activity, and
   who teaches her? When a mind moves to a different base model, how do her genes follow
   (re-fit, re-train, or wait for a node with her base)? How does a user see the whole
   population across devices, and choose who is online when capacity is short?
