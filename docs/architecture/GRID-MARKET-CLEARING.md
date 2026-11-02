@@ -99,8 +99,12 @@ stated). For each claim `i`:
 
 That last clause is what keeps a flat job from being worth nothing: on its flat region, more resources do not
 make it more valuable sooner, but they raise the probability it completes before its horizon. As its horizon
-nears and that probability falls, the marginal value of resources to it rises, so a long, flat job gains
-priority from its own curve, not from a fixed aging rule or a second scheduler. Long-lived work enters as
+nears, the marginal value of resources to it CAN rise, and a long, flat job then gains priority from its own
+curve, not from a fixed aging rule or a second scheduler. That is a possible measured result, never a theorem
+of the curve (Codex): once the horizon is unreachable even with the resource, both completion probabilities are
+zero, their difference is zero, and the claim gains nothing. Such a claim is a typed outcome, `Infeasible`
+before admission or `MissedCommitment` after it, reported, never left to bid at zero. Changing a utility cannot
+create capacity: admission proves a commitment feasible before it is accepted. Long-lived work enters as
 verified sub-outcomes (each passing test, each merged slice), each with its own `U(t)`, so progress counts
 before the whole completes.
 
@@ -112,8 +116,10 @@ and uncertainty:
 - complementary resources become a joint claim, solved as a bundle at the lowest common tier (slice 1 part 2);
 - a shape the conversion cannot represent is a typed `Unsupported` state, never approximated silently.
 
-Validators (none can be proved by a linearized copy of production policy): a flat long job competing with
-repeated short arrivals (the long job completes before its horizon; nobody starves); an all-or-none deadline job
+Validators (none can be proved by a linearized copy of production policy): for an ADMITTED, FEASIBLE workload, a
+flat long job competing with repeated short arrivals completes before its horizon (sustained overload is outside
+this claim: there admission refuses, or the commitment ends as `MissedCommitment`, and the validator asserts that
+typed outcome); an all-or-none deadline job
 (granted whole in time or not at all, never half); each against the production solver through its seam.
 
 **What is measured and what is learned.**
@@ -139,8 +145,10 @@ on #5621 scoped it). A P2P grid has no one trusted in the middle:
   (invariant 7).
 - **A partition is an explicit placement state** (invariant 5): local clearing continues for local work, while
   work in flight on the unreachable peer keeps its custody and its pending outcome. It is never replayed locally
-  while its fate is unknown, and its remote credit is not released until the peer reports or the custody is
-  withdrawn by its own lease rules.
+  while its fate is unknown. Two things are distinct (Codex): an authorization can EXPIRE by its lease rules (the
+  peer may no longer start new work under it), but expiry does not make the physical resources it held reusable.
+  The retained accounting persists, through a partition too, until actual reclamation evidence arrives (the peer's
+  report or the existing release-evidence and fencing contract); only then is the remote credit released.
 
 **In the solver** (`cambrian-flex`, ONE-BUDGET slice 1), a claim's `Value` is in this currency, and its
 increments are the marginal change in expected value per unit of resource, evaluated on its curve at the
