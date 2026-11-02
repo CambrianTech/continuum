@@ -7,32 +7,46 @@
 use super::chat_data_handle::{ChatModule, CHAT_DATA_HANDLE};
 use super::orm_entities::CHAT_ORM_COLLECTIONS;
 use crate::orm::types::BatchOperation;
-use crate::runtime::{command_executor::CommandExecutor, LateBound};
+use crate::runtime::command_executor::CommandExecutor;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// What every chat module built over one executor shares: the late-bound executor, and whether its
-/// store's chat collections exist yet (ensured once, on first use; a failure retries on the next).
+/// What every chat module built over one executor shares: the executor, installed late at boot
+/// (a watch, so a boot-internal reader awaits the install instead of polling or failing), and
+/// whether its store's chat collections exist yet (ensured once, on first use; a failure retries).
 pub struct ChatSlot {
-    executor: LateBound<CommandExecutor>,
+    executor: tokio::sync::watch::Sender<Option<Arc<CommandExecutor>>>,
     collections_ready: tokio::sync::OnceCell<()>,
 }
 
 impl ChatSlot {
     pub fn new() -> Self {
         Self {
-            executor: LateBound::new("chat::executor"),
+            executor: tokio::sync::watch::Sender::new(None),
             collections_ready: tokio::sync::OnceCell::new(),
         }
     }
 
     pub fn install(&self, executor: Arc<CommandExecutor>) {
-        self.executor.install(executor);
+        self.executor.send_replace(Some(executor));
     }
 
     pub fn cloned(&self) -> Option<Arc<CommandExecutor>> {
-        self.executor.cloned()
+        self.executor.borrow().clone()
+    }
+
+    /// The executor once boot installs it. For boot-internal readers only (the inbound seam, ring
+    /// hydration); a command never waits here, it fails loud before install (#201).
+    pub async fn ready(&self) -> Result<Arc<CommandExecutor>, String> {
+        let mut installed = self.executor.subscribe();
+        let ready = installed
+            .wait_for(Option::is_some)
+            .await
+            .map_err(|e| format!("chat slot: {e}"))?;
+        ready
+            .clone()
+            .ok_or_else(|| "chat slot: woke without an executor".to_string())
     }
 }
 
