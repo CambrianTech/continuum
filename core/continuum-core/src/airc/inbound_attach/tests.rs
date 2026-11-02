@@ -510,6 +510,7 @@ fn obligation_for(relay: PeerId, text: &str, message: Uuid, room: RoomId, sender
         sender,
         relay,
         digest: continuum_mind::chat::publication::publication_digest(message, room, sender, text, &[]),
+        state: continuum_mind::chat::publication::PublicationState::Pending,
     }
 }
 
@@ -561,4 +562,26 @@ async fn a_claim_to_speak_for_someone_needs_its_exact_publication() {
     assert_eq!(imported.len(), 1);
     assert_eq!(imported[0].author, PeerId::from_uuid(joel), "delegated to the proven sender");
     assert!(imported[0].retires_publication, "the import retires the obligation");
+}
+
+// what this catches: the replay after a restart (Codex on #5696). A relayed line whose echo was
+// imported and whose obligation retired arrives again: it is still attributed (not refused as
+// having no origin), and as a line the store already holds it is neither stored again nor
+// projected again.
+#[tokio::test]
+async fn a_replayed_line_is_attributed_once_and_never_projected_twice() {
+    let bus = MessageBus::new();
+    let mut receiver = bus.receiver();
+    let (relay, joel, room, message) = (PeerId::from_u128(0x4e), Uuid::from_u128(0x10e1), RoomId::from_u128(2), Uuid::from_u128(0xa1));
+    let lines = continuum_mind::chat::line_store::RecordingImporter::default();
+    let mut retired = obligation_for(relay, "hello", message, room, joel);
+    retired.state = continuum_mind::chat::publication::PublicationState::Retired;
+    lines.2.lock().expect("test: lock").insert(message, retired); // test: a fixture step that must succeed
+    let (event, _) = relayed_line(relay, joel, room, "hello", message);
+    publish_transcript_event(&Arc::new(event.clone()), &bus, &lines).await.expect("the replay imports");
+    assert_eq!(lines.0.lock().expect("test: lock").len(), 1, "attributed and stored once"); // test: a fixture step that must succeed
+    assert!(timeout(Duration::from_millis(200), receiver.recv()).await.is_ok(), "projected the first time");
+    publish_transcript_event(&Arc::new(event), &bus, &lines).await.expect("a duplicate is not an error");
+    assert_eq!(lines.0.lock().expect("test: lock").len(), 1, "never stored twice"); // test: a fixture step that must succeed
+    assert!(timeout(Duration::from_millis(200), receiver.recv()).await.is_err(), "never projected twice");
 }

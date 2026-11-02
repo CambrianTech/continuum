@@ -370,6 +370,36 @@ pub async fn publish_transcript_event(
         Gate::Pass { delegated } => delegated,
         Gate::Refused => return Ok(()),
     };
+    // THE STORE FIRST, ONCE (Slice P; Codex on #5696): a room line is imported, awaited, before
+    // anything consumes it; an error ends this attach before the watermark passes the line, and the
+    // re-attach replays it. A line the store already holds (a replay after a restart, a re-published
+    // relayed line) is not perceived or projected again. Known gap until P2 perceives from the store:
+    // a line imported but not yet fed when the core died is not re-fed on replay.
+    let decoded = envelope_from_event(event);
+    let chat_line = match &decoded {
+        Ok(None) => posted_from_message(event),
+        Ok(Some(envelope)) => posted_from_envelope(envelope, event).map(|mut line| {
+            line.retires_publication = delegated;
+            line
+        }),
+        Err(_) => None,
+    };
+    if let Some(line) = &chat_line {
+        let imported = lines
+            .import(line.clone())
+            .await
+            .map_err(|e| format!("inbound line not stored; re-attaching to replay it: {e}"))?;
+        if let continuum_mind::chat::line_store::Imported::Duplicate { arrival_seq } = imported {
+            continuum_base::probe!(
+                class = "airc.inbound.duplicate_line",
+                room = %event.room_id.as_uuid(),
+                message = %line.message_id,
+                arrival_seq = arrival_seq,
+                "a line the store already holds arrived again; not perceived or projected twice"
+            );
+            return Ok(());
+        }
+    }
     let fed = crate::persona::perception_feed::feed(&conversation, EpochMs::now().millis());
     if fed > 0 {
         continuum_base::probe!(
@@ -384,7 +414,7 @@ pub async fn publish_transcript_event(
     // review is verified (signed by its author, accepted in the room's projection,
     // admitted by the room's self-review policy). It used to settle here, on any
     // review-shaped event, unchecked.
-    let envelope = match envelope_from_event(event) {
+    let envelope = match decoded {
         Ok(Some(envelope)) => envelope,
         // Not a Continuum EventBridge envelope. Before dropping it, try
         // the thin chat projection: a plain airc chat message projects
@@ -399,13 +429,7 @@ pub async fn publish_transcript_event(
             // content). An event is at most one of these; anything else is not
             // ours here → skip. Classification, never a fallback — a
             // non-matching kind fabricates nothing.
-            if let Some(line) = posted_from_message(event) {
-                // The durable transcript FIRST, awaited (#140, Slice P): an error ends this
-                // attach before the watermark can pass the line, and the re-attach replays it;
-                // the import is idempotent by id, so the replay never doubles it.
-                lines.import(line.clone()).await.map_err(|e| {
-                    format!("inbound line not stored; re-attaching to replay it: {e}")
-                })?;
+            if let Some(line) = &chat_line {
                 // task #84: the persona-turn / plain-airc-message stream into
                 // the room. This is the seam a client's live read surface
                 // (positron ChatViewState) is fed from — probe it so the turn

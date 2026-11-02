@@ -39,13 +39,6 @@ pub enum Imported {
     Duplicate { arrival_seq: u64 },
 }
 
-/// Whether a line is new (its id was just minted) or imported (it may already be stored).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum LineWrite {
-    New,
-    Import,
-}
-
 /// The chat module the inbound seam imports through, installed at its initialize.
 static IMPORTER: LateBound<ChatModule> = LateBound::new("chat::line_store::importer");
 
@@ -82,7 +75,7 @@ pub struct ChatStore;
 impl LineImporter for ChatStore {
     async fn import(&self, line: PostedLine) -> Result<Imported, String> {
         installed()?
-            .commit_line(&line, LineWrite::Import, None, json!({ "text": line.text }), Vec::new())
+            .commit_line(&line, None, json!({ "text": line.text }))
             .await
     }
 
@@ -109,6 +102,51 @@ fn installed() -> Result<std::sync::Arc<ChatModule>, String> {
         .ok_or_else(|| "chat store: the chat module is not installed yet (early boot)".to_string())
 }
 
+/// The message row of `line` as one batch operation: the same ChatMessageEntity shape for every
+/// writer; WHO spoke is `senderId`, and `metadata.source: "user"` for all citizens alike.
+fn message_row(
+    line: &PostedLine,
+    operation_type: BatchOperationType,
+    reply_to: Option<Uuid>,
+    content: Value,
+) -> BatchOperation {
+    BatchOperation {
+        operation_type,
+        collection: CHAT_MESSAGES_COLLECTION.to_string(),
+        id: Some(line.message_id.to_string()),
+        data: Some(json!({
+            "id": line.message_id.to_string(),
+            "roomId": line.room.as_uuid().to_string(),
+            "senderId": line.author.as_uuid().to_string(),
+            "timestamp": now_iso(line.occurred_at_ms),
+            "content": content,
+            "replyToId": reply_to.map(|id| id.to_string()),
+            "metadata": { "source": "user" },
+            "status": "sent",
+        })),
+    }
+}
+
+impl ChatModule {
+    /// Run `operations` as one atomic batch; a refusal is an error naming the store's reason.
+    async fn run_batch(&self, operations: Vec<BatchOperation>) -> Result<Value, String> {
+        let params = json!({ "dbPath": CHAT_DATA_HANDLE, "operations": operations });
+        let result = self
+            .executor()?
+            .execute_json("data/batch", params)
+            .await
+            .map_err(|e| format!("chat line: data/batch failed: {e}"))?;
+        if result.get("success").and_then(Value::as_bool) != Some(true) {
+            let detail = result
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("success=false without an error");
+            return Err(format!("chat line: the store refused the line: {detail}"));
+        }
+        Ok(result)
+    }
+}
+
 /// Records every imported line and reports each as fresh, in order: the seam's test importer.
 #[cfg(any(test, feature = "test-fixtures"))]
 #[derive(Default)]
@@ -122,7 +160,16 @@ pub struct RecordingImporter(
 #[async_trait::async_trait]
 impl LineImporter for RecordingImporter {
     async fn import(&self, line: PostedLine) -> Result<Imported, String> {
+        // As the store does: a message id already held is a duplicate at its first arrival.
         let mut lines = self.0.lock().unwrap_or_else(|p| p.into_inner()); // test fixture: a poisoned lock still holds the lines recorded
+        if let Some(first) = lines
+            .iter()
+            .position(|held| held.message_id == line.message_id)
+        {
+            return Ok(Imported::Duplicate {
+                arrival_seq: first as u64 + 1,
+            });
+        }
         lines.push(line);
         Ok(Imported::Fresh {
             arrival_seq: lines.len() as u64,
@@ -130,7 +177,12 @@ impl LineImporter for RecordingImporter {
     }
 
     async fn publication(&self, id: Uuid) -> Result<Option<PublicationObligation>, String> {
-        Ok(self.2.lock().unwrap_or_else(|p| p.into_inner()).get(&id).cloned()) // test fixture: a poisoned lock still holds the obligations
+        Ok(self
+            .2
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&id)
+            .cloned()) // test fixture: a poisoned lock still holds the obligations
     }
 
     async fn watermark(&self, room: RoomId) -> Result<Option<ImportedThrough>, String> {
@@ -175,37 +227,36 @@ impl LineImporter for RecordingImporter {
 }
 
 impl ChatModule {
-    /// Commit `line`'s message row and its arrival in ONE batch.
-    pub(super) async fn commit_line(
+    /// Store a line `chat/send` just minted: its message row, plus `extra` (the publication
+    /// obligation when this core relays it), in ONE batch. No arrival: arrivals are the inbound
+    /// seam's alone, appended when the line comes back over airc (Codex, #5691 P2).
+    pub(super) async fn store_sent_line(
         &self,
         line: &PostedLine,
-        write: LineWrite,
         reply_to: Option<Uuid>,
         content: Value,
         extra: Vec<BatchOperation>,
+    ) -> Result<(), String> {
+        let mut operations = vec![message_row(
+            line,
+            BatchOperationType::Create,
+            reply_to,
+            content,
+        )];
+        operations.extend(extra);
+        self.run_batch(operations).await.map(|_| ())
+    }
+
+    /// Import a line the inbound seam received: its message row (ensured, so a replay is
+    /// idempotent) and its arrival in ONE batch, and, for a delegated line, its publication
+    /// obligation marked retired (kept, so an exact replay after a restart still attributes).
+    pub(super) async fn commit_line(
+        &self,
+        line: &PostedLine,
+        reply_to: Option<Uuid>,
+        content: Value,
     ) -> Result<Imported, String> {
-        let executor = self.executor()?;
-        // The same ChatMessageEntity shape for every writer; WHO spoke is `senderId`, and
-        // `metadata.source: "user"` for all citizens alike.
-        let message = json!({
-            "id": line.message_id.to_string(),
-            "roomId": line.room.as_uuid().to_string(),
-            "senderId": line.author.as_uuid().to_string(),
-            "timestamp": now_iso(line.occurred_at_ms),
-            "content": content,
-            "replyToId": reply_to.map(|id| id.to_string()),
-            "metadata": { "source": "user" },
-            "status": "sent",
-        });
-        let message_op = BatchOperation {
-            operation_type: match write {
-                LineWrite::New => BatchOperationType::Create,
-                LineWrite::Import => BatchOperationType::Ensure,
-            },
-            collection: CHAT_MESSAGES_COLLECTION.to_string(),
-            id: Some(line.message_id.to_string()),
-            data: Some(message),
-        };
+        let message_op = message_row(line, BatchOperationType::Ensure, reply_to, content);
         let arrival = Arrival::new(
             line.message_id,
             line.room,
@@ -215,28 +266,19 @@ impl ChatModule {
         );
         let append_op = arrival.append_op().map_err(|e| format!("chat line: {e}"))?;
         let mut operations = vec![message_op, append_op];
-        operations.extend(extra);
         if line.retires_publication {
-            // The relayed line came back: its obligation retires with the import, atomically.
+            // The relayed line came back: its obligation is marked retired with the import,
+            // atomically. Kept, not deleted, so an exact replay after a restart is recognized.
             operations.push(BatchOperation {
-                operation_type: BatchOperationType::Delete,
-                collection: <super::publication::PublicationObligation as crate::orm::OrmEntity>::COLLECTION.to_string(),
+                operation_type: BatchOperationType::Update,
+                collection:
+                    <super::publication::PublicationObligation as crate::orm::OrmEntity>::COLLECTION
+                        .to_string(),
                 id: Some(line.message_id.to_string()),
-                data: None,
+                data: Some(json!({ "state": super::publication::PublicationState::Retired })),
             });
         }
-        let params = json!({ "dbPath": CHAT_DATA_HANDLE, "operations": operations });
-        let result = executor
-            .execute_json("data/batch", params)
-            .await
-            .map_err(|e| format!("chat line: data/batch failed: {e}"))?;
-        if result.get("success").and_then(Value::as_bool) != Some(true) {
-            let detail = result
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("success=false without an error");
-            return Err(format!("chat line: the store refused the line: {detail}"));
-        }
+        let result = self.run_batch(operations).await?;
         let appended = result
             .get("data")
             .and_then(|d| d.get(1))

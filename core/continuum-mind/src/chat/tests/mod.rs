@@ -140,12 +140,7 @@
         let chat = chat_with_stubs(vec![Arc::new(data)]);
         let line = imported_line("I see the word LIGHTHOUSE in the room.");
         let imported = chat
-            .commit_line(
-                &line,
-                crate::chat::line_store::LineWrite::Import,
-                None,
-                json!({ "text": line.text }), Vec::new(),
-            )
+            .commit_line(&line, None, json!({ "text": line.text }))
             .await
             .expect("the import commits");
         assert_eq!(
@@ -198,12 +193,7 @@
         let chat = chat_with_stubs(vec![Arc::new(data)]);
         let line = imported_line("already stored by send()");
         let imported = chat
-            .commit_line(
-                &line,
-                crate::chat::line_store::LineWrite::Import,
-                None,
-                json!({ "text": line.text }), Vec::new(),
-            )
+            .commit_line(&line, None, json!({ "text": line.text }))
             .await
             .expect("a duplicate is a committed import");
         assert_eq!(
@@ -220,10 +210,44 @@
         let chat = chat_with_stubs(vec![Arc::new(data)]);
         let line = imported_line("unconfirmed");
         let err = chat
-            .commit_line(&line, crate::chat::line_store::LineWrite::Import, None, json!({ "text": line.text }), Vec::new())
+            .commit_line(&line, None, json!({ "text": line.text }))
             .await
             .expect_err("a reply without freshness is malformed");
         assert!(err.contains("did not say whether it was fresh"), "named: {err}");
+    }
+
+    // what this catches: a relayed line stored with its publication obligation but never published
+    // because the core stopped between (Codex on #5696): the restart sweep re-publishes it, rebuilt
+    // from its stored row, as the same line (its message id and sender).
+    #[tokio::test]
+    pub(super) async fn a_pending_publication_is_republished_from_its_stored_row() {
+        let (message, room, sender) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let obligation = json!({
+            "id": message, "room": room, "sender": sender, "relay": Uuid::from_u128(0x7e1a),
+            "digest": vec![0u8; 32], "state": "pending",
+        });
+        let row = json!({
+            "id": message, "roomId": room, "senderId": sender, "timestamp": "2026-11-02T01:00:00Z",
+            "content": { "text": "left pending by the last stop", "media": [] }, "replyToId": null,
+        });
+        let published: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = published.clone();
+        let chat = chat_with_stubs(vec![
+            Arc::new(StubDataModule::new(move |cmd, _p| match cmd {
+                "data/query" => Ok(json!({ "success": true, "data": [{ "data": obligation.clone() }] })),
+                "data/read" => Ok(json!({ "success": true, "data": { "data": row.clone() } })),
+                other => panic!("the sweep only reads: {other}"),
+            })),
+            Arc::new(StubAircModule::with(move |p| {
+                seen.lock().unwrap().push(p);
+                Ok(airc_ok_response("evt-republished"))
+            })),
+        ]);
+        assert_eq!(chat.republish_pending().await.expect("the sweep runs"), 1);
+        let calls = published.lock().unwrap();
+        assert_eq!(calls.len(), 1, "re-published once");
+        assert_eq!(calls[0]["envelope"]["eventId"], message.to_string(), "the same line, by its message id");
+        assert_eq!(calls[0]["envelope"]["sourceId"], sender.to_string(), "for the same sender");
     }
 
     // what this catches: a store refusal swallowed as a calm skip. The import is awaited by the
@@ -237,12 +261,7 @@
         let chat = chat_with_stubs(vec![Arc::new(data)]);
         let line = imported_line("lost?");
         let err = chat
-            .commit_line(
-                &line,
-                crate::chat::line_store::LineWrite::Import,
-                None,
-                json!({ "text": line.text }), Vec::new(),
-            )
+            .commit_line(&line, None, json!({ "text": line.text }))
             .await
             .expect_err("a refusal is an error");
         assert!(err.contains("disk full"), "the cause is named: {err}");
@@ -620,7 +639,7 @@
                 assert_eq!(cmd, "data/batch", "happy path only writes (no other data ops)");
                 // The envelope leg relays for the caller: the publication obligation commits in the
                 // SAME batch as the row and its arrival (#5696), never a separate write.
-                assert_eq!(p["operations"][2]["collection"], "chat_publications", "obligation in the line's batch: {p}");
+                assert_eq!(p["operations"][1]["collection"], "chat_publications", "obligation in the line's batch: {p}");
                 Ok(batch_ok())
             })),
             Arc::new(StubAircModule::ok(airc_ok_response("evt-happy-001"))),

@@ -227,8 +227,9 @@ impl ChatModule {
         let message_id = Uuid::new_v4();
         let extra = if relayed { vec![Self::publication_op(message_id, params)?] } else { Vec::new() };
         let now_ms = continuum_base::time::EpochMs::now().millis();
-        // Ground truth first: the row and its arrival commit together, or the send fails and no
-        // airc publish is attempted (broadcasting a line the store lacks would diverge).
+        // Ground truth first: the row (and, when this core relays it, its publication obligation)
+        // commit together, or the send fails and no airc publish is attempted. Its arrival is
+        // appended when the line comes back through the inbound seam.
         let line = super::line_store::PostedLine {
             message_id,
             room: airc_core::RoomId::from_uuid(params.room_id),
@@ -240,15 +241,9 @@ impl ChatModule {
             retires_publication: false,
         };
         let content = json!({ "text": params.text, "media": params.media });
-        self.commit_line(
-            &line,
-            super::line_store::LineWrite::New,
-            params.reply_to_id,
-            content,
-            extra,
-        )
-        .await
-        .map_err(|e| format!("chat/send: {e}"))?;
+        self.store_sent_line(&line, params.reply_to_id, content, extra)
+            .await
+            .map_err(|e| format!("chat/send: {e}"))?;
         Ok((message_id, now_ms))
     }
 
@@ -417,6 +412,12 @@ pub fn install_line_importer(handle: &tokio::runtime::Handle, module: Arc<ChatMo
                 error,
                 "speech-ring hydration failed — repetition facts start cold this boot (#265)"
             );
+        }
+        // Restart recovery: re-publish the relayed lines stored but never seen back (#5696).
+        match module.republish_pending().await {
+            Ok(0) => {}
+            Ok(count) => tracing::info!(count, "re-published relayed lines left pending by the last stop"),
+            Err(error) => tracing::warn!(error, "pending relayed lines stay pending until the next start"),
         }
     });
 }

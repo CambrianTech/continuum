@@ -63,7 +63,17 @@ pub fn publication_digest(
     hash.finalize().into()
 }
 
-/// One line `chat/send` published for its caller and has not yet seen come back.
+/// Where a publication stands: published (or about to be) and not yet seen back, or seen back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicationState {
+    /// Recorded before publishing; a restart re-publishes it until its echo is imported.
+    Pending,
+    /// Its echo was imported. Kept, so an exact replay of it after a restart still attributes.
+    Retired,
+}
+
+/// One line `chat/send` publishes for its caller.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, crate::orm::Entity)]
 #[serde(rename_all = "camelCase")]
 #[entity(collection = "chat_publications")]
@@ -76,6 +86,7 @@ pub struct PublicationObligation {
     /// The authenticated transport this core publishes relayed lines as: only it may deliver this line.
     pub relay: PeerId,
     pub digest: [u8; 32],
+    pub state: PublicationState,
 }
 
 /// The transport identity this core publishes relayed lines as (the airc module's scope peer),
@@ -123,7 +134,7 @@ pub enum DelegationRefusal {
 }
 
 /// Decide a received line's attribution from its transport author, its header's sender claim, the
-/// obligation its message id names (if any) and the digest of the line as received (`None` when it
+/// obligation its message id names (if any, pending or retired: a retired one is an exact replay) and the digest of the line as received (`None` when it
 /// could not be decoded, which matches no publication). Pure.
 pub fn attribute(
     transport: PeerId,
@@ -187,6 +198,7 @@ impl ChatModule {
             sender,
             relay,
             digest: publication_digest(message_id, room, sender, &params.text, &params.media),
+            state: PublicationState::Pending,
         };
         let data = serde_json::to_value(&obligation).map_err(|e| format!("publication: {e}"))?; // storage boundary: the adapter's row format
         Ok(crate::orm::types::BatchOperation {
@@ -218,6 +230,75 @@ impl ChatModule {
                 "publication: the store refused the obligation: {result}"
             )),
         }
+    }
+
+    /// Restart recovery (Codex on #5696): an obligation still pending had its line stored but may
+    /// never have been published (the core stopped between). Each is published again, rebuilt
+    /// from its stored row; an echo that arrives twice is one line, because the import dedupes by
+    /// message id and a duplicate is never perceived again. Returns how many were re-published.
+    pub async fn republish_pending(&self) -> Result<usize, String> {
+        let query = serde_json::json!({
+            "dbPath": super::chat_data_handle::CHAT_DATA_HANDLE,
+            "collection": <PublicationObligation as crate::orm::OrmEntity>::COLLECTION,
+            "filter": { "state": { "$eq": "pending" } },
+        });
+        let result = self
+            .executor()?
+            .execute_json("data/query", query)
+            .await
+            .map_err(|e| format!("publication: pending query failed: {e}"))?;
+        let mut republished = 0;
+        for row in super::chat_module::extract_records_as_data(&result) {
+            let parsed = serde_json::from_value::<PublicationObligation>(row); // storage boundary: the adapter's row format
+            let obligation = parsed.map_err(|e| format!("publication: malformed row: {e}"))?;
+            let Some((params, at_ms)) = self.sent_line(obligation.id).await? else {
+                continue; // no stored line: nothing to publish (the obligation was written with it, so this is a pruned row)
+            };
+            self.broadcast_envelope(obligation.id, &params, at_ms)
+                .await?;
+            republished += 1;
+        }
+        Ok(republished)
+    }
+
+    /// The parameters `chat/send` stored a line with, read back from its row, and its time.
+    async fn sent_line(
+        &self,
+        message: Uuid,
+    ) -> Result<Option<(super::types::ChatSendParams, u64)>, String> {
+        let params = serde_json::json!({
+            "dbPath": super::chat_data_handle::CHAT_DATA_HANDLE,
+            "collection": super::types::CHAT_MESSAGES_COLLECTION,
+            "id": message.to_string(),
+        });
+        let result = self
+            .executor()?
+            .execute_json("data/read", params)
+            .await
+            .map_err(|e| format!("publication: line read failed: {e}"))?;
+        let Some(row) = result
+            .get("data")
+            .and_then(|d| d.get("data"))
+            .filter(|_| result.get("success").and_then(serde_json::Value::as_bool) == Some(true))
+        else {
+            return Ok(None);
+        };
+        let parsed = serde_json::from_value::<StoredLine>(row.clone()); // storage boundary: the adapter's row format
+        let stored = parsed.map_err(|e| format!("publication: malformed line: {e}"))?;
+        let at_ms = chrono::DateTime::parse_from_rfc3339(&stored.timestamp)
+            .map_err(|e| format!("publication: line time: {e}"))?
+            .timestamp_millis()
+            .max(0) as u64;
+        Ok(Some((
+            super::types::ChatSendParams {
+                room_id: stored.room_id,
+                sender_id: stored.sender_id,
+                text: stored.content.text,
+                reply_to_id: stored.reply_to_id,
+                media: stored.content.media,
+            },
+            at_ms,
+        )))
     }
 
     /// The obligation a received line's message id names, if any.
@@ -264,6 +345,7 @@ mod tests {
             sender,
             relay,
             digest,
+            state: PublicationState::Pending,
         }
     }
 
@@ -340,6 +422,21 @@ mod tests {
             attribute(relay, named, room, Some(&exact), published),
             Attribution::Delegated { sender: joel }
         );
+        // what this catches: a genuine line replayed after its echo was imported (a restart before
+        // the watermark advanced) refused as having no origin (Codex on #5696): a retired
+        // obligation still proves its exact line, while altered content is still refused.
+        let retired = PublicationObligation {
+            state: PublicationState::Retired,
+            ..exact.clone()
+        };
+        assert_eq!(
+            attribute(relay, named, room, Some(&retired), published),
+            Attribution::Delegated { sender: joel }
+        );
+        assert_eq!(
+            refused(relay, named, room, Some(&retired), Some([9u8; 32])),
+            Some(DelegationRefusal::AlteredPublication)
+        );
     }
 
     // what this catches: a digest that ignores a field a consumer sees, so altered media still
@@ -386,4 +483,23 @@ mod tests {
             original
         );
     }
+}
+
+/// The stored chat row's fields a re-publish needs, typed.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredLine {
+    room_id: Uuid,
+    sender_id: Uuid,
+    timestamp: String,
+    content: StoredContent,
+    #[serde(default)]
+    reply_to_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredContent {
+    text: String,
+    #[serde(default)]
+    media: Vec<crate::cognition::conversation::channel_items::MediaItemRequest>,
 }
