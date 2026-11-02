@@ -46,12 +46,15 @@ compile_error!(
       `n_gpu_layers = -1` because Metal kernels are not in the binary.\n\
       Expect ~20x slowdown (12 tok/s instead of 60-100+ tok/s).\n\
      \n\
-      FIX: add `--features metal` to your cargo build command.\n\
-      Example:\n\
-        cargo build --release -p continuum-core --features metal,accelerate\n\
+      FIX: pass `--features metal` on the crate you are checking, when\n\
+      that crate depends on llama (its Cargo.toml lists a `metal` feature).\n\
+      Example:  cargo check -p continuum-engine --features metal\n\
      \n\
-      If CPU-only on macOS is genuinely what you want (testing only),\n\
-      delete this compile_error with a commit message justifying it.\n\
+      A crate that does NOT depend on llama (e.g. continuum-tool-protocol,\n\
+      continuum-base) has no `metal` feature and never reaches this error:\n\
+      check it plainly:  cargo check -p continuum-tool-protocol\n\
+      Until a llama-dependent crate passes with `--features metal`, code\n\
+      that crate uses has NOT been checked.\n\
      ===================================================================\n"
 );
 
