@@ -25,11 +25,11 @@ filter?: OutputFilter,
 /**
  * A regex to grep for — the power-user path when a preset isn't specific enough.
  * e.g. `"error\\[E0308\\]"` for one exact error. Omit to use `filter`, a range,
- * or the tail.
+ * or the whole output.
  */
 pattern?: string, 
 /**
- * Lines of context to keep around each grep match (default 2, like `grep -C`).
+ * Lines of context to keep around each grep match (like `grep -C`; none unless asked).
  */
 contextLines?: number, 
 /**
@@ -41,7 +41,8 @@ startLine?: number,
  */
 endLine?: number, 
 /**
- * Cap on the number of grep match windows returned (default 50).
+ * Return only the first N grep matches (all of them unless asked); the total count and
+ * `nextByteOffset` still cover the whole output.
  */
 maxMatches?: number, 
 /**
@@ -50,7 +51,7 @@ maxMatches?: number,
  */
 byteOffset?: number, 
 /**
- * Requested byte count; a page fits the live render allowance. No bytes are
- * discarded when this request spans multiple pages: nextByteOffset continues it.
+ * Requested byte count; omitted, the read runs to the end. No byte is discarded:
+ * nextByteOffset continues a page.
  */
 byteLength?: number, };
