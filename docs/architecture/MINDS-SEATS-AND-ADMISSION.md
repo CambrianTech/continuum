@@ -224,6 +224,20 @@ What this adds to the design above:
   2026-11-02: "First class citizenship allows persona abilities to create minds too"): the same
   verb, the same recorded reason and lineage (who created her), the same population ledger; no
   second, lesser path for minds.
+- **Genesis: her id seeds who she is** (Joel, 2026-11-02: "from its own random uuidv7 you'd use
+  it for all characteristics: gender, voice (matching gender), appearance, phenotypes,
+  personality (also a gene I believe) and so on. Procedurally consistent and then editable by
+  self and commands and technically user but we might allow persona agency over it.") A
+  newborn needs no separate incubation phase: her own UUIDv7 is the seed, and every trait is a
+  deterministic draw from it with its own salt (gender; a voice matching it; appearance and
+  phenotype; personality as a gene), so the same id always yields the same mind. After birth
+  the traits are hers to change: by her own agency, by commands, and by the user. Today this is
+  partial: `continuum-live/src/live/avatar/hash.rs` `deterministic_pick(id, options, salt)`
+  seeds gender, avatar, voice and scene; personality and phenotype are not seeded, the pick
+  lives in the live crate (the genome cannot reach it), and it takes the id as a string. The
+  build: one genesis owner in a floor crate, keyed by the typed `Uuid`, salted per trait,
+  covering every trait including the personality gene, with each trait's edits recorded as her
+  own changes over the seeded default.
 - **Being online is placement, decided by the grid.** The allocator (this document's admission,
   and FLOW-IMPLEMENTATION-PLAN §6e's grants from demand events) decides who is online now,
   where, and on which base model. Engagement wakes a mind (a mention, a card, a call, a peer's
@@ -261,8 +275,7 @@ What this adds to the design above:
 - **All:** what replaces the expiring hold, and how a node's owner sees and overrides who is
   awake (a person's choice beats the allocator).
 - **All (2026-11-02, the population larger than the grid):** decided: a persona creates minds
-  with the same ability a user has. Open: what is "incubation": a newborn mind's first activity, and
-  who teaches her? When a mind moves to a different base model, how do her genes follow
+  with the same ability a user has; a newborn needs no incubation phase (genesis above). Open: when a mind moves to a different base model, how do her genes follow
   (re-fit, re-train, or wait for a node with her base)? Decided: a user sees the whole
   population as presence, like any chat app (Joel, 2026-11-02: "Users would just see them as
   offline if not active"): a mind not placed now reads offline (see Presence above), still
