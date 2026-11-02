@@ -174,24 +174,47 @@ impl AircRemoteInferenceAdapter {
     /// any answer (even a refusal) proves the peer evaluates our mail and
     /// resets the count.
     fn observe(&self, outcome: &Result<(), &RemoteInferenceError>) {
-        match outcome {
-            Err(RemoteInferenceError::Timeout { .. }) => {
-                // Fold this miss into the PEER's shared breaker: `Some(n)` means THIS
-                // miss — summed across every persona on the peer — tripped it cold.
-                if let Some(n) = self.breaker.observe_timeout(EpochMs::now_or_latest().millis()) {
-                    continuum_base::probe!(
-                        class = "remote_lane.cold",
-                        peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
-                        persona = %self.persona_label(),
-                        deadlines = n,
-                        cold_for_s = COLD_WINDOW.as_secs(),
-                        "the remote peer let requests die at the deadline in a row \
-                         (summed across every persona on it); refusing here for the \
-                         window instead of burning turns"
-                    );
-                }
-            }
-            _ => self.breaker.observe_answer(),
+        // Only the peer ANSWERING resets its breaker: any reply, a refusal included, proves
+        // it alive. A request that got no answer at all (it timed out, no route reached the
+        // peer, or the session or wire failed before any reply) is a miss, whatever its
+        // type. Counting only `Timeout` let a seat that never formed a session reset the
+        // breaker on every act: IntelMac 2026-11-02 13:08Z, Delia, Iris and Paige each
+        // waited ~630 s per act on a seat that took no handshake, never went cold and never
+        // fell home (card ce043fcc). Exhaustive, so a new error must be classified here.
+        let answered = match outcome {
+            Ok(()) => true,
+            Err(
+                RemoteInferenceError::PeerAdapterFailed { .. }
+                | RemoteInferenceError::PolicyDenied { .. }
+                | RemoteInferenceError::CorrelationMismatch { .. }
+                | RemoteInferenceError::SeatOverloaded { .. },
+            ) => true,
+            Err(
+                RemoteInferenceError::Timeout { .. }
+                | RemoteInferenceError::NoPeerReachable { .. }
+                | RemoteInferenceError::Transport { .. },
+            ) => false,
+        };
+        if answered {
+            self.breaker.observe_answer();
+            return;
+        }
+        // Fold this miss into the PEER's shared breaker: `Some(n)` means THIS
+        // miss — summed across every persona on the peer — tripped it cold.
+        if let Some(n) = self
+            .breaker
+            .observe_timeout(EpochMs::now_or_latest().millis())
+        {
+            continuum_base::probe!(
+                class = "remote_lane.cold",
+                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
+                persona = %self.persona_label(),
+                deadlines = n,
+                cold_for_s = COLD_WINDOW.as_secs(),
+                "the remote peer answered none of the last requests in a row \
+                 (summed across every persona on it): deadlines, no route or no \
+                 session; refusing here for the window instead of burning turns"
+            );
         }
     }
 
