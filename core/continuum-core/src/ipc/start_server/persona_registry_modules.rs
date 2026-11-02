@@ -103,10 +103,14 @@ pub(super) fn register_persona_registry_modules(
     // The shared channel-element cache is rebuildable (airc is the record): RAM sizes it, it sheds
     // least recently used first under pressure, never an entry cap of ours.
     crate::cognition::channel_substrate::global_channel_element_cache().register(pressure_monitor);
-    pressure_monitor.add_reporter(Arc::new(crate::cognition::persona_workspace::MindResultsReporter::new(
+    let mind_results = Arc::new(crate::cognition::persona_workspace::MindResultsReporter::new(
         crate::cognition::persona_workspace::global(),
         pressure_monitor.subscribe(),
-    )));
+    ));
+    // One overrun is shared across its priority's holders (Cormac on #5697): it joins the group.
+    let holder: Arc<dyn crate::system_resources::memory_pressure::Holder> = mind_results.clone();
+    crate::system_resources::memory_pressure::register_holder(Arc::downgrade(&holder));
+    pressure_monitor.add_reporter(mind_results);
     // The dream/consolidation region goes LIVE (#145 slice B): per live persona,
     // on a material-driven cadence (dreams only when undigested episodic
     // experience accrues, `CadenceHint::Sleep` otherwise), it distills episodic

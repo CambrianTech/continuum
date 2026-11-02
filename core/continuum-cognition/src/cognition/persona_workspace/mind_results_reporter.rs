@@ -145,6 +145,16 @@ pub(crate) fn over_gate(snapshot: &PressureSnapshot) -> u64 {
     snapshot.over_gate(PRIORITY)
 }
 
+impl continuum_kernel::system_resources::memory_pressure::Holder for MindResultsReporter {
+    fn priority(&self) -> MemoryPriority {
+        PRIORITY
+    }
+
+    fn held_bytes(&self) -> u64 {
+        resident_bytes(&self.registry.resident_working_memories())
+    }
+}
+
 /// One mind's resident result bodies: what a shed may move (saved, not the newest, and its
 /// copy proven) and what it may not.
 #[derive(Debug, Clone)]
@@ -341,12 +351,13 @@ impl MemoryReporter for MindResultsReporter {
     }
 
     fn shed_load(&self, level: PressureLevel) {
-        let over = over_gate(&self.pressure.borrow());
+        let minds = self.registry.resident_working_memories();
+        let before = resident_bytes(&minds);
+        // Its share of its priority's overrun, as every shedder computes it (Cormac on #5697).
+        let over = self.pressure.borrow().share_of_overrun(PRIORITY, before);
         if over == 0 {
             return;
         }
-        let minds = self.registry.resident_working_memories();
-        let before = resident_bytes(&minds);
         shed_to(&minds, before.saturating_sub(over), &self.proven);
         continuum_base::probe!(
             class = "wm.results.shed",
