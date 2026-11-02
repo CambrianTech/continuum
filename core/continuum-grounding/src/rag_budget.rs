@@ -66,6 +66,8 @@ mod substrate_context;
 pub use substrate_context::*;
 mod flex_allocate;
 pub use flex_allocate::*;
+mod critical_source;
+pub use critical_source::{CriticalSource, Grounded, Required};
 
 //=============================================================================
 // TESTS

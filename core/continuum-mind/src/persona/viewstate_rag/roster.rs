@@ -36,48 +36,7 @@ impl RagRenderable for continuum_positron::RosterViewState {
         });
         ordered
             .into_iter()
-            .map(|slot| {
-                // Kind and role are what make a name actionable ("who can I ask?"),
-                // so they ride the SAME unit as the name rather than a second block
-                // a tight budget would sever from it.
-                // WHICH ONE IS HER (2026-09-06, card bb387821): a citizen appeared in
-                // her own roster formatted identically to her peers, with no marker.
-                // Measured on IntelMac, BOTH directions, both with correct prompts —
-                // Paige's prompt said "You are Paige" five times plus an explicit
-                // NOT-list and she answered "I am Saoirse"; Saoirse's said "You are
-                // Saoirse" and she answered "My name is Paige". The prose asserted an
-                // identity five times while the STRUCTURED list beside it presented two
-                // interchangeable agents, and the structure won. Marking the reader
-                // costs four characters and removes the ambiguity the prose was losing
-                // to. She stays IN the list — a citizen is present in her own room, and
-                // deleting her row would make "who is here" undercount the room.
-                let mut line = if slot.member_id == viewer {
-                    format!("{} ({:?}, YOU)", slot.display_name, slot.kind)
-                } else {
-                    format!("{} ({:?})", slot.display_name, slot.kind)
-                };
-                if let Some(role) = slot.role_label.as_deref().filter(|r| !r.is_empty()) {
-                    line.push_str(&format!(" — {role}"));
-                }
-                // NO liveness flag in the mind's copy (2026-09-04): `[ready]`/`[busy]`
-                // flips with every heartbeat, and this block sits inside the STABLE
-                // system prefix — consecutive prompts of one citizen diverged at char
-                // ~9.7k of a 10.1k system on exactly this flag, forfeiting the whole
-                // prefix (hit_rate 0.0 on 57/57 turns). Who is here, their kind and
-                // role, are the stable facts; whether a peer is busy this second is
-                // presence — the live view carries it, and it belongs in the volatile
-                // tail if a turn ever needs it ([[a-mutating-system-prompt-destroys-kv-reuse]]).
-                // Key = peer id (stable across turns). Pointer = the bare name: a member
-                // line is ~10 tokens so the view rarely collapses one, but when it does she
-                // still knows WHO is here, and `room/members` yields the rest.
-                let mut unit = RagRenderUnit::new(slot.member_id.to_string(), line);
-                unit.pointer = Some(slot.display_name.clone());
-                unit.metadata
-                    .insert("peer_id".into(), serde_json::json!(slot.member_id));
-                unit.metadata
-                    .insert("display_name".into(), serde_json::json!(slot.display_name));
-                unit
-            })
+            .map(|slot| member_unit(slot.member_id, &slot.display_name, slot.kind, slot.role_label.as_deref(), viewer))
             .collect()
     }
 
@@ -85,4 +44,36 @@ impl RagRenderable for continuum_positron::RosterViewState {
     fn room(&self) -> Option<uuid::Uuid> {
         Some(self.room_id)
     }
+}
+
+/// One member's line in "who is here": the ONE renderer for a member row, used by the roster and
+/// by her own row where no shared roster exists (her mind room).
+///
+/// WHICH ONE IS HER (2026-09-06, card bb387821): a citizen appeared in her own roster formatted
+/// identically to her peers and answered with a peer's name, both directions; marking the reader
+/// costs four characters and removes the ambiguity. She stays IN the list: a citizen is present
+/// in her own room. NO liveness flag (2026-09-04): `[ready]`/`[busy]` flipped with every
+/// heartbeat and forfeited the cached prefix; who, kind and role are the stable facts.
+/// Key = peer id (stable across turns); pointer = the bare name, so a collapsed row still says
+/// WHO, and `room/members` yields the rest.
+pub(crate) fn member_unit(
+    member_id: uuid::Uuid,
+    display_name: &str,
+    kind: continuum_positron::SenderKind,
+    role: Option<&str>,
+    viewer: uuid::Uuid,
+) -> RagRenderUnit {
+    let mut line = if member_id == viewer {
+        format!("{display_name} ({kind:?}, YOU)")
+    } else {
+        format!("{display_name} ({kind:?})")
+    };
+    if let Some(role) = role.filter(|r| !r.is_empty()) {
+        line.push_str(&format!(" — {role}"));
+    }
+    let mut unit = RagRenderUnit::new(member_id.to_string(), line);
+    unit.pointer = Some(display_name.to_string());
+    unit.metadata.insert("peer_id".into(), serde_json::json!(member_id));
+    unit.metadata.insert("display_name".into(), serde_json::json!(display_name));
+    unit
 }
