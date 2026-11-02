@@ -76,9 +76,7 @@ impl ChatModule {
         if let Some(limit) = limit {
             query["limit"] = json!(limit);
         }
-        Ok(extract_records_as_data(
-            &self.store("data/query", query).await?,
-        ))
+        records(collection, &self.store("data/query", query).await?)
     }
 
     /// The row `id` names in `collection`, `None` only when the store confirms there is none.
@@ -139,16 +137,22 @@ fn refusal(command: &str, result: &Value) -> Option<String> {
     Some(format!("chat store: the store refused {command}: {reason}"))
 }
 
-/// The entities of a `data/query` response (`{ success, data: [{ id, data: <entity> }] }`).
-pub(super) fn extract_records_as_data(query_result: &Value) -> Vec<Value> {
-    query_result
+/// The entities of a successful `data/query` response (`{ success, data: [{ id, data: <entity> }] }`).
+/// Only a well-formed empty list means no rows: a missing list or a record without its entity is a
+/// malformed answer, an error, never fewer rows (Codex on #5696).
+fn records(collection: &str, query_result: &Value) -> Result<Vec<Value>, String> {
+    let malformed = |what: &str| format!("chat store: malformed {collection} query answer: {what}");
+    let records = query_result
         .get("data")
         .and_then(Value::as_array)
-        .map(|records| {
-            records
-                .iter()
-                .filter_map(|record| record.get("data").cloned())
-                .collect()
+        .ok_or_else(|| malformed("no record list"))?;
+    records
+        .iter()
+        .map(|record| {
+            record
+                .get("data")
+                .cloned()
+                .ok_or_else(|| malformed("a record without its entity"))
         })
-        .unwrap_or_default()
+        .collect()
 }

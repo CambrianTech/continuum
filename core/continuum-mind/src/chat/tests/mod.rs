@@ -312,6 +312,17 @@
         assert!(result.after_message_id.is_none());
     }
 
+    // what this catches: a malformed store answer read as fewer rows (Codex on #5696): only a
+    // well-formed empty list is "no rows"; a missing list or a record without its entity is an error.
+    #[tokio::test]
+    pub(super) async fn a_malformed_query_answer_is_an_error_never_fewer_rows() {
+        for answer in [json!({ "success": true }), json!({ "success": true, "data": [{ "id": "x" }] })] {
+            let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(move |_p| answer.clone()))]);
+            let err = chat.poll(ChatPollParams::default()).await.expect_err("a malformed answer is refused");
+            assert!(err.contains("malformed"), "names the malformed answer: {err}");
+        }
+    }
+
     // what this catches: #201 boot-race — a chat command that arrives BEFORE
     // install_executor_on_all runs fails LOUD to its caller (naming the contract),
     // instead of .expect()-panicking the whole core and taking every other module
