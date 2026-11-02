@@ -54,9 +54,9 @@ fn the_cache_holds_the_active_rosters_states_not_every_seed_on_disk() {
         .map(|i| (28_000 + i * 500, 225_000 + i * 12_000))
         .collect();
     population.push((0, 505_000));
-    let active = crate::persona::spawner_module::bounded_by_warm_slots(population.len(), Some(2));
+    let active = crate::persona::spawner_module::bounded_by_warm_slots(population.len(), Some(2), 2);
     assert_eq!(active, 4, "two lanes seat four active minds");
-    let states = active_cache_states(&population, 67_072, active);
+    let states = active_cache_states(&population, 67_072, active, 2);
     assert_eq!(
         states.len(),
         4,
@@ -79,8 +79,8 @@ fn the_cache_holds_the_active_rosters_states_not_every_seed_on_disk() {
     // No bound known (a derivation before any plan) keeps the FLOOR, never everything:
     // unknown is not "all 23 at their peaks" — that is the want this law deletes.
     assert_eq!(
-        active_cache_states(&population, 67_072, 0).len(),
-        crate::cognition::health_ledger::MINDLESS_RESIDENT_FLOOR as usize
+        active_cache_states(&population, 67_072, 0, 2).len(),
+        2
     );
     // Through the decision: the same population on a 2-lane serve asks for a
     // demand-sized cache, not the whole afford.
@@ -208,7 +208,7 @@ fn the_cache_counts_the_minds_that_rotate_not_the_seeds_on_disk() {
         3,
         "the dormant seeds stay out: 7b01ed65 stays shut"
     );
-    let floor = crate::persona::spawner_module::bounded_by_warm_slots(23, Some(2));
+    let floor = crate::persona::spawner_module::bounded_by_warm_slots(23, Some(2), 2);
     assert_eq!(
         rotating_minds(&m5, now, w5).max(floor),
         floor,

@@ -186,17 +186,6 @@ pub fn note_stop(stop: Stop) {
     LEDGER.stops.note(stop);
 }
 
-/// The hour's stops, read and reset by the tick. Its own reader, for the reason
-/// [`snapshot_lane_starved_and_reset`] gives.
-pub fn snapshot_stops_and_reset() -> StopCounts {
-    LEDGER.stops.read(|c| c.swap(0, Ordering::Relaxed))
-}
-
-/// The hour's stops so far, without a reset (the on-demand health read).
-pub fn read_stops() -> StopCounts {
-    LEDGER.stops.read(|c| c.load(Ordering::Relaxed))
-}
-
 /// A placement move landed (the `placement.move.opportunity` seam and the switch's
 /// fall-home / return / spill seams). `opportunity` = a better seat, not a failed one.
 pub fn note_move(opportunity: bool) {
@@ -205,10 +194,6 @@ pub fn note_move(opportunity: bool) {
     } else {
         LEDGER.moves_failure.fetch_add(1, Ordering::Relaxed);
     }
-}
-
-pub fn snapshot_moves_and_reset() -> (u64, u64) {
-    (LEDGER.moves_opportunity.swap(0, Ordering::Relaxed), LEDGER.moves_failure.swap(0, Ordering::Relaxed))
 }
 
 /// The node served `lanes` lanes just now — fold into the hour's maximum (see
@@ -229,13 +214,12 @@ pub const LANE_BUCKETS: usize = 30;
 
 pub(crate) const LANE_BUCKET_MS: u64 = 2 * 60 * 1_000;
 
-/// How many DISTINCT buckets must carry a sample before the hour has a shape. Ten
-/// buckets is twenty minutes of separate two-minute periods — not twenty minutes of
-/// elapsed time between two samples, which is the guard Astra broke: one stray early
-/// sample plus a burst cleared both a count floor and a first-to-last span.
-// derived-or-floor: a sample-sufficiency floor over the hour's own 30 buckets (a third of them),
-// not a stand-in for any rate or duration the substrate measures.
-pub const LANE_MIN_BUCKETS: usize = 10;
+/// How many distinct buckets a window's lane asks must touch to have a SHAPE: a majority of
+/// the window's buckets, because "sustained" means held for most of the window by definition
+/// (a burst touching a few minutes cannot outvote the hour).
+pub fn sustained_buckets() -> usize {
+    LANE_BUCKETS / 2 + 1
+}
 
 /// The node had `lanes` lanes at a moment work was actually asked of them — fold into
 /// THIS bucket's maximum. Called from [`note_lane_granted`] and [`note_lane_starved`],
@@ -274,34 +258,15 @@ pub(crate) fn note_lane_sample(lanes: u64) {
 ///
 /// **A burst cannot win here.** Astra's counterexample — one 8-lane sample at t0 and
 /// thirty-two 1-lane samples during a relaunch ten minutes later — touches exactly TWO
-/// buckets, so it is below [`LANE_MIN_BUCKETS`] and yields `None`. Volume buys nothing;
+/// buckets, so it is below [`sustained_buckets`] and yields `None`. Volume buys nothing;
 /// only MINUTES do.
 pub fn lanes_sustained_of(buckets: &[u64; LANE_BUCKETS]) -> Option<u64> {
     let mut seen: Vec<u64> = buckets.iter().copied().filter(|&v| v > 0).collect();
-    if seen.len() < LANE_MIN_BUCKETS {
+    if seen.len() < sustained_buckets() {
         return None;
     }
     seen.sort_unstable();
     Some(seen[seen.len() / 2])
-}
-
-/// The hour's buckets, read and reset by the tick.
-pub fn snapshot_lane_buckets_and_reset() -> [u64; LANE_BUCKETS] {
-    let mut out = [0u64; LANE_BUCKETS];
-    for (i, slot) in LEDGER.lane_bucket_max.iter().enumerate() {
-        out[i] = slot.swap(0, Ordering::Relaxed);
-    }
-    LEDGER.lane_window_start_ms.store(0, Ordering::Relaxed);
-    out
-}
-
-/// The same buckets WITHOUT reset, for the read-only `citizen/health` command.
-pub fn read_lane_buckets() -> [u64; LANE_BUCKETS] {
-    let mut out = [0u64; LANE_BUCKETS];
-    for (i, slot) in LEDGER.lane_bucket_max.iter().enumerate() {
-        out[i] = slot.load(Ordering::Relaxed);
-    }
-    out
 }
 
 /// A turn iteration ended WITHOUT reaching the model (the `persona.act.lane_starved`
@@ -365,10 +330,12 @@ pub fn lane_grants_of(persona: uuid::Uuid) -> u64 {
     MINDS.get(&persona).map(|m| m.lane_grants).unwrap_or(0) // JUSTIFIED unwrap_or: never granted this hour = 0, the truth
 }
 
-/// Per-mind speech discipline this hour — the MINDLESS receipt's inputs
-/// (card aed15611; Joel: "mindless AIs should be accounted for"). Fed at the two
-/// seams that already probe: the Speak verdict (`gate_refused` = a framing-echo or
-/// not-speech pass — the substrate silenced her) and the act seam (`wrote`).
+/// Per-mind accounting this hour (Joel: "mindless AIs should be accounted for"): her Speak
+/// verdicts, how many the substrate refused (`gate_refused`: a framing echo or not-speech),
+/// her acts and writes, and her lane grants. Fed at the seams that already probe. Accounting
+/// only: no rule pages a mind out on it (the mindless page-out was deleted 2026-11-02; a free
+/// mind is never judged out of her seat). The slow clip orders its rotation by grants and
+/// verdicts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MindHour {
     pub agent_name: String,
@@ -403,50 +370,6 @@ pub fn note_act_of(persona: uuid::Uuid, wrote: bool) {
     }
 }
 
-/// A mind is MINDLESS this hour when at least [`MINDLESS_MIN_VERDICTS`] of her Speak
-/// verdicts were decided and at least [`MINDLESS_GATE_SHARE`] of them were the
-/// substrate refusing what she said (a recital, an envelope), and she changed no
-/// file. Pure — the rule the tick applies and a test can read.
-// derived-or-floor: an evidence floor (how many decided verdicts before a pattern is judged), a
-// count of her own acts, not a measured quantity.
-pub const MINDLESS_MIN_VERDICTS: u64 = 6;
-
-// derived-or-floor: a policy share of her own verdicts (four in five refused), a ratio of counts
-// the ledger keeps, not a rate, a size or a time.
-pub const MINDLESS_GATE_SHARE: f64 = 0.8;
-
-pub fn is_mindless(m: &MindHour) -> bool {
-    m.verdicts >= MINDLESS_MIN_VERDICTS
-        && m.writes == 0
-        && (m.gate_refused as f64) >= MINDLESS_GATE_SHARE * (m.verdicts as f64)
-}
-
-/// Never page the roster below this many resident minds, and never more than this
-/// many seats in one tick — a page-out is a considered act, not a purge.
-// derived-or-floor: a floor that only ever keeps minds resident (never pages below two), a
-// roster policy, not a measurement.
-pub const MINDLESS_RESIDENT_FLOOR: u64 = 2;
-
-// derived-or-floor: a pacing cap on a considered act (at most three page-outs a tick), so a
-// rest is never a purge; nothing measured stands behind it.
-pub const MINDLESS_MAX_PER_TICK: usize = 3;
-
-/// The pure choice: which minds to page out this tick, worst first, bounded.
-pub fn mindless_seats(minds: &[(uuid::Uuid, MindHour)], resident: u64) -> Vec<(uuid::Uuid, MindHour)> {
-    let room = resident.saturating_sub(MINDLESS_RESIDENT_FLOOR) as usize;
-    let mut out: Vec<(uuid::Uuid, MindHour)> = minds
-        .iter()
-        .filter(|(_, m)| is_mindless(m))
-        .cloned()
-        .collect();
-    out.sort_by(|a, b| {
-        let share = |m: &MindHour| m.gate_refused as f64 / m.verdicts.max(1) as f64;
-        share(&b.1).partial_cmp(&share(&a.1)).unwrap_or(std::cmp::Ordering::Equal) // unwrap_or: NaN is impossible (verdicts ≥ 1); Equal keeps the order
-    });
-    out.truncate(room.min(MINDLESS_MAX_PER_TICK));
-    out
-}
-
 /// THE SLOW CLIP (card ef25bf6c; Joel: dormant is not off, every mind gets a slow clip at
 /// any grid size). With every seat on the grid taken, a mind outside the draw waited
 /// forever: 8 of 18 on the IntelMac, the oldest 533 minutes, with no resting record for
@@ -456,12 +379,11 @@ pub fn mindless_seats(minds: &[(uuid::Uuid, MindHour)], resident: u64) -> Vec<(u
 /// grants first. Pure; the caller also skips anyone holding a live claim.
 pub fn rotation_candidates(
     dormant_waiting: bool,
-    freed_this_pass: usize,
     residents: &[(uuid::Uuid, MindHour)],
     seated_since: impl Fn(&str) -> Option<u64>,
     now_ms: u64,
 ) -> Vec<(uuid::Uuid, MindHour)> {
-    if !dormant_waiting || freed_this_pass > 0 {
+    if !dormant_waiting {
         return Vec::new();
     }
     let window = HEALTH_WINDOW.as_millis() as u64;
@@ -509,7 +431,7 @@ pub struct CitizenHealth {
     pub lanes_now: u64,
     /// THE LANES THE HOUR ACTUALLY HELD: the median of the lane counts seen at this
     /// window's pull decisions, falling back to [`CitizenHealth::lanes`] when the window
-    /// carried a sample in fewer than [`LANE_MIN_BUCKETS`] distinct two-minute buckets.
+    /// carried a sample in fewer than [`sustained_buckets`] distinct two-minute buckets.
     ///
     /// **The verdict and the rest divide by THIS, not by `lanes`** (card `6d444769`).
     /// `lanes` answers "did the node ever serve N" — a peak, and a `fetch_max` can only
@@ -648,13 +570,6 @@ impl Verdict {
 // a policy on the count of minds per lane, not a stand-in for a measured rate.
 pub const MINDS_PER_LANE_STARVED_ABOVE: u64 = 2;
 
-/// A node is DROPPING above this share of its generations thrown away in flight. One
-/// dropped turn an hour is a bound trimming a genuine outlier; a tenth of them is a pipe
-/// that reaps healthy work, and the loss compounds — every drop is a full prefill (five
-/// to six minutes of a 27B lane on the M5) spent and discarded. The measured night this
-/// was written ran at 36%.
-pub const DROPPED_GENERATIONS_ABOVE_PCT: u64 = 10;
-
 /// A roster is SLOW below one write per this many residents in an hour: 16 minds that
 /// write twice in an hour (00:01Z 2026-09-15, the first receipt the core posted) are not
 /// healthy, whatever the lanes say. Four residents per write-hour is a floor, not a goal.
@@ -686,7 +601,9 @@ pub fn verdict(h: &CitizenHealth) -> Verdict {
     // BEFORE blaming the minds: did the substrate throw their work away? A node losing
     // this share of its generations has a bound problem, and every verdict below reads as
     // a capability verdict about the citizens.
-    if dropped_pct(h).is_some_and(|pct| pct >= DROPPED_GENERATIONS_ABOVE_PCT) {
+    // One dropped turn in a window is a bound trimming a genuine outlier; more than one is a
+    // pattern in the pipe, and every drop is a full prefill spent and discarded.
+    if h.generations_dropped > 1 {
         return Verdict::Dropping { dropped: h.generations_dropped, generations: h.generations };
     }
     if h.writes == 0 {
@@ -841,46 +758,73 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
     )
 }
 
-/// The hour's lane-starved waits, read and reset by the tick. Its own reader for the
-/// reason `snapshot_prompt_and_reset` is (card c119ace7, #4280): the main tuple is
-/// already nine positional `u64`s, and on 2026-09-20 two PRs each widening it by one
-/// landed a TENTH value behind a nine-wide signature — the arity was the only thing
-/// that noticed. A separable counter cannot be mis-positioned by a merge.
-pub fn snapshot_lane_starved_and_reset() -> u64 {
-    LEDGER.lane_starved.swap(0, Ordering::Relaxed)
+/// Whether a read closes the window (the hourly tick: every counter reset) or looks at it
+/// (an on-demand reader). The one decision every counter shares, so no reader decides it per
+/// counter group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Read {
+    Close,
+    Peek,
 }
 
-/// The hour's generations and the ones dropped in flight, read and reset by the tick.
-/// Its own reader for the reason [`snapshot_lane_starved_and_reset`] is: the main tuple
-/// is already nine positional `u64`s and a tenth cannot be mis-positioned by a merge if
-/// it never joins the tuple.
-pub fn snapshot_generations_and_reset() -> (u64, u64) {
-    (
-        LEDGER.generations.swap(0, Ordering::Relaxed),
-        LEDGER.generations_dropped.swap(0, Ordering::Relaxed),
-    )
+impl Read {
+    fn of(self, counter: &AtomicU64) -> u64 {
+        match self {
+            Self::Close => counter.swap(0, Ordering::Relaxed),
+            Self::Peek => counter.load(Ordering::Relaxed),
+        }
+    }
 }
 
-/// The hour's prompt-cache totals (cached, prefilled), read and reset by the tick.
-/// Its own reader, not a tenth slot on [`snapshot_and_reset`]'s tuple: the two are read
-/// at the same tick but they are different ledgers, and a tuple that long stops being
-/// legible at the call site.
-pub fn snapshot_prompt_and_reset() -> (u64, u64) {
-    (
-        LEDGER.prompt_cached.swap(0, Ordering::Relaxed),
-        LEDGER.prompt_prefilled.swap(0, Ordering::Relaxed),
-    )
+/// Every counter of the window, by name. Named, never positional: a tuple of nine `u64`s
+/// once took a tenth behind its signature from two PRs at once (card c119ace7), which is
+/// why each counter group used to have its own reader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HourCounters {
+    pub acts: u64,
+    pub writes: u64,
+    pub lanes_granted: u64,
+    pub settles: u64,
+    pub credits_staged: u64,
+    pub credits_settled: u64,
+    pub stops: StopCounts,
+    pub lane_starved: u64,
+    pub generations: u64,
+    pub generations_dropped: u64,
+    pub prompt_cached: u64,
+    pub prompt_prefilled: u64,
+    pub moves_opportunity: u64,
+    pub moves_failure: u64,
+    pub lane_buckets: [u64; LANE_BUCKETS],
 }
 
-pub fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64) {
-    (
-        LEDGER.acts.swap(0, Ordering::Relaxed),
-        LEDGER.writes.swap(0, Ordering::Relaxed),
-        LEDGER.lanes_granted.swap(0, Ordering::Relaxed),
-        LEDGER.settles.swap(0, Ordering::Relaxed),
-        LEDGER.credits_staged.swap(0, Ordering::Relaxed),
-        LEDGER.credits_settled.swap(0, Ordering::Relaxed),
-    )
+/// The window's counters, read one way: a close resets every one (and the lane window), a
+/// peek leaves them standing.
+pub fn hour(read: Read) -> HourCounters {
+    let mut lane_buckets = [0u64; LANE_BUCKETS];
+    for (out, slot) in lane_buckets.iter_mut().zip(LEDGER.lane_bucket_max.iter()) {
+        *out = read.of(slot);
+    }
+    if read == Read::Close {
+        LEDGER.lane_window_start_ms.store(0, Ordering::Relaxed);
+    }
+    HourCounters {
+        acts: read.of(&LEDGER.acts),
+        writes: read.of(&LEDGER.writes),
+        lanes_granted: read.of(&LEDGER.lanes_granted),
+        settles: read.of(&LEDGER.settles),
+        credits_staged: read.of(&LEDGER.credits_staged),
+        credits_settled: read.of(&LEDGER.credits_settled),
+        stops: LEDGER.stops.read(|c| read.of(c)),
+        lane_starved: read.of(&LEDGER.lane_starved),
+        generations: read.of(&LEDGER.generations),
+        generations_dropped: read.of(&LEDGER.generations_dropped),
+        prompt_cached: read.of(&LEDGER.prompt_cached),
+        prompt_prefilled: read.of(&LEDGER.prompt_prefilled),
+        moves_opportunity: read.of(&LEDGER.moves_opportunity),
+        moves_failure: read.of(&LEDGER.moves_failure),
+        lane_buckets,
+    }
 }
 
 #[cfg(test)]

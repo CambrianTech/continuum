@@ -1,37 +1,6 @@
 #![cfg(test)]
     use super::*;
 
-    // what this catches (card aed15611): the MINDLESS rule and the bounded choice. A
-    // mind whose verdicts were ≥80% gate refusals with no write is mindless; a mind
-    // that wrote once, or was refused half the time, or spoke fewer than the floor,
-    // is not. The choice is worst-first, never below the resident floor, never more
-    // than the per-tick cap.
-    #[test]
-    fn a_mind_of_recitals_is_paged_out_worst_first_and_never_below_the_floor() {
-        let mind = |name: &str, verdicts, refused, acts, writes| MindHour {
-            agent_name: name.into(), verdicts, gate_refused: refused, acts, writes, lane_grants: acts,
-        };
-        assert!(is_mindless(&mind("Sigurd", 21, 18, 3, 0)));
-        assert!(!is_mindless(&mind("wrote", 21, 18, 3, 1)), "a write is a mind");
-        assert!(!is_mindless(&mind("half", 10, 5, 0, 0)), "half refused is a struggling mind, not a mindless one");
-        assert!(!is_mindless(&mind("quiet", 5, 5, 0, 0)), "below the verdict floor: not enough evidence");
-        let minds: Vec<(uuid::Uuid, MindHour)> = [
-            mind("A", 10, 8, 0, 0),
-            mind("B", 20, 20, 0, 0),
-            mind("C", 10, 9, 0, 0),
-            mind("D", 10, 10, 0, 0),
-            mind("ok", 10, 1, 4, 2),
-        ]
-        .into_iter()
-        .map(|m| (uuid::Uuid::new_v4(), m))
-        .collect();
-        let chosen = mindless_seats(&minds, 16);
-        let names: Vec<&str> = chosen.iter().map(|(_, m)| m.agent_name.as_str()).collect();
-        assert_eq!(names, ["B", "D", "C"], "worst first, capped at {MINDLESS_MAX_PER_TICK}");
-        assert_eq!(mindless_seats(&minds, 3).len(), 1, "3 resident − floor 2 = one seat may rest");
-        assert!(mindless_seats(&minds, 2).is_empty(), "at the floor nobody is paged out");
-    }
-
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
         CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, lanes_sustained: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, stops: StopCounts::default(), lane_starved: 0, generations: 0, generations_dropped: 0, knee: None, prompt_cached_tokens: 0, prompt_prefill_tokens: 0, moves_opportunity: 0, moves_failure: 0, oldest_dormant_turn_age_ms: None, held_for: None }
     }
@@ -51,9 +20,9 @@
         note_move(true);
         note_move(false);
         note_move(false);
-        let (o, f) = snapshot_moves_and_reset();
+        let (o, f) = { let c = hour(Read::Close); (c.moves_opportunity, c.moves_failure) };
         assert!(o >= 1 && f >= 2);
-        assert_eq!(snapshot_moves_and_reset(), (0, 0), "a window, not a lifetime");
+        assert_eq!({ let c = hour(Read::Close); (c.moves_opportunity, c.moves_failure) }, (0, 0), "a window, not a lifetime");
     }
 
     // what this catches: the four shapes of 2026-09-14 named by the rule — 16 on 3 is
@@ -96,11 +65,11 @@
     // lets READING outrank it, puts the blame back on the minds.
     #[test]
     fn a_dropped_generation_is_counted_rendered_and_outranks_the_reading_verdict() {
-        let _ = snapshot_generations_and_reset(); // start this assertion from a known floor
+        let _ = hour(Read::Close); // start this assertion from a known floor
         note_generation_outcome(false);
         note_generation_outcome(true);
         note_generation_outcome(true);
-        let (generations, dropped) = snapshot_generations_and_reset();
+        let (generations, dropped) = { let c = hour(Read::Close); (c.generations, c.generations_dropped) };
         // `>=`, not `==`: the ledger is a process global and a sibling test may be
         // generating into it. An UNDER-count is the only thing this can miss, and that is
         // the failure worth catching.
@@ -114,7 +83,7 @@
         assert!(line(&clean, &verdict(&clean)).contains("dropped 0 of 50 (0%)"));
         assert!(line(&h(4, 2, 10, 2), &verdict(&h(4, 2, 10, 2))).contains("dropped n/a"));
 
-        // The measured night: 18 of 50 = 36%, well past the threshold.
+        // The measured night: 18 of 50 = 36% thrown away, a pattern in the pipe.
         let m5 = CitizenHealth { generations: 50, generations_dropped: 18, ..h(4, 2, 13, 0) };
         assert_eq!(dropped_pct(&m5), Some(36));
         assert_eq!(
@@ -126,10 +95,13 @@
         assert!(l.contains("dropped 18 of 50 (36%)"), "{l}");
         assert!(l.contains("DROPPING"), "{l}");
         assert!(!l.contains("READING"), "{l}");
-        // Below the threshold the older verdicts still stand — this does not swallow them.
-        let occasional = CitizenHealth { generations: 50, generations_dropped: 2, ..h(4, 2, 13, 0) };
-        assert_eq!(verdict(&occasional), Verdict::Reading { acts: 13 }, "4% is a bound trimming an outlier");
-        let healthy = CitizenHealth { generations: 50, generations_dropped: 2, ..h(4, 2, 13, 4) };
+        // One drop is a bound trimming an outlier: the older verdicts still stand. More than one
+        // is a pattern (two is already one more than an outlier).
+        let occasional = CitizenHealth { generations: 50, generations_dropped: 1, ..h(4, 2, 13, 0) };
+        assert_eq!(verdict(&occasional), Verdict::Reading { acts: 13 }, "one drop is an outlier");
+        let pattern = CitizenHealth { generations: 50, generations_dropped: 2, ..h(4, 2, 13, 0) };
+        assert_eq!(verdict(&pattern), Verdict::Dropping { dropped: 2, generations: 50 }, "two drops are a pattern");
+        let healthy = CitizenHealth { generations: 50, generations_dropped: 1, ..h(4, 2, 13, 4) };
         assert_eq!(verdict(&healthy), Verdict::Healthy);
     }
 
@@ -199,29 +171,36 @@
         note_settle();
         note_credit_staged();
         note_stop(Stop::CutThink);
-        let (a, w, l, s, c, _) = snapshot_and_reset();
-        assert!(a >= 2 && w >= 1 && l >= 1 && s >= 1 && c >= 1);
+        let closed = hour(Read::Close);
+        assert!(closed.acts >= 2 && closed.writes >= 1 && closed.lanes_granted >= 1 && closed.settles >= 1 && closed.credits_staged >= 1);
         // what this catches (the M5, 2026-10-30): a cut inside thinking is on the hour's
         // ledger as a cut, and the stops reset with the rest of the window.
-        assert!(snapshot_stops_and_reset().cut_think >= 1, "a cut think is on the hour's ledger");
-        let (a2, _, _, _, _, _) = snapshot_and_reset();
-        assert_eq!(a2, 0);
+        assert!(closed.stops.cut_think >= 1, "a cut think is on the hour's ledger");
+        assert_eq!(hour(Read::Close).acts, 0);
         // The prompt-cache totals are a window too (card c119ace7), and an unmeasured
-        // generation (no timings: 0/0) leaves them untouched.
+        // generation (no timings: 0/0) leaves them untouched; a lane-starved wait is one too.
         note_generation(0, 0);
         note_generation(22_800, 9_300);
-        // The lane-starved counter is its own separable window (card cff534ba).
         note_lane_starved();
-        assert!(snapshot_lane_starved_and_reset() >= 1, "a lane-starved wait is on the hour's ledger");
-        assert_eq!(snapshot_lane_starved_and_reset(), 0, "the tick reset its window");
-        let (cached, prefilled) = snapshot_prompt_and_reset();
-        assert!(cached >= 22_800 && prefilled >= 9_300, "cached {cached} prefilled {prefilled}");
-        // A window, not a lifetime: the read reset it. (`<`, not `== 0`: the ledger is a
-        // process global and a parallel test may fold a generation between the two reads.)
-        let (cached2, prefilled2) = snapshot_prompt_and_reset();
+        let window = hour(Read::Close);
+        assert!(window.lane_starved >= 1, "a lane-starved wait is on the hour's ledger");
         assert!(
-            cached2 + prefilled2 < cached + prefilled,
-            "the tick must reset the window: {cached2}/{prefilled2} after {cached}/{prefilled}"
+            window.prompt_cached >= 22_800 && window.prompt_prefilled >= 9_300,
+            "cached {} prefilled {}",
+            window.prompt_cached,
+            window.prompt_prefilled
+        );
+        // A window, not a lifetime: the close reset it. (`<`, not `== 0`: the ledger is a
+        // process global and a parallel test may fold a generation between the two reads.)
+        let next = hour(Read::Close);
+        assert_eq!(next.lane_starved, 0, "the tick reset its window");
+        assert!(
+            next.prompt_cached + next.prompt_prefilled < window.prompt_cached + window.prompt_prefilled,
+            "the tick must reset the window: {}/{} after {}/{}",
+            next.prompt_cached,
+            next.prompt_prefilled,
+            window.prompt_cached,
+            window.prompt_prefilled
         );
     }
 
@@ -241,12 +220,11 @@
         ];
         let now = 10 * 3_600_000;
         let seated = |name: &str| Some(if name == "just-seated" { now - 60_000 } else { now - 2 * 3_600_000 });
-        let chosen = rotation_candidates(true, 0, &residents, seated, now);
+        let chosen = rotation_candidates(true, &residents, seated, now);
         let names: Vec<&str> = chosen.iter().map(|(_, m)| m.agent_name.as_str()).collect();
         assert_eq!(names, vec!["quiet-few-grants", "quiet-many-grants"], "quiet and tenured only, least served first");
-        assert!(rotation_candidates(false, 0, &residents, seated, now).is_empty(), "nobody waits: nobody yields");
-        assert!(rotation_candidates(true, 1, &residents, seated, now).is_empty(), "a seat already freed this pass is the clip");
-        assert!(rotation_candidates(true, 0, &residents, |_| None, now).is_empty(), "unknown tenure never yields");
+        assert!(rotation_candidates(false, &residents, seated, now).is_empty(), "nobody waits: nobody yields");
+        assert!(rotation_candidates(true, &residents, |_| None, now).is_empty(), "unknown tenure never yields");
     }
 
 
@@ -285,10 +263,10 @@
 
         // THE FLOOR IS DISTINCT BUCKETS, not elapsed time and not sample count.
         let mut thin = [0u64; LANE_BUCKETS];
-        for i in 0..LANE_MIN_BUCKETS - 1 { thin[i] = 1; }
-        assert_eq!(lanes_sustained_of(&thin), None, "nine two-minute periods is not an hour");
-        thin[LANE_MIN_BUCKETS - 1] = 1;
-        assert_eq!(lanes_sustained_of(&thin), Some(1), "at the floor it has a shape");
+        for i in 0..sustained_buckets() - 1 { thin[i] = 1; }
+        assert_eq!(lanes_sustained_of(&thin), None, "a minority of the window's minutes is not sustained");
+        thin[sustained_buckets() - 1] = 1;
+        assert_eq!(lanes_sustained_of(&thin), Some(1), "a majority of the window has a shape");
     }
 
     // what this catches (card `6d444769`, the defect itself): a roster that is starved on
@@ -352,4 +330,18 @@
         assert!(!unknown_line.contains("hosts live work"), "{unknown_line}");
         let acting = CitizenHealth { held_for: held.held_for.clone(), ..h(4, 2, 10, 2) };
         assert_ne!(verdict(&acting).as_str(), "held", "minds that acted are judged on their acts");
+    }
+
+    // what this catches: a reading labelled with the configured hour while its counters cover
+    // only the time since the last close (read just after a tick, the command said "last 60
+    // min: acts 0 ... IDLE" while 66 acts had landed that hour, 2026-11-02). A peek reports the
+    // window it covers; a close keeps the closed hour for the next reader.
+    #[test]
+    fn a_reading_reports_the_window_it_covers_and_the_closed_hour_is_kept() {
+        let opened = continuum_base::time::EpochMs::now().millis().saturating_sub(120_000);
+        super::rest_seats::open_window_at_for_test(opened);
+        let peek = super::rest_seats::peek_for_test();
+        assert!((119..=121).contains(&peek.window_secs), "the window since it opened: {}", peek.window_secs);
+        let closed = CitizenHealthModule::new().read();
+        assert!(super::rest_seats::last_hour_for_test().is_some_and(|hour| hour == closed), "the closed hour is kept");
     }
