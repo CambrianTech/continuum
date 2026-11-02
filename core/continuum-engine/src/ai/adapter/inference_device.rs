@@ -590,11 +590,11 @@ pub trait AIProviderAdapter: Send + Sync {
         }
         if let Some(reasoning) = response.reasoning.as_ref() {
             if !reasoning.is_empty() {
-                let _ = sink.send(GenerationChunk::Reasoning(reasoning.clone()));
+                crate::ai::stream_sinks::deliver(&sink, GenerationChunk::Reasoning(reasoning.clone())).await;
             }
         }
         if !response.text.is_empty() {
-            let _ = sink.send(GenerationChunk::Token(response.text.clone()));
+            crate::ai::stream_sinks::deliver(&sink, GenerationChunk::Token(response.text.clone())).await;
         }
         Ok(response)
     }
