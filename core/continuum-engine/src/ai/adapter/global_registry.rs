@@ -93,7 +93,7 @@ pub fn select_failure_message(
 }
 
 /// Generate text using the best available provider
-/// This is a convenience function for internal use (e.g., AgentModule)
+/// This is a convenience function for internal use (e.g., the recipe generator)
 pub async fn generate_text(
     registry: &AdapterRegistry,
     request: TextGenerationRequest,
@@ -104,8 +104,8 @@ pub async fn generate_text(
     // class; layering a `Gpu` filter on top of an already-named
     // (provider, model) pair wrongly excludes CPU-only adapters
     // even when they are the only ones claiming the requested
-    // model. Used by cognition::analyze and other internal
-    // callers that don't have a device opinion.
+    // model. Used by internal callers that don't have a device
+    // opinion.
     let (provider_id, adapter) = registry
         .select(
             request.provider.as_deref(),

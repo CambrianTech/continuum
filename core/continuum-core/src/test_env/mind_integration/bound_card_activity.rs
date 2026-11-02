@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::cognition::act_observe::test_support::{admission, ActThenSpeak, RecordingExecutor};
 use crate::cognition::act_observe::{settle_step, ActChain};
-use crate::cognition::working_memory::{WorkingMemory, WorkingMemoryFaculty};
+use crate::cognition::working_memory::WorkingMemory;
 use crate::cognition::workspace::{
     ActingBody, SalienceArbiter, Situation, TurnFraming, WorkspaceCycle,
 };
@@ -108,11 +108,9 @@ async fn bound_card_activity_is_shared_by_perception_and_execution() {
     let cycle = WorkspaceCycle::new(
         vec![
             Arc::new(board),
-            Arc::new(WorkingMemoryFaculty::new(wm.clone())),
             Arc::new(ActThenSpeak::new()),
         ],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(Arc::new(ActingBody {
         persona_id: persona,

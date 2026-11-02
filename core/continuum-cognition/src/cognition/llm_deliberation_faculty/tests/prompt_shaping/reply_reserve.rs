@@ -51,10 +51,7 @@ fn prompt_plus_completion_cap_never_exceeds_the_served_window() {
     let cap = request
         .max_tokens
         .expect("deliberation must bound generation to the reserved room");
-    assert_eq!(
-        cap, view.completion_reserve,
-        "the generation cap IS the reserved room — one source of truth"
-    );
+    assert_eq!(cap, view.completion_reserve, "the generation cap IS the reserved room — one source of truth");
     // The closed invariant: prompt-at-ceiling + the generation cap fits n_ctx.
     let prompt_tokens = estimate_guard_tokens(&view.system) + estimate_guard_tokens(&view.user_text());
     assert!(
@@ -143,8 +140,9 @@ fn an_unmeasured_mind_reserves_a_reply_not_a_fraction_of_her_window() {
 // (b) measured = her p90 think + answer with headroom, ABOVE the reply-sized
 // prior when she writes more; (c) a tiny talker still claims the reply floor;
 // (d) a turn cut mid-answer grows the claim back within a turn; (e) a retained cut
-// (cf9e: 3,587) keeps its doubled claim, 7,174, through intermediate reads, inside
-// the physical window, and releases it at settlement.
+// (cf9e: 3,587) keeps its measured peak as demand through intermediate reads (never
+// doubled again; the allocation grants it), inside the physical window, and releases it
+// at settlement.
 #[test]
 fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
     use crate::cognition::working_set::EmissionStop;
@@ -161,7 +159,7 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
     .with_context_window(window)
     .with_working_set(reg.clone());
     let wanted = |who: Uuid, pending: u32| {
-        reply_claim(TurnKind::Pass, reg.need_of(who), pending, false, false).0.max_tokens
+        reply_claim(TurnKind::Pass, reg.need_of(who), pending, false, false).max_tokens
     };
 
     let cold = wanted(persona, 0);
@@ -211,12 +209,12 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
     wm.retain_truncated_emission(room, cut.peak_tokens);
     for (tick, tokens) in [871, 1120, 400, 300, 300, 300, 300, 300, 300].into_iter().enumerate() {
         reg.record_emission_in_memory(quiet, tokens, 0, EmissionStop::Landed, 11 + tick as u64);
-        assert_eq!(wanted(quiet, wm.pending_emission_peak(room)), 7174,
-            "the claim retains the measured cut through intermediate reads");
-        assert!(quiet_faculty.prompt_view_within(&concern, window).completion_reserve >= 7174,
-            "actual prompt construction grants it");
+        assert!(wanted(quiet, wm.pending_emission_peak(room)) >= 3587,
+            "the claim retains at least the measured cut as demand through intermediate reads");
+        assert!(quiet_faculty.prompt_view_within(&concern, window).completion_reserve >= 3587,
+            "the one allocation grants it under measured capacity");
     }
-    assert!(wanted(quiet, 0) < 7174, "ordinary measurements still decay");
+    assert!(wanted(quiet, 0) < 3587, "ordinary measurements still decay");
     let small = quiet_faculty.prompt_view_within(&concern, 4096);
     assert!(small.capacity_error.is_none(), "{:?}", small.capacity_error);
     assert!(
@@ -776,7 +774,6 @@ fn a_budget_too_small_for_even_one_unit_emits_no_header_at_all() {
 #[test]
 fn the_results_ring_renders_before_churning_grounding() {
     let wm = Arc::new(crate::cognition::working_memory::WorkingMemory::new(3));
-    wm.set_served_window(32_768);
     let custody = |h: &str| crate::ai::types::ResultCustody::Whole { handle: h.into() };
     wm.record_receipt_typed(&[], "RING-ENTRY older result", None, custody("1111111111111111"));
     wm.record_receipt_typed(&[], "the newest result", None, custody("2222222222222222"));

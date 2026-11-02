@@ -33,7 +33,7 @@ use crate::ai::embedding::{CachingEmbeddingProvider, EmbeddingProvider, LexicalE
 use super::llm_deliberation_faculty::LlmDeliberationFaculty;
 use super::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
 use super::recall_faculty::RecallFaculty;
-use super::working_memory::{WorkingMemory, WorkingMemoryFaculty};
+use super::working_memory::WorkingMemory;
 use super::workspace::{ActingBody, Faculty, SituationFocusArbiter, WorkspaceCycle};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::cognition::admission_state::AdmissionState;
@@ -43,7 +43,9 @@ use crate::cognition::rag_budget::RagSource;
 /// owner's schema, native path, and cross-process checkpoint exclusion.
 pub mod checkpoint_adoption;
 
+mod act_output;
 mod rehome;
+pub use rehome::RehomeReason;
 
 pub use crate::cognition::handoff::SaveReason;
 
@@ -57,4 +59,6 @@ pub use acting_hands::*;
 mod root_acting_workspace;
 pub use root_acting_workspace::*;
 mod own_speech_persisted;
+mod mind_results_reporter;
+pub use mind_results_reporter::MindResultsReporter;
 pub(crate) use own_speech_persisted::*;

@@ -94,11 +94,7 @@ mod tests {
     /// error direction makes the ratchet meaningless.
     #[test]
     fn only_gated_mods_count_and_the_first_is_free() {
-        let mk = |src: &str| SourceFile {
-            rel: "fake.rs".into(),
-            production: String::new(),
-            raw: src.into(),
-        };
+        let mk = |src: &str| SourceFile::fixture("fake.rs", "", src);
         let rule = TestModSingularity;
         assert_eq!(rule.check(&mk("#[cfg(test)]\nmod tests {}")).len(), 0, "one mod is sanctioned");
         assert_eq!(

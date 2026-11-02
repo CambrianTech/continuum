@@ -67,23 +67,6 @@ pub struct SemanticDistiller {
     max_observation_chars: usize,
 }
 
-/// Default observation budget (chars) when the caller doesn't inject the live served
-/// window. DERIVED, never a literal: it reads the window the local lane is serving right
-/// now, and only if nothing is served falls back to the substrate's own declared minimum
-/// (`MIN_SERVE_CTX`) — the one floor the serving stack already owns, not a fresh guess.
-/// Production still wires the real per-slot window via `with_observation_budget`; this is
-/// the honest answer for an unwired build.
-/// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
-pub fn default_max_observation_chars() -> usize {
-    let live = crate::inference::llama_server::current_serving();
-    let window = if live.ready && live.served_context_window > 0 {
-        live.served_context_window
-    } else {
-        crate::inference::planning::MIN_SERVE_CTX
-    };
-    crate::cognition::context_budget::ContextBudget::from_window(window).latest_action_chars()
-}
-
 /// A sub-personal LENS — one inner voice of the mind-wanderer arc (#145,
 /// [[mind-wanderers-subpersonal-processes]]). Each lens is the SAME machinery
 /// (walk engrams → one LLM pass → admit_reflection with content-hash dedup)
@@ -163,26 +146,23 @@ specific to past work, or contradicted by your current understanding.",
 };
 
 impl SemanticDistiller {
-    pub fn new(adapter: Arc<dyn AIProviderAdapter>) -> Self {
+    /// A distiller whose observation block is budgeted to `observation_chars` (#175). The
+    /// caller derives it from the LIVE served per-slot window (tokens → chars, minus
+    /// system-prompt + reply reserve) so the dream prompt is composed WITHIN the slot and
+    /// never overflows. There is no default: a window guessed for an unwired build is a second
+    /// budget. A single engram larger than it still distills ([`Self::observations_block`]
+    /// always keeps one whole).
+    pub fn new(adapter: Arc<dyn AIProviderAdapter>, observation_chars: usize) -> Self {
         Self {
             adapter,
             model: None,
-            max_observation_chars: default_max_observation_chars(),
+            max_observation_chars: observation_chars,
         }
     }
 
     /// Ask the adapter for a specific served model (the persona's live binding).
     pub fn with_model(mut self, model: Option<String>) -> Self {
         self.model = model;
-        self
-    }
-
-    /// Budget the observation block to `chars` (#175). The caller derives this from
-    /// the LIVE served per-slot window (tokens → chars, minus system-prompt + reply
-    /// reserve) so the dream prompt is composed WITHIN the slot and never overflows.
-    /// Floored at one engram's worth so a single large memory still distills.
-    pub fn with_observation_budget(mut self, chars: usize) -> Self {
-        self.max_observation_chars = chars.max(2_000);
         self
     }
 
@@ -420,7 +400,7 @@ impl SemanticDistiller {
             continuum_base::probe!(
                 class = "dream.review.raw_tail",
                 persona = ?persona_id,
-                tail = %&tail[..tail.len().min(120)],
+                tail = %tail,
                 "belief-review raw verdict line"
             );
         }

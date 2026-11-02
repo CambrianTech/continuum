@@ -326,6 +326,9 @@ declare -a CMAKE_ARGS=(
   -DLLAMA_BUILD_TESTS=OFF
   -DLLAMA_BUILD_EXAMPLES=OFF
   -DLLAMA_CURL=OFF
+  # No TLS in the engine: it listens on localhost and loads local GGUF paths, so
+  # cpp-httplib needs no OpenSSL (LLAMA_OPENSSL defaults ON and finds whatever is installed).
+  -DLLAMA_OPENSSL=OFF
   "${BACKEND_DEFS[@]}"
 )
 
@@ -452,7 +455,7 @@ if [ -n "$EXE" ]; then
     cp -f "$_dll" "$INSTALL_DIR/" || {
       echo "✗ FATAL: could not install $(basename "$_dll") into $INSTALL_DIR." >&2
       echo "  On Windows this usually means a running llama-server holds it open." >&2
-      echo "  Stop the core (\`continuum stop\`) and rerun; do NOT ship a partial set." >&2
+      echo "  Stop the core and its engine (\`continuum stop --engine\`) and rerun; do NOT ship a partial set." >&2
       exit 1
     }
   done

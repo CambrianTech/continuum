@@ -102,7 +102,8 @@ pub struct GenomeTeachParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub teacher_model: Option<String>,
-    /// Max fix attempts per task before it's dropped as unsolved. Default 4.
+    /// A cap on fix attempts per task, if you want one. Without it, each task runs while the
+    /// grader shows progress and stops when it does not (the reason is in its outcome).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub max_fix_iters: Option<u32>,
@@ -289,7 +290,8 @@ impl GenomeTeach {
             })?,
         };
         let temperature = p.temperature.unwrap_or(DEFAULT_TEMPERATURE);
-        let max_fix_iters = p.max_fix_iters.unwrap_or(DEFAULT_MAX_FIX_ITERS);
+        // A cap only when the caller names one: otherwise each task runs while the grader shows progress.
+        let max_fix_iters = p.max_fix_iters;
 
         // The synthesis itself — shared with the self-improvement orchestrator.
         let RemediationCorpus {
@@ -316,8 +318,8 @@ impl GenomeTeach {
 
         if examples.is_empty() {
             return Err(CommandError::Internal(format!(
-                "teacher solved 0 of {} tasks within {max_fix_iters} fixes — no validated corpus to \
-                 write (try a stronger teacher_model or a higher max_fix_iters)",
+                "teacher solved 0 of {} tasks (each ran until the grader showed no progress; see the \
+                 task outcomes) — no validated corpus to write (try a stronger teacher_model)",
                 tasks.len()
             )));
         }
@@ -489,27 +491,21 @@ use crate::genome::teach::progress::{set_current_teach_run, teach_ledger_path};
 use crate::cognition::eval::synthesize_remediation;
 use crate::genome::teach::{
     subscribe_teach_progress, GenomeTeachTaskOutcome, RemediationCorpus, TeachProgress,
-    DEFAULT_MAX_FIX_ITERS, DEFAULT_TEMPERATURE,
+    DEFAULT_TEMPERATURE,
 };
 
 /// Write the terminal row for a detached run — success carries the full result, failure
 /// carries the loud error keyed on the SAME run_id (a poller sees the failure, never waits
 /// on a corpse — the eval `append_failed_ledger` lesson). [[fallbacks-are-illegal-fail-loud]]
 fn write_teach_ledger(run_id: &str, result: Result<&GenomeTeachResult, String>) {
-    let Some(path) = teach_ledger_path(run_id) else {
-        return;
-    };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     let row = match result {
         Ok(r) => serde_json::json!({ "runId": run_id, "complete": true, "ok": true, "result": r }),
         Err(e) => serde_json::json!({ "runId": run_id, "complete": true, "ok": false, "error": e }),
     };
-    let _ = std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&row).unwrap_or_default(),
-    );
+    // The genome owns the ledger file; this is its terminal row.
+    if let Err(error) = crate::genome::teach::progress::write_teach_ledger(run_id, &row) {
+        tracing::warn!(%run_id, %error, "teach terminal row not written: teach-status cannot resolve this run");
+    }
 }
 
 fn read_teach_ledger(run_id: &str) -> Option<serde_json::Value> {

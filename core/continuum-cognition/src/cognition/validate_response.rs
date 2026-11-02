@@ -2,8 +2,7 @@
 //!
 //! Oxidizer for `AIValidateResponseServerCommand` (TS, see
 //! `src/commands/ai/validate-response/server/AIValidateResponseServerCommand.ts`).
-//! Sibling to the closed `check_redundancy` (#1375) + `generate_response`
-//! (#1385) oxidizers. Same shape, same discipline.
+//! Sibling to the `generate_response` (#1385) oxidizer. Same shape, same discipline.
 //!
 //! Per Joel directive 2026-05-18 19:44Z: zero-users full-blown-Rust-dev
 //! mode — this is shipped as ONE PR (add Rust + delete TS predecessor
@@ -31,7 +30,6 @@
 //!   parser; caller can compare against `decision == SUBMIT && reason
 //!   == DEFAULT_REASON_SUBMIT` if they want to detect parse-fallthrough.
 //! - No JSON parsing — model is asked for a single word, not JSON.
-//!   Different from check_redundancy.
 
 use continuum_base::time::EpochMs;
 use crate::ai::adapter::InferenceDevice;

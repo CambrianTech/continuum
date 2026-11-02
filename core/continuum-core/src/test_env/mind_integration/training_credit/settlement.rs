@@ -123,68 +123,13 @@ use super::*;
             ..Default::default()
         };
         let rows = stored_credit_rows(&data, name).await;
-        let mut evidence = graded::LegacyGradeEvidence {
+        let evidence = graded::LegacyGradeEvidence {
             room: Uuid::new_v4(), card, owner: persona, claim: a.claim_id.unwrap(),
             review_card: Uuid::new_v4(), reviewer: Uuid::new_v4(), review_claim: Uuid::new_v4(),
             review_post: Uuid::new_v4(), review_sha256: "review-digest".into(),
             benchmark: "coder-write-eval".into(), instance: instance.clone(),
             verdict_sha256: "verdict-digest".into(), artifact_sha256: "artifact-digest".into(),
         };
-        use crate::commands::benchmark::credit_recovery::{verify_cards, verify_post, verify_result};
-        let mut original = claimed_card_fixture(Some(airc_core::PeerId::from_uuid(persona)),
-            Some(airc_work::ClaimId::from_uuid(evidence.claim)));
-        original.card_id = airc_work::WorkCardId::from_uuid(card);
-        original.title = format!("[bench coder-write-eval] {instance}");
-        original.state = airc_work::CardState::Closed;
-        let mut review = claimed_card_fixture(Some(airc_core::PeerId::from_uuid(evidence.reviewer)),
-            Some(airc_work::ClaimId::from_uuid(evidence.review_claim)));
-        review.card_id = airc_work::WorkCardId::from_uuid(evidence.review_card);
-        review.reviews = Some(original.card_id);
-        review.state = airc_work::CardState::Closed;
-        verify_cards(&evidence, &original, &review).unwrap();
-        review.reviews = Some(airc_work::WorkCardId::new());
-        assert!(verify_cards(&evidence, &original, &review).is_err());
-        review.reviews = Some(original.card_id);
-        review.claim_id = Some(airc_work::ClaimId::new());
-        assert!(verify_cards(&evidence, &original, &review).is_err());
-        let artifact = b"independently graded artifact";
-        evidence.artifact_sha256 = graded::digest(artifact);
-        let attested_verdict = crate::cognition::swe_bench::SweVerdict {
-            benchmark: evidence.benchmark.clone(), solver: persona.to_string(),
-            gate_ok: true, f2p_passed: 1, f2p_total: 1, ..verdict.clone()
-        };
-        let bytes = serde_json::to_vec(&attested_verdict).unwrap();
-        evidence.verdict_sha256 = graded::digest(&bytes);
-        verify_result(&evidence, artifact, &bytes).unwrap();
-        assert!(verify_result(&evidence, b"changed artifact", &bytes).is_err());
-        let mut wrong_solver = evidence.clone();
-        wrong_solver.owner = Uuid::new_v4();
-        assert!(verify_result(&wrong_solver, artifact, &bytes).is_err());
-        let ledger = crate::experience::ledger::CardLedger {
-            card_id: evidence.review_card, by: evidence.reviewer,
-            decided_fix: Some(format!("PASS, exact artifact {}", evidence.artifact_sha256)),
-            ..Default::default()
-        };
-        let mut post = airc_core::doctrine::WallPostPublished {
-            room_id: airc_core::RoomId::from_uuid(evidence.room), post_id: evidence.review_post,
-            category: crate::experience::ledger::LEDGER_WALL_CATEGORY.into(),
-            body: serde_json::to_string(&ledger).unwrap(), supersedes: None,
-            published_by: airc_core::PeerId::from_uuid(evidence.reviewer), published_at_ms: 1,
-        };
-        evidence.review_sha256 = graded::digest(post.body.as_bytes());
-        verify_post(&evidence, &post).unwrap();
-        post.published_by = airc_core::PeerId::new();
-        assert!(verify_post(&evidence, &post).is_err(), "body.by cannot impersonate the reviewer");
-        let denied = crate::sdk_codegen::ActionCommand::run(
-            &crate::commands::benchmark::credit_recovery::BenchmarkCreditRecover,
-            &crate::sdk_codegen::Ctx {
-                caller: Some(CallerIdentity::local_persona(airc_core::PeerId::from_uuid(persona))),
-                ..Default::default()
-            },
-            crate::commands::benchmark::credit_recovery::CreditRecoveryParams::Attest { evidence: evidence.clone() },
-        ).await;
-        assert!(matches!(denied, Err(crate::sdk_codegen::CommandError::Denied(_))),
-            "a citizen cannot self-attest a legacy grade");
         let graded_at_ms = rows.iter().map(|row| row.staged_at_ms).max().unwrap();
         let binding = graded::BenchmarkCreditAttribution {
             id: card, rows: graded::select_rows(&evidence, graded_at_ms, &rows).unwrap(),

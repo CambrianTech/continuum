@@ -158,67 +158,18 @@ fn pin_swap_down_credits_the_evicted_incumbents_weights() {
 // what this catches (2026-09-17, the M5): a steady hold pinning a boot shape of
 // 8 × 12,800 against a plan of 3 × 67,340 for 255 ticks. The hold yields to a
 // shortfall of REHOME_HOLD_OVERRIDE_PCT or more; a few-percent grow-back stays held.
-// what this catches (2026-09-19 17:56–18:20Z, the M5 at 3 lanes then 1): on unified
-// memory a plan filled to Comfort's fraction sat inside the Eco band, the third lane
-// went in with zero slack, the compressor's response read as co-consumer growth, and
-// the plan collapsed. The fill on unified memory stops ECO_EXIT_BYTES short of the
-// budget: the M5's 40.3 GB budget plans 2 × 67k (27.4 GB) and never 3; Eco's own
-// fraction still rules when it is tighter; a small box keeps the mode alone; discrete
-// VRAM is unchanged.
+// what this catches: a machine-specific constant sizing every plan. The plan fills the mode's
+// fraction of the sustained budget, the same on unified and discrete memory; the M5's 2026-10-29
+// plan withheld a flat 12 GiB on top (three lanes for four residents, 17 s median slot wait).
 #[test]
-fn a_unified_plan_never_fills_within_the_eco_band() {
-    use crate::inference::planning::serving_plan::ModelFootprint;
-    use crate::capacity::power_mode::{PowerMode, ECO_EXIT_BYTES};
-    let live = 40_300_000_000u64; // the M5 at rest: available 13.4 GB + serving 26.9 GB
-    let comfort = PowerMode::Comfort.serving_fraction();
-    let fill = plan_fill(live, comfort, true);
-    assert_eq!(
-        fill,
-        live - ECO_EXIT_BYTES,
-        "the band, not the fraction, is the ceiling on the M5"
-    );
-    assert!(fill < (live as f64 * comfort) as u64);
-    assert_eq!(
-        plan_fill(live, comfort, false),
-        (live as f64 * comfort) as u64,
-        "discrete VRAM: the mode alone"
-    );
-    let eco = PowerMode::Eco.serving_fraction();
-    assert_eq!(
-        plan_fill(live, eco, true),
-        (live as f64 * eco) as u64,
-        "Eco is tighter than the band: Eco rules"
-    );
-    let small = 20_000_000_000u64;
-    assert_eq!(
-        plan_fill(small, comfort, true),
-        (small as f64 * comfort) as u64,
-        "a small box: the band would leave less than Eco does; the mode alone"
-    );
-    // The M5's own fit at that ceiling: two 67k lanes of the 27B, never three.
-    let m5 = ModelFootprint {
-        model_id: "qwen-27b".into(),
-        weights_bytes: 19_000_000_000,
-        kv_per_token: 32_768,
-        context_window: 262_144,
-        capability_rank: 42,
-        fixed_per_lane_bytes: 0,
-    };
-    let floor = 64_052; // typical prompt 51,242 × 1.25
-    assert!(
-        m5.window_within(fill, 2) >= floor,
-        "two lanes clear the floor: {}",
-        m5.window_within(fill, 2)
-    );
-    assert!(
-        m5.window_within(fill, 3) < floor,
-        "three do not — the zero-slack third lane is what collapsed the box"
-    );
-    let by_mode = (live as f64 * comfort) as u64;
-    assert!(
-        m5.window_within(by_mode, 3) >= floor,
-        "under the bare fraction the third lane fit, with nothing to spare"
-    );
+fn a_plan_fills_the_modes_fraction_and_nothing_flat() {
+    use crate::capacity::power_mode::PowerMode;
+    for live in [20_000_000_000u64, 40_300_000_000, 120_000_000_000] {
+        for mode in [PowerMode::Eco, PowerMode::Comfort, PowerMode::Performance] {
+            let expected = (live as f64 * mode.serving_fraction()) as u64;
+            assert_eq!(plan_fill(live, mode.serving_fraction()), expected, "{live} {mode:?}");
+        }
+    }
 }
 
 // what this catches (#4230, BigMama's condition): with the plan's own reserve gone, a

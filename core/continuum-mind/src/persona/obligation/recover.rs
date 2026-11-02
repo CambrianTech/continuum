@@ -160,7 +160,6 @@ mod tests {
                 crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
             ))),
             adapter: Arc::new(adapter),
-            capacity: None,
             grounding_sources: Vec::new(),
             embedder: None,
             tool_executor: Some(Arc::new(crate::cognition::act_observe::test_support::ScriptedExecutor::new(["ok"]))),
@@ -171,6 +170,7 @@ mod tests {
             defer_grounding: false,
             suppress_recall: false,
             forked: false,
+            read_receipt: None,
         };
         crate::cognition::persona_workspace::global().register_from_cfg(cfg).unwrap() // unwrap: test fixture
     }

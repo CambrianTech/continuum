@@ -26,6 +26,29 @@ use crate::ai::adapter::GenerationChunk;
 /// The params key a hop stamps so the command streams into its registered sink.
 pub const STREAM_ID_PARAM: &str = "streamId";
 
+/// Consume incremental output while awaiting the authoritative whole response.
+/// The caller owns both futures: cancellation drops both, and completion does
+/// not wait for stray sender clones. No detached reader or buffered transcript.
+pub async fn drain_generation<F, Fut, T>(generate: F) -> T
+where
+    F: FnOnce(UnboundedSender<GenerationChunk>) -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    let (sink, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let generation = generate(sink);
+    tokio::pin!(generation);
+    loop {
+        tokio::select! {
+            result = &mut generation => return result,
+            chunk = receiver.recv() => {
+                if chunk.is_none() {
+                    return generation.await;
+                }
+            }
+        }
+    }
+}
+
 fn sinks() -> &'static DashMap<Uuid, UnboundedSender<GenerationChunk>> {
     static SINKS: OnceLock<DashMap<Uuid, UnboundedSender<GenerationChunk>>> = OnceLock::new();
     SINKS.get_or_init(DashMap::new)
@@ -67,6 +90,40 @@ pub fn stream_id_of(params: &serde_json::Value) -> Option<Uuid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn whole_response_drain_keeps_consumer_alive_and_ends_with_response()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (retained, retained_rx) = tokio::sync::oneshot::channel();
+        let response = drain_generation(|sink| async move {
+            sink.send(GenerationChunk::Token("progress".into()))?;
+            retained.send(sink.clone()).map_err(|_| "retain sender")?;
+            tokio::task::yield_now().await;
+            assert!(!sink.is_closed(), "whole-response call is still consuming");
+            Ok::<_, Box<dyn std::error::Error>>("terminal")
+        }).await?;
+        assert_eq!(response, "terminal");
+        assert!(retained_rx.await?.is_closed(), "terminal response drops the reader despite sender clones");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelling_whole_response_drops_its_consumer()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (retained, retained_rx) = tokio::sync::oneshot::channel();
+        let mut generation = Box::pin(drain_generation(|sink| async move {
+            let _ = retained.send(sink.clone());
+            std::future::pending::<()>().await;
+        }));
+        assert!(futures::poll!(&mut generation).is_pending());
+        let sink = retained_rx.await?;
+        assert!(!sink.is_closed());
+        drop(generation);
+        assert!(sink.is_closed());
+        Ok(())
+    }
 
     // what this catches: the join key works exactly once and leaves nothing
     // behind — a second `take` is None, a dropped guard clears an untaken entry

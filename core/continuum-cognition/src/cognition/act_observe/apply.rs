@@ -7,7 +7,6 @@ use continuum_base::time::EpochMs;
 use uuid::Uuid;
 
 use crate::ai::types::{ToolCall, ToolResult};
-use crate::cognition::context_budget::ContextBudget;
 use crate::cognition::workspace::WorkspaceCycle;
 
 use super::observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
@@ -144,25 +143,6 @@ pub async fn apply_act(
     // Call history is not a cache-validity proof. Reads can change, failures can
     // recover, and earlier results may no longer fit the prompt. Execute through
     // the owning command; authorization and operation-specific idempotency stay there.
-    // EVERY re-injection bound in this act comes from her LIVE served window, never a
-    // constant — an unknown window folds NOTHING rather than inventing a number
-    // ([[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]).
-    // WM clips inside its OWN record path (it owns its truncation), so it needs the live
-    // window too — pushed from here, the seam that has the cycle. Re-pushed every act so a
-    // lane relaunch at a different `-c` is picked up without a restart.
-    if let Some((_, w)) = cycle.model_loadout() {
-        body.working_memory.set_served_window(w);
-    }
-    // ONE budget for what an act's results may hold: working memory's own, which is the
-    // same for every turn of hers. Sized from the running turn's audience, a room turn
-    // (Interactive) cut a 440-line read at 12,960 chars while the ring the result joins next
-    // budgets ~26k (Benchy, the M5, 2026-10-17 23:06Z: "more than this window's 12960-char
-    // share", the same file re-read every turn, no write).
-    let budget = if cycle.model_loadout().is_some() {
-        body.working_memory.budget()
-    } else {
-        ContextBudget::unknown()
-    };
     let ctx = crate::cognition::tool_executor::ToolExecutionContext {
         persona_id: body.persona_id,
         persona_name: body.persona_name.clone(),
@@ -303,7 +283,7 @@ pub async fn apply_act(
     let batch_result = tokio::time::timeout(
         TOOL_BATCH_CEILING,
         executor
-            .execute_native_batch_pinned(&dispatched, &ctx, budget.latest_action_chars(), &pin),
+            .execute_native_batch_pinned(&dispatched, &ctx, &pin),
     )
     .await
     .unwrap_or_else(|_| { // timeout elapsed = the hang this bound exists to convert; the closure builds the honest error
@@ -409,14 +389,14 @@ pub async fn apply_act(
         // handle and the executor decodes it once from the full value.
         if verdict.running() {
             if let Some(handle) = projected.and_then(|v| v.dispatch_handle) {
+                // Her command whole, as she wrote it: this label is what her view shows for the
+                // handle, and a cut command reads as a different one.
                 let label: String = call
                     .input
                     .get("command")
                     .and_then(|v| v.as_str())
                     .unwrap_or(call.name.as_str()) // label only — the handle is the key
-                    .chars()
-                    .take(80)
-                    .collect();
+                    .to_owned();
                 body.working_memory.record_dispatch_event(
                     handle,
                     &format!("{}: {label}", call.name),
@@ -437,7 +417,7 @@ pub async fn apply_act(
             },
             status: ActStatus::Executed,
         };
-        observation.push_str(&obs.render_recency(intent, &budget));
+        observation.push_str(&obs.render_recency());
         recall_observation.push_str(&obs.render_recall(intent));
         // (The canvas feed publishes at the tool-executor seam, PRE-fold — a
         // flood-sized ObserveResult here is already a spilled preview that no
@@ -482,19 +462,7 @@ pub async fn apply_act(
             // The human OBJECT of the act: the first extracted path (reads,
             // writes, edits), else the shell command head, else empty —
             // honest-thin, never dumped raw JSON args.
-            let summary = obs
-                .output
-                .paths
-                .first()
-                .map(|p| p.display().to_string())
-                .or_else(|| {
-                    obs.call
-                        .input
-                        .get("command")
-                        .and_then(|c| c.as_str())
-                        .map(|c| c.chars().take(80).collect::<String>())
-                })
-                .unwrap_or_default();
+            let summary = act_object(obs);
             let update = crate::cognition::mind_events::PersonaActUpdate {
                 act_id: Uuid::new_v4(),
                 room_id,
@@ -543,19 +511,7 @@ pub async fn apply_act(
             lines.push(crate::cognition::presence_glyph::said_line(said.trim()));
         }
         lines.extend(acts.iter().map(|obs| {
-                let object = obs
-                    .output
-                    .paths
-                    .first()
-                    .map(|p| p.display().to_string())
-                    .or_else(|| {
-                        obs.call
-                            .input
-                            .get("command")
-                            .and_then(|c| c.as_str())
-                            .map(|c| c.chars().take(80).collect::<String>())
-                    })
-                    .unwrap_or_default();
+                let object = act_object(obs);
                 crate::cognition::presence_glyph::act_line(
                     &obs.call.name,
                     &object,
@@ -846,4 +802,16 @@ mod tests {
             "the wrong short name must NOT match"
         );
     }
+}
+
+/// The human object of an act, for the clients' act line and presence glyph: its first extracted
+/// path (a read, a write, an edit), else its shell command, else empty, never raw JSON arguments.
+/// Whole: how much of it a client shows is that client's rendering, not a cut made here.
+fn act_object(obs: &Observation) -> String {
+    obs.output
+        .paths
+        .first()
+        .map(|p| p.display().to_string())
+        .or_else(|| obs.call.input.get("command").and_then(|c| c.as_str()).map(str::to_owned))
+        .unwrap_or_default() // unwrap_or_default: an act with no path and no command has no object
 }

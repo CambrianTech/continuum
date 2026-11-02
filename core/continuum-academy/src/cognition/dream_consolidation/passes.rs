@@ -292,9 +292,7 @@ fn distiller_for(reflector: &PersonaReflector) -> SemanticDistiller {
     } else {
         reflector.model.clone()
     };
-    SemanticDistiller::new(reflector.adapter.clone())
-        .with_model(model)
-        .with_observation_budget(obs_budget_chars)
+    SemanticDistiller::new(reflector.adapter.clone(), obs_budget_chars).with_model(model)
 }
 
 /// Apply the model's supersession verdict: demote each replaced belief to the

@@ -148,15 +148,7 @@ fn a_viewer_absent_from_the_roster_marks_nobody() {
 async fn a_present_peer_reaches_the_citizens_grounding() {
     let source: ViewStateRagSource<RosterViewState> =
         ViewStateRagSource::per_room(roster_registry(&["Anwen", "Asha"]));
-    // The canonical kind owns the same small claim as its legacy reader;
-    // adapting it through ViewState must not buy a retrieval-sized share.
-    for window in [0, 256, 2048, 51_712] {
-        let claim = source.budget_claim(window, window);
-        assert_eq!(claim.max_tokens, window / 64);
-        assert_eq!(claim.min_tokens, 0);
-        assert_eq!(claim.floor_tokens, 0);
-    }
-    let delivery = source.deliver(&ctx(), 500, ResolutionPreference::Raw).await;
+    let delivery = source.deliver(&ctx()).await;
     let rendered = delivery
         .items
         .iter()
@@ -165,31 +157,25 @@ async fn a_present_peer_reaches_the_citizens_grounding() {
         .join("\n");
     assert!(rendered.contains("Anwen"), "peer missing: {rendered}");
     assert!(rendered.contains("Asha"), "peer missing: {rendered}");
-    assert!(delivery.tokens_used <= 500);
 }
 
-/// what this catches: the all-or-nothing failure `floor_tokens` exists to
-/// prevent. Under a budget that fits one member, the citizen must learn about
-/// ONE person — not receive an empty block, and not overrun the window.
+/// what this catches: a source that takes a size. Every member reaches the view as its
+/// own item keyed by peer id (stable across turns, so an unchanged member appends
+/// nothing); which level each shows at is the one allocation's choice, never the source's.
 #[tokio::test]
-async fn a_tight_budget_yields_fewer_units_never_a_chopped_one() {
+async fn every_member_is_delivered_keyed_by_peer_id() {
     let source: ViewStateRagSource<RosterViewState> =
         ViewStateRagSource::per_room(roster_registry(&["Anwen", "Asha", "Anon"]));
-    // 8 tokens, against ~4-token member lines: fits two, not three. (12 was
-    // the first guess and it fit ALL THREE exactly — the packing was right and
-    // the test's arithmetic was wrong, which is worth saying out loud because
-    // "make the failing assert pass" is how a real invariant gets weakened.)
-    let delivery = source.deliver(&ctx(), 8, ResolutionPreference::Raw).await;
-    assert!(!delivery.items.is_empty(), "a fitting unit must be delivered");
-    assert!(delivery.items.len() < 3, "budget 8 cannot fit all three");
+    let delivery = source.deliver(&ctx()).await;
+    assert_eq!(delivery.items.len(), 3, "no member is dropped: {:?}", delivery.items);
+    assert!(!delivery.truncated);
+    let keys: Vec<_> = delivery.items.iter().map(|i| i.key.clone()).collect();
+    for id in 1..=3u128 {
+        assert!(keys.contains(&Uuid::from_u128(id).to_string()), "{keys:?}");
+    }
     assert!(
-        delivery.tokens_used <= 8,
-        "the allocator's contract is tokens_used <= budget, got {}",
-        delivery.tokens_used
-    );
-    assert!(
-        delivery.truncated,
-        "undelivered members must be resumable, not silently dropped"
+        delivery.items.iter().all(|i| i.pointer.is_some()),
+        "a collapsed member stays reachable by name"
     );
     // Regression for card 84dee23e: live roster atoms must feed the actual
     // turn-author and wake consumers, including under partial admission.
@@ -220,19 +206,19 @@ async fn a_tight_budget_yields_fewer_units_never_a_chopped_one() {
     for name in admitted.values() {
         assert!(wake[0].content.contains(name));
     }
-    let transcript = RagDelivery {
-        source_id: "airc".into(),
-        items: (1..=3)
-            .map(|i| RagItem {
-                content: format!("distinct observation {i}"),
-                tokens: 4,
-                metadata: serde_json::json!({"peer_id": Uuid::from_u128(i).to_string()}),
+    let transcript = RagDelivery::of(
+        "airc",
+        (1..=3)
+            .map(|i| {
+                RagItem::whole(
+                    format!("event-{i}"),
+                    format!("distinct observation {i}"),
+                    serde_json::json!({"peer_id": Uuid::from_u128(i).to_string()}),
+                )
             })
             .collect(),
-        tokens_used: 12,
-        truncated: false,
-        resolution_used: ResolutionPreference::Raw,
-    };
+        false,
+    );
     let own = Uuid::from_u128(3).to_string();
     let turns = crate::cognition::conversation::workspace_turns::build_workspace_turns(
         &[delivery, transcript],
@@ -253,14 +239,13 @@ async fn a_tight_budget_yields_fewer_units_never_a_chopped_one() {
     }
 }
 
-/// what this catches: an unconditional cursor. If a fully-delivered source
-/// still handed back a cursor, the allocator would spend a later turn's budget
-/// resuming a source with nothing left to say.
+/// what this catches: a source flagging `truncated` when it holds nothing more. The
+/// flag now means only "more exists behind the expand command", never a size cut.
 #[tokio::test]
-async fn a_complete_delivery_offers_no_continuation() {
+async fn a_complete_delivery_is_not_truncated() {
     let source: ViewStateRagSource<RosterViewState> =
         ViewStateRagSource::per_room(roster_registry(&["Anwen"]));
-    let delivery = source.deliver(&ctx(), 500, ResolutionPreference::Raw).await;
+    let delivery = source.deliver(&ctx()).await;
     assert_eq!(delivery.items.len(), 1);
     assert!(!delivery.truncated);
 }
@@ -297,7 +282,7 @@ async fn the_roster_follows_the_turn_into_a_room_that_is_not_the_first_one() {
     let in_other =
         RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, Uuid::from_u128(OTHER));
     let delivery = source
-        .deliver(&in_other, 500, ResolutionPreference::Raw)
+        .deliver(&in_other)
         .await;
     let rendered = delivery
         .items
@@ -334,7 +319,7 @@ async fn reading_a_room_that_was_never_projected_does_not_create_one() {
         let elsewhere =
             RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, Uuid::from_u128(0xd0 + n));
         let delivery = source
-            .deliver(&elsewhere, 500, ResolutionPreference::Raw)
+            .deliver(&elsewhere)
             .await;
         assert!(delivery.items.is_empty(), "an unprojected room has no view");
     }
@@ -355,7 +340,7 @@ async fn a_roomless_turn_gets_no_roster_rather_than_an_arbitrary_rooms() {
     let source: ViewStateRagSource<RosterViewState> =
         ViewStateRagSource::per_room(roster_registry(&["Anwen"]));
     let roomless = RagContext::for_persona(Uuid::from_u128(0x9), 0);
-    let delivery = source.deliver(&roomless, 500, ResolutionPreference::Raw).await;
+    let delivery = source.deliver(&roomless).await;
     assert!(delivery.items.is_empty(), "{:?}", delivery.items);
     assert_eq!(delivery.tokens_used, 0);
     assert!(!delivery.truncated);
@@ -368,7 +353,7 @@ async fn a_roomless_turn_gets_no_roster_rather_than_an_arbitrary_rooms() {
 async fn an_empty_view_renders_no_block_rather_than_an_empty_header() {
     let source: ViewStateRagSource<RosterViewState> =
         ViewStateRagSource::per_room(Arc::new(PerRoomSubstrates::new()));
-    let delivery = source.deliver(&ctx(), 500, ResolutionPreference::Raw).await;
+    let delivery = source.deliver(&ctx()).await;
     assert!(delivery.items.is_empty());
     assert_eq!(delivery.tokens_used, 0);
     assert!(!delivery.truncated);

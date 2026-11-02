@@ -9,13 +9,15 @@ pub(super) async fn warm_gate(cycle: &crate::cognition::workspace::WorkspaceCycl
     let probe_delivery = crate::cognition::rag_budget::RagDelivery {
         source_id: "airc".to_string(),
         items: vec![crate::cognition::rag_budget::RagItem {
+            key: String::new(),
+            summary: None,
+            pointer: None,
             content: "ready check".to_string(),
             tokens: 0,
             metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
         }],
         tokens_used: 0,
         truncated: false,
-        resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
     };
     let mut warm = false;
     for _ in 0..15u32 {

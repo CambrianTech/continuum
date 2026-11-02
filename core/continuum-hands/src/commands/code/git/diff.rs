@@ -40,6 +40,7 @@ crate::action_command! {
     access: AiSafe,
     native: true,
     aliases: &["git_diff"],
+    effect: Observes,
     params: GitDiffParams,
     output: GitDiffResult,
     run(this, ctx, p) => {

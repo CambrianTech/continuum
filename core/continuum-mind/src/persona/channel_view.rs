@@ -37,9 +37,7 @@ use uuid::Uuid;
 /// One `CoherentInput` per channel-with-work per service cycle, per
 /// `[[cognition-batches-per-channel-adapter]]`. Production callers go
 /// through `evaluator::analyze_burst` (task #248) which takes a single
-/// `CoherentInput` and fires the gate ONCE per burst; the service-loop
-/// integration that drives this from
-/// `service_module::service_burst_for` is task #249.
+/// `CoherentInput` and fires the gate ONCE per burst.
 ///
 /// Per `[[strong-typing-across-boundaries]]`: each variant carries the
 /// per-domain shape cognition needs. Adding a new channel adds a new

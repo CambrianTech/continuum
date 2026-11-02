@@ -33,3 +33,12 @@ fn move_write_through(from: &Path, to: &Path, flags: u32) -> io::Result<()> {
     }
     Ok(())
 }
+
+/// A directory cannot be opened as a file to sync, so this flushes the placed file. That is the
+/// contract here, and no more: a handle-relative rename has no `MOVEFILE_WRITE_THROUGH`, and that
+/// flushing the file also commits the rename's directory entry across power loss is NOT verified
+/// (no receipt exists; Codex on #5651). The path API (`replace`, `publish_new`) keeps the
+/// write-through move. Windows CI runs these fixtures; it cannot cut power.
+pub(super) fn sync_placed(dir: &cap_std::fs::Dir, name: &Path) -> io::Result<()> {
+    dir.open_with(name, cap_std::fs::OpenOptions::new().read(true).write(true))?.sync_all()
+}

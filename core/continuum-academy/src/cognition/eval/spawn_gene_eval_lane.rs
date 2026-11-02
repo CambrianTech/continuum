@@ -366,7 +366,7 @@ impl PrivateTeacherLane {
         &self,
         tasks: &[EvalTask],
         temperature: f32,
-        max_fix_iters: u32,
+        max_fix_iters: Option<u32>,
     ) -> Result<crate::genome::teach::RemediationCorpus, CommandError> {
         let adapter = self
             .adapter
@@ -647,10 +647,22 @@ pub(super) fn write_eval_run_marker(root: &std::path::Path, run_id: &str) {
     });
     // Marker write is best-effort: the run must not die because its guard
     // breadcrumb could not be written; the reboot guard just loses this run.
-    if let Err(e) = std::fs::write(
-        root.join(EVAL_RUN_MARKER),
-        marker.to_string(), // disk marker read by the CLI process — a true process boundary
-    ) {
+    // Written through the eval-roots class the run's root lives in (a disk marker read by
+    // the CLI process — a true process boundary).
+    let written = (|| -> std::io::Result<()> {
+        use continuum_kernel::system_resources::disk_reporters::tracked_dir;
+        let class = tracked_dir("eval-roots").ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "the eval-roots disk class is not registered")
+        })?;
+        let within = root.strip_prefix(class.path()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} is not under the eval-roots class {}", root.display(), class.path().display()),
+            )
+        })?;
+        class.writer().replace(&within.join(EVAL_RUN_MARKER), marker.to_string().as_bytes())
+    })();
+    if let Err(e) = written {
         tracing::warn!(error = %e, "eval run marker not written — reboot guard cannot see this run");
     }
 }

@@ -56,9 +56,6 @@ impl LlmDeliberationFaculty {
             .filter(|c| c.decision.is_none() && c.trailing)
             .map(|c| estimate_guard_tokens(&c.content))
             .sum();
-        let affordable_tokens = super::super::super::tool_surface::over_affordable_receipt(
-            &self.persona_name, surface_reason, tool_tokens, framing_tokens, context_window,
-        );
         if budget_tokens == 0 {
             // Received-vs-rendered receipt even on the zero-budget path — a turn
             // whose entire context vanished must say so, not render silently empty
@@ -78,7 +75,6 @@ impl LlmDeliberationFaculty {
                 tool_tokens,
                 registry_tool_tokens = self.describe_tool_tokens(),
                 surface_reason = ?surface_reason,
-                affordable_tokens = ?affordable_tokens,
                 received = ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing).count(),
                 rendered = 0usize,
                 dropped = %ws
@@ -192,10 +188,8 @@ impl LlmDeliberationFaculty {
             // Actual selected schemas, not the full registry's withheld cost.
             tool_tokens,
             registry_tool_tokens = self.describe_tool_tokens(),
-            // Which arm selected that surface, and the prompt the lane affords: the two
-            // numbers a 10k-token surface on a 2.8k-affordable lane is read against.
+            // Which whole tool level the shared allocation selected.
             surface_reason = ?surface_reason,
-            affordable_tokens = ?affordable_tokens,
             // The pool the budget is subtracted FROM, read from the local that
             // actually holds it. First written as
             // `framing + conversation + budget` — a RECONSTRUCTION from the

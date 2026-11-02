@@ -45,7 +45,7 @@ pub async fn synthesize_remediation(
     tasks: &[EvalTask],
     teacher_model: &str,
     temperature: f32,
-    max_fix_iters: u32,
+    max_fix_iters: Option<u32>,
 ) -> Result<RemediationCorpus, CommandError> {
     synthesize_remediation_with_lane(
         tasks,
@@ -62,7 +62,7 @@ pub(super) async fn synthesize_remediation_with_lane(
     tasks: &[EvalTask],
     teacher_model: &str,
     temperature: f32,
-    max_fix_iters: u32,
+    max_fix_iters: Option<u32>,
     lane: impl std::future::Future<Output = Result<EvalLane, CommandError>>,
 ) -> Result<RemediationCorpus, CommandError> {
     // Retain the owner for the entire batch, including grading between generations.

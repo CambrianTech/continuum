@@ -116,6 +116,11 @@ pub trait CommandSpec {
     /// by the command in its own file so it stays portable; aggregated into one
     /// generated inverse index. Defaults to none.
     const ALIASES: &'static [&'static str] = &[];
+    /// What this command's calls do to the world (MIND-CONTEXT invariant 4): declared HERE,
+    /// by the command in its own file, never inferred from its name or output. Defaults to
+    /// `Undeclared`, which authorizes nothing: such a call is never a repeat and never taken as
+    /// observing, and the replay validator counts it.
+    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Undeclared;
     /// The handler's ACTUAL wire convention — decides whether the generated
     /// surface is enveloped or bare. MUST match what the handler really does
     /// (a mismatch is a type that lies about the wire).
@@ -252,6 +257,9 @@ pub struct CommandDescriptor {
     /// (`ai::tool_dialect`) that maps a model's reflex name back to this
     /// command. Empty for most commands.
     pub aliases: &'static [&'static str],
+    /// What its calls do to the world (from [`CommandSpec::EFFECT`]): the effect an executed
+    /// call carries into her act, read from the command that actually ran.
+    pub effect: continuum_base::tool_effect::ToolEffect,
     pub params: TypeRef,
     /// The params' JSON Schema (from [`CommandSpec::params_schema`]) — the
     /// canonical input contract every SDK/interface adapts from. `Null` when the
@@ -298,6 +306,7 @@ impl CommandDescriptor {
             wire: C::WIRE,
             native: C::NATIVE,
             aliases: C::ALIASES,
+            effect: C::EFFECT,
             params,
             params_schema: C::params_schema(),
             result,

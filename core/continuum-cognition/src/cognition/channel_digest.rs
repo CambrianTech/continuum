@@ -408,8 +408,8 @@ mod tests {
             "first sight splits one page back — the seed the caller then persists"
         );
 
-        // Now the DELIVERY step marks what she was shown as read — what
-        // `AircRagSource::deliver` does with the packed read-through lamport. The
+        // Now her read receipt marks what a sent prompt showed her as read — what
+        // `AircRagSource::mark_read` does after the deliberation faculty sends. The
         // seed bounds the page; the advance consumes it. Both halves are needed,
         // and together the room goes QUIET with nothing new. Before the fix, the
         // whole transcript came back as unread on every single turn forever.

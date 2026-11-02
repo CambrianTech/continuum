@@ -16,7 +16,7 @@ path = "src/bin/bench.rs"
 [build-dependencies]
 cmake = "0.1"
 bindgen = "0.70"
-sha2 = "0.10" # streamed producer-output identity shared with cache reclamation
+sha2 = { workspace = true } # streamed producer-output identity shared with cache reclamation
 
 [features]
 default = []

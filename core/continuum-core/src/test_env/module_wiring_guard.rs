@@ -95,13 +95,6 @@ const UNWIRED: &[Unwired] = &[
               MemoryModule. Registering it today would add a tick that \
               does nothing.",
     },
-    Unwired {
-        module: "PersonaServiceModule",
-        why: "shadowed: claims command_prefixes \"persona/\", but \
-              PersonaAllocatorModule claims the SAME prefix and IS \
-              registered (ipc/mod.rs). The surface is served; this is \
-              dead code, not a live break.",
-    },
     // ProbeStreamModule's DEFECT entry (#362) lived here for exactly one
     // commit — the fix registers it in ipc/mod.rs against the router
     // installed by install_probe_tracing, and this audit's staleness

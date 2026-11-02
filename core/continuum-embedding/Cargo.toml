@@ -10,9 +10,9 @@ continuum-engine = { path = "../continuum-engine" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-schemars = { version = "0.8", features = ["uuid1"] }
+schemars = { workspace = true }
 async-trait.workspace = true
-inventory = "0.3"
+inventory = { workspace = true }
 ts-rs.workspace = true
 
 [dev-dependencies]

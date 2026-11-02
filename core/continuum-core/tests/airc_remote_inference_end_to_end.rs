@@ -5,8 +5,7 @@
 //! ## What this test adds beyond PR #1560's wire test
 //!
 //! `tests/airc_remote_inference_roundtrip.rs` (PR #1560) proves the
-//! wire SHAPE is correct: substrate's `parse_envelope` + `send_reply`
-//! accept and produce the right envelope, headers, body. But it
+//! wire SHAPE is correct: the substrate's command receiver accepts and produces the right envelope, headers, body. But it
 //! HAND-CANS the response — it never actually runs an adapter. That
 //! left a load-bearing gap: the substrate's `CommandExecutor` →
 //! `ServiceModule` → `AIProviderAdapter` chain is untested across
@@ -15,15 +14,15 @@
 //! This test closes that gap. peer_a runs:
 //!
 //! ```text
-//!   CommandRequestHandler::on_envelope
-//!     -> parse_envelope                      [REAL]
-//!     -> process_request_via(&executor)      [REAL]
+//!   CommandRequestHandler::on_addressed (from the addressed inbox)
+//!     -> ingress contract + decode           [REAL]
+//!     -> process_request(&executor)          [REAL]
 //!        -> CommandExecutor::execute_with_caller
 //!           -> AuthPolicy::gate (AllowAll)   [REAL]
 //!           -> TestInferenceModule::handle_command
 //!              -> HeuristicInferenceAdapter::generate_text  [REAL]
 //!        -> AircCommandResponse::ok(result)
-//!     -> send_reply                          [REAL]
+//!     -> send_reply (bound to the request)  [REAL]
 //! ```
 //!
 //! No hand-canned responses. The heuristic adapter's signature output
@@ -84,7 +83,6 @@ use continuum_core::runtime::command_executor::CommandExecutor;
 use continuum_core::runtime::{
     CommandResult, ModuleConfig, ModulePriority, ModuleRegistry, ServiceModule,
 };
-use futures::stream::StreamExt;
 
 /// A minimal test-only ServiceModule that routes `ai/generate` to an
 /// injected `AIProviderAdapter`. Mirrors the shape of
@@ -211,10 +209,9 @@ fn build_handler(
     CommandRequestHandler::new(peer_a, executor)
 }
 
-/// Generic substrate-side responder. Subscribes to peer_a's inbound
-/// stream and dispatches every command-request-shaped envelope
-/// through `handler.on_envelope()` — the SAME code path a productized
-/// peer-side adapter registry would call.
+/// Substrate-side responder: reads peer_a's addressed inbox and hands the first
+/// command to `handler.on_addressed()`, the SAME entry point the production pump
+/// calls (ingress contract -> decode -> dispatch -> reply bound to the request).
 ///
 /// Returns the JoinHandle so the test can await task completion.
 async fn spawn_substrate_responder(
@@ -222,46 +219,16 @@ async fn spawn_substrate_responder(
     peer_a: Arc<airc_lib::Airc>,
     ready: Arc<tokio::sync::Notify>,
 ) -> tokio::task::JoinHandle<()> {
-    use airc_lib::adapter::ConsumerAdapter;
+    use continuum_core::routing::addressed_inbox::AddressedHandler;
 
-    let self_id = peer_a.peer_id();
-    let body_hint_filter = handler.body_hint();
     tokio::spawn(async move {
-        let mut stream = peer_a.subscribe().await.expect("peer_a subscribe");
+        let mut inbox = peer_a
+            .addressed_inbox(tokio::time::Instant::now() + airc_ipc::client::DEFAULT_RPC_TIMEOUT)
+            .await
+            .expect("peer_a addressed inbox");
         ready.notify_one();
-        while let Some(event) = stream.next().await {
-            let event = match event {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if event.peer_id == self_id {
-                continue;
-            }
-            let hint = match event
-                .headers
-                .get(continuum_airc_protocol::HEADER_CONTINUUM_BODY_HINT)
-            {
-                Some(h) => h,
-                None => continue,
-            };
-            if hint != body_hint_filter {
-                continue;
-            }
-            // SAME entry point a productized airc adapter-registry
-            // dispatch loop would call. The handler internally goes
-            // parse_envelope -> process_request -> send_reply.
-            //
-            // airc-lib's `subscribe()` yields `Arc<TranscriptEvent>`;
-            // `ConsumerAdapter::on_envelope` takes the owned value, so
-            // clone the inner. Production dispatch loops would do the
-            // same (the Arc only exists to fan-out to multiple
-            // subscribers).
-            handler
-                .on_envelope((*event).clone())
-                .await
-                .expect("substrate handler on_envelope");
-            return;
-        }
+        let frame = inbox.next().await.expect("addressed request arrives");
+        handler.on_addressed(frame).await;
     })
 }
 

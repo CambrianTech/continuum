@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use airc_lib::{AgentAvailabilityState, RoomMember};
+use airc_lib::AgentAvailabilityState;
 use continuum_positron::{Provenance, RosterSlotView, SenderKind};
 use uuid::Uuid;
 
@@ -42,83 +42,7 @@ fn availability_label(state: AgentAvailabilityState) -> &'static str {
     }
 }
 
-/// THE `RoomMember` → neutral [`RosterSlotView`] projection — one place both
-/// rails build a roster slot from an airc member, so the WS widget and the
-/// persona's grounding can never drop different fields (the divergence
-/// #8/#13 removes: Rail A used to keep `availability`/`last_seen_ms` while
-/// Rail B silently dropped them). Pure and total — no self-exclusion, no
-/// budget, no ordering: those are per-consumer policies the caller applies
-/// to the projected slots, not part of the shared projection.
-///
-/// The WS emitter (`ipc::positron_presence`) and the persona grounding source
-/// (`persona::room_roster_source`) call the identical function.
-pub(crate) fn roster_slot_from_member(member: &RoomMember) -> RosterSlotView {
-    // Coarse styling hint from the free-form runtime class; the full string
-    // is preserved verbatim in `provenance` (never string-match on runtime
-    // to pick behavior — that is task #70's smell).
-    let kind = SenderKind::from_runtime(&member.runtime);
-    // airc resolved the name; a present-but-unnamed peer gets the SAME
-    // provisional short-peer label the consumer uses when a card has not
-    // folded in — one provisional-label decision, never a silently-invisible
-    // citizen and never a second fallback form.
-    let display_name = member
-        .display_name
-        .clone()
-        .unwrap_or_else(|| provisional_sender_name(member.peer_id.as_uuid()));
-    RosterSlotView {
-        member_id: member.peer_id.as_uuid(),
-        display_name,
-        kind,
-        // airc's `RoomMember` carries no cross-system badge map (the richer
-        // `room_roster_cards` path would fill this); empty is the honest "no
-        // badges known", not a fabricated one.
-        integrations: BTreeMap::new(),
-        // The accountability truth airc surfaces today, carried verbatim.
-        // Trust tier + verification join here later (task #38), no wire break.
-        provenance: Provenance {
-            runtime: member.runtime.clone(),
-        },
-        // airc excludes `Leaving` peers from the roster, so every member it
-        // returns is present → active.
-        active: true,
-        // Neutral presence facts carried straight through — the fields Rail B
-        // used to drop. `availability` is airc's stable label (or `None` when
-        // unreported); `last_seen_ms` is the raw recency signal.
-        availability: member
-            .availability
-            .map(availability_label)
-            .map(str::to_owned),
-        last_seen_ms: member.last_seen_ms,
-        // The thin `room_roster` path carries no identity card — these fill
-        // only on the cards path ([`roster_slot_from_card`], #262). Honest
-        // absent, never fabricated.
-        pronouns: None,
-        role_label: None,
-        bio: None,
-        // airc's `RoomMember` carries no vitals — a continuum persona's live
-        // `PersonaState` (energy/attention/compute) arrives on its OWN
-        // `persona:vitals` event and is folded into the slot by id at `store`
-        // time (see [`PersonaVitalsUpdate`] / [`ChatProjection::apply_vitals`]),
-        // never through this presence path. Empty here = no vitals reported,
-        // never fabricated bars ([[fallbacks-are-illegal-fail-loud]]).
-        vitals: BTreeMap::new(),
-        // Same design B as vitals: an AI member's loadout (`model · size · ctx`)
-        // arrives on its OWN `persona:vitals` event and is folded in by id at
-        // `store` time. `None` here = no bound model reported (a human, an
-        // unresolved agent) — honest-absent, never a fabricated model.
-        loadout: None,
-        // The avatar IMAGE is a node-local disk fact the presence EMITTER
-        // enriches (it owns the store scan); this shared projection stays
-        // pure — no I/O here, absent by default.
-        avatar_url: None,
-        // Gene names arrive on the persona's OWN `persona:vitals` radiate and
-        // are folded in at `store` time, same as vitals/loadout — never
-        // through this presence path. Empty = none reported.
-        genes: Vec::new(),
-    }
-}
-
-/// The CARDS-flavored sibling of [`roster_slot_from_member`] (#262): projects
+/// The CARDS-flavored sibling of the member projection the legacy roster source used (#262): projects
 /// an airc [`airc_lib::RoomMemberCard`] — presence + the FULL published
 /// identity card — into the same neutral slot. This is what makes a citizen's
 /// pronouns / role / bio / integrations reach every rendered roster instead
@@ -156,7 +80,7 @@ pub fn roster_slot_from_card(member: &airc_lib::RoomMemberCard) -> RosterSlotVie
         bio: identity.and_then(|i| non_empty(&i.bio)),
         // Vitals / loadout / avatar / genes fold in by id downstream, same
         // as the member path — see the field notes on
-        // [`roster_slot_from_member`].
+        // the member projection the legacy roster source used.
         vitals: BTreeMap::new(),
         loadout: None,
         avatar_url: None,

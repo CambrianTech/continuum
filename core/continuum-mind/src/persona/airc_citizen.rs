@@ -234,24 +234,6 @@ pub trait AircCitizen:
     async fn subscribed_rooms(&self) -> Result<Vec<Uuid>, AircError> {
         Ok(Vec::new())
     }
-
-    /// The cards on `room`'s board that are takeable RIGHT NOW (Open, or held on a
-    /// lapsed lease) per the ONE claimability decision
-    /// ([`crate::cognition::card_holder::claimable_now`]). The pull reads THIS, not the
-    /// round tracker: the tracker never records a claim, so without board truth every
-    /// idle resident would retry the first already-claimed card forever. Default is
-    /// empty (nothing offered); the production runtime folds the room's board.
-    async fn claimable_cards_in(&self, _room: Uuid, _now_ms: u64) -> Result<Vec<Uuid>, AircError> {
-        Ok(Vec::new())
-    }
-
-    /// How many cards on `room`'s board are IN FLIGHT — live holds in a holder's
-    /// column, per the ONE predicate ([`crate::cognition::card_holder::in_flight_now`]).
-    /// The WIP = lanes gate counts this, never a tracker arithmetic. Fixture default:
-    /// nothing in flight; the production runtime folds the room's board.
-    async fn in_flight_cards_in(&self, _room: Uuid, _now_ms: u64) -> Result<usize, AircError> {
-        Ok(0)
-    }
 }
 
 /// Where a reply for `room_id` should be published — the ONE place
@@ -340,9 +322,6 @@ pub struct StubAircCitizen {
     peer_id: Uuid,
     /// Rooms the stub reports as resident in (see [`AircCitizen::subscribed_rooms`]).
     rooms: Vec<Uuid>,
-    /// Cards the stub reports as claimable on ANY room's board
-    /// (see [`AircCitizen::claimable_cards_in`]).
-    claimable: Vec<Uuid>,
     /// Cards this stub reports as its active claims — empty by default. A test
     /// that exercises the held-work path seeds one so `active_claims()` returns
     /// held work (the held-work gate fires only on a Claimed/InProgress card).
@@ -366,7 +345,6 @@ impl StubAircCitizen {
         Self {
             peer_id,
             rooms: Vec::new(),
-            claimable: Vec::new(),
             held: Vec::new(),
             boards: std::collections::HashMap::new(),
             advanced: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -570,10 +548,6 @@ impl AircCitizen for StubAircCitizen {
 
     async fn subscribed_rooms(&self) -> Result<Vec<Uuid>, AircError> {
         Ok(self.rooms.clone())
-    }
-
-    async fn claimable_cards_in(&self, _room: Uuid, _now_ms: u64) -> Result<Vec<Uuid>, AircError> {
-        Ok(self.claimable.clone())
     }
 }
 

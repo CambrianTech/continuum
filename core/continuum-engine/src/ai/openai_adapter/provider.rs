@@ -297,17 +297,13 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     }
 
     /// Convenience drain over [`generate_stream`]: when a caller wants the whole
-    /// answer (no live tokens), it streams into a throwaway channel and returns the
-    /// assembled response. The channel is unbounded so token decode never blocks on
-    /// a reader; the receiver is held to the end of the call and dropped (the
-    /// buffered chunks are cheap and discarded). Same SSE path, same liveness
-    /// watchdog — just without surfacing the tokens.
+    /// answer (no live tokens), the shared drain consumes chunks as they arrive
+    /// and returns the assembled response. Same SSE path and liveness watchdog.
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<GenerationChunk>();
-        self.generate_stream(request, tx).await
+        crate::ai::stream_sinks::drain_generation(|sink| self.generate_stream(request, sink)).await
     }
 
     /// Streaming-first generation: each token reaches `sink` the INSTANT the

@@ -25,7 +25,11 @@ pub async fn prepare_writer_fixture() {
     TEST_OWNERSHIP
         .get_or_init(|| async {
             let (adapter, directory) = crate::orm::store::fresh_adapter().await;
-            let registry = Registry::new(Vec::new()).await;
+            // The real class layout, rooted in this fixture's own temporary home, so a test of any
+            // crate resolves `ClassWriter::of` / `tracked_dir` exactly as boot would, never a
+            // per-crate fallback directory; boot's set-once TRACKED_DIRS stays untouched.
+            let home = directory.path();
+            let registry = Registry::new(super::standard_tracked_dirs(home, &home.join(".continuum"))).await;
             registry
                 .open_records(adapter)
                 .await
@@ -40,7 +44,7 @@ pub async fn prepare_writer_fixture() {
 /// filesystem bound ([`crate::runtime::daemon::LAUNCH_PATH_FS_BOUND`], measured there).
 pub(crate) const ADMISSION_BOUND: std::time::Duration = crate::runtime::daemon::LAUNCH_PATH_FS_BOUND;
 
-fn writer_registry() -> Result<&'static Registry, String> {
+pub(super) fn writer_registry() -> Result<&'static Registry, String> {
     if let Some(registry) = TRACKED_DIRS.get() {
         return Ok(registry);
     }

@@ -26,7 +26,7 @@ Access levels on what survives: **AiSafe** (persona may call — reads, composit
 These are the cross-cutting calls that change *what gets built*, not just *how*. Detail per command is in the cluster tables below.
 
 ### 1. `cognition/*` is not a command namespace — it is the substrate's internals leaking onto the wire
-Of the 50 `cognition/*` arms, ~30 exist **only** because TypeScript used to drive the cognitive cycle step-by-step over IPC (`calculate-priority` → `fast-path-decision` → `should-respond` → `generate-response` → `validate-response` → …). Under the headless Rust `WorkspaceCycle` the kernel runs these in-process; no persona, `uu`, or grid peer should call them individually. **Verdict: the real entry points stay AiSafe (`cognition/respond`, `persona/turn-execute`, `inbox/drain-frame`); the per-step gates become `Internal`; the heuristic helpers are DELETED (finding #2).** This single finding removes ~30 commands from the persona tool surface — which is the *correct* shape, not a regression. "Available by default" never meant "expose the cycle's guts."
+Of the 50 `cognition/*` arms, ~30 exist **only** because TypeScript used to drive the cognitive cycle step-by-step over IPC (`calculate-priority` → `fast-path-decision` → `should-respond` → `generate-response` → `validate-response` → …). Under the headless Rust `WorkspaceCycle` the kernel runs these in-process; no persona, `uu`, or grid peer should call them individually. **Verdict: the real entry points stay AiSafe (`persona/turn-execute`, `inbox/drain-frame`; `cognition/respond` was deleted with the chat-era respond path, #5656); the per-step gates become `Internal`; the heuristic helpers are DELETED (finding #2).** This single finding removes ~30 commands from the persona tool surface — which is the *correct* shape, not a regression. "Available by default" never meant "expose the cycle's guts."
 
 ### 2. The heuristic helpers are already condemned by standing doctrine — DELETE, don't migrate
 `cognition/calculate-priority`, `cognition/fast-path-decision`, `cognition/classify-domain` (keyword table!), `cognition/text-similarity`, `cognition/check-semantic-loop`, `cognition/check-mentions`, `cognition/register-domain-keywords`, `cognition/sync-domain-classifier` are exactly the *"hardcoded heuristics to steer cognition"* the memory `[[no-hardcoded-heuristics-to-steer-cognition]]` and task **#9** (*"delete calculate_priority + fast_path caste/mention heuristics"*) say to kill. Migrating them would launder dead code onto the new registry. **Verdict: DELETE (8 commands).** Judgment they encode belongs to the genome/judges, not a `match` arm.
@@ -61,7 +61,6 @@ Of the 50 `cognition/*` arms, ~30 exist **only** because TypeScript used to driv
 ### cognition.rs (50) → ~12 KEEP/INTERNAL, ~8 DELETE, ~9 MOVE→genome
 | Command | Verdict | Note |
 |---|---|---|
-| cognition/respond | KEEP (AiSafe) | hot path |
 | persona/turn-execute, persona/drain-turn-frame | KEEP (AiSafe) | Lane D full-turn entry |
 | inbox/drain-frame | KEEP (AiSafe) | bounded work frame |
 | inbox/create | MERGE→create-engine (keep `inbox/create` name) | finding #6 |
@@ -97,11 +96,11 @@ Of the 50 `cognition/*` arms, ~30 exist **only** because TypeScript used to driv
 - **KEEP (already migrated):** code/read,write,edit,list,exists,glob,tree,search; code/git/*; code/cargo/check,test; code/shell,shell-poll,shell-kill.
 - **Finding #4 reconcile:** code/shell-create,execute,cd,status,watch,sentinel,destroy (legacy) → fold needed verbs onto the handle-based family, DELETE spoofable duplicates.
 - **KEEP:** code/create-workspace, delete, diff, undo, history (migrate; identity → ctx.caller).
-- **RETYPE:** search/execute, search/vector, search/list, search/params (untyped today). **Access** AiSafe.
+- **RETYPE:** search/execute, search/list, search/params (untyped today). **Access** AiSafe.
 - **KEEP:** vdd/report, vdd/score (Privileged — eval infra).
 
 ### ai/inference cluster (18) → KEEP (clean), DELETE the TS fallthrough
-- **KEEP (typed):** ai/generate (AiSafe), ai/providers/list, ai/model-info, ai/providers/health, ai/models/list, ai/lora/list, ai/lora/capabilities; inference/capacity; embedding/similarity,similarity-matrix,top-k,cluster; models/discover,capabilities; serving/plan,status.
+- **KEEP (typed):** ai/generate (AiSafe), ai/providers/list, ai/model-info, ai/providers/health, ai/models/list, ai/lora/list, ai/lora/capabilities; embedding/similar,groups; models/discover,capabilities; serving/plan,status.
 - **DELETE:** `ai/*` TS fallthrough (finding #5, Wave Z).
 - inference-coordinator: no commands (bootstrap) — nothing to migrate.
 

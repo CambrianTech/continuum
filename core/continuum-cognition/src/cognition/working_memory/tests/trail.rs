@@ -11,9 +11,7 @@ use super::*;
 #[test]
 fn recent_results_survive_subsequent_acts_and_stay_bounded() {
     let wm = WorkingMemory::new(8);
-    // A known window: the receipt-time collapse folds nothing against an unknown one
-    // (the act→observe seam pins the served window before any receipt in production).
-    wm.set_served_window(16_384);
+    // A known window, as the act→observe seam pins it before any receipt in production.
     record_saved(&wm, "[action] code/run(sol.rs) error[E0601]: `main` function not found");
     record_saved(&wm, "[action] code/list() sol.rs sol2.rs");
     record_saved(&wm, "[action] code/tree() workspace/");
@@ -22,17 +20,14 @@ fn recent_results_survive_subsequent_acts_and_stay_bounded() {
         block.contains("E0601"),
         "the compile error must survive later trivial acts: {block}"
     );
-    // PREMISE (2026-10-16, the third premise): the share is enforced at EVERY receipt,
-    // in a BURST with hysteresis. 2026-08-24 moved it to settlement because per-act
-    // eviction rotated the head on every act; a coding turn then held 100+ results
-    // between settlements (the M5: 1.09M chars persisted for one mind). So: flooding
-    // past the share collapses the OLDEST to pointers once, down to half the share…
-    let cap = wm.budget().recent_results_chars();
-    // Whole results an eighth of the share each, so several fit and the collapse is visible.
-    let unit = (cap / 8).max(1);
+    // A shed (only the memory owner's, under pressure) collapses the OLDEST to pointers,
+    // and every result still shown is shown whole.
+    let unit = BODY;
     for _ in 0..8 {
         record_saved(&wm, &"x".repeat(unit));
     }
+    let pinned = line_bytes(&wm);
+    shed(&wm, 4 * unit + pinned);
     let messages = wm.recent_results_messages();
     let kept: Vec<&String> = messages.iter().filter(|m| m.starts_with("[result ")).collect();
     assert!(!kept.is_empty(), "the newest results stay");
@@ -43,18 +38,11 @@ fn recent_results_survive_subsequent_acts_and_stay_bounded() {
     assert!(messages.iter().any(|m| m.contains("collapsed")), "the rest are pointers");
     assert!(
         !messages.join("\n").contains("E0601"),
-        "the oldest collapse to pointers once the share is exceeded — bounded, not immortal"
+        "the oldest collapse to pointers once shed — bounded, not immortal"
     );
-    // …in ONE CHUNK: the collapse lands at half the cap so the surviving head
-    // stays byte-identical across the next receipts and settles (the KV divergence
-    // audit, 2026-09-13: the oldest surviving result was the first differing block in
-    // 28 of 55 consecutive turns under one-entry-per-settle eviction).
-    let total: usize = kept.len() * unit;
-    assert!(
-        total <= cap / 2 + unit,
-        "an over-cap collapse lands at half the cap, not at the cap: {total} > {}",
-        cap / 2
-    );
+    assert!(wm.resident_result_bytes() <= (4 * unit + pinned) as u64, "down to the allocation: {}", wm.resident_result_bytes());
+    // Between sheds the ring only appends: receipts and settles move nothing, so the head
+    // stays byte-identical (the KV divergence audit, 2026-09-13).
     let head_after_collapse = wm.recent_results_messages().get(1).cloned();
     record_saved(&wm, "[action] code/read(a.rs) fine");
     wm.record_settlement("one", None);
@@ -63,22 +51,21 @@ fn recent_results_survive_subsequent_acts_and_stay_bounded() {
     assert_eq!(
         wm.recent_results_messages().get(1).cloned(),
         head_after_collapse,
-        "the ledger head is byte-stable across receipts and settles that fit under the cap"
+        "the ledger head is byte-stable across receipts and settles between sheds"
     );
 }
 
-// what this catches: e731576c — actual settlement records must reach the
-// memory contribution even when a one-word correction resembles an older
-// answer, or a later answer repeats the original state.
-#[tokio::test]
-async fn settlement_trail_preserves_corrections_and_later_repeated_reports() {
+// what this catches: e731576c — actual settlement records must be kept, in order and whole,
+// even when a one-word correction resembles an older answer, or a later answer repeats the
+// original state.
+#[test]
+fn settlement_trail_preserves_corrections_and_later_repeated_reports() {
     let passed = "I verified the candidate build and all regression tests passed \
                   after checking the shared workspace changes against the review requirements.";
     let failed = "I verified the candidate build and all regression tests failed \
                   after checking the shared workspace changes against the review requirements.";
     assert!(super::super::super::deliberation_budget::near_identical_substantial(passed, failed));
-    let wm = Arc::new(WorkingMemory::new(8));
-    wm.set_served_window(32_768);
+    let wm = WorkingMemory::new(8);
     wm.record_settlement(passed, None);
     wm.record_receipt("code/read found the regression");
     wm.record_settlement(failed, None);
@@ -93,27 +80,10 @@ async fn settlement_trail_preserves_corrections_and_later_repeated_reports() {
             &WmKind::Settlement
         ]
     );
-    assert!(entries
-        .iter()
-        .all(|entry| entry.text.chars().count() <= wm.budget().trail_head_chars()));
-    let expected: Vec<_> = entries
-        .iter()
-        .map(|entry| format!("- {}", entry.text))
-        .collect();
-    let contribution = WorkingMemoryFaculty::new(wm)
-        .contribute(&Workspace::new("What changed in the latest review?"))
-        .await
-        .expect("test: recorded working memory contributes");
-    let actual: Vec<_> = contribution
-        .content
-        .lines()
-        .filter(|line| line.starts_with("- "))
-        .collect();
-    assert_eq!(
-        actual, expected,
-        "the rendered trail must preserve every recorded entry in order"
-    );
-    assert!(!contribution.content.contains("not re-shown"));
+    let texts: Vec<&str> = entries.iter().map(|entry| entry.text.as_str()).collect();
+    assert!(texts[0].ends_with(passed), "the first report, whole: {}", texts[0]);
+    assert!(texts[2].ends_with(failed), "the correction, whole, though it resembles the first: {}", texts[2]);
+    assert!(texts[3].ends_with(passed), "the later repeat, kept as its own entry: {}", texts[3]);
 }
 
 // what this catches: loop-awareness — `note_action_fingerprint` counts repeats of the
@@ -293,17 +263,13 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         action_statements: Vec::new(),
         last_action: None,
         action_fps: Vec::new(),
+        recent_results: Vec::new(),
         next_action_seq: 1,
         saved_at_ms: 0, // pre-field snapshot: no save time guessed
         interrupted_dispatches: Vec::new(),
         build_sha: String::new(), // pre-field snapshot: no rebuild guessed either
         acting_card: None,
-        receipt_heads: Vec::new(),
-        receipt_head_rooms: Vec::new(), // pre-archive snapshot: ledger's counter-only arm covers it
-        recent_results: Vec::new(),
-        result_scopes: Default::default(),
         handoff: None,
-        evicted_pointers: Vec::new(),
         actions: Vec::new(),
         context_view: None,
         receipt_children: Default::default(),
@@ -323,3 +289,4 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         "no fabricated save age on legacy snapshots: {q:?}"
     );
 }
+

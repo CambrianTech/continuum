@@ -3,7 +3,7 @@
 //! Shells out to `git` CLI for operations. This keeps the implementation
 //! simple and avoids pulling in libgit2 as a dependency.
 //!
-//! Every git child runs OWNED (card bfa87dd5): through `lane_process::run_owned_with_input`, so a
+//! Every git child runs OWNED (card bfa87dd5): through `continuum_process::run_owned_with_input`, so a
 //! cancelled command or an expired deadline ends the git and everything it started, its output
 //! is read whole or named as not whole, and it holds the hands' admission until it has ended.
 //! A caller with a deadline runs its git calls [`within`] it: ONE absolute deadline across all
@@ -538,12 +538,12 @@ impl From<GitError> for String {
 }
 
 /// The ONE git runner: [`run_git`] with optional stdin `input` (a patch for `git apply`). Owned
-/// through `lane_process::run_owned_with_input`, within the task's [`deadline`] when one is set.
+/// through `continuum_process::run_owned_with_input`, within the task's [`deadline`] when one is set.
 /// An exit that isn't success is an `Err` with git's stderr; so is an output that wasn't read
 /// whole or an input that wasn't delivered; a deadline that ended it says its effect is UNKNOWN
 /// (a push may have landed), never that nothing happened.
 pub async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &str)], input: Option<Vec<u8>>) -> Result<String, GitError> {
-    use crate::inference::lane_process::{run_owned_with_input, Answer, Why};
+    use continuum_process::{run_owned_with_input, Answer, Why};
     let bound = match deadline() {
         Some(at) => {
             let left = at.saturating_duration_since(tokio::time::Instant::now());
@@ -600,7 +600,7 @@ pub async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &
         // the runner's errors aren't all before the spawn (a failed wait, an end that couldn't
         // run): what the git did is unknown, never "it never ran" (Codex reviewer on #5037)
         .map_err(|e| GitError { end: GitEnd::Unknown, message: format!("Failed to run git: {e}") })?;
-    // the shared projection (lane_process::OwnedOutput::answer): a non-zero exit is git's own
+    // the shared projection (continuum_process::OwnedOutput::answer): a non-zero exit is git's own
     // failure, with its stderr, and any delivery note beside it; a deadline that ended it says
     // its effect is unknown
     if let Answer::Not(unanswered) = out.answer() {

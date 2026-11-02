@@ -58,7 +58,7 @@ async fn rehome_requires_a_readable_local_assignment() {
     let _native = crate::paths::NativeHomeOverride::install(root.path());
     let registry = PersonaWorkspaceRegistry::new();
     let id = Uuid::new_v4();
-    let cycle = registry.register_from_cfg(cfg_for(id)).expect("resident");
+    let cycle = registry.register_from_cfg(cfg_for(id, "Ivar")).expect("resident");
     let (original, original_model) = cycle.current_model_route().expect("binding");
     let airc = crate::identity::citizen_path::citizen_home_path(root.path(), crate::identity::IdentityKind::Persona, None, "Ivar");
     let home = crate::cognition::home::PersonaHome::from_root(airc.parent().expect("parent").to_path_buf());
@@ -67,27 +67,64 @@ async fn rehome_requires_a_readable_local_assignment() {
     let replacement: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
     for corrupt in [false, true] {
         if corrupt { std::fs::write(home.model_override_json(), b"{").expect("corrupt"); }
-        assert_eq!(registry.re_home_all_at(root.path(), replacement.clone(), Some("new/local".into()), 4096), 0);
+        assert_eq!(registry.re_home_all_at(root.path(), Some(replacement.clone()), "new/local", 4096), 0);
         let (actual, model) = cycle.current_model_route().expect("preserved");
         assert!(Arc::ptr_eq(&original, &actual));
         assert_eq!(model, original_model);
     }
     PersonaModelOverride::new("local/model", None, 2).write(&home).expect("local override");
-    assert_eq!(registry.re_home_all_at(root.path(), replacement.clone(), Some("new/local".into()), 4096), 1);
+    assert_eq!(registry.re_home_all_at(root.path(), Some(replacement.clone()), "new/local", 4096), 1);
     let (actual, model) = cycle.current_model_route().expect("rebound");
     assert!(Arc::ptr_eq(&replacement, &actual));
     assert_eq!(model.as_deref(), Some("new/local"));
 }
 
+// what this catches (the M5, 2026-10-29, core 83c000606): residents materialized while the
+// engine was still loading kept their provisional 2048 window, and the reconciler keyed
+// only on the model name, so the first ready snapshot never corrected it; working memory
+// budgeted 2048*4 chars and discarded every result body past ~4k. The served window alone
+// must rebind a local resident (same model, her own adapter), a resident already bound to
+// (model, window) must cost nothing, and an off-box resident must keep her binding.
+#[tokio::test]
+async fn a_resident_bound_at_the_provisional_window_is_rehomed_to_the_served_window() {
+    use crate::cognition::persona_workspace::RehomeReason;
+    crate::persona::cognition_extensions::install();
+    let root = tempfile::tempdir().expect("root");
+    let _native = crate::paths::NativeHomeOverride::install(root.path());
+    let registry = PersonaWorkspaceRegistry::new();
+    let local = registry.register_from_cfg(cfg_for(Uuid::new_v4(), "Aiko")).expect("local resident");
+    let remote = registry.register_from_cfg(cfg_for(Uuid::new_v4(), "Kira")).expect("remote resident");
+    let airc = crate::identity::citizen_path::citizen_home_path(root.path(), crate::identity::IdentityKind::Persona, None, "Kira");
+    let home = crate::cognition::home::PersonaHome::from_root(airc.parent().expect("parent").to_path_buf());
+    PersonaModelOverride::new_remote("remote/model", None, 1, Uuid::new_v4().to_string()).write(&home).expect("remote override");
+    let before = local.current_binding().expect("local binding");
+    let remote_before = remote.current_binding().expect("remote binding");
+    let model = before.requested_model().to_string();
+    assert_eq!(before.context_window, crate::inference::planning::MIN_SERVE_CTX, "bound at the provisional window");
+    let served = 60_672;
+
+    assert_eq!(registry.rehome_reason_at(root.path(), &model, served), Some(RehomeReason::WindowChanged));
+    assert_eq!(registry.re_home_all_at(root.path(), None, &model, served), 1, "only the local resident moves");
+    let after = local.current_binding().expect("rebound");
+    assert_eq!(after.context_window, served);
+    assert_eq!(after.requested_model(), model);
+    assert!(Arc::ptr_eq(&before.adapter, &after.adapter), "a window-only correction keeps her adapter");
+    let remote_after = remote.current_binding().expect("remote kept");
+    assert!(Arc::ptr_eq(&remote_before, &remote_after), "the off-box resident keeps her binding");
+
+    assert_eq!(registry.rehome_reason_at(root.path(), &model, served), None, "steady state needs nothing");
+    assert_eq!(registry.re_home_all_at(root.path(), None, &model, served), 0, "already bound: untouched");
+    assert!(Arc::ptr_eq(&after, &local.current_binding().expect("still bound")), "no store on a matching binding");
+}
+
 /// A resident's brain config: the deterministic heuristic adapter, no grounding, no hands.
-fn cfg_for(persona_id: uuid::Uuid) -> crate::cognition::persona_workspace::PersonaBrainConfig {
+fn cfg_for(persona_id: uuid::Uuid, name: &str) -> crate::cognition::persona_workspace::PersonaBrainConfig {
     crate::cognition::persona_workspace::PersonaBrainConfig {
         persona_id,
-        persona_name: "Ivar".to_string(),
-        system_prompt: "You are Ivar, an engineer on the grid.".to_string(),
+        persona_name: name.to_string(),
+        system_prompt: format!("You are {name}, an engineer on the grid."),
         admission: crate::cognition::act_observe::test_support::admission(),
         adapter: std::sync::Arc::new(crate::ai::HeuristicInferenceAdapter::new()),
-        capacity: None,
         grounding_sources: Vec::new(),
         embedder: None,
         tool_executor: None,
@@ -97,5 +134,6 @@ fn cfg_for(persona_id: uuid::Uuid) -> crate::cognition::persona_workspace::Perso
         defer_grounding: false,
         suppress_recall: false,
         forked: false,
+        read_receipt: None,
     }
 }

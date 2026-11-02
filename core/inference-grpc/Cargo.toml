@@ -34,8 +34,8 @@ serde_json.workspace = true
 once_cell.workspace = true
 rand.workspace = true
 half.workspace = true
-dirs = "5.0"
-num_cpus = "1.16"
+dirs = { workspace = true }
+num_cpus = { workspace = true }
 
 # Logging
 log = "0.4"

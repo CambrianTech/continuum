@@ -3,7 +3,6 @@
 use super::*;
 use crate::ai::types::ToolCall;
 use crate::cognition::working_memory::WorkingMemory;
-use crate::cognition::working_memory::WorkingMemoryFaculty;
 use crate::cognition::workspace::Contribution;
 use crate::cognition::workspace::Decision;
 use crate::cognition::workspace::Faculty;
@@ -60,11 +59,9 @@ async fn drive_to_settle_acts_then_settles_on_speak() {
     let wm = Arc::new(WorkingMemory::new(3));
     let cycle = WorkspaceCycle::new(
         vec![
-            Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
-            Arc::new(ActThenSpeak::new()),
+            Arc::new(ActThenSpeak::new().with_memory(Arc::clone(&wm))),
         ],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
 
@@ -84,7 +81,7 @@ async fn drive_to_settle_acts_then_settles_on_speak() {
 // Refusal after a real act retains its observed work and cannot replay input.
 #[tokio::test]
 async fn acted_then_capacity_refused_retains_work_without_replay() {
-    struct ActThenRefuse;
+    struct ActThenRefuse(Arc<WorkingMemory>);
     #[async_trait]
     impl Faculty for ActThenRefuse {
         fn id(&self) -> FacultyId {
@@ -94,7 +91,7 @@ async fn acted_then_capacity_refused_retains_work_without_replay() {
             true
         }
         async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
-            if latest_action_seq(&ws.perceived()) > 0 {
+            if latest_action_seq(&crate::cognition::act_observe::test_support::perceived_with(ws, Some(&self.0))) > 0 {
                 Some(Contribution::prompt_capacity_refused(
                     crate::cognition::workspace::PromptCapacityError {
                         required_tokens: 8192,
@@ -117,11 +114,9 @@ async fn acted_then_capacity_refused_retains_work_without_replay() {
     let exec = Arc::new(ScriptedExecutor::new(["real observed result"]));
     let cycle = WorkspaceCycle::new(
         vec![
-            Arc::new(WorkingMemoryFaculty::new(wm.clone())),
-            Arc::new(ActThenRefuse),
+            Arc::new(ActThenRefuse(Arc::clone(&wm))),
         ],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body_with_wm(exec, admission(), wm));
     let outcome = drive_to_settle(&cycle, "perform the task", 8, TurnFraming::ambient()).await;
@@ -165,7 +160,7 @@ async fn capacity_refusal_leaves_the_driver_once_with_typed_custody() {
         }
     }
     let faculty = Arc::new(Refusing(std::sync::atomic::AtomicUsize::new(0)));
-    let cycle = WorkspaceCycle::new(vec![faculty.clone()], Arc::new(SalienceArbiter), 8);
+    let cycle = WorkspaceCycle::new(vec![faculty.clone()], Arc::new(SalienceArbiter));
     let outcome =
         drive_to_settle(&cycle, "keep the complete input", 8, TurnFraming::ambient()).await;
     assert_eq!(faculty.0.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -201,11 +196,9 @@ async fn a_zero_change_speak_reperceives_up_to_the_narration_budget_when_the_wor
     });
     let cycle = WorkspaceCycle::new(
         vec![
-            Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
             Arc::clone(&speaker) as Arc<dyn Faculty>,
         ],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm)));
 
@@ -248,11 +241,9 @@ async fn an_ordinary_turn_still_settles_on_the_first_speak() {
     });
     let cycle = WorkspaceCycle::new(
         vec![
-            Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
             Arc::clone(&speaker) as Arc<dyn Faculty>,
         ],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm)));
 
@@ -326,7 +317,6 @@ async fn drive_to_settle_gates_discovery_at_half_budget_on_workspace_deliverable
             ticks: Mutex::new(0),
         })],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body(exec.clone(), adm.clone()));
 
@@ -361,7 +351,6 @@ async fn drive_to_settle_gates_discovery_at_half_budget_on_workspace_deliverable
             ticks: Mutex::new(0),
         })],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body(exec2, admission()));
     let ambient = drive_to_settle(&cycle2, "look around", 20, TurnFraming::ambient()).await;
@@ -392,7 +381,6 @@ async fn act_budget_facts_reach_working_memory_on_workspace_turns_only() {
             ticks: Mutex::new(0),
         })],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(the_body);
     drive_to_settle(
@@ -433,7 +421,6 @@ async fn act_budget_facts_reach_working_memory_on_workspace_turns_only() {
             ticks: Mutex::new(0),
         })],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body2);
     drive_to_settle(&cycle2, "look around", 6, TurnFraming::ambient()).await;
@@ -456,7 +443,7 @@ async fn drive_to_settle_returns_unsettled_act_when_budget_exhausted() {
         result_content: "...".into(),
     });
     let adm = admission();
-    let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), adm.clone()));
 
     let outcome = drive_to_settle(&cycle, "go", 2, TurnFraming::ambient()).await;
@@ -491,7 +478,7 @@ async fn repeated_calls_respect_the_callers_budget() {
         ),
     ] {
         let exec = Arc::new(ScriptedExecutor::new(results));
-        let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
+        let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter))
             .with_acting(body(exec.clone(), admission()));
         let outcome = drive_to_settle(&cycle, "go", 6, TurnFraming::ambient()).await;
         assert_eq!(outcome.acts, expected_acts);
@@ -508,7 +495,7 @@ async fn fixed_point_requires_available_finished_result_evidence() {
     use super::super::perception::batch_evidence;
     use crate::sdk_codegen::{ActVerdict, ToolVerdict};
     let exec = Arc::new(ScriptedExecutor::new(["result"]));
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(exec, admission()));
     let mut call = tool_call();
     let mut acts = acts_of(apply_act(
@@ -549,7 +536,7 @@ async fn settle_step_defers_the_act_without_executing_when_may_act_is_false() {
         result_content: "...".into(),
     });
     let adm = admission();
-    let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), adm.clone()));
 
     let (deferred, _, _) = settle_step(

@@ -9,7 +9,6 @@
 //! Phase 4: data, embedding, inference, search, training, logger (absorb external workers)
 
 pub mod acting_provider;
-pub mod agent;
 pub mod ai_provider;
 pub mod airc;
 pub mod airc_bridge_directive;
@@ -78,7 +77,6 @@ pub use continuum_mind::modules::persona_rag_inspect;
 pub mod persona_rag_inspect_filesystem;
 pub mod ports;
 pub mod pressure_broker_module;
-pub mod prompt_reuse;
 pub mod rag;
 pub mod recipe;
 pub mod resources_module;

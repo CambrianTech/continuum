@@ -27,3 +27,18 @@ pub fn command_registry_live() -> Vec<CommandDescriptor> {
     all
 }
 
+
+/// What the command named `canonical` declares its calls do ([`super::CommandSpec::EFFECT`]),
+/// for a name already resolved through the dispatch seam (`tool_dialect::resolve_wire_name`),
+/// so the effect is the descriptor's of the command that runs, never read off what the model
+/// typed. A name no command claims is `Undeclared`: it authorizes nothing. Built once from the
+/// live catalogue, which is immutable after boot's one install.
+pub fn effect_of(canonical: &str) -> continuum_base::tool_effect::ToolEffect {
+    static EFFECTS: std::sync::OnceLock<std::collections::HashMap<&'static str, continuum_base::tool_effect::ToolEffect>> =
+        std::sync::OnceLock::new();
+    let effects = EFFECTS.get_or_init(|| command_registry_live().iter().map(|d| (d.name, d.effect)).collect());
+    match effects.get(canonical) {
+        Some(effect) => *effect,
+        None => continuum_base::tool_effect::ToolEffect::Undeclared,
+    }
+}

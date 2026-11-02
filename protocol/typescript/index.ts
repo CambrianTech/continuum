@@ -2,11 +2,6 @@
 // Source: generator/generate-rust-bindings.ts
 // Re-generate: npx tsx generator/generate-rust-bindings.ts
 
-// agent: explicit exports (has duplicate types)
-export type { AgentAction } from './agent';
-export type { AgentStatus } from './agent';
-export type { ToolCall } from './agent';
-export type { ToolResult } from './agent';
 // ai: explicit exports (has duplicate types)
 export type { ActiveAdapterRequest } from './ai';
 export type { AudioInput } from './ai';
@@ -42,7 +37,6 @@ export type { AIGatingDecisionFactors } from './cognition';
 export type { AdaptiveThroughputPlan } from './cognition';
 export type { AdaptiveThroughputRequest } from './cognition';
 export type { AdversarialPatternDecline } from './cognition';
-export type { AnalysisError } from './cognition';
 export type { AuditEntry } from './cognition';
 export type { AuditEntryKind } from './cognition';
 export type { EmbedToolsRequest } from './cognition';
@@ -59,18 +53,14 @@ export type { GenerateResponseResult } from './cognition';
 export type { HostCapability } from './cognition';
 export type { ProbeError } from './cognition';
 export type { HwCapabilityTier } from './cognition';
-export type { LeverCall } from './cognition';
-export type { LeverName } from './cognition';
 export type { LocalOrCloudPolicy } from './cognition';
 export type { MediaItemLite } from './cognition';
 export type { ModelRequirement } from './cognition';
 export type { NativeBatchOutcome } from './cognition';
 export type { ParsedToolBatch } from './cognition';
 export type { PersonaMediaConfigLite } from './cognition';
-export type { PersonaRenderRequest } from './cognition';
 export type { PersonaResponse } from './cognition';
 export type { PersonaTurnPlan } from './cognition';
-export type { PriorContribution } from './cognition';
 export type { ProposalRating } from './cognition';
 export type { RateProposalsRequest } from './cognition';
 export type { RateProposalsResponse } from './cognition';
@@ -87,19 +77,14 @@ export type { RecipeTemplateInfo } from './cognition';
 export type { RecipeTurnBatchPlan } from './cognition';
 export type { RecipeTurnBatchRequest } from './cognition';
 export type { RecipeTurnTrigger } from './cognition';
-export type { RedundancyCheckRequest } from './cognition';
-export type { RedundancyDecision } from './cognition';
 export type { ResolutionError } from './cognition';
 export type { ResolvedModel } from './cognition';
 export type { ResourceAdmissionPolicy } from './cognition';
 export type { ResourceClass } from './cognition';
-export type { ResponderDecision } from './cognition';
 export type { ResponseDecision } from './cognition';
 export type { ResponseProposal } from './cognition';
 export type { SemanticSearchResult } from './cognition';
 export type { SemanticSearchToolsRequest } from './cognition';
-export type { SharedAnalysis } from './cognition';
-export type { SharedAnalysisIntent } from './cognition';
 export type { SharedRagSourcePlan } from './cognition';
 export type { ShouldRespondRequest } from './cognition';
 export type { SiliconResidencyRequirement } from './cognition';

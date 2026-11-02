@@ -58,7 +58,7 @@
         assert_eq!(d.peak_tokens, 176_154);
         assert_eq!(typical_tokens(&d), Some(45_000), "the median of recent turns");
         assert_eq!(requirement_tokens(&d), 45_000);
-        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [0; RECENT_TURNS], need_next: 0 };
+        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [0; RECENT_TURNS], need_next: 0, sent_recent: [0; RECENT_TURNS], sent_next: 0 };
         assert_eq!(requirement_tokens(&legacy), 29_911, "no ring: the last turn, never the peak");
         let ser: PersonaDemand = serde_json::from_str(r#"{"peak_tokens":1,"last_tokens":2,"last_seen_ms":3,"turns":4}"#).expect("legacy json");
         assert_eq!(typical_tokens(&ser), None);
@@ -269,7 +269,7 @@
         // The closed loop: every turn is a think-only cut at the cap the last need set.
         let mut cap = landed.total();
         for t in 0..(NEED_SAMPLES as u64 + 4) {
-            reg.record_emission_in_memory(p(9), cap, cap, EmissionStop::classify(true, 0), 100 + t);
+            reg.record_emission_in_memory(p(9), cap, cap, EmissionStop::classify(true, false), 100 + t);
             let need = reg.need_of(p(9)).expect("need measured");
             assert_eq!(need, landed, "a think-only cut is not a sample: the need does not move (turn {t})");
             let e = reg.emission_of(p(9)).expect("recorded");
@@ -279,16 +279,16 @@
         }
         // A cut inside the ANSWER is the growth path, on that channel only: the peak is
         // the sum of the channels, not the whole output doubled.
-        reg.record_emission_in_memory(p(8), 7_003, 7_000, EmissionStop::classify(true, 3), 1);
+        reg.record_emission_in_memory(p(8), 7_003, 7_000, EmissionStop::classify(true, true), 1);
         assert_eq!(reg.emission_of(p(8)).expect("recorded").peak_tokens, 7_006, "7,006, not 14,006");
-        reg.record_emission_in_memory(p(7), 7_000, 1_000, EmissionStop::classify(true, 6_000), 1);
+        reg.record_emission_in_memory(p(7), 7_000, 1_000, EmissionStop::classify(true, true), 1);
         let write = reg.emission_of(p(7)).expect("recorded");
         assert_eq!((write.peak_tokens, write.answer_samples[0], write.reasoning_samples[0]), (13_000, 12_000, 1_000));
         // Classification is by channel; only a cap hit is a cut.
-        assert_eq!(EmissionStop::classify(false, 0), EmissionStop::Landed);
-        assert_eq!(EmissionStop::classify(false, 9), EmissionStop::Landed);
-        assert_eq!(EmissionStop::classify(true, 0), EmissionStop::CutMidThought);
-        assert_eq!(EmissionStop::classify(true, 1), EmissionStop::CutMidAnswer);
+        assert_eq!(EmissionStop::classify(false, false), EmissionStop::Landed);
+        assert_eq!(EmissionStop::classify(false, true), EmissionStop::Landed);
+        assert_eq!(EmissionStop::classify(true, false), EmissionStop::CutMidThought);
+        assert_eq!(EmissionStop::classify(true, true), EmissionStop::CutMidAnswer);
     }
 
     #[test]
@@ -439,7 +439,7 @@
             let budget = crate::inference::request_body::deliberation_reasoning_budget(u64::from(allowance))
                 .expect("an allowance large enough to budget") as u32;
             let answer = 300u32;
-            let stop = EmissionStop::classify_with_budget(false, answer, budget, Some(budget), allowance);
+            let stop = EmissionStop::classify_with_budget(false, true, budget, Some(budget), allowance);
             assert_eq!(stop, EmissionStop::ThinkBudgetHit { allowance }, "turn {t}");
             reg.record_emission_in_memory(p(6), budget + answer, budget, stop, 100 + t);
             let next = reg.need_of(p(6)).expect("need measured").total();
@@ -462,9 +462,60 @@
         let start2 = a2;
         for t in 0..(NEED_SAMPLES as u64 * 10) {
             let budget = crate::inference::request_body::deliberation_reasoning_budget(u64::from(a2)).expect("budget") as u32;
-            reg2.record_emission_in_memory(p(5), budget + 300, budget, EmissionStop::classify(false, 300), 200 + t);
+            reg2.record_emission_in_memory(p(5), budget + 300, budget, EmissionStop::classify(false, true), 200 + t);
             a2 = reg2.need_of(p(5)).expect("need measured").total();
         }
         assert!(a2 < start2, "the control: verbatim samples contract ({start2} → {a2})");
     }
 
+    // what this catches: the lane floor sized by a lifetime peak (the M5, 2026-10-28: sent_peaks
+    // of 188-370k against recent turns of 20-43k set a 423,945-token requirement, every runnable
+    // plan was refused, and four residents shared one 27,904-token slot). The floor follows her
+    // recent growth samples; a legacy record with only a peak stands on her typical demand.
+    #[test]
+    fn a_historic_giant_turn_stops_setting_the_lane_floor() {
+        let reg = WorkingSetRegistry::new();
+        let (aris, benchy) = (Uuid::new_v4(), Uuid::new_v4());
+        reg.record_sent_in_memory(aris, 370_493, 1);
+        reg.record_sent_in_memory(benchy, 339_156, 1);
+        for turn in 0..RECENT_TURNS as u32 {
+            reg.record_sent_in_memory(aris, 21_000 + turn, 2);
+            reg.record_sent_in_memory(benchy, 24_000 + turn, 2);
+        }
+        let floor = reg.sent_median_of(&[aris, benchy]).expect("two residents");
+        assert!(floor < 30_000, "the floor follows recent turns, not the 339k-370k peaks: {floor}");
+        assert_eq!(reg.sent_ceiling_of(&[aris, benchy]), Some(24_000 + RECENT_TURNS as u32 - 1));
+        let legacy = PersonaDemand { sent_peak: 339_156, recent: [35_000; RECENT_TURNS], ..PersonaDemand::default() };
+        assert_eq!(growth_sample(&legacy), Some(35_000), "a record from before the ring stands on her typical turn");
+        assert_eq!(growth_sample(&PersonaDemand { sent_peak: 9_000, ..PersonaDemand::default() }), Some(9_000));
+        // A mind that never sent a growth sample sets no floor, however large her typical turn:
+        // the re-home tests' plans moved when such a record contributed one (#5579 CI).
+        let never_sent = PersonaDemand { recent: [35_000; RECENT_TURNS], ..PersonaDemand::default() };
+        assert_eq!(growth_sample(&never_sent), None);
+    }
+
+// what this catches: the allowance policy and the hour line disagreeing on one generation, and a
+// stream that reports no usage read as empty. ONE classification drives both, from presence: a
+// length cut carrying an answer with usage missing is a cut in the answer for the policy AND the
+// counter (Codex on #5616); a landed turn with only reasoning ended in her think, one with nothing
+// is empty, and an answer or call is landed whatever its token counts (Fable and Codex on #5616).
+#[test]
+fn every_completed_generation_maps_to_exactly_one_counted_stop() {
+    use continuum_vitals::health_ledger::Stop;
+    // (length cut, answered, reasoned, reasoning tokens vs a budget of 100) -> (policy, counter)
+    let cases = [
+        (false, true, true, 0, EmissionStop::Landed, Stop::Landed),
+        (false, true, false, 0, EmissionStop::Landed, Stop::Landed),
+        (false, false, true, 0, EmissionStop::Landed, Stop::ThinkEnded),
+        (false, false, false, 0, EmissionStop::Landed, Stop::Empty),
+        (true, true, true, 0, EmissionStop::CutMidAnswer, Stop::CutAnswer),
+        (true, true, false, 0, EmissionStop::CutMidAnswer, Stop::CutAnswer),
+        (true, false, true, 0, EmissionStop::CutMidThought, Stop::CutThink),
+        (false, true, true, 100, EmissionStop::ThinkBudgetHit { allowance: 400 }, Stop::ThinkBudget),
+    ];
+    for (cut, answered, reasoned, reasoning, policy, counter) in cases {
+        let stop = EmissionStop::classify_with_budget(cut, answered, reasoning, Some(100), 400);
+        assert_eq!(stop, policy, "policy class for {:?}", (cut, answered, reasoned, reasoning));
+        assert_eq!(stop.counted(answered, reasoned), counter, "counted class for {:?}", (cut, answered, reasoned, reasoning));
+    }
+}

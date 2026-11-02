@@ -8,7 +8,60 @@
 //! "passes" generation could "fail" eval (and vice versa) for grader-shape reasons
 //! alone. Extracted here so that can never drift.
 
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
+use continuum_kernel::system_resources::disk_reporters::ClassWriter;
 use uuid::Uuid;
+
+/// Where a grade's scratch source and binary live: the measured, evicted temp class
+/// (`disk_reporters::standard`), one owner directory per grade, removed after it.
+const SCRATCH_CLASS: &str = "eval-roots";
+
+/// How far a graded attempt got. `Refused` means the grader could not grade at all (an
+/// unsupported language, a test in a format that would false-pass, no candidate file, no scratch
+/// class); it says nothing about the candidate, so it is never compared as progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GradeStage {
+    Refused,
+    Compile,
+    Run,
+    Pass,
+}
+
+/// One grade, typed: what the teacher's fix loop measures progress by, read from the grader's
+/// own result and never by scanning its text (Codex and Fable on card a4bbae0a).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grade {
+    pub stage: GradeStage,
+    /// The failure set by identity, never raw text, so timings and temp paths cannot make one
+    /// failure look like another: a compile error as `code: message` (its location shifts as the
+    /// candidate changes), a run failure as the test line that panicked or the solution's panic
+    /// message. Empty on a pass.
+    pub failures: BTreeSet<String>,
+    /// For a run failure inside the test, which test line panicked (1-based): a later line means
+    /// the assertions before it passed. `None` otherwise.
+    pub test_line: Option<u32>,
+    /// The whole text the teacher reads: every rendered compiler diagnostic, or the run's whole
+    /// stderr. Never cut.
+    pub text: String,
+}
+
+impl Grade {
+    pub fn passed(&self) -> bool {
+        self.stage == GradeStage::Pass
+    }
+
+    /// Pass and the whole text, for a caller that reports a verdict and measures nothing.
+    pub fn verdict(self) -> (bool, String) {
+        (self.passed(), self.text)
+    }
+
+    fn refused(text: impl Into<String>) -> Self {
+        let text = text.into();
+        Grade { stage: GradeStage::Refused, failures: BTreeSet::from([text.clone()]), test_line: None, text }
+    }
+}
 
 /// Per-step grade timeouts. A step that overruns is SIGKILLed on drop.
 ///
@@ -155,29 +208,21 @@ fn matching_brace(bytes: &[u8], open: usize) -> Option<usize> {
 /// the pragmatic floor for an OWNER's local dev machine (what coding agents do); it
 /// is NOT a sandbox. Before public/untrusted tasks, this MUST run in a real sandbox
 /// (container/seccomp). Slice 1 = prove the grading mechanism; sandbox is a P1 req.
-pub async fn test_grade(answer: &str, lang: &str, test: &str) -> (bool, String) {
+/// The typed grade of `answer`'s code against `test` (the teacher's fix loop measures progress by it).
+pub async fn grade(answer: &str, lang: &str, test: &str) -> Grade {
     let code = extract_code_block(answer);
     // Rust only — the persona ships Rust, so the gym grades Rust. Anything else
     // fails LOUD with a named reason, never a silent pass.
     match lang {
         "rust" | "rs" => {}
-        other => {
-            return (
-                false,
-                format!("unsupported lang '{other}' (Rust gym: lang must be 'rust')"),
-            )
-        }
+        other => return Grade::refused(format!("unsupported lang '{other}' (Rust gym: lang must be 'rust')")),
     }
-    let dir = std::env::temp_dir().join(format!("cu-gym-{}", Uuid::new_v4()));
-    if std::fs::create_dir_all(&dir).is_err() {
-        return (false, "temp dir create failed".to_string());
-    }
-    let result = grade_rust(&dir, &code, test).await;
-    let _ = std::fs::remove_dir_all(&dir);
-    match result {
-        Ok(()) => (true, "tests passed".to_string()),
-        Err(msg) => (false, msg),
-    }
+    grade_in_scratch(&code, test).await
+}
+
+/// [`grade`]'s verdict: pass and the whole text, for a caller that measures nothing.
+pub async fn test_grade(answer: &str, lang: &str, test: &str) -> (bool, String) {
+    grade(answer, lang, test).await.verdict()
 }
 
 /// ARTIFACT grade: read her acted solution from an in-workspace file (her HANDS) and run the
@@ -188,20 +233,15 @@ pub async fn test_grade(answer: &str, lang: &str, test: &str) -> (bool, String) 
 /// `code/write` sandboxes to). Fails LOUD (never a silent pass) if she wrote nothing, the path
 /// escapes the workspace, or the file is empty. The file is removed after grading so a stale
 /// artifact from this or a prior task can never false-pass a later one.
-pub async fn test_grade_file(
+pub async fn grade_file(
     root: Option<&std::path::Path>,
     rel_path: &str,
     lang: &str,
     test: &str,
-) -> (bool, String) {
+) -> Grade {
     match lang {
         "rust" | "rs" => {}
-        other => {
-            return (
-                false,
-                format!("unsupported lang '{other}' (Rust gym: lang must be 'rust')"),
-            )
-        }
+        other => return Grade::refused(format!("unsupported lang '{other}' (Rust gym: lang must be 'rust')")),
     }
     // Resolve against the RUN'S ROOT, never the process CWD. The grader read
     // bare `rel_path` from the core's cwd (the repo checkout) while her hands
@@ -211,10 +251,7 @@ pub async fn test_grade_file(
     // correct IN the clone, grade said not-found). `None` = cwd-relative, for
     // callers that genuinely run in the target directory (tests).
     if std::path::Path::new(rel_path).is_absolute() || rel_path.contains("..") {
-        return (
-            false,
-            format!("solution_file must be a relative in-workspace path, got '{rel_path}'"),
-        );
+        return Grade::refused(format!("solution_file must be a relative in-workspace path, got '{rel_path}'"));
     }
     let path = match root {
         Some(r) => r.join(rel_path),
@@ -224,14 +261,10 @@ pub async fn test_grade_file(
         Ok(c) if !c.trim().is_empty() => c,
         Ok(_) => {
             let _ = std::fs::remove_file(path);
-            return (
-                false,
-                format!("solution_file '{rel_path}' is empty — she wrote no code"),
-            );
+            return Grade::refused(format!("solution_file '{rel_path}' is empty — she wrote no code"));
         }
         Err(_) => {
-            return (
-                false,
+            return Grade::refused(
                 // State only what THIS function observed: the file is absent. The old text
                 // asserted "(acts=0 on this task)" — a fact the grader does not have and which
                 // is routinely FALSE: the first live run under the hands-only grade spent 8 acts
@@ -248,36 +281,50 @@ pub async fn test_grade_file(
         }
     };
     let _ = std::fs::remove_file(&path);
-    let dir = std::env::temp_dir().join(format!("cu-gym-{}", Uuid::new_v4()));
-    if std::fs::create_dir_all(&dir).is_err() {
-        return (false, "temp dir create failed".to_string());
-    }
-    let result = grade_rust(&dir, &code, test).await;
-    let _ = std::fs::remove_dir_all(&dir);
-    match result {
-        Ok(()) => (true, "tests passed".to_string()),
-        Err(msg) => (false, msg),
-    }
+    grade_in_scratch(&code, test).await
 }
 
-/// Compile the candidate (with a `main` built from the task's test) using `rustc`,
-/// then run the binary. `Ok(())` iff it compiles AND the test asserts don't panic
-/// (exit 0). `Err` carries the first failing step's stderr — compile error or panic
-/// message — so the failure is diagnosable, not a vibe.
-async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(), String> {
-    let src = dir.join("sol.rs");
-    let bin = dir.join("sol");
+/// [`grade_file`]'s verdict: pass and the whole text.
+pub async fn test_grade_file(
+    root: Option<&std::path::Path>,
+    rel_path: &str,
+    lang: &str,
+    test: &str,
+) -> (bool, String) {
+    grade_file(root, rel_path, lang, test).await.verdict()
+}
+
+/// Grade `code` against `test` in a scratch directory of its own, removed afterwards.
+async fn grade_in_scratch(code: &str, test: &str) -> Grade {
+    let scratch = match ClassWriter::of(SCRATCH_CLASS) {
+        Ok(class) => class.owned_by(Uuid::new_v4()),
+        Err(e) => return Grade::refused(format!("grader scratch unavailable: {e}")),
+    };
+    let grade = grade_rust(&scratch, code, test).await;
+    if let Ok(src) = scratch.path(Path::new(SOURCE)) {
+        if let Some(dir) = src.parent() {
+            let _ = std::fs::remove_dir_all(dir); // a leftover is the class's to evict; the grade stands
+        }
+    }
+    grade
+}
+
+/// The generated source and binary names inside a grade's scratch directory.
+const SOURCE: &str = "sol.rs";
+const BINARY: &str = "sol";
+
+/// Compile the candidate (with a `main` built from the task's test) using `rustc`, then run the
+/// binary. Passes iff it compiles AND the test's asserts don't panic (exit 0). A failure carries
+/// its stage, its identity set and the whole text, so the failure is diagnosable and comparable.
+async fn grade_rust(scratch: &ClassWriter, code: &str, test: &str) -> Grade {
     // GUARD the false-pass (proven 2026-07-21): the task's `test` is spliced into a
     // GENERATED `fn main() { <test> }`, so it MUST be bare assertion statements. If it
     // instead defines a `#[test]` function or its own `fn main`, that becomes a DEAD
     // nested item main never calls — the assertions never run, the process exits 0, and
     // WRONG CODE FALSE-PASSES. A benchmark that green-lights broken code is worse than no
     // benchmark. Fail LOUD with the fix, never a silent green. [[fallbacks-are-illegal-fail-loud]]
-    if let Some(bad) = ["#[test]", "#[cfg(test)]", "fn main"]
-        .into_iter()
-        .find(|m| test.contains(m))
-    {
-        return Err(format!(
+    if let Some(bad) = ["#[test]", "#[cfg(test)]", "fn main"].into_iter().find(|m| test.contains(m)) {
+        return Grade::refused(format!(
             "gym test format error: `test` contains `{bad}`, which the harness splices into a \
              generated `fn main()` where it is NEVER CALLED — the assertions would not run and \
              wrong code would FALSE-PASS. Author `test` as bare assert!/assert_eq! statements; the \
@@ -289,34 +336,102 @@ async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(),
     // `fn main` the candidate wrote to self-verify — the grader's test-driven main is
     // authoritative, and two module-level mains are an E0428 collision.
     let code = strip_top_level_main(code);
-    let full = format!("#![allow(dead_code)]\n{code}\n\nfn main() {{\n{test}\n}}\n");
-    std::fs::write(&src, full).map_err(|e| format!("temp write failed: {e}"))?;
+    let prelude = format!("#![allow(dead_code)]\n{code}\n\nfn main() {{\n");
+    // The line `fn main() {` stands on: a panic at a later line is in the test, and its offset from
+    // here names the test line whatever the candidate's length.
+    let main_line = prelude.lines().count() as u32;
+    let full = format!("{prelude}{test}\n}}\n");
+    if let Err(e) = scratch.replace(Path::new(SOURCE), full.as_bytes()) {
+        return Grade::refused(format!("grader scratch write failed: {e}"));
+    }
+    let (src, bin): (PathBuf, PathBuf) = match (scratch.path(Path::new(SOURCE)), scratch.path(Path::new(BINARY))) {
+        (Ok(src), Ok(bin)) => (src, bin),
+        (Err(e), _) | (_, Err(e)) => return Grade::refused(format!("grader scratch path refused: {e}")),
+    };
 
     let mut rustc = tokio::process::Command::new("rustc");
-    rustc
-        .arg("--edition")
-        .arg("2021")
-        .arg("-o")
-        .arg(&bin)
-        .arg(&src);
-    let compiled = run_capped(rustc, "compile", COMPILE_TIMEOUT_SECS).await?;
+    rustc.arg("--edition").arg("2021").arg("--error-format=json").arg("-o").arg(&bin).arg(&src);
+    let compiled = match run_capped(rustc, "compile", COMPILE_TIMEOUT_SECS).await {
+        Ok(out) => out,
+        Err(e) => return failed(GradeStage::Compile, BTreeSet::from([e.clone()]), None, e),
+    };
     if !compiled.status.success() {
-        return Err(format!("compile error: {}", trunc_stderr(&compiled.stderr)));
+        return compile_failure(&compiled.stderr);
     }
 
-    let ran = run_capped(tokio::process::Command::new(&bin), "run", RUN_TIMEOUT_SECS).await?;
+    let ran = match run_capped(tokio::process::Command::new(&bin), "run", RUN_TIMEOUT_SECS).await {
+        Ok(out) => out,
+        Err(e) => return failed(GradeStage::Run, BTreeSet::from([e.clone()]), None, e),
+    };
     if ran.status.success() {
-        Ok(())
-    } else {
-        Err(trunc_stderr(&ran.stderr))
+        return Grade { stage: GradeStage::Pass, failures: BTreeSet::new(), test_line: None, text: "tests passed".into() };
+    }
+    run_failure(&ran.stderr, main_line)
+}
+
+fn failed(stage: GradeStage, failures: BTreeSet<String>, test_line: Option<u32>, text: String) -> Grade {
+    Grade { stage, failures, test_line, text }
+}
+
+/// A failed compile from rustc's own diagnostics (`--error-format=json`): each error's identity is
+/// its code and message, and the teacher reads every rendered diagnostic whole.
+fn compile_failure(stderr: &[u8]) -> Grade {
+    let raw = String::from_utf8_lossy(stderr);
+    let mut failures = BTreeSet::new();
+    let mut rendered = String::new();
+    for line in raw.lines() {
+        let Ok(diagnostic) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(text) = diagnostic.get("rendered").and_then(|r| r.as_str()) {
+            rendered.push_str(text);
+        }
+        // An error with a code or a location is a failure of the candidate; rustc's closing
+        // "aborting due to N previous errors" has neither and only counts the others.
+        let is_error = diagnostic.get("level").and_then(|l| l.as_str()) == Some("error");
+        let code = diagnostic.pointer("/code/code").and_then(|c| c.as_str());
+        let located = diagnostic.get("spans").and_then(|s| s.as_array()).is_some_and(|s| !s.is_empty());
+        if is_error && (code.is_some() || located) {
+            let message = diagnostic.get("message").and_then(|m| m.as_str()).unwrap_or_default(); // unwrap_or_default: a diagnostic without a message is still identified by its code
+            failures.insert(format!("{}: {message}", code.unwrap_or("error"))); // unwrap_or: an uncoded error is identified by its message
+        }
+    }
+    if failures.is_empty() {
+        // rustc failed without a diagnostic it could serialize: the raw output is all there is.
+        failures.insert("compile failed".into());
+        rendered = raw.into_owned();
+    }
+    failed(GradeStage::Compile, failures, None, format!("compile error:\n{}", rendered.trim_end()))
+}
+
+/// A failed run: the panic's site names it. A panic inside the generated `main` is in the test,
+/// identified by its test line (a later line means the assertions before it passed); a panic in
+/// the candidate's own code is identified by its message.
+fn run_failure(stderr: &[u8], main_line: u32) -> Grade {
+    let text = String::from_utf8_lossy(stderr).trim_end().to_string();
+    // `thread 'main' panicked at <path>/sol.rs:<line>:<column>:` then the message on the next line.
+    let site = text.split("panicked at ").nth(1).and_then(|rest| {
+        let location = rest.split_once('\n').map_or(rest, |(site, _)| site).trim_end_matches(':'); // map_or: a site with no message line is the whole rest
+        let mut parts = location.rsplitn(3, ':');
+        let _column = parts.next()?;
+        parts.next()?.parse::<u32>().ok()
+    });
+    let message = text.lines().skip_while(|l| !l.contains("panicked at ")).nth(1).unwrap_or("").trim().to_string(); // unwrap_or: a panic with no message line is named by its site alone
+    match site {
+        Some(line) if line > main_line => {
+            let test_line = line - main_line;
+            failed(GradeStage::Run, BTreeSet::from([format!("test line {test_line}")]), Some(test_line), text)
+        }
+        Some(_) => failed(GradeStage::Run, BTreeSet::from([format!("solution panicked: {message}")]), None, text),
+        None => failed(GradeStage::Run, BTreeSet::from(["exited without a panic site".to_string()]), None, text),
     }
 }
 
-/// Run one grader subprocess under the grade timeout, OWNED (`lane_process::run_owned`): a
+/// Run one grader subprocess under the grade timeout, OWNED (`continuum_process::run_owned`): a
 /// step that overruns, or whose grade is dropped, is ended with everything it started (model
 /// code can spawn), never orphaned to init burning a core.
 async fn run_capped(cmd: tokio::process::Command, label: &str, timeout_secs: u64) -> Result<std::process::Output, String> {
-    use crate::inference::lane_process::{run_owned, Ended};
+    use continuum_process::{run_owned, Ended};
     let out = run_owned(cmd, Some(std::time::Duration::from_secs(timeout_secs)), "gym-grader", std::sync::Arc::default())
         .await
         .map_err(|e| format!("{label} spawn failed: {e}"))?;
@@ -330,16 +445,6 @@ async fn run_capped(cmd: tokio::process::Command, label: &str, timeout_secs: u64
     }
 }
 
-/// First 180 chars of trimmed stderr — enough of the compiler/panic message to
-/// diagnose without flooding the grade field.
-fn trunc_stderr(stderr: &[u8]) -> String {
-    String::from_utf8_lossy(stderr)
-        .trim()
-        .chars()
-        .take(180)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,14 +456,15 @@ mod tests {
     // the #[test] path (rejected) are pinned so the two can never be confused again.
     #[tokio::test]
     async fn hashtest_wrapped_test_is_rejected_not_false_passed() {
+        continuum_kernel::system_resources::disk_reporters::prepare_writer_fixture().await;
         let _home = crate::paths::test_home::HomeGuard::preserve().await;
         // WRONG sum_evens + a #[test]-wrapped test: must FAIL loud (format error), never pass.
-        let (ok, msg) = test_grade(
+        let (ok, msg) = { let g = grade(
             "```rust\nfn sum_evens(nums: &[i32]) -> i32 { 0 }\n```",
             "rust",
             "#[test]\nfn t() { assert_eq!(sum_evens(&[2,4]), 6); }",
         )
-        .await;
+        .await; (g.passed(), g.text) };
         assert!(
             !ok,
             "a #[test]-wrapped test must NOT pass — that is the false-pass bug"
@@ -368,12 +474,12 @@ mod tests {
             "must fail LOUD naming the bad format, got: {msg}"
         );
         // Sanity: the same WRONG code with a bare-assert test correctly FAILS on the panic.
-        let (ok2, _) = test_grade(
+        let ok2 = grade(
             "```rust\nfn sum_evens(nums: &[i32]) -> i32 { 0 }\n```",
             "rust",
             "assert_eq!(sum_evens(&[2,4]), 6);",
         )
-        .await;
+        .await.passed();
         assert!(
             !ok2,
             "wrong code with a bare-assert test must fail on the assertion"
@@ -436,9 +542,10 @@ mod tests {
     // → PASS with "tests passed". Drives the real rustc grader end-to-end.
     #[tokio::test]
     async fn passing_test_grades_pass() {
+        continuum_kernel::system_resources::disk_reporters::prepare_writer_fixture().await;
         let _home = crate::paths::test_home::HomeGuard::preserve().await;
         let answer = "```rust\nfn add(a: i32, b: i32) -> i32 { a + b }\n```";
-        let (ok, grade) = test_grade(answer, "rust", "assert_eq!(add(2, 3), 5);").await;
+        let (ok, grade) = { let g = grade(answer, "rust", "assert_eq!(add(2, 3), 5);").await; (g.passed(), g.text) };
         assert!(ok, "grade was: {grade}");
         assert_eq!(grade, "tests passed");
     }
@@ -447,9 +554,10 @@ mod tests {
     // FAIL, and the panic message (not a vibe) is surfaced as the grade.
     #[tokio::test]
     async fn failing_test_grades_fail_with_panic() {
+        continuum_kernel::system_resources::disk_reporters::prepare_writer_fixture().await;
         let _home = crate::paths::test_home::HomeGuard::preserve().await;
         let answer = "```rust\nfn add(a: i32, b: i32) -> i32 { a - b }\n```";
-        let (ok, grade) = test_grade(answer, "rust", "assert_eq!(add(2, 3), 5);").await;
+        let (ok, grade) = { let g = grade(answer, "rust", "assert_eq!(add(2, 3), 5);").await; (g.passed(), g.text) };
         assert!(!ok);
         assert!(
             grade.contains("assert") || grade.contains("panic") || grade.contains("left"),
@@ -461,9 +569,10 @@ mod tests {
     // surfaced, so the persona can read what broke rather than guessing.
     #[tokio::test]
     async fn non_compiling_code_grades_fail_with_compile_error() {
+        continuum_kernel::system_resources::disk_reporters::prepare_writer_fixture().await;
         let _home = crate::paths::test_home::HomeGuard::preserve().await;
         let answer = "```rust\nfn add(a: i32, b: i32) -> i32 { a + }\n```";
-        let (ok, grade) = test_grade(answer, "rust", "let _ = add(2, 3);").await;
+        let (ok, grade) = { let g = grade(answer, "rust", "let _ = add(2, 3);").await; (g.passed(), g.text) };
         assert!(!ok);
         assert!(grade.contains("compile error"), "grade was: {grade}");
     }
@@ -475,21 +584,22 @@ mod tests {
     // ACTING persona measurable at all (a spoken-text grade is blind to code she filed).
     #[tokio::test]
     async fn artifact_grade_reads_the_file_passes_correct_cleans_up_and_fails_loud() {
+        continuum_kernel::system_resources::disk_reporters::prepare_writer_fixture().await;
         let _home = crate::paths::test_home::HomeGuard::preserve().await;
         let rel = format!("cu-gym-artifact-{}.rs", uuid::Uuid::new_v4());
         std::fs::write(&rel, "pub fn dbl(x: i32) -> i32 { x * 2 }\n").unwrap();
-        let (ok, grade) = test_grade_file(None, &rel, "rust", "assert_eq!(dbl(3), 6);").await;
+        let (ok, grade) = { let g = grade_file(None, &rel, "rust", "assert_eq!(dbl(3), 6);").await; (g.passed(), g.text) };
         assert!(ok, "a correct solution file should pass: {grade}");
         assert!(
             !std::path::Path::new(&rel).exists(),
             "the file must be removed after grading so it can't false-pass a later task"
         );
-        let (ok2, grade2) = test_grade_file(None, &rel, "rust", "assert_eq!(dbl(3), 6);").await;
+        let (ok2, grade2) = { let g = grade_file(None, &rel, "rust", "assert_eq!(dbl(3), 6);").await; (g.passed(), g.text) };
         assert!(
             !ok2 && grade2.contains("never wrote it"),
             "a missing file must fail loud, not silently pass: {grade2}"
         );
-        let (ok3, _) = test_grade_file(None, "../escape.rs", "rust", "").await;
+        let ok3 = grade_file(None, "../escape.rs", "rust", "").await.passed();
 
         // what this catches: THE take-2 defect — the grader must read the file
         // from the RUN'S root, not the process cwd. A correct solution in the
@@ -498,13 +608,13 @@ mod tests {
         let rooted = tempfile::tempdir().expect("tempdir");
         std::fs::write(rooted.path().join("sol_rooted.rs"), "pub fn dbl(x: i32) -> i32 { x * 2 }")
             .expect("write");
-        let (ok4, grade4) = test_grade_file(
+        let (ok4, grade4) = { let g = grade_file(
             Some(rooted.path()),
             "sol_rooted.rs",
             "rust",
             "assert_eq!(dbl(4), 8);",
         )
-        .await;
+        .await; (g.passed(), g.text) };
         assert!(ok4, "rooted resolution must grade the real file: {grade4}");
         assert!(!ok3, "a path escaping the workspace must be refused");
     }
@@ -516,6 +626,7 @@ mod tests {
     // multiple times` — Asha's answer carried a demo main).
     #[tokio::test]
     async fn candidate_with_its_own_main_still_grades_against_the_test() {
+        continuum_kernel::system_resources::disk_reporters::prepare_writer_fixture().await;
         let _home = crate::paths::test_home::HomeGuard::preserve().await;
         let answer = "```rust\n\
             fn is_prime(n: u64) -> bool {\n\
@@ -527,12 +638,12 @@ mod tests {
             fn main() {\n\
             \x20   println!(\"{}\", is_prime(7));\n\
             }\n```";
-        let (ok, grade) = test_grade(
+        let (ok, grade) = { let g = grade(
             answer,
             "rust",
             "assert!(is_prime(7)); assert!(!is_prime(9)); assert!(is_prime(2)); assert!(!is_prime(1));",
         )
-        .await;
+        .await; (g.passed(), g.text) };
         assert!(ok, "grade was: {grade}");
     }
 
@@ -552,11 +663,34 @@ mod tests {
     // silently passes — the fail-loud contract for the Rust-only gym.
     #[tokio::test]
     async fn unsupported_lang_fails_loud() {
-        let (ok, grade) = test_grade("print('x')", "python", "// test").await;
+        continuum_kernel::system_resources::disk_reporters::prepare_writer_fixture().await;
+        let (ok, grade) = { let g = grade("print('x')", "python", "// test").await; (g.passed(), g.text) };
         assert!(!ok);
         assert!(
             grade.contains("unsupported lang 'python'"),
             "grade was: {grade}"
         );
+    }
+
+    // what this catches: the teacher's progress read from text instead of the grader's own result,
+    // and its error cut (the old 180-char head). A type error is a coded compile failure with the
+    // whole rendered text; a failing second assertion names test line 2, whatever the candidate's length.
+    #[tokio::test]
+    async fn a_grade_is_typed_by_stage_identity_and_test_line() {
+        continuum_kernel::system_resources::disk_reporters::prepare_writer_fixture().await;
+        let _home = crate::paths::test_home::HomeGuard::preserve().await;
+        let typed = grade("```rust\nfn add(a: i32, b: i32) -> i32 { \"no\" }\n```", "rust", "assert_eq!(add(1, 1), 2);").await;
+        assert_eq!(typed.stage, GradeStage::Compile, "{typed:?}");
+        assert!(typed.failures.iter().all(|f| f.starts_with("E0308")), "{:?}", typed.failures);
+        assert!(typed.text.contains("mismatched types") && typed.text.len() > 180, "whole text: {}", typed.text);
+        let padding = "// a longer candidate\n".repeat(30);
+        let ran = grade(
+            &format!("```rust\n{padding}fn add(a: i32, b: i32) -> i32 {{ a * b }}\n```"),
+            "rust",
+            "assert_eq!(add(2, 2), 4);\nassert_eq!(add(1, 1), 2);",
+        )
+        .await;
+        assert_eq!((ran.stage, ran.test_line), (GradeStage::Run, Some(2)), "{ran:?}");
+        assert!(ran.failures.contains("test line 2"));
     }
 }

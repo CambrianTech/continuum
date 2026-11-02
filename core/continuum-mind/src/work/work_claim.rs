@@ -30,10 +30,9 @@ impl ActionCommand for WorkClaim {
             .await
             .filter(|(_, card)| card.owner == Some(airc.peer_id()))
             .and_then(|(_, card)| card.claim_id);
-        // A card whose instance this box cannot grade is refused at the VERB, the same
-        // predicate the pull reads (`swe_verdict_sweep::standing_refusal_for_card`): the pull
-        // skipped requests-1766, then a message-turn claim by id took it anyway (Atlas,
-        // 2026-09-13, an hour of lane on work no grade could score).
+        // A card whose instance this box cannot grade is refused at the VERB
+        // (`swe_verdict_sweep::standing_refusal_for_card`): a message-turn claim by id took
+        // requests-1766 anyway (Atlas, 2026-09-13, an hour of lane on work no grade could score).
         if let Ok(board) = airc
             .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
             .await

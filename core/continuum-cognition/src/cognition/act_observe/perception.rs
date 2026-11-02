@@ -361,6 +361,7 @@ mod tests {
         )])]));
         assert!(!any_real_receipt(&[settle()]));
         let facty = WmEntry {
+            occurrence: 0,
             disk_change: Default::default(),
             native_calls: Vec::new(),
             kind: WmKind::Fact,

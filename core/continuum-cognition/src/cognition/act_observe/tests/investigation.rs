@@ -16,7 +16,6 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::Mutex;
 use crate::cognition::working_memory::WorkingMemory;
-use crate::cognition::working_memory::WorkingMemoryFaculty;
 
 /// A deliberation faculty that is a small *investigator*: its next move is a
 /// pure function of what it has DISCOVERED so far (the observations folded
@@ -27,7 +26,7 @@ use crate::cognition::working_memory::WorkingMemoryFaculty;
 /// accumulated MEMORY CONTENT, which is the whole point: the hands change
 /// the mind. (A test stand-in for the model, exactly like `ActThenSpeak`;
 /// it proves the cycle's cross-tick plumbing, not production cognition.)
-struct Investigator;
+struct Investigator(Arc<WorkingMemory>);
 #[async_trait]
 impl Faculty for Investigator {
     fn id(&self) -> FacultyId {
@@ -41,7 +40,7 @@ impl Faculty for Investigator {
         // working-memory render of its own recent acts (proprioception),
         // where each act-observation head carries the executor's result tokens
         // (ENTRY=…/CALLS=…). Not the raw burst, not the deleted fold.
-        let perceived = ws.perceived();
+        let perceived = crate::cognition::act_observe::test_support::perceived_with(ws, Some(&self.0));
         let after = |key: &str| -> Option<String> {
             perceived
                 .split(key)
@@ -105,11 +104,9 @@ async fn the_hands_change_the_mind_across_a_multi_act_investigation() {
     let wm = Arc::new(WorkingMemory::new(3));
     let cycle = WorkspaceCycle::new(
         vec![
-            Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
-            Arc::new(Investigator),
+            Arc::new(Investigator(Arc::clone(&wm))),
         ],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
 
@@ -186,7 +183,7 @@ async fn repeated_reads_and_scoped_discovery_reach_the_executor() {
         "old", "edited", "new", "missing", "available",
         "schema one", "schema two", "tree one", "tree two",
     ]).with_error_at(4));
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), admission()));
     let room = Uuid::new_v4();
     let chain = ActChain::new();
@@ -216,7 +213,7 @@ async fn repeated_reads_and_scoped_discovery_reach_the_executor() {
 async fn repeated_request_keeps_current_room_and_returns_fresh_evidence() {
     let exec = Arc::new(ScriptedExecutor::new(["room-a content", "room-b content"]));
     let wm = Arc::new(WorkingMemory::new(3));
-    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body_with_wm(exec.clone(), admission(), wm.clone()));
     let rooms = [Uuid::new_v4(), Uuid::new_v4()];
     for (i, room) in rooms.into_iter().enumerate() {
@@ -267,11 +264,9 @@ async fn it_settles_then_re_awakens_without_cranking_to_a_halt() {
     let wm = Arc::new(WorkingMemory::new(3));
     let cycle = WorkspaceCycle::new(
         vec![
-            Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
-            Arc::new(ActThenSpeak::new()),
+            Arc::new(ActThenSpeak::new().with_memory(Arc::clone(&wm))),
         ],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
 
@@ -344,7 +339,6 @@ async fn spoken_narrated_action_records_unfulfilled_promise() {
     let cycle = WorkspaceCycle::new(
         vec![Arc::new(SpeaksText(promise)) as Arc<dyn Faculty>],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body_with_wm(exec.clone(), admission(), Arc::clone(&wm)));
     let (step, _, _) = settle_step(
@@ -367,7 +361,6 @@ async fn spoken_narrated_action_records_unfulfilled_promise() {
     let cycle2 = WorkspaceCycle::new(
         vec![Arc::new(SpeaksText("the answer is 4, plainly.")) as Arc<dyn Faculty>],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm2)));
     let (step2, _, _) = settle_step(
@@ -411,7 +404,6 @@ async fn a_near_identical_copy_of_a_peers_line_is_a_pass_not_a_post() {
     let cycle = WorkspaceCycle::new(
         vec![Arc::new(SpeaksText(peer_line)) as Arc<dyn Faculty>],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body_with_wm(exec.clone(), admission(), Arc::clone(&wm)));
     let (step, _, _) = settle_step(&cycle, burst(), true, TurnFraming::ambient(), Situation::FreshContext, &ActChain::new()).await;
@@ -426,7 +418,6 @@ async fn a_near_identical_copy_of_a_peers_line_is_a_pass_not_a_post() {
     let cycle2 = WorkspaceCycle::new(
         vec![Arc::new(SpeaksText(own)) as Arc<dyn Faculty>],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm2)));
     let (step2, _, _) = settle_step(&cycle2, burst(), true, TurnFraming::ambient(), Situation::FreshContext, &ActChain::new()).await;
@@ -459,7 +450,6 @@ async fn fenced_content_over_unkept_promises_records_unverified_artifact() {
     let cycle = WorkspaceCycle::new(
         vec![Arc::new(SpeaksText(confabulated)) as Arc<dyn Faculty>],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body_with_wm(exec.clone(), admission(), Arc::clone(&wm)));
     let (step, _, _) = settle_step(
@@ -488,7 +478,6 @@ async fn fenced_content_over_unkept_promises_records_unverified_artifact() {
     let cycle2 = WorkspaceCycle::new(
         vec![Arc::new(SpeaksText(confabulated)) as Arc<dyn Faculty>],
         Arc::new(SalienceArbiter),
-        8,
     )
     .with_acting(body_with_wm(exec2, admission(), Arc::clone(&wm2)));
     let (step2, _, _) = settle_step(

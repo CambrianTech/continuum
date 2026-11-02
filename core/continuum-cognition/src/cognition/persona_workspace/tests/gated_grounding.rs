@@ -65,15 +65,7 @@ use super::*;
         }
 
         /// Test/stub source — floorless, so it never encodes a production floor.
-        fn floor_tokens(&self) -> u32 {
-            0
-        }
-        async fn deliver(
-            &self,
-            _ctx: &crate::cognition::rag_budget::RagContext,
-            _budget: u32,
-            resolution: crate::cognition::rag_budget::ResolutionPreference,
-        ) -> crate::cognition::rag_budget::RagDelivery {
+        async fn deliver(&self, _ctx: &crate::cognition::rag_budget::RagContext) -> crate::cognition::rag_budget::RagDelivery {
             self.entries.fetch_add(1, AtomicOrdering::SeqCst);
             self.entered.notify_one();
             // Park until the test opens the gate. `wait_for` returns immediately
@@ -82,13 +74,15 @@ use super::*;
             crate::cognition::rag_budget::RagDelivery {
                 source_id: "gated-grounding".to_string(),
                 items: vec![crate::cognition::rag_budget::RagItem {
+                    key: String::new(),
+                    summary: None,
+                    pointer: None,
                     content: "roster: Ivar [persona], win-claude [claude]".to_string(),
                     tokens: 12,
                     metadata: serde_json::Value::Null,
                 }],
                 tokens_used: 12,
                 truncated: false,
-                resolution_used: resolution,
             }
         }
     }

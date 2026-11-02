@@ -336,7 +336,7 @@ pub fn is_envelope_field(key: &str) -> bool {
 /// — silently `None` for an option, "invalid type … expected struct HandleRef" for a
 /// string. Five collisions before the guard (card ea28d2f6): actorKind (#3781),
 /// requestId (#4178), `handle` on the staging path (#3924 — why `dbPath` exists), and
-/// `jobHandle` (#4326); `agent/status`, `agent/stop` and `agent/wait` could not be
+/// `jobHandle` (#4326), where a command whose input was named `handle` could not be
 /// called through the envelope at all.
 pub const ENVELOPE_FIELDS: &[&str] =
     &["handle", "sessionId", "userId", "actorKind", "contextId", "requestId"];

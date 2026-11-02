@@ -1,27 +1,8 @@
-//! Serving-lane admission: lane pools, ambient turn permits and directed-turn reservation.
+//! Serving-lane admission: lane pools and directed-turn reservation.
 
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-
-/// Try to claim an ambient-turn slot. `Some(permit)` → run the ambient turn (hold the
-/// permit for the turn's lifetime; it releases on drop). `None` → all ambient slots
-/// are busy; the caller yields this ambient turn. Non-blocking (never waits).
-pub fn try_hold_ambient_turn() -> Option<tokio::sync::OwnedSemaphorePermit> {
-    LANES.try_hold_ambient_turn()
-}
-
-/// Wait at most `within` for an ambient permit — the bounded wait the mind grants a
-/// starving citizen (`cognition::turn_ledger::hold_ambient_turn_for` decides who is
-/// starving; the pool stays the pool). `None` = the wait ran out.
-pub async fn wait_ambient_turn(within: std::time::Duration) -> Option<tokio::sync::OwnedSemaphorePermit> {
-    tokio::time::timeout(
-        within,
-        LANES.acquire_resized(&LANES.ambient_semaphore(), &LANES.ambient_installed, LaneBudget::NonDirected),
-    )
-    .await
-    .ok()
-}
 
 /// Whether a directed line is pending for any citizen on this node — the reserved lane's
 /// re-arm signal. Attention is the mind's, so the mind installs the reader at boot; the
@@ -105,8 +86,6 @@ pub struct LaneAdmission {
     /// Serializes the rare live semaphore reconcile so two concurrent re-plans can't
     /// double-count a grow.
     pub(super) resize_lock: Mutex<()>,
-    pub(super) ambient: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>,
-    pub(super) ambient_installed: AtomicUsize,
     /// Held-work callers queued for the non-directed budget right now. While it is
     /// non-zero an AMBIENT caller (a mind with no card in hand) does not enter the
     /// queue — work first (2026-09-15, [`LanePriority`]).
@@ -279,8 +258,6 @@ impl LaneAdmission {
             serving_installed: AtomicUsize::new(0),
             nondirected_installed: AtomicUsize::new(0),
             resize_lock: Mutex::new(()),
-            ambient: std::sync::OnceLock::new(),
-            ambient_installed: AtomicUsize::new(0),
             work_waiting: AtomicUsize::new(0),
             released: tokio::sync::Notify::const_new(),
         }
@@ -312,7 +289,6 @@ impl LaneAdmission {
             self.served.load(Ordering::Acquire),
             self.serving_installed.load(Ordering::Acquire),
             self.nondirected_installed.load(Ordering::Acquire),
-            self.ambient_installed.load(Ordering::Acquire),
         );
         self.served.store(lanes, Ordering::Release);
         if let Some(sem) = self.serving.get() {
@@ -325,17 +301,10 @@ impl LaneAdmission {
                 lanes.saturating_sub(1).max(1),
             );
         }
-        // The ambient-turn pool rides the SAME budget, so it grows on the same signal.
-        // Missing this is how a pool installed at the boot floor would stay there for the
-        // process's life while serving grew underneath it.
-        if let Some(sem) = self.ambient.get() {
-            resize_semaphore_to(sem, &self.ambient_installed, lanes.saturating_sub(1).max(1));
-        }
         let after = (
             lanes,
             self.serving_installed.load(Ordering::Acquire),
             self.nondirected_installed.load(Ordering::Acquire),
-            self.ambient_installed.load(Ordering::Acquire),
         );
         drop(_guard);
         if after != before {
@@ -345,7 +314,6 @@ impl LaneAdmission {
                 installed = after.1 as u64,
                 debt = after.1.saturating_sub(lanes) as u64,
                 nondirected_installed = after.2 as u64,
-                ambient_installed = after.3 as u64,
                 "lane admission reconciled; installed includes held shrink debt, zero means uninitialized"
             );
         }
@@ -364,33 +332,6 @@ impl LaneAdmission {
             let n = self.nondirected_budget();
             self.nondirected_installed.store(n, Ordering::Release);
             std::sync::Arc::new(tokio::sync::Semaphore::new(n))
-        })
-    }
-
-    /// See [`try_hold_ambient_turn`]. Lazy like its siblings, and for the same load-bearing
-    /// reason: it must capture the budget at FIRST USE, once serving has published a real
-    /// lane count — never at construction, when only the boot ceiling is known.
-    /// The ambient pool itself, for a bounded wait (see `hold_ambient_turn_for`).
-    pub fn ambient_semaphore(&self) -> std::sync::Arc<tokio::sync::Semaphore> {
-        self.ambient
-            .get_or_init(|| {
-                let n = self.nondirected_budget();
-                self.ambient_installed.store(n, Ordering::Release);
-                std::sync::Arc::new(tokio::sync::Semaphore::new(n))
-            })
-            .clone()
-    }
-
-    pub fn try_hold_ambient_turn(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
-        self.try_acquire_resized(
-            &self.ambient_semaphore(),
-            &self.ambient_installed,
-            LaneBudget::NonDirected,
-        )
-        .or_else(|| {
-            // Count the miss. The permit is non-blocking, so a None here IS the yield.
-            AMBIENT_YIELDS.fetch_add(1, Ordering::Relaxed);
-            None
         })
     }
 

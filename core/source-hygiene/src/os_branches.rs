@@ -37,7 +37,7 @@ impl SourceRule for OsBranches {
     fn check(&self, file: &SourceFile) -> Vec<Violation> {
         file.production_lines()
             .filter(|(_, l)| {
-                let code = crate::split_code_and_comment(l).0;
+                let code = crate::lexer::split_code_and_comment(l).0;
                 branches_on_os(code)
             })
             .map(|(n, l)| Violation { rule: self.name(), file: file.rel.clone(), line: n, source: l.trim().to_string() })

@@ -1,6 +1,5 @@
 use crate::code::{FileEngine, ShellSession};
 use crate::gpu::GpuMemoryManager;
-use crate::modules::agent::AgentModule;
 use crate::modules::ai_provider::AIProviderModule;
 use crate::modules::airc::AircModule;
 use crate::modules::airc_bridge_directive::AircBridgeDirectiveModule;

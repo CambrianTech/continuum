@@ -156,6 +156,7 @@ pub struct CodeListParams {
 #[async_trait]
 impl ActionCommand for CodeList {
     const NAME: &'static str = "code/list";
+    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Observes;
     const ALIASES: &'static [&'static str] = &["list_files", "list_dir", "glob", "ls"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
@@ -293,6 +294,7 @@ pub struct CodeExistsParams {
 #[async_trait]
 impl ActionCommand for CodeExists {
     const NAME: &'static str = "code/exists";
+    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Observes;
     const DESCRIPTION: &'static str =
         "Check whether a path exists and its kind (file / directory / symlink) in one roundtrip.";
     type Params = CodeExistsParams;
@@ -325,6 +327,7 @@ pub struct CodeGlobParams {
 #[async_trait]
 impl ActionCommand for CodeGlob {
     const NAME: &'static str = "code/glob";
+    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Observes;
     const DESCRIPTION: &'static str =
         "Find files by glob pattern (e.g. `**/*.rs` matches Rust files at any depth, layout-independent). Returns matching workspace-relative paths.";
     type Params = CodeGlobParams;
@@ -361,6 +364,7 @@ pub struct CodeTreeParams {
 #[async_trait]
 impl ActionCommand for CodeTree {
     const NAME: &'static str = "code/tree";
+    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Observes;
     const ALIASES: &'static [&'static str] = &["file_tree", "directory_tree", "tree"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
@@ -420,6 +424,7 @@ pub struct CodeSearchParams {
 #[async_trait]
 impl ActionCommand for CodeSearch {
     const NAME: &'static str = "code/search";
+    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Observes;
     const ALIASES: &'static [&'static str] = &["grep", "search_files", "ripgrep", "rg", "search"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
@@ -521,8 +526,9 @@ impl ActionCommand for CodeSearch {
                         .collect()
                 })
                 .unwrap_or_default();
+            // Every top-level directory: the layout is the grounding, and the shared executor's
+            // whole-or-handle custody sizes what she is handed (no count cut here).
             tops.sort();
-            tops.truncate(24);
             error = Some(format!(
                 "No files matched glob {:?}. Workspace root is {} and all paths are \
                  relative to it; its top-level directories are: [{}]. Re-check the \

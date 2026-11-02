@@ -118,9 +118,9 @@ fn cargo_test(
                 cargo.grant(),
             );
             command.env("CARGO_TARGET_DIR", target);
-            crate::inference::lane_process::holding(
+            continuum_process::holding(
                 cargo.kept(),
-                crate::inference::lane_process::run_owned(
+                continuum_process::run_owned(
                     command,
                     None,
                     "gym cargo",
@@ -143,7 +143,7 @@ fn cargo_test(
                 }
             };
             (
-                matches!(o.ended, crate::inference::lane_process::Ended::Exited(status) if status.success()),
+                matches!(o.ended, continuum_process::Ended::Exited(status) if status.success()),
                 tail,
             )
         }

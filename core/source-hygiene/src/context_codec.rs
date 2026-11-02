@@ -16,22 +16,16 @@
 //! - `collapse_outside_the_view`: collapsing what she sees anywhere but a view start. Working
 //!   memory bounds RAM by handle; the view decides what she reads.
 //! - `hand_churn_labels`: ordering sources by a label (`churn_of`) instead of measured motion.
+//! - sizing what she sees outside the one allocation is `budget_discipline::SelfSized`'s class.
 
-use super::{SourceFile, SourceRule, Violation};
+use super::{sites, SourceFile, SourceRule, Violation};
 
 /// The prompt assembly, where every message must come from the view or the tail's renderer.
 const PROMPT_ASSEMBLY: &str = "cognition/llm_deliberation_faculty/prompt/";
 
-pub struct PromptMessagesOutsideTheView;
-pub struct CollapseOutsideTheView;
-pub struct HandChurnLabels;
-
-fn sites(file: &SourceFile, rule: &'static str, hit: impl Fn(&str) -> bool) -> Vec<Violation> {
-    file.production_lines()
-        .filter(|(_, l)| hit(crate::split_code_and_comment(l).0))
-        .map(|(n, l)| Violation { rule, file: file.rel.clone(), line: n, source: l.trim().to_string() })
-        .collect()
-}
+struct PromptMessagesOutsideTheView;
+struct CollapseOutsideTheView;
+struct HandChurnLabels;
 
 impl SourceRule for PromptMessagesOutsideTheView {
     fn name(&self) -> &'static str {
@@ -42,7 +36,9 @@ impl SourceRule for PromptMessagesOutsideTheView {
         if !file.rel.starts_with(PROMPT_ASSEMBLY) {
             return Vec::new();
         }
-        sites(file, self.name(), |code| code.contains("ChatMessage::text(") || code.contains("ChatMessage::tool_results("))
+        sites(file, self.name(), |code| {
+            (code.contains("ChatMessage::text(") || code.contains("ChatMessage::tool_results(")).then(|| "a message pushed by hand".to_owned())
+        })
     }
 }
 
@@ -53,7 +49,7 @@ impl SourceRule for CollapseOutsideTheView {
 
     fn check(&self, file: &SourceFile) -> Vec<Violation> {
         sites(file, self.name(), |code| {
-            !code.contains("fn ") && (code.contains(".collapse_over(") || code.contains("collapse_results_over_cap()"))
+            (code.contains(".collapse_over(") || code.contains("collapse_results_over_cap()")).then(|| "a collapse outside the view".to_owned())
         })
     }
 }
@@ -64,7 +60,7 @@ impl SourceRule for HandChurnLabels {
     }
 
     fn check(&self, file: &SourceFile) -> Vec<Violation> {
-        sites(file, self.name(), |code| code.contains("churn_of(") && !code.contains("fn churn_of("))
+        sites(file, self.name(), |code| code.contains("churn_of(").then(|| "an order by label".to_owned()))
     }
 }
 

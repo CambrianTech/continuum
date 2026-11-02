@@ -223,14 +223,13 @@ mod tests {
     // what this catches: the RIGHT command losing the alphabetical coin-flip. #3769
     // added the token tier so an invented verb gets suggestions instead of silence,
     // and then — measured live on the box that produced the original 31-call loop —
-    // `list_cards` returned agent/list, ai/lora/list, ai/models/list,
-    // ai/providers/list, benchmark/list, code/list: six names, none of them the two
+    // `list_cards` returned ai/lora/list, ai/models/list, ai/providers/list,
+    // benchmark/list, code/list and one since-deleted verb: six names, none of the two
     // she needed, because twenty commands tie at score 0 and take(6) cuts at `code/`.
     // Suggestions are not a route unless the route survives the window.
     #[test]
     fn the_closest_command_survives_the_window_when_many_share_a_word() {
         let names = [
-            "agent/list",
             "ai/lora/list",
             "ai/models/list",
             "ai/providers/list",

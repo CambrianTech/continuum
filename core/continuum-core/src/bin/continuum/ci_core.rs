@@ -396,8 +396,8 @@ pub(super) async fn prebuilt_checkout_sha(
     if let Some(git_dir) = git_dir {
         cmd.env("GIT_DIR", git_dir);
     }
-    // owned (lane_process::run_owned): a hung git is ended with anything it started
-    let output = continuum_core::inference::lane_process::run_owned(
+    // owned (continuum_process::run_owned): a hung git is ended with anything it started
+    let output = continuum_process::run_owned(
         tokio::process::Command::from(cmd),
         Some(Duration::from_secs(30)),
         "prebuilt-head-lookup",
@@ -406,8 +406,8 @@ pub(super) async fn prebuilt_checkout_sha(
     .await
     .map_err(|e| format!("cannot read prebuilt checkout HEAD in {}: {e}", cwd.display()))?;
     let status = match output.ended {
-        continuum_core::inference::lane_process::Ended::Exited(status) => status,
-        continuum_core::inference::lane_process::Ended::TimedOut { .. } => {
+        continuum_process::Ended::Exited(status) => status,
+        continuum_process::Ended::TimedOut { .. } => {
             return Err(format!("prebuilt checkout HEAD lookup timed out in {}", cwd.display()))
         }
     };

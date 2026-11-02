@@ -3,7 +3,7 @@
 //!
 //! Why this verb exists (Joel, 2026-08-31): the USERS & AGENTS panel is GLOBAL
 //! scope — "who all exists in this continuum and who is online" — but its only
-//! global source was `persona/roster` (residents-only, 4 rows), so every other
+//! global source was the old residents-only roster verb (4 rows), so every other
 //! peer's liveness came from the FOCUSED ROOM's presence and flipped when you
 //! switched tabs ("online means online-for-the-tab"). The daemon has held the
 //! whole answer all along: `room_roster_cards_in(room: None)` is the scope
@@ -67,8 +67,8 @@ pub struct PresenceDirectoryEntry {
     /// ONLINE = heartbeat within the live presence window, OR resident on this
     /// node (residency wins — see module doc).
     pub online: bool,
-    /// Resident on THIS node (live service loop) — the `persona/roster` signal,
-    /// folded in so one read answers the panel.
+    /// Resident on THIS node (live service loop), folded in so one read answers
+    /// the panel.
     pub resident: bool,
     /// Last heartbeat, unix ms — the REAL recency stamp (the "9d ago" rows were
     /// identity-creation dates being passed off as activity).

@@ -6,9 +6,8 @@
  * or id. Adding a capability is a real architectural decision (new kind
  * of task) and should be rare.
  *
- * Wire-exported via ts-rs because `PersonaContext` (recipe layer) and
- * the `cognition/respond` IPC payload both carry capability vocab as
- * a list of these values. TS hosts read/write the same kebab-case
+ * Wire-exported via ts-rs because IPC payloads carry capability vocab
+ * as a list of these values. TS hosts read/write the same kebab-case
  * strings serde produces.
  */
 export type Capability = "text-generation" | "chat" | "tool-use" | "vision" | "audio-input" | "audio-output" | "streaming" | "fine-tuning" | "lora-adapter" | "image-generation" | "embedding" | "reranking";

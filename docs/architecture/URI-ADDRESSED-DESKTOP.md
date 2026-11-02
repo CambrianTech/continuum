@@ -52,9 +52,9 @@ embodiment work rides the avatar plan (JEPA-class world models over VLA).
 |---|---|---|
 | rounds index | `BenchViewState` (board truth per card since #3673) | `benchmark/rounds` |
 | round / card | Bench + Kanban + Roster + Chat | `benchmark/rounds`, `work/get` |
-| persona profile | Roster + presence directory + genome | `persona/roster`, `presence/directory`, `genome/list` |
+| persona profile | Presence directory + genome | `presence/directory`, `genome/list` |
 | persona mind | the RAG allocation + deliveries | `persona/rag-inspect` |
-| persona explore / neighborhood | presence directory + roster + room bindings + sight, rendered as a world | `presence/directory`, `persona/roster`, `persona/rag-inspect` |
+| persona explore / neighborhood | presence directory + room bindings + sight, rendered as a world | `presence/directory`, `persona/rag-inspect` |
 | persona learning | training-trigger buckets + verdicts | `genome/training-trigger/status` |
 | core | Serving + metrics | `serving/*`, `ai/report` |
 

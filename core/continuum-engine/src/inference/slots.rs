@@ -38,6 +38,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::paging::pool::{PagedResourcePool, PinHandle, PoolConfig};
 
+mod state_sampler;
+#[cfg(test)]
+use state_sampler::StateSampler;
 mod citizen_slots;
 pub use citizen_slots::*;
 mod page_key;
@@ -58,6 +61,9 @@ use relaunch_discard::DiscardLog;
 pub use engine_generation::*;
 mod placement;
 pub use placement::*;
+pub(crate) mod page_io;
+pub(crate) use page_io::admit as admit_page_io;
+pub use page_io::PageIoSettle;
 
 #[cfg(test)]
 mod tests;

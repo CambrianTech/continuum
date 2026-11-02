@@ -83,14 +83,10 @@ pub const HEADER_COMMAND_ENV: &str = "continuum.command.env";
 /// airc header on the reply side: `"ok"` or `"error"`.
 pub const HEADER_COMMAND_STATUS: &str = "continuum.command.status";
 
-/// airc header naming the consumer-namespaced body hint.
+/// airc header naming the consumer-namespaced body hint (the event protocol's frames).
+/// Commands carry no hint: a command request and its result are airc's own typed
+/// frame kinds (`Command` / `CommandResult`) on the addressed command bus.
 pub const HEADER_CONTINUUM_BODY_HINT: &str = "continuum.body_hint";
-
-/// Body-hint value for request envelopes.
-pub const COMMAND_REQUEST_BODY_HINT: &str = "continuum.command.request.v1";
-
-/// Body-hint value for reply envelopes.
-pub const COMMAND_RESPONSE_BODY_HINT: &str = "continuum.command.response.v1";
 
 // ─── Typed envelopes ─────────────────────────────────────────────────
 
@@ -281,7 +277,5 @@ mod tests {
         assert_eq!(HEADER_COMMAND_ENV, "continuum.command.env");
         assert_eq!(HEADER_COMMAND_STATUS, "continuum.command.status");
         assert_eq!(HEADER_CONTINUUM_BODY_HINT, "continuum.body_hint");
-        assert_eq!(COMMAND_REQUEST_BODY_HINT, "continuum.command.request.v1");
-        assert_eq!(COMMAND_RESPONSE_BODY_HINT, "continuum.command.response.v1");
     }
 }

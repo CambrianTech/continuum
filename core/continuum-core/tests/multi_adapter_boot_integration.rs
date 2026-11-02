@@ -25,7 +25,7 @@
 //! restart — every persona using local inference returns `-3` for the
 //! rest of the boot. Chat is unusable.
 //!
-//! The existing `vision_integration.rs` only registers ONE adapter
+//! The single-adapter vision test registered only ONE adapter
 //! (qwen2-vl), so it never exercised the multi-row scenario. Result:
 //! Joel's bug had no test that would have caught it. This file fixes
 //! that — it walks every llamacpp-local row in the Rust catalog (catalog.rs) whose

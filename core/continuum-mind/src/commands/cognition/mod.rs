@@ -41,7 +41,6 @@ pub mod recall_engrams;
 pub mod record_content;
 pub mod redact_memory;
 pub mod register_domain_keywords;
-pub mod respond;
 pub mod score_interaction;
 pub mod select_model;
 pub mod set_sleep_mode;
@@ -50,7 +49,7 @@ pub mod track_response;
 pub mod vision_describe;
 
 // The stateless commands are continuum-cognition's; the old paths still name them.
-pub use continuum_cognition::commands::{check_redundancy, embed_tools, generate_recipe, generate_response, plan_turn_batch, rate_proposals, semantic_search_tools, should_respond, validate_response_decision};
+pub use continuum_cognition::commands::{embed_tools, generate_recipe, generate_response, plan_turn_batch, rate_proposals, semantic_search_tools, should_respond, validate_response_decision};
 
 use admit_inbox_message::AdmitInboxMessage;
 use cache_message::CacheMessage;
@@ -72,7 +71,6 @@ use recall_engrams::RecallEngrams;
 use record_content::RecordContent;
 use redact_memory::RedactMemory;
 use register_domain_keywords::RegisterDomainKeywords;
-use respond::Respond;
 use select_model::SelectModel;
 use set_sleep_mode::SetSleepMode;
 use sync_adapters::SyncAdapters;
@@ -86,7 +84,7 @@ use vision_describe::VisionDescribe;
 /// [`CognitionModule::commands`](crate::modules::cognition::CognitionModule) so they
 /// reach `command_registry()`, the persona tool surface, the ACL, codegen, and `uu`.
 ///
-/// The stateless oxidizer commands ([`should_respond`], [`check_redundancy`],
+/// The stateless oxidizer commands ([`should_respond`],
 /// [`generate_response`], [`embed_tools`], [`semantic_search_tools`],
 /// [`validate_response_decision`], [`score_interaction`], [`check_adequacy`],
 /// [`plan_turn_batch`], [`rate_proposals`], [`generate_recipe`]) hold no module state,
@@ -163,9 +161,6 @@ pub fn command_objects(
             state: state.clone(),
         }),
         Arc::new(RecallEngrams {
-            state: state.clone(),
-        }),
-        Arc::new(Respond {
             state: state.clone(),
         }),
         Arc::new(InboxDrainFrame { state }),

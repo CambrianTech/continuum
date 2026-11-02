@@ -129,8 +129,8 @@ impl ChatProjection {
     /// **multi-hop replay** re-emits the same logical message with a FRESH
     /// `message_id` (#16) — which the id check alone cannot collapse, and which
     /// showed as doubled turns in every client. Content-identity is the same
-    /// stance the cognition admission dedup already takes (`content_hash`,
-    /// `cognition_io.rs`): one `(sender, content)` is one message, however many
+    /// stance the cognition admission dedup already takes (`content_hash_sha256`,
+    /// `inbox_admission.rs`): one `(sender, content)` is one message, however many
     /// ids the bus minted for it. Identity is resolved from the roster, never
     /// carried on the message (see `AircChatPosted`).
     pub(super) fn apply_message(&mut self, msg: AircChatPosted) {

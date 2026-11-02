@@ -29,7 +29,6 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     // shape: `code/search` returned the `_sympify` location she must edit next. Large
     // enough to clear the trail-head threshold so the pinned block surfaces.
     let wm = Arc::new(WorkingMemory::new(8));
-    wm.set_served_window(16_384);
     let needle = "sympy/core/expr.py:123:        return self == sympify(other)  # _sympify HERE";
     let grep_result = format!(
         "code/search matches:\n{needle}\n{}",
@@ -265,7 +264,6 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     // (a burst to pointers once the share is exceeded), so the window is sized to
     // hold this 16.8k-char inventory beside the next batch; a smaller window would
     // collapse it at the batch's receipt, which is the other mechanism, not this one.
-    wm.set_served_window(65_536);
     let pin = crate::cognition::tool_executor::spill::LivePin::new();
     let custody = pin.retain(persona, &inventory);
     let handle = custody.handle().expect("saved inventory").to_owned();
@@ -285,8 +283,8 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
         refit: roomy.refit, system: String::new(), input_identity: [0; 32],
         estimated_prompt_tokens: estimate, completion_reserve: 0,
         capacity_error: None, budget_fault: None, protocol_error: None, segments: Vec::new(),
-        newest_result_reduced: false, newest_result_tokens: 0,
-        messages: roomy.messages,
+        newest_result_reduced: false, newest_result_tokens: 0, allocation: None,
+        messages: roomy.messages, tools: crate::cognition::tool_surface::SelectedSurface::none(), tools_grant: 0,
     };
     let corrected = faculty.refit_rejected_prompt(snapshot, estimate as u32 + 1, estimate as u32, 0).unwrap();
     assert!(corrected.estimated_prompt_tokens < estimate);
@@ -781,7 +779,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
         "the newest burst line must survive once the budget prices the surface it \
                  actually sends — if this regresses, the accounting is double-counting the \
                  withheld registry again (card dec1a7ff); selected={}, estimated={}, reserve={}, capacity={:?}\n{}",
-        faculty.select_tool_surface(&ws).tokens,
+        faculty.prompt_view(&ws).tools.tokens,
         view.estimated_prompt_tokens,
         view.completion_reserve,
         view.capacity_error,

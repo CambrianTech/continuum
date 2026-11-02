@@ -491,6 +491,8 @@ mod tests {
     // and refuse changed input under the same identity before spending inference.
     #[tokio::test]
     async fn candidate_replay_preserves_acceptance_without_teacher_regeneration() {
+        // The grader's scratch is the eval-roots class: the test registry holds it.
+        continuum_kernel::system_resources::disk_reporters::prepare_writer_fixture().await;
         let temp = tempfile::tempdir().unwrap();
         let service = Arc::new(DatasetService::new(temp.path().join("datasets")));
         let gym_cache = temp.path().join("gyms");

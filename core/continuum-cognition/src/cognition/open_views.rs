@@ -51,22 +51,16 @@ pub struct OpenView {
     /// checkout; `None` = her own workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-    /// What she understood when she last read it, in her own words: the reasoning she stated
-    /// for that act. A view that says only "read 1-498 (all of it)" told her THAT she read a
-    /// file but not WHAT it said, so once the bytes left her window she read it again (Benchy,
-    /// the M5, 2026-10-18 05:01-05:03Z, `lib.rs` re-read whole with this very line in her
-    /// prompt). Her note carries the takeaway forward; the bytes stay a page away.
+    /// Intent stated before the read, not a conclusion drawn from its result. Offered only
+    /// in the whole representation; the shared context allocator decides its visibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
-/// How many views a mind keeps open. A count of views is the size of this state, not a
-/// context bound: each renders as one line (~150 chars), so eight cost ~300 tokens, under
-/// 1% of the 34,560-token lane this was measured on and ~6% of a 5,000-token one. A card's
-/// working set is a handful of files and the outputs that came back from building them;
-/// the ninth view opened evicts the least recently touched one.
-// derived-or-floor: a count of records in her own state (one rendered line each), never a
-// token, a second or a rate; the per-line cost above is what it spends of a window
+/// Storage retention in records, not a prompt budget. Cursor and intent costs are measured
+/// separately by the shared context allocator. The ninth view evicts the least recently
+/// touched record; this bound must never be used to estimate its rendered cost.
+// derived-or-floor: a count of retained records in her own state, never prompt tokens
 const OPEN_VIEWS_KEPT: usize = 8;
 
 /// The open views of one mind, least recently touched first.
@@ -163,7 +157,11 @@ impl OpenViews {
     /// touches that file's view: its line numbers are the saved result's, which open with a
     /// header line, not the file's.
     fn note_output_page(&mut self, act: &Observation, seq: u64) -> bool {
-        let Some(handle) = act.call.input.get("outputId").and_then(|v| v.as_str()) else {
+        let header = crate::cognition::tool_executor::spill::result_scalars(&act.output.result.content);
+        // The output she named, or, for a call by act number, the one the result echoes.
+        let named = act.call.input.get("outputId").and_then(|v| v.as_str());
+        let echoed = header.as_ref().and_then(|h| h.get("outputId")?.as_str());
+        let Some(handle) = named.or(echoed) else {
             return false;
         };
         let Some(index) = self.views.iter().position(|v| {
@@ -175,7 +173,6 @@ impl OpenViews {
         let mut view = self.views.remove(index);
         view.touched_seq = seq;
         if act.completed_successfully() && matches!(view.subject, ViewSubject::Output { .. }) {
-            let header = crate::cognition::tool_executor::spill::result_scalars(&act.output.result.content);
             let total = header.as_ref().and_then(|h| h.get("totalLines")?.as_u64()).and_then(|n| u32::try_from(n).ok());
             let truncated = header.as_ref().and_then(|h| h.get("truncated")?.as_bool()).unwrap_or(true); // unwrap_or: a page that does not say it came back whole is not counted as read
             let line = |key: &str| act.call.input.get(key)?.as_u64().and_then(|n| u32::try_from(n).ok());
@@ -225,17 +222,13 @@ impl OpenViews {
         }
     }
 
-    /// One compact block, one line per view visible from `scope`, ordered by what each view
-    /// is OF (never by recency), so a page read changes only its own line. `None` when no
-    /// view is open here.
-    /// Attach her stated reasoning to every view the acts of this receipt touched (the views
-    /// whose `touched_seq` is `seq`), clipped to `max_chars` (her window-relative echo budget).
-    pub fn annotate(&mut self, seq: u64, intent: &str, max_chars: usize) -> bool {
-        let note = intent.split_whitespace().collect::<Vec<_>>().join(" ");
+    /// Retain the intent preceding this receipt without applying a source-local budget.
+    /// Visibility of this detail belongs to the shared context allocation.
+    pub fn annotate(&mut self, seq: u64, label: &str) -> bool {
+        let note = label.split_whitespace().collect::<Vec<_>>().join(" ");
         if note.is_empty() {
             return false;
         }
-        let note: String = note.chars().take(max_chars).collect();
         let mut changed = false;
         for view in self.views.iter_mut().filter(|v| v.touched_seq == seq) {
             if view.note.as_deref() != Some(note.as_str()) {
@@ -252,12 +245,19 @@ impl OpenViews {
          start_line/end_line pages a file; tool/output with outputId and startLine/endLine \
          pages an output:";
 
-    /// Each view visible from `scope`: its stable key (its checkout and subject, so the same
-    /// relative path in two checkouts is two views) and its one line.
-    pub fn lines(&self, scope: Option<&str>) -> Vec<(String, String)> {
+    /// Each visible view's stable key, whole representation and resolvable cursor. Planning
+    /// prose is detail, never part of the mandatory cursor floor (FOCUS-CONTRACT rules 1–3).
+    pub fn lines(&self, scope: Option<&str>) -> Vec<ViewLine> {
         let mut visible: Vec<&OpenView> = self.views.iter().filter(|v| visible_from(v, scope)).collect();
         visible.sort_by(|a, b| a.subject.cmp(&b.subject));
-        visible.into_iter().map(|view| (view_key(view), render_line(view))).collect()
+        visible.into_iter().map(|view| {
+            let pointer = render_cursor(view);
+            let full = match &view.note {
+                Some(note) => format!("{pointer}; intent before this read: \"{note}\""),
+                None => pointer.clone(),
+            };
+            ViewLine { key: view_key(view), full, pointer, touched_seq: view.touched_seq }
+        }).collect()
     }
 
     /// The keys of views her hands cannot see from `scope` (they stand in another checkout):
@@ -273,12 +273,21 @@ impl OpenViews {
             return None;
         }
         let mut out = String::from(Self::BANNER);
-        for (_, line) in lines {
+        for line in lines {
             out.push_str("\n- ");
-            out.push_str(&line);
+            out.push_str(&line.full);
         }
         Some(out)
     }
+}
+
+/// One open view as her view renders it: its key, its whole and pointer lines, and the act that
+/// last read it (its cause).
+pub struct ViewLine {
+    pub key: String,
+    pub full: String,
+    pub pointer: String,
+    pub touched_seq: u64,
 }
 
 fn visible_from(view: &OpenView, scope: Option<&str>) -> bool {
@@ -297,7 +306,7 @@ fn view_key(view: &OpenView) -> String {
     }
 }
 
-fn render_line(view: &OpenView) -> String {
+fn render_cursor(view: &OpenView) -> String {
     let mut line = match &view.subject {
         ViewSubject::File { path } => path.clone(),
         ViewSubject::Output { handle } => format!("output `{handle}` (from {})", view.label),
@@ -324,9 +333,6 @@ fn render_line(view: &OpenView) -> String {
     }
     if let (ViewSubject::File { .. }, Some(handle)) = (&view.subject, &view.handle) {
         line.push_str(&format!(" (that whole read is saved as output `{handle}`)"));
-    }
-    if let Some(note) = &view.note {
-        line.push_str(&format!("; my note when I read it: \"{note}\""));
     }
     line
 }

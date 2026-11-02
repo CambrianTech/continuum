@@ -47,7 +47,6 @@ impl Refusal {
 /// What one completed turn cost, as the turn's own metrics and receipts measured it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Completion {
-    pub generations: u32,
     pub acts: u32,
     /// The turn's wall time, settle to settle.
     pub wall_ms: u64,
@@ -73,6 +72,12 @@ pub struct Turn {
 pub struct ResidentLedger {
     turns: Vec<Turn>,
     parked_on: Option<Refusal>,
+    /// Generations served since the last window closed, counted when each was served, whether
+    /// or not its turn has settled. A resident's turn may run unlimited acts (her own agency), so
+    /// a window that counted only settled turns read a mind serving dozens of generations inside
+    /// one long turn as stalled (Aris on the M5, 2026-10-31: one turn open from 22:00:35Z, ~77
+    /// generations served, "demand 1, completions 0").
+    served: u32,
     /// The last model that answered her; empty until one has.
     model: String,
 }
@@ -99,6 +104,11 @@ impl ResidentLedger {
         self.parked_on = None;
     }
 
+    /// One generation was served to her, now: counted in the window it happened in.
+    pub fn note_generation(&mut self) {
+        self.served = self.served.saturating_add(1);
+    }
+
     /// Close the window `span`: its turns move into the summary, the parked refusal stays
     /// standing. `in_flight_since_ms` is when her unsettled turn started, if one is in flight:
     /// a turn that has run since before the window opened is demand the window never saw settle
@@ -107,7 +117,8 @@ impl ResidentLedger {
     /// window; if it never settles, it spans the next window whole and is counted there.
     pub fn close(&mut self, span: Window, in_flight_since_ms: Option<u64>) -> ResidentWindow {
         let spanning = in_flight_since_ms.filter(|start| *start <= span.start_ms);
-        ResidentWindow::of(std::mem::take(&mut self.turns), self.parked_on, spanning, &self.model)
+        let served = std::mem::take(&mut self.served);
+        ResidentWindow::of(std::mem::take(&mut self.turns), self.parked_on, spanning, &self.model, served)
     }
 }
 
@@ -139,7 +150,7 @@ pub struct ResidentWindow {
 }
 
 impl ResidentWindow {
-    fn of(turns: Vec<Turn>, parked_on: Option<Refusal>, in_flight_since_ms: Option<u64>, model: &str) -> Self {
+    fn of(turns: Vec<Turn>, parked_on: Option<Refusal>, in_flight_since_ms: Option<u64>, model: &str, served: u32) -> Self {
         let completed: Vec<&Completion> = turns.iter().filter_map(|t| t.completion.as_ref()).collect();
         let refusals: Vec<Refusal> = turns.iter().filter_map(|t| t.refusal).collect();
         let mut wall: Vec<u64> = completed.iter().map(|c| c.wall_ms).collect();
@@ -159,9 +170,10 @@ impl ResidentWindow {
         };
         let dominant = dominant(&refusals).or(parked_on.map(|r| (r, 0)));
         Self {
-            offered: (turns.len() as u32) + u32::from(turns.is_empty() && (parked_on.is_some() || in_flight_since_ms.is_some())),
+            offered: (turns.len() as u32)
+                + u32::from(turns.is_empty() && (parked_on.is_some() || in_flight_since_ms.is_some() || served > 0)),
             completions: completed.len() as u32,
-            generations: completed.iter().map(|c| c.generations).sum(),
+            generations: served,
             acts: completed.iter().map(|c| c.acts).sum(),
             refused: refusals.len() as u32,
             latency_p50_ms: quantile(&mut wall, 1, 2),

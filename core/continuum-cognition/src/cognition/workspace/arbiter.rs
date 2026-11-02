@@ -11,18 +11,14 @@ use super::*;
 /// intelligence lives in the faculties (and, later, a learned focuser); the
 /// arbiter only integrates and focuses it.
 pub trait Arbiter: Send + Sync {
-    /// Focus `candidates` down to what should enter the bounded workspace for
-    /// THIS tick's `ctx`. INPUT-side attention only — curates the context the
-    /// model attends to, never the model's output.
-    fn focus(
-        &self,
-        candidates: Vec<Contribution>,
-        capacity: usize,
-        ctx: &FocusContext<'_>,
-    ) -> Vec<Contribution>;
+    /// Order `candidates` for THIS tick's `ctx`. INPUT-side attention only — curates the
+    /// context the model attends to, never the model's output. It never cuts by a count:
+    /// every bid is forwarded, and how much of each she sees is her view's one allocation
+    /// (MIND-CONTEXT, ONE-BUDGET; a top-k spotlight was a cut outside it).
+    fn focus(&self, candidates: Vec<Contribution>, ctx: &FocusContext<'_>) -> Vec<Contribution>;
 }
 
-/// Top-k by ML salience within the workspace's bounded capacity.
+/// Every bid, ordered by ML salience.
 ///
 /// This is the **bootstrap** policy: pure exploitation, attention at temperature
 /// 0 — the highest-salience bids always win. It is *greedy*, so on its own it
@@ -40,18 +36,8 @@ impl Arbiter for SalienceArbiter {
     /// Blind top-k by ML salience — ignores the situation (`_ctx`). It is the
     /// floor (outlier A): every richer, situation-aware focuser must beat THIS on
     /// the scoreboard to earn its latency.
-    fn focus(
-        &self,
-        mut candidates: Vec<Contribution>,
-        capacity: usize,
-        _ctx: &FocusContext<'_>,
-    ) -> Vec<Contribution> {
-        candidates.sort_by(|a, b| {
-            b.salience
-                .partial_cmp(&a.salience)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        candidates.truncate(capacity);
+    fn focus(&self, mut candidates: Vec<Contribution>, _ctx: &FocusContext<'_>) -> Vec<Contribution> {
+        candidates.sort_by(|a, b| b.salience.total_cmp(&a.salience));
         candidates
     }
 }
@@ -100,12 +86,7 @@ impl Default for SituationFocusArbiter {
 }
 
 impl Arbiter for SituationFocusArbiter {
-    fn focus(
-        &self,
-        candidates: Vec<Contribution>,
-        capacity: usize,
-        ctx: &FocusContext<'_>,
-    ) -> Vec<Contribution> {
+    fn focus(&self, candidates: Vec<Contribution>, ctx: &FocusContext<'_>) -> Vec<Contribution> {
         // `stable` MUST NOT DECIDE ATTENTION — its own contract says so.
         //
         // [`Contribution::stable`] is documented as "a SERIALIZATION-order property,
@@ -135,7 +116,7 @@ impl Arbiter for SituationFocusArbiter {
         // Situation-weighted budgets per #167) — never a serialization flag borrowed as
         // an attention verdict.
         let _ = ctx.situation;
-        self.inner.focus(candidates, capacity, ctx)
+        self.inner.focus(candidates, ctx)
     }
 }
 
@@ -216,8 +197,8 @@ pub struct ActingBody {
     /// (proprioception). Distinct from `admission` (long-term, content-deduped): an
     /// act must be perceptible NEXT tick even when its result is a dedup no-op in
     /// long-term memory, so the mind sees its own hands and doesn't re-issue the
-    /// identical act blind. Shared `Arc` with the perception-tier
-    /// [`WorkingMemoryFaculty`] (one buffer, written here, read there).
+    /// identical act blind. Shared `Arc` with her view's sources (`context_streams`: one
+    /// buffer, written here, read there).
     pub working_memory: Arc<crate::cognition::working_memory::WorkingMemory>,
 }
 
@@ -228,9 +209,6 @@ pub struct ActingBody {
 pub struct WorkspaceCycle {
     pub(super) faculties: Vec<Arc<dyn Faculty>>,
     pub(super) arbiter: Arc<dyn Arbiter>,
-    /// Bound on how many contributions can hold the workspace at once — the
-    /// finite "spotlight" of attention.
-    pub(super) capacity: usize,
     /// Replay/logging seam — every tick is recorded here. Default `Noop`
     /// (zero hot-path cost); swap in a recording sink to make the mind a
     /// glass box for debugging, tuning, and test benches.

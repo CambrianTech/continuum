@@ -109,6 +109,13 @@ const EMBEDDED_GYMS: &[(&str, &str)] = &[
         "lc-unrelated.jsonl",
         include_str!("../../../../docs/genome/lc-unrelated.jsonl"),
     ),
+    // lc-parent-scope: the held-out family of Kimi's canonical correction (card 2de02f40, bound
+    // in docs/genome/correction-families.json): each task asks for an adjacent feature; its
+    // held-out check is that a marker on the enclosing class/module/base/group governs members.
+    (
+        "lc-parent-scope.jsonl",
+        include_str!("../../../../docs/genome/lc-parent-scope.jsonl"),
+    ),
     (
         "humaneval-rs.jsonl",
         include_str!("../../../../docs/genome/humaneval-rs.jsonl"),

@@ -222,24 +222,24 @@ jobs:
           if [ "$CONTINUUM_CLI_FEATURES" = "$CONTINUUM_FEATURES" ]; then
             # One cargo call, one library compile, all four bins (both Macs).
             # shellcheck disable=SC2086  # the feature string is split on purpose
-            cargo build --manifest-path "$manifest" --release \
+            cargo build --locked --manifest-path "$manifest" --release \
               --bin continuum-core-server --bin continuum --bin continuum-mcp --bin forge-custodian \
               $CONTINUUM_FEATURES
           else
             # The CLI is a socket client and must never link a GPU runtime (core-features.sh),
             # so it builds separately with its own set, as start-server.sh does.
             # shellcheck disable=SC2086
-            cargo build --manifest-path "$manifest" --release \
+            cargo build --locked --manifest-path "$manifest" --release \
               --bin continuum-core-server --bin continuum-mcp --bin forge-custodian \
               $CONTINUUM_FEATURES
             # shellcheck disable=SC2086
-            cargo build --manifest-path "$manifest" --release --bin continuum $CONTINUUM_CLI_FEATURES
+            cargo build --locked --manifest-path "$manifest" --release --bin continuum $CONTINUUM_CLI_FEATURES
           fi
           if [ "$RUNNER_OS" = Windows ]; then
             # The Windows handoff stages the voice sidecar beside the core and refuses a core
             # without it (continuum.rs, PreparedCoreService::stage), as start-server.sh's warm
             # build provides it.
-            cargo build --manifest-path core/livekit-bridge/Cargo.toml --bin livekit-bridge --release
+            cargo build --locked --manifest-path core/livekit-bridge/Cargo.toml --bin livekit-bridge --release
           fi
 
       # The published engine is a pure function of the pinned llama.cpp (core/vendor/LLAMA_CPP_PIN),

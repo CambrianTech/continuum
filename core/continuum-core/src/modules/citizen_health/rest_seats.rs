@@ -120,7 +120,8 @@ impl CitizenHealthModule {
         Self
     }
     pub(super) fn read(&self) -> CitizenHealth {
-        let (acts, writes, lanes_granted, settles, credits_staged, credits_settled, think_only) = snapshot_and_reset();
+        let (acts, writes, lanes_granted, settles, credits_staged, credits_settled) = snapshot_and_reset();
+        let stops = snapshot_stops_and_reset();
         let resident = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
             .map(|r| r.live_personas().len() as u64)
             .unwrap_or(0); // JUSTIFIED unwrap_or: no registry = no residents, and the verdict says so
@@ -154,7 +155,7 @@ impl CitizenHealthModule {
             settles,
             credits_staged,
             credits_settled,
-            think_only,
+            stops,
             generations,
             generations_dropped,
             knee: knee_of(serving.active_model.as_deref()),
@@ -222,7 +223,12 @@ impl ServiceModule for CitizenHealthModule {
             acts = h.acts,
             writes = h.writes,
             lane_grants = h.lanes_granted,
-            think_only = h.think_only,
+            stops_landed = h.stops.landed,
+            stops_empty = h.stops.empty,
+            stops_think_ended = h.stops.think_ended,
+            stops_cut_answer = h.stops.cut_answer,
+            stops_cut_think = h.stops.cut_think,
+            stops_think_budget = h.stops.think_budget,
             lane_starved = h.lane_starved,
             generations = h.generations,
             generations_dropped = h.generations_dropped,
@@ -281,7 +287,7 @@ impl ServiceModule for CitizenHealthModule {
                     settles: LEDGER.settles.load(Ordering::Relaxed),
                     credits_staged: LEDGER.credits_staged.load(Ordering::Relaxed),
                     credits_settled: LEDGER.credits_settled.load(Ordering::Relaxed),
-                    think_only: LEDGER.think_only.load(Ordering::Relaxed),
+                    stops: read_stops(),
                     lane_starved: LEDGER.lane_starved.load(Ordering::Relaxed),
                     generations: LEDGER.generations.load(Ordering::Relaxed),
                     generations_dropped: LEDGER.generations_dropped.load(Ordering::Relaxed),
@@ -308,7 +314,11 @@ impl ServiceModule for CitizenHealthModule {
                     "served_window": h.served_window,
                     "acts": h.acts, "writes": h.writes, "lane_grants": h.lanes_granted, "settles": h.settles,
                     "credits_staged": h.credits_staged, "credits_settled": h.credits_settled,
-                    "think_only": h.think_only,
+                    "stops": {
+                        "landed": h.stops.landed, "empty": h.stops.empty, "think_ended": h.stops.think_ended,
+                        "cut_answer": h.stops.cut_answer, "cut_think": h.stops.cut_think,
+                        "think_budget": h.stops.think_budget,
+                    },
                     "lane_starved": h.lane_starved,
                     "generations": h.generations, "generations_dropped": h.generations_dropped,
                     "dropped_pct": dropped_pct(&h),

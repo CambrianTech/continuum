@@ -42,11 +42,18 @@
 //! `--chars-per-token <r>` prices the window at the core's own estimate instead of the
 //! engine's bill; `--keyed-turn` keys the standing turn text into the epoch; `--trace`
 //! prints each act's view against what it may hold.
+//!
+//! `--acts` is the act inspector (`replay/acts/`): one row per request each resident sent, joined
+//! to the engine log and her view's probes, with her summary; see `replay/acts/mod.rs`.
 
 use std::collections::BTreeMap;
 
 use continuum_context::source::{Item, Source};
 
+#[path = "replay/acts/mod.rs"]
+mod acts;
+#[path = "replay/captures.rs"]
+mod captures;
 #[path = "replay/validate.rs"]
 mod validate;
 #[path = "replay/append.rs"]
@@ -121,14 +128,21 @@ impl Source<String> for Captured {
 fn item(key: String, text: String) -> Item<String> {
     let pointer: String = text.lines().next().unwrap_or_default().chars().take(185).collect();
     let pointer = if pointer.len() < text.len() { pointer } else { text.clone() };
-    Item { key, pointer: Some(pointer), summary: None, full: text }
+    captured(key, text).with_pointer(pointer)
+}
+
+/// A captured element: a capture records what was sent, never what caused it, so its cause is
+/// `Unrecorded` (counted, never toward closure) and its id comes from its key.
+fn captured(key: String, full: String) -> Item<String> {
+    let id = continuum_context::cause::ElementId::of(&[key.as_bytes()]);
+    Item::whole(id, continuum_context::cause::Cause::Unrecorded, key, full)
 }
 
 /// The one allocation, modelled: every source gets its floor, then the rest of `budget`
 /// goes to sources by priority level, highest first, sources of one level sharing in
 /// proportion to what each wants. (In the core this is `flex_allocate`.)
 fn allocate(claims: &[continuum_context::view::Claim], budget: usize) -> Vec<usize> {
-    let mut grants: Vec<usize> = claims.iter().map(|claim| claim.pointer_chars).collect();
+    let mut grants: Vec<usize> = claims.iter().map(|claim| claim.floor_chars).collect();
     let mut spare = budget.saturating_sub(grants.iter().sum());
     let mut levels: Vec<u8> = claims.iter().map(|claim| claim.priority).collect();
     levels.sort_unstable_by(|a, b| b.cmp(a));
@@ -264,10 +278,7 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
     let mut sent = head.clone();
     let mut push = |source: &str, items: Vec<Item<String>>| sources.entry(source.to_owned()).or_default().extend(items);
     for message in request["messages"].as_array().into_iter().flatten() {
-        let text = match &message["content"] {
-            serde_json::Value::String(text) => text.clone(),
-            other => other.to_string(),
-        };
+        let text = captures::text(message);
         sent.push('\n');
         sent.push_str(&text);
         if let Some(key) = turn_key(&text) {
@@ -293,7 +304,7 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
             // Its action lines are the action log again; its thoughts are its own items.
             let thoughts = bullets("working-memory", &text)
                 .into_iter()
-                .filter(|item| !item.full.starts_with("- [action #"))
+                .filter(|item| !item.full().starts_with("- [action #"))
                 .collect();
             push("working-memory", thoughts);
         } else if text.starts_with("My own recent thoughts") {
@@ -319,8 +330,8 @@ fn cut(request: &serde_json::Value, tools: &str, keyed_turn: bool) -> Cut {
     }
     // A ledger line stands in for an act only when the log holds no rendering of it.
     if let Some(ledger) = sources.remove("ledger") {
-        let held: Vec<String> = sources.get("actions").into_iter().flatten().map(|item| item.key.clone()).collect();
-        let missing = ledger.into_iter().filter(|line| !held.contains(&line.key)).collect::<Vec<_>>();
+        let held: Vec<String> = sources.get("actions").into_iter().flatten().map(|item| item.key().to_owned()).collect();
+        let missing = ledger.into_iter().filter(|line| !held.iter().any(|key| key == line.key())).collect::<Vec<_>>();
         sources.entry("actions".into()).or_default().extend(missing);
     }
     Cut { head, sources, tail, sent, act: validate::act_of(request), said: outline::said(request), reads: paged::reads(request) }
@@ -359,6 +370,7 @@ struct Outcome {
 fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order), keyed_turn: bool, admit: bool, trace: bool, share: usize) -> Result<Outcome, Box<dyn std::error::Error>> {
     let mut restored = validate::Restored::default();
     let (mut rereads, mut retained) = (0usize, 0usize);
+    let mut repeats = validate::Repeats::default();
     let mut view: Option<View<String>> = None;
     let mut previous_sent: Option<&str> = None;
     let mut previous_head: Option<&str> = None;
@@ -373,11 +385,15 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
     let mut tails = Vec::new();
     let mut turnover_prefill = Vec::new();
     for cut in cuts {
-        let action_keys: Vec<String> = cut.sources.get("actions").into_iter().flatten().map(|item| item.key.clone()).collect();
+        let action_keys: Vec<String> = cut.sources.get("actions").into_iter().flatten().map(|item| item.key().to_owned()).collect();
         restored.learn(&action_keys, &cut.act);
         let counted = restored.rereads(&cut.act, &previous_view);
         rereads += counted.total;
         retained += counted.held;
+        let identity = restored.repeats(&cut.act, &previous_view);
+        repeats.requests += identity.requests;
+        repeats.unchanged += identity.unchanged;
+        repeats.rendered += identity.rendered;
         let mut sources: Vec<Captured> = cut
             .sources
             .iter()
@@ -396,10 +412,10 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
         tails.push(tail_chars as f64);
         for (name, items) in &cut.sources {
             for item in items {
-                let key = (name.clone(), item.key.clone());
-                if held.get(&key) != Some(&item.full) {
-                    *appended.entry(name.clone()).or_default() += item.full.chars().count();
-                    held.insert(key, item.full.clone());
+                let key = (name.clone(), item.key().to_owned());
+                if held.get(&key) != Some(item.full()) {
+                    *appended.entry(name.clone()).or_default() += item.full().chars().count();
+                    held.insert(key, item.full().clone());
                 }
             }
         }
@@ -470,6 +486,10 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
     let line: Vec<String> = appended.iter().map(|(name, chars)| format!("{name} {}", chars / acts)).collect();
     println!("  appended per act by source: {}", line.join(", "));
     println!("  her re-reads of a file read before: {rereads}, of which the prompt still held the earlier read whole or as its outline (a retention proxy): {retained}; acts whose result was ambiguous (not restored): {}", restored.ambiguous);
+    println!(
+        "  invariant 4: reads asking an earlier read's exact request again {}, with the outcome unchanged {}, of which the view renders as a repeat (the earlier whole in her prompt) {}",
+        repeats.requests, repeats.unchanged, repeats.rendered
+    );
     Ok(Outcome { turnovers, prefill_chars: view_prefill, rereads, retained, turnover_prefill })
 }
 
@@ -488,6 +508,10 @@ fn request_chars(request: &serde_json::Value, tools: &str) -> usize {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--acts") {
+        return acts::main(args.into_iter().filter(|arg| arg != "--acts").collect());
+    }
     let (mut room, mut purpose, mut keyed_turn, mut trace, mut paths) = (String::new(), String::from("deliberation"), false, false, Vec::new());
     // The growing sources' share of what a start leaves: `start_grants` gives them half.
     let mut share = 2usize;
@@ -499,7 +523,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut reply_override: Option<u64> = None;
     let mut fixed_tools: Option<String> = None;
     let (mut outline_results, mut generational, mut paged_reads) = (false, false, false);
-    let mut args = std::env::args().skip(1);
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--room" => room = args.next().ok_or("--room needs an id prefix")?,
@@ -535,22 +559,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => paths.push(arg),
         }
     }
-    let mut rows = Vec::new();
-    let mut billed: BTreeMap<String, u64> = BTreeMap::new();
-    for path in &paths {
-        for line in std::fs::read_to_string(path)?.lines() {
-            let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-            match event["event"].as_str() {
-                Some("submitted") => rows.push(event),
-                Some("completed") => {
-                    if let (Some(id), Some(tokens)) = (event["request_id"].as_str(), event["response"]["usage"]["inputTokens"].as_u64()) {
-                        billed.insert(id.to_owned(), tokens);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
+    let captured = captures::load(&paths, captures::Window::default())?;
+    let billed: BTreeMap<&str, u64> = captured
+        .terminal
+        .iter()
+        .filter(|(_, end)| end["event"] == "completed")
+        .filter_map(|(id, end)| Some((id.as_str(), end["response"]["usage"]["inputTokens"].as_u64()?)))
+        .collect();
+    let mut rows = captured.submitted;
     // Chars per token as the engine billed this resident's own requests.
     let per_token: Vec<f64> = rows
         .iter()

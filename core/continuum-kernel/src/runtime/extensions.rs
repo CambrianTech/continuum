@@ -48,11 +48,60 @@ pub fn install_settle_before_stop<S: SettleBeforeStop>(settler: Arc<S>) {
     }
 }
 
-/// Let every participant settle, in install order, each within `cap`.
+/// Let every participant settle, in install order, all within ONE `cap`: each is given what
+/// the ones before it left. The stop's caller waits for `cap` and the save after it, never for
+/// a cap per participant (the M5, 2026-10-27 22:20Z: the turns took the whole 300 s, the page
+/// checkpoint then ran past the CLI's 315 s wait, and the core was killed before it saved).
 pub async fn settle_before_stop(cap: Duration) {
     let settlers: Vec<Arc<dyn SettleBeforeStop>> = SETTLERS.read().iter().map(|(_, s)| Arc::clone(s)).collect();
+    settle_within(&settlers, cap).await;
+}
+
+async fn settle_within(settlers: &[Arc<dyn SettleBeforeStop>], cap: Duration) {
+    let deadline = tokio::time::Instant::now() + cap;
     for settler in settlers {
-        settler.settle(cap).await;
+        settler.settle(deadline.saturating_duration_since(tokio::time::Instant::now())).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A participant that records the cap it was given and spends `takes` of it.
+    struct Spends {
+        takes: Duration,
+        given: Arc<parking_lot::Mutex<Vec<Duration>>>,
+    }
+
+    impl SettleBeforeStop for Spends {
+        fn name(&self) -> &'static str {
+            "spends"
+        }
+        fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+            self.given.lock().push(cap);
+            let takes = self.takes.min(cap);
+            Box::pin(async move { tokio::time::sleep(takes).await })
+        }
+    }
+
+    // what this catches: each participant handed the whole cap, so the stop outlives the wait
+    // its caller gives it (the M5, 2026-10-27 22:20Z).
+    #[tokio::test(start_paused = true)]
+    async fn participants_share_one_stop_budget() {
+        let given = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let settlers: Vec<Arc<dyn SettleBeforeStop>> = vec![
+            Arc::new(Spends { takes: Duration::from_secs(250), given: given.clone() }),
+            Arc::new(Spends { takes: Duration::from_secs(250), given: given.clone() }),
+            Arc::new(Spends { takes: Duration::from_secs(250), given: given.clone() }),
+        ];
+        let started = tokio::time::Instant::now();
+        settle_within(&settlers, Duration::from_secs(300)).await;
+        assert!(started.elapsed() <= Duration::from_secs(301), "the whole stop fits its one cap");
+        let given = given.lock().clone();
+        assert_eq!(given[0], Duration::from_secs(300));
+        assert!(given[1] <= Duration::from_secs(50), "the second gets what the first left: {:?}", given[1]);
+        assert_eq!(given[2], Duration::ZERO, "nothing left for the third");
     }
 }
 

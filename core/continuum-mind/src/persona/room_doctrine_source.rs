@@ -36,16 +36,9 @@ use airc_core::doctrine::RoomDoctrinePublished;
 use airc_lib::AircError;
 use async_trait::async_trait;
 
-use crate::cognition::rag_budget::{
-     RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
-};
+use crate::cognition::rag_budget::{RagContext, RagDelivery, RagItem, RagSource};
 
 use crate::cognition::faculty_ids::ROOM_DOCTRINE;
-
-/// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
-/// shared by every RAG source so the replay ledger's numbers match. (Was a private
-/// copy — converged.)
-use continuum_base::token_estimate::estimate_prompt_tokens as estimate_tokens;
 
 /// Abstract reader over the airc room operating doctrine. Production
 /// rides on `airc_lib::Airc::room_doctrine`; tests stub it without a
@@ -132,11 +125,7 @@ enum Outcome {
     /// The reader failed. Cognition stays up, but this is NOT the normal case and
     /// must never again look like one.
     ReadFailed,
-    /// A doctrine exists but the budget could not carry the marker plus real
-    /// content.
-    BudgetTooSmall,
 }
-
 
 /// RoomDoctrineSource — persona-bound, reads the room doctrine from any
 /// `AircDoctrineReader`.
@@ -278,39 +267,12 @@ impl RoomDoctrineSource {
         self
     }
 
-    /// Fit the doctrine body to `budget` tokens. A doctrine is a single
-    /// contract; if it doesn't fit we deliver a truncated prefix (with a
-    /// marker) rather than dropping it entirely — partial guidance still
-    /// grounds the persona in the room's nature.
-    ///
-    /// Returns `None` (no block) when the budget is too small to carry
-    /// the marker PLUS some real content. The alternative — emitting a
-    /// `[Room operating doctrine]` block whose entire content is the
-    /// truncation marker — is strictly worse than no block: it spends
-    /// tokens to say nothing, and (with a naive char budget) overspends
-    /// the allocation. Both the no-content case and overspend are
-    /// guarded here. `estimate_tokens(s) = s.chars()/4 + 1`, so a string
-    /// of `4*budget - 4` chars estimates to exactly `budget` tokens —
-    /// that's the ceiling we fit the (truncated body + marker) under.
-    fn fit_body(body: &str, budget: u32) -> Option<String> {
-        if budget == 0 {
-            return None;
-        }
-        if estimate_tokens(body) <= budget {
-            return Some(body.to_string());
-        }
-        const MARKER: &str = "\n…[doctrine truncated]";
-        let marker_chars = MARKER.chars().count();
-        // Max chars whose estimate stays within `budget` tokens.
-        let max_chars = (budget as usize).saturating_mul(4).saturating_sub(4);
-        if max_chars <= marker_chars {
-            // No room for the marker plus any content → emit no block.
-            return None;
-        }
-        let char_budget = max_chars - marker_chars;
-        let mut out: String = body.chars().take(char_budget).collect();
-        out.push_str(MARKER);
-        Some(out)
+    /// The doctrine's coarser level: its first paragraph (heading block), cut at a
+    /// blank line, never mid-text. `None` when the body is a single block already.
+    fn first_block(body: &str) -> Option<&str> {
+        let body = body.trim();
+        let (first, rest) = body.split_once("\n\n")?;
+        (!rest.trim().is_empty()).then_some(first.trim_end())
     }
 }
 
@@ -320,45 +282,18 @@ impl RagSource for RoomDoctrineSource {
         ROOM_DOCTRINE
     }
 
-    fn budget_claim(&self, window: u32, headroom: u32) -> crate::cognition::rag_budget::RagSourceBudget {
-        // Existing task-124 allowance: 1024 at 16k, scaling with the window.
-        crate::cognition::rag_budget::RagSourceBudget::floorless_share(
-            self.source_id(),
-            window,
-            headroom,
-            std::num::NonZeroU32::new(16).expect("existing nonzero source share"),
-        )
-    }
-
     fn expand_command(&self) -> Option<&'static str> {
         // the room's doctrine is a single standing statement, delivered whole.
         None
     }
 
-    /// Floorless by design (unchanged): doctrine is lightweight standing
-    /// framing that takes leftover room rather than reserving any.
-    fn floor_tokens(&self) -> u32 {
-        0
-    }
-
-    async fn deliver(
-        &self,
-        ctx: &RagContext,
-        budget: u32,
-        resolution: ResolutionPreference,
-    ) -> RagDelivery {
-        let empty = |res| RagDelivery {
-            source_id: ROOM_DOCTRINE.to_string(),
-            items: Vec::new(),
-            tokens_used: 0,
-            truncated: false,
-            resolution_used: res,
-        };
+    async fn deliver(&self, ctx: &RagContext) -> RagDelivery {
+        let empty = || RagDelivery::empty(ROOM_DOCTRINE);
 
         // Persona-scoped (defense in depth, same shape as the roster).
         if ctx.persona_id != self.persona_id {
             let _ = self.report(Outcome::CrossPersona, None, ctx.now_ms);
-            return empty(ResolutionPreference::Placeholder);
+            return empty();
         }
         // Room resolution — TURN-PARAMETRIC (#443), the same shape RoomBoardSource
         // already uses and for the same reason: the rules she needs are the rules
@@ -378,7 +313,7 @@ impl RagSource for RoomDoctrineSource {
                     "synthetic nil-room context — no doctrine, and no fallback to the bound room"
                 );
                 let _ = self.report(Outcome::NilRoom, Some(t), ctx.now_ms);
-                return empty(ResolutionPreference::Placeholder);
+                return empty();
             }
             Some(t) => Some(t),
             None => self.room_id,
@@ -394,7 +329,7 @@ impl RagSource for RoomDoctrineSource {
             // this variant must not re-tell that story in the other direction.
             Ok(None) => {
                 let _ = self.report(Outcome::NotObservedInReadWindow, effective_room, ctx.now_ms);
-                return empty(resolution);
+                return empty();
             }
             Err(err) => {
                 tracing::warn!(
@@ -403,41 +338,34 @@ impl RagSource for RoomDoctrineSource {
                     "room_doctrine: read failed — empty delivery, cognition stays up"
                 );
                 let _ = self.report(Outcome::ReadFailed, effective_room, ctx.now_ms);
-                return empty(ResolutionPreference::Placeholder);
+                return empty();
             }
         };
 
-        let Some(content) = Self::fit_body(&card.body, budget) else {
-            let _ = self.report(Outcome::BudgetTooSmall, effective_room, ctx.now_ms);
-            return empty(resolution);
-        };
-        let tokens = estimate_tokens(&content);
+        let tokens = continuum_base::token_estimate::estimate_prompt_tokens(&card.body);
 
         tracing::debug!(
             persona_id = %self.persona_id,
-            budget,
             version = %card.version,
             tokens,
             "room_doctrine: deliver"
         );
         let _ = self.report(Outcome::Delivered, effective_room, ctx.now_ms);
 
-        RagDelivery {
-            source_id: ROOM_DOCTRINE.to_string(),
-            items: vec![RagItem {
-                content,
-                tokens,
-                metadata: serde_json::json!({
-                    "version": card.version,
-                    "published_by": card.published_by.as_uuid().to_string(),
-                    "published_at_ms": card.published_at_ms,
-                }),
-            }],
-            tokens_used: tokens,
-            // One current contract per room; no pagination.
-            truncated: false,
-            resolution_used: resolution,
+        let metadata = serde_json::json!({
+            "version": card.version,
+            "published_by": card.published_by.as_uuid().to_string(),
+            "published_at_ms": card.published_at_ms,
+        });
+        // The doctrine has no expand verb today, so the pointer says so rather than
+        // naming one: collapsing it leaves a marker, not a way back.
+        let mut item = RagItem::whole("doctrine", card.body.as_str(), metadata)
+            .with_pointer(format!("[room doctrine {} (no expand verb; shown whole when the view has room)]", card.version));
+        if let Some(first) = Self::first_block(&card.body) {
+            item = item.with_summary(first);
         }
+        // One current contract per room; no pagination.
+        RagDelivery::of(ROOM_DOCTRINE, vec![item], false)
     }
 
 }
@@ -527,7 +455,7 @@ mod tests {
             let reader = Arc::new(StubReader::new(None));
             let src = source(reader.clone(), room);
 
-            let d = src.deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw).await;
+            let d = src.deliver(&ctx_in(room)).await;
             assert!(d.items.is_empty(), "no doctrine published — no block");
             assert_eq!(
                 src.observed_in(Some(room)),
@@ -536,7 +464,7 @@ mod tests {
             );
 
             reader.set_fail(true);
-            let d = src.deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw).await;
+            let d = src.deliver(&ctx_in(room)).await;
             assert!(d.items.is_empty(), "a failed read still keeps cognition up");
             assert_eq!(
                 src.observed_in(Some(room)),
@@ -640,7 +568,7 @@ mod tests {
         let src = RoomDoctrineSource::new(persona(), reader.clone()).for_room(bound);
 
         let ctx = RagContext::for_persona_in_room(persona(), 1_000_000, turn);
-        let out = src.deliver(&ctx, 4096, ResolutionPreference::Raw).await;
+        let out = src.deliver(&ctx).await;
 
         assert_eq!(
             reader.asked_room(),
@@ -664,7 +592,7 @@ mod tests {
         let src = RoomDoctrineSource::new(persona(), reader.clone()).for_room(bound);
 
         let ctx = RagContext::for_persona_in_room(persona(), 1_000_000, uuid::Uuid::nil());
-        let out = src.deliver(&ctx, 4096, ResolutionPreference::Raw).await;
+        let out = src.deliver(&ctx).await;
 
         assert!(out.items.is_empty(), "a nil-room context must receive no doctrine");
         assert_eq!(
@@ -684,7 +612,7 @@ mod tests {
         ))));
         let source = RoomDoctrineSource::new(persona(), reader);
         let delivery = source
-            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         assert_eq!(delivery.items.len(), 1);
         assert!(delivery.items[0].content.contains("Respond sparingly"));
@@ -699,7 +627,7 @@ mod tests {
         let reader = Arc::new(StubReader::new(None));
         let source = RoomDoctrineSource::new(persona(), reader);
         let delivery = source
-            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
@@ -713,7 +641,7 @@ mod tests {
         reader.set_fail(true);
         let source = RoomDoctrineSource::new(persona(), reader);
         let delivery = source
-            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .deliver(&ctx())
             .await;
         assert!(delivery.items.is_empty());
     }
@@ -725,62 +653,36 @@ mod tests {
         let source = RoomDoctrineSource::new(persona(), reader);
         let alien = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
         let delivery = source
-            .deliver(
-                &RagContext::for_persona(alien, 1_000_000),
-                1_000,
-                ResolutionPreference::Raw,
-            )
+            .deliver(&RagContext::for_persona(alien, 1_000_000))
             .await;
         assert!(delivery.items.is_empty());
-        assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
-    // what this catches: an over-budget doctrine is truncated and NEVER
-    // overspends the allocation — across the full budget regime, not just
-    // a comfortable one. The earlier version only checked budget=20 and
-    // missed that tiny budgets (1..=6) overspent with a content-free
-    // marker-only block (adversarial review of PR #1651). Invariant now:
-    // for ANY budget, either no block is delivered, or the delivered
-    // block fits the budget AND carries real content (not just the
-    // truncation marker).
+    // what this catches: the doctrine is delivered WHOLE with a stable key, a summary
+    // (its first block) and an honest pointer; nothing is cut to a size and no
+    // truncation marker appears -- the prompt view chooses the level later.
     #[tokio::test]
-    async fn oversized_doctrine_never_overspends_across_budget_regime() {
-        let big = "x".repeat(10_000);
-        for budget in [1u32, 2, 3, 5, 6, 7, 8, 20, 100, 500] {
-            let reader = Arc::new(StubReader::new(Some(card(&big))));
-            let source = RoomDoctrineSource::new(persona(), reader);
-            let delivery = source
-                .deliver(&ctx(), budget, ResolutionPreference::Raw)
-                .await;
-            assert!(
-                delivery.tokens_used <= budget,
-                "budget {budget}: overspent ({} > {budget})",
-                delivery.tokens_used
-            );
-            if let Some(item) = delivery.items.first() {
-                // A delivered block must carry real doctrine content, not
-                // just the truncation marker — else it spends tokens to
-                // say nothing.
-                let only_marker =
-                    item.content.trim_start().starts_with('…') || !item.content.contains('x');
-                assert!(
-                    !only_marker,
-                    "budget {budget}: delivered a content-free block: {:?}",
-                    item.content
-                );
-            }
-        }
-    }
-
-    // what this catches: a budget too small to carry the marker plus real
-    // content yields NO block rather than a token-wasting marker-only one.
-    #[tokio::test]
-    async fn tiny_budget_emits_no_block() {
-        let big = "x".repeat(10_000);
-        let reader = Arc::new(StubReader::new(Some(card(&big))));
+    async fn a_long_doctrine_is_delivered_whole_with_levels() {
+        let body = format!("# Rules\nBe brief.\n\n{}", "x".repeat(10_000));
+        let reader = Arc::new(StubReader::new(Some(card(&body))));
         let source = RoomDoctrineSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 3, ResolutionPreference::Raw).await;
-        assert!(delivery.items.is_empty(), "tiny budget must emit no block");
-        assert_eq!(delivery.tokens_used, 0);
+        let delivery = source.deliver(&ctx()).await;
+        let item = &delivery.items[0];
+        assert_eq!(item.key, "doctrine");
+        assert_eq!(item.content, body, "whole body, never cut");
+        assert!(!item.content.contains("truncated"));
+        assert_eq!(item.summary.as_deref(), Some("# Rules\nBe brief."));
+        assert!(item.pointer.as_deref().is_some_and(|p| p.contains("v1abc")));
+        assert!(!delivery.truncated);
+    }
+
+    // what this catches: a one-block doctrine has no coarser level, so no summary is
+    // invented (the whole text is already its own summary).
+    #[tokio::test]
+    async fn a_single_block_doctrine_has_no_summary() {
+        let reader = Arc::new(StubReader::new(Some(card("be excellent"))));
+        let source = RoomDoctrineSource::new(persona(), reader);
+        let delivery = source.deliver(&ctx()).await;
+        assert!(delivery.items[0].summary.is_none());
     }
 }

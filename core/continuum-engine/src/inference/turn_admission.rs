@@ -165,11 +165,19 @@ pub struct AdmissionPatience {
 }
 
 impl AdmissionPatience {
-    pub fn for_turn(bound: Option<std::time::Duration>, elapsed: std::time::Duration) -> Self {
+    /// A generation occupancy estimate is not an admission expiry. Healthy queue
+    /// and paging work stays owned until admitted or the requester cancels.
+    pub fn for_turn() -> Self {
         Self {
             readiness: crate::inference::slots::EndpointSlots::TURN_READINESS_PATIENCE,
-            deadline: bound.map(|bound| tokio::time::Instant::now() + bound.saturating_sub(elapsed)),
+            deadline: None,
         }
+    }
+
+    /// An explicit caller expiry, already expressed on the monotonic clock.
+    /// Do not derive this from predicted generation occupancy.
+    pub fn until(deadline: tokio::time::Instant) -> Self {
+        Self { deadline: Some(deadline), ..Self::for_turn() }
     }
 }
 
@@ -193,8 +201,9 @@ impl From<std::time::Duration> for AdmissionPatience {
 /// `patience` is how long the turn holds through a CLOSED endpoint (an engine still
 /// loading, a transition in flight) before it is refused — the caller's bound, since
 /// only the caller knows what its request can afford: the persona adapter passes
-/// `AdmissionPatience::for_turn(turn_bound, elapsed)`. Readiness time is cumulative
-/// across retries; healthy slot and adapter waits spend only the request deadline.
+/// `AdmissionPatience::for_turn()`. Readiness time is cumulative across retries;
+/// healthy slot and adapter waits end only on cancellation or an explicit caller
+/// expiry supplied with `AdmissionPatience::until`.
 /// A test that asserts immediate readiness refusal passes zero. See `EndpointSlots::admit_when_ready`
 /// for the boot window that cost Kimi 16 turns.
 pub async fn admit_turn(
@@ -384,6 +393,10 @@ async fn admit(
                 admission.released = Some(pool.released());
                 admission._slot_permit = Some(pool.acquire_slot(slot).await?);
                 admission._endpoint.check_ready()?;
+                // Before the plan moves the slot's attribution: once a stop has closed page IO,
+                // nothing pages a resident out (card 47151d36, `slots::page_io`).
+                let page_io = crate::inference::slots::admit_page_io(crate::inference::slots::page_io::gate())
+                    .map_err(|closed| closed.to_string())?;
                 let pg = pool.plan_paging(slot, k);
                 admission.page_confirmed = pg.already_resident;
                 if pg.already_resident {
@@ -422,6 +435,8 @@ async fn admit(
                     let client = client.clone();
                     let paging_root = root.to_owned();
                     admission = admission.retain_paging(root, move |mut admission, interested| async move {
+                        // Held until this task's ledger updates: the stop waits for it.
+                        let _page_io = page_io;
                         // 3. The context switch onto a now-free slot: page the evictee out,
                         //    page this activity in. Lands immediately (no defer) because the slot
                         //    is not decoding.
@@ -482,7 +497,9 @@ async fn admit(
             // BEFORE the await so cancellation cannot leave the next page treating
             // transient KV as its own warm tail.
             let slot = pool.transient_slot();
-            admission = admission.borrow_slot_for_transient(pool, slot, client, root).await?;
+            admission = admission
+                .borrow_slot_for_transient(pool, slot, client, root, crate::inference::slots::page_io::gate())
+                .await?;
         } else if let (Some(pool), Some(scratch)) = (pool.as_ref(), admission.scratch) {
             // Anonymous traffic lands on the SCRATCH slot, and takes its operation permit
             // like every other slot user. Before this, every non-turn call wrote the
@@ -508,15 +525,21 @@ impl TurnAdmission {
     /// operation permit (event-driven, behind any live decode), detach its resident and
     /// SAVE the resident's page so its warmth survives, and leave the slot unattributed
     /// so no page later mistakes this traffic's KV for its own.
+    ///
+    /// The `page_io` permit is taken before the resident is detached, as on the keyed
+    /// path: once a stop has closed page IO, a borrow neither detaches a resident nor
+    /// starts a save, and a save it started holds the stop until its ledger update.
     async fn borrow_slot_for_transient(
         mut self,
         pool: &Arc<KvSlotPool>,
         slot: u32,
         client: &reqwest::Client,
         root: &str,
+        page_io: &'static crate::runtime::admission_gate::AdmissionGate,
     ) -> Result<Self, String> {
         self._slot_permit = Some(pool.acquire_slot(slot).await?);
         self._endpoint.check_ready()?;
+        let page_io = crate::inference::slots::admit_page_io(page_io).map_err(|closed| closed.to_string())?;
         let (previous, pin) = pool.take_resident(slot);
         self._pin = pin;
         if let Some(previous) = previous {
@@ -524,6 +547,8 @@ impl TurnAdmission {
             let client = client.clone();
             let paging_root = root.to_owned();
             self = self.retain_paging(root, move |mut admission, _interested| async move {
+                // Held until this save's ledger update: the stop waits for it.
+                let _page_io = page_io;
                 pool.note_page_lost(&previous);
                 if admission.page_action(&client, &paging_root, slot, &previous, "save").await? {
                     pool.note_saved(previous);
@@ -558,6 +583,16 @@ pub async fn admit_transient(
     root: &str,
     slot: Option<u32>,
 ) -> Result<TurnAdmission, String> {
+    admit_transient_through(client, root, slot, crate::inference::slots::page_io::gate()).await
+}
+
+/// [`admit_transient`] through the page-IO gate `page_io`.
+async fn admit_transient_through(
+    client: &reqwest::Client,
+    root: &str,
+    slot: Option<u32>,
+    page_io: &'static crate::runtime::admission_gate::AdmissionGate,
+) -> Result<TurnAdmission, String> {
     let endpoint = crate::inference::slots::directory()
         .endpoint(root)
         .admit()
@@ -590,7 +625,7 @@ pub async fn admit_transient(
             pool.n_slots()
         ));
     }
-    admission = admission.borrow_slot_for_transient(&pool, slot, client, root).await?;
+    admission = admission.borrow_slot_for_transient(&pool, slot, client, root, page_io).await?;
     Ok(admission)
 }
 

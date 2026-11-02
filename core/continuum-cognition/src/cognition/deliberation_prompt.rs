@@ -147,7 +147,6 @@ pub(super) enum PromptChurn {
 
 /// The churn class of a grounding block, by the source id it renders under.
 pub(super) fn churn_of(faculty: &str) -> PromptChurn {
-    use crate::cognition::working_memory::WM_FACULTY_ID;
     use crate::cognition::workspace::FacultyId;
     use crate::cognition::faculty_ids::{
         ACTIVE_WORK, AIRC, AWARENESS, ENGRAMS, MEDIA_PERCEPTION, MISSION, ROOM_BOARD,
@@ -166,7 +165,7 @@ pub(super) fn churn_of(faculty: &str) -> PromptChurn {
         | WALL
         | ACTIVE_WORK => PromptChurn::Board,
         ROOM_BOARD => PromptChurn::Claims,
-        ENGRAMS | AIRC | WM_FACULTY_ID => PromptChurn::Turn,
+        ENGRAMS | AIRC => PromptChurn::Turn,
         // The strip changes with every event in any of her rooms: turn churn, after the
         // standing and board blocks, so her awareness never displaces the cached prefix.
         AWARENESS => PromptChurn::Turn,
@@ -954,7 +953,6 @@ mod tests {
         let mut live = vec!["room-kanban", "room-wall", "roster", "active-work"];
         live.sort_by(|a, b| stable_prefix_order(a, b));
         assert_eq!(live, ["active-work", "room-wall", "roster", "room-kanban"]);
-        assert_eq!(churn_of("working-memory"), PromptChurn::Turn);
         assert_eq!(churn_of("engrams"), PromptChurn::Turn);
         assert_eq!(churn_of("media-perception"), PromptChurn::Standing);
     }

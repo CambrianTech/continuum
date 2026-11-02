@@ -200,15 +200,21 @@ impl OpenAICompatibleAdapter {
             // Discovery: install this server's slot pool on first use (probes /props).
             // Non-Turn traffic also needs the pool on a single-slot server: it
             // must save the activity resident before borrowing the only slot.
-            let pool = self.ensure_slot_pool(&endpoints).await.map_err(|miss| miss.probe(root)).ok();
+            let pool = self.ensure_slot_pool(&endpoints).await.map_err(|miss| {
+                miss.probe(root);
+                crate::ai::inference_error::InferenceError::Unavailable(format!(
+                    "slot discovery refused generation at {root}: {} ({miss:?})",
+                    miss.as_str(),
+                ))
+            })?;
             let adm = crate::inference::turn_admission::admit_turn(
                 &self.concurrency,
                 turn_key,
-                pool,
+                Some(pool),
                 &self.client,
                 root,
                 approx_tokens,
-                crate::inference::turn_admission::AdmissionPatience::for_turn(request.turn_bound, start.elapsed()),
+                crate::inference::turn_admission::AdmissionPatience::for_turn(),
             )
             .await
             .map_err(crate::ai::inference_error::InferenceError::Unavailable)?;
@@ -304,7 +310,6 @@ impl OpenAICompatibleAdapter {
                                 rows.sort_by(|a, b| b.1.cmp(&a.1));
                                 let rendered = rows
                                     .iter()
-                                    .take(6)
                                     .map(|(role, tokens)| format!("{role}={tokens}"))
                                     .collect::<Vec<_>>()
                                     .join(" ");
@@ -445,7 +450,7 @@ impl OpenAICompatibleAdapter {
                     &self.client,
                     root,
                     0,
-                    crate::inference::turn_admission::AdmissionPatience::for_turn(request.turn_bound, start.elapsed()),
+                    crate::inference::turn_admission::AdmissionPatience::for_turn(),
                 )
                 .await
                 .map_err(crate::ai::inference_error::InferenceError::Unavailable)?,
@@ -529,7 +534,7 @@ impl OpenAICompatibleAdapter {
         let mut finish_reason = finish_reason_str
             .as_deref()
             .map(|r| self.map_finish_reason(r))
-            .unwrap_or(FinishReason::Stop);
+            .unwrap_or(FinishReason::Unreported); // no marker arrived: say so, never claim a stop
         let generation_completed =
             finish_reason_str.is_some() && !matches!(finish_reason, FinishReason::Error);
 
@@ -626,10 +631,8 @@ impl OpenAICompatibleAdapter {
                                 tool = t.name.as_str(),
                                 error = e.to_string().as_str(),
                                 arg_len = t.arguments.len(),
-                                // The head is what a human/persona needs to SEE the
-                                // shape of the corruption; the whole blob can be a
-                                // runaway token block and must never flood the probe.
-                                head = t.arguments.chars().take(200).collect::<String>().as_str(),
+                                // The whole blob rides in the call's result below
+                                // (`__malformed_tool_arguments.raw`); the probe names its size.
                                 "model emitted tool arguments that are not valid JSON — the call cannot be honored as written",
                             );
                             // Carry the parse error itself, under a SELF-DESCRIBING key,

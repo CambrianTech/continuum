@@ -284,6 +284,7 @@ use super::*;
             capture: None,
             genes: Vec::new(),
             gene_scales: Vec::new(),
+            allocation: None,
         });
         receipts.push(receipt("failed-after-serving"));
         let homogeneous = served_provenance(&receipts).unwrap();
@@ -299,6 +300,7 @@ use super::*;
             capture: None,
             genes: Vec::new(),
             gene_scales: Vec::new(),
+            allocation: None,
         });
         assert!(served_provenance(&receipts).is_none());
         let last = receipts.last_mut().unwrap();

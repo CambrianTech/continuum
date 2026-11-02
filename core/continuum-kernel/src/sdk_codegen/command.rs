@@ -341,6 +341,9 @@ pub trait ActionCommand: Send + Sync + Sized + 'static {
     /// generated inverse index ([`crate::ai::tool_dialect`]); a name two
     /// commands both claim is a build-time panic. Defaults to none.
     const ALIASES: &'static [&'static str] = &[];
+    /// What this command's calls do to the world. See [`CommandSpec::EFFECT`]; defaults to
+    /// `Undeclared`.
+    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Undeclared;
 
     /// The typed request payload (a ts-rs wire type). `JsonSchema` so its schema
     /// is derived automatically (no hand-authoring) and exposed to every SDK.
@@ -361,6 +364,7 @@ impl<T: ActionCommand> CommandSpec for T {
     const DESCRIPTION: &'static str = <T as ActionCommand>::DESCRIPTION;
     const NATIVE: bool = <T as ActionCommand>::NATIVE;
     const ALIASES: &'static [&'static str] = <T as ActionCommand>::ALIASES;
+    const EFFECT: continuum_base::tool_effect::ToolEffect = <T as ActionCommand>::EFFECT;
     const WIRE: WireShape = WireShape::Bare;
     type Params = <T as ActionCommand>::Params;
     type Result = <T as ActionCommand>::Output;

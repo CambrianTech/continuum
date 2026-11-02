@@ -1,7 +1,7 @@
 //! `embedding/groups` — group TEXT candidates that say the same thing, in the ONE
 //! process-wide embedding space.
 //!
-//! The text-level twin of `embedding/cluster` (which takes vectors). Its one job is
+//! It calls `vector_math::detect_clusters` directly. Its one job is
 //! the duplicate listing: "which of these 118 cards are the same card" — measured
 //! today as astropy-12907 open eight times — but it is written over `(id, text)`
 //! so the same call groups people by bio, documents by body, anything.

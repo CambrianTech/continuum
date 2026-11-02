@@ -1,9 +1,9 @@
 //! A persona's obligations: the turns she was admitted into and has not finished (card 920619c5).
 //!
-//! A turn's trigger is marked read when its context is composed (`airc_source` advances the
-//! read cursor on delivery), and after a restart `prime()` skips everything already in the
-//! room. So a turn the stop cuts loses its trigger for good, which is why the stop waits up
-//! to `turn_ingress::TURN_SETTLE_CAP` for turns in flight (enrico 2026-10-26: four stops,
+//! A turn's trigger is marked read once a prompt that rendered it was sent and answered (the
+//! deliberation faculty's read receipt), and after a restart `prime()` skips everything already
+//! in the room. So a turn the stop cuts after that point loses its trigger for good, which is
+//! why the stop waits up to `turn_ingress::TURN_SETTLE_CAP` for turns in flight (enrico 2026-10-26: four stops,
 //! 300 s each, 12 of 14 turns cut anyway).
 //!
 //! This module is the durable half of `wake_backlog::PendingInput`'s custody: one row per

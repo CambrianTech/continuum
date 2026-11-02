@@ -173,11 +173,9 @@ pub async fn settle_step(
                 // read the typed acts (verb + paths) off these entries, not receipt prose,
                 // so they survive the seam-5 live-drift the `I ran …` scans died on.
                 let pre_settle = body.working_memory.recent_entries();
-                let head: String = text
-                    .chars()
-                    .take(body.working_memory.budget().trail_head_chars())
-                    .collect();
-                body.working_memory.record_settlement(&head, Some(ws.activity_room_id));
+                // Whole: what of it her trail shows is the trail's levels in her view's one
+                // allocation, never a head cut at a window share here (FLOW §2d).
+                body.working_memory.record_settlement(&text, Some(ws.activity_room_id));
                 // Unfulfilled-promise backstop (#122): a Speak that NARRATES action
                 // (first-person intent + fence) which nothing lifted/executed —
                 // reaching this arm means no format recognized it — leaves her

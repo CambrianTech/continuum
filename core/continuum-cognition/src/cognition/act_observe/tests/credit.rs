@@ -3,14 +3,12 @@
 use super::*;
 use crate::cognition::workspace::TurnFraming;
 use crate::cognition::workspace::WorkspaceCycle;
-use crate::cognition::workspace::Faculty;
 use crate::cognition::workspace::SalienceArbiter;
 use crate::ai::types::ToolCall;
 use uuid::Uuid;
 use std::sync::Arc;
 use std::sync::Mutex;
 use crate::cognition::working_memory::WorkingMemory;
-use crate::cognition::working_memory::WorkingMemoryFaculty;
 
 // what this catches: c5910be2 — an ordinary room drive could not see coaching
 // until it settled. Inject through the conversation DURING a real tool action,
@@ -114,7 +112,6 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
                 .with_request_recorder(Arc::clone(&recorded)),
         );
         let wm = Arc::new(WorkingMemory::new(8));
-        wm.set_served_window(32_768);
         let adm = admission();
         let body = body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm));
         let persona = body.persona_id;
@@ -135,11 +132,9 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
                 }]);
         let cycle = WorkspaceCycle::new(
             vec![
-                Arc::new(WorkingMemoryFaculty::new(wm)) as Arc<dyn Faculty>,
                 Arc::new(faculty),
             ],
             Arc::new(SalienceArbiter),
-            8,
         )
         .with_acting(body);
         let task = "Review the original src/lib.rs change and report a reproducible defect.";

@@ -6,9 +6,10 @@ description = "The floor of the core: leaf utilities every other crate may depen
 
 [dependencies]
 chrono.workspace = true
-dirs = "5.0"
+serde = { workspace = true }
+dirs = { workspace = true }
 tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }

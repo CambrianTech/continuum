@@ -556,6 +556,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // relaunched lane starts clean" — this is the site that makes it true.
             reset_real_decode_failures();
             mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
+            observe_launched_engine(ctrl).await;
             EnsureOutcome::Spawned {
                 model: target.model_id().to_string(),
             }
@@ -574,6 +575,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                 Ok(()) => {
                     reset_real_decode_failures();
                     mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
+                    observe_launched_engine(ctrl).await;
                     EnsureOutcome::Spawned {
                         model: target.model_id().to_string(),
                     }
@@ -588,6 +590,14 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             reason: reason.to_string(),
         },
     }
+}
+
+/// A lane this reconcile launched answered ready: read its own build now, not at the next
+/// reconcile that happens to pass the convergence check, so her tool head is decided by what the
+/// running engine says before her acts reach it.
+async fn observe_launched_engine<C: LlamaServerControl + ?Sized>(ctrl: &C) {
+    let probe = ctrl.served_engine_build().await;
+    observe_served_engine(ctrl.served_incarnation(), probe.as_ref().map(Option::as_deref).map_err(|_| ()));
 }
 
 /// The refusal last reported by [`keep_incumbent`], so an unchanged one is said once, not on

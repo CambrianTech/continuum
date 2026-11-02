@@ -257,16 +257,8 @@ pub async fn evaluate_gating(
 }
 
 pub fn build_gating_prompt(context: &AIDecisionContext) -> String {
-    let recent_messages = context
-        .rag_context
-        .conversation_history
-        .iter()
-        .rev()
-        .take(10)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>();
+    // The history its caller's RAG context already sized: no second count here.
+    let recent_messages: Vec<_> = context.rag_context.conversation_history.iter().collect();
 
     let trigger_text = &context.trigger_message.content.text;
     let trigger_sender = &context.trigger_message.sender_name;
@@ -444,7 +436,7 @@ fn extract_reason(text: &str) -> String {
 
     text.lines()
         .find(|line| line.trim().len() >= 10)
-        .map(|line| line.trim().chars().take(100).collect())
+        .map(|line| line.trim().to_string())
         .unwrap_or_else(|| "Extracted from natural language response".to_string())
 }
 

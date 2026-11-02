@@ -1,9 +1,9 @@
 #![cfg(test)]
 
     // what this catches: PROVENANCE BEING FILTERED BY ATTENTION. Card 0d51573a.
-    // `ws.broadcast` is the FOCUSED set — SalienceArbiter truncates to capacity — so
-    // deriving receipts from it silently drops the generations of any faculty that
-    // lost the attention competition. Astra found that in my first implementation,
+    // `ws.broadcast` is the FOCUSED set, so deriving receipts from it would drop the
+    // generations of any faculty attention dropped (the arbiter cut by a count until card
+    // c537d687; it forwards every bid now, and receipts must still not depend on it). Astra found that in my first implementation,
     // which flat_mapped broadcast; my previous test could not catch it because it
     // hand-assembled `ws.broadcast` and never ran the arbiter at all.
     //
@@ -23,17 +23,8 @@
             Arc::new(FixedFaculty(loud)),
             Arc::new(FixedFaculty(quiet)),
         ];
-        // capacity 1 — one of the two bids MUST be truncated.
-        let ws = cycle(faculties, 1).run("burst").await;
-
-        // POSITIVE CONTROL: the truncation really happened. Without this the receipt
-        // assertion below would pass just as well on a cycle that kept both bids,
-        // and would be asserting nothing about attention.
-        assert_eq!(
-            ws.broadcast.len(),
-            1,
-            "capacity 1 must drop one bid — otherwise this test never exercises truncation"
-        );
+        let ws = cycle(faculties).run("burst").await;
+        assert_eq!(ws.broadcast.len(), 2, "attention forwards every bid");
 
         let ids: Vec<&str> = ws
             .generation_receipts()
@@ -41,8 +32,8 @@
             .collect();
         assert!(
             ids.contains(&"req-quiet"),
-            "the TRUNCATED faculty's receipt must survive — provenance is not subject \
-             to attention; got {ids:?}"
+            "the quieter faculty's receipt survives — provenance is not subject to \
+             attention; got {ids:?}"
         );
         assert!(
             ids.contains(&"req-loud"),
@@ -175,8 +166,8 @@
         }
     }
 
-    fn cycle(faculties: Vec<Arc<dyn Faculty>>, capacity: usize) -> WorkspaceCycle {
-        WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter), capacity)
+    fn cycle(faculties: Vec<Arc<dyn Faculty>>) -> WorkspaceCycle {
+        WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter))
     }
 
     // what this catches: the cycle's genome page-in/page-out round-trips through the
@@ -186,7 +177,7 @@
     // would measure the same genome and every lift would read as zero.
     #[test]
     fn genome_page_in_and_out_round_trips() {
-        let c = cycle(vec![], 4);
+        let c = cycle(vec![]);
         assert!(
             c.genome().is_empty(),
             "a fresh cycle starts on the base model"
@@ -215,7 +206,7 @@
     // the tile's Act corner would never light while she runs tools.
     #[test]
     fn acting_lights_only_the_act_axis_on_the_compass() {
-        let c = cycle(vec![], 4);
+        let c = cycle(vec![]);
         assert_eq!(
             c.faculty_pulse().levels(),
             [0, 0, 0, 0],
@@ -245,7 +236,7 @@
             Arc::new(HeuristicInferenceAdapter::new());
         // The handle the faculty would hold; the cycle shares the SAME Arc.
         let handle = model_binding(Arc::clone(&adapter), None, 4096);
-        let c = cycle(vec![], 4).with_model_binding(Arc::clone(&handle));
+        let c = cycle(vec![]).with_model_binding(Arc::clone(&handle));
 
         // Baseline: what boot bound.
         assert_eq!(handle.load().context_window, 4096);
@@ -274,7 +265,7 @@
 
         // A cycle that shared no binding in (no deliberation faculty) must not
         // panic on re-home — it has nothing to rebind.
-        let bare = cycle(vec![], 4);
+        let bare = cycle(vec![]);
         bare.rebind_model(ModelBinding {
             adapter,
             model: Some("whatever".to_string()),
@@ -305,7 +296,7 @@
 
         // Boot shape: binding with NO explicit model (the live upstart path).
         let handle = model_binding(Arc::clone(&adapter), None, 20_224);
-        let c = cycle(vec![], 4).with_model_binding(handle);
+        let c = cycle(vec![]).with_model_binding(handle);
         let (model, ctx) = c.model_loadout().expect("a bound cycle reports a loadout");
         assert_eq!(
             model.as_deref(),
@@ -324,7 +315,7 @@
         assert_eq!(model.as_deref(), Some("qwen-coder-14b"));
 
         // No binding at all (no deliberation faculty) → no loadout, honest-absent.
-        assert!(cycle(vec![], 4).model_loadout().is_none());
+        assert!(cycle(vec![]).model_loadout().is_none());
     }
 
     // what this catches: every finding is stamped with the cycle it was computed
@@ -348,7 +339,7 @@
             ))),
             Arc::new(ConditionalDeliberation),
         ];
-        let c = cycle(faculties, 4);
+        let c = cycle(faculties);
 
         // First tick → CycleId(1); both the perception (Recall) and deliberation
         // (verdict) findings must carry it.
@@ -397,7 +388,7 @@
             ))),
             Arc::new(ConditionalDeliberation),
         ];
-        let c = cycle(faculties, 4);
+        let c = cycle(faculties);
         let ws = Workspace::new("teammate: the deploy is red, what happened?");
 
         // isolate recall: exactly one bid, its engram content, a real timing.
@@ -448,7 +439,7 @@
     // the highest-salience faculty bids win the bounded workspace. This is the
     // ML-integration replacement for calculate_priority's hand-weights.
     #[tokio::test]
-    async fn arbiter_selects_top_k_by_ml_salience() {
+    async fn arbiter_forwards_every_bid_highest_salience_first() {
         let faculties: Vec<Arc<dyn Faculty>> = vec![
             Arc::new(FixedFaculty(Contribution::context(
                 FacultyId::Recall,
@@ -469,10 +460,9 @@
                 "some arousal",
             ))),
         ];
-        let ws = cycle(faculties, 2).run("the consolidated thread").await;
-        assert_eq!(ws.broadcast.len(), 2, "bounded capacity");
-        assert_eq!(ws.broadcast[0].content, "high", "highest ML salience wins");
-        assert_eq!(ws.broadcast[1].content, "mid");
+        let ws = cycle(faculties).run("the consolidated thread").await;
+        let order: Vec<&str> = ws.broadcast.iter().map(|c| c.content.as_str()).collect();
+        assert_eq!(order, ["high", "mid", "low"], "every bid, highest ML salience first: the view sizes each");
     }
 
     // what this catches: ACTING-ORGANISM step 1 — the mind can express "I want to
@@ -498,7 +488,7 @@
             0.95,
             "the model emitted a tool call",
         )))];
-        let ws = cycle(faculties, 4).run("peer: does your sum work?").await;
+        let ws = cycle(faculties).run("peer: does your sum work?").await;
         match ws.decision() {
             Some(Decision::Act { calls, intent }) => {
                 assert_eq!(calls.as_slice(), std::slice::from_ref(&call));
@@ -538,11 +528,11 @@
                 "actionable",
             ))),
         ];
-        let ws = cycle(faculties, 1).run("burst").await;
-        assert_eq!(ws.broadcast.len(), 1);
+        let ws = cycle(faculties).run("burst").await;
+        assert_eq!(ws.broadcast.len(), 2);
         assert!(
             ws.broadcast[0].content.contains("peer persona"),
-            "the relevant peer-persona content wins on salience, not the human's rank"
+            "the relevant peer-persona content leads on salience, not the human's rank"
         );
     }
 
@@ -566,7 +556,7 @@
                 "high epistemic value — no one raised it",
             ))),
         ];
-        let ws = cycle(faculties, 5).run("coordination thread").await;
+        let ws = cycle(faculties).run("coordination thread").await;
         match ws.decision() {
             Some(Decision::RaiseUnprompted { text }) => {
                 assert_eq!(text, "blocker on the deploy")
@@ -587,7 +577,7 @@
                 "nothing worth adding",
             ))),
         ];
-        let ws = cycle(faculties, 5).run("idle chatter").await;
+        let ws = cycle(faculties).run("idle chatter").await;
         assert_eq!(
             ws.broadcast.len(),
             1,
@@ -615,7 +605,7 @@
                 "model 'X' is not the active served model (serving: 'Y')",
             ))),
         ];
-        let ws = cycle(faculties, 5).run("swept to an unhosted model").await;
+        let ws = cycle(faculties).run("swept to an unhosted model").await;
         // The fault is readable and names the cause verbatim…
         assert_eq!(
             ws.deliberation_fault(),
@@ -642,6 +632,7 @@
             capture: None,
             genes: Vec::new(),
             gene_scales: Vec::new(),
+            allocation: None,
         };
         let served = || GenerationOutcome::Served { model: "m".into(), provider: "p".into(), provider_request_id: None };
         let faulted = || GenerationOutcome::Faulted { detail: "lane refused".into(), model: None, provider: None };
@@ -652,12 +643,12 @@
         context.receipts = vec![receipt("other-faculty", served())];
         let faculties: Vec<Arc<dyn Faculty>> =
             vec![Arc::new(FixedFaculty(verdict)), Arc::new(FixedFaculty(context))];
-        let ws = cycle(faculties, 5).run("decide").await;
+        let ws = cycle(faculties).run("decide").await;
         assert_eq!(ws.decision_generation().as_deref(), Some("decided"));
 
         let mut all_faulted = Contribution::verdict(Decision::Speak { text: "x".into() }, 0.8, "faulted");
         all_faulted.receipts = vec![receipt("only-fault", faulted())];
-        let ws = cycle(vec![Arc::new(FixedFaculty(all_faulted))], 5).run("decide").await;
+        let ws = cycle(vec![Arc::new(FixedFaculty(all_faulted))]).run("decide").await;
         assert_eq!(ws.decision_generation(), None, "a decision with no served generation carries none");
     }
 
@@ -673,7 +664,7 @@
             0.8,
             "caught up on the backlog",
         )))];
-        let ws = cycle(faculties, 5).run(consolidated).await;
+        let ws = cycle(faculties).run(consolidated).await;
         assert!(ws.world_state.contains("many events, one unit"));
         assert!(matches!(ws.decision(), Some(Decision::Speak { .. })));
     }
@@ -709,8 +700,8 @@
                 "high value",
             ))),
         ];
-        // capacity 1 → only the winner is broadcast, but the trace keeps both.
-        let _ws = WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter), 1)
+        // Every bid is broadcast, and the trace keeps every bid with its salience.
+        let _ws = WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter))
             .with_capture(sink.clone())
             .run("thread")
             .await;
@@ -719,7 +710,7 @@
         assert_eq!(traces.len(), 1, "one tick recorded");
         let t = &traces[0];
         assert_eq!(t.bids.len(), 2, "trace keeps ALL bids — winner AND loser");
-        assert_eq!(t.broadcast.len(), 1, "only the winner held attention");
+        assert_eq!(t.broadcast.len(), 2, "attention forwards every bid");
         assert!(
             t.bids.iter().any(|b| b.content == "loser bid"),
             "the loser bid + its salience + reasoning are replayable for debugging"
@@ -749,7 +740,7 @@
             // Phase 2 (deliberation): reacts to the assembled broadcast.
             Arc::new(ConditionalDeliberation),
         ];
-        let ws = cycle(faculties, 5).run("what's the status?").await;
+        let ws = cycle(faculties).run("what's the status?").await;
         match ws.decision() {
             Some(Decision::Speak { text }) => assert!(
                 text.contains("deploy pipeline is red"),
@@ -777,7 +768,7 @@
             ))),
             Arc::new(ConditionalDeliberation),
         ];
-        let _ws = WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter), 5)
+        let _ws = WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter))
             .with_capture(sink.clone())
             .run("status?")
             .await;
@@ -838,7 +829,7 @@
             ))),
             Arc::new(CountingDeliberation(calls.clone())),
         ];
-        let _ws = cycle(faculties, 5).run("burst").await;
+        let _ws = cycle(faculties).run("burst").await;
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),
             1,
@@ -886,11 +877,10 @@
         );
         let candidates = vec![roster, doctrine, result.clone(), recall.clone()];
 
-        // Fresh ask: fuller grounding — everything within capacity survives, exactly
-        // like the blind salience floor.
+        // Fresh ask: fuller grounding — every bid survives, exactly like the blind
+        // salience floor.
         let fresh = arbiter.focus(
             candidates.clone(),
-            10,
             &FocusContext {
                 world_state: "ask",
                 situation: Situation::FreshContext,
@@ -922,7 +912,6 @@
         // "salience still governs which contributions are included and truncated".
         let post = arbiter.focus(
             candidates,
-            10,
             &FocusContext {
                 world_state: "result",
                 situation: Situation::PostAction,

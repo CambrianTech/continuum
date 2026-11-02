@@ -91,7 +91,7 @@ pub fn probe_process(pid: u32) -> ProcessProbe {
         // A zombie has exited and only awaits its reaper: its pid still answers `kill(pid, 0)`
         // and keeps its start time, so it would read ALIVE and hold its residency forever
         // (card e4ef7780; the Windows twin is a retained terminated handle, #5565). Same rule as
-        // `lane_process::kill9::still_present`.
+        // `continuum_process::kill9::still_present`.
         if p.status() == ProcessStatus::Zombie {
             return ProcessProbe::Absent;
         }

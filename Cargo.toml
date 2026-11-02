@@ -33,10 +33,17 @@ members = [
     "core/continuum-memory",
     "core/continuum-experience",
     "core/continuum-cognition",
+    "core/continuum-rooms",
+    "core/continuum-vitals",
+    "core/continuum-prompt",
+    "core/continuum-grounding",
+    "core/continuum-engram",
+    "core/continuum-capture",
     "core/continuum-text-analysis",
     "core/continuum-academy",
     "core/continuum-live",
     "core/continuum-hands",
+    "core/continuum-process",
     "core/continuum-engine",
     "core/continuum-models",
     "core/continuum-serving",
@@ -246,20 +253,28 @@ members = [
 # Also inherits reviewed #1599-1614 delivery, maintenance and checkout fixes.
 # 2026-10-24: #1616 stages card clones transactionally, preserves interrupted
 # predecessors, and gives shallow-mirror transfers their network-sized budget.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
-airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
-airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
+# 2026-10-30 bump fa918ab -> c7083d04 (airc#1620, the addressed command bus foundation):
+# typed Command / CommandResult frame and transcript kinds, so a command is never
+# classified by a header string or a body. BLOCKED: the core's command receiver also
+# needs the addressed module (AddressedInbox / VerifiedAddressed / reply bound to the
+# request) that lands on top of it; bump again to that rev when it publishes.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
+airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
+airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
+# airc-trust: the peer trust store's tier writes. Test fixtures only: TwoAircLoopback
+# enrols its two peers at `own_account`, the tier the command ingress contract requires.
+airc-trust = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "fa918ab7fd4a295301f34ff3066067cddb368489" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "d26713bfde49d74b2a91a071be2e437ee213ae4b" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
@@ -269,7 +284,7 @@ candle-transformers = { version = "0.9" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] } # raw_value: a derived field is held as its exact text until decoded, so u128 ids never pass through Value (#5659)
 
 # Database
 rusqlite = { version = "0.38", features = ["bundled"] }
@@ -296,7 +311,8 @@ half = "2.7"
 bytemuck = { version = "1.14", features = ["derive"] }
 
 # HuggingFace Hub for model downloads
-hf-hub = "0.5"
+# rustls, never the system OpenSSL (native-tls): one TLS stack in Rust, no OpenSSL to find, ship or patch.
+hf-hub = { version = "0.5", default-features = false, features = ["tokio", "ureq", "rustls-tls"] }
 
 # Tokenization
 tokenizers = "0.22"
@@ -358,6 +374,12 @@ ort = { version = "2.0.0-rc.11", default-features = false, features = ["download
 ndarray = "0.17"  # ort 2.0.0-rc.11 requires ndarray 0.17 for OwnedTensorArrayData trait compatibility
 
 # WebSocket
+# HTTP: rustls only, never native-tls (the system OpenSSL): one TLS stack in Rust, nothing to
+# find, ship or patch per OS. Every crate inherits this; features add on top.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "http2", "charset"] }
+# LiveKit over rustls (webpki roots), never native-tls; one place decides its TLS.
+livekit = { version = "0.7", default-features = false, features = ["tokio", "rustls-tls-webpki-roots"] }
+livekit-api = { version = "0.4", features = ["rustls-tls-webpki-roots"] }
 tokio-tungstenite = "0.28"
 futures-util = "0.3"
 
@@ -368,6 +390,44 @@ futures-util = "0.3"
 # codegen-units was set to 1 as defense-in-depth but that forces LLVM to run
 # single-threaded, pinning one core at 99% during compilation. The symbol conflict
 # is a link-time issue unaffected by codegen units. Default 16 enables parallel LLVM.
+
+# Shared by 2+ crates (Joel 2026-10-27): declared once here; members say `workspace = true` plus only their own extras.
+arc-swap = "1.7"
+axum = "0.8"
+base64 = "0.22"
+crossbeam-channel = "0.5"
+csv = "1"
+dashmap = "6.1"
+dirs = "5.0"
+earshot = "0.1"
+ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }
+fs2 = "0.4"
+futures = "0.3"
+hound = "3.5"
+ignore = "0.4"
+image = "0.25"
+inventory = "0.3"
+landlock = "0.4"
+libc = "0.2"
+metal = "0.32"
+notify = "8"
+num_cpus = "1.16"
+objc = "0.2"
+positron-core = { git = "https://github.com/CambrianTech/positron", tag = "v0.1.1" }
+proc-macro2 = "1.0.107"
+regex = "1"
+ron = "0.12"
+rubato = "0.15"
+rustpython-parser = "0.4.0"
+schemars = { version = "0.8", features = ["uuid1"] }
+scraper = "0.21"
+similar = "2.6"
+syn = { version = "2", features = ["extra-traits", "full"] }
+sysinfo = "0.33"
+tempfile = "3"
+toml = "0.8"
+wide = "0.7"
+windows-sys = { version = "0.60", features = ["Win32_Foundation"] }
 [profile.release]
 # codegen-units = 1  # REMOVED — was single-threading rustc compilation for no benefit
 # Strip debug symbols — continuum-core-server is ~200MB+ without this, mostly
@@ -478,7 +538,7 @@ by_nature = ["continuum-cli-lifecycle", "jtag-mcp", "livekit-bridge", "llama", "
 # pending: tests exist but no job selects them yet (card 996e3537). Debt that only shrinks: an
 # entry leaves by being deleted, and crate_wiring fails if this list grows past its ceiling.
 pending = [
-    "airc-test-fixtures", "continuum-airc-protocol", "continuum-bridge-protocol", "continuum-context",
+    "airc-test-fixtures", "continuum-airc-protocol", "continuum-bridge-protocol",
     "continuum-orm-derive", "continuum-positron", "continuum-text-analysis", "continuum-tool-protocol",
     "expert-pager-policy", "inference-grpc", "serving-replay", "tool-working-set",
 ]

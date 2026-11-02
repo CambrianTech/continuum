@@ -36,10 +36,4 @@ repeatLastN: number,
  * sequence frequency, catching gap-separated loops the windowed
  * penalty misses (#181). 0.0 = off. llama.cpp-family gateways only.
  */
-frequencyPenalty: number, 
-/**
- * Maximum tokens to generate per response. Derived from role's
- * `max_response_chars` divided by approximate chars-per-token
- * (typically 4 for English).
- */
-maxNewTokens: number, };
+frequencyPenalty: number, };

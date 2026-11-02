@@ -85,7 +85,7 @@ pub async fn drive_create_workspace(
     };
     let ws_out = hands
         .executor
-        .execute_native_batch(std::slice::from_ref(&ws_call), &ws_ctx, 8000)
+        .execute_native_batch(std::slice::from_ref(&ws_call), &ws_ctx)
         .await
         .map_err(|e| {
             crate::sdk_codegen::CommandError::Internal(format!(

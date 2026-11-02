@@ -6,9 +6,8 @@
 //! Before #1206, every persona's `RespondInput` carried its own deep
 //! copy of `recent_history`, `known_specialties`, and `room_id`. With
 //! N personas reacting to one message, that's N deep clones of
-//! identical data on the hot path — plus more clones inside
-//! `respond()` as the data flows through analyze → render → prompt
-//! assembly → recorder. The cost is O(N × history_depth × clone_cost)
+//! identical data on the hot path — plus more clones as the data
+//! flows through prompt assembly → recorder. The cost is O(N × history_depth × clone_cost)
 //! per turn, all of it pure waste.
 //!
 //! `Arc<TurnContext>` collapses this into a single allocation per
@@ -19,9 +18,8 @@
 //!
 //! Grouping into one struct gives:
 //! - **One refcount** instead of three (smaller per-clone overhead).
-//! - **One construction site** in `build_respond_input` — the place
-//!   that knew how to assemble the per-turn shape can keep doing so
-//!   without hauling three `Arc::new` calls through the projection.
+//! - **One construction site** (`TurnContext::arc`) instead of three
+//!   `Arc::new` calls hauled through every projection.
 //! - **A natural attach point for follow-up per-turn data** — the
 //!   #1211 PR-2 work (engram recall surface plumbed into
 //!   `prompt_assembly`) hangs off this struct. Each new per-turn

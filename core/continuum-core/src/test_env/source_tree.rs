@@ -56,7 +56,7 @@ impl SourceFile {
         if self.is_test_file() {
             return String::new();
         }
-        source_hygiene::production_half(&self.text)
+        source_hygiene::lexer::production_half(&self.text)
             .lines()
             .map(code_only)
             .collect::<Vec<_>>()
@@ -93,7 +93,7 @@ impl SourceFile {
 /// nor trip a guard. Source-hygiene's splitter, which knows string literals: one
 /// comment rule for the ratchets and these guards.
 pub(crate) fn code_only(line: &str) -> &str {
-    source_hygiene::split_code_and_comment(line).0
+    source_hygiene::lexer::split_code_and_comment(line).0
 }
 
 /// The crates cut out of continuum-core whose modules core re-exports under their old

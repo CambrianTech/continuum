@@ -33,7 +33,7 @@ async fn persona_executes_ping_via_typed_object_path() {
         input: json!({}),
     }];
     let out = exec
-        .execute_native_batch(&calls, &ctx(), 8000)
+        .execute_native_batch(&calls, &ctx())
         .await
         .expect("batch ok");
 

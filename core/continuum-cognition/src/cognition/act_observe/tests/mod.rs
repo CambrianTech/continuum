@@ -39,7 +39,6 @@ impl ToolExecutor for FailingExecutor {
         &self,
         _calls: &[ToolCall],
         _context: &ToolExecutionContext,
-        _max_result_chars: usize,
     ) -> Result<NativeBatchOutcome, ToolError> {
         Err(ToolError::ExecutionFailed {
             tool: "code/run".into(),

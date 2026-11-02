@@ -281,7 +281,7 @@ impl ActionCommand for CodeReleaseHands {
                         Err(p) => p.get_ref().unconfirmed_descendants.clone(), // poisoned: read the last state
                     };
                     if !survivors.is_empty() {
-                        let still = tokio::task::spawn_blocking(move || crate::inference::lane_process::recheck(&survivors))
+                        let still = tokio::task::spawn_blocking(move || continuum_process::recheck(&survivors))
                         .await
                         .map_err(|e| CommandError::Internal(format!("release-hands: re-checking descendants failed to run: {e}")))?;
                         if let Ok(mut s) = state.lock() {
@@ -294,14 +294,14 @@ impl ActionCommand for CodeReleaseHands {
                     }
                     break;
                 }
-                tokio::time::sleep(crate::inference::lane_process::KILL_POLL).await;
+                tokio::time::sleep(continuum_process::KILL_POLL).await;
             }
         }
         // What admitted work started and couldn't confirm gone (a gh's git): the same recheck
         // as a shell's survivors, and the hands are kept while any is present.
         if !lingering.processes.is_empty() {
             let processes = lingering.processes;
-            let still = tokio::task::spawn_blocking(move || crate::inference::lane_process::recheck(&processes))
+            let still = tokio::task::spawn_blocking(move || continuum_process::recheck(&processes))
                 .await
                 .map_err(|e| CommandError::Internal(format!("release-hands: re-checking its work's processes failed to run: {e}")))?;
             if !still.is_empty() {

@@ -148,7 +148,7 @@ impl WorkspaceCycle {
         };
         let focused = self
             .arbiter
-            .focus(context_bids.clone(), self.capacity, &focus_ctx);
+            .focus(context_bids.clone(), &focus_ctx);
         // Bids-vs-focused receipt at the attention seam. Together with
         // `delib.context.render` (received-vs-rendered) this closes the glass box
         // over a surfaced finding's whole path: faculty bid → attention →
@@ -157,7 +157,6 @@ impl WorkspaceCycle {
         // dark (#130).
         continuum_base::probe!(
             class = "workspace.attention.focus",
-            capacity = self.capacity,
             // The situation that drove this focus — the stat that makes context
             // control learnable: a focuser policy (this bootstrap, or a later
             // learned one) is a function of situation → dropped grounding, and the

@@ -10,7 +10,7 @@
 //! Per line, so a pure move cannot change the count; only removing a coupling lowers it.
 //! Measured on canary a51bc55bd (2026-10-24): 108 lines in 34 files. The cut lands at 0.
 
-use super::{split_code_and_comment, SourceFile, SourceRule, Violation};
+use super::{lexer::split_code_and_comment, SourceFile, SourceRule, Violation};
 
 pub struct CognitionNamesPersona;
 

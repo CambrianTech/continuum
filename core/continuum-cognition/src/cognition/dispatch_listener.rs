@@ -18,26 +18,13 @@ use crate::cognition::working_memory::{DispatchStatus, WorkingMemory};
 use crate::runtime::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 use crate::runtime::message_bus::MessageBus;
 
-// A dispatched command's result (a compile log, a sentinel's report) is bounded so one huge
-// result can't dominate perception; the full text stays recoverable through the command's own
-// handle. The bound is a FRACTION OF HER LIVE WINDOW, never a constant — the old
-// `DISPATCH_RESULT_MAX_CHARS = 4_000` is exactly the "4k or smaller window" that makes a
-// 1M-context model useless. [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
-use crate::cognition::context_budget::ContextBudget;
-
-/// Render a command result Value into the compact text the mind reads. A JSON string is
-/// shown bare (no quotes); anything else is compact JSON. Bounded by
-/// the live window (`ContextBudget::dispatch_result_chars`).
-fn summarize_result(value: &serde_json::Value) -> String {
-    let raw = match value {
+/// Preserve the completion for working memory's source. JSON strings are bare;
+/// other values retain their complete compact JSON. The view chooses a level;
+/// this transport consumer cannot discard the end of a result before allocation.
+fn result_text(value: &serde_json::Value) -> String {
+    match value {
         serde_json::Value::String(s) => s.clone(),
         other => other.to_string(),
-    };
-    let cap = ContextBudget::live().dispatch_result_chars();
-    if raw.chars().count() > cap {
-        raw.chars().take(cap).collect::<String>() + " …[truncated]"
-    } else {
-        raw
     }
 }
 
@@ -58,7 +45,7 @@ pub fn fold_completion(wm: &WorkingMemory, ev: CommandCompletedEvent) -> bool {
         let body = ev
             .result
             .as_ref()
-            .map(summarize_result)
+            .map(result_text)
             .unwrap_or_else(|| "done".to_string());
         (body, DispatchStatus::Done)
     } else {
@@ -98,6 +85,21 @@ pub fn spawn(bus: Arc<MessageBus>, working_memory: Arc<WorkingMemory>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_source_keeps_the_terminal_result_before_view_allocation() {
+        let wm = WorkingMemory::new(8);
+        let handle = uuid::Uuid::new_v4();
+        wm.record_dispatch_event(handle, "compile", "running", DispatchStatus::Running);
+        let body = format!("{}\nFINAL: compile failed at the changed call site", "診断\n".repeat(100_000));
+        assert!(fold_completion(&wm, ev(Some(handle), true, serde_json::json!(body))));
+        let snapshot = wm.dispatched_snapshot();
+        let result = snapshot.iter().find(|(h, ..)| *h == handle).expect("owned dispatch retained");
+        assert_eq!(result.2, body);
+        assert_eq!(result.3, DispatchStatus::Done);
+        let structured = serde_json::json!({"output": body, "status": "failed"});
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&result_text(&structured)).expect("complete JSON"), structured);
+    }
 
     fn ev(
         handle: Option<uuid::Uuid>,

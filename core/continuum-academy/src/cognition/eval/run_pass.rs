@@ -205,6 +205,9 @@ pub(super) async fn run_pass(
         let task_delivery = crate::cognition::rag_budget::RagDelivery {
             source_id: "airc".to_string(),
             items: vec![crate::cognition::rag_budget::RagItem {
+                key: String::new(),
+                summary: None,
+                pointer: None,
                 content: framed_prompt,
                 tokens: 0,
                 metadata: serde_json::json!({
@@ -214,7 +217,6 @@ pub(super) async fn run_pass(
             }],
             tokens_used: 0,
             truncated: false,
-            resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
         };
         // own_peer/agent_name attribute the persona's OWN past posts; a single-task
         // exam has none, so they're inert here (the item's peer_id "peer" ≠ "").
@@ -400,6 +402,9 @@ pub(super) async fn run_pass(
             let nudge_delivery = crate::cognition::rag_budget::RagDelivery {
                 source_id: "airc".to_string(),
                 items: vec![crate::cognition::rag_budget::RagItem {
+                    key: String::new(),
+                    summary: None,
+                    pointer: None,
                     content: format!(
                         "You did not answer. This is a GRADED exam question and you must answer it \
                          now — do NOT reply PASS or stay silent. Provide your complete solution:\n\n{}",
@@ -410,7 +415,6 @@ pub(super) async fn run_pass(
                 }],
                 tokens_used: 0,
                 truncated: false,
-                resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
             };
             let nudge_burst = crate::cognition::workspace::Burst::from_turns(
                 room,
@@ -519,6 +523,9 @@ pub(super) async fn run_pass(
                     let red_delivery = crate::cognition::rag_budget::RagDelivery {
                     source_id: "airc".to_string(),
                     items: vec![crate::cognition::rag_budget::RagItem {
+                        key: String::new(),
+                        summary: None,
+                        pointer: None,
                         content: format!(
                             "You settled, but the task's definition-of-done currently FAILS.                              Its output ends:
 
@@ -531,7 +538,6 @@ Fix the workspace and finish —                              the grade reads th
                     }],
                     tokens_used: 0,
                     truncated: false,
-                    resolution_used: crate::cognition::rag_budget::ResolutionPreference::Raw,
                 };
                 let red_burst = crate::cognition::workspace::Burst::from_turns(
                     room,

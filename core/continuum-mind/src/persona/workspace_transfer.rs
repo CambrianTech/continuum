@@ -644,7 +644,7 @@ async fn sync_by(deadline: tokio::time::Instant, root: &Path, sync: impl std::fu
         let Ok(one_at_a_time) = tokio::time::timeout_at(deadline, lock.lock_owned()).await else {
             return PushOutcome::TimedOut;
         };
-        crate::inference::lane_process::holding(std::sync::Arc::new(one_at_a_time), sync).await
+        continuum_process::holding(std::sync::Arc::new(one_at_a_time), sync).await
     })
     .await;
     // past the deadline, a step's failure was the deadline's (a git it ended or never ran), so

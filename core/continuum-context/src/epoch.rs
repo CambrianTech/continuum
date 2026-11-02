@@ -13,15 +13,20 @@ pub struct SourceId(pub String);
 /// What a block holds: plain text, or a caller's richer rendering (a role-tagged message).
 /// The epoch compares blocks for equality and counts their characters; nothing else.
 pub trait Block: Clone + PartialEq + std::hash::Hash {
-    /// Characters this block costs the view, the unit [`Epoch::superseded_chars`] counts.
-    fn chars(&self) -> usize;
+    /// The block's text: what it costs and what its content hash is taken over.
+    fn text(&self) -> &str;
+
+    /// Characters this block costs the view, the unit [`Epoch::superseded_chars`] counts:
+    /// characters, never bytes (bytes would weigh a non-ASCII block heavier than its twin and skew
+    /// the one allocation).
+    fn chars(&self) -> usize {
+        self.text().chars().count()
+    }
 }
 
 impl Block for String {
-    /// Characters, the same unit every block counts in (bytes would weigh a non-ASCII
-    /// block heavier than its twin and skew the one allocation).
-    fn chars(&self) -> usize {
-        self.as_str().chars().count()
+    fn text(&self) -> &str {
+        self
     }
 }
 
@@ -29,6 +34,11 @@ impl Block for String {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Event<T = String> {
     pub source: SourceId,
+    /// The occurrence this block renders (`crate::cause`); `None` for a source's fold block,
+    /// which stands for a range of items.
+    pub element: Option<crate::cause::ElementId>,
+    /// The level the view rendered it at: what a render receipt reports she was shown.
+    pub level: crate::level::Level,
     pub version: u32,
     pub text: T,
     /// The source ended with this notice; turnover drops it entirely.
@@ -72,16 +82,23 @@ impl<T: Block> Epoch<T> {
 
     /// Record a source's current rendering. Appends only when it differs from that source's
     /// latest version; never edits an earlier block.
-    pub fn observe(&mut self, source: SourceId, text: T) -> Observed {
+    pub fn observe(&mut self, source: SourceId, element: Option<crate::cause::ElementId>, level: crate::level::Level, text: T) -> Observed {
         let latest = self.events.iter().rposition(|e| e.source == source);
         if let Some(i) = latest {
             if self.events[i].text == text {
+                // The same bytes now stand for another occurrence or level (a short item whose
+                // pointer is itself, a re-read of unchanged content): the prompt is unchanged, so
+                // nothing appends, but what the block IS updates in place, or a receipt would
+                // report the old occurrence or level (Codex on #5639).
+                let event = &mut self.events[i];
+                event.element = element;
+                event.level = level;
                 return Observed::Unchanged;
             }
             self.superseded_chars += self.events[i].text.chars();
         }
         let version = latest.map_or(0, |i| self.events[i].version + 1);
-        self.events.push(Event { source, version, text, retired: false });
+        self.events.push(Event { source, element, level, version, text, retired: false });
         Observed::Appended { version }
     }
 
@@ -97,8 +114,8 @@ impl<T: Block> Epoch<T> {
             return Observed::Unchanged;
         }
         self.superseded_chars += self.events[i].text.chars();
-        let version = self.events[i].version + 1;
-        self.events.push(Event { source, version, text: notice, retired: true });
+        let (element, version) = (self.events[i].element, self.events[i].version + 1);
+        self.events.push(Event { source, element, level: crate::level::Level::Pointer, version, text: notice, retired: true });
         Observed::Appended { version }
     }
 
@@ -119,6 +136,12 @@ impl<T: Block> Epoch<T> {
         self.events.iter().any(|e| &e.source == source)
     }
 
+    /// Every block after the head, in prompt order, superseded versions included: what a render
+    /// receipt projects.
+    pub fn events(&self) -> &[Event<T>] {
+        &self.events
+    }
+
     /// The view in order: the head, then every event as it arrived.
     pub fn render(&self) -> impl Iterator<Item = &T> {
         self.head.iter().chain(self.events.iter().map(|e| &e.text))
@@ -137,6 +160,27 @@ impl<T: Block> Epoch<T> {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: a receipt reporting stale evidence when identical bytes change meaning:
+    // a block first shown as a pointer whose whole is the same bytes, or a re-read of unchanged
+    // content by a new occurrence (Codex on #5639). The prompt must not grow; the metadata must.
+    #[test]
+    fn identical_bytes_with_a_new_level_or_occurrence_update_the_block_without_appending() {
+        use crate::cause::ElementId;
+        use crate::level::Level;
+        let mut e = Epoch::<String>::new(1, Vec::new());
+        let (first, second) = (ElementId::of(&[b"read 1"]), ElementId::of(&[b"read 2"]));
+        assert_eq!(e.observe(src("open-views/a.rs"), Some(first), Level::Pointer, "a.rs: 3 lines".into()), Observed::Appended { version: 0 });
+        assert_eq!(e.observe(src("open-views/a.rs"), Some(first), Level::Full, "a.rs: 3 lines".into()), Observed::Unchanged);
+        assert_eq!((e.events().len(), e.events()[0].level), (1, Level::Full), "same bytes, now its whole");
+        assert_eq!(e.observe(src("open-views/a.rs"), Some(second), Level::Full, "a.rs: 3 lines".into()), Observed::Unchanged);
+        assert_eq!((e.events().len(), e.events()[0].element), (1, Some(second)), "same bytes, now the newer occurrence");
+    }
+
+    /// A test block: whole, standing for no particular occurrence.
+    fn seen(e: &mut Epoch<String>, source: SourceId, text: String) -> Observed {
+        e.observe(source, None, crate::level::Level::Full, text)
+    }
+
     use super::*;
 
     fn src(s: &str) -> SourceId {
@@ -161,7 +205,7 @@ mod tests {
         let mut previous = joined(&e);
         for act in acts {
             for (s, t) in act {
-                e.observe(src(s), t.to_string());
+                seen(&mut e, src(s), t.to_string());
             }
             let now = joined(&e);
             assert!(now.starts_with(&previous), "an act rewrote the prefix:\n{previous}\n---\n{now}");
@@ -173,9 +217,9 @@ mod tests {
     #[test]
     fn an_unchanged_source_appends_nothing() {
         let mut e = Epoch::<String>::new(1, vec![]);
-        assert_eq!(e.observe(src("kanban"), "v1".into()), Observed::Appended { version: 0 });
-        assert_eq!(e.observe(src("kanban"), "v1".into()), Observed::Unchanged);
-        assert_eq!(e.observe(src("kanban"), "v2".into()), Observed::Appended { version: 1 });
+        assert_eq!(seen(&mut e, src("kanban"), "v1".into()), Observed::Appended { version: 0 });
+        assert_eq!(seen(&mut e, src("kanban"), "v1".into()), Observed::Unchanged);
+        assert_eq!(seen(&mut e, src("kanban"), "v2".into()), Observed::Appended { version: 1 });
         assert_eq!(e.superseded_chars(), 2);
     }
 
@@ -186,12 +230,12 @@ mod tests {
     fn per_item_sources_append_only_the_item_that_changed() {
         let mut e = Epoch::<String>::new(1, vec![]);
         for view in ["a.rs", "b.rs", "c.rs"] {
-            e.observe(src(&format!("open-views/{view}")), format!("{view} v1 {}", "x".repeat(1000)));
+            seen(&mut e, src(&format!("open-views/{view}")), format!("{view} v1 {}", "x".repeat(1000)));
         }
         let before: usize = e.chars();
-        e.observe(src("open-views/a.rs"), "a.rs v1 ".to_string() + &"x".repeat(1000));
-        e.observe(src("open-views/b.rs"), "b.rs v2".into());
-        e.observe(src("open-views/c.rs"), "c.rs v1 ".to_string() + &"x".repeat(1000));
+        seen(&mut e, src("open-views/a.rs"), "a.rs v1 ".to_string() + &"x".repeat(1000));
+        seen(&mut e, src("open-views/b.rs"), "b.rs v2".into());
+        seen(&mut e, src("open-views/c.rs"), "c.rs v1 ".to_string() + &"x".repeat(1000));
         let after: usize = e.chars();
         assert_eq!(after - before, "b.rs v2".len(), "only the changed view was appended");
     }
@@ -201,7 +245,7 @@ mod tests {
     #[test]
     fn retiring_a_source_appends_its_notice_once() {
         let mut e = Epoch::<String>::new(1, vec![]);
-        e.observe(src("open-views/a.rs"), "a.rs contents".into());
+        seen(&mut e, src("open-views/a.rs"), "a.rs contents".into());
         let before = joined(&e);
         assert_eq!(e.retire(src("open-views/a.rs"), "[closed a.rs]".into()), Observed::Appended { version: 1 });
         assert!(joined(&e).starts_with(&before));

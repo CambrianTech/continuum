@@ -8,11 +8,11 @@ use crate::cognition::context_streams::conversation::{Conversation, Turn};
 use crate::cognition::context_streams::Role;
 
 fn block(faculty: &str, text: &str) -> Grounding {
-    Grounding { faculty: faculty.to_owned(), text: text.to_owned(), minimum: text.to_owned() }
+    Grounding::atomic(uuid::Uuid::nil(), faculty, text)
 }
 
 fn turn(n: usize) -> Turn {
-    Turn { key: format!("turn-{n}"), role: Role::User, line: format!("[occurred {n}] Operator: turn {n}") }
+    Turn { key: format!("turn-{n}"), role: Role::User, line: format!("[occurred {n}] Operator: turn {n}"), pointer: None }
 }
 
 /// One act's sources: a room window of six turns starting at `first_turn`, a settled map, the
@@ -20,7 +20,7 @@ fn turn(n: usize) -> Turn {
 /// that says something new every act.
 fn streams(first_turn: usize, recall: &str) -> Streams {
     Streams {
-        conversation: Conversation { turns: (first_turn..first_turn + 6).map(turn).collect() },
+        conversation: Conversation { turns: (first_turn..first_turn + 6).map(turn).collect(), ..Default::default() },
         blocks: vec![
             block("workspace-map", "MAP: src/ tests/ docs/"),
             block("room-kanban", "BOARD: you hold 1 card; 3 claimable"),
@@ -60,7 +60,7 @@ fn two_acts_and_a_turnover(conversation_first: bool) -> (usize, usize, usize) {
     let memory = WorkingMemory::new(8);
     memory.record_receipt("I ran code/list Result: 4 files");
     memory.record_settlement("listed", None);
-    let memory_streams = MemoryStreams::of(&memory);
+    let memory_streams = MemoryStreams::of(&memory, uuid::Uuid::nil());
     let first = streams(0, "RECALL: the repro lives in tests/");
     let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
     let (mut view, _) = View::start(Vec::new(), &ordered(&first, &memory_streams, conversation_first), whole)
@@ -96,13 +96,13 @@ fn two_acts_and_a_turnover(conversation_first: bool) -> (usize, usize, usize) {
 #[test]
 fn consecutive_acts_share_the_whole_view_and_a_turnover_keeps_the_settled_front() {
     let memory = WorkingMemory::new(8);
-    let memory_streams = MemoryStreams::of(&memory);
+    let memory_streams = MemoryStreams::of(&memory, uuid::Uuid::nil());
     let now = streams(0, "RECALL: one");
     let names: Vec<&str> =
         LlmDeliberationFaculty::view_sources(&now, Some(&memory_streams)).iter().map(|s| s.name()).collect();
     assert_eq!(
         names,
-        ["workspace-map", "actions", "conversation", "room-kanban", "recall", "thoughts", "open-views", "notices"],
+        ["workspace-map", "actions", "conversation", "room-kanban", "recall", "thoughts", "tasks", "open-views", "notices"],
         "settled blocks, then her actions and conversation, then what counts or changes within an epoch"
     );
 
@@ -115,4 +115,19 @@ fn consecutive_acts_share_the_whole_view_and_a_turnover_keeps_the_settled_front(
     // The map and the `[actions]` banner at least: the first change is inside her actions (an
     // act the turnover collapsed, or the act the epoch had appended at its end).
     assert!(survived >= 2, "a turnover keeps the settled blocks and her actions' front: {survived}");
+}
+
+// what this catches: a view that fits turning over, cold, to raise a collapsed item a level
+// (the M5, 2026-10-31: 32 of 91 turnovers in 3 h, each 101-111 s of prefill instead of 6-8 s).
+// A restore is taken only on an act whose next append would turn the epoch over anyway, and
+// only then is a whole start priced; an overflow always turns over.
+#[test]
+fn a_fitting_view_restores_only_when_the_next_act_would_turn_it_over() {
+    let never = || -> Result<bool, ()> { panic!("a start is priced only when the next act would overflow") };
+    assert_eq!(turnover_due(21_000, 32_000, Some(5_000), never), Ok(Turnover::Keep), "room for the next act: keep appending");
+    assert_eq!(turnover_due(21_000, 32_000, None, never), Ok(Turnover::Keep), "nothing measured yet: keep appending");
+    assert_eq!(turnover_due(30_000, 32_000, Some(5_000), || Ok::<_, ()>(true)), Ok(Turnover::Restore), "the next act overflows: restore now");
+    assert_eq!(turnover_due(30_000, 32_000, Some(5_000), || Ok::<_, ()>(false)), Ok(Turnover::Keep), "nothing to restore: keep");
+    assert_eq!(turnover_due(33_000, 32_000, Some(5_000), never), Ok(Turnover::Overflow), "over its grant: turn over");
+    assert_eq!(turnover_due(30_000, 32_000, Some(5_000), || Err("mismatch")), Err("mismatch"), "a broken allocation refuses");
 }

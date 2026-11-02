@@ -54,8 +54,6 @@ fn extra_commands(registry: &PersonaAircRuntimeRegistry) -> Vec<Arc<dyn DynComma
         // coursework/import: the coursework/round recipe's card source (ONE-RESIDENT §10.4),
         // the same family as benchmark/import.
         Arc::new(crate::commands::benchmark_import::CourseworkImport),
-        // persona/roster reads the live persona registry (#396 live-roster verb).
-        Arc::new(crate::commands::persona_roster::PersonaRoster { registry: registry.clone() }),
         Arc::new(crate::commands::presence_directory::PresenceDirectory { registry: registry.clone() }),
     ]
 }

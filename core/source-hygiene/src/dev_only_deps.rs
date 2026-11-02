@@ -18,7 +18,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::{collect_files, split_code_and_comment, SourceFile, Violation};
+use crate::{lexer::split_code_and_comment, collect_files, SourceFile, Violation};
 
 /// The crates a manifest declares, by the name code uses for them (`-` becomes `_`).
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -232,7 +232,7 @@ fn test_regions(file: &SourceFile) -> (Vec<bool>, Vec<String>) {
         } else {
             let mut item = lines[head..].to_vec();
             item[0] = code;
-            head + crate::gated_item_end(&item, 0)
+            head + crate::lexer::gated_item_end(&item, 0)
         };
         test_only[i..=end].iter_mut().for_each(|t| *t = true);
         i = end + 1;
@@ -289,7 +289,7 @@ pub fn workspace_violations(repo: &Path) -> (usize, Vec<Violation>) {
             };
             scanned += 1;
             let name = entry.file_name().to_string_lossy().into_owned();
-            out.extend(violations_in(&name, &DeclaredCrates::parse(&manifest), &collect_files(&dir.join("src"))));
+            out.extend(violations_in(&name, &DeclaredCrates::parse(&manifest), &collect_files(repo, &format!("{group}/{name}/src"))));
         }
     }
     (scanned, out)

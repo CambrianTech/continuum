@@ -26,32 +26,19 @@ pub fn seed_device_vram_prior(total_bytes: u64) {
 }
 
 /// The bytes the plan may fill out of the replace-myself budget `live` under a mode's
-/// fraction. On UNIFIED memory the serving pool and the pressure monitor measure the
-/// same bytes, so a fill to the mode's fraction can leave the box inside the Eco band:
-/// measured 2026-09-19 17:56–18:20Z on the M5 (64 GB, Comfort, budget 40 GB) — 2 × 67k
-/// (27 GB) became 3 × 67k (32 GB) the tick the fit allowed it, with zero slack; the
-/// compressor took 6 GB of other processes' pages, "external" read 15 → 23 GB, the budget
-/// fell 40 → 33, Eco entered, the plan collapsed to one lane at the floor and admission
-/// followed it: five minds on one of three slots for the hour. Comfort's 20% of a 40 GB
-/// budget is 8 GB — UNDER the 12 GiB Eco exit line — so a full Comfort fill is already
-/// inside the band. The plan therefore never fills within [`ECO_EXIT_BYTES`] of the
-/// budget on unified memory: the band the mode machinery already defines, one place,
-/// where #4230's removed 15% used to sit by accident. A box small enough that Eco's own
-/// fraction is the tighter bound keeps the mode alone (the band is absolute; the mode
-/// scales). Discrete VRAM is a different pool from host memory: the band does not apply.
-pub fn plan_fill(live: u64, fraction: f64, unified: bool) -> u64 {
-    use crate::capacity::power_mode::{PowerMode, ECO_EXIT_BYTES};
-    let by_mode = (live as f64 * fraction) as u64;
-    if !unified {
-        return by_mode;
-    }
-    let eco_floor = (live as f64 * PowerMode::Eco.serving_fraction()) as u64;
-    let above_band = live.saturating_sub(ECO_EXIT_BYTES);
-    if above_band > eco_floor {
-        by_mode.min(above_band)
-    } else {
-        by_mode
-    }
+/// fraction: the mode's fraction is the one reserve, and it scales with the machine. The
+/// budget it is applied to is already the sustained minimum over one relaunch
+/// (`budget_readings`), which is what keeps a wandering "available" from flipping the plan.
+///
+/// A second, flat reserve sat here: the Eco exit edge (12 GiB) subtracted from every unified
+/// plan after the 2026-09-19 collapse (a fill with zero slack, the compressor's response read
+/// as co-consumer growth), a month before the sustained minimum fixed that flapping at its
+/// source. On a 64 GB node it withheld a fifth of the machine: on the M5, 2026-10-29, with
+/// ~25 GB available it left the plan 16.5 GB, three 27,904-token lanes for four residents and
+/// a median 17 s per act waiting for a slot. The Eco band stays where it belongs, deciding when
+/// the MODE changes; it is not a capacity reserve.
+pub fn plan_fill(live: u64, fraction: f64) -> u64 {
+    (live as f64 * fraction) as u64
 }
 
 /// The fraction a production budget may hand the plan: the operator's headroom policy,

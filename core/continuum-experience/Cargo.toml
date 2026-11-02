@@ -18,7 +18,7 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-schemars = { version = "0.8", features = ["uuid1"] }
+schemars = { workspace = true }
 thiserror.workspace = true
 async-trait.workspace = true
 airc-core.workspace = true
@@ -28,7 +28,7 @@ ts-rs.workspace = true  # TypeScript type generation
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-tempfile = "3"
+tempfile = { workspace = true }
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
 continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
 

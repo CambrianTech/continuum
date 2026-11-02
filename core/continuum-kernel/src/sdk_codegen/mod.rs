@@ -69,6 +69,9 @@ pub use command::{
 };
 #[cfg(feature = "ts-codegen")]
 pub use emit::write_typescript_sdk;
+/// What a command does to the world, declared on it (`ActionCommand::EFFECT`); re-exported so
+/// `action_command!`'s `effect:` clause resolves in any crate that expands it.
+pub use continuum_base::tool_effect::ToolEffect;
 pub use events::{event_registry, EventDescriptor, EventSpec};
 #[cfg(feature = "ts-codegen")]
 pub use events::{generate_event_api, generate_event_map};
@@ -180,7 +183,7 @@ macro_rules! register_stateless_command {
 /// action_command! {
 ///     /// Show git status for the caller's workspace.
 ///     pub struct CodeGitStatus { state: Arc<CodeState> }
-///     name: "code/git-status",
+///     name: "code/git/status",
 ///     access: AiSafe,
 ///     params: GitStatusParams,
 ///     output: GitStatusResult,
@@ -204,6 +207,7 @@ macro_rules! action_command {
         access: $access:ident,
         $(native: $native:expr,)?
         $(aliases: $aliases:expr,)?
+        $(effect: $effect:ident,)?
         params: $params:ty,
         output: $output:ty,
         run($this:ident, $ctx:ident, $p:ident) => $body:block
@@ -211,7 +215,7 @@ macro_rules! action_command {
         $(#[doc = $doc])*
         #[derive(::std::default::Default)]
         $vis struct $cmd;
-        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], $params, $output, $this, $ctx, $p, $body);
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], $params, $output, $this, $ctx, $p, $body);
         $crate::register_stateless_command!($cmd);
     };
 
@@ -224,13 +228,14 @@ macro_rules! action_command {
         access: $access:ident,
         $(native: $native:expr,)?
         $(aliases: $aliases:expr,)?
+        $(effect: $effect:ident,)?
         params: $params:ty,
         output: $output:ty,
         run($this:ident, $ctx:ident, $p:ident) => $body:block
     ) => {
         $(#[doc = $doc])*
         $vis struct $cmd { $($(#[$field_meta])* pub $field: $fty),+ }
-        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], $params, $output, $this, $ctx, $p, $body);
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], $params, $output, $this, $ctx, $p, $body);
         // Register the DESCRIPTOR (type-only — no instance needed) so the command
         // appears in `command_registry()`, the persona tool surface, the ACL, and
         // codegen. Its RUNTIME object is constructed with deps by the owning
@@ -239,7 +244,7 @@ macro_rules! action_command {
     };
 
     // ── Internal: the shared `ActionCommand` impl both forms expand to. ──
-    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], [$($native:expr)?], [$($aliases:expr)?], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
+    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], [$($native:expr)?], [$($aliases:expr)?], [$($effect:ident)?], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
         #[::async_trait::async_trait]
         impl $crate::sdk_codegen::ActionCommand for $cmd {
             const NAME: &'static str = $name;
@@ -255,6 +260,10 @@ macro_rules! action_command {
             // model reaches for, resolved inbound by tool_dialect). Absent ⇒ the trait
             // default (empty). Emitted only when present, so the default stands otherwise.
             $(const ALIASES: &'static [&'static str] = $aliases;)?
+            // Optional `effect: <ToolEffect variant>,` clause ⟹ EFFECT (MIND-CONTEXT invariant 4:
+            // only a command that declares it `Observes` can have an unchanged result render as a
+            // repeat). Absent ⇒ the trait default, `Undeclared`, which authorizes nothing.
+            $(const EFFECT: $crate::sdk_codegen::ToolEffect = $crate::sdk_codegen::ToolEffect::$effect;)?
             type Params = $params;
             type Output = $output;
             async fn run(

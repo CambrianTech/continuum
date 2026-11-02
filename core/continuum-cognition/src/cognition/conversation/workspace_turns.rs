@@ -41,6 +41,9 @@ pub struct TriggerTurn<'a> {
     /// Event occurrence time when measured; zero means unknown. Never substitute
     /// the wake/turn clock for an event timestamp missing from the source.
     pub occurred_at_ms: u64,
+    /// The room event the waking message is, when known: her read receipt advances to it
+    /// once a sent prompt rendered it.
+    pub source: Option<crate::cognition::workspace::TurnSource>,
 }
 
 /// The shared roster projection's admitted atoms. The legacy source remains
@@ -203,6 +206,17 @@ pub fn push_work_board_anchor(
     turns.push(crate::cognition::workspace::BurstTurn::perception(anchor));
 }
 
+/// The room event an airc item is, from the metadata the airc source stamps (`event_id`,
+/// `room_id`, `lamport`). `None` for an item without it (a synthesized eval delivery).
+fn turn_source(metadata: &serde_json::Value) -> Option<crate::cognition::workspace::TurnSource> {
+    let id = |key: &str| metadata.get(key).and_then(|v| v.as_str()).and_then(|s| uuid::Uuid::parse_str(s).ok());
+    Some(crate::cognition::workspace::TurnSource {
+        room: id("room_id")?,
+        event: id("event_id")?,
+        lamport: metadata.get("lamport").and_then(|v| v.as_u64())?,
+    })
+}
+
 pub fn build_workspace_turns(
     deliveries: &[crate::cognition::rag_budget::RagDelivery],
     own_peer: &str,
@@ -238,7 +252,11 @@ pub fn build_workspace_turns(
                 names.get(who_raw).copied().unwrap_or(who_raw)
             };
             let occurred_at_ms = item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64());
-            BurstTurn::attributed(is_self, author, item.content.clone(), occurred_at_ms)
+            let turn = BurstTurn::attributed(is_self, author, item.content.clone(), occurred_at_ms);
+            match turn_source(&item.metadata) {
+                Some(source) => turn.from_event(source),
+                None => turn,
+            }
         })
         .collect();
 
@@ -260,12 +278,11 @@ pub fn build_workspace_turns(
                 .get(trigger.peer_id)
                 .copied()
                 .unwrap_or(trigger.peer_id);
-            turns.push(BurstTurn::attributed(
-                false,
-                author,
-                trigger.content.to_string(),
-                Some(trigger.occurred_at_ms),
-            ));
+            let turn = BurstTurn::attributed(false, author, trigger.content.to_string(), Some(trigger.occurred_at_ms));
+            turns.push(match trigger.source {
+                Some(source) => turn.from_event(source),
+                None => turn,
+            });
         }
     }
 

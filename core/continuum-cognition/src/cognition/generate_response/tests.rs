@@ -112,7 +112,6 @@ fn extract_members_empty_after_prefix_returns_unknown() {
 // ─── format_time_prefix ───────────────────────────────────────────
 
 /// What this catches: present timestamp renders as `[HH:MM] ` UTC.
-/// Same shape as `check_redundancy.rs` for consistency.
 #[test]
 fn format_time_prefix_renders_hh_mm_utc() {
     assert_eq!(format_time_prefix(Some(1_700_000_000_000)), "[22:13] ");

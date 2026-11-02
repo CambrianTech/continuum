@@ -10,7 +10,7 @@
 //! so the recipe layer inherits the whole modular command architecture instead
 //! of re-encoding fragments of it as serde fields (the static-plumbing trap
 //! this module replaces — `reviewers: N` on the benchmark recipe format needed
-//! a recompile; a pipeline step calling `persona/roster` does not).
+//! a recompile; a pipeline step calling `presence/directory` does not).
 //!
 //! Layout (one concern per file):
 //! - [`types`] — `RecipeStep`, the serde-tolerant wire shape of one step
