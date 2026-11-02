@@ -282,10 +282,10 @@ async fn an_inline_run_publishes_under_the_same_rule() {
             refused: 0
         }
     );
-    let published = runner.latest().expect("test: inline output was published");
-    assert_eq!(published.output, 4);
+    let inline_output = runner.latest().expect("test: inline output was published");
+    assert_eq!(inline_output.output, 4);
     assert_eq!(
-        published.provenance,
+        inline_output.provenance,
         Provenance {
             by: RunId {
                 incarnation: incarnation(1),
