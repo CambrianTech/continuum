@@ -151,24 +151,29 @@ impl TaskLedger {
 
     /// Recover the exact execution owner without guessing from a forgotten handle
     /// or a process snapshot. Only the recipient may inspect this registration.
-    pub async fn execution(&self, task: Uuid, owner: Uuid) -> Result<TaskExecution, String> {
+    pub async fn execution(&self, task: Uuid, owner: Uuid) -> Result<TaskExecution, FinishError> {
         match self
             .facts
             .find_by_id(task)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| FinishError::Persistence(e.to_string()))?
         {
             Some(TaskFact {
                 task: stored_task,
                 owner: stored,
                 fact: Fact::Accepted { execution, .. },
             }) if stored == owner && stored_task == task => Ok(execution),
-            _ => Err("task is absent or belongs to another owner".into()),
+            _ => Err(FinishError::Authorization(
+                "task is absent or belongs to another owner".into(),
+            )),
         }
     }
 
     async fn authorize(&self, task: Uuid, owner: Uuid) -> Result<(), String> {
-        self.execution(task, owner).await.map(|_| ())
+        self.execution(task, owner)
+            .await
+            .map(|_| ())
+            .map_err(String::from)
     }
 
     /// Only a supervisor that has observed execution ending calls this. A cancellation
@@ -180,10 +185,7 @@ impl TaskLedger {
         execution: TaskExecution,
         end: TaskEnd,
     ) -> Result<TaskEnd, FinishError> {
-        let accepted = self
-            .execution(task, owner)
-            .await
-            .map_err(FinishError::Authorization)?;
+        let accepted = self.execution(task, owner).await?;
         if accepted != execution {
             return Err(FinishError::ExecutionMismatch {
                 task,
@@ -563,6 +565,37 @@ mod tests {
     use crate::orm::gated_adapter::GatedAdapter;
 
     #[tokio::test]
+    async fn unreadable_acceptance_is_not_an_authorization_refusal() -> Result<(), String> {
+        let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+        let gated = Arc::new(GatedAdapter::new(adapter));
+        let ledger = TaskLedger::new(gated.clone()).await?;
+        let owner = Uuid::new_v4();
+        let execution = TaskExecution::new_command_executor();
+        let task = ledger.accept(owner, "code/shell".into(), execution).await?;
+        gated.fail_next_read();
+        assert!(matches!(
+            ledger
+                .finish(task, owner, execution, TaskEnd::Stopped)
+                .await,
+            Err(FinishError::Persistence(_))
+        ));
+        assert_eq!(ledger.terminal(task, owner).await?, None);
+        assert!(matches!(
+            ledger
+                .finish(task, Uuid::new_v4(), execution, TaskEnd::Stopped)
+                .await,
+            Err(FinishError::Authorization(_))
+        ));
+        assert_eq!(
+            ledger
+                .finish(task, owner, execution, TaskEnd::Stopped)
+                .await?,
+            TaskEnd::Stopped
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn lost_terminal_and_delivery_replies_survive_reopen_without_duplicate_facts(
     ) -> Result<(), String> {
         use crate::orm::adapter::StorageAdapter;
@@ -649,10 +682,7 @@ mod tests {
                 .finish(
                     task,
                     owner,
-                    delayed
-                        .execution(task, owner)
-                        .await
-                        .map_err(FinishError::Authorization)?,
+                    delayed.execution(task, owner).await?,
                     TaskEnd::Lost,
                 )
                 .await
