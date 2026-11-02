@@ -208,7 +208,7 @@ impl ChatModule {
         params: ChatSendParams,
         wire: WireLeg,
     ) -> Result<ChatSendResult, String> {
-        let (message_id, now_ms) = self.persist(&params).await?;
+        let (message_id, now_ms) = self.persist(&params, wire == WireLeg::Envelope).await?;
         match wire {
             WireLeg::Envelope => self.broadcast_envelope(message_id, &params, now_ms).await,
             WireLeg::CallerSpeaks => Ok(ChatSendResult {
@@ -221,8 +221,11 @@ impl ChatModule {
 
     /// Step 1 of a send: persist the message row (ground truth). Returns the
     /// minted message id and the timestamp the row carries.
-    pub(super) async fn persist(&self, params: &ChatSendParams) -> Result<(Uuid, u64), String> {
+    /// `relayed`: this core will publish the line for its caller (the envelope leg), so its
+    /// publication obligation commits in the same batch as the row and arrival.
+    pub(super) async fn persist(&self, params: &ChatSendParams, relayed: bool) -> Result<(Uuid, u64), String> {
         let message_id = Uuid::new_v4();
+        let extra = if relayed { vec![Self::publication_op(message_id, params)?] } else { Vec::new() };
         let now_ms = continuum_base::time::EpochMs::now().millis();
         // Ground truth first: the row and its arrival commit together, or the send fails and no
         // airc publish is attempted (broadcasting a line the store lacks would diverge).
@@ -242,6 +245,7 @@ impl ChatModule {
             super::line_store::LineWrite::New,
             params.reply_to_id,
             content,
+            extra,
         )
         .await
         .map_err(|e| format!("chat/send: {e}"))?;
@@ -280,7 +284,6 @@ impl ChatModule {
         // Record the publication obligation BEFORE publishing (Codex on #5696): the exact envelope's
         // digest, the room and the sender, under the message id. The inbound seam delegates the line
         // to this sender only on an exact match, so the envelope published is the typed one digested.
-        self.record_publication(message_id, params).await?;
         let publish_params = json!({ "envelope": publish_envelope });
 
         // Partial failure path: data succeeded, airc failed. Return

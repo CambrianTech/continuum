@@ -543,8 +543,9 @@ enum Gate {
 async fn attribution_gate(event: &airc_core::TranscriptEvent, lines: &dyn LineImporter) -> Result<Gate, String> {
     use crate::routing::airc_realtime_wire::{claimed_message, claimed_sender, envelope_from_event};
     use continuum_mind::chat::publication::{attribute, publication_digest, Attribution};
-    let claimed = claimed_sender(event);
-    if claimed.is_none() || claimed == Some(event.peer_id) {
+    use crate::routing::airc_realtime_wire::SenderClaim;
+    let claim = claimed_sender(event);
+    if claim == SenderClaim::Absent || claim == SenderClaim::Named(event.peer_id) {
         return Ok(Gate::Pass { delegated: false });
     }
     let obligation = match claimed_message(event) {
@@ -553,14 +554,14 @@ async fn attribution_gate(event: &airc_core::TranscriptEvent, lines: &dyn LineIm
     };
     // The line as received, from the one chat_transcript decoder (its claimed sender, its text and
     // media); a line that does not decode matches no publication.
-    let received = match (claimed_message(event), claimed, envelope_from_event(event)) {
-        (Some(message), Some(sender), Ok(Some(envelope))) => {
+    let received = match (claimed_message(event), claim, envelope_from_event(event)) {
+        (Some(message), SenderClaim::Named(sender), Ok(Some(envelope))) => {
             crate::cognition::conversation::room_event::chat_transcript_content(&envelope, sender.as_uuid())
                 .map(|turn| publication_digest(message, event.room_id, sender, &turn.text, &turn.media))
         }
         _ => None,
     };
-    match attribute(event.peer_id, claimed, event.room_id, obligation.as_ref(), received) {
+    match attribute(event.peer_id, claim, event.room_id, obligation.as_ref(), received) {
         Attribution::Author(_) => Ok(Gate::Pass { delegated: false }),
         Attribution::Delegated { .. } => Ok(Gate::Pass { delegated: true }),
         Attribution::Refused { claimed, reason } => {
@@ -568,7 +569,7 @@ async fn attribution_gate(event: &airc_core::TranscriptEvent, lines: &dyn LineIm
                 class = "airc.inbound.delegation_refused",
                 room = %event.room_id.as_uuid(),
                 transport = %event.peer_id.as_uuid(),
-                claimed = %claimed.as_uuid(),
+                claimed = ?claimed.map(|c| c.as_uuid()),
                 reason = ?reason,
                 "a line claimed to speak for someone it could not prove; refused, not relabeled"
             );

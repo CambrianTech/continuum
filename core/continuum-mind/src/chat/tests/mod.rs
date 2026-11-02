@@ -26,6 +26,9 @@
             registry.register(module);
         }
         let executor = Arc::new(CommandExecutor::new(registry));
+        // The relay this core publishes callers' lines as (the airc module registers it in
+        // production); first registration wins process-wide.
+        crate::chat::publication::register_relay(airc_core::PeerId::from_u128(0x7e1a));
         ChatModule::with_executor(executor)
     }
 
@@ -141,7 +144,7 @@
                 &line,
                 crate::chat::line_store::LineWrite::Import,
                 None,
-                json!({ "text": line.text }),
+                json!({ "text": line.text }), Vec::new(),
             )
             .await
             .expect("the import commits");
@@ -199,7 +202,7 @@
                 &line,
                 crate::chat::line_store::LineWrite::Import,
                 None,
-                json!({ "text": line.text }),
+                json!({ "text": line.text }), Vec::new(),
             )
             .await
             .expect("a duplicate is a committed import");
@@ -217,7 +220,7 @@
         let chat = chat_with_stubs(vec![Arc::new(data)]);
         let line = imported_line("unconfirmed");
         let err = chat
-            .commit_line(&line, crate::chat::line_store::LineWrite::Import, None, json!({ "text": line.text }))
+            .commit_line(&line, crate::chat::line_store::LineWrite::Import, None, json!({ "text": line.text }), Vec::new())
             .await
             .expect_err("a reply without freshness is malformed");
         assert!(err.contains("did not say whether it was fresh"), "named: {err}");
@@ -238,7 +241,7 @@
                 &line,
                 crate::chat::line_store::LineWrite::Import,
                 None,
-                json!({ "text": line.text }),
+                json!({ "text": line.text }), Vec::new(),
             )
             .await
             .expect_err("a refusal is an error");
@@ -614,12 +617,10 @@
     pub(super) async fn send_happy_path_returns_message_id_and_event_id() {
         let chat = chat_with_stubs(vec![
             Arc::new(StubDataModule::new(|cmd, p| {
-                // The row batch, then the publication obligation recorded before the envelope leg
-                // publishes (#5696). Nothing else.
-                assert!(
-                    cmd == "data/batch" || (cmd == "data/create" && p["collection"] == "chat_publications"),
-                    "happy path only writes the line and its publication obligation: {cmd}"
-                );
+                assert_eq!(cmd, "data/batch", "happy path only writes (no other data ops)");
+                // The envelope leg relays for the caller: the publication obligation commits in the
+                // SAME batch as the row and its arrival (#5696), never a separate write.
+                assert_eq!(p["operations"][2]["collection"], "chat_publications", "obligation in the line's batch: {p}");
                 Ok(batch_ok())
             })),
             Arc::new(StubAircModule::ok(airc_ok_response("evt-happy-001"))),
@@ -659,10 +660,6 @@
         let sent = media.clone();
         let chat = chat_with_stubs(vec![
             Arc::new(StubDataModule::new(move |cmd, p| {
-                if cmd == "data/create" {
-                    assert_eq!(p["collection"], "chat_publications", "the only create is the publication obligation");
-                    return Ok(json!({ "success": true }));
-                }
                 assert_eq!(cmd, "data/batch");
                 assert_eq!(p["operations"][0]["data"]["content"]["media"], json!([stored]));
                 assert_eq!(p["operations"][0]["data"]["content"]["text"], "Look at the page");

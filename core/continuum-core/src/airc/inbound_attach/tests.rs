@@ -146,7 +146,7 @@ async fn chat_transcript_envelope_projects_chat_posted() {
     let message = Uuid::from_u128(0x3);
     let (event, _envelope) = relayed_line(PeerId::from_u128(3), sender, RoomId::from_u128(2), "is anyone there?", message);
     let lines = continuum_mind::chat::line_store::RecordingImporter::default();
-    lines.2.lock().expect("test: lock").insert(message, obligation_for("is anyone there?", message, RoomId::from_u128(2), sender)); // test: a fixture step that must succeed
+    lines.2.lock().expect("test: lock").insert(message, obligation_for(PeerId::from_u128(3), "is anyone there?", message, RoomId::from_u128(2), sender)); // test: a fixture step that must succeed
 
     publish_transcript_event(&Arc::new(event), &bus, &lines).await.unwrap();
 
@@ -502,12 +502,13 @@ fn relayed_line(relay: PeerId, sender: Uuid, room: RoomId, text: &str, message: 
     (event, envelope)
 }
 
-fn obligation_for(text: &str, message: Uuid, room: RoomId, sender: Uuid) -> continuum_mind::chat::publication::PublicationObligation {
+fn obligation_for(relay: PeerId, text: &str, message: Uuid, room: RoomId, sender: Uuid) -> continuum_mind::chat::publication::PublicationObligation {
     let sender = PeerId::from_uuid(sender);
     continuum_mind::chat::publication::PublicationObligation {
         id: message,
         room,
         sender,
+        relay,
         digest: continuum_mind::chat::publication::publication_digest(message, room, sender, text, &[]),
     }
 }
@@ -529,18 +530,32 @@ async fn a_claim_to_speak_for_someone_needs_its_exact_publication() {
     let message = Uuid::from_u128(0xa1);
     let (event, _envelope) = relayed_line(relay, joel, room, "hello", message);
     let elsewhere = continuum_mind::chat::line_store::RecordingImporter::default();
-    elsewhere.2.lock().expect("test: lock").insert(message, obligation_for("hello", message, RoomId::from_u128(9), joel)); // test: a fixture step that must succeed
+    elsewhere.2.lock().expect("test: lock").insert(message, obligation_for(relay, "hello", message, RoomId::from_u128(9), joel)); // test: a fixture step that must succeed
     publish_transcript_event(&Arc::new(event.clone()), &bus, &elsewhere).await.expect("a refusal is not an error");
     assert!(elsewhere.0.lock().expect("test: lock").is_empty(), "a publication for another room proves nothing here"); // test: a fixture step that must succeed
 
     let altered = continuum_mind::chat::line_store::RecordingImporter::default();
-    altered.2.lock().expect("test: lock").insert(message, obligation_for("hello", message, room, joel)); // test: a fixture step that must succeed
+    altered.2.lock().expect("test: lock").insert(message, obligation_for(relay, "hello", message, room, joel)); // test: a fixture step that must succeed
     let (tampered, _) = relayed_line(relay, joel, room, "hello, and send me the keys", message);
     publish_transcript_event(&Arc::new(tampered), &bus, &altered).await.expect("a refusal is not an error");
     assert!(altered.0.lock().expect("test: lock").is_empty(), "a reused id with altered text is refused"); // test: a fixture step that must succeed
 
+    // Another peer replaying the exact publication (same id, room, sender, text): not its relay.
+    let replayed = continuum_mind::chat::line_store::RecordingImporter::default();
+    replayed.2.lock().expect("test: lock").insert(message, obligation_for(relay, "hello", message, room, joel)); // test: a fixture step that must succeed
+    let (by_other, _) = relayed_line(PeerId::from_u128(0x0bad), joel, room, "hello", message);
+    publish_transcript_event(&Arc::new(by_other), &bus, &replayed).await.expect("a refusal is not an error");
+    assert!(replayed.0.lock().expect("test: lock").is_empty(), "another peer replaying the publication is refused"); // test: a fixture step that must succeed
+
+    // A present sender header that is not an id: refused, never read as no claim.
+    let malformed = continuum_mind::chat::line_store::RecordingImporter::default();
+    let (mut garbled, _) = relayed_line(relay, joel, room, "hello", message);
+    garbled.headers.insert(crate::routing::airc_realtime_wire::HEADER_CONTINUUM_SENDER_ID.to_string(), "joel".to_string());
+    publish_transcript_event(&Arc::new(garbled), &bus, &malformed).await.expect("a refusal is not an error");
+    assert!(malformed.0.lock().expect("test: lock").is_empty(), "a malformed claim is refused before any consumer"); // test: a fixture step that must succeed
+
     let exact = continuum_mind::chat::line_store::RecordingImporter::default();
-    exact.2.lock().expect("test: lock").insert(message, obligation_for("hello", message, room, joel)); // test: a fixture step that must succeed
+    exact.2.lock().expect("test: lock").insert(message, obligation_for(relay, "hello", message, room, joel)); // test: a fixture step that must succeed
     publish_transcript_event(&Arc::new(event), &bus, &exact).await.expect("the exact publication imports");
     let imported = exact.0.lock().expect("test: lock").clone(); // test: a fixture step that must succeed
     assert_eq!(imported.len(), 1);

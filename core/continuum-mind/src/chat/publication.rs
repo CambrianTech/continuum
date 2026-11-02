@@ -1,10 +1,14 @@
 //! A relayed line's proof of origin. When `chat/send` publishes a line for its caller through the
-//! core's relay (the envelope leg), it first records a durable PUBLICATION OBLIGATION in the same
-//! batch as the message row: the message id, room, sender (bound to the authenticated caller) and the
-//! digest of the exact envelope it publishes. The inbound seam attributes a line to a sender other
-//! than its transport author only when the line it received matches an obligation exactly: same id,
-//! room, claimed sender and envelope digest. A forged sender header, a different room, or a reused id
-//! with altered text matches nothing and is refused; it is never relabeled (Codex on #5696).
+//! core's relay (the envelope leg), it records a durable PUBLICATION OBLIGATION in the same batch as
+//! the message row and its arrival: the message id, room, sender (bound to the authenticated
+//! caller), the relay it publishes as, and the digest of the exact line. (The fallback after a failed
+//! sender publish records it alone, still before publishing: [`ChatModule::record_publication`].)
+//!
+//! The inbound seam attributes a line to a sender other than its transport author only when the line
+//! matches an obligation exactly: the same id, from the same relay, in the same room, for the same
+//! sender, with the same digest. A forged sender header, a malformed one, another peer replaying the
+//! publication, another room, or a reused id with altered content matches nothing and is refused;
+//! it is never relabeled (Codex on #5696).
 //!
 //! The digest is an integrity check of the publication, computed from its typed fields with no
 //! serialization; routing still reads only the typed headers.
@@ -14,10 +18,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::chat_data_handle::ChatModule;
+use crate::routing::airc_realtime_wire::SenderClaim;
+
 /// The digest of a published line, fed directly with its typed facts (no serialization): message id,
-/// room, sender, text and each media item's content handle, each length-prefixed so no two lines
-/// can collide by moving a boundary. The publisher computes it from what it sends, the seam from what
-/// it received; any altered field changes it.
+/// room, sender, text and every field of every media item a consumer sees (kind, MIME, both handles,
+/// description, each with its presence), length-prefixed so no two lines collide by moving a boundary.
+/// The publisher computes it from what it sends, the seam from what it received.
 pub fn publication_digest(
     message: Uuid,
     room: RoomId,
@@ -34,14 +41,24 @@ pub fn publication_digest(
     field(room.as_uuid().as_bytes());
     field(sender.as_uuid().as_bytes());
     field(text.as_bytes());
+    field(&(media.len() as u64).to_le_bytes());
     for item in media {
-        field(
-            item.blob_hash
-                .as_deref()
-                .or(item.url.as_deref())
-                .unwrap_or_default()
-                .as_bytes(),
-        ); // unwrap_or_default: an item with neither handle still counts, as an empty field
+        field(item.kind.as_bytes());
+        // An absent field and an empty one hash differently, so neither can stand in for the other.
+        for optional in [
+            &item.mime_type,
+            &item.blob_hash,
+            &item.url,
+            &item.description,
+        ] {
+            match optional {
+                Some(value) => {
+                    field(&[1]);
+                    field(value.as_bytes());
+                }
+                None => field(&[0]),
+            }
+        }
     }
     hash.finalize().into()
 }
@@ -56,7 +73,21 @@ pub struct PublicationObligation {
     pub id: Uuid,
     pub room: RoomId,
     pub sender: PeerId,
+    /// The authenticated transport this core publishes relayed lines as: only it may deliver this line.
+    pub relay: PeerId,
     pub digest: [u8; 32],
+}
+
+/// The transport identity this core publishes relayed lines as (the airc module's scope peer),
+/// registered once at its construction.
+static RELAY: std::sync::OnceLock<PeerId> = std::sync::OnceLock::new();
+
+pub fn register_relay(peer: PeerId) {
+    let _ = RELAY.set(peer); // first registration wins: the airc module constructs once per process
+}
+
+pub fn relay() -> Option<PeerId> {
+    RELAY.get().copied()
 }
 
 /// Who a received line is from.
@@ -66,9 +97,9 @@ pub enum Attribution {
     Author(PeerId),
     /// The core relayed it for this sender, proven by its publication obligation.
     Delegated { sender: PeerId },
-    /// A claim to speak for someone else that nothing proves: dropped, said, never relabeled.
+    /// A claim nothing proves: dropped, said, never relabeled. `claimed` is `None` for a malformed claim.
     Refused {
-        claimed: PeerId,
+        claimed: Option<PeerId>,
         reason: DelegationRefusal,
     },
 }
@@ -76,36 +107,54 @@ pub enum Attribution {
 /// Why a claim to speak for someone else was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DelegationRefusal {
-    /// No publication obligation for this message id (a forged claim, or a foreign relay: no
-    /// scoped relay grant exists yet).
+    /// The sender header is present but not an id.
+    MalformedClaim,
+    /// No publication obligation for this message id.
     NoOrigin,
+    /// It arrived from a transport other than the relay the obligation names (a replay by another
+    /// peer, or a foreign relay: no scoped relay grant exists yet).
+    ForeignRelay,
     /// The obligation is for another room.
     RoomMismatch,
     /// The obligation names another sender.
     SenderMismatch,
-    /// The envelope is not the one published (a reused id with altered content).
+    /// The line is not the one published (a reused id with altered content).
     AlteredPublication,
 }
 
-/// Decide a received line's attribution from its transport author, the sender its header claims, the
-/// obligation its message id names (if any) and the digest of the envelope it arrived as (`None` when
-/// it could not be decoded, which matches no publication). Pure.
+/// Decide a received line's attribution from its transport author, its header's sender claim, the
+/// obligation its message id names (if any) and the digest of the line as received (`None` when it
+/// could not be decoded, which matches no publication). Pure.
 pub fn attribute(
     transport: PeerId,
-    claimed: Option<PeerId>,
+    claim: SenderClaim,
     room: RoomId,
     obligation: Option<&PublicationObligation>,
     received: Option<[u8; 32]>,
 ) -> Attribution {
-    let claimed = match claimed {
-        None => return Attribution::Author(transport),
-        Some(claimed) if claimed == transport => return Attribution::Author(transport),
-        Some(claimed) => claimed,
+    let claimed = match claim {
+        SenderClaim::Absent => return Attribution::Author(transport),
+        SenderClaim::Named(claimed) if claimed == transport => {
+            return Attribution::Author(transport)
+        }
+        SenderClaim::Named(claimed) => claimed,
+        SenderClaim::Malformed => {
+            return Attribution::Refused {
+                claimed: None,
+                reason: DelegationRefusal::MalformedClaim,
+            }
+        }
     };
-    let refuse = |reason| Attribution::Refused { claimed, reason };
+    let refuse = |reason| Attribution::Refused {
+        claimed: Some(claimed),
+        reason,
+    };
     let Some(obligation) = obligation else {
         return refuse(DelegationRefusal::NoOrigin);
     };
+    if obligation.relay != transport {
+        return refuse(DelegationRefusal::ForeignRelay);
+    }
     if obligation.room != room {
         return refuse(DelegationRefusal::RoomMismatch);
     }
@@ -118,94 +167,16 @@ pub fn attribute(
     Attribution::Delegated { sender: claimed }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn obligation(room: RoomId, sender: PeerId, digest: [u8; 32]) -> PublicationObligation {
-        PublicationObligation {
-            id: Uuid::new_v4(),
-            room,
-            sender,
-            digest,
-        }
-    }
-
-    // what this catches: attribution decided by anything but proof of origin (Codex on #5696): no
-    // claim and a self claim are the author; a forged claim to be Joel, a room mismatch, another
-    // sender, and a reused id with altered content are refused; only an exact obligation delegates.
-    #[test]
-    fn only_an_exact_publication_delegates() {
-        let (relay, joel, room) = (PeerId::new(), PeerId::new(), RoomId::new());
-        let published = [7u8; 32];
-        let exact = obligation(room, joel, published);
-        assert_eq!(
-            attribute(relay, None, room, None, Some(published)),
-            Attribution::Author(relay),
-            "no claim"
-        );
-        assert_eq!(
-            attribute(relay, Some(relay), room, None, Some(published)),
-            Attribution::Author(relay),
-            "self"
-        );
-        assert_eq!(
-            attribute(relay, Some(joel), room, None, Some(published)),
-            Attribution::Refused {
-                claimed: joel,
-                reason: DelegationRefusal::NoOrigin
-            },
-            "a forged Joel header proves nothing"
-        );
-        assert_eq!(
-            attribute(
-                relay,
-                Some(joel),
-                RoomId::new(),
-                Some(&exact),
-                Some(published)
-            ),
-            Attribution::Refused {
-                claimed: joel,
-                reason: DelegationRefusal::RoomMismatch
-            }
-        );
-        assert!(matches!(
-            attribute(
-                relay,
-                Some(PeerId::new()),
-                room,
-                Some(&exact),
-                Some(published)
-            ),
-            Attribution::Refused {
-                reason: DelegationRefusal::SenderMismatch,
-                ..
-            }
-        ));
-        assert_eq!(
-            attribute(relay, Some(joel), room, Some(&exact), Some([9u8; 32])),
-            Attribution::Refused {
-                claimed: joel,
-                reason: DelegationRefusal::AlteredPublication
-            },
-            "a reused id with changed content"
-        );
-        assert_eq!(
-            attribute(relay, Some(joel), room, Some(&exact), Some(published)),
-            Attribution::Delegated { sender: joel }
-        );
-    }
-}
-
-impl super::chat_data_handle::ChatModule {
-    /// Record that this core is publishing this line for `params.sender_id` (bound to the
-    /// authenticated caller by `chat/send`), before it is published.
-    pub(super) async fn record_publication(
-        &self,
+impl ChatModule {
+    /// The obligation for a line this core is about to publish for `params.sender_id` (bound to the
+    /// authenticated caller by `chat/send`), as the batch operation that records it.
+    pub(super) fn publication_op(
         message_id: Uuid,
         params: &super::types::ChatSendParams,
-    ) -> Result<(), String> {
+    ) -> Result<crate::orm::types::BatchOperation, String> {
+        let relay = relay().ok_or(
+            "chat/send: this core has no relay identity (the airc module is not attached), so it cannot publish for a caller",
+        )?;
         let (room, sender) = (
             RoomId::from_uuid(params.room_id),
             PeerId::from_uuid(params.sender_id),
@@ -214,20 +185,33 @@ impl super::chat_data_handle::ChatModule {
             id: message_id,
             room,
             sender,
+            relay,
             digest: publication_digest(message_id, room, sender, &params.text, &params.media),
         };
         let data = serde_json::to_value(&obligation).map_err(|e| format!("publication: {e}"))?; // storage boundary: the adapter's row format
-        let params = serde_json::json!({
-            "dbPath": super::chat_data_handle::CHAT_DATA_HANDLE,
-            "collection": <PublicationObligation as crate::orm::OrmEntity>::COLLECTION,
-            "id": message_id.to_string(),
-            "data": data,
-        });
+        Ok(crate::orm::types::BatchOperation {
+            operation_type: crate::orm::types::BatchOperationType::Create,
+            collection: <PublicationObligation as crate::orm::OrmEntity>::COLLECTION.to_string(),
+            id: Some(message_id.to_string()),
+            data: Some(data),
+        })
+    }
+
+    /// The fallback path's custody: the line is already stored (its sender's own publish failed), so
+    /// the obligation is recorded on its own, still BEFORE the envelope is published. A crash between
+    /// leaves an unused obligation (retired by retention), never an unproven line.
+    pub async fn record_publication(
+        &self,
+        message_id: Uuid,
+        params: &super::types::ChatSendParams,
+    ) -> Result<(), String> {
+        let op = Self::publication_op(message_id, params)?;
+        let params = serde_json::json!({ "dbPath": super::chat_data_handle::CHAT_DATA_HANDLE, "operations": [op] });
         let result = self
             .executor()?
-            .execute_json("data/create", params)
+            .execute_json("data/batch", params)
             .await
-            .map_err(|e| format!("publication: data/create failed: {e}"))?;
+            .map_err(|e| format!("publication: data/batch failed: {e}"))?;
         match result.get("success").and_then(serde_json::Value::as_bool) {
             Some(true) => Ok(()),
             _ => Err(format!(
@@ -258,6 +242,148 @@ impl super::chat_data_handle::ChatModule {
             return Ok(None);
         };
         let row = serde_json::from_value(data); // storage boundary: the adapter's row format
-        row.map(Some).map_err(|e| format!("publication: malformed row: {e}"))
+        row.map(Some)
+            .map_err(|e| format!("publication: malformed row: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cognition::conversation::channel_items::MediaItemRequest;
+
+    fn obligation(
+        relay: PeerId,
+        room: RoomId,
+        sender: PeerId,
+        digest: [u8; 32],
+    ) -> PublicationObligation {
+        PublicationObligation {
+            id: Uuid::new_v4(),
+            room,
+            sender,
+            relay,
+            digest,
+        }
+    }
+
+    // what this catches: attribution decided by anything but proof of origin (Codex on #5696): no
+    // claim and a self claim are the author; a malformed claim, a forged claim to be Joel, a replay by
+    // another peer, a room mismatch, another sender and altered content are refused; only an exact
+    // obligation from its relay delegates.
+    #[test]
+    fn only_an_exact_publication_from_its_relay_delegates() {
+        let (relay, other, joel, room) =
+            (PeerId::new(), PeerId::new(), PeerId::new(), RoomId::new());
+        let published = Some([7u8; 32]);
+        let exact = obligation(relay, room, joel, [7u8; 32]);
+        let named = SenderClaim::Named(joel);
+        assert_eq!(
+            attribute(relay, SenderClaim::Absent, room, None, published),
+            Attribution::Author(relay),
+            "no claim"
+        );
+        assert_eq!(
+            attribute(relay, SenderClaim::Named(relay), room, None, published),
+            Attribution::Author(relay),
+            "self"
+        );
+        assert_eq!(
+            attribute(relay, SenderClaim::Malformed, room, Some(&exact), published),
+            Attribution::Refused {
+                claimed: None,
+                reason: DelegationRefusal::MalformedClaim
+            },
+            "a present but invalid header is refused, never read as absent"
+        );
+        let refused =
+            |transport, claim, room, obligation: Option<&PublicationObligation>, received| {
+                match attribute(transport, claim, room, obligation, received) {
+                    Attribution::Refused { reason, .. } => Some(reason),
+                    _ => None,
+                }
+            };
+        assert_eq!(
+            refused(relay, named, room, None, published),
+            Some(DelegationRefusal::NoOrigin),
+            "a forged Joel header"
+        );
+        assert_eq!(
+            refused(other, named, room, Some(&exact), published),
+            Some(DelegationRefusal::ForeignRelay),
+            "another peer replaying the exact publication"
+        );
+        assert_eq!(
+            refused(relay, named, RoomId::new(), Some(&exact), published),
+            Some(DelegationRefusal::RoomMismatch)
+        );
+        assert_eq!(
+            refused(
+                relay,
+                SenderClaim::Named(PeerId::new()),
+                room,
+                Some(&exact),
+                published
+            ),
+            Some(DelegationRefusal::SenderMismatch)
+        );
+        assert_eq!(
+            refused(relay, named, room, Some(&exact), Some([9u8; 32])),
+            Some(DelegationRefusal::AlteredPublication)
+        );
+        assert_eq!(
+            refused(relay, named, room, Some(&exact), None),
+            Some(DelegationRefusal::AlteredPublication),
+            "an undecodable line"
+        );
+        assert_eq!(
+            attribute(relay, named, room, Some(&exact), published),
+            Attribution::Delegated { sender: joel }
+        );
+    }
+
+    // what this catches: a digest that ignores a field a consumer sees, so altered media still
+    // matches the publication (Codex on #5696): every media field, and an absent field versus an empty
+    // one, changes the digest.
+    #[test]
+    fn every_consumer_visible_media_field_binds_the_digest() {
+        let (message, room, sender) = (Uuid::new_v4(), RoomId::new(), PeerId::new());
+        let base = MediaItemRequest {
+            kind: "image".into(),
+            mime_type: Some("image/png".into()),
+            blob_hash: Some("sha256:aa".into()),
+            url: Some("https://a".into()),
+            description: Some("a cat".into()),
+        };
+        let digest = |item: &MediaItemRequest| {
+            publication_digest(message, room, sender, "look", std::slice::from_ref(item))
+        };
+        let original = digest(&base);
+        let mutations: [fn(&mut MediaItemRequest); 6] = [
+            |m| m.kind = "audio".into(),
+            |m| m.mime_type = Some("image/jpeg".into()),
+            |m| m.url = Some("https://b".into()),
+            |m| m.description = Some("a dog".into()),
+            |m| m.description = None,
+            |m| m.url = Some(String::new()),
+        ];
+        for (i, mutate) in mutations.iter().enumerate() {
+            let mut altered = base.clone();
+            mutate(&mut altered);
+            assert_ne!(
+                digest(&altered),
+                original,
+                "mutation {i} must change the digest"
+            );
+        }
+        assert_ne!(
+            publication_digest(message, room, sender, "look", &[]),
+            original,
+            "dropping the media changes it"
+        );
+        assert_ne!(
+            publication_digest(message, room, sender, "lookx", std::slice::from_ref(&base)),
+            original
+        );
     }
 }

@@ -82,7 +82,7 @@ pub struct ChatStore;
 impl LineImporter for ChatStore {
     async fn import(&self, line: PostedLine) -> Result<Imported, String> {
         installed()?
-            .commit_line(&line, LineWrite::Import, None, json!({ "text": line.text }))
+            .commit_line(&line, LineWrite::Import, None, json!({ "text": line.text }), Vec::new())
             .await
     }
 
@@ -182,6 +182,7 @@ impl ChatModule {
         write: LineWrite,
         reply_to: Option<Uuid>,
         content: Value,
+        extra: Vec<BatchOperation>,
     ) -> Result<Imported, String> {
         let executor = self.executor()?;
         // The same ChatMessageEntity shape for every writer; WHO spoke is `senderId`, and
@@ -214,6 +215,7 @@ impl ChatModule {
         );
         let append_op = arrival.append_op().map_err(|e| format!("chat line: {e}"))?;
         let mut operations = vec![message_op, append_op];
+        operations.extend(extra);
         if line.retires_publication {
             // The relayed line came back: its obligation retires with the import, atomically.
             operations.push(BatchOperation {

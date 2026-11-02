@@ -164,7 +164,11 @@ crate::action_command! {
                 }
                 if let Some(e) = publish_err {
                     // The say missed: fall back to the envelope leg so the line
-                    // still reaches the wire, and say why.
+                    // still reaches the wire, and say why. The core now publishes for the caller,
+                    // so its publication obligation is recorded first (#5696).
+                    chat.record_publication(result.message_id, &params)
+                        .await
+                        .map_err(CommandError::Internal)?;
                     let fallback = chat
                         .broadcast_envelope(
                             result.message_id,

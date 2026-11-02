@@ -15,12 +15,15 @@ use crate::runtime::message_bus::BusEvent;
 pub const CONTINUUM_BODY_HINT: &str = "continuum.airc.realtime.envelope.v1";
 pub const HEADER_CONTINUUM_EVENT_ID: &str = "continuum.event_id";
 pub const HEADER_CONTINUUM_SOURCE_ID: &str = "continuum.source_id";
+/// The person a `chat_transcript` line is said by: stamped only on a person's line, so a claim to
+/// speak for someone is its own typed header, never inferred from free-form provenance.
+pub const HEADER_CONTINUUM_SENDER_ID: &str = "continuum.sender_id";
 pub const HEADER_CONTINUUM_DELIVERY: &str = "continuum.delivery";
 pub const HEADER_CONTINUUM_TRACE_ID: &str = "continuum.trace_id";
 
-/// The line's logical sender, from the `continuum.source_id` header the publisher stamped (a relay
-/// publishes a human's line for them); the transport peer when the header is absent or is not an id
-/// (a presence subject, a free-form source). Read from the header alone: the body is never opened to
+/// The line's logical sender, from the `continuum.sender_id` header a person's line carries (a relay
+/// publishes a human's line for them); the transport peer when there is none. Only lines that passed
+/// the inbound attribution gate reach a consumer, so a claim read here was proven. Read from the header alone: the body is never opened to
 /// attribute a line (Joel, 2026-11-01: routing on headers, never parsed bodies).
 ///
 /// Trust is the relay rule's, not this decoder's: whether a transport peer may speak for the sender it
@@ -28,19 +31,31 @@ pub const HEADER_CONTINUUM_TRACE_ID: &str = "continuum.trace_id";
 pub fn logical_sender(event: &TranscriptEvent) -> uuid::Uuid {
     event
         .headers
-        .get(HEADER_CONTINUUM_SOURCE_ID)
-        .and_then(|value| uuid::Uuid::parse_str(value).ok()) // wire boundary: a header value is text; a non-id source is a non-person publisher
+        .get(HEADER_CONTINUUM_SENDER_ID)
+        .and_then(|value| uuid::Uuid::parse_str(value).ok()) // wire boundary: a header value is text; the gate refused a malformed one
         .unwrap_or_else(|| event.peer_id.as_uuid()) // the transport peer is the real author when no relay named one
 }
 
-/// The sender a line's header claims it speaks for, when it names one by id. `None` when no claim
-/// (or a non-id source) is made; the transport peer is then the author.
-pub fn claimed_sender(event: &TranscriptEvent) -> Option<airc_core::PeerId> {
-    event
-        .headers
-        .get(HEADER_CONTINUUM_SOURCE_ID)
-        .and_then(|value| uuid::Uuid::parse_str(value).ok()) // wire boundary: a header value is text
-        .map(airc_core::PeerId::from_uuid)
+/// What a line's `continuum.sender_id` header claims about who it speaks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SenderClaim {
+    /// No claim: the transport peer is the author.
+    Absent,
+    /// A claim naming this sender.
+    Named(airc_core::PeerId),
+    /// A header is present but is not an id: refused before any consumer, never read as absent.
+    Malformed,
+}
+
+/// The sender a line's header claims it speaks for.
+pub fn claimed_sender(event: &TranscriptEvent) -> SenderClaim {
+    match event.headers.get(HEADER_CONTINUUM_SENDER_ID) {
+        None => SenderClaim::Absent,
+        Some(value) => match uuid::Uuid::parse_str(value) { // wire boundary: a header value is text
+            Ok(id) => SenderClaim::Named(airc_core::PeerId::from_uuid(id)),
+            Err(_) => SenderClaim::Malformed,
+        },
+    }
 }
 
 /// The message id a continuum envelope is named by (`continuum.event_id`), when it is an id.
@@ -76,6 +91,13 @@ pub fn headers_for_envelope(envelope: &AircRealtimeEnvelope) -> Headers {
     );
     if let Some(trace_id) = &envelope.trace_id {
         headers.insert(HEADER_CONTINUUM_TRACE_ID.to_string(), trace_id.clone());
+    }
+    // A person's line names its sender in its own header; other frames (an event bridge, a presence
+    // subject) carry free-form provenance in `continuum.source_id` and make no claim.
+    if let AircRealtimePayload::ExistingSchema { payload } = &envelope.payload {
+        if payload.schema == AircRealtimeSchema::ChatTranscript {
+            headers.insert(HEADER_CONTINUUM_SENDER_ID.to_string(), envelope.source_id.clone());
+        }
     }
     headers
 }
@@ -189,10 +211,14 @@ mod tests {
     #[test]
     fn the_logical_sender_is_read_from_the_header() {
         let human = uuid::Uuid::from_u128(0x5e);
-        let relayed = event(Headers::from([(HEADER_CONTINUUM_SOURCE_ID.to_string(), human.to_string())]));
+        let relayed = event(Headers::from([(HEADER_CONTINUUM_SENDER_ID.to_string(), human.to_string())]));
         assert_eq!(logical_sender(&relayed), human);
+        assert_eq!(claimed_sender(&relayed), SenderClaim::Named(airc_core::PeerId::from_uuid(human)));
         assert_eq!(logical_sender(&event(Headers::new())), uuid::Uuid::from_u128(0x4e));
-        let named = event(Headers::from([(HEADER_CONTINUUM_SOURCE_ID.to_string(), "persona-1".to_string())]));
-        assert_eq!(logical_sender(&named), uuid::Uuid::from_u128(0x4e), "a non-id source is not a person");
+        assert_eq!(claimed_sender(&event(Headers::new())), SenderClaim::Absent);
+        let provenance = event(Headers::from([(HEADER_CONTINUUM_SOURCE_ID.to_string(), "continuum-peer".to_string())]));
+        assert_eq!(claimed_sender(&provenance), SenderClaim::Absent, "free-form provenance is no claim");
+        let garbled = event(Headers::from([(HEADER_CONTINUUM_SENDER_ID.to_string(), "joel".to_string())]));
+        assert_eq!(claimed_sender(&garbled), SenderClaim::Malformed, "a present sender header that is not an id");
     }
 }

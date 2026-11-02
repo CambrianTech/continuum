@@ -95,6 +95,9 @@ impl AircModule {
                 // reads a durable override — not only after this node hears its own
                 // beacon echo back.
                 crate::persona::self_peer::register(*peer_id);
+                // This scope peer is the relay `chat/send` publishes callers' lines as: its
+                // publication obligations name it, and only it may deliver them (#5696).
+                continuum_mind::chat::publication::register_relay(airc_core::PeerId::from_uuid(*peer_id));
                 Self {
                     queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
                     // #3849: the socket is re-resolved when the daemon
