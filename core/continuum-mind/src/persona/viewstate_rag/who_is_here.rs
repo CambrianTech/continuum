@@ -1,7 +1,13 @@
 //! "Who is here", REQUIRED: she is present in every room she takes a turn in (her mind room
 //! included, where she is the only one), so this grounding is never empty by construction. It is
 //! the roster's projection with her own row guaranteed, rendered by the roster's own
-//! [`member_unit`], not a fallback: a room's present set always contains the one standing in it.
+//! [`member_unit`].
+//!
+//! What it guarantees, exactly (Codex on #5701): HER presence is known (her identity); OTHERS'
+//! presence is the shared projection's, with its completeness. An empty projection outside her
+//! mind room is not evidence that nobody else is here, so that delivery is partial (`truncated`:
+//! `room/members` yields the rest), never an authoritative "only you". In her mind room the set
+//! is complete: it is private.
 
 use std::sync::Arc;
 
@@ -55,9 +61,14 @@ impl CriticalSource for WhoIsHere {
                 <continuum_positron::RosterViewState as super::RagRenderable>::BLOCK,
             ),
         };
+        // Others unknown (no shared rows outside her private room) is partial, never "only you".
+        let room = ctx.airc_room.as_ref().map(|r| r.as_uuid());
+        let private =
+            room.is_some_and(|r| crate::cognition::mind_room::is_private_room(self.me, r));
+        let others_unknown = others.is_empty() && !private;
         // Her row first is a stable position (the roster sorts the rest by name), so the bytes
         // stay the same turn to turn.
-        Grounded::new(mine, others, delivery.truncated)
+        Grounded::new(mine, others, delivery.truncated || others_unknown)
     }
 }
 
@@ -102,6 +113,30 @@ mod tests {
             keys(here, me).await,
             vec![me.to_string()],
             "her row, and only hers"
+        );
+    }
+
+    // what this catches: an unavailable roster acquiring a completeness claim because her row made
+    // it non-empty (Codex on #5701): outside her mind room, no shared rows is PARTIAL (others may
+    // be here); in her mind room, her row alone is complete.
+    #[tokio::test]
+    async fn no_shared_rows_is_partial_except_in_her_mind_room() {
+        let me = uuid::Uuid::from_u128(1);
+        let shared = RagContext::for_persona_in_room(me, 0, uuid::Uuid::from_u128(9));
+        let mind =
+            RagContext::for_persona_in_room(me, 0, crate::cognition::mind_room::mind_room_id(me));
+        let required = crate::cognition::rag_budget::Required(Arc::new(WhoIsHere::new(
+            Arc::new(Roster(Vec::new())),
+            me,
+            "Atlas",
+        )));
+        assert!(
+            RagSource::deliver(&required, &shared).await.truncated,
+            "others unknown: partial"
+        );
+        assert!(
+            !RagSource::deliver(&required, &mind).await.truncated,
+            "her private room: complete"
         );
     }
 

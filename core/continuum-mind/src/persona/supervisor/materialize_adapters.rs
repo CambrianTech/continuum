@@ -502,25 +502,25 @@ pub async fn materialize_adapters(
                         identity.peer_id.as_uuid(),
                         profile.persona_name.clone(),
                     ),
-                )),
+                )).into(),
                 // Doctrine — WHAT the room is for: the PARTICIPATION GATE. This
                 // one stays SYNCHRONOUS: a cold-start `None`
                 // would let the persona speak in a room it shouldn't on turn one,
                 // which is wrong, not merely unenriched. The lone exception to
                 // "defer almost everything."
-                crate::cognition::persona_workspace::GroundingSource::framing(doctrine_source),
+                crate::cognition::persona_workspace::GroundingSource::framing(doctrine_source).into(),
                 // The persona's own live work across rooms — enriching framing so
                 // it knows what it's working on (cross-activity, dynamic, no
                 // hardcoded card state). Defer-tolerant.
                 // Where else she is needed while she works here: it changes every turn.
                 crate::cognition::persona_workspace::GroundingSource::framing(awareness_source)
                     .defer_tolerant()
-                    .volatile_content(),
+                    .volatile_content().into(),
                 crate::cognition::persona_workspace::GroundingSource::framing(active_work_source)
                     .defer_tolerant()
                     // Claim states flap per turn — floor stays, stable-tier
                     // placement goes (debug/prompt-reuse conviction, 2026-08-22).
-                    .volatile_content(),
+                    .volatile_content().into(),
                 // WHERE code lives — the real workspace layout as framing, so a
                 // reasoner can avoid blind globs like `src/**/*.rs` from the
                 // prompt alone. Synchronous (NOT deferred):
@@ -539,7 +539,7 @@ pub async fn materialize_adapters(
                     // Her OWN writes mutate the map — every productive act. It sat
                     // in the stable tier breaking the KV prefix at ~8k chars of a
                     // 40k prompt (measured 2026-08-23, turn-over-turn capture diff).
-                    .volatile_content(),
+                    .volatile_content().into(),
                 // The room's pinned shared documents (airc wall) as
                 // enriching framing — the plan/instructions/recipe that
                 // shape HOW the persona works here, read from the exact
@@ -547,7 +547,7 @@ pub async fn materialize_adapters(
                 // first-tick miss costs one under-grounded turn, not a
                 // wrong one.
                 crate::cognition::persona_workspace::GroundingSource::framing(wall_source)
-                    .defer_tolerant(),
+                    .defer_tolerant().into(),
                 // The room's WHOLE work board (airc kanban) as enriching
                 // framing — every card/column/owner, so the persona can
                 // coordinate against the shared plan, not just its own
@@ -556,7 +556,7 @@ pub async fn materialize_adapters(
                 crate::cognition::persona_workspace::GroundingSource::framing(room_board_source)
                     .defer_tolerant()
                     // Card/column states churn with the round — same conviction.
-                    .volatile_content(),
+                    .volatile_content().into(),
                 // Live-call perception (#187/#192): WHO is visible on the call +
                 // what they show, as enriching framing. Defer-tolerant: a
                 // first-tick miss costs one under-grounded turn, not a wrong one —
@@ -568,7 +568,7 @@ pub async fn materialize_adapters(
                 crate::cognition::persona_workspace::GroundingSource::framing(
                     media_perception_source,
                 )
-                .defer_tolerant(),
+                .defer_tolerant().into(),
             ],
             // The persona's HANDS — built by the caller for THIS persona's
             // identity (None → speak-only). What turns "talks" into "acts".

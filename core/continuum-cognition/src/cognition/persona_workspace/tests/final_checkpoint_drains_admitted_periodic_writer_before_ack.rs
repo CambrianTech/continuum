@@ -513,29 +513,62 @@ use super::*;
     pub(super) fn deferrability_is_orthogonal_to_salience_and_defaults_to_synchronous() {
         let s: Arc<dyn RagSource> = Arc::new(ClassifyStub);
 
-        let critical = GroundingSource::framing(Arc::clone(&s));
+        let critical: GroundingSource = GroundingSource::framing(Arc::clone(&s)).into();
         assert_eq!(
-            critical.deferrability,
+            critical.deferrability(),
             Deferrability::Synchronous,
             "safe default: a framing source runs synchronously until opted off"
         );
-        assert_eq!(critical.policy, SaliencePolicy::StandingFraming);
+        assert_eq!(critical.policy(), SaliencePolicy::StandingFraming);
 
-        let tolerant = GroundingSource::framing(Arc::clone(&s)).defer_tolerant();
+        let tolerant: GroundingSource = GroundingSource::framing(Arc::clone(&s)).defer_tolerant().into();
         assert_eq!(
-            tolerant.deferrability,
+            tolerant.deferrability(),
             Deferrability::DeferTolerant,
             "opt-in flips ONLY the schedule axis"
         );
         assert_eq!(
-            tolerant.policy,
+            tolerant.policy(),
             SaliencePolicy::StandingFraming,
             "orthogonal: deferrability must not touch the salience policy"
         );
 
         // retrieved() (the other constructor) also defaults to the safe side.
-        let retrieved = GroundingSource::retrieved(Arc::clone(&s));
-        assert_eq!(retrieved.deferrability, Deferrability::Synchronous);
+        let retrieved: GroundingSource = GroundingSource::retrieved(Arc::clone(&s)).into();
+        assert_eq!(retrieved.deferrability(), Deferrability::Synchronous);
+    }
+
+    // what this catches: the required/optional distinction erased at assembly (Codex on #5701):
+    // a required grounding has no deferred state, so whatever the cycle's deferral setting, the
+    // parts assembly builds its faculty from are synchronous, and its source is the required
+    // adapter over the CriticalSource (never a replaceable optional source). `defer_tolerant` is
+    // not a method of `RequiredGrounding`, so deferring one does not compile.
+    #[test]
+    pub(super) fn a_required_grounding_reaches_assembly_synchronous_and_required() {
+        struct Present;
+        #[async_trait::async_trait]
+        impl crate::cognition::rag_budget::CriticalSource for Present {
+            fn source_id(&self) -> &'static str {
+                "roster"
+            }
+            fn expand_command(&self) -> Option<&'static str> {
+                None // a stub
+            }
+            async fn deliver(&self, _ctx: &crate::cognition::rag_budget::RagContext) -> crate::cognition::rag_budget::Grounded {
+                crate::cognition::rag_budget::Grounded::new(
+                    crate::cognition::rag_budget::RagItem::whole("me", "Me (Agent, YOU)", serde_json::json!({})),
+                    Vec::new(),
+                    false,
+                )
+            }
+        }
+        let required: GroundingSource = GroundingSource::critical(Arc::new(Present)).volatile_content().into();
+        assert_eq!(required.deferrability(), Deferrability::Synchronous);
+        let (source, _, volatile, deferrability) = required.into_parts();
+        assert_eq!(deferrability, Deferrability::Synchronous, "never deferred, whatever the cycle defers");
+        assert!(volatile);
+        let delivered = futures::executor::block_on(source.deliver(&crate::cognition::rag_budget::RagContext::for_persona(Uuid::nil(), 0)));
+        assert_eq!(delivered.items.len(), 1, "the faculty reads the CriticalSource through the required adapter");
     }
 
     // what this catches: capability consistency on the eval fork — grounding
@@ -582,11 +615,11 @@ use super::*;
         }
         let mut cfg = cfg_for(persona);
         cfg.grounding_sources = vec![
-            GroundingSource::framing(Arc::new(HandsMap)).requires_hands(),
+            GroundingSource::framing(Arc::new(HandsMap)).requires_hands().into(),
             // A second, hands-agnostic source so the assertion below is about the
             // hands-describing one being stripped, not about grounding being empty.
             // Its gate starts open, so it delivers straight through here.
-            GroundingSource::framing(Arc::new(GatedGrounding::new())),
+            GroundingSource::framing(Arc::new(GatedGrounding::new())).into(),
         ];
         registry
             .register_from_cfg(cfg)

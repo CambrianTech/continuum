@@ -125,7 +125,7 @@ use super::*;
             let gate = Arc::new(GatedGrounding::new());
             let source: Arc<dyn RagSource> = Arc::clone(&gate) as Arc<dyn RagSource>;
             let mut cfg = cfg_for(persona);
-            cfg.grounding_sources = vec![GroundingSource::framing(source).defer_tolerant()];
+            cfg.grounding_sources = vec![GroundingSource::framing(source).defer_tolerant().into()];
             cfg.defer_grounding = defer_grounding;
 
             let cycle = build_workspace_cycle(cfg);

@@ -267,7 +267,7 @@ impl PersonaWorkspaceRegistry {
         }
         let mut listed: Vec<String> = roster
             .iter()
-            .map(|(id, name)| format!("{name} ({})", &id.to_string()[..8]))
+            .map(|(id, name)| format!("{name} ({})", airc_core::shown_id::shown_form(*id)))
             .collect();
         listed.sort();
         format!("Online now: {}.", listed.join(", "))
@@ -525,7 +525,7 @@ impl PersonaWorkspaceRegistry {
             // (workspace-map's tool paths + "drill in with code/list…") must not
             // be delivered into a hands-stripped cycle — a perception surface
             // never describes affordances that don't exist this cycle.
-            cfg.grounding_sources.retain(|g| !g.requires_hands);
+            cfg.grounding_sources.retain(|g| !g.describes_hands());
         } else {
             give_fork_its_own_hands(&mut cfg, *persona_id);
         }
@@ -584,7 +584,7 @@ impl PersonaWorkspaceRegistry {
             // (workspace-map's tool paths + "drill in with code/list…") must not
             // be delivered into a hands-stripped cycle — a perception surface
             // never describes affordances that don't exist this cycle.
-            cfg.grounding_sources.retain(|g| !g.requires_hands);
+            cfg.grounding_sources.retain(|g| !g.describes_hands());
         } else {
             give_fork_its_own_hands(&mut cfg, *persona_id);
         }

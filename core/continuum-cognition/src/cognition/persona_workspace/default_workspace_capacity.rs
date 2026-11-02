@@ -133,94 +133,175 @@ pub enum Deferrability {
     DeferTolerant,
 }
 
-/// A grounding [`RagSource`] plus the [`SaliencePolicy`] under which it competes
-/// for attention and the [`Deferrability`] that decides whether it runs on or off
-/// the loop. Classified by whoever assembles the cycle (the spawn path), keeping
-/// `RagSource` itself salience- and schedule-free.
+/// A grounding source, the [`SaliencePolicy`] it competes under and how it is scheduled,
+/// classified by whoever assembles the cycle (the spawn path), keeping `RagSource` itself
+/// salience- and schedule-free.
+///
+/// REQUIRED vs OPTIONAL is a type, sealed through assembly (Codex on #5701): a required
+/// grounding holds a [`CriticalSource`] (which always grounds) and has no deferred state, so it
+/// runs on the loop every tick; nothing can defer it or swap in a source that may be empty. Its
+/// builder is [`RequiredGrounding`], which has no `defer_tolerant`. An optional grounding may be
+/// empty and may be deferred ([`OptionalGrounding`]). Fields are private: what assembly reads
+/// it reads through [`GroundingSource::into_parts`].
+///
+/// [`CriticalSource`]: crate::cognition::rag_budget::CriticalSource
 #[derive(Clone)]
 pub struct GroundingSource {
-    pub source: Arc<dyn RagSource>,
-    pub policy: SaliencePolicy,
-    /// Defaults to [`Deferrability::Synchronous`]: a new source runs on the loop until its
-    /// assembler opts it into the background via [`GroundingSource::defer_tolerant`].
-    pub deferrability: Deferrability,
+    grounding: Grounding,
+    policy: SaliencePolicy,
     /// CAPABILITY CONSISTENCY: this grounding DESCRIBES the persona's hands
     /// (tool paths, "drill in with code/list…"), so it must only be delivered
     /// into a cycle that HAS hands. Glass-boxed 2026-07-10: every spoken-graded
     /// exam prompt carried the workspace-map telling her to use tools that were
     /// stripped for the exam — the RAG lying to her about her own affordances.
-    /// A perception surface must never describe affordances that don't exist
-    /// this cycle. `false` (default) = capability-neutral grounding.
-    pub requires_hands: bool,
-    /// FRAMING BY IMPORTANCE, VOLATILE BY CONTENT (2026-08-22). `StandingFraming`
-    /// conflated two axes: selection priority (the attention floor — correct for
-    /// these sources) and PLACEMENT in the cacheable stable tier (correct only for
-    /// byte-stable content). `debug/prompt-reuse` convicted active-work and
-    /// room-board on live captures: their content flaps every turn ("card X
-    /// [Claimed]" ↔ "[work] Your claim on card X…") at ~char 7,900 of 90–185k-char
-    /// prompts — a mutating span parked at the TOP of the prompt, invalidating the
-    /// KV of everything behind it (worst pairs: 4% predicted reuse). `true` keeps
-    /// the salience floor but serializes the content in the volatile tail, nearest
-    /// generation, where mutation costs only itself.
-    pub volatile_content: bool,
+    requires_hands: bool,
+    /// FRAMING BY IMPORTANCE, VOLATILE BY CONTENT (2026-08-22): `true` keeps the salience
+    /// floor but serializes the content in the volatile tail, nearest generation, where
+    /// mutation costs only itself (active-work and room-board flapped every turn at the top of
+    /// the prompt, invalidating the KV behind them).
+    volatile_content: bool,
+}
+
+#[derive(Clone)]
+enum Grounding {
+    /// Always grounds, always on the loop.
+    Required(Arc<dyn crate::cognition::rag_budget::CriticalSource>),
+    /// May be empty; scheduled by its deferrability.
+    Optional { source: Arc<dyn RagSource>, deferrability: Deferrability },
+}
+
+/// Builder for a REQUIRED grounding. There is no `defer_tolerant`: a required source runs on the
+/// loop every tick, by construction.
+pub struct RequiredGrounding(GroundingSource);
+
+impl RequiredGrounding {
+    /// This grounding DESCRIBES her hands (see the field doc): dropped from a handless cycle.
+    pub fn requires_hands(mut self) -> Self {
+        self.0.requires_hands = true;
+        self
+    }
+
+    /// Its CONTENT mutates per turn: keeps the attention floor, loses stable-tier placement.
+    pub fn volatile_content(mut self) -> Self {
+        self.0.volatile_content = true;
+        self
+    }
+}
+
+impl From<RequiredGrounding> for GroundingSource {
+    fn from(required: RequiredGrounding) -> Self {
+        required.0
+    }
+}
+
+/// Builder for an OPTIONAL grounding: it may have nothing this turn, and may be deferred.
+pub struct OptionalGrounding(GroundingSource);
+
+impl OptionalGrounding {
+    /// Opt this source off the loop: it runs in the background and serves a reprojected
+    /// last-good. Only for a source whose first-tick miss is an acceptable under-grounding
+    /// (NOT the participation gate).
+    pub fn defer_tolerant(mut self) -> Self {
+        if let Grounding::Optional { deferrability, .. } = &mut self.0.grounding {
+            *deferrability = Deferrability::DeferTolerant;
+        }
+        self
+    }
+
+    /// This grounding DESCRIBES her hands (see the field doc): dropped from a handless cycle.
+    pub fn requires_hands(mut self) -> Self {
+        self.0.requires_hands = true;
+        self
+    }
+
+    /// Its CONTENT mutates per turn: keeps the attention floor, loses stable-tier placement.
+    pub fn volatile_content(mut self) -> Self {
+        self.0.volatile_content = true;
+        self
+    }
+}
+
+impl From<OptionalGrounding> for GroundingSource {
+    fn from(optional: OptionalGrounding) -> Self {
+        optional.0
+    }
 }
 
 impl GroundingSource {
     /// A REQUIRED grounding: its absence would be a wrong turn, so it is a [`CriticalSource`]
-    /// that always grounds (it returns `Grounded`, which cannot be empty), and it runs on the
-    /// loop. The type is the requirement: a source that could come up empty cannot be passed.
+    /// that always grounds, and it runs on the loop every tick.
     ///
     /// [`CriticalSource`]: crate::cognition::rag_budget::CriticalSource
-    pub fn critical(source: Arc<dyn crate::cognition::rag_budget::CriticalSource>) -> Self {
-        Self::framing(Arc::new(crate::cognition::rag_budget::Required(source)))
-    }
-
-    /// Standing framing (doctrine, the wall, the board) — structural context that may have
-    /// nothing this turn (a room with no published doctrine). Synchronous by default; call
-    /// [`Self::defer_tolerant`] to move an enriching source off the loop.
-    pub fn framing(source: Arc<dyn RagSource>) -> Self {
-        Self {
-            source,
+    pub fn critical(source: Arc<dyn crate::cognition::rag_budget::CriticalSource>) -> RequiredGrounding {
+        RequiredGrounding(Self {
+            grounding: Grounding::Required(source),
             policy: SaliencePolicy::StandingFraming,
-            deferrability: Deferrability::Synchronous,
             requires_hands: false,
             volatile_content: false,
+        })
+    }
+
+    /// Standing framing (doctrine, the wall, the board): structural context that may have
+    /// nothing this turn. Synchronous unless made [`OptionalGrounding::defer_tolerant`].
+    pub fn framing(source: Arc<dyn RagSource>) -> OptionalGrounding {
+        Self::optional(source, SaliencePolicy::StandingFraming)
+    }
+
+    /// Retrieved grounding (engram, conversation): competes on relevance.
+    pub fn retrieved(source: Arc<dyn RagSource>) -> OptionalGrounding {
+        Self::optional(source, SaliencePolicy::Retrieved)
+    }
+
+    fn optional(source: Arc<dyn RagSource>, policy: SaliencePolicy) -> OptionalGrounding {
+        OptionalGrounding(Self {
+            grounding: Grounding::Optional { source, deferrability: Deferrability::Synchronous },
+            policy,
+            requires_hands: false,
+            volatile_content: false,
+        })
+    }
+
+    /// Whether this grounding describes her hands (dropped from a handless cycle).
+    pub fn describes_hands(&self) -> bool {
+        self.requires_hands
+    }
+
+    pub fn policy(&self) -> SaliencePolicy {
+        self.policy
+    }
+
+    /// How it is scheduled: a required grounding is always [`Deferrability::Synchronous`].
+    pub fn deferrability(&self) -> Deferrability {
+        match &self.grounding {
+            Grounding::Required(_) => Deferrability::Synchronous,
+            Grounding::Optional { deferrability, .. } => *deferrability,
         }
     }
 
-    /// Mark this grounding as DESCRIBING the persona's hands — it is dropped
-    /// from any cycle whose tools are stripped (see field docs).
-    pub fn requires_hands(mut self) -> Self {
-        self.requires_hands = true;
-        self
-    }
-
-    /// Retrieved grounding (engram, conversation) — competes on relevance.
-    pub fn retrieved(source: Arc<dyn RagSource>) -> Self {
-        Self {
-            source,
-            policy: SaliencePolicy::Retrieved,
-            deferrability: Deferrability::Synchronous,
-            requires_hands: false,
-            volatile_content: false,
+    pub fn source_id(&self) -> &'static str {
+        match &self.grounding {
+            Grounding::Required(source) => source.source_id(),
+            Grounding::Optional { source, .. } => source.source_id(),
         }
     }
 
-    /// Opt this source off the critical path: it runs in the background and serves
-    /// a reprojected last-good. Orthogonal to the salience policy — a `framing()`
-    /// source stays `StandingFraming` and *also* becomes defer-tolerant. Use only
-    /// when a first-tick `None` is an acceptable under-grounding (NOT for the
-    /// participation gate).
-    pub fn defer_tolerant(mut self) -> Self {
-        self.deferrability = Deferrability::DeferTolerant;
-        self
+    /// Rewrap an OPTIONAL source in place (a fork's pinned, cached workspace map). A required
+    /// source is never rewrapped: its guarantee belongs to the source assembly was given.
+    pub(crate) fn rewrap_optional(&mut self, rewrap: impl FnOnce(Arc<dyn RagSource>) -> Arc<dyn RagSource>) {
+        if let Grounding::Optional { source, .. } = &mut self.grounding {
+            *source = rewrap(Arc::clone(source));
+        }
     }
 
-    /// Framing whose CONTENT mutates per turn (see field doc): keeps the
-    /// attention floor, loses the stable-tier placement.
-    pub fn volatile_content(mut self) -> Self {
-        self.volatile_content = true;
-        self
+    /// What assembly builds a faculty from: the source the faculty reads, its policy, whether
+    /// its content is volatile, and its schedule (a required one always synchronous).
+    pub(crate) fn into_parts(self) -> (Arc<dyn RagSource>, SaliencePolicy, bool, Deferrability) {
+        let deferrability = self.deferrability();
+        let source: Arc<dyn RagSource> = match self.grounding {
+            Grounding::Required(source) => Arc::new(crate::cognition::rag_budget::Required(source)),
+            Grounding::Optional { source, .. } => source,
+        };
+        (source, self.policy, self.volatile_content, deferrability)
     }
 }
 
@@ -239,7 +320,7 @@ pub(super) fn give_fork_its_own_hands(cfg: &mut PersonaBrainConfig, persona_id: 
         Some(own) => cfg.tool_executor = Some(own),
         None => {
             cfg.tool_executor = None;
-            cfg.grounding_sources.retain(|g| !g.requires_hands);
+            cfg.grounding_sources.retain(|g| !g.describes_hands());
             continuum_base::probe!(
                 class = "workspace.fork_without_hands",
                 persona = %persona_id,
@@ -441,9 +522,9 @@ pub(super) fn assemble_workspace_cycle(
     // No per-source ceiling: each source delivers every item at its levels and her prompt
     // view's one allocation decides what she sees (FLOW-IMPLEMENTATION-PLAN §2d).
     for g in cfg.grounding_sources {
-        let faculty = RagSourceFaculty::new(cfg.persona_id, g.source, g.policy)
-            .with_volatile_content(g.volatile_content);
-        match g.deferrability {
+        let (source, policy, volatile, deferrability) = g.into_parts();
+        let faculty = RagSourceFaculty::new(cfg.persona_id, source, policy).with_volatile_content(volatile);
+        match deferrability {
             Deferrability::DeferTolerant if cfg.defer_grounding => {
                 faculties.push(Arc::new(DeferredFaculty::spawn(Arc::new(faculty))));
             }
@@ -678,7 +759,7 @@ pub(super) fn repoint_workspace_map_if_pinned(
         .and_then(|t| t.command_executor())
         .and_then(|c| c.message_bus());
     for g in cfg.grounding_sources.iter_mut() {
-        if g.source.source_id() == "workspace-map" {
+        if g.source_id() == "workspace-map" {
             // The map source is persona's (its layout readers); the slot builds it at `root`.
             let Some(pinned) =
                 crate::cognition::extensions::pinned_workspace_map(*persona_id, std::path::Path::new(root))
@@ -692,7 +773,8 @@ pub(super) fn repoint_workspace_map_if_pinned(
             // mutating commands completes. No wrap without a wire: a handless
             // cfg keeps the raw walk. The invalidator holds only a weak handle,
             // so it exits with the ephemeral fork instead of leaking.
-            g.source = match bus.clone() {
+            let bus = bus.clone();
+            g.rewrap_optional(|_live| match bus {
                 Some(bus) => {
                     let (cached, dirty) =
                         crate::cognition::cached_source::CachedRagSource::new(pinned);
@@ -703,7 +785,7 @@ pub(super) fn repoint_workspace_map_if_pinned(
                     cached
                 }
                 None => pinned,
-            };
+            });
         }
     }
 }
