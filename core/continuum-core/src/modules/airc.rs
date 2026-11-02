@@ -79,9 +79,12 @@ impl AircModule {
     /// (the boot banner / log output can show what was resolved
     /// before the failure), but the module construction does not
     /// pretend.
-    pub fn from_discovery(discovery: &crate::airc::AircDiscovery) -> Self {
+    pub fn from_discovery(
+        discovery: &crate::airc::AircDiscovery,
+        scopes: &crate::persona::self_peer::ScopeRegistry,
+    ) -> Result<Self, crate::persona::self_peer::ScopeConflict> {
         use crate::airc::AircDiscovery;
-        match discovery {
+        Ok(match discovery {
             AircDiscovery::Healthy {
                 socket,
                 default_room,
@@ -96,7 +99,9 @@ impl AircModule {
                 // beacon echo back.
                 // This scope peer is the identity the core publishes as: realtime publishes, the
                 // capacity beacon, and the relay `chat/send` publishes callers' lines as (#5696).
-                crate::persona::self_peer::register_scope(*peer_id);
+                // A different scope peer is refused before anything is registered (Codex on #5697).
+                scopes.designate(*peer_id)?;
+                crate::persona::self_peer::register(*peer_id);
                 Self {
                     queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
                     // #3849: the socket is re-resolved when the daemon
@@ -123,7 +128,7 @@ impl AircModule {
             AircDiscovery::Degraded { .. } | AircDiscovery::Unreachable { .. } => {
                 Self::with_queue_client(Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)))
             }
-        }
+        })
     }
 
     pub fn with_daemon_home(airc_home: impl Into<std::path::PathBuf>) -> Self {
@@ -286,7 +291,8 @@ mod from_discovery_tests {
             peer_id: peer,
         };
 
-        let module = AircModule::from_discovery(&discovery);
+        let module = AircModule::from_discovery(&discovery, &crate::persona::self_peer::ScopeRegistry::default())
+            .expect("test: a fresh scope registry takes any peer");
 
         assert_eq!(
             module.daemon_socket(),
@@ -331,7 +337,8 @@ mod from_discovery_tests {
             },
         };
 
-        let module = AircModule::from_discovery(&discovery);
+        let module = AircModule::from_discovery(&discovery, &crate::persona::self_peer::ScopeRegistry::default())
+            .expect("test: a fresh scope registry takes any peer");
 
         assert_eq!(
             module.daemon_socket(),
@@ -362,7 +369,8 @@ mod from_discovery_tests {
             },
         };
 
-        let module = AircModule::from_discovery(&discovery);
+        let module = AircModule::from_discovery(&discovery, &crate::persona::self_peer::ScopeRegistry::default())
+            .expect("test: a fresh scope registry takes any peer");
 
         assert_eq!(
             module.daemon_socket(),
@@ -383,7 +391,8 @@ mod from_discovery_tests {
             reason: DiscoveryFailure::AutoInstallDisabled,
         };
 
-        let module = AircModule::from_discovery(&discovery);
+        let module = AircModule::from_discovery(&discovery, &crate::persona::self_peer::ScopeRegistry::default())
+            .expect("test: a fresh scope registry takes any peer");
 
         assert_eq!(module.daemon_socket(), None);
         assert_eq!(module.default_room(), None);
@@ -425,7 +434,8 @@ mod from_discovery_tests {
             ),
         ];
         for (discovery, expect_socket_some) in cases {
-            let module = AircModule::from_discovery(&discovery);
+            let module = AircModule::from_discovery(&discovery, &crate::persona::self_peer::ScopeRegistry::default())
+            .expect("test: a fresh scope registry takes any peer");
             assert_eq!(
                 module.daemon_socket().is_some(),
                 expect_socket_some,

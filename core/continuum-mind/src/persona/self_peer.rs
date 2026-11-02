@@ -33,19 +33,46 @@ pub fn register(peer: Uuid) {
     registered().lock().unwrap_or_else(|p| p.into_inner()).insert(peer); // JUSTIFIED unwrap_or_else: a poisoned set still holds the ids; membership is bookkeeping, never truth
 }
 
-/// The core's own project-scope peer: the identity it publishes as (airc realtime publishes, relayed
-/// callers' lines, the capacity beacon). One of the ids above, designated once by the airc module.
-static SCOPE: OnceLock<Uuid> = OnceLock::new();
+/// A second, different scope peer offered to a registry that already holds one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("this core's scope peer is {existing}; refusing to also attach as {offered}")]
+pub struct ScopeConflict {
+    pub existing: Uuid,
+    pub offered: Uuid,
+}
 
-/// Designate the core's project-scope peer (and record it as one of this process's ids).
-pub fn register_scope(peer: Uuid) {
-    register(peer);
-    let _ = SCOPE.set(peer); // first designation wins: the airc module constructs once per process
+/// The core's own project-scope peer: the identity it publishes as (airc realtime publishes, relayed
+/// callers' lines, the capacity beacon). Designated once; the same peer again is a no-op, and a
+/// different one is refused, so the module can never attach as one peer while the relay and the
+/// beacon publish as another (Codex on #5697). Instance-owned so a test holds its own.
+#[derive(Debug, Default)]
+pub struct ScopeRegistry(OnceLock<Uuid>);
+
+impl ScopeRegistry {
+    /// Designate `peer` as the scope peer: idempotent for the same peer, refused for another.
+    pub fn designate(&self, peer: Uuid) -> Result<(), ScopeConflict> {
+        let existing = *self.0.get_or_init(|| peer);
+        if existing == peer {
+            Ok(())
+        } else {
+            Err(ScopeConflict { existing, offered: peer })
+        }
+    }
+
+    pub fn scope(&self) -> Option<Uuid> {
+        self.0.get().copied()
+    }
+}
+
+/// The process's scope registry.
+pub fn scopes() -> &'static ScopeRegistry {
+    static SCOPES: OnceLock<ScopeRegistry> = OnceLock::new();
+    SCOPES.get_or_init(ScopeRegistry::default)
 }
 
 /// The core's project-scope peer, once the airc module has attached.
 pub fn scope() -> Option<Uuid> {
-    SCOPE.get().copied()
+    scopes().scope()
 }
 
 /// Is `peer` one of the ids this process wears? A peer that is this node is never a
@@ -64,6 +91,19 @@ pub fn is_this_node(peer: Uuid) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a second, different scope peer silently ignored, so the airc module
+    // attaches as B while the relay and the beacon still publish as A (Codex on #5697): the same
+    // peer is idempotent, a different one is refused and leaves the first in place.
+    #[test]
+    fn a_scope_is_designated_once_and_a_different_one_is_refused() {
+        let scopes = ScopeRegistry::default();
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        assert_eq!(scopes.designate(a), Ok(()));
+        assert_eq!(scopes.designate(a), Ok(()), "the same peer again is a no-op");
+        assert_eq!(scopes.designate(b), Err(ScopeConflict { existing: a, offered: b }));
+        assert_eq!(scopes.scope(), Some(a), "the first stays");
+    }
 
     // what this catches (card 2500d2f1): a node that wears N airc ids must answer "me"
     // for every one of them and for nobody else — the M5 knew one of its three and

@@ -81,7 +81,7 @@ pub(super) fn discover_and_register_airc(
                 room_name,
                 ..
             } => {
-                let peer_short: String = peer_id.to_string().chars().take(8).collect();
+                let peer_short = airc_core::shown_id::shown_form(*peer_id);
                 (
                     BootStatusKind::Ok,
                     format!(
@@ -101,7 +101,11 @@ pub(super) fn discover_and_register_airc(
         };
         boot_status("airc", kind, &detail);
     }
-    let airc_module = Arc::new(AircModule::from_discovery(&discovery));
+    // A second, different scope peer refuses boot rather than run as two identities (Codex on #5697).
+    let airc_module = Arc::new(
+        AircModule::from_discovery(&discovery, crate::persona::self_peer::scopes())
+            .map_err(|conflict| std::io::Error::other(conflict.to_string()))?,
+    );
     // #432 (was the vestigial gate): persona hosting needs the DAEMON SOCKET
     // only — #298 removed the operator room from birth deps, but the zip here
     // still required a discovered default room, so "no default room ⇒ no

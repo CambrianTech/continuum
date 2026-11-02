@@ -37,7 +37,8 @@ async fn an_override_naming_this_node_is_retired_at_build_and_she_is_born_home()
         default_room: airc_core::RoomId::from_uuid(uuid::Uuid::new_v4()),
         room_name: "general".to_string(),
         peer_id: me,
-    });
+    }, &crate::persona::self_peer::ScopeRegistry::default())
+    .expect("test: a fresh scope registry takes any peer");
     PersonaModelOverride::new_remote("ggml-org/Qwen3.8-27B-GGUF", Some("placement:fleet".to_string()), 1, me.to_string())
         .write(&home)
         .expect("write override");
