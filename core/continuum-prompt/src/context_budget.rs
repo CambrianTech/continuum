@@ -115,26 +115,6 @@ impl ContextBudget {
         }
     }
 
-    /// The window her prompt is fitted to: the knee the dyno measured in her own traffic, never
-    /// above the served slot. Stable by construction: it does not move with load, so it never
-    /// turns an epoch over mid-flight.
-    ///
-    /// Why a token count from the dyno and not a rate: the knee is where a smaller window's
-    /// turnovers start to cost more than the smaller context saves, and it is counted in
-    /// tokens of her own requests, so it does not depend on how fast the engine is. A rate
-    /// does, and moves with load. Deriving the window from the live prefill-rate EMA
-    /// (f45f090a6, M5 2026-10-28) moved it 48k -> 40k -> 32k as contention lowered the rate,
-    /// refused Aris twice at 32k and turned epochs over 74 times in 37 minutes. Rolled back.
-    ///
-    /// Measured 2026-10-28 (continuum-context replay --append-tail over all four residents'
-    /// captures, `~/.continuum/evidence/2026-10-28-working-window/`): at 48k, prefill per
-    /// request fell ~3x (Benchy 110 -> 41 s, Aiko 81 -> 24, Aris 113 -> 33, Atlas 94 -> 20)
-    /// with zero handles dropped; 32k doubled turnovers. Re-measure by rerunning the replay;
-    /// the act inspector tracking the knee continuously is the next step.
-    pub fn working_window(served: u32) -> u32 {
-        Self::working_window_when(served, continuum_engine::inference::llama_server::current_serving().active_model.is_some())
-    }
-
     /// The served window only — the KV-capacity reading, for seams that must not be
     /// prefill-bounded (a test fixture, a capacity report).
     pub fn from_window_unbounded(context_window: u32) -> Self {
@@ -218,22 +198,16 @@ fn affordable_for_rate(
     // cache. Measured on the M5 2026-10-17: prefix reuse 55-75%, a ~18k-token bound on a
     // 34,560-token lane, so a resident's results ring (a quarter of the bound) could not
     // hold one 320-line read and she re-read the same file every turn. The measured cached
-    // fraction scales the bound up, counted at most MAX_CACHE_CREDIT so a turn that does
-    // lose its cache stays within a few multiples of its budget.
-    let credited = cache_fraction.filter(|f| f.is_finite() && *f > 0.0).map(|f| f.min(Self::MAX_CACHE_CREDIT)).unwrap_or(0.0);
+    // fraction scales the bound up, as measured: no ceiling on the credit (a 0.75 cap sat
+    // below the M5's live 78% reuse on 2026-11-02). The served window still bounds it, and a
+    // turn whose cache missed pays its real cold prefill, which the rate measures next turn.
+    let credited = cache_fraction.filter(|f| f.is_finite() && *f > 0.0).unwrap_or(0.0); // unwrap_or: no measured fraction credits nothing
     let affordable = ((affordable as f64) / (1.0 - credited)).min(u32::MAX as f64) as u32;
     // The planning helper may raise a proposed lane to MIN_SERVE_CTX. This
     // owner budgets an already-resolved window: a serving floor cannot enlarge
     // its capacity, including small explicit evaluation windows.
     affordable.min(served)
 }
-
-/// The most of the measured cache fraction the bound credits: at 0.75 the bound grows at
-/// most 4x, so a turn that misses its cache entirely costs at most four times its
-/// time-to-first-token budget. Above it the bound would buy a whole-window cold prefill.
-// derived-or-floor: floor — measured prefix reuse on the M5 2026-10-17 ran 0.55-0.75; the
-// cap sits at the top of that range so the credit never exceeds what was observed.
-const MAX_CACHE_CREDIT: f64 = 0.75;
 
 /// The served window clamped to what the served lane can prefill inside the turn's
 /// time-to-first-token budget.
@@ -310,22 +284,6 @@ fn prefill_affordable_window_for(served: u32, audience: continuum_engine::infere
     }
     affordable
 }
-
-/// The working window's measured knee, in tokens (see [`Self::working_window`]).
-// derived-or-floor: derived — the dyno's knee over the M5 residents' own captures, 2026-10-28
-// (~/.continuum/evidence/2026-10-28-working-window/): 48k cut prefill per request ~3x with
-// zero handles dropped; 32k doubled turnovers; 64k kept 1.5-2x more prefill.
-const WORKING_WINDOW_TOKENS: u32 = 49_152;
-
-/// PURE: the working window for a served slot of `served` tokens, when a model is `serving`: the
-/// measured knee, never above the slot. With nothing served (a fixture) it is the served window.
-fn working_window_when(served: u32, serving: bool) -> u32 {
-    if served == 0 || !serving {
-        return served;
-    }
-    Self::WORKING_WINDOW_TOKENS.min(served)
-}
-
 
     /// Whether a window is known: every bound below is a real number, not "no bound".
     pub fn is_known(&self) -> bool {
@@ -466,7 +424,7 @@ mod tests {
     // what this catches: the prefill time bound charging cached tokens as if they had to
     // be read (the M5 2026-10-17: ~100 t/s x 180 s = ~18k on a 34,560 lane with 57% reuse,
     // so a resident's ring could not hold one 320-line read). The measured cache fraction
-    // scales the bound, credited at most MAX_CACHE_CREDIT, never past the window.
+    // scales the bound as measured, never past the window.
     #[test]
     fn the_prefill_bound_credits_the_measured_cache() {
         use continuum_engine::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
@@ -475,7 +433,7 @@ mod tests {
         let half = ContextBudget::affordable_for_rate(rate, 200_000, Audience::Unattended, Some(0.5));
         assert_eq!(half, cold * 2, "half the prompt cached: twice the prompt fits the same fresh-token budget");
         let all = ContextBudget::affordable_for_rate(rate, 200_000, Audience::Unattended, Some(0.99));
-        assert_eq!(all, cold * 4, "credited at most MAX_CACHE_CREDIT (4x), whatever the measured fraction");
+        assert_eq!(all, 200_000, "the measured fraction is credited whole; the served window is the bound");
         assert_eq!(ContextBudget::affordable_for_rate(rate, 34_560, Audience::Unattended, Some(0.9)), 34_560, "never past the served window");
     }
 
@@ -602,17 +560,5 @@ mod tests {
         let b = ContextBudget::unknown();
         assert_eq!(b.latest_action_chars(), usize::MAX);
         assert_eq!(b.trail_head_chars(), usize::MAX);
-    }
-
-    // what this catches: a working window that moves with load (f45f090a6 shrank it 48k ->
-    // 32k under contention and refused a resident) or exceeds the slot. With no served model
-    // (every test) it is the served window, as before.
-    #[test]
-    fn the_working_window_is_the_measured_knee_and_never_exceeds_the_slot() {
-        assert_eq!(ContextBudget::working_window_when(159_232, true), 49_152, "serving a wide slot: the measured knee");
-        assert_eq!(ContextBudget::working_window_when(32_768, true), 32_768, "never above the slot");
-        assert_eq!(ContextBudget::working_window_when(159_232, false), 159_232, "nothing served (a fixture): the served window");
-        assert_eq!(ContextBudget::working_window_when(0, true), 0);
-        assert_eq!(ContextBudget::working_window(159_232), 159_232, "no served model in a test: the served window");
     }
 }
