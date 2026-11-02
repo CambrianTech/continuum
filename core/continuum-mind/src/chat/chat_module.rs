@@ -83,10 +83,11 @@ impl ServiceModule for ChatModule {
     }
 
     fn install_executor(&self, executor: Arc<CommandExecutor>) {
-        // `LateBound::install` silently no-ops when the slot is already
-        // filled, so a `with_executor()`-injected test executor is never
-        // clobbered — the original install wins, same contract as before.
-        self.executor_slot.install(executor);
+        // The first install wins (a `with_executor()`-injected executor is never clobbered); a
+        // different second executor is refused loudly, never swapped in under a ready store.
+        if let Err(conflict) = self.executor_slot.install(executor) {
+            continuum_base::probe!(class = "chat.executor.install_refused", conflict = %conflict, "a second, different executor was offered to the chat slot");
+        }
     }
 
     /// The migrated `chat/poll` + `chat/send` commands as typed

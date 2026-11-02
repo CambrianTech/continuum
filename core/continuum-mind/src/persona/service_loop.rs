@@ -8,7 +8,7 @@
 //!
 //!   subscribe → for each event:
 //!     • skip pre-watermark / self / non-text
-//!     • lease the brain (`ctx.cognition.lock().await`)
+//!     • read the brain (`ctx.cognition`: wired once at materialize, then shared, never locked)
 //!     • `compose_for_turn` — engram + airc through the
 //!       FlexboxRagBudgetAdapter
 //!     • the workspace cycle: admit → build_workspace_turns → Burst →

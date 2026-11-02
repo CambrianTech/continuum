@@ -624,7 +624,7 @@ pub async fn materialize_adapters(
             profile,
             adapter,
             runtime,
-            cognition: Arc::new(tokio::sync::Mutex::new(cognition)),
+            cognition: Arc::new(cognition),
             system_prompt,
         }));
     }

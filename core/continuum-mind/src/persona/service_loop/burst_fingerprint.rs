@@ -308,7 +308,7 @@ pub(super) async fn run_self_cycle(
         return;
     }
     let composed = {
-        let cognition = ctx.cognition.lock().await;
+        let cognition = &ctx.cognition;
         // Passing None here is what made idle ticks blind to the board (#331 / #127).
         cognition
             .compose_for_turn(
