@@ -91,11 +91,7 @@ pub fn touched_clean(name: &str, violations: &[Violation], advice: impl FnOnce()
         Err(e) => panic!("cannot read the touched-file list {path}: {e}"),
     };
     let touched: BTreeSet<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-    let dirty: Vec<String> = violations
-        .iter()
-        .filter(|v| touched.contains(v.file.as_str()))
-        .map(|v| format!("  {}:{}  {}", v.file, v.line, v.source))
-        .collect();
+    let dirty = dirty_sites(violations, &touched);
     assert!(
         dirty.is_empty(),
         "{name}: {} site(s) remain in files this change touches; a touched file leaves with none. {}\n{}",
@@ -103,6 +99,43 @@ pub fn touched_clean(name: &str, violations: &[Violation], advice: impl FnOnce()
         advice(),
         dirty.join("\n")
     );
+}
+
+/// The violations that sit in a touched file, as failure lines. A violation names its file by
+/// repository path, the same form the touched list holds, so the two always compare.
+pub(crate) fn dirty_sites(violations: &[Violation], touched: &BTreeSet<&str>) -> Vec<String> {
+    violations
+        .iter()
+        .filter(|v| touched.contains(v.file.as_str()))
+        .map(|v| format!("  {}:{}  {}", v.file, v.line, v.source))
+        .collect()
+}
+
+/// One crate's movement for one ratchet: its base count (absent when the base never recorded
+/// it) and its head count (zero when the head has none left, so a crate swept to zero reports
+/// `N -> 0` instead of vanishing from the receipt).
+#[derive(Debug, PartialEq, Eq)]
+pub struct CrateMovement {
+    pub ratchet: String,
+    pub owner: String,
+    pub before: Option<usize>,
+    pub after: usize,
+}
+
+/// Every per-crate row either run recorded, the union of base and head.
+pub fn crate_movement(base: &BTreeMap<String, usize>, head: &BTreeMap<String, usize>) -> Vec<CrateMovement> {
+    let keys: BTreeSet<&String> = base.keys().chain(head.keys()).filter(|k| k.contains(BY_CRATE)).collect();
+    keys.into_iter()
+        .filter_map(|key| {
+            let (ratchet, owner) = key.split_once(BY_CRATE)?;
+            Some(CrateMovement {
+                ratchet: ratchet.to_owned(),
+                owner: owner.to_owned(),
+                before: base.get(key).copied(),
+                after: head.get(key).copied().unwrap_or(0), // unwrap_or: a crate the head never recorded has none left
+            })
+        })
+        .collect()
 }
 
 /// One line per count. A ratchet runs in its own test thread, and a single short append is
@@ -145,6 +178,19 @@ mod tests {
 
     // what this catches: a per-crate record keyed by the wrong path segment, which would
     // attribute every count to `core` and name no owner.
+    // what this catches: a crate swept to zero disappearing from the receipt (the head records
+    // only nonzero crates), which hides exactly the result a sweep exists to show.
+    #[test]
+    fn a_crate_swept_to_zero_reports_its_fall() {
+        let base: BTreeMap<String, usize> = [("u@a".to_owned(), 3), ("u@b".to_owned(), 2)].into();
+        let head: BTreeMap<String, usize> = [("u@b".to_owned(), 1), ("u@c".to_owned(), 4)].into();
+        let rows = crate_movement(&base, &head);
+        let row = |owner: &str| rows.iter().find(|r| r.owner == owner).map(|r| (r.before, r.after));
+        assert_eq!(row("a"), Some((Some(3), 0)), "swept to zero");
+        assert_eq!(row("b"), Some((Some(2), 1)));
+        assert_eq!(row("c"), Some((None, 4)), "new in head");
+    }
+
     #[test]
     fn a_site_is_attributed_to_its_crate() {
         assert_eq!(crate_of("core/continuum-mind/src/persona/act.rs"), "continuum-mind");

@@ -66,33 +66,31 @@ fn print_movement(base: &Path, head: &Path) {
     let (base, head) = (read(base), read(head));
     let mut rows: Vec<_> = head.iter().map(|(name, &after)| (name, base.get(name).copied(), after)).collect();
     rows.sort_by_key(|(name, before, after)| (before == &Some(*after), (*name).clone()));
-    let (by_crate, rows): (Vec<_>, Vec<_>) = rows.into_iter().partition(|(name, _, _)| name.contains(source_hygiene::ratchet::BY_CRATE));
+    let rows: Vec<_> = rows.into_iter().filter(|(name, _, _)| !name.contains(source_hygiene::ratchet::BY_CRATE)).collect();
     eprintln!("ratchet                          base     head");
     for (name, before, after) in rows {
         let before = before.map_or_else(|| "-".to_owned(), |b| b.to_string()); // map_or_else: a ratchet the base run did not record prints as absent
         eprintln!("{name:<30} {before:>7} {after:>8}");
     }
-    print_by_crate(by_crate);
+    print_by_crate(source_hygiene::ratchet::crate_movement(&base, &head));
 }
 
-/// Where each ratchet's debt lives: its largest crates, so a sweep has an owner.
-fn print_by_crate(rows: Vec<(&String, Option<usize>, usize)>) {
-    let mut by_rule: std::collections::BTreeMap<&str, Vec<(&str, Option<usize>, usize)>> = std::collections::BTreeMap::new();
-    for (name, before, after) in rows {
-        if let Some((rule, owner)) = name.split_once(source_hygiene::ratchet::BY_CRATE) {
-            by_rule.entry(rule).or_default().push((owner, before, after));
-        }
+/// Where each ratchet's debt lives: its largest crates, and any crate a change swept to zero.
+fn print_by_crate(rows: Vec<source_hygiene::ratchet::CrateMovement>) {
+    let mut by_rule: std::collections::BTreeMap<String, Vec<source_hygiene::ratchet::CrateMovement>> = std::collections::BTreeMap::new();
+    for row in rows {
+        by_rule.entry(row.ratchet.clone()).or_default().push(row);
     }
     if by_rule.is_empty() {
         return;
     }
-    eprintln!("by crate (largest first)            base     head");
+    eprintln!("by crate (moved first, then largest)  base     head");
     for (rule, mut crates) in by_rule {
-        crates.sort_by_key(|(_, _, after)| std::cmp::Reverse(*after));
+        crates.sort_by_key(|row| (row.before == Some(row.after), std::cmp::Reverse(row.after)));
         eprintln!("{rule}");
-        for (owner, before, after) in crates.into_iter().take(LARGEST_CRATES_SHOWN) {
-            let before = before.map_or_else(|| "-".to_owned(), |b| b.to_string()); // map_or_else: a crate the base run did not record prints as absent
-            eprintln!("  {owner:<30} {before:>7} {after:>8}");
+        for row in crates.into_iter().take(LARGEST_CRATES_SHOWN) {
+            let before = row.before.map_or_else(|| "-".to_owned(), |b| b.to_string()); // map_or_else: a crate the base run did not record prints as absent
+            eprintln!("  {:<30} {before:>7} {:>8}", row.owner, row.after);
         }
     }
 }
