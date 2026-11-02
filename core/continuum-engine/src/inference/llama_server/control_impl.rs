@@ -444,7 +444,7 @@ impl LlamaServerControl for LlamaServerProcess {
             .prepared
             .as_ref()
             .ok_or_else(|| LlamaServerError::Spawn("original launch was not captured".into()))?;
-        prepared.validate_restoration(&self.root, &prepared.engine_program).await
+        prepared.validate_restoration(&self.root, prepared.engine_program()).await
     }
 
     async fn restore_owned_launch(

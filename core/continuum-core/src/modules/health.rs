@@ -57,6 +57,10 @@ pub struct PingResult {
     /// number orders SOURCE, sha names it, built-at dates the BINARY — catching
     /// a rebuild of old source after a fix landed, which number+sha both miss).
     pub built_at: String,
+    /// The engine this core holds its node to (card a3e92354): its pin, the INSTALLED slot's
+    /// stamp and the SERVED engine's own build, kept apart, or the operator's own engine as its
+    /// own mode. `deploy-verify` passes only when the live owned engine is the pin.
+    pub engine: continuum_engine::inference::llama_server::EngineReport,
 }
 
 /// `ping` — the canonical self-routing command. As an [`ActionCommand`] it gets
@@ -82,6 +86,7 @@ impl ActionCommand for PingCommand {
             build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
             build_number: env!("CONTINUUM_BUILD_NUMBER").parse().unwrap_or(0),
             built_at: env!("CONTINUUM_BUILD_AT").to_string(),
+            engine: continuum_engine::inference::llama_server::engine_report(),
         })
     }
 }

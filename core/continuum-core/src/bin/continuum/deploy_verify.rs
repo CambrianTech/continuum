@@ -119,6 +119,7 @@ pub(super) async fn verify_deployed_build_against(
     ) {
         Ok(line) => {
             println!("{line}");
+            println!("{}", verify_engine_pin().await?);
             if let Some(note) = cli_note {
                 println!("{note}");
             }
@@ -165,4 +166,35 @@ pub(super) fn describe_running_core(socket: &str) -> String {
         desc.push_str(&format!(", image {}", img.display()));
     }
     desc
+}
+
+/// How long `deploy-verify` waits for the live engine to become the pinned one: the core
+/// promotes the pinned slot at its next reconcile and relaunches the lane onto it, and a cold
+/// relaunch of a large GGUF is bounded by the serving wait (`READY_TIMEOUT` plus the reconcile's
+/// start margin), the same physical event every other consumer waits on.
+const ENGINE_ADOPT_WAIT: std::time::Duration = continuum_engine::inference::llama_server::DEFAULT_SERVING_WAIT;
+
+/// The engine half of a deploy's receipt (card a3e92354): the running core reports its pin, the
+/// installed slot and the live engine's own build, and only a live owned engine running the pin
+/// passes (`engine_verdict`). The M5 ran a stale engine for 2.5 h on 2026-10-27 behind two
+/// "deploy verified" lines that checked only the core; a promoted pointer alone is not the engine
+/// that serves (Codex on #5535).
+async fn verify_engine_pin() -> Result<String, String> {
+    let started = std::time::Instant::now();
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+    loop {
+        tick.tick().await;
+        let reply = running_core_provenance("ping", "engine-verify").await?;
+        let verdict = match reply.get("engine") {
+            Some(engine) => serde_json::from_value::<continuum_engine::inference::llama_server::EngineReport>(engine.clone())
+                .map_err(|e| format!("ENGINE NOT VERIFIED: the core's `ping.engine` is not an engine report: {e}"))
+                .and_then(|report| continuum_engine::inference::llama_server::engine_verdict(&report)),
+            None => Err("ENGINE NOT VERIFIED: the running core reports no `ping.engine`; it cannot prove which engine serves".to_string()),
+        };
+        match verdict {
+            // Promotion and relaunch follow boot: ask again until the wait ends.
+            Err(_) if started.elapsed() < ENGINE_ADOPT_WAIT => continue,
+            verdict => return verdict,
+        }
+    }
 }

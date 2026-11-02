@@ -290,4 +290,78 @@ mod reservations {
         assert_eq!(idle_slot_reserved(root, Some("engine-c"), None, &live, &["engine-a"], |_| true), Err(NotIdle::AllInUse));
         assert_eq!(idle_slot_reserved(root, None, None, &[None], &["engine-a"], |_| true), Err(NotIdle::AllInUse));
     }
+
+    // what this catches (Codex on #5535): a crashed installer's claim pinning a slot forever,
+    // or a claim whose owner merely cannot be read being reaped (a build then overwrote a slot
+    // a launch was about to run); `release-slot` removing a claim it does not own; two launches
+    // of one process (live and ephemeral lanes on the current slot) refusing each other, or the
+    // first to finish releasing the slot under the second.
+    #[test]
+    fn one_claim_per_slot_reaped_only_when_its_owner_is_verified_gone() {
+        use crate::inference::engine_residency::{probe_process, ProcessProbe};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let claims = root.join("reservations");
+        std::fs::create_dir_all(&claims).unwrap();
+        let no_lanes = || Ok(Vec::new());
+        let me = std::process::id();
+        let dead_builder = |pid: u32| if pid == 4_000_000 { ProcessProbe::Absent } else { probe_process(pid) };
+
+        // A crashed builder (verified gone) held engine-a: reaped, and engine-a is claimed.
+        std::fs::write(claims.join("engine-a"), "build 4000000 1700000000\n").unwrap();
+        assert!(matches!(claim_idle_slot(root, &["engine-b", "engine-c"], me, no_lanes, &dead_builder), Ok("engine-a")));
+        // Another process (pid 1: it never holds this claim) releases nothing.
+        let other = release_build_claim(root, "engine-a", 1);
+        assert!(!matches!(&other, Ok(said) if said == "engine-a released"), "{other:?}");
+        assert!(claims.join("engine-a").exists(), "another owner's release removes nothing");
+        assert_eq!(release_build_claim(root, "engine-a", me).unwrap(), "engine-a released");
+
+        // An owner that cannot be read, or a claim that cannot be parsed, holds its slot.
+        let unreadable = |pid: u32| if pid == 4_000_001 { ProcessProbe::Unreadable } else { probe_process(pid) };
+        std::fs::write(claims.join("engine-a"), "build 4000001 1700000000\n").unwrap();
+        std::fs::write(claims.join("engine-b"), "").unwrap();
+        assert!(matches!(claim_idle_slot(root, &["engine-c"], me, no_lanes, &unreadable), Err(VerbError::NoIdleSlot)));
+        std::fs::remove_file(claims.join("engine-a")).unwrap();
+        std::fs::remove_file(claims.join("engine-b")).unwrap();
+
+        // Two launches of this process share engine-a's claim; it outlives the first.
+        let first = SlotClaim::acquire_with(root, "engine-a", &probe_process).unwrap();
+        let second = SlotClaim::acquire_with(root, "engine-a", &probe_process).unwrap();
+        drop(first);
+        assert!(matches!(claim_idle_slot(root, &["engine-b", "engine-c"], me, no_lanes, &probe_process), Err(VerbError::NoIdleSlot)));
+        drop(second);
+        assert!(!claims.join("engine-a").exists(), "the last launch releases it");
+    }
+
+    // what this catches (Codex on #5535): a crash between creating a claim and writing its
+    // owner left an EMPTY claim, holding its slot until an operator removed it. A claim is
+    // published whole or not at all: a builder that staged its claim and died before linking
+    // leaves no claim (the slot stays claimable), and the scratch files a dead writer left are
+    // swept, while a live writer's are not.
+    #[test]
+    fn a_claim_is_published_whole_or_not_at_all_and_dead_strays_are_swept() {
+        use crate::inference::engine_residency::{probe_process, ProcessProbe};
+        use crate::inference::engine_slots::claim::{stage, ClaimKind, Owner};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let claims = root.join("reservations");
+        std::fs::create_dir_all(&claims).unwrap();
+        let me = std::process::id();
+
+        let staged = stage(&claims, &Owner::of(ClaimKind::Build, me).unwrap()).unwrap();
+        assert!(staged.is_file(), "the claim was written");
+        assert!(!claims.join("engine-a").exists(), "and, never linked, no claim exists");
+
+        let stray = claims.join(".claim.4000003.1700000000.42");
+        let tomb = claims.join(".claim.4000003.1700000000.43");
+        std::fs::write(&stray, "build 4000003 1700000000\n").unwrap();
+        std::fs::write(&tomb, "launch 4000003 1700000000\n").unwrap();
+        let dead = |pid: u32| if pid == 4_000_003 { ProcessProbe::Absent } else { probe_process(pid) };
+        assert!(matches!(claim_idle_slot(root, &["engine-b", "engine-c"], me, || Ok(Vec::new()), &dead), Ok("engine-a")), "the slot is claimable");
+        let held = std::fs::read_to_string(claims.join("engine-a")).unwrap();
+        assert!(held.starts_with(&format!("build {me} ")) && held.ends_with('\n'), "the published claim is whole: {held:?}");
+        assert!(!stray.exists() && !tomb.exists(), "a dead writer's scratch files are swept");
+        assert!(staged.exists(), "a live writer's scratch file is not");
+        assert_eq!(release_build_claim(root, "engine-a", me).unwrap(), "engine-a released");
+    }
 }

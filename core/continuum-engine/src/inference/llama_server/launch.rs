@@ -17,7 +17,7 @@ impl LlamaServerProcess {
         let restore_generation = restore_session.map(|session| session.expected.lock().clone());
         let restoring = restore_generation.is_some();
         if restoring {
-            prepared.validate_restoration(&self.root, &prepared.engine_program).await?;
+            prepared.validate_restoration(&self.root, prepared.engine_program()).await?;
         }
         let target = &prepared.target;
         let gguf = prepared.gguf.clone();
@@ -27,6 +27,9 @@ impl LlamaServerProcess {
         let (_, port) = split_host_port(&self.root);
         let lanes = target.parallel_lanes();
         let total_ctx = target.served_total_ctx();
+        // The claim on the checked engine's slot, before the incumbent is retired: refused here
+        // (a build or another launch holds it), the incumbent is never touched.
+        let engine_custody = prepared.take_engine_custody()?;
         if let Some(receipt) = &engine_install {
             receipt.confirm().await.map_err(LlamaServerError::Spawn)?;
         }
@@ -227,6 +230,9 @@ impl LlamaServerProcess {
                 None
             }
         };
+        // The last observation before the spawn: the claimed slot still holds the validated
+        // build, so what spawns is what was checked (`checked_engine`).
+        prepared.confirm_engine()?;
         // Clone before OS spawn, so allocation cannot strand an uninstalled child.
         let child_install = engine_install.clone();
         let child_inputs = prepared.local_inputs.as_ref().ok().cloned();
@@ -245,7 +251,7 @@ impl LlamaServerProcess {
             Ok(child) => child,
             Err(error) => {
                 generation.observed_exit(); // No child was created for this generation.
-                return Err(LlamaServerError::Spawn(format!("{}: {error}", prepared.engine_program)));
+                return Err(LlamaServerError::Spawn(format!("{}: {error}", prepared.engine_program())));
             }
         };
         let child_pid = child.id();
@@ -257,13 +263,13 @@ impl LlamaServerProcess {
         // The transition drained the incumbent's readers and the candidate spawned: only now is
         // its `tail_tools` evidence published, for this incarnation. The launch tail carries it,
         // so a launch that fails, is cancelled or is discarded from here on withdraws it.
-        let evidence = self.publish_launched_evidence(&prepared.engine_program, child_pid);
+        let evidence = self.publish_launched_evidence(prepared.engine_program(), child_pid);
         // Launch arguments are evidence of what we requested, not a readback of
         // cache capacity or occupancy. Adopted engines do not pass this seam.
         continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.prompt_cache.launch",
             model = target.model.id.as_str(),
             artifact = %gguf.display(),
-            engine = %prepared.engine_program,
+            engine = %prepared.engine_program(),
             pid = ?child_pid,
             port = port,
             requested_mib = target.host_prompt_cache_mib as u64,
@@ -291,7 +297,7 @@ impl LlamaServerProcess {
             // An engine nobody reads: its faults would go unseen, and a full pipe would block
             // its writes. It does not serve (card 1d7d6d4c).
             self.kill_child();
-            return Err(LlamaServerError::Spawn(format!("{}: {reason}", prepared.engine_program)));
+            return Err(LlamaServerError::Spawn(format!("{}: {reason}", prepared.engine_program())));
         }
 
         // Record the child pid so a SIGKILLed core's successor can reclaim THIS
@@ -324,6 +330,7 @@ impl LlamaServerProcess {
         // port; the registry is what closes the ephemeral-lane leak. Same as the
         // pidfile, a write failure only DISARMS future reclaim for this lane — it
         // never fails the serve.
+        let mut lane_recorded = false;
         if let Some(pid) = child_pid {
             let role = if self.is_live_lane {
                 crate::inference::lane_registry::LaneRole::Live
@@ -341,7 +348,7 @@ impl LlamaServerProcess {
                 context_window: target.context_window,
                 lanes: target.lanes,
                 page_dir: Some(slot_save_dir.clone()),
-                engine_bin: Some(PathBuf::from(&prepared.engine_program)),
+                engine_bin: Some(PathBuf::from(prepared.engine_program())),
                 // the OS start time with the pid names this exact process (residency step 1)
                 started_s: crate::inference::engine_residency::process_start_s(pid).unwrap_or(0), // unwrap_or: 0 never matches a live process, so an unreadable start time holds nothing
                 placement: Some(target.placement),
@@ -349,14 +356,19 @@ impl LlamaServerProcess {
             };
             // Record + release under the page-dir guard (one critical section); a
             // failed write keeps the reservation for the lane's lifetime.
-            if let Err(e) = page_dir_reservation.handoff(&rec) {
-                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_registry",
+            match page_dir_reservation.handoff(&rec) {
+                Ok(()) => lane_recorded = true,
+                Err(e) => continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.lane_registry",
                     port = port,
                     error = e.to_string().as_str(),
                     "lane registry write failed — orphan reclaim disarmed for this lane",
-                );
+                ),
             }
         }
+        // The lane record names the engine now, and is the slot's custody from here on, as for
+        // any running lane: the launch's slot claim is released. Without a record it stays
+        // beside the child until its exit, like the page-dir reservation below.
+        *self.retained_engine_slot.lock() = if lane_recorded { None } else { engine_custody };
 
         // A reservation the handoff could not release (record write failed) lives
         // as long as the child does — beside it, not in this frame.
