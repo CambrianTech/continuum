@@ -1,9 +1,8 @@
 //! `cognition/admit-inbox-message` — run a persona's admission gate over one inbox
 //! message (typed, dep-holding).
 //!
-//! Converts the JSON-transport [`InboxMessageRequest`](super::inbox_message_request::InboxMessageRequest)
-//! to the domain [`InboxMessage`](crate::cognition::conversation::types::InboxMessage) via the one canonical
-//! `to_inbox_message()` seam, then runs the persona's admission gate
+//! Takes the domain [`InboxMessage`](crate::cognition::conversation::types::InboxMessage) itself, decoded
+//! by serde at the boundary, then runs the persona's admission gate
 //! ([`admit`](crate::cognition::admission_state)) — recording side-effects (admitted
 //! engram → store, content_hash → dedup, AIRC event_id → replay-protection). Returns
 //! the typed [`AdmissionDecision`](crate::cognition::engram::AdmissionDecision) plus funnel
@@ -21,7 +20,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use super::inbox_message_request::InboxMessageRequest;
+use crate::cognition::conversation::types::InboxMessage;
 use crate::modules::cognition::CognitionState;
 use crate::cognition::trace::CognitionTrace;
 use crate::cognition::engram::AdmissionDecision;
@@ -37,8 +36,8 @@ pub struct AdmitInboxMessageParams {
     /// Persona whose admission gate runs.
     #[ts(type = "string")]
     pub persona_id: Uuid,
-    /// The message to admit (JSON-transport shape, string UUIDs + string enums).
-    pub message: InboxMessageRequest,
+    /// The message to admit (decoded by serde at the boundary: typed ids and enums).
+    pub message: InboxMessage,
 }
 
 /// The admission outcome plus admission-funnel telemetry.
@@ -68,7 +67,7 @@ crate::action_command! {
     params: AdmitInboxMessageParams,
     output: AdmitInboxMessageResult,
     run(this, _ctx, p) => {
-        let inbox_msg = p.message.to_inbox_message().map_err(CommandError::Invalid)?;
+        let inbox_msg = p.message;
 
         let persona = this
             .state

@@ -3743,6 +3743,7 @@ dependencies = [
 name = "continuum-tool-protocol"
 version = "0.1.0"
 dependencies = [
+ "schemars",
  "serde",
  "serde_json",
  "ts-rs 12.0.1",

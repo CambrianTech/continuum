@@ -139,9 +139,9 @@ pub(super) fn act_probe_client() -> &'static reqwest::Client {
 // its own truncation). Still used here for the settlement answer-head.
 /// Drive the mind to SETTLEMENT: tick → if `Act`, run it + fold the observation
 /// into the next perception → re-tick → until it `Speak`s/`Pass`es or the
-/// external `max_acts` budget is spent.
+/// external step budget ([`TurnBudget`]) is spent.
 ///
-/// `max_acts` is the EXTERNAL observer's stopwatch — the grader holds it because
+/// The [`TurnBudget`] is the EXTERNAL observer's stopwatch — the grader holds it because
 /// the eval room has no heartbeat to pace re-perception. It is NOT a cap that
 /// lives in the persona's head (the live path has no such bound; an "acts
 /// forever" persona is a fitness gap to train away, never a substrate ceiling —
@@ -251,10 +251,10 @@ impl PaceCadence {
 pub fn drive_to_settle(
     cycle: &WorkspaceCycle,
     burst: impl Into<Burst>,
-    max_acts: usize,
+    budget: impl Into<TurnBudget>,
     framing: TurnFraming,
 ) -> impl std::future::Future<Output = SettleOutcome> + Send + '_ {
-    drive_with_input(cycle, burst.into(), max_acts, framing, None, None)
+    drive_with_input(cycle, burst.into(), budget.into(), framing, None, None)
 }
 
 /// The live driver leases its existing conversation between steps. No second
@@ -262,11 +262,11 @@ pub fn drive_to_settle(
 pub fn drive_to_settle_with_input<'a>(
     cycle: &'a WorkspaceCycle,
     burst: Burst,
-    max_acts: usize,
+    budget: impl Into<TurnBudget>,
     framing: TurnFraming,
     conversation: &'a mut dyn crate::cognition::conversation::PersonaConversation,
 ) -> impl std::future::Future<Output = SettleOutcome> + Send + 'a {
-    drive_with_input(cycle, burst, max_acts, framing, Some(conversation), None)
+    drive_with_input(cycle, burst, budget.into(), framing, Some(conversation), None)
 }
 
 /// A live card-linked turn uses the same driver with its own credit capture.
@@ -274,20 +274,20 @@ pub fn drive_to_settle_with_input<'a>(
 pub fn drive_to_settle_with_credit<'a>(
     cycle: &'a WorkspaceCycle,
     burst: Burst,
-    max_acts: usize,
+    budget: impl Into<TurnBudget>,
     framing: TurnFraming,
     conversation: &'a mut dyn crate::cognition::conversation::PersonaConversation,
     credit: Option<&'a mut dyn TurnCredit>,
 ) -> impl std::future::Future<Output = SettleOutcome> + Send + 'a {
     // Return the shared driver directly: an async forwarding wrapper needlessly
     // nests its state in every live/eval caller and inflates future layout depth.
-    drive_with_input(cycle, burst, max_acts, framing, Some(conversation), credit)
+    drive_with_input(cycle, burst, budget.into(), framing, Some(conversation), credit)
 }
 
 pub(super) async fn drive_with_input<'c>(
     cycle: &WorkspaceCycle,
     burst: Burst,
-    max_acts: usize,
+    budget: TurnBudget,
     framing: TurnFraming,
     conversation: Option<&mut dyn crate::cognition::conversation::PersonaConversation>,
     mut credit: Option<&mut (dyn TurnCredit + 'c)>,
@@ -297,7 +297,7 @@ pub(super) async fn drive_with_input<'c>(
     let settled = settle_to_outcome(
         cycle,
         burst,
-        max_acts,
+        budget,
         framing,
         conversation,
         credit.as_deref_mut(),

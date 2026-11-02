@@ -435,7 +435,7 @@ pub(crate) async fn drive_in_held_card(
     stimulus: &str,
     burst: crate::cognition::workspace::Burst,
     framing: crate::cognition::workspace::TurnFraming,
-    max_acts: usize,
+    max_acts: crate::cognition::act_observe::TurnBudget,
     conversation: &mut dyn CitizenConversation,
 ) -> (
     crate::cognition::act_observe::SettleOutcome,

@@ -48,7 +48,7 @@ mod page_budget;
 pub use apply::{apply_act, ActChain};
 
 mod settle;
-pub use settle::{drive_to_settle_with_credit, TurnCredit};
+pub use settle::{drive_to_settle_with_credit, TurnBudget, TurnCredit};
 pub use settle::{drive_to_settle, drive_to_settle_with_input, settle_step};
 
 #[cfg(test)]

@@ -20,6 +20,7 @@ use crate::sdk_codegen::DynCommand;
 
 pub mod admit_inbox_message;
 pub mod cache_message;
+pub mod calculate_priority;
 pub mod check_adequacy;
 pub mod check_content_dedup;
 pub mod classify_domain;
@@ -27,11 +28,11 @@ pub mod configure_rate_limiter;
 pub mod create_engine;
 pub mod dream_now;
 pub mod enqueue_message;
+pub mod fast_path_decision;
 pub mod forget_context;
 pub mod full_evaluate;
 pub mod get_state;
 pub mod gpu_budget;
-pub mod inbox_message_request;
 pub mod has_evaluated;
 pub mod inbox_create;
 pub mod inbox_drain_frame;
@@ -58,7 +59,9 @@ use classify_domain::ClassifyDomain;
 use configure_rate_limiter::ConfigureRateLimiter;
 use create_engine::CreateEngine;
 use dream_now::DreamNow;
+use calculate_priority::CalculatePriority;
 use enqueue_message::EnqueueMessage;
+use fast_path_decision::FastPathDecision;
 use forget_context::ForgetContext;
 use full_evaluate::FullEvaluate;
 use get_state::GetState;
@@ -137,6 +140,12 @@ pub fn command_objects(
             state: state.clone(),
         }),
         Arc::new(EnqueueMessage {
+            state: state.clone(),
+        }),
+        Arc::new(CalculatePriority {
+            state: state.clone(),
+        }),
+        Arc::new(FastPathDecision {
             state: state.clone(),
         }),
         Arc::new(FullEvaluate {
