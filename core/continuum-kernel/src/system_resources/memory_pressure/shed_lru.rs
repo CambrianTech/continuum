@@ -5,12 +5,12 @@
 //!
 //! One owner for the pattern: every in-process cache of rebuildable values registers one of these
 //! with the monitor instead of carrying its own entry cap. The overrun at a priority is shared
-//! across every holder at that priority in proportion to what each holds, so one pressure event
-//! frees it once (Cormac on #5697).
+//! across every reporter at that priority in proportion to what each holds (the monitor publishes
+//! what each priority holds in its snapshot), so one pressure event frees it once (Cormac on #5697).
 
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use tokio::sync::watch;
@@ -29,47 +29,25 @@ impl PressureSnapshot {
         used.saturating_sub(gate)
     }
 
+    /// Bytes every reporter at `priority` held at this snapshot's poll.
+    pub fn held_at(&self, priority: MemoryPriority) -> u64 {
+        self.held_by_priority
+            .iter()
+            .filter(|held| held.priority == priority)
+            .map(|held| held.bytes)
+            .sum()
+    }
+
     /// The part of `priority`'s overrun a consumer holding `held` bytes gives back: its share in
-    /// proportion to what it holds among every registered holder at that priority, so one pressure
-    /// event frees the overrun once, not once per consumer.
+    /// proportion to what it holds among every reporter at that priority (the monitor's own count of
+    /// its reporters, published in the snapshot), so one pressure event frees the overrun once.
     pub fn share_of_overrun(&self, priority: MemoryPriority, held: u64) -> u64 {
-        let total = held_at(priority).max(held);
+        let total = self.held_at(priority).max(held);
         if total == 0 {
             return 0;
         }
         (u128::from(self.over_gate(priority)) * u128::from(held) / u128::from(total)) as u64
     }
-}
-
-/// A consumer that holds RAM at a priority and sheds a share of that priority's overrun.
-pub trait Holder: Send + Sync {
-    fn priority(&self) -> MemoryPriority;
-    fn held_bytes(&self) -> u64;
-}
-
-/// Every shedding consumer, held weakly (a dropped one leaves the group): the population an
-/// overrun is apportioned across.
-fn holders() -> &'static Mutex<Vec<Weak<dyn Holder>>> {
-    static HOLDERS: std::sync::OnceLock<Mutex<Vec<Weak<dyn Holder>>>> = std::sync::OnceLock::new();
-    HOLDERS.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-/// Join the group an overrun is shared across.
-pub fn register_holder(holder: Weak<dyn Holder>) {
-    let mut holders = holders().lock();
-    holders.retain(|held| held.strong_count() > 0);
-    holders.push(holder);
-}
-
-/// Bytes every live holder at `priority` holds now.
-fn held_at(priority: MemoryPriority) -> u64 {
-    holders()
-        .lock()
-        .iter()
-        .filter_map(Weak::upgrade)
-        .filter(|holder| holder.priority() == priority)
-        .map(|holder| holder.held_bytes())
-        .sum()
 }
 
 /// How many bytes of RAM a cached value holds (what shedding it gives back).
@@ -140,8 +118,6 @@ impl<K: Clone + Eq + Hash + Send + Sync, V: ByteSized + Send + Sync> ShedLru<K, 
         V: 'static,
     {
         *self.pressure.lock() = Some(monitor.subscribe());
-        let holder: Arc<dyn Holder> = Arc::clone(self) as Arc<dyn Holder>;
-        register_holder(Arc::downgrade(&holder));
         monitor.add_reporter(Arc::clone(self) as Arc<dyn MemoryReporter>);
     }
 
@@ -220,16 +196,6 @@ impl<K: Clone + Eq + Hash + Send + Sync, V: ByteSized + Send + Sync> ShedLru<K, 
     }
 }
 
-impl<K: Clone + Eq + Hash + Send + Sync, V: ByteSized + Send + Sync> Holder for ShedLru<K, V> {
-    fn priority(&self) -> MemoryPriority {
-        self.priority
-    }
-
-    fn held_bytes(&self) -> u64 {
-        self.bytes()
-    }
-}
-
 impl<K: Clone + Eq + Hash + Send + Sync, V: ByteSized + Send + Sync> MemoryReporter
     for ShedLru<K, V>
 {
@@ -255,6 +221,10 @@ impl<K: Clone + Eq + Hash + Send + Sync, V: ByteSized + Send + Sync> MemoryRepor
             detail: format!("{} rebuildable entries", self.len()),
             can_shed: true,
         }
+    }
+
+    fn priority(&self) -> MemoryPriority {
+        self.priority
     }
 
     fn can_shed(&self) -> bool {
@@ -288,6 +258,7 @@ impl<K: Clone + Eq + Hash + Send + Sync, V: ByteSized + Send + Sync> MemoryRepor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::system_resources::memory_pressure::HeldAtPriority;
 
     struct Bytes(u64);
     impl ByteSized for Bytes {
@@ -344,35 +315,26 @@ mod tests {
         drop(held);
     }
 
-    struct Fixed(MemoryPriority, u64);
-    impl Holder for Fixed {
-        fn priority(&self) -> MemoryPriority {
-            self.0
-        }
-        fn held_bytes(&self) -> u64 {
-            self.1
-        }
-    }
-
     // what this catches: every consumer at a priority shedding the WHOLE overrun, so N caches free N
     // times what the host needed and rebuildable entries thrash: the shares of one overrun across a
-    // priority's holders add up to the overrun, in proportion to what each holds.
+    // priority's reporters (as the monitor counted them) add up to the overrun, in proportion to what
+    // each holds.
     #[test]
     fn one_overrun_is_shared_across_a_priority_not_repeated() {
-        let priority = MemoryPriority::Batch; // a priority no other test in this crate registers
-        let a: Arc<dyn Holder> = Arc::new(Fixed(priority, 300));
-        let b: Arc<dyn Holder> = Arc::new(Fixed(priority, 100));
-        register_holder(Arc::downgrade(&a));
-        register_holder(Arc::downgrade(&b));
+        let priority = MemoryPriority::Background;
         let snapshot = PressureSnapshot {
             total_bytes: 1000,
             available_bytes: 300,
+            held_by_priority: vec![HeldAtPriority {
+                priority,
+                bytes: 400,
+            }],
             ..PressureSnapshot::default()
         };
         assert_eq!(
             snapshot.over_gate(priority),
-            200,
-            "used 700 of 1000 is 200 past Batch's 0.50 gate"
+            100,
+            "used 700 of 1000 is 100 past Background's 0.60 gate"
         );
         let (share_a, share_b) = (
             snapshot.share_of_overrun(priority, 300),
@@ -380,12 +342,12 @@ mod tests {
         );
         assert_eq!(
             (share_a, share_b),
-            (150, 50),
+            (75, 25),
             "in proportion to what each holds"
         );
         assert_eq!(
             share_a + share_b,
-            200,
+            100,
             "the shares add up to the overrun once"
         );
     }

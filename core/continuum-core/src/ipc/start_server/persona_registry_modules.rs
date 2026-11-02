@@ -107,9 +107,6 @@ pub(super) fn register_persona_registry_modules(
         crate::cognition::persona_workspace::global(),
         pressure_monitor.subscribe(),
     ));
-    // One overrun is shared across its priority's holders (Cormac on #5697): it joins the group.
-    let holder: Arc<dyn crate::system_resources::memory_pressure::Holder> = mind_results.clone();
-    crate::system_resources::memory_pressure::register_holder(Arc::downgrade(&holder));
     pressure_monitor.add_reporter(mind_results);
     // The dream/consolidation region goes LIVE (#145 slice B): per live persona,
     // on a material-driven cadence (dreams only when undigested episodic

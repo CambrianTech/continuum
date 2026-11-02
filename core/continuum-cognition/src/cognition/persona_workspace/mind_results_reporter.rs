@@ -145,16 +145,6 @@ pub(crate) fn over_gate(snapshot: &PressureSnapshot) -> u64 {
     snapshot.over_gate(PRIORITY)
 }
 
-impl continuum_kernel::system_resources::memory_pressure::Holder for MindResultsReporter {
-    fn priority(&self) -> MemoryPriority {
-        PRIORITY
-    }
-
-    fn held_bytes(&self) -> u64 {
-        resident_bytes(&self.registry.resident_working_memories())
-    }
-}
-
 /// One mind's resident result bodies: what a shed may move (saved, not the newest, and its
 /// copy proven) and what it may not.
 #[derive(Debug, Clone)]
@@ -344,6 +334,10 @@ impl MemoryReporter for MindResultsReporter {
             ),
             can_shed: true,
         }
+    }
+
+    fn priority(&self) -> MemoryPriority {
+        PRIORITY
     }
 
     fn can_shed(&self) -> bool {

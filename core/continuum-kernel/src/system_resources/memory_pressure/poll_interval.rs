@@ -204,12 +204,6 @@ pub enum PressureLevel {
     Critical,
 }
 
-/// Threshold constants for pressure level boundaries.
-/// Below FLOOR = Normal (0.0 normalized), above CEILING = Critical (1.0 normalized).
-pub(super) const PRESSURE_FLOOR: f64 = 0.80;
-
-pub(super) const PRESSURE_CEILING: f64 = 0.95;
-
 impl PressureLevel {
     pub(super) fn from_pressure(pressure: f64) -> Self {
         // Thresholds are SYSTEM-WIDE memory, not process-only.
@@ -227,9 +221,9 @@ impl PressureLevel {
         }
     }
 
-    /// Normalize raw pressure (used/total) to 0.0-1.0 action range.
-    /// 0.0 = at or below floor (no concern), 1.0 = at or above ceiling (emergency).
-    /// Linear interpolation between PRESSURE_FLOOR and PRESSURE_CEILING.
+    /// Normalize raw pressure (used/total) to the 0.0-1.0 action zone: 0.0 at or below the
+    /// Interactive gate (no concern), 1.0 at or above the Realtime gate (emergency), linear between.
+    /// The zone's ends ARE those gates: one table of gates, never a second pair of thresholds.
     /// Swap is its own pressure axis. macOS counts swapped-out and compressible pages
     /// as "available", so `from_pressure` read NORMAL on 2026-09-08 while swap sat at
     /// 40 of 41 GB and the model server paged weights from disk at 1–9 t/s. Half the
@@ -272,7 +266,15 @@ impl PressureLevel {
     }
 
     pub(super) fn normalize(pressure: f64) -> f64 {
-        ((pressure - PRESSURE_FLOOR) / (PRESSURE_CEILING - PRESSURE_FLOOR)).clamp(0.0, 1.0)
+        let floor = MemoryPriority::Interactive.pressure_gate();
+        let ceiling = MemoryPriority::Realtime.pressure_gate();
+        if pressure <= floor {
+            0.0
+        } else if pressure >= ceiling {
+            1.0
+        } else {
+            (pressure - floor) / (ceiling - floor)
+        }
     }
 
     pub(super) fn to_u8(self) -> u8 {
@@ -491,6 +493,8 @@ pub struct PressureSnapshot {
     pub swap_used_bytes: u64,
     /// Per-module memory breakdown (empty if no reporters registered)
     pub modules: Vec<ModuleMemoryReport>,
+    /// Bytes held at each priority this poll (from every live reporter's report and priority).
+    pub held_by_priority: Vec<HeldAtPriority>,
     /// Timestamp (ms since epoch)
     #[ts(type = "number")]
     pub timestamp_ms: u64,
@@ -509,10 +513,22 @@ impl Default for PressureSnapshot {
             available_bytes: 0,
             swap_used_bytes: 0,
             modules: Vec::new(),
+            held_by_priority: Vec::new(),
             timestamp_ms: 0,
             consecutive_at_level: 0,
         }
     }
+}
+
+/// Bytes every reporter at one priority held at the snapshot's poll: what that priority's overrun
+/// is shared across.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/system/HeldAtPriority.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct HeldAtPriority {
+    pub priority: MemoryPriority,
+    #[ts(type = "number")]
+    pub bytes: u64,
 }
 
 // =============================================================================
@@ -542,6 +558,12 @@ pub trait MemoryReporter: Send + Sync {
 
     /// Report current memory usage. Must be fast and non-blocking.
     fn report(&self) -> ModuleMemoryReport;
+
+    /// The priority this reporter sheds at: read every poll beside `report()`, so keep it cheap.
+    /// Defaults to the declared budget's; a reporter whose budget is costly to compute overrides it.
+    fn priority(&self) -> MemoryPriority {
+        self.budget().priority
+    }
 
     /// Whether this reporter can shed load under pressure.
     fn can_shed(&self) -> bool {
@@ -577,7 +599,7 @@ pub(super) struct ReporterEntry {
 /// reporter's name + count are resolved during the fold (so the warning text
 /// reflects the post-increment count), keeping this enum data-only.
 pub(super) enum ReporterCallOutcome {
-    Report(ModuleMemoryReport),
+    Report(ModuleMemoryReport, MemoryPriority),
     /// Reporter body panicked (caught inside `spawn_blocking`).
     Panicked,
     /// `spawn_blocking` itself failed to join (runtime-level, not a body panic).
