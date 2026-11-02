@@ -144,23 +144,6 @@ impl LlmDeliberationFaculty {
                 return Some(Contribution::deliberation_fault(fault.clone()));
             }
             if let Some(error) = view.capacity_error {
-                // Required input past the WORKING window is served from the whole slot, once,
-                // never refused while the slot has room (`ContextBudget::working_window`).
-                let (served_fit, served_calibration) = self.prompt_fit_served(&binding);
-                if served_fit > fit_window {
-                    continuum_base::probe!(
-                        class = "delib.prompt.working_window_exceeded",
-                        persona = %self.persona_name,
-                        required_tokens = error.required_tokens,
-                        working_window = fit_window,
-                        served_window = served_fit,
-                        "required input exceeds the working window: this act is fitted to the served window instead"
-                    );
-                    fit_window = served_fit;
-                    calibration = served_calibration;
-                    view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
-                    continue;
-                }
                 continuum_base::probe!(
                     class = "delib.prompt.capacity",
                     persona = %self.persona_name,

@@ -24,17 +24,11 @@ impl LlmDeliberationFaculty {
         self.prompt_view_with_feedback(ws, window, calibration)
     }
 
-    /// The window her prompt is fitted to: the working window
-    /// ([`crate::cognition::context_budget::ContextBudget::working_window`]), narrowed by the
-    /// provider's last observation. The binding keeps the served window: serving reads it.
+    /// The window her prompt is fitted to: her served window, narrowed only by the provider's
+    /// last observation. No fixed cap below the slot: a 49k "working window" (2026-10-28) cut
+    /// prefill but left her re-reading what fell out of view (2026-11-02, today's reads: Aiko
+    /// 92% re-reads, Aris 75%, Benchy 69%, Atlas 54%).
     pub fn prompt_fit(&self, binding: &ModelBinding) -> (u32, PromptCalibration) {
-        self.fit_within(binding, crate::cognition::context_budget::ContextBudget::working_window(binding.context_window))
-    }
-
-    /// The served window, narrowed the same way: the one rebuild when her required input
-    /// cannot fit the working window (`verdict/contribute.rs`), so a large required payload is
-    /// served from the whole slot instead of refused.
-    pub fn prompt_fit_served(&self, binding: &ModelBinding) -> (u32, PromptCalibration) {
         self.fit_within(binding, binding.context_window)
     }
 
@@ -46,10 +40,10 @@ impl LlmDeliberationFaculty {
         )
     }
 
-    /// The working window for this faculty's current binding: the shares sized from the
-    /// window (results, room updates, the tool surface) scale with the prompt they live in.
-    pub(in super::super) fn working_window(&self) -> u32 {
-        crate::cognition::context_budget::ContextBudget::working_window(self.binding.load().context_window)
+    /// The window this faculty's turn is fitted to (its binding's served window): the shares
+    /// sized from the window (results, room updates, the tool surface) scale with it.
+    pub(in super::super) fn turn_window(&self) -> u32 {
+        self.binding.load().context_window
     }
 
     /// Fixture view against an explicit window, without a prior provider observation.
