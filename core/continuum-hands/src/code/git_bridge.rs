@@ -86,20 +86,17 @@ pub async fn git_status(workspace_root: &Path) -> GitStatusInfo {
     }
 }
 
-/// Which changes a diff shows.
+// A resident's edits are checkpointed into wip(...) commits every act, so a working-tree-only
+// diff is always empty and read as "my edits were phantom" (Aiko re-read the same files for 80
+// minutes, 2026-11-02). These doc lines are the schema text every mind reads: keep them short.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/code/DiffScope.ts")]
 pub enum DiffScope {
-    /// Everything this branch did since it left its integration branch: the act checkpoints
-    /// the substrate commits for her (`wip(...)`) and the working tree. A resident's own work
-    /// is committed every act, so a working-tree-only diff is always empty and read as "my
-    /// edits were phantom" (Aiko re-read the same files for 80 minutes, 2026-11-02).
+    // All her work since her branch started, checkpoints included.
     #[default]
     YourWork,
-    /// Working-tree changes not yet staged.
     Unstaged,
-    /// Staged changes (`--cached`).
     Staged,
 }
 

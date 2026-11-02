@@ -6,6 +6,6 @@ export type GitDiffResult = {
  */
 diff: string, 
 /**
- * What the diff was taken against, so an empty diff says what it is empty against.
+ * What the diff compared against.
  */
 against: string, };

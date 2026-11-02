@@ -18,8 +18,7 @@ use crate::sdk_codegen::CommandError;
     export_to = "../../../protocol/typescript/code/GitDiffParams.ts"
 )]
 pub struct GitDiffParams {
-    /// Which changes: `yourWork` (default: everything since your branch left its
-    /// integration branch, including the checkpoints committed for you), `unstaged`, `staged`.
+    /// Default `yourWork`: all your work since your branch started.
     #[serde(default)]
     pub scope: git_bridge::DiffScope,
 }
@@ -32,14 +31,12 @@ pub struct GitDiffParams {
 pub struct GitDiffResult {
     /// The raw unified diff text.
     pub diff: String,
-    /// What the diff was taken against, so an empty diff says what it is empty against.
+    /// What the diff compared against.
     pub against: String,
 }
 
 crate::action_command! {
-    /// Show the git diff for your workspace. By default shows your work since your branch
-    /// left its integration branch (committed checkpoints and the working tree); set `scope`
-    /// to `unstaged` or `staged` for those alone.
+    /// Show the git diff of your work (default: everything since your branch started).
     pub struct CodeGitDiff { state: Arc<CodeState> }
     name: "code/git/diff",
     access: AiSafe,

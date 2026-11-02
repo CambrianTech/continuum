@@ -3,7 +3,6 @@ import type { DiffScope } from "./DiffScope";
 
 export type GitDiffParams = { 
 /**
- * Which changes: `yourWork` (default: everything since your branch left its
- * integration branch, including the checkpoints committed for you), `unstaged`, `staged`.
+ * Default `yourWork`: all your work since your branch started.
  */
 scope: DiffScope, };
