@@ -33,10 +33,8 @@
 //! cannot be missing past it.
 
 use crate::gpu::GpuMemoryManager;
-use crate::logging::TimingGuard;
 use continuum_text_analysis::LoopDetector;
 use crate::persona::{PersonaCognition, PersonaInboxFrame, PersonaTurnFrame, PersonaTurnFrameReplayRecord};
-use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
 use crate::rag::RagEngine;
 use crate::runtime::{CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
@@ -325,6 +323,7 @@ fn turn_frame_replay_record(
 #[cfg(test)]
 mod turn_frame_recording_tests {
     use super::*;
+    use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
     use crate::persona::PersonaInboxFrameMetrics;
 
     fn frame_with_messages(messages: Vec<InboxMessage>) -> PersonaInboxFrame {

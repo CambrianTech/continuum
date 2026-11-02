@@ -17,13 +17,12 @@
 
 use std::sync::Arc;
 
-use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::ai::adapter::InferenceDevice;
 use crate::ai::{
-    AdapterRegistry, ChatMessage, ContentPart, MessageContent, RoutingInfo, TextGenerationRequest,
-    TextGenerationResponse, ToolCall, UsageMetrics,
+    AdapterRegistry, ContentPart, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
+    ToolCall, UsageMetrics,
 };
 use crate::logging::TimingGuard;
 use crate::ai::adapter::select_failure_message;
