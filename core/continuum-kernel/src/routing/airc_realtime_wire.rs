@@ -18,6 +18,21 @@ pub const HEADER_CONTINUUM_SOURCE_ID: &str = "continuum.source_id";
 pub const HEADER_CONTINUUM_DELIVERY: &str = "continuum.delivery";
 pub const HEADER_CONTINUUM_TRACE_ID: &str = "continuum.trace_id";
 
+/// The line's logical sender, from the `continuum.source_id` header the publisher stamped (a relay
+/// publishes a human's line for them); the transport peer when the header is absent or is not an id
+/// (a presence subject, a free-form source). Read from the header alone: the body is never opened to
+/// attribute a line (Joel, 2026-11-01: routing on headers, never parsed bodies).
+///
+/// Trust is the relay rule's, not this decoder's: whether a transport peer may speak for the sender it
+/// names is a grid-trust decision (raised with Codex), exactly as it was for the body field it replaces.
+pub fn logical_sender(event: &TranscriptEvent) -> uuid::Uuid {
+    event
+        .headers
+        .get(HEADER_CONTINUUM_SOURCE_ID)
+        .and_then(|value| uuid::Uuid::parse_str(value).ok()) // wire boundary: a header value is text; a non-id source is a non-person publisher
+        .unwrap_or_else(|| event.peer_id.as_uuid()) // the transport peer is the real author when no relay named one
+}
+
 pub fn frame_kind_for_delivery(delivery: AircRealtimeDelivery) -> FrameKind {
     match delivery {
         AircRealtimeDelivery::Durable => FrameKind::Message,
@@ -128,4 +143,41 @@ pub fn is_stream_chunk(event: &TranscriptEvent) -> bool {
 /// attention. Inspect the routing header before decoding or queueing its body.
 pub fn is_command_frame(event: &TranscriptEvent) -> bool {
     event.headers.get(airc_protocol::HEADER_AIRC_CORRELATION_ID).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use airc_core::{ClientId, EventId, MentionTarget, PeerId, RoomId, TranscriptKind};
+
+    fn event(headers: Headers) -> TranscriptEvent {
+        TranscriptEvent {
+            event_id: EventId::from_u128(1),
+            room_id: RoomId::from_u128(2),
+            peer_id: PeerId::from_u128(0x4e),
+            client_id: ClientId::from_u128(4),
+            kind: TranscriptKind::Message,
+            occurred_at_ms: 100,
+            lamport: 1,
+            target: MentionTarget::All,
+            headers,
+            body: None,
+            attachment: None,
+            receipt: None,
+            metadata: serde_json::Value::Null,
+        }
+    }
+
+    // what this catches: a relayed human line attributed to the relay peer (she answers the wrong
+    // person), or a non-id source fabricating a sender: the header names the logical sender; absent
+    // or not an id, the transport peer is the author.
+    #[test]
+    fn the_logical_sender_is_read_from_the_header() {
+        let human = uuid::Uuid::from_u128(0x5e);
+        let relayed = event(Headers::from([(HEADER_CONTINUUM_SOURCE_ID.to_string(), human.to_string())]));
+        assert_eq!(logical_sender(&relayed), human);
+        assert_eq!(logical_sender(&event(Headers::new())), uuid::Uuid::from_u128(0x4e));
+        let named = event(Headers::from([(HEADER_CONTINUUM_SOURCE_ID.to_string(), "persona-1".to_string())]));
+        assert_eq!(logical_sender(&named), uuid::Uuid::from_u128(0x4e), "a non-id source is not a person");
+    }
 }

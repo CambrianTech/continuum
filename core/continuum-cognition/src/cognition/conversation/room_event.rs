@@ -81,17 +81,41 @@ pub fn room_turn_from_event(event: &TranscriptEvent) -> Result<(uuid::Uuid, Stri
     Ok((turn.sender, render_room_content(&turn.text, &turn.media)))
 }
 
+/// What kind of media an attachment is, from its declared kind (the MIME top-level type).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum MediaKind {
+    Image,
+    Audio,
+    Video,
+    Text,
+    File,
+}
+
+impl MediaKind {
+    fn of(kind: &str) -> Self {
+        match kind {
+            "image" => Self::Image,
+            "audio" => Self::Audio,
+            "video" => Self::Video,
+            "text" => Self::Text,
+            _ => Self::File, // any other declared kind is a file she can open, never free text in her prompt
+        }
+    }
+}
+
 /// A bounded notice, not a claim that the model has inspected the attachment.
 /// The event retains the full references for explicit inspection/replay.
 pub(crate) fn render_room_content(text: &str, media: &[crate::cognition::conversation::channel_items::MediaItemRequest]) -> String {
     if media.is_empty() { return text.to_owned(); }
     let mut rendered = format!("{text}\n[{} media attachment(s); contents not loaded", media.len());
-    for item in media.iter().take(8) {
-        let kind: String = item.kind.chars().filter(|c| !c.is_control()).take(24).collect();
-        rendered.push_str(&format!("; {kind}"));
-        if let Some(hash) = item.blob_hash.as_deref().filter(|h| h.starts_with("sha256:") && h.len() == 71 && h[7..].bytes().all(|b| b.is_ascii_hexdigit())) {
-            rendered.push_str(&format!(" {hash}"));
-        }
+    // One entry per kind with its count: bounded by the few media kinds that exist, never by a cap
+    // on items or characters (a typed kind from the MIME top-level type, so no free text reaches her).
+    let mut kinds = std::collections::BTreeMap::<MediaKind, usize>::new();
+    for item in media {
+        *kinds.entry(MediaKind::of(&item.kind)).or_default() += 1;
+    }
+    for (kind, count) in kinds {
+        rendered.push_str(&format!("; {count} {kind:?}"));
     }
     rendered.push(']');
     rendered
@@ -101,7 +125,7 @@ pub(crate) fn render_room_content(text: &str, media: &[crate::cognition::convers
 /// words. Short ids because that is how the board renders them; the typed event
 /// retains the full ids for her hands.
 pub fn render_room_work(work: &RoomWork, actor: uuid::Uuid) -> String {
-    let short = |id: uuid::Uuid| id.to_string()[..8].to_string();
+    let short = airc_core::shown_id::shown_form;
     match work {
         RoomWork::Reviewed { card_id, outcome, reviewer, .. } => format!(
             "[board fact] review on card {}: {:?} (reviewer {})",
@@ -171,7 +195,7 @@ pub fn room_content_from_event(event: &TranscriptEvent) -> Result<RoomTurn, &'st
         match envelope_from_event(event) {
             Err(_) => return Err("envelope_decode_error"),
             Ok(None) => return Err("no_continuum_body_hint"),
-            Ok(Some(envelope)) => chat_transcript_content(&envelope, event.peer_id.as_uuid()).ok_or("non_chat_schema")?,
+            Ok(Some(envelope)) => chat_transcript_content(&envelope, crate::routing::airc_realtime_wire::logical_sender(event)).ok_or("non_chat_schema")?,
         }
     };
     // Native AIRC attachments are first-class room input too. Preserve the
@@ -200,11 +224,9 @@ pub fn room_content_from_event(event: &TranscriptEvent) -> Result<RoomTurn, &'st
 /// (EventBridge, presence, media-control) — a non-`chat_transcript`
 /// fabricates nothing.
 ///
-/// The sender falls back to `fallback_peer` (the transport peer that
-/// relayed the publish) when `inline.senderId` is absent. Both are real
-/// identities — this is attribution recovery of a present-but-relayed
-/// sender, NOT a fabricated default for a missing one
-/// ([[fallbacks-are-illegal-fail-loud]]).
+/// The sender is the caller's, resolved from the event's header by
+/// [`crate::routing::airc_realtime_wire::logical_sender`]: this decoder opens the body for the
+/// line's text and media only, never to attribute it.
 ///
 /// This is the ONE decoder for the `chat_transcript` wire shape. Both the
 /// persona perception path (`perceptual_from_event`) and the positron
@@ -216,13 +238,13 @@ pub fn room_content_from_event(event: &TranscriptEvent) -> Result<RoomTurn, &'st
 /// through this decoder.
 pub fn chat_transcript_message(
     envelope: &AircRealtimeEnvelope,
-    fallback_peer: uuid::Uuid,
+    sender: uuid::Uuid,
 ) -> Option<(uuid::Uuid, String)> {
-    let turn = chat_transcript_content(envelope, fallback_peer)?;
+    let turn = chat_transcript_content(envelope, sender)?;
     Some((turn.sender, render_room_content(&turn.text, &turn.media)))
 }
 
-fn chat_transcript_content(envelope: &AircRealtimeEnvelope, fallback_peer: uuid::Uuid) -> Option<RoomTurn> {
+fn chat_transcript_content(envelope: &AircRealtimeEnvelope, sender: uuid::Uuid) -> Option<RoomTurn> {
     let AircRealtimePayload::ExistingSchema { payload } = &envelope.payload else {
         return None;
     };
@@ -231,11 +253,6 @@ fn chat_transcript_content(envelope: &AircRealtimeEnvelope, fallback_peer: uuid:
     }
     let inline = payload.inline.as_ref()?;
     let text = inline.get("text").and_then(serde_json::Value::as_str)?;
-    let sender = inline
-        .get("senderId")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|s| uuid::Uuid::parse_str(s).ok())
-        .unwrap_or(fallback_peer);
     let media = inline.get("media").map(|value| serde_json::from_value(value.clone())).transpose().ok()?.unwrap_or_default(); // boundary: AIRC transcript JSON decodes typed references; omitted media is the legacy text-only wire contract.
     Some(RoomTurn { sender, text: text.to_string(), media })
 }
@@ -287,12 +304,12 @@ mod tests {
     // This is the seam that keeps human chat lines from being structurally
     // invisible to BOTH persona perception and the positron read surface.
     // A regression that renamed the `chat_transcript` schema tag or the
-    // inline `text`/`senderId` fields silently drops every human message
-    // from the room.
+    // inline `text` field silently drops every human message from the room;
+    // and the body's `senderId` must never override the header-resolved sender
+    // (routing on headers, never parsed bodies: Joel, 2026-11-01).
     #[test]
-    fn chat_transcript_message_recovers_sender_and_text() {
+    fn chat_transcript_text_decodes_and_the_header_sender_wins() {
         let sender = uuid::Uuid::from_u128(0x5e).to_string();
-        let relay = uuid::Uuid::from_u128(0x4e);
         // Encode exactly as chat/send → airc/realtime-publish builds it.
         let envelope: AircRealtimeEnvelope = serde_json::from_value(serde_json::json!({
             "eventId": uuid::Uuid::from_u128(0x1).to_string(),
@@ -315,13 +332,11 @@ mod tests {
         }))
         .expect("chat/send envelope shape must decode into AircRealtimeEnvelope");
 
+        let header_sender = uuid::Uuid::from_u128(0x77);
         let (recovered, text) =
-            chat_transcript_message(&envelope, relay).expect("chat_transcript must decode");
-        assert_eq!(
-            recovered.to_string(),
-            sender,
-            "logical sender, not the relay"
-        );
+            chat_transcript_message(&envelope, header_sender).expect("chat_transcript must decode");
+        assert_eq!(recovered, header_sender, "the header's sender; the body's senderId routes nothing");
+        assert_ne!(recovered.to_string(), sender);
         assert_eq!(text, "is anyone there?");
     }
 
@@ -340,37 +355,6 @@ mod tests {
         assert!(!rendered.contains("base64"));
         assert!(!rendered.contains("unverified visual claim"));
         assert!(rendered.len() < 1000);
-    }
-
-    // what this catches: attribution recovery, not fabrication. When the
-    // inline omits senderId, the sender falls back to the transport peer
-    // that relayed the publish — a real identity, never a nil/default.
-    #[test]
-    fn chat_transcript_message_falls_back_to_transport_peer() {
-        let relay = uuid::Uuid::from_u128(0x4e);
-        let envelope: AircRealtimeEnvelope = serde_json::from_value(serde_json::json!({
-            "eventId": uuid::Uuid::from_u128(0x1).to_string(),
-            "roomId": uuid::Uuid::from_u128(0x2).to_string(),
-            "sourceId": uuid::Uuid::from_u128(0x5e).to_string(),
-            "createdAtMs": 100,
-            "delivery": "durable",
-            "payload": {
-                "kind": "existing_schema",
-                "payload": {
-                    "schema": "chat_transcript",
-                    "inline": { "text": "hello" }
-                }
-            },
-        }))
-        .expect("envelope must decode");
-
-        let (recovered, text) =
-            chat_transcript_message(&envelope, relay).expect("chat_transcript must decode");
-        assert_eq!(
-            recovered, relay,
-            "omitted senderId recovers to the relay peer"
-        );
-        assert_eq!(text, "hello");
     }
 
     // what this catches: classification, not fallback. A non-chat_transcript

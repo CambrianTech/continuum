@@ -505,7 +505,7 @@ fn posted_from_envelope(
     envelope: &AircRealtimeEnvelope,
     event: &airc_core::TranscriptEvent,
 ) -> Option<PostedLine> {
-    let (sender_id, content) = chat_transcript_message(envelope, event.peer_id.as_uuid())?;
+    let (sender_id, content) = chat_transcript_message(envelope, crate::routing::airc_realtime_wire::logical_sender(event))?;
     let message_id = match &envelope.payload {
         crate::routing::airc_realtime::AircRealtimePayload::ExistingSchema { payload } => payload
             .inline

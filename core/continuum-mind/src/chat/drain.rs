@@ -151,11 +151,8 @@ impl ChatModule {
 }
 
 fn decode(rows: Vec<Value>) -> Result<Vec<Arrival>, String> {
-    rows.into_iter()
-        .map(|row| {
-            serde_json::from_value(row).map_err(|e| format!("drain: malformed arrival row: {e}"))
-        }) // storage boundary: the adapter's row format
-        .collect()
+    let decode_row = |row: Value| serde_json::from_value::<Arrival>(row); // storage boundary: the adapter's row format
+    rows.into_iter().map(|row| decode_row(row).map_err(|e| format!("drain: malformed arrival row: {e}"))).collect()
 }
 
 #[cfg(test)]
