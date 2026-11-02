@@ -56,12 +56,21 @@ pub async fn git_status(workspace_root: &Path) -> GitStatusInfo {
             ('?', '?') => untracked.push(file_path),
             _ if either('A') => added.push(file_path),
             _ if either('D') => deleted.push(file_path),
-            _ if either('M') || either('R') || either('C') => modified.push(file_path),
-            _ => {
-                // Catch-all: treat as modified
-                if !file_path.is_empty() {
-                    modified.push(file_path);
-                }
+            // M modified, R renamed, C copied, T type changed, U unmerged: the path's content
+            // differs from HEAD. `!` is an ignored path (not reported). Porcelain v1 has no
+            // other codes, so the match names every one.
+            _ if either('M') || either('R') || either('C') || either('T') || either('U') => modified.push(file_path),
+            ('!', '!') => {}
+            (index, tree) => {
+                return GitStatusInfo {
+                    success: false,
+                    branch,
+                    modified: Vec::new(),
+                    added: Vec::new(),
+                    deleted: Vec::new(),
+                    untracked: Vec::new(),
+                    error: Some(format!("git status reported an unknown porcelain status {index:?}{tree:?} for {file_path}")),
+                };
             }
         }
     }
@@ -100,45 +109,49 @@ pub struct Diff {
     pub against: String,
 }
 
-/// Git diff output for the workspace, in `scope`.
+/// Git diff output for the workspace, in `scope`. `YourWork` needs the checkout's recorded work
+/// base and refuses without one; it never falls back to a comparison that would read empty.
 pub async fn git_diff(workspace_root: &Path, scope: DiffScope) -> Result<Diff, String> {
     match scope {
         DiffScope::Unstaged => Ok(Diff { text: run_git(workspace_root, &["diff"]).await?, against: "the index".into() }),
         DiffScope::Staged => Ok(Diff { text: run_git(workspace_root, &["diff", "--cached"]).await?, against: "HEAD (staged)".into() }),
-        DiffScope::YourWork => match work_base(workspace_root).await {
-            Some((base, from)) => Ok(Diff {
-                text: run_git(workspace_root, &["diff", &base]).await?,
-                against: format!("{} ({from}, where this branch left it)", &base[..base.len().min(SHOWN_SHA)]),
-            }),
-            // No integration branch to fork from: nothing commits into such a checkout, so the
-            // working tree against HEAD is all of the work.
-            None => Ok(Diff { text: run_git(workspace_root, &["diff", "HEAD"]).await?, against: "HEAD".into() }),
-        },
+        DiffScope::YourWork => {
+            let base = work_base(workspace_root).await?;
+            Ok(Diff {
+                text: run_git(workspace_root, &["diff", &base.sha]).await?,
+                against: format!("{} (where this branch left {})", base.short, base.from),
+            })
+        }
     }
 }
 
-/// How much of a commit id the `against` line shows: git's own short form.
-const SHOWN_SHA: usize = 12;
+/// Where this checkout's work starts: the merge-base of HEAD with the integration ref the
+/// checkout's owner recorded at allocation (airc's `AllocationEvidence`), so a branch rebased
+/// onto a newer integration tip still diffs from where it actually left it.
+pub struct WorkBase {
+    pub sha: String,
+    /// Git's own unambiguous short form of `sha`.
+    pub short: String,
+    /// The recorded integration ref the base was taken on.
+    pub from: String,
+}
 
-/// The integration branches a card can fork from, newest first by preference of the repo:
-/// the origin's own default, then the conventional names.
-const INTEGRATION_REFS: &[&str] = &["origin/HEAD", "origin/canary", "origin/main", "origin/master"];
-
-/// Where this branch left its integration branch: the newest merge-base of HEAD with any of
-/// the origin's integration refs that exist, and that ref's name. `None` when the checkout has
-/// no such ref (no origin, or a fresh `git init`).
-pub async fn work_base(workspace_root: &Path) -> Option<(String, String)> {
-    let mut best: Option<(i64, String, String)> = None;
-    for reference in INTEGRATION_REFS {
-        let Ok(base) = run_git(workspace_root, &["merge-base", "HEAD", reference]).await else { continue };
-        let base = base.trim().to_owned();
-        let Ok(when) = run_git(workspace_root, &["log", "-1", "--format=%ct", &base]).await else { continue };
-        let Ok(when) = when.trim().parse::<i64>() else { continue };
-        if best.as_ref().is_none_or(|(newest, _, _)| when > *newest) {
-            best = Some((when, base, (*reference).to_owned()));
-        }
-    }
-    best.map(|(_, base, from)| (base, from))
+/// The recorded work base of the checkout at `workspace_root`. A checkout with no allocation
+/// record (one airc did not allocate) has no known base, and says so; git failures propagate.
+pub async fn work_base(workspace_root: &Path) -> Result<WorkBase, String> {
+    let root = workspace_root.to_path_buf();
+    let evidence = tokio::task::spawn_blocking(move || airc_lib::work_worktree::allocation_evidence(&root))
+        .await
+        .map_err(|e| format!("reading the checkout's allocation record: {e}"))??
+        .ok_or_else(|| {
+            "this checkout has no allocation record, so where its work starts is unknown; \
+             ask for scope `unstaged` or `staged`"
+                .to_owned()
+        })?;
+    let from = evidence.start_ref;
+    let sha = run_git(workspace_root, &["merge-base", "HEAD", &from]).await?.trim().to_owned();
+    let short = run_git(workspace_root, &["rev-parse", "--short", &sha]).await?.trim().to_owned();
+    Ok(WorkBase { sha, short, from })
 }
 
 /// The `owner/name` board key this checkout belongs to, read from `origin`.
