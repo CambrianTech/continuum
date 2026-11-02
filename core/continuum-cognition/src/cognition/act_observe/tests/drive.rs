@@ -68,7 +68,7 @@ async fn drive_to_settle_acts_then_settles_on_speak() {
     let outcome = drive_to_settle(
         &cycle,
         "[eval]\npeer: what is 2+2?",
-        8,
+        crate::cognition::act_observe::TurnBudget::Steps(8),
         TurnFraming::ambient(),
     )
     .await;
@@ -205,7 +205,7 @@ async fn a_zero_change_speak_reperceives_within_the_turns_step_budget_when_the_w
     let outcome = drive_to_settle(
         &cycle,
         "fix the bug in sympy/core/basic.py",
-        8,
+        crate::cognition::act_observe::TurnBudget::Steps(8),
         TurnFraming::directed().on_workspace(),
     )
     .await;
@@ -259,7 +259,7 @@ async fn an_ordinary_turn_still_settles_on_the_first_speak() {
 
     assert_eq!(
         speaker.generations(),
-        1,
+        crate::cognition::act_observe::TurnBudget::Steps(1),
         "one generation, settled — unchanged"
     );
     assert!(
@@ -330,7 +330,7 @@ async fn drive_to_settle_gates_discovery_at_half_budget_on_workspace_deliverable
     let outcome = drive_to_settle(
         &cycle,
         "fix the bug",
-        20,
+        crate::cognition::act_observe::TurnBudget::Steps(20),
         TurnFraming::ambient().on_workspace(),
     )
     .await;
@@ -393,7 +393,7 @@ async fn act_budget_facts_reach_working_memory_on_workspace_turns_only() {
     drive_to_settle(
         &cycle,
         "fix the bug",
-        6,
+        crate::cognition::act_observe::TurnBudget::Steps(6),
         TurnFraming::ambient().on_workspace(),
     )
     .await;

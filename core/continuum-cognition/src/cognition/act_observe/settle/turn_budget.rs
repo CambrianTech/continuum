@@ -39,9 +39,3 @@ impl TurnBudget {
         }
     }
 }
-
-impl From<usize> for TurnBudget {
-    fn from(steps: usize) -> Self {
-        Self::Steps(steps)
-    }
-}

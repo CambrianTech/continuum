@@ -696,7 +696,7 @@ mod tests {
         let completed = drive_to_settle_with_input(
             &cycle,
             burst(pending.message().unwrap()),
-            8,
+            crate::cognition::act_observe::TurnBudget::Steps(8),
             framing,
             &mut conversation,
         )
