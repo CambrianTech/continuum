@@ -49,6 +49,8 @@ compile_error!(
       FIX: pass `--features metal` on the crate you are checking, when\n\
       that crate depends on llama (its Cargo.toml lists a `metal` feature).\n\
       Example:  cargo check -p continuum-engine --features metal\n\
+      On an Intel Mac (x86_64), where Metal hangs at device init, use\n\
+      the published CPU profile instead:  --features llama/mac-cpu-only\n\
      \n\
       A crate that does NOT depend on llama (e.g. continuum-tool-protocol,\n\
       continuum-base) has no `metal` feature and never reaches this error:\n\
