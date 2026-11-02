@@ -1,8 +1,5 @@
 use super::*;
 
-// context-budget-exempt: a count of recent inbound MESSAGES to consider, not a size in tokens or chars
-pub(super) const RECENT_INBOUND_WINDOW: usize = 24;
-
 /// What the resync-to-now drain decided for this wake.
 pub(super) enum Resync {
     /// Turn once on this message (the newest addressed, else the newest overall).
@@ -180,70 +177,4 @@ pub(super) async fn resync_to_now(
         );
     }
     Resync::Trigger(msg)
-}
-
-/// Message-path loop-filler gate: a near-duplicate arriving into an already-cycling
-/// exchange is admitted to memory and its dedicated turn deferred to the heartbeat
-/// (`Continue`); anything else is recorded in the recent-inbound ring and proceeds.
-pub(super) async fn defer_loop_filler(
-    ctx: &HostedPersona,
-    trigger: TurnTrigger<'_>,
-    roster_names: &std::collections::HashMap<Uuid, String>,
-    recent_inbound: &mut std::collections::VecDeque<String>,
-    opts: &ServeOptions,
-    outcome: &mut ServeOutcome,
-) -> LoopStep {
-    let TurnTrigger { msg, turn_room, admitted_retry } = trigger;
-    // Message-path loop-filler gate (#16): the heartbeat dedups its burst, but
-    // this path ran a full ~55s decode for EVERY inbound message — so two
-    // personas trading one goodbye template cycled forever on a metronome equal
-    // to decode time (glass-boxed 2026-07-09; the [pattern] observation, the
-    // presence clause, and honored PASSes all reached her and the loop survived
-    // on scheduling alone). A near-duplicate of an already-seen contribution
-    // arriving into an ALREADY-CYCLING exchange is not news: ADMIT it to memory
-    // (she remembers hearing it) but defer the dedicated turn to the heartbeat,
-    // whose deduped fingerprint stays stable → the resonance starves. A repeated
-    // sincere question in a non-cycling exchange never defers (the never-ghost
-    // floor) — see `loop_dedup::defer_as_loop_filler` for the two-condition
-    // trigger. Scheduling hygiene, not an output gate
-    // ([[no-hardcoded-heuristics-to-steer-cognition]]).
-    // This heuristic compares text only. Equal captions do not establish
-    // that two media-bearing messages are repeated input.
-    if !admitted_retry && msg.media.is_empty() && crate::persona::loop_dedup::defer_as_loop_filler(
-        &msg.text,
-        recent_inbound.make_contiguous(),
-    ) {
-        let now_ms = (opts.now_ms)();
-        let inbox_msg = trigger_inbox_message(msg, turn_room, roster_names, now_ms);
-        {
-            let cognition = ctx.cognition.lock().await;
-            if let Err(e) = cognition.admission.admit(&inbox_msg, None) {
-                tracing::warn!(
-                    lamport = msg.lamport,
-                    error = %e,
-                    "admission.admit failed on deferred loop-filler — engram not formed"
-                );
-            }
-        }
-        continuum_base::probe!(
-            class = "persona.turn.deferred_loop_filler",
-            persona = %ctx.identity.agent_name,
-            lamport = msg.lamport,
-            text_len = msg.text.len(),
-            "near-duplicate inbound in an already-cycling exchange — admitted to memory, dedicated turn deferred to the heartbeat"
-        );
-        recent_inbound.push_back(msg.text.clone());
-        if recent_inbound.len() > RECENT_INBOUND_WINDOW {
-            recent_inbound.pop_front();
-        }
-        outcome.turns_skipped += 1;
-        return LoopStep::Continue;
-    }
-    if !admitted_retry {
-        recent_inbound.push_back(msg.text.clone());
-        if recent_inbound.len() > RECENT_INBOUND_WINDOW {
-            recent_inbound.pop_front();
-        }
-    }
-    LoopStep::Proceed
 }

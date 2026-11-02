@@ -75,12 +75,10 @@ fn test_obligations(hosted: &HostedPersona) -> crate::persona::obligation::Oblig
             // page_recent returns empty per the no-fallback doctrine,
             // so unit tests exercising the loop don't need the
             // airc-side composition to land items.
-            cognition: Arc::new(tokio::sync::Mutex::new(
-                crate::persona::unified::PersonaCognition::new(
-                    persona_id,
-                    "Paige".to_string(),
-                    Arc::new(crate::rag::RagEngine::new()),
-                ),
+            cognition: Arc::new(crate::persona::unified::PersonaCognition::new(
+                persona_id,
+                "Paige".to_string(),
+                Arc::new(crate::rag::RagEngine::new()),
             )),
             // #195 slice 2: build via the same helper production
             // uses, NOT a copy-pasted template. If a future PR
