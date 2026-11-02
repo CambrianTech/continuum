@@ -12,8 +12,10 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// What every chat module built over one executor shares: the late-bound executor, and whether its
-/// store's chat collections exist yet (ensured once, on first use; a failure retries on the next).
+/// What every chat module built over one executor shares: the executor, installed once late at
+/// boot (the first install wins and is never replaced, so `collections_ready` always describes the
+/// store of the executor that holds the slot), and whether that store's chat collections exist yet
+/// (ensured once, on first use; a failure retries).
 pub struct ChatSlot {
     executor: LateBound<CommandExecutor>,
     collections_ready: tokio::sync::OnceCell<()>,
@@ -27,12 +29,34 @@ impl ChatSlot {
         }
     }
 
-    pub fn install(&self, executor: Arc<CommandExecutor>) {
-        self.executor.install(executor);
+    /// A slot that already holds `executor` (tests and injected executors).
+    pub fn installed(executor: Arc<CommandExecutor>) -> Self {
+        let slot = Self::new();
+        slot.executor.install(executor);
+        slot
+    }
+
+    /// Install the executor. The same executor again is a no-op; a DIFFERENT one is refused (Codex
+    /// on #5698): the slot and the store it ensured stay the first install's.
+    pub fn install(&self, executor: Arc<CommandExecutor>) -> Result<(), String> {
+        self.executor.install(Arc::clone(&executor));
+        match self.executor.get() {
+            Some(held) if Arc::ptr_eq(held, &executor) => Ok(()),
+            _ => Err(
+                "chat slot: a different executor is already installed; the first install stays"
+                    .to_string(),
+            ),
+        }
     }
 
     pub fn cloned(&self) -> Option<Arc<CommandExecutor>> {
         self.executor.cloned()
+    }
+
+    /// The executor once boot installs it. For boot-internal readers only (the inbound seam, ring
+    /// hydration); a command never waits here, it fails loud before install (#201).
+    pub async fn ready(&self) -> Result<Arc<CommandExecutor>, String> {
+        Ok(self.executor.ready().await)
     }
 }
 

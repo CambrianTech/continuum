@@ -68,11 +68,6 @@ pub(super) async fn serve_persona_loop_inner(
     // over an unchanged world is free. Shared by both paths: a message turn updates
     // it, so the very next tick doesn't re-deliberate the same burst.
     let mut last_burst_fp: u64 = 0;
-    // Recent inbound texts (bounded ring) — the exchange record the message-path
-    // loop-filler gate below judges against. Inbound only: own posts are filtered
-    // above the gate, and the peer's repeats are what re-arm the resonance.
-    let mut recent_inbound: std::collections::VecDeque<String> =
-        std::collections::VecDeque::with_capacity(RECENT_INBOUND_WINDOW);
     // Roster-name memory for engram attribution: harvested from each turn's
     // composed roster delivery (zero extra I/O — the shared projection already
     // runs per turn), consulted at admit time so her MEMORY records
@@ -210,34 +205,6 @@ pub(super) async fn serve_persona_loop_inner(
             turn_room,
             admitted_retry,
         };
-
-        // Message-path loop-filler gate (#16): the heartbeat dedups its burst, but
-        // this path ran a full ~55s decode for EVERY inbound message — so two
-        // personas trading one goodbye template cycled forever on a metronome equal
-        // to decode time (glass-boxed 2026-07-09; the [pattern] observation, the
-        // presence clause, and honored PASSes all reached her and the loop survived
-        // on scheduling alone). A near-duplicate of an already-seen contribution
-        // arriving into an ALREADY-CYCLING exchange is not news: ADMIT it to memory
-        // (she remembers hearing it) but defer the dedicated turn to the heartbeat,
-        // whose deduped fingerprint stays stable → the resonance starves. A repeated
-        // sincere question in a non-cycling exchange never defers (the never-ghost
-        // floor) — see `loop_dedup::defer_as_loop_filler` for the two-condition
-        // trigger. Scheduling hygiene, not an output gate
-        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
-        // This heuristic compares text only. Equal captions do not establish
-        // that two media-bearing messages are repeated input.
-        if let LoopStep::Continue = defer_loop_filler(
-            ctx,
-            trigger,
-            &roster_names,
-            &mut recent_inbound,
-            &opts,
-            &mut outcome,
-        )
-        .await
-        {
-            continue;
-        }
 
         // Per-turn latency clock starts AFTER the filters above —
         // we measure the substrate's per-reply cost (RAG + inference

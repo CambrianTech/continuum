@@ -64,6 +64,8 @@ use std::sync::{Arc, OnceLock};
 /// Arc internally so callers don't repeat it.
 pub struct LateBound<T: ?Sized> {
     slot: OnceLock<Arc<T>>,
+    /// Wakes `ready()` waiters when the install lands: an event, never a poll.
+    installed: tokio::sync::Notify,
     name: &'static str,
 }
 
@@ -74,6 +76,7 @@ impl<T: ?Sized> LateBound<T> {
     pub const fn new(name: &'static str) -> Self {
         Self {
             slot: OnceLock::new(),
+            installed: tokio::sync::Notify::const_new(),
             name,
         }
     }
@@ -83,7 +86,25 @@ impl<T: ?Sized> LateBound<T> {
     /// substrate). Use `is_installed()` before to assert idempotency
     /// in tests if needed.
     pub fn install(&self, value: Arc<T>) {
-        let _ = self.slot.set(value);
+        if self.slot.set(value).is_ok() {
+            self.installed.notify_waiters();
+        }
+    }
+
+    /// The dependency once installed: for boot-internal readers that may start before the install
+    /// (an attach racing `install_executor_on_all`). Waits on the install event, never a poll; a
+    /// caller that must fail loud before install uses `require()` instead.
+    pub async fn ready(&self) -> Arc<T> {
+        loop {
+            let installed = self.installed.notified();
+            tokio::pin!(installed);
+            // Registered before the check, so an install between the check and the await wakes it.
+            installed.as_mut().enable();
+            if let Some(value) = self.slot.get() {
+                return Arc::clone(value);
+            }
+            installed.await;
+        }
     }
 
     /// Borrow the installed dependency, or produce a diagnostic
@@ -147,6 +168,35 @@ impl<T: ?Sized> std::fmt::Debug for LateBound<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a boot reader that starts before the install (the inbound seam racing
+    // install_executor_on_all) failing its first attempt, or polling. Deterministic (Codex on
+    // #5698): the pinned ready() is polled once and proven Pending BEFORE the install, then woken
+    // by it; separately, a ready() after the install returns at once.
+    #[tokio::test]
+    async fn ready_waits_for_the_install_and_wakes_on_it() {
+        use std::future::Future;
+        let slot: LateBound<u32> = LateBound::new("test::ready");
+        let waiting = slot.ready();
+        tokio::pin!(waiting);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(waiting.as_mut().poll(&mut cx).is_pending(), "before the install, ready() waits");
+        slot.install(Arc::new(7));
+        assert_eq!(*waiting.await, 7, "the install wakes the waiter registered before it");
+    }
+
+    #[tokio::test]
+    async fn ready_after_the_install_returns_at_once() {
+        let slot: LateBound<u32> = LateBound::new("test::ready_after");
+        slot.install(Arc::new(9));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let ready = slot.ready();
+        tokio::pin!(ready);
+        assert!(
+            matches!(std::future::Future::poll(ready.as_mut(), &mut cx), std::task::Poll::Ready(v) if *v == 9),
+            "installed: the first poll is ready"
+        );
+    }
 
     #[derive(Debug)]
     struct Dep {

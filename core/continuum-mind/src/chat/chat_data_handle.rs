@@ -52,9 +52,7 @@ impl ChatModule {
     /// real cross-module call path without going through `start_server`.
     #[cfg(test)]
     pub fn with_executor(executor: Arc<CommandExecutor>) -> Self {
-        let executor_slot = Arc::new(ChatSlot::new());
-        executor_slot.install(executor);
-        Self { executor_slot }
+        Self { executor_slot: Arc::new(ChatSlot::installed(executor)) }
     }
 
     /// Rebuild a chat module over an EXISTING late-bound executor slot.
@@ -331,23 +329,11 @@ impl ChatModule {
     /// lines of one `chat/poll` page (chronological, all rooms — each ring keeps
     /// only its own bounded tail) so the facts have priors from the first tick.
     ///
-    /// Waits boundedly for the executor slot — this runs from the persist
-    /// listener spawned in `initialize`, which can race
-    /// `install_executor_on_all` (the #201 ordering); a missing executor here
-    /// is a not-yet, not a bug, so we poll the slot instead of panicking.
+    /// Awaits the executor's install: this runs from the task spawned in `initialize`, which can
+    /// race `install_executor_on_all` (the #201 ordering); a missing executor here is a not-yet,
+    /// so it waits on the slot's install event, never a poll.
     pub async fn hydrate_speech_rings(&self) -> Result<(), String> {
-        const EXECUTOR_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
-        const EXECUTOR_POLL: std::time::Duration = std::time::Duration::from_millis(250);
-
-        let deadline = std::time::Instant::now() + EXECUTOR_WAIT;
-        while self.executor_slot.cloned().is_none() {
-            if std::time::Instant::now() >= deadline {
-                return Err(
-                    "executor not installed within boot window — rings start cold".to_string(),
-                );
-            }
-            tokio::time::sleep(EXECUTOR_POLL).await;
-        }
+        self.executor_slot.ready().await?;
 
         let result = self
             .poll(ChatPollParams {
