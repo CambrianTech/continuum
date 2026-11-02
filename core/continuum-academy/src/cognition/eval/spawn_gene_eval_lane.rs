@@ -649,19 +649,7 @@ pub(super) fn write_eval_run_marker(root: &std::path::Path, run_id: &str) {
     // breadcrumb could not be written; the reboot guard just loses this run.
     // Written through the eval-roots class the run's root lives in (a disk marker read by
     // the CLI process — a true process boundary).
-    let written = (|| -> std::io::Result<()> {
-        use continuum_kernel::system_resources::disk_reporters::tracked_dir;
-        let class = tracked_dir("eval-roots").ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "the eval-roots disk class is not registered")
-        })?;
-        let within = root.strip_prefix(class.path()).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("{} is not under the eval-roots class {}", root.display(), class.path().display()),
-            )
-        })?;
-        class.writer().replace(&within.join(EVAL_RUN_MARKER), marker.to_string().as_bytes())
-    })();
+    let written = write_in_eval_root(&root, EVAL_RUN_MARKER, marker.to_string().as_bytes());
     if let Err(e) = written {
         tracing::warn!(error = %e, "eval run marker not written — reboot guard cannot see this run");
     }

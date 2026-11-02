@@ -33,7 +33,7 @@ pub(super) async fn warm_gate(cycle: &crate::cognition::workspace::WorkspaceCycl
         let probe = crate::cognition::act_observe::drive_to_settle(
             cycle,
             burst,
-            0, // no acts — a bare deliberation is enough to prove the lane answers
+            crate::cognition::act_observe::TurnBudget::Steps(0), // no acts — a bare deliberation is enough to prove the lane answers
             crate::cognition::workspace::TurnFraming::directed(),
         )
         .await;

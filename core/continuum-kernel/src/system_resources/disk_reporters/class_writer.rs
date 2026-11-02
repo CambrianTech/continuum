@@ -89,6 +89,21 @@ impl ClassWriter {
         Ok(owners)
     }
 
+    /// The files directly in this scope, by name (the flat-class mirror of `owners`), for a
+    /// reader that scans every file a class holds: each is read through `path`. A class nothing
+    /// has written yet has none.
+    pub fn files(&self) -> io::Result<Vec<PathBuf>> {
+        let mut files = Vec::new();
+        for entry in self.held()?.entries()? {
+            let entry = entry?;
+            if entry.file_type()?.is_file() {
+                files.push(PathBuf::from(entry.file_name()));
+            }
+        }
+        files.sort();
+        Ok(files)
+    }
+
     /// Where `relative` lives in this class, by name, for display and for readers outside this
     /// type: refused unless it is plain names. Writes never go through it; they go through the
     /// held directory.

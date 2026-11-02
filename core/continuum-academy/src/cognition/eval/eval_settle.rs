@@ -9,7 +9,7 @@ pub(super) async fn eval_settle(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
     room: crate::identity::ActivityRoom,
     prompt: &str,
-    max_acts: usize,
+    max_acts: crate::cognition::act_observe::TurnBudget,
 ) -> crate::cognition::act_observe::SettleOutcome {
     let delivery = crate::cognition::rag_budget::RagDelivery {
         source_id: "airc".to_string(),
@@ -56,7 +56,7 @@ pub(super) async fn run_pass_team(
     reviewer_iso: &crate::cognition::workspace::EvalIsolation,
     tasks: &[EvalTask],
     room: crate::identity::ActivityRoom,
-    max_acts: usize,
+    max_acts: crate::cognition::act_observe::TurnBudget,
     // The run's resolved eval root (explicit pin or #312 ephemeral clone) —
     // artifact grading resolves solution files against it, same as solo.
     workspace_root: Option<&str>,
@@ -180,7 +180,7 @@ pub(super) async fn run_pass_team(
             ok,
             grade,
             acts,
-            answer: answer.chars().take(ANSWER_CAPTURE_CHARS).collect(),
+            answer,
             latency_ms: m.latency_ms,
             output_tokens: m.output_tokens,
             tokens_per_second: m.tokens_per_second(),

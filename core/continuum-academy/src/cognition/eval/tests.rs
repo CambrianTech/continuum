@@ -65,9 +65,15 @@
     // regression for the 2026-08-23 finding (a SIGTERM'd reboot orphaned a 31 GB
     // eval clone that Drop could never reap; the sweep is the crash-path owner,
     // and live_eval_roots() is what scopes it to true orphans).
-    #[test]
-    fn orphan_sweep_removes_dead_worlds_and_never_live_ones() {
-        let parent = tempfile::tempdir().expect("tempdir");
+    #[tokio::test]
+    async fn orphan_sweep_removes_dead_worlds_and_never_live_ones() {
+        // Worlds live in the eval-roots class (as a real run's do), so a kept world's marker is
+        // written through the class like production's.
+        continuum_kernel::system_resources::disk_reporters::prepare_writer_fixture().await;
+        let class = continuum_kernel::system_resources::disk_reporters::tracked_dir("eval-roots")
+            .expect("the fixture registers the eval-roots class");
+        std::fs::create_dir_all(class.path()).expect("mkdir the eval-roots class");
+        let parent = tempfile::tempdir_in(class.path()).expect("tempdir in the eval-roots class");
         let live = parent.path().join("live-run");
         let orphan = parent.path().join("orphan-run");
         std::fs::create_dir_all(&live).expect("mkdir live");

@@ -113,7 +113,7 @@ async fn the_hands_change_the_mind_across_a_multi_act_investigation() {
     let outcome = drive_to_settle(
         &cycle,
         "[eval]\npeer: where does the program start and what does it call?",
-        8,
+        crate::cognition::act_observe::TurnBudget::Steps(8),
         TurnFraming::ambient(),
     )
     .await;
@@ -274,7 +274,7 @@ async fn it_settles_then_re_awakens_without_cranking_to_a_halt() {
     let a = drive_to_settle(
         &cycle,
         "[eval]\npeer: concern A?",
-        8,
+        crate::cognition::act_observe::TurnBudget::Steps(8),
         TurnFraming::ambient(),
     )
     .await;
@@ -286,7 +286,7 @@ async fn it_settles_then_re_awakens_without_cranking_to_a_halt() {
     let b = drive_to_settle(
         &cycle,
         "[eval]\npeer: a totally different concern B?",
-        8,
+        crate::cognition::act_observe::TurnBudget::Steps(8),
         TurnFraming::ambient(),
     )
     .await;

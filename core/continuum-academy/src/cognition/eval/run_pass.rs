@@ -5,7 +5,7 @@ pub(super) async fn run_pass(
     isolation: &crate::cognition::workspace::EvalIsolation,
     tasks: &[EvalTask],
     room: crate::identity::ActivityRoom,
-    max_acts: usize,
+    max_acts: crate::cognition::act_observe::TurnBudget,
     max_retries: u32,
     // The pinned workspace root the persona's hands were rooted at (from-scratch build /
     // SWE-bench). UI grading MUST observe the artifact HERE, where she wrote it — not the
@@ -291,7 +291,7 @@ pub(super) async fn run_pass(
             let drive = crate::cognition::act_observe::drive_to_settle(
                 cycle,
                 make_burst(),
-                t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
+                task_budget(t, max_acts),
                 if t.silence {
                     // A silence-graded task is AMBIENT by definition: the room moved and
                     // nothing addressed her. Posed as directed, a correct answer to an
@@ -433,7 +433,7 @@ pub(super) async fn run_pass(
                 crate::cognition::act_observe::drive_to_settle(
                     cycle,
                     nudge_burst,
-                    t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
+                    task_budget(t, max_acts),
                     if t.workspace_deliverable() {
                         crate::cognition::workspace::TurnFraming::directed().on_workspace()
                     } else {
@@ -512,14 +512,8 @@ pub(super) async fn run_pass(
                         round = redrive_round as u64,
                         "settled on a RED DoD — handing her the verdict with a bounded re-drive"
                     );
-                    let tail: String = dod_out
-                        .chars()
-                        .rev()
-                        .take(4000)
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .rev()
-                        .collect();
+                    // Whole: the one context budget sizes what she sees, newest kept (never a cut here).
+                    let tail = &dod_out;
                     let red_delivery = crate::cognition::rag_budget::RagDelivery {
                     source_id: "airc".to_string(),
                     items: vec![crate::cognition::rag_budget::RagItem {
@@ -553,7 +547,7 @@ Fix the workspace and finish —                              the grade reads th
                     crate::cognition::act_observe::drive_to_settle(
                         cycle,
                         red_burst,
-                        t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
+                        task_budget(t, max_acts),
                         crate::cognition::workspace::TurnFraming::directed().on_workspace(),
                     ),
                 )
@@ -590,7 +584,7 @@ Fix the workspace and finish —                              the grade reads th
                 ok: false,
                 grade: format!("infra (DoD could not run, NOT a wrong answer): {reason}"),
                 acts: settled.acts as u32,
-                answer: answer.chars().take(ANSWER_CAPTURE_CHARS).collect(),
+                answer,
                 latency_ms: settled.metrics.latency_ms,
                 output_tokens: settled.metrics.output_tokens,
                 tokens_per_second: settled.metrics.tokens_per_second(),
@@ -713,7 +707,7 @@ Fix the workspace and finish —                              the grade reads th
             ok,
             grade,
             acts: total_acts,
-            answer: answer.chars().take(ANSWER_CAPTURE_CHARS).collect(),
+            answer,
             latency_ms: m.latency_ms,
             output_tokens: m.output_tokens,
             tokens_per_second: m.tokens_per_second(),
@@ -744,4 +738,24 @@ Fix the workspace and finish —                              the grade reads th
         infra_faults,
         infra_reason,
     }
+}
+
+/// A task's act budget: its own row's bound when it sets one, else the run's (one owner for
+/// the three drives that read it).
+fn task_budget(
+    t: &EvalTask,
+    inherit: crate::cognition::act_observe::TurnBudget,
+) -> crate::cognition::act_observe::TurnBudget {
+    t.max_acts
+        .map(|steps| crate::cognition::act_observe::TurnBudget::Steps(steps as usize))
+        .unwrap_or(inherit)
+}
+
+/// An exam's declared resource policy: part of what it measures, so declared by the exam or
+/// its caller and never defaulted, and recorded on every ledger row it produces.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExamPolicy {
+    pub(crate) budget: crate::cognition::act_observe::TurnBudget,
+    pub(crate) max_retries: u32,
 }

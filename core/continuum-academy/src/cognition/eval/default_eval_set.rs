@@ -11,18 +11,6 @@ use super::*;
 /// the resolver instead of `std::fs::read_to_string`.
 pub(super) const DEFAULT_EVAL_SET: &str = "docs/genome/coder-eval.jsonl";
 
-/// How many act→observe cycles a single task may take before it counts as
-/// unfinished, when neither the caller nor the task row sets `max_acts`.
-///
-/// Raised 8 → 32 on 2026-08-23 after the MirrorCode baseline showed what 8
-/// buys on a frontier task: Atlas spent the whole budget on a genuinely
-/// competent case-bucketing analysis and was graded with an EMPTY src/ — the
-/// cap measured our patience, not the model ("repeated engineering process
-/// till finished … who cares if it has to cycle to do it" — the doctrine the
-/// old default contradicted). Tasks that need fewer acts settle on their own;
-/// the cap only exists to bound a runaway, so it must sit ABOVE what honest
-/// engineering needs. Per-task rows override via `EvalTask::max_acts`.
-pub(super) const DEFAULT_MAX_ACTS: u32 = 32;
 
 /// Fixed "exam epoch" stamped on every task's burst (`[t=<ms>] peer: …`). The
 /// live burst carries each message's real `occurred_at_ms`; the eval pins it to
@@ -153,26 +141,7 @@ where
 /// step over — the living persona's lane.
 pub(super) const EVAL_LANE_BASE_PORT: u16 = 58_200;
 
-/// How much of a graded answer to persist in the result. A coder answer (code + reasoning)
-/// fits far under this; the generous bound exists ONLY to cap a pathological loop-to-length
-/// generation (which is captured up to here, still a diagnosable signal). The old 200-char
-/// cap stored only the preamble and blinded every failure diagnosis + correction-corpus mine.
-// context-budget-exempt: observability: how much of an answer is CAPTURED into the run ledger for humans, never text sent to a model
-pub(super) const ANSWER_CAPTURE_CHARS: usize = 24_000;
 
-/// Per-task detail retained in the DURABLE run ledger row (`append_progress_ledger`).
-/// The ledger stored only the summary (score/total), so a detached run's per-task
-/// verdicts were unrecoverable — a webdev pass/fail could not be glass-boxed after the
-/// fact (glass-boxed 2026-07-21: could not tell whether an `acts=0` webdev miss was the
-/// mouth-or-hands capture not firing or the spoken page failing a strict check). We now
-/// persist a compact per-task array; the diagnostic `grade` verdict + answer head are kept
-/// ONLY for FAILED tasks, so a 164-task humaneval row stays lean while a failing 6-task
-/// webdev row is fully inspectable. [[self-test-via-command-feedback-surface-never-blind]]
-// context-budget-exempt: observability: ledger rendering width for a failed grade, human-facing only
-pub(super) const LEDGER_FAIL_GRADE_CHARS: usize = 800;
-
-// context-budget-exempt: observability: ledger rendering width for a failed answer, human-facing only
-pub(super) const LEDGER_FAIL_ANSWER_CHARS: usize = 1_200;
 
 /// Wall-clock TTL for the eval lane's governed VRAM lease (#56/G1). Expiry
 /// makes a lease eligible for the governor's reclaim protocol; it is not proof

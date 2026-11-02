@@ -3,13 +3,17 @@
 //! (`usize::MAX` was the live turn's sentinel, and a probe once read its remainder as
 //! 18446744073709551614).
 
-/// A turn's step budget.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A turn's step budget. On the wire a caller declares it: `"unbounded"` or `{"steps": n}`.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema, ts_rs::TS,
+)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/cognition/TurnBudget.ts")]
 pub enum TurnBudget {
     /// A live turn: she acts until she settles.
     Unbounded,
     /// A caller-bounded turn (an eval, a solve): at most this many steps.
-    Steps(usize),
+    Steps(#[ts(type = "number")] usize),
 }
 
 impl TurnBudget {
@@ -37,11 +41,5 @@ impl TurnBudget {
             Self::Unbounded => None,
             Self::Steps(n) => Some((n / 4 * 3).max(1)),
         }
-    }
-}
-
-impl From<usize> for TurnBudget {
-    fn from(steps: usize) -> Self {
-        Self::Steps(steps)
     }
 }

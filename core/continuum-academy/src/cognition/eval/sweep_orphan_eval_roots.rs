@@ -72,7 +72,7 @@ impl EphemeralEvalRoot {
         let marker = UnresolvedHands { pids };
         let written = serde_json::to_string(&marker) // disk marker read by a later process's sweep — a true process boundary
             .map_err(|e| e.to_string())
-            .and_then(|body| std::fs::write(self.path.join(UNRESOLVED_HANDS_MARKER), body).map_err(|e| e.to_string()));
+            .and_then(|body| write_in_eval_root(&self.path, UNRESOLVED_HANDS_MARKER, body.as_bytes()).map_err(|e| e.to_string()));
         if let Err(e) = written {
             tracing::error!(root = %self.path.display(), error = %e, "an unresolved eval world's marker could not be written; only this process's registry keeps it from the sweep");
         }
@@ -83,6 +83,22 @@ impl EphemeralEvalRoot {
         );
         self.retained = true;
     }
+}
+
+/// Write `name` into the eval world at `root`, through the eval-roots disk class the world
+/// lives in (replaced whole). The one way a marker reaches an eval world.
+pub(crate) fn write_in_eval_root(root: &std::path::Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    use continuum_kernel::system_resources::disk_reporters::tracked_dir;
+    let class = tracked_dir("eval-roots").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "the eval-roots disk class is not registered")
+    })?;
+    let within = root.strip_prefix(class.path()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is not under the eval-roots class {}", root.display(), class.path().display()),
+        )
+    })?;
+    class.writer().replace(&within.join(name), bytes)
 }
 
 /// Written into an eval world kept because a fork's hands in it weren't confirmed ended.
@@ -593,21 +609,16 @@ pub struct CognitionEvalParams {
     #[ts(optional)]
     #[ts(optional, type = "number")]
     pub reviewers: Option<u32>,
-    /// Max act→observe cycles per task before it counts as unfinished. Default 32
-    /// (see DEFAULT_MAX_ACTS); a task row's own max_acts overrides per task.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    #[ts(optional, type = "number")]
-    pub max_acts: Option<u32>,
+    /// The run's step budget per task, declared by the caller (`{"steps": 32}` or
+    /// `"unbounded"`): an exam's budget is part of what it measures, so it is never defaulted.
+    /// A task row's own `max_acts` overrides it per task.
+    pub budget: crate::cognition::act_observe::TurnBudget,
     /// Agentic-recovery budget: how many times a FAILED test-graded task is handed its
-    /// compiler/test output to fix before it scores a miss. Default [`MAX_FAIL_RETRIES`].
-    /// Set `0` for the ONE-SHOT baseline (what plain inference gets on the same
-    /// weights) — so a `0` vs `N` A/B on the identical model+benchmark measures exactly the
+    /// compiler/test output to fix before it scores a miss, declared by the caller (never
+    /// defaulted). `0` is the ONE-SHOT baseline (what plain inference gets on the same
+    /// weights), so a `0` vs `N` A/B on the identical model+benchmark measures exactly the
     /// edge our agentic loop adds, repeatably, from one param.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    #[ts(optional, type = "number")]
-    pub max_retries: Option<u32>,
+    pub max_retries: u32,
     /// Decoding temperature pin for the WHOLE run. **Omitted → her LIVED
     /// sampling** (the engineerable form — Joel 2026-08-23: "the old form is
     /// useless"): greedy 0.0 measured pathological on long-context agentic
