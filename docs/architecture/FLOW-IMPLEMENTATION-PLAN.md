@@ -418,6 +418,22 @@ Open, in order:
 | keyed room state in airc (doctrine, purpose) | "not in the last 200 events" | Codex |
 | the typed sweep | the remaining runtime complaints, `Params`, `LateBound`'s "not installed" | by crate (plan on airc 2026-11-02) |
 
+## 6d. Architectural refinements the day's defects named (Joel, 2026-11-02: "some architectural refinement is necessary")
+
+Each defect of 2026-11-02 was the same gap wearing a different name. Each refinement is one rule,
+an owner, and a ratchet or validator that only lets the old shape fall.
+
+| refinement | the defects that named it | owner |
+|---|---|---|
+| ONE typed owner per policy (retry, error class): callers match a typed outcome, never re-derive it | the sentinel matched error-text substrings under a guessed retry count; the remote breaker counted "no session" as an answer (#5702); airc folded distinct failures into one `DeadlineExceeded` (#1649) | Codex (airc, transport); Fable (mind) |
+| REQUIRED inputs by type: required field, non-empty type, typestate; never `Option` + runtime complaint, `LateBound` "not installed", or a number meaning "unbounded" | the cold-start absence probe; `usize::MAX` act budget; "Missing {key}" in untyped params | everyone, by crate (`required_input_complaints`) |
+| ONE door per resource: the one place that names the handle, ensures the schema and turns a refusal into an error | the chat store's seven hand-built calls (the door found the tables canary never created) | Fable (stores the mind owns) |
+| STATE is keyed, never scanned: a room fact is an indexed read | doctrine read from the newest 200 events; the work gate's 400-row page | Codex (airc room state); Fable (the work gate) |
+| MANY READERS, one stream (§6b, PERCEPTION-FROM-THE-STORE) | the in-memory inbox whose capacity error ends her turn; the text dedup filtering what she perceives | Fable (P2) |
+| LIFECYCLES have owners: every process is started, reaped and reported by its owner | a 20-hour orphaned `airc join` holding the machine identity; an engine relaunched under live acts; agent test windows restarting residents mid-work (0 writes in a disturbed hour, 26 in two undisturbed) | Codex (airc, serving); every agent (batch windows) |
+| EVERY fact answerable live: a probe names its subject; a boot fact is queryable, not a rotated log line | condemned acts named only by time; `mind.feed.event` with no event id; the node pump's online state lost to rotation | Fable (`ping` reports the node pump) |
+| the WAIT LEDGER (§6b) | 300 s of non-model time per act inferred, not reported | Fable (with P2) |
+
 ## 6a. The dyno and the simulator: how to use them (both proved their worth on 2026-10-28)
 
 Answer "will this be faster?" here before touching the live node. Live reads under load are road
