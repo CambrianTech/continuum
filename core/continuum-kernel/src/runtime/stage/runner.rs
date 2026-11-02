@@ -120,7 +120,7 @@ impl<S: Stage> Shared<S> {
             Ok(outcome) => {
                 self.panics.store(0, Ordering::Release);
                 match outcome {
-                    RunOutcome::Produced(outputs) => self.publish(outputs),
+                    RunOutcome::Produced(outputs) => self.publish(outputs, run, revisions),
                     RunOutcome::Idle => Ran::Idle,
                     RunOutcome::Stopped(receipt) => Ran::Stopped(receipt),
                     RunOutcome::Dispatched => {
@@ -140,9 +140,18 @@ impl<S: Stage> Shared<S> {
     }
 
     /// Publish each output under the compare-and-set, atomically with making it visible.
-    fn publish(&self, outputs: Vec<(S::Output, Provenance)>) -> Ran<S::Output> {
+    fn publish(
+        &self,
+        outputs: Vec<S::Output>,
+        run: RunId,
+        revisions: &[InputRevision],
+    ) -> Ran<S::Output> {
         let (mut accepted, mut refused) = (Vec::new(), 0);
-        for (output, provenance) in outputs {
+        for output in outputs {
+            let provenance = Provenance {
+                by: run,
+                from: revisions.to_vec(),
+            };
             self.published.send_if_modified(|state| {
                 let fresh = state.publication.try_publish(&provenance.from) == Published::Accepted;
                 if fresh {

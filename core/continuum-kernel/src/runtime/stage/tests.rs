@@ -139,13 +139,7 @@ impl Stage for Counting {
                 }
             }
         }
-        RunOutcome::Produced(vec![(
-            input.len() as u64,
-            Provenance {
-                by: ctx.run,
-                from: input.to_vec(),
-            },
-        )])
+        RunOutcome::Produced(vec![input.len() as u64])
     }
 }
 
@@ -162,13 +156,7 @@ async fn a_stage_honours_control_with_the_receipt_that_proves_it() {
     let (tx, rx) = tokio::sync::watch::channel(ControlRequest::Continue);
     let ctx = StageContext { run, control: rx };
     match Counting.run(&ctx, &(), &input).await {
-        RunOutcome::Produced(out) => assert_eq!(
-            out[0].1,
-            Provenance {
-                by: run,
-                from: input.to_vec()
-            }
-        ),
+        RunOutcome::Produced(out) => assert_eq!(out, vec![1]),
         other => panic!("left alone it completes: {other:?}"), // test: the assertion failing loudly
     }
     tx.send(ControlRequest::Yield)
@@ -214,18 +202,12 @@ impl Stage for Echo {
     }
     async fn run(
         &self,
-        ctx: &StageContext,
+        _ctx: &StageContext,
         input: &i64,
-        revisions: &[InputRevision],
+        _revisions: &[InputRevision],
     ) -> RunOutcome<i64> {
         assert!(*input >= 0, "test: a negative input panics the run"); // test: the deliberate panic under test
-        RunOutcome::Produced(vec![(
-            *input,
-            Provenance {
-                by: ctx.run,
-                from: revisions.to_vec(),
-            },
-        )])
+        RunOutcome::Produced(vec![*input])
     }
 }
 
@@ -300,7 +282,19 @@ async fn an_inline_run_publishes_under_the_same_rule() {
             refused: 0
         }
     );
-    assert_eq!(runner.latest().map(|o| o.output), Some(4));
+    let published = runner.latest().expect("test: inline output was published");
+    assert_eq!(published.output, 4);
+    assert_eq!(
+        published.provenance,
+        Provenance {
+            by: RunId {
+                incarnation: incarnation(1),
+                seq: 1
+            },
+            from: vec![rev("numbers", 4)],
+        },
+        "the runner stamps its own run and inputs even when the stage ignores them"
+    );
     assert_eq!(
         runner.run_inline(&2, &[rev("numbers", 2)]).await,
         Ran::Produced {
