@@ -92,6 +92,9 @@ pub struct PersonaCognition {
 pub struct ComposedTurn {
     /// One delivery per bound source, airc first, then the roster.
     pub deliveries: Vec<RagDelivery>,
+    /// The turn this compose belongs to: the id every capture of it carries, and the id its
+    /// burst takes (`Burst::for_turn`).
+    pub turn_id: Uuid,
 }
 
 impl PersonaCognition {
@@ -245,7 +248,7 @@ impl PersonaCognition {
                 turn_id: Some(turn_id),
             });
         }
-        ComposedTurn { deliveries }
+        ComposedTurn { deliveries, turn_id }
     }
 }
 

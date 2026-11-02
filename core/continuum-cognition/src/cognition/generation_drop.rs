@@ -171,8 +171,8 @@ impl Drop for InFlight {
         continuum_base::probe!(
             class = "persona.generation.dropped",
             persona = %self.persona,
-            room = ?act.map(|a| a.room),
-            act = ?act.map(|a| a.act),
+            turn = ?act.map(|a| a.turn),
+            step = ?act.map(|a| a.step),
             at = "generation",
             elapsed_secs = self.started.elapsed().as_secs(),
             // The turn's OWN bound and where it came from. `floor` here means the turn

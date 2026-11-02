@@ -5,7 +5,7 @@
 
     /// An act for `persona`: the first act of a turn in a fixed room.
     fn act_of(persona: uuid::Uuid) -> admission_clock::ActAt {
-        admission_clock::ActAt { persona, room: uuid::Uuid::from_u128(0xa11), act: 0 }
+        admission_clock::ActAt { persona, turn: uuid::Uuid::from_u128(0xa11), step: 0 }
     }
 
     // what this catches: a relaunch's cost inferred from timestamps (Codex on the 2026-11-02 06:26Z
@@ -13,7 +13,7 @@
     // condemned and dropped probes name it; outside a step there is no act, never a guessed one.
     #[tokio::test]
     async fn a_step_knows_which_act_it_is_and_nothing_outside_does() {
-        let act = admission_clock::ActAt { persona: uuid::Uuid::from_u128(7), room: uuid::Uuid::from_u128(8), act: 3 };
+        let act = admission_clock::ActAt { persona: uuid::Uuid::from_u128(7), turn: uuid::Uuid::from_u128(8), step: 3 };
         let start = tokio::time::Instant::now();
         let bound = std::time::Duration::from_secs(60);
         let seen = super::until_act_stalls(start + bound, bound, Some(act), async { admission_clock::current_act() })
@@ -21,6 +21,31 @@
             .expect("the step completes");
         assert_eq!(seen, Some(act), "inside the step, its act");
         assert_eq!(admission_clock::current_act(), None, "outside any step, no act");
+    }
+
+    // what this catches: a generation dropped on the CANCELLATION path not naming its step
+    // (Codex on #5700): the step is ended by a condemned engine, and the drop witness inside it,
+    // dropped as the step is torn down, still reads the step it belonged to.
+    #[tokio::test]
+    async fn a_generation_dropped_by_a_condemned_engine_still_names_its_step() {
+        struct Witness(std::sync::Arc<std::sync::Mutex<Option<Option<admission_clock::ActAt>>>>);
+        impl Drop for Witness {
+            fn drop(&mut self) {
+                *self.0.lock().expect("lock") = Some(admission_clock::current_act()); // test: a fixture step that must succeed
+            }
+        }
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let act = admission_clock::ActAt { persona: uuid::Uuid::from_u128(9), turn: uuid::Uuid::from_u128(10), step: 4 };
+        let start = tokio::time::Instant::now();
+        let bound = std::time::Duration::from_secs(60);
+        let witness = Witness(std::sync::Arc::clone(&seen));
+        let step = async move {
+            let _witness = witness;
+            std::future::pending::<()>().await
+        };
+        let ended = super::until_act_stalls_or(start + bound, bound, Some(act), step, async {}).await;
+        assert!(ended.is_err(), "the condemned engine ends the step");
+        assert_eq!(*seen.lock().expect("lock"), Some(Some(act)), "the dropped generation named its step");
     }
 
     // Inject only the engine observation; acquisition and watchdog remain real.

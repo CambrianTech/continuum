@@ -215,6 +215,13 @@ async fn a_zero_change_speak_reperceives_within_the_turns_step_budget_when_the_w
         8,
         "the zero-deliverable Speaks spend the turn's own 8-step budget — not one, not a loop"
     );
+    // what this catches: generations of one turn indistinguishable in a drop or condemn probe
+    // (Codex on #5700): every generation of the turn names the same turn and its own step.
+    let steps = speaker.steps();
+    let turn = steps[0].expect("an acting turn's generation knows its step").turn;
+    assert!(steps.iter().all(|s| s.is_some_and(|s| s.turn == turn)), "one turn throughout: {steps:?}");
+    let indices: Vec<u64> = steps.iter().map(|s| s.map_or(u64::MAX, |s| s.step)).collect();
+    assert_eq!(indices, (0..8).collect::<Vec<u64>>(), "each generation its own step");
     assert!(
         wm.recent().iter().any(|l| l.contains("[no-deliverable]")),
         "the structural fact reached working memory, where the next tick perceives it: {:?}",
@@ -459,13 +466,13 @@ async fn drive_to_settle_returns_unsettled_act_when_budget_exhausted() {
     );
 }
 
-// what this catches: changing results preserve productive iteration (the whole budget),
-// while identical input AND output is a fixed point the first time it repeats: the turn
-// yields after that one repeat (act 2), not after a constant number of them (2026-11-02).
+// what this catches: the substrate ending her turn on identical result TEXT, which does not
+// prove no progress (a mutating command can return the same success text each time it changes
+// state; Codex on #5700): identical and changing results alike spend the caller's whole budget.
 #[tokio::test]
 async fn repeated_calls_respect_the_callers_budget() {
     for (results, expected_acts) in [
-        (["unchanged"; 6], 2),
+        (["unchanged"; 6], 6),
         (
             [
                 "pending 1",
@@ -487,6 +494,24 @@ async fn repeated_calls_respect_the_callers_budget() {
         assert!(matches!(outcome.decision, Decision::Act { .. }));
         assert!(outcome.spoken.is_none());
     }
+}
+
+// what this catches: two turns in one room naming the same turn (Codex on #5700): each burst is
+// its own turn, so their generations are told apart in every probe.
+#[tokio::test]
+async fn two_turns_in_one_room_are_two_turns() {
+    let speaker = CountingSpeaker::new();
+    let wm = Arc::new(WorkingMemory::new(8));
+    let exec = Arc::new(RecordingExecutor { seen_context: Arc::new(Mutex::new(None)), result_content: "src/".into() });
+    let cycle = WorkspaceCycle::new(vec![Arc::clone(&speaker) as Arc<dyn Faculty>], Arc::new(SalienceArbiter))
+        .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm)));
+    let _ = drive_to_settle(&cycle, "first", 8, TurnFraming::ambient()).await;
+    let _ = drive_to_settle(&cycle, "second", 8, TurnFraming::ambient()).await;
+    let steps = speaker.steps();
+    assert_eq!(steps.len(), 2, "one generation per ambient turn");
+    let (a, b) = (steps[0].expect("first turn's step"), steps[1].expect("second turn's step"));
+    assert_ne!(a.turn, b.turn, "two turns, two ids");
+    assert_eq!((a.step, b.step), (0, 0), "each its own turn's first step");
 }
 
 // what this catches: fixed-point evidence ignores correlation IDs but never

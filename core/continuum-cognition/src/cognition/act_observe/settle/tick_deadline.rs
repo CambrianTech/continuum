@@ -62,22 +62,20 @@ pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::
             _ = queue_rx.changed() => continue,
             () = &mut condemned => {
                 let abandoned = Abandoned::at(&queue_rx);
-                // WHICH act this ends, so a relaunch's cost is named act by act, never inferred
-                // from timestamps (Codex on the 2026-11-02 06:26Z M5 re-home): the act (persona,
-                // room, index), the slot and endpoint its generation was pinned to, and the live
-                // engine (pid + start + port); each is `None` when not known, never guessed.
+                // WHICH generation this ends, so a relaunch's cost is named one by one, never
+                // inferred from timestamps (Codex on the 2026-11-02 06:26Z M5 re-home): its turn
+                // and step, and the slot and endpoint it was dispatched to; `None` when unknown.
+                // The slot and endpoint are the ones this generation was DISPATCHED to (its own
+                // in-flight registration). The engine process is not named: the live engine read
+                // now could be a replacement or another endpoint, never proof of where this ran.
                 let pinned = persona.and_then(crate::inference::llama_server::in_flight_slot);
-                let engine = crate::inference::lane_registry::live_incarnation();
                 continuum_base::probe!(
                     class = "settle.tick.condemned",
                     persona = ?persona,
-                    room = ?act.map(|a| a.room),
-                    act = ?act.map(|a| a.act),
+                    turn = ?act.map(|a| a.turn),
+                    step = ?act.map(|a| a.step),
                     slot = ?pinned.as_ref().map(|p| p.slot),
                     endpoint = ?pinned.as_ref().map(|p| p.root.as_str()),
-                    engine_pid = ?engine.as_ref().map(|e| e.pid),
-                    engine_started_s = ?engine.as_ref().map(|e| e.started_s),
-                    engine_port = ?engine.as_ref().map(|e| e.port),
                     dispatched = abandoned.dispatched,
                     extensions = extensions as u64,
                     "the engine was condemned mid-act: ending the act now, so the relaunch's drain is not held to its next checkpoint"

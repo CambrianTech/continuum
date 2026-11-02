@@ -110,10 +110,18 @@ impl Burst {
             rendered,
             now_ms,
             cause,
+            turn: uuid::Uuid::new_v4(),
             room_updates: Arc::default(),
             hands: None,
             effects: None,
         }
+    }
+
+    /// This burst is the turn `turn` (the id its compose minted), so its acts and its RAG
+    /// captures name one turn.
+    pub fn for_turn(mut self, turn: uuid::Uuid) -> Self {
+        self.turn = turn;
+        self
     }
 
     /// This turn acts with the hands of `context` (the card claim it works).
@@ -142,6 +150,7 @@ impl Burst {
             rendered: s,
             now_ms: None,
             cause: Cause::Synthetic,
+            turn: uuid::Uuid::new_v4(),
             room_updates: Arc::default(),
             hands: None,
             effects: None,
@@ -164,6 +173,7 @@ impl From<String> for Burst {
             // A raw string arrives with no channel and no antecedent — a fixture, by
             // construction. Honest, never invented.
             cause: Cause::Synthetic,
+            turn: uuid::Uuid::new_v4(),
             room_updates: Arc::default(),
             hands: None,
             effects: None,

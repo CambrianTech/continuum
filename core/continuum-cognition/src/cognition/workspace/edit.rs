@@ -756,6 +756,10 @@ pub struct Burst {
     /// to: threading the cause as a separate parameter through every driver would let
     /// the two drift, and provenance belongs on the thing whose provenance it is.
     pub cause: Cause,
+    /// WHICH turn this is: one id per turn, the same one its compose stamped on every RAG
+    /// capture (`ComposedTurn::turn_id`), so a capture, an act and a dropped generation of one
+    /// turn name the same turn. A burst built outside a live compose gets its own at birth.
+    pub turn: uuid::Uuid,
     /// WHICH of her hands this turn acts with: the acting context of the card claim it
     /// works, or `None` for her default hands. Bound once, at the turn's admission, by
     /// whoever admitted it; every act of the turn runs in these hands and no turn moves

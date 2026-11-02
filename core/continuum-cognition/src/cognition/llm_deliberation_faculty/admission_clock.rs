@@ -7,14 +7,16 @@ use crate::inference::{
 use std::{future::Future, time::Duration};
 use tokio::{sync::watch, time::Instant};
 
-/// Which act a step is: the persona, the turn's room and the act's index in its turn, the same
-/// identity `persona.act.pace` reports. It rides the step's scope, so whatever ends the step (a
-/// condemned engine, a dropped generation) names the act it ended.
+/// Which step a generation is: the persona, the turn (`Burst::turn`, the id its compose stamped
+/// on every capture) and the step's index in that turn, counting every generation (acts, spoken
+/// plans and retried faults each take their own step). Unique per generation of a turn. It
+/// rides the step's scope, so whatever ends the step (a condemned engine, a dropped
+/// generation) names exactly the generation it ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ActAt {
     pub(crate) persona: uuid::Uuid,
-    pub(crate) room: uuid::Uuid,
-    pub(crate) act: u32,
+    pub(crate) turn: uuid::Uuid,
+    pub(crate) step: u64,
 }
 
 #[derive(Clone, Copy)]

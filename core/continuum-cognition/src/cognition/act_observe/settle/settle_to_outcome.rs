@@ -46,13 +46,13 @@ pub(super) async fn settle_to_outcome<'c>(
     // deliberations and no single one is canonical (card 0d51573a).
     let mut generation_receipts: Vec<crate::ai::provenance::GenerationReceipt> = Vec::new();
 
-    // Admission uses the caller's budget and lifecycle deadlines. Identical inputs
-    // do not establish a stuck mind: repeated reads/retries can observe new state.
-    // A repeated input AND an identical actual result, though, observed nothing new: that is
-    // a fixed point the first time it repeats, and the turn yields there (2026-11-02; it
-    // used to tolerate three, a constant nothing measured). Productive work never repeats both.
+    // Admission uses the caller's budget and lifecycle deadlines, and nothing else ends her
+    // turn. An identical call with identical result TEXT does not prove no progress (a
+    // mutating command can return the same success text each time it changes state; Codex
+    // on #5700), so the substrate never ends a turn on it: she perceives the repetition as a
+    // fact and decides, and the turn's one step budget bounds the work (2026-11-02; the
+    // termination at three repeats, STUCK_LIMIT, is deleted).
     let mut prior_evidence = None;
-    let mut repeated = false;
     // A workspace-deliverable turn re-perceives on a zero-deliverable Speak (see the Spoke
     // arm). This used to be ONE-SHOT, and the glass box showed what that costs: on
     // sympy-21379 `persona.settle.no_deliverable` fired exactly once per run and she then
@@ -362,7 +362,7 @@ pub(super) async fn settle_to_outcome<'c>(
         // Speaking is never gated.
         let discovery_open =
             !framing.workspace_deliverable || mutated_yet || acts < discovery_budget;
-        if !discovery_open && acts + non_act_steps < max_acts && !repeated && !saturation_probed {
+        if !discovery_open && acts + non_act_steps < max_acts && !saturation_probed {
             saturation_probed = true;
             continuum_base::probe!(
                 class = "persona.settle.discovery_saturated",
@@ -375,7 +375,7 @@ pub(super) async fn settle_to_outcome<'c>(
                  the empty-diff re-drive instead of being read away (#390 state gate)"
             );
         }
-        let may_act = acts + non_act_steps < max_acts && !repeated && discovery_open;
+        let may_act = acts + non_act_steps < max_acts && discovery_open;
         let act_started = std::time::Instant::now();
         continuum_base::probe!(
             class = "settle.tick.start",
@@ -404,8 +404,9 @@ pub(super) async fn settle_to_outcome<'c>(
             act_bound,
             acting_persona.map(|persona| crate::cognition::llm_deliberation_faculty::admission_clock::ActAt {
                 persona,
-                room: room_id,
-                act: u32::try_from(acts).unwrap_or(u32::MAX), // past u32::MAX acts saturates; no turn reaches it
+                turn: burst.turn,
+                // Every generation takes its own step: acts, spoken plans and retried faults.
+                step: (acts + non_act_steps) as u64, // usize -> u64 is lossless on every supported target
             }),
             // Boxed: the step is the largest future in the drive, and holding it by value
             // inside this wrapper's own state overflowed the layout query depth (CI,
@@ -679,19 +680,20 @@ pub(super) async fn settle_to_outcome<'c>(
                 let evidence = cycle.acting().and_then(|body| {
                     batch_evidence(&calls, &body.working_memory.recent_acts())
                 });
-                repeated = evidence.is_some() && evidence == prior_evidence;
+                let repeated = evidence.is_some() && evidence == prior_evidence;
                 prior_evidence = evidence;
                 if repeated {
+                    // Sense, not steer: the fact is hers to weigh; the turn goes on.
                     continuum_base::probe!(
-                        class = "persona.settle.stuck_backstop",
+                        class = "persona.settle.repetition_observed",
                         room_id = %room_id,
                         acts = acts,
-                        "same calls and actual results repeated; yielding without claiming completion"
+                        "the same calls returned the same results as the previous act; recorded as a fact, the turn continues"
                     );
                     if let Some(body) = cycle.acting() {
                         body.working_memory.record_fact(
-                            "[repetition] Consecutive executions returned the same results for \
-                             the same requests. This turn yields; the work is not declared complete."
+                            "[repetition] My last act made the same calls and got the same results \
+                             as the one before it."
                         );
                     }
                 }

@@ -377,7 +377,8 @@ pub(super) async fn run_self_cycle(
         // lost. Handles are what would make it nameable
         // (docs/architecture/CONTENT-TRAVELS-BY-HANDLE.md).
         crate::cognition::workspace::Cause::Ambient,
-    );
+    )
+    .for_turn(composed.turn_id);
     // A continuation naming her mind room lands here as `tick_room`: it runs on her MIND
     // cycle, with its own working memory (PRIVACY-OF-THOUGHT.md §4).
     let Some(cycle) = crate::cognition::persona_workspace::global()
