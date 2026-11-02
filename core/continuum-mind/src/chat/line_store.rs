@@ -79,36 +79,41 @@ pub struct ChatStore;
 #[async_trait::async_trait]
 impl LineImporter for ChatStore {
     async fn import(&self, line: PostedLine) -> Result<Imported, String> {
-        installed()?
+        ready()
+            .await?
             .commit_line(&line, None, json!({ "text": line.text }))
             .await
     }
 
     async fn recover_publications(&self, room: RoomId) -> Result<usize, String> {
-        installed()?.republish_pending(room).await
+        ready().await?.republish_pending(room).await
     }
 
     async fn publication(&self, id: Uuid) -> Result<Option<PublicationObligation>, String> {
-        installed()?.publication(id).await
+        ready().await?.publication(id).await
     }
 
     async fn watermark(&self, room: RoomId) -> Result<Option<ImportedThrough>, String> {
-        installed()?.import_watermark(room).await
+        ready().await?.import_watermark(room).await
     }
 
     async fn advance_watermark(&self, room: RoomId, mark: ImportWatermark) -> Result<(), String> {
-        installed()?.advance_import_watermark(room, mark).await
+        ready().await?.advance_import_watermark(room, mark).await
     }
 
     async fn migrate_watermark(&self, room: RoomId, mark: ImportWatermark) -> Result<(), String> {
-        installed()?.migrate_import_watermark(room, mark).await
+        ready().await?.migrate_import_watermark(room, mark).await
     }
 }
 
-fn installed() -> Result<std::sync::Arc<ChatModule>, String> {
-    IMPORTER
-        .cloned()
-        .ok_or_else(|| "chat store: the chat module is not installed yet (early boot)".to_string())
+/// The chat module once its executor is installed: the inbound seam can attach before boot
+/// installs executors, and waits for that install (an event) instead of failing its first attach.
+async fn ready() -> Result<std::sync::Arc<ChatModule>, String> {
+    let module = IMPORTER.cloned().ok_or_else(|| {
+        "chat store: the chat module is not installed yet (early boot)".to_string()
+    })?;
+    module.executor_slot.ready().await?;
+    Ok(module)
 }
 
 /// The message row of `line` as one batch operation: the same ChatMessageEntity shape for every
