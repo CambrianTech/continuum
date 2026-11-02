@@ -451,23 +451,30 @@ at the output limit that hour (Aris at 465 tokens against a measured peak of 799
 
 The shape:
 - **Demand is what she holds in view.** The view codec (`continuum-context`) admits and collapses
-  her items; each admission that grows her assembled demand, and each collapse or close that
-  shrinks it, publishes one typed `DemandChanged { mind, tokens }` on her watch channel, only on
-  change (no tick, no re-measure).
+  her items; each change in her UNTRIMMED required demand plus her completion reserve (never only
+  the admitted, already-collapsed view, which would hide need by shrinking) publishes one typed
+  `DemandChanged { mind, required_tokens, completion_reserve, input_revision }` on her watch
+  channel, only on change (no tick, no re-measure). (Codex's review of #5709.)
 - **One allocator grants every mind's window from those events.** The serving plan's allocator
   (`window_allocator`) holds each mind's requirement as a claim in one flex allocation over one
   shared pool; it sleeps on the demand channels and regrants only when one moves. Priority follows
   activity temperature (goal 9); scratch and background traffic claim what they use; every
-  downward grant has a scheduled upward test.
+  downward grant has a scheduled upward test. A grant carries its generation; a grant in use by
+  an in-flight turn never shrinks under it: down-grants apply at an acknowledged safe boundary,
+  and every reader of one turn uses the same captured grant. A measured answer peak is evidence
+  for the reserve, not a guarantee that no answer exceeds it. Today the allocator takes per-mind
+  requirements but emits ONE window; uneven grants are new allocator work.
 - **The engine honours uneven grants.** Slots share one KV pool (the fork's `--kv-unified`), so a
-  grant is a live budget, not a relaunch; a change in grants never restarts the engine.
+  grant is a live budget, not a relaunch. `--kv-unified` alone does not prove mutable per-slot
+  caps: a fork capability test on the serving revision proves it before any no-relaunch claim.
 - **One window owner per turn.** The view, `CapacityReadiness` and the span read her grant through
   the one function (card 1c508526), so no reader holds a stale window.
 
-Order: unified KV on the engine (Codex, serving) -> per-mind grants in the allocator -> demand
-events from the codec (Fable) -> the one-window read. Validator first: the simulator runs four minds
-with uneven reading and asserts each grant follows its demand within one event, no answer is cut
-below its measured peak, and the pool is never exceeded.
+Order: the validator first (it needs no engine change): the simulator runs four minds reading
+unevenly and asserts each grant follows its demand within one event, no in-flight grant shrinks,
+and the pool is never exceeded. Then, in parallel, the fork capability proof for per-slot caps
+over a unified pool and the allocator's uneven-grant contract (Codex owns the engine and capacity
+seam); then the codec's demand events (Fable); then the one-window read (card 1c508526).
 
 ## 6a. The dyno and the simulator: how to use them (both proved their worth on 2026-10-28)
 
