@@ -105,7 +105,7 @@ they derived from: an older run's result never overwrites state derived from new
   identity. **Fencing blocks stale mutation, not durable evidence:** a completion from an old
   incarnation stays in the task ledger, and the current incarnation explicitly adopts, consumes
   or disposes of it with a durable receipt. Nothing strands a completion or erases a committed
-  effect. Dependencies, not available guarantees: #5585 and #5664 (unmerged) do not yet prove
+  effect. Dependencies, not available guarantees: #5585 (unmerged; it superseded #5664) do not yet prove
   restart adoption or cancellation quiescence; Codex owns closing those gaps.
 - **Admission and the physical grant (Codex).** One authority grants physical capacity,
   execution and residency separately. The stage scheduler ranks ready demand by each mind's
@@ -133,7 +133,7 @@ they derived from: an older run's result never overwrites state derived from new
     cancel requested mid-step gets its receipt only when that step's outcome arrives (quiescence).
     If the engine's incarnation changes mid-step, that outcome never arrives, so quiescence is
     proved by the fence, never by waiting: fork #88 stamps each learn with `{ execution, base_step,
-    engine_incarnation }`, a step under an old incarnation can no longer commit, and
+    engine_incarnation }`, a step under an old incarnation can no longer commit once its physical executor is proven stopped (a new incarnation id alone is not that proof), and
     `committed_effects` comes from `/learn/receipt` for that execution, else from the adapter's
     `base_step` against the step the run dispatched, under #5695's lost-reply order (task terminal,
     then the same-incarnation receipt, then redispatch, then rewind to the binding snapshot, else
@@ -163,8 +163,11 @@ Recall, reflex and dream under contention on one replayed engine, each case foll
 work (the mind keeps working, both ways: law 8):
 - a stimulus during work: the reflex trips; the dream yields at its next step boundary, the receipt
   carrying the measured expected latency for the node class beside the observed one;
-- the engine relaunches mid-step: the dream's cancel receipt arrives with the committed count from
-  the fence, and nothing re-applies the step;
+- the engine relaunches mid-step, two cases: (a) the fence's evidence is present (`/learn/receipt`
+  for the execution, or `base_step` read from the adapter): the cancel receipt carries the proven
+  committed count and nothing re-applies the step; (b) that evidence is missing: the run stays
+  `Unresolved` with its custody retained, never a cancel receipt or a guessed count. A new
+  incarnation id alone does not prove the old executor stopped;
 - late and duplicate completions; a late terminal delivery after a restart, adopted with a receipt;
 - a stale incarnation's mutation refused while its completion stays adoptable;
 - a forgotten continuation (nobody resumes a paused run): its custody is reclaimed, reported;
