@@ -76,7 +76,7 @@ pub struct PersonaBrainConfig {
     /// Push the [`Deferrability::DeferTolerant`] grounding sources off the hot path
     /// too (same speculative-prefetch rationale as `defer_recall`: the enriching
     /// framing — roster, active_work, workspace_map — runs in the bg and the turn
-    /// reads a reprojected last-good). `ColdStartCritical` sources (doctrine, the
+    /// reads a reprojected last-good). `Synchronous` sources (doctrine, the
     /// participation gate) stay synchronous regardless. `true` on the LIVE paths;
     /// `false` for eval forks + harnesses whose tight settle-loops never yield to
     /// the worker (they'd measure a grounding-starved mind). Reproject-to-now is
@@ -119,11 +119,11 @@ pub struct PersonaBrainConfig {
 /// exception is the one whose cold-start miss is unacceptable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Deferrability {
-    /// Must run on the loop. A first-tick `None` (the cold-start miss every
-    /// deferred faculty has) would be *wrong*, not merely unenriched — this is the
-    /// participation gate (doctrine: "speaks when it shouldn't" is worse than a
-    /// missed enrichment), so it pays the synchronous cost to be correct turn one.
-    ColdStartCritical,
+    /// Runs on the loop, so it is present on the very first tick: the participation gate
+    /// (doctrine: "speaks when it shouldn't" is worse than a missed enrichment) pays the
+    /// synchronous cost to be correct turn one. A SCHEDULE only: whether a source must always
+    /// ground is its type (`GroundingSource::critical` takes a `CriticalSource`).
+    Synchronous,
     /// May run in the background ([`DeferredFaculty`]) and serve a reprojected
     /// last-good. Enriching framing (roster, active_work, workspace_map) whose
     /// cold-start miss only costs ONE under-grounded first tick, then warm
@@ -141,10 +141,8 @@ pub enum Deferrability {
 pub struct GroundingSource {
     pub source: Arc<dyn RagSource>,
     pub policy: SaliencePolicy,
-    /// Defaults to [`Deferrability::ColdStartCritical`] (the safe direction: a new
-    /// source runs synchronously until its assembler deliberately opts it into the
-    /// bg via [`GroundingSource::defer_tolerant`], having decided its first-tick
-    /// miss is tolerable).
+    /// Defaults to [`Deferrability::Synchronous`]: a new source runs on the loop until its
+    /// assembler opts it into the background via [`GroundingSource::defer_tolerant`].
     pub deferrability: Deferrability,
     /// CAPABILITY CONSISTENCY: this grounding DESCRIBES the persona's hands
     /// (tool paths, "drill in with code/list…"), so it must only be delivered
@@ -165,22 +163,28 @@ pub struct GroundingSource {
     /// the salience floor but serializes the content in the volatile tail, nearest
     /// generation, where mutation costs only itself.
     pub volatile_content: bool,
-    /// Where this source applies (`RoomScope`): `Everywhere` unless declared shared-rooms-only.
-    pub scope: crate::cognition::rag_source_faculty::RoomScope,
 }
 
 impl GroundingSource {
-    /// Standing framing (roster, doctrine) — always-present structural context.
-    /// Cold-start-critical by default; call [`Self::defer_tolerant`] to move an
-    /// enriching framing source off the loop.
+    /// A REQUIRED grounding: its absence would be a wrong turn, so it is a [`CriticalSource`]
+    /// that always grounds (it returns `Grounded`, which cannot be empty), and it runs on the
+    /// loop. The type is the requirement: a source that could come up empty cannot be passed.
+    ///
+    /// [`CriticalSource`]: crate::cognition::rag_budget::CriticalSource
+    pub fn critical(source: Arc<dyn crate::cognition::rag_budget::CriticalSource>) -> Self {
+        Self::framing(Arc::new(crate::cognition::rag_budget::Required(source)))
+    }
+
+    /// Standing framing (doctrine, the wall, the board) — structural context that may have
+    /// nothing this turn (a room with no published doctrine). Synchronous by default; call
+    /// [`Self::defer_tolerant`] to move an enriching source off the loop.
     pub fn framing(source: Arc<dyn RagSource>) -> Self {
         Self {
             source,
             policy: SaliencePolicy::StandingFraming,
-            deferrability: Deferrability::ColdStartCritical,
+            deferrability: Deferrability::Synchronous,
             requires_hands: false,
             volatile_content: false,
-            scope: crate::cognition::rag_source_faculty::RoomScope::Everywhere,
         }
     }
 
@@ -196,10 +200,9 @@ impl GroundingSource {
         Self {
             source,
             policy: SaliencePolicy::Retrieved,
-            deferrability: Deferrability::ColdStartCritical,
+            deferrability: Deferrability::Synchronous,
             requires_hands: false,
             volatile_content: false,
-            scope: crate::cognition::rag_source_faculty::RoomScope::Everywhere,
         }
     }
 
@@ -210,13 +213,6 @@ impl GroundingSource {
     /// participation gate).
     pub fn defer_tolerant(mut self) -> Self {
         self.deferrability = Deferrability::DeferTolerant;
-        self
-    }
-
-    /// This source's content exists only in shared rooms (a room's airc channel or
-    /// projection); in her private mind room it has none by design.
-    pub fn shared_rooms_only(mut self) -> Self {
-        self.scope = crate::cognition::rag_source_faculty::RoomScope::SharedRoomsOnly;
         self
     }
 
@@ -438,7 +434,7 @@ pub(super) fn assemble_workspace_cycle(
     // Deferrability is the ORTHOGONAL second axis: a DeferTolerant source (the
     // enriching framing — roster, active_work, workspace_map) runs off the hot path
     // on the live paths, exactly like recall, and the turn reads its reprojected
-    // last-good. A ColdStartCritical source (doctrine, the participation gate) stays
+    // last-good. A Synchronous source (doctrine, the participation gate) stays
     // synchronous so it's never `None` on the first tick. Eval/harness keep
     // everything synchronous (`defer_grounding == false`) — their tight settle-loops
     // never yield to the worker, so deferral there would measure a starved mind.
@@ -446,14 +442,7 @@ pub(super) fn assemble_workspace_cycle(
     // view's one allocation decides what she sees (FLOW-IMPLEMENTATION-PLAN §2d).
     for g in cfg.grounding_sources {
         let faculty = RagSourceFaculty::new(cfg.persona_id, g.source, g.policy)
-            .with_volatile_content(g.volatile_content)
-            // Deferrability is also a LOUDNESS contract, not only a scheduling one
-            // (#3873). ColdStartCritical means "absent here is a wrong turn", so a
-            // source in this tier that delivers nothing says so in the probe
-            // ledger instead of abstaining silently — which is how `room-doctrine`
-            // sat at 0 bids in 873 consecutive ticks with nothing noticing.
-            .cold_start_critical(matches!(g.deferrability, Deferrability::ColdStartCritical))
-            .in_scope(g.scope);
+            .with_volatile_content(g.volatile_content);
         match g.deferrability {
             Deferrability::DeferTolerant if cfg.defer_grounding => {
                 faculties.push(Arc::new(DeferredFaculty::spawn(Arc::new(faculty))));

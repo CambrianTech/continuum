@@ -345,7 +345,7 @@ pub async fn materialize_adapters(
         // event-folds — their projections change ONLY when a peer publishes
         // (TranscriptKind::DoctrinePublished / WallPostPublished), which is
         // rare, yet doctrine was the ONE SYNCHRONOUS airc round-trip on every
-        // live compose (ColdStartCritical, never deferred). ONE subscribe
+        // live compose (synchronous, never deferred). ONE subscribe
         // stream per persona marks both caches; the invalidator holds weak
         // handles and dies with them. No wrap without a wire: if subscribe
         // fails, both stay raw (correct, just slow) and we log loud. NOTE the
@@ -484,7 +484,7 @@ pub async fn materialize_adapters(
             // #1650/#1651 grounding silently falls out of the live path —
             // the persona forgets who is present / what the room is for.
             grounding_sources: vec![
-                // Roster — WHO is present. SYNCHRONOUS (ColdStartCritical),
+                // Roster — WHO is present. SYNCHRONOUS,
                 // like workspace-map and for the same reason: the deferral
                 // was earned by the OLD airc-fetch reader this source
                 // replaced; the ViewState roster is a watch-channel borrow
@@ -496,9 +496,15 @@ pub async fn materialize_adapters(
                 // reprojections (measured 2026-09-01: both his captures
                 // carried "[reprojected … held]"). A source this cheap
                 // never gets a fallback ([[fallbacks-are-illegal-fail-loud]]).
-                crate::cognition::persona_workspace::GroundingSource::framing(roster_source).shared_rooms_only(),
+                crate::cognition::persona_workspace::GroundingSource::critical(Arc::new(
+                    crate::persona::viewstate_rag::WhoIsHere::new(
+                        roster_source,
+                        identity.peer_id.as_uuid(),
+                        profile.persona_name.clone(),
+                    ),
+                )),
                 // Doctrine — WHAT the room is for: the PARTICIPATION GATE. This
-                // one stays SYNCHRONOUS (ColdStartCritical): a cold-start `None`
+                // one stays SYNCHRONOUS: a cold-start `None`
                 // would let the persona speak in a room it shouldn't on turn one,
                 // which is wrong, not merely unenriched. The lone exception to
                 // "defer almost everything."
@@ -517,11 +523,11 @@ pub async fn materialize_adapters(
                     .volatile_content(),
                 // WHERE code lives — the real workspace layout as framing, so a
                 // reasoner can avoid blind globs like `src/**/*.rs` from the
-                // prompt alone. ColdStartCritical (synchronous, NOT deferred):
+                // prompt alone. Synchronous (NOT deferred):
                 // measured 2026-07-13 that the deferred version was ABSENT on
                 // cold ticks (worst under repeated reboots), so some personas
                 // acted blind to the layout — a WRONG turn (blind-glob loops),
-                // not merely unenriched, which is exactly the ColdStartCritical
+                // not merely unenriched, which is exactly the Synchronous
                 // bar. It's a cheap local dir listing (unlike the airc-backed
                 // framing sources that stay deferred), so it earns synchronous
                 // presence like doctrine. requires_hands: the block SAYS "drill
@@ -581,7 +587,7 @@ pub async fn materialize_adapters(
             defer_recall: true,
             // LIVE mind: push the defer-tolerant grounding (roster, active_work,
             // workspace_map) off the hot path too — the 90%-async win for the
-            // enriching framing. Doctrine (ColdStartCritical) stays synchronous
+            // enriching framing. Doctrine stays synchronous
             // regardless. Eval/harness override to false.
             defer_grounding: true,
             // The LIVING persona always keeps her memories — suppression is a

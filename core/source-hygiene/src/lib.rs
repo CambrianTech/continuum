@@ -49,6 +49,7 @@ pub mod tls_stack;
 pub mod subprocess_spawn;
 pub mod unwrap_justification;
 pub mod vendor_pin;
+pub mod required_inputs;
 pub mod wall_clock;
 
 use std::path::{Path, PathBuf};

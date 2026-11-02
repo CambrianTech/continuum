@@ -139,7 +139,7 @@ pub fn is_room_state_publish(kind: &airc_core::TranscriptKind) -> bool {
 ///
 /// These events are RARE (a doctrine or wall edit), which is exactly why
 /// the sources cache so well — and why the doctrine fetch, the one
-/// SYNCHRONOUS airc round-trip on every live compose (ColdStartCritical),
+/// SYNCHRONOUS airc round-trip on every live compose (synchronous),
 /// was pure waste per tick. Exits when every handle is dead (all wrapped
 /// sources dropped) or the stream ends terminally (airc-lib owns transient
 /// reconnection; a terminal end is a real fault the pump already logs loud

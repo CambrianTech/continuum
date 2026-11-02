@@ -501,7 +501,7 @@ use super::*;
     }
 
     // what this catches: deferrability is ORTHOGONAL to salience, and the SAFE
-    // DEFAULT is synchronous. framing() is ColdStartCritical — a fresh grounding
+    // DEFAULT is synchronous. framing() is Synchronous — a fresh grounding
     // source runs ON the loop until deliberately opted off, so doctrine (the
     // participation gate) can never silently start serving a cold-start `None`
     // (speaking in a room it shouldn't on turn one). `.defer_tolerant()` flips
@@ -516,7 +516,7 @@ use super::*;
         let critical = GroundingSource::framing(Arc::clone(&s));
         assert_eq!(
             critical.deferrability,
-            Deferrability::ColdStartCritical,
+            Deferrability::Synchronous,
             "safe default: a framing source runs synchronously until opted off"
         );
         assert_eq!(critical.policy, SaliencePolicy::StandingFraming);
@@ -535,7 +535,7 @@ use super::*;
 
         // retrieved() (the other constructor) also defaults to the safe side.
         let retrieved = GroundingSource::retrieved(Arc::clone(&s));
-        assert_eq!(retrieved.deferrability, Deferrability::ColdStartCritical);
+        assert_eq!(retrieved.deferrability, Deferrability::Synchronous);
     }
 
     // what this catches: capability consistency on the eval fork — grounding

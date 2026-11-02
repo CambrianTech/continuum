@@ -349,25 +349,20 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
             Some(v) if room_scope_allows(v.room(), ctx, V::KIND) => v.units(ctx.persona_id),
             _ => Vec::new(),
         };
-        let items = units
-            .into_iter()
-            .map(|mut unit| {
-                unit.metadata
-                    .insert("kind".into(), serde_json::json!(V::KIND));
-                unit.metadata
-                    .insert("block".into(), serde_json::json!(V::BLOCK));
-                let item = RagItem::whole(
-                    unit.key,
-                    unit.content,
-                    serde_json::Value::Object(unit.metadata),
-                );
-                match unit.pointer {
-                    Some(pointer) => item.with_pointer(pointer),
-                    None => item,
-                }
-            })
-            .collect();
+        let items = units.into_iter().map(|unit| rag_item(unit, V::KIND, V::BLOCK)).collect();
         RagDelivery::of(V::KIND, items, false)
+    }
+}
+
+/// One rendered unit as the item her view keys and levels: the ONE conversion, shared by every
+/// ViewState source and the required roster.
+pub(crate) fn rag_item(mut unit: RagRenderUnit, kind: &str, block: &str) -> RagItem {
+    unit.metadata.insert("kind".into(), serde_json::json!(kind));
+    unit.metadata.insert("block".into(), serde_json::json!(block));
+    let item = RagItem::whole(unit.key, unit.content, serde_json::Value::Object(unit.metadata));
+    match unit.pointer {
+        Some(pointer) => item.with_pointer(pointer),
+        None => item,
     }
 }
 
@@ -379,5 +374,7 @@ impl RoomScopedView for continuum_positron::RosterViewState {}
 
 
 mod roster;
+mod who_is_here;
+pub use who_is_here::WhoIsHere;
 
 mod tests;
