@@ -120,9 +120,14 @@ pub(crate) fn settle_bound_ms(turns: &[(u64, Option<u64>)], uncounted: bool, cap
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TurnSettle {
     pub in_flight_at_close: u64,
+    /// Turns the stop leaves running with a confirmed obligation: not waited for, and handed
+    /// back by the next start (stop-drain S3/S4).
+    pub handed_back: u64,
+    /// Turns the stop tore with no confirmed obligation: these are the loss.
     pub cut: u64,
     pub bound_ms: u64,
-    /// Where the bound came from: `nothing_in_flight`, `measured` (the turns' own
+    /// Where the bound came from: `nothing_in_flight`, `all_confirmed` (every turn in flight
+    /// is handed back, so none is waited for), `measured` (the unconfirmed turns' own
     /// remaining time), or `cap` (an unknown turn, or measured past the cap).
     pub bound_source: &'static str,
     pub waited_ms: u64,
@@ -146,18 +151,24 @@ impl continuum_kernel::runtime::extensions::SettleBeforeStop for TurnsSettle {
             continuum_base::probe!(
                 class = "cognition.turns.settled",
                 in_flight_at_close = s.in_flight_at_close,
+                handed_back = s.handed_back,
                 cut = s.cut,
                 bound_ms = s.bound_ms,
                 bound_source = s.bound_source,
                 waited_ms = s.waited_ms,
                 cap_ms = cap.as_millis() as u64,
-                "the stop let admitted turns finish before saving — `cut` is how many it still tore"
+                "the stop let unconfirmed turns finish before saving; `handed_back` are confirmed turns the next start resumes, `cut` the ones it still tore"
             );
         })
     }
 }
 
 /// CLOSE THE DOOR, THEN LET THE CITIZENS FINISH: the step before a stop saves.
+///
+/// Only a turn without a confirmed obligation is waited for (stop-drain S4, card f78d7a22):
+/// a confirmed one is durable, so cutting it hands it back to the next start (S3), and
+/// waiting for it is the dark window. The 2026-11-02 IntelMac stop waited the whole 300 s
+/// cap on turns stuck behind a busy engine; on enrico 10-26, every stop was 335-352 s dark.
 ///
 /// Called only from the runtime's shutdown task, which no connection owns, so the door
 /// this closes is always followed by the shutdown it exists for (the one-way rule above).
@@ -170,9 +181,13 @@ pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
     let in_flight_at_close = in_flight();
     let cap_ms = cap.as_millis().min(u128::from(u64::MAX)) as u64;
     let turns = crate::turn_ledger::in_flight_turns(EpochMs::now().millis());
-    let bound_ms = settle_bound_ms(&turns, in_flight_at_close > turns.len() as u64, cap_ms);
+    let unconfirmed: Vec<(u64, Option<u64>)> =
+        turns.iter().filter(|t| !t.confirmed).map(|t| (t.elapsed_ms, t.typical_ms)).collect();
+    let bound_ms = settle_bound_ms(&unconfirmed, in_flight_at_close > turns.len() as u64, cap_ms);
     let bound_source = if in_flight_at_close == 0 {
         "nothing_in_flight"
+    } else if in_flight_at_close <= crate::turn_ledger::confirmed_in_flight() {
+        "all_confirmed"
     } else if bound_ms >= cap_ms {
         "cap"
     } else {
@@ -180,16 +195,24 @@ pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
     };
     let deadline = started + std::time::Duration::from_millis(bound_ms);
     let mut poll = tokio::time::interval(POLL);
-    while in_flight() > 0 && std::time::Instant::now() < deadline {
+    while waits_for(in_flight(), crate::turn_ledger::confirmed_in_flight()) && std::time::Instant::now() < deadline {
         poll.tick().await;
     }
+    let handed_back = crate::turn_ledger::confirmed_in_flight();
     TurnSettle {
         in_flight_at_close,
-        cut: in_flight(),
+        handed_back,
+        cut: in_flight().saturating_sub(handed_back),
         bound_ms,
         bound_source,
         waited_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
     }
+}
+
+/// PURE: does the settle still wait? Only while some admitted turn holds no confirmed
+/// obligation: `in_flight` counts every admitted turn, `confirmed` the ones a cut hands back.
+pub(crate) fn waits_for(in_flight: u64, confirmed: u64) -> bool {
+    in_flight > confirmed
 }
 
 #[cfg(test)]
@@ -248,5 +271,31 @@ mod tests {
         assert_eq!(settle_bound_ms(&[(1_000, Some(20_000))], true, CAP), CAP);
         // A zero cap is no settle at all.
         assert_eq!(settle_bound_ms(&[(0, Some(240_000))], true, 0), 0);
+    }
+
+    // what this catches (stop-drain S4, card f78d7a22): a stop that waits for turns whose
+    // obligation is already durable. On the IntelMac 2026-11-02 the settle sat at its 300 s
+    // cap on turns stuck behind a busy engine, though each had a confirmed obligation the
+    // next start hands back (S3). A confirmed turn is not waited for; an unconfirmed one
+    // (admitted, not yet durable) still is; and the confirmation ends with the turn.
+    #[test]
+    fn the_settle_waits_only_for_turns_not_yet_confirmed() {
+        assert!(!waits_for(0, 0), "nothing in flight");
+        assert!(!waits_for(3, 3), "every turn confirmed: handed back, not waited for");
+        assert!(waits_for(3, 2), "one admitted turn is not durable yet: wait for it");
+
+        let persona = uuid::Uuid::new_v4();
+        let now = EpochMs::now().millis();
+        let before = crate::turn_ledger::confirmed_in_flight();
+        let turn = crate::turn_ledger::begin_turn(persona, now);
+        let mine = |confirmed: bool| {
+            crate::turn_ledger::in_flight_turns(now).iter().any(|t| t.confirmed == confirmed)
+        };
+        assert!(mine(false), "begun, not confirmed: the settle sizes its bound from it");
+        turn.confirm();
+        assert_eq!(crate::turn_ledger::confirmed_in_flight(), before + 1);
+        assert!(mine(true), "confirmed: left out of the bound");
+        drop(turn);
+        assert_eq!(crate::turn_ledger::confirmed_in_flight(), before, "the confirmation ends with the turn");
     }
 }

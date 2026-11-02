@@ -56,6 +56,11 @@ pub(super) static TURN_SHAPES: std::sync::LazyLock<
 > = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 pub(super) static IN_FLIGHT: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashSet<uuid::Uuid>>> =
     std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
+/// The minds whose turn in flight holds a CONFIRMED obligation (stop-drain S2): a stop that
+/// cuts it leaves a durable row that the next start hands back (S3), so the stop need not
+/// wait for it (S4).
+pub(super) static CONFIRMED: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashSet<uuid::Uuid>>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
 
 /// A turn in flight for `persona`: stamps the start (as [`note_turn_started`]) and marks
 /// her IN FLIGHT until dropped — so every exit of the service-loop turn, including a
@@ -73,8 +78,17 @@ pub fn begin_turn(persona: uuid::Uuid, now_ms: u64) -> TurnInFlight {
     TurnInFlight { persona, started: std::time::Instant::now(), previous_start_ms }
 }
 
+impl TurnInFlight {
+    /// This turn's obligation is confirmed durable: from here a stop may cut it, because the
+    /// next start hands it back (stop-drain S3), so the stop no longer waits for it (S4).
+    pub fn confirm(&self) {
+        CONFIRMED.lock().insert(self.persona);
+    }
+}
+
 impl Drop for TurnInFlight {
     fn drop(&mut self) {
+        CONFIRMED.lock().remove(&self.persona);
         IN_FLIGHT.lock().remove(&self.persona);
         let turn_ms = self.started.elapsed().as_millis() as u64;
         let gap_ms = self
@@ -101,11 +115,21 @@ pub fn in_flight_starts() -> Vec<(uuid::Uuid, u64)> {
     personas.into_iter().filter_map(|p| starts.get(&p).map(|s| (p, *s))).collect()
 }
 
-/// Every turn in flight right now, as (ms it has run, her typical turn ms — `None` until
-/// she has finished one this boot). The settle before a stop sizes its wait from this
-/// ([`crate::turn_ingress::settle_bound_ms`]). `now_ms` is the clock
+/// One turn in flight, as the settle before a stop reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InFlightTurn {
+    /// How long it has run, ms.
+    pub(crate) elapsed_ms: u64,
+    /// Her typical turn, ms; `None` until she has finished one this boot.
+    pub(crate) typical_ms: Option<u64>,
+    /// Its obligation is confirmed durable (S2), so a stop that cuts it hands it back (S3).
+    pub(crate) confirmed: bool,
+}
+
+/// Every turn in flight right now. The settle before a stop sizes its wait from the ones not
+/// yet confirmed ([`crate::turn_ingress::settle_bound_ms`]). `now_ms` is the clock
 /// [`begin_turn`] was stamped with. Locks taken one at a time, never nested.
-pub(crate) fn in_flight_turns(now_ms: u64) -> Vec<(u64, Option<u64>)> {
+pub(crate) fn in_flight_turns(now_ms: u64) -> Vec<InFlightTurn> {
     let personas: Vec<uuid::Uuid> = IN_FLIGHT.lock().iter().copied().collect();
     let starts = LAST_TURN_MS.lock();
     let started: Vec<(uuid::Uuid, u64)> = personas
@@ -113,10 +137,20 @@ pub(crate) fn in_flight_turns(now_ms: u64) -> Vec<(u64, Option<u64>)> {
         .map(|p| (p, starts.get(&p).map_or(0, |s| now_ms.saturating_sub(*s)))) // map_or: begin_turn stamps the start before marking in flight, so a miss is a race at most — 0 elapsed waits LONGER, never shorter
         .collect();
     drop(starts);
+    let confirmed = CONFIRMED.lock().clone();
     started
         .into_iter()
-        .map(|(p, elapsed)| (elapsed, turn_shape_of(p).map(|s| s.turn_ms)))
+        .map(|(p, elapsed_ms)| InFlightTurn {
+            elapsed_ms,
+            typical_ms: turn_shape_of(p).map(|s| s.turn_ms),
+            confirmed: confirmed.contains(&p),
+        })
         .collect()
+}
+
+/// How many turns in flight hold a confirmed obligation right now.
+pub(crate) fn confirmed_in_flight() -> u64 {
+    CONFIRMED.lock().len() as u64
 }
 
 /// Her measured turn shape; `None` until a turn has finished this boot.
