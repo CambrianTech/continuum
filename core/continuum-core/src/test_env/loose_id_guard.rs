@@ -64,7 +64,6 @@ const LOOSE_IDS: &[LooseId] = &[
     LooseId { file: "cognition/should_respond.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "commands/consciousness_context.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "commands/multi_layer_recall.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
-    LooseId { file: "commands/recall_hook.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "commands/persona/wall/pin.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
     LooseId { file: "commands/cognition/inbox_message_request.rs", field: "room_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
     LooseId { file: "commands/cognition/inbox_message_request.rs", field: "sender_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
