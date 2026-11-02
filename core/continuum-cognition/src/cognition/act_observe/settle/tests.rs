@@ -3,6 +3,26 @@
     use crate::cognition::llm_deliberation_faculty::admission_clock;
     use crate::inference::resource_admission::{LaneAdmission, LanePriority};
 
+    /// An act for `persona`: the first act of a turn in a fixed room.
+    fn act_of(persona: uuid::Uuid) -> admission_clock::ActAt {
+        admission_clock::ActAt { persona, room: uuid::Uuid::from_u128(0xa11), act: 0 }
+    }
+
+    // what this catches: a relaunch's cost inferred from timestamps (Codex on the 2026-11-02 06:26Z
+    // M5 re-home): whatever ends a step reads the act it is from the step's own scope, so the
+    // condemned and dropped probes name it; outside a step there is no act, never a guessed one.
+    #[tokio::test]
+    async fn a_step_knows_which_act_it_is_and_nothing_outside_does() {
+        let act = admission_clock::ActAt { persona: uuid::Uuid::from_u128(7), room: uuid::Uuid::from_u128(8), act: 3 };
+        let start = tokio::time::Instant::now();
+        let bound = std::time::Duration::from_secs(60);
+        let seen = super::until_act_stalls(start + bound, bound, Some(act), async { admission_clock::current_act() })
+            .await
+            .expect("the step completes");
+        assert_eq!(seen, Some(act), "inside the step, its act");
+        assert_eq!(admission_clock::current_act(), None, "outside any step, no act");
+    }
+
     // Inject only the engine observation; acquisition and watchdog remain real.
     async fn healthy_wait<T>(acquire: impl std::future::Future<Output=T>) -> T {
         let mut tokens = 0;
@@ -164,14 +184,14 @@
         let persona = uuid::Uuid::new_v4();
         let bound = std::time::Duration::from_secs(10);
         let deadline = tokio::time::Instant::now() + bound;
-        let turn = tokio::spawn(super::until_act_stalls(deadline, bound, Some(persona), async move {
+        let turn = tokio::spawn(super::until_act_stalls(deadline, bound, Some(act_of(persona)), async move {
             tokio::select! {
                 _ = healthy_wait(gate.acquire_serving_lane(Some(persona), LanePriority::Work, None)) => false,
                 _ = crate::cognition::directed_pending::wait(persona) => true,
             }
         }));
         queued(gate, 1).await;
-        let other = tokio::spawn(super::until_act_stalls(deadline, bound, Some(persona), std::future::pending::<()>()));
+        let other = tokio::spawn(super::until_act_stalls(deadline, bound, Some(act_of(persona)), std::future::pending::<()>()));
         tokio::time::advance(bound * 3).await;
         assert!(other.await?.is_err());
         assert!(!turn.is_finished());
@@ -194,7 +214,7 @@
         assert!(never.is_err());
         assert_eq!(start.elapsed(), bound, "no extension without a pinned slot");
         let unpinned = uuid::Uuid::new_v4();
-        let quick = super::until_act_stalls(start + bound * 2, bound, Some(unpinned), async { 42 }).await;
+        let quick = super::until_act_stalls(start + bound * 2, bound, Some(act_of(unpinned)), async { 42 }).await;
         assert_eq!(quick, Ok(42));
     }
 

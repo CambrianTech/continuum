@@ -181,12 +181,12 @@ async fn capacity_refusal_leaves_the_driver_once_with_typed_custody() {
 // 2026-08-04 on sympy-21379: one `code/tree`, then a prose explanation of the bug —
 // 0 patch bytes, 29 of 30 acts unspent, run over). When the CALLER declared the
 // deliverable to be the workspace, a Speak that changed no file must not end the
-// turn: she gets up to NARRATION_BUDGET more perceptions, each carrying the
-// structural fact that her working memory holds no mutation (2026-09-05: one was
-// too few — a plan, one act, a second plan ended every work turn). Bounded — the
-// budget spends and it settles, so a determined Speak is never trapped in a loop.
+// turn: she keeps perceiving, each time carrying the structural fact that her working
+// memory holds no mutation (2026-09-05: one was too few — a plan, one act, a second
+// plan ended every work turn). Bounded by the turn's own step budget, which plans
+// spend like acts, so a determined Speak is never trapped in a loop.
 #[tokio::test]
-async fn a_zero_change_speak_reperceives_up_to_the_narration_budget_when_the_workspace_is_the_deliverable(
+async fn a_zero_change_speak_reperceives_within_the_turns_step_budget_when_the_workspace_is_the_deliverable(
 ) {
     let speaker = CountingSpeaker::new();
     let wm = Arc::new(WorkingMemory::new(8));
@@ -212,8 +212,8 @@ async fn a_zero_change_speak_reperceives_up_to_the_narration_budget_when_the_wor
 
     assert_eq!(
         speaker.generations(),
-        super::super::settle::NARRATION_BUDGET + 1,
-        "the zero-deliverable Speaks bought exactly the narration budget of perceptions — not zero, not a loop"
+        8,
+        "the zero-deliverable Speaks spend the turn's own 8-step budget — not one, not a loop"
     );
     assert!(
         wm.recent().iter().any(|l| l.contains("[no-deliverable]")),
@@ -459,12 +459,13 @@ async fn drive_to_settle_returns_unsettled_act_when_budget_exhausted() {
     );
 }
 
-// what this catches: changing results preserve productive iteration, while
-// identical input AND output yields honestly after three repeated observations.
+// what this catches: changing results preserve productive iteration (the whole budget),
+// while identical input AND output is a fixed point the first time it repeats: the turn
+// yields after that one repeat (act 2), not after a constant number of them (2026-11-02).
 #[tokio::test]
 async fn repeated_calls_respect_the_callers_budget() {
     for (results, expected_acts) in [
-        (["unchanged"; 6], 4),
+        (["unchanged"; 6], 2),
         (
             [
                 "pending 1",

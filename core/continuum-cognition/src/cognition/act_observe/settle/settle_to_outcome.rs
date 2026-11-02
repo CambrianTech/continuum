@@ -48,11 +48,11 @@ pub(super) async fn settle_to_outcome<'c>(
 
     // Admission uses the caller's budget and lifecycle deadlines. Identical inputs
     // do not establish a stuck mind: repeated reads/retries can observe new state.
-    // Bound only a repeated input AND actual result, after executing the retry.
-    // This preserves unlimited productive work while yielding a fixed-point loop.
-    const STUCK_LIMIT: usize = 3;
+    // A repeated input AND an identical actual result, though, observed nothing new: that is
+    // a fixed point the first time it repeats, and the turn yields there (2026-11-02; it
+    // used to tolerate three, a constant nothing measured). Productive work never repeats both.
     let mut prior_evidence = None;
-    let mut stuck = 0usize;
+    let mut repeated = false;
     // A workspace-deliverable turn re-perceives on a zero-deliverable Speak (see the Spoke
     // arm). This used to be ONE-SHOT, and the glass box showed what that costs: on
     // sympy-21379 `persona.settle.no_deliverable` fired exactly once per run and she then
@@ -64,6 +64,10 @@ pub(super) async fn settle_to_outcome<'c>(
     // in a row with no act between them means the nudge is not working, so she settles
     // rather than being trapped. Her own behavior is the budget — no counter, no constant.
     let mut narrations_since_act: usize = 0;
+    // ONE STEP BUDGET (2026-11-02): every generation of a turn spends `max_acts`, the caller's
+    // one bound: acts, spoken plans and retried faulted generations alike. This counts the
+    // steps that were not acts; `acts + non_act_steps` is what the turn has spent.
+    let mut non_act_steps: usize = 0;
     let mut acts_at_last_nudge: Option<usize> = None;
     // Which `acts` value the last budget fact fired at — a Speak's one-shot
     // re-perception re-enters the loop with `acts` unchanged, and the same
@@ -115,9 +119,9 @@ pub(super) async fn settle_to_outcome<'c>(
     // faulted thought is retried in place, bounded, before the turn is
     // surrendered — the flicker costs one re-generation, not the turn. Only a
     // SUSTAINED fault (budget spent across the turn) ends the turn with
-    // inference_error, exactly as before — 4+ faults in one turn IS a wedge worth
-    // surrendering to, not a flicker. Whole-turn budget, not per-tick.
-    const DELIBERATION_RETRY_BUDGET: u32 = 3;
+    // inference_error, exactly as before. Whole-turn budget, not per-tick: the turn's own
+    // step budget, which a retried generation spends like any other (2026-11-02).
+    // Retries spend the turn's one step budget (`non_act_steps`), never a budget of their own.
     let mut delib_retries: u32 = 0;
 
     let mut first_step = true;
@@ -358,7 +362,7 @@ pub(super) async fn settle_to_outcome<'c>(
         // Speaking is never gated.
         let discovery_open =
             !framing.workspace_deliverable || mutated_yet || acts < discovery_budget;
-        if !discovery_open && acts < max_acts && stuck < STUCK_LIMIT && !saturation_probed {
+        if !discovery_open && acts + non_act_steps < max_acts && !repeated && !saturation_probed {
             saturation_probed = true;
             continuum_base::probe!(
                 class = "persona.settle.discovery_saturated",
@@ -371,7 +375,7 @@ pub(super) async fn settle_to_outcome<'c>(
                  the empty-diff re-drive instead of being read away (#390 state gate)"
             );
         }
-        let may_act = acts < max_acts && stuck < STUCK_LIMIT && discovery_open;
+        let may_act = acts + non_act_steps < max_acts && !repeated && discovery_open;
         let act_started = std::time::Instant::now();
         continuum_base::probe!(
             class = "settle.tick.start",
@@ -398,7 +402,11 @@ pub(super) async fn settle_to_outcome<'c>(
         let (step, step_metrics, step_receipts) = match until_act_stalls(
             tick_deadline,
             act_bound,
-            acting_persona,
+            acting_persona.map(|persona| crate::cognition::llm_deliberation_faculty::admission_clock::ActAt {
+                persona,
+                room: room_id,
+                act: u32::try_from(acts).unwrap_or(u32::MAX), // past u32::MAX acts saturates; no turn reaches it
+            }),
             // Boxed: the step is the largest future in the drive, and holding it by value
             // inside this wrapper's own state overflowed the layout query depth (CI,
             // "queries overflow the depth limit"). The box keeps the wrapper one pointer wide.
@@ -564,25 +572,28 @@ pub(super) async fn settle_to_outcome<'c>(
                 // in `settle_step`. [[no-hardcoded-heuristics-to-steer-cognition]],
                 // [[fix-the-substrate-never-rig-the-persona-the-line-between-assist-and-scaffold]].
                 // NARRATION IS NOT A SETTLEMENT (2026-09-05): a workspace-deliverable
-                // turn that speaks without having changed a file is re-perceived up to
-                // NARRATION_BUDGET consecutive times, not once. Measured on the team
-                // round: each work turn was one act and a spoken plan, the second plan
-                // ended the turn, the next turn re-oriented — 29 acts, 0 writes in 70
-                // minutes on 12 held cards. The fact names the count so pacing stays
-                // hers; the caller budget and lifecycle deadlines still apply.
-                if framing.workspace_deliverable && narrations_since_act < NARRATION_BUDGET {
+                // turn that speaks without having changed a file is re-perceived, not
+                // ended. Measured on the team round: each work turn was one act and a
+                // spoken plan, the second plan ended the turn, the next turn re-oriented
+                // — 29 acts, 0 writes in 70 minutes on 12 held cards. The bound is the
+                // turn's own step budget, spent by plans and acts alike (a plan is a
+                // generation too), never a separate constant on how many plans she may
+                // make (2026-11-02); the fact names the count so pacing stays hers.
+                if framing.workspace_deliverable && acts + non_act_steps + 1 < max_acts {
                     if let Some(body) = cycle.acting() {
                         if !mutated_workspace(&body.working_memory.recent_entries(), ConcernPhase::JustSettled) {
                             narrations_since_act += 1;
+                            non_act_steps += 1;
                             acts_at_last_nudge = Some(acts);
                             // Sense, not steer (2026-09-01): the receipt-absence is
                             // the fact; the "an explanation of a fix is not the fix"
                             // sermon accumulated dozens of copies in looping minds
                             // and became the content of their turns.
                             body.working_memory.record_fact(&format!(
-                                "[no-deliverable] I settled by speaking ({narrations_since_act} of \
-                                 {NARRATION_BUDGET} plans in a row); no act of mine has changed a \
-                                 file in this workspace yet."
+                                "[no-deliverable] I settled by speaking ({narrations_since_act} \
+                                 plans in a row, {} of this turn's {max_acts} steps left); no act \
+                                 of mine has changed a file in this workspace yet.",
+                                max_acts - acts - non_act_steps
                             ));
                             continuum_base::probe!(
                                 class = "persona.settle.no_deliverable",
@@ -668,18 +679,13 @@ pub(super) async fn settle_to_outcome<'c>(
                 let evidence = cycle.acting().and_then(|body| {
                     batch_evidence(&calls, &body.working_memory.recent_acts())
                 });
-                if evidence.is_some() && evidence == prior_evidence {
-                    stuck += 1;
-                } else {
-                    stuck = 0;
-                }
+                repeated = evidence.is_some() && evidence == prior_evidence;
                 prior_evidence = evidence;
-                if stuck >= STUCK_LIMIT {
+                if repeated {
                     continuum_base::probe!(
                         class = "persona.settle.stuck_backstop",
                         room_id = %room_id,
                         acts = acts,
-                        stuck = stuck,
                         "same calls and actual results repeated; yielding without claiming completion"
                     );
                     if let Some(body) = cycle.acting() {
@@ -767,8 +773,7 @@ pub(super) async fn settle_to_outcome<'c>(
                         class = "persona.act.lane_starved",
                         room_id = %room_id,
                         act = acts,
-                        acts_kept = (max_acts.saturating_sub(acts)) as u64,
-                        delib_retries_kept = DELIBERATION_RETRY_BUDGET.saturating_sub(delib_retries) as u64,
+                        steps_kept = (max_acts.saturating_sub(acts + non_act_steps)) as u64,
                         error = %error,
                         "deferred at the serving gate without reaching the model — act budget and deliberation retries left intact for the next tick"
                     );
@@ -801,14 +806,15 @@ pub(super) async fn settle_to_outcome<'c>(
                 // retry waits out another whole bound on the same engine (up to three, so one
                 // turn held four). It surrenders now, a failed act: demand and a failure for
                 // the resident ledger, never a completion (Fable on #5498).
-                if delib_retries < DELIBERATION_RETRY_BUDGET && !dropped_in_flight {
+                if acts + non_act_steps + 1 < max_acts && !dropped_in_flight {
                     delib_retries += 1;
+                    non_act_steps += 1;
                     continuum_base::probe!(
                         class = "persona.settle.deliberation_retry",
                         room_id = %room_id,
                         acts = acts,
                         retry = delib_retries,
-                        budget = DELIBERATION_RETRY_BUDGET,
+                        steps_kept = (max_acts.saturating_sub(acts + non_act_steps)) as u64,
                         error = %error,
                         "transient deliberation fault — retrying the thought in place (the turn is not yet surrendered)"
                     );
