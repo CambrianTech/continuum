@@ -374,9 +374,26 @@
         let dir = setup_git_repo().await;
         fs::write(dir.path().join("initial.txt"), "modified\n").unwrap();
 
-        let diff = git_diff(dir.path(), false).await.unwrap();
+        let diff = git_diff(dir.path(), DiffScope::Unstaged).await.unwrap().text;
         assert!(diff.contains("-hello"));
         assert!(diff.contains("+modified"));
+    }
+
+    // what this catches: a resident's work checkpointed into commits every act reading as
+    // nothing done. The working-tree diff is empty after a checkpoint; her work is not
+    // (Aiko re-read the same files for 80 minutes on 2026-11-02 believing her edits phantom).
+    #[tokio::test]
+    async fn your_work_includes_the_checkpoints_committed_since_the_integration_branch() {
+        let dir = setup_git_repo().await;
+        let root = dir.path();
+        run_git(root, &["update-ref", "refs/remotes/origin/main", "HEAD"]).await.unwrap();
+        fs::write(root.join("initial.txt"), "her edit\n").unwrap();
+        run_git(root, &["commit", "-qam", "wip(card): continuum act on node n"]).await.unwrap();
+
+        assert!(git_diff(root, DiffScope::Unstaged).await.unwrap().text.is_empty(), "the checkpoint left the tree clean");
+        let work = git_diff(root, DiffScope::YourWork).await.unwrap();
+        assert!(work.text.contains("+her edit"), "her committed work is her work: {}", work.text);
+        assert!(work.against.contains("origin/main"), "it names what it was taken against: {}", work.against);
     }
 
     #[tokio::test]

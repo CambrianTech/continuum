@@ -44,28 +44,19 @@ pub async fn git_status(workspace_root: &Path) -> GitStatusInfo {
     let mut untracked = Vec::new();
 
     for line in status_output.lines() {
-        if line.len() < 3 {
+        // Porcelain v1: the index status, the work-tree status, a space, then the path.
+        let mut chars = line.chars();
+        let (Some(index), Some(tree), Some(' ')) = (chars.next(), chars.next(), chars.next()) else {
             continue;
-        }
+        };
+        let file_path = chars.as_str().trim().to_string();
+        let either = |code: char| index == code || tree == code;
 
-        let status_code = &line[..2];
-        let file_path = line[3..].trim().to_string();
-
-        // Parse porcelain v1 status codes
-        // First char = index status, second char = work tree status
-        match status_code {
-            "??" => untracked.push(file_path),
-            s if s.starts_with('A') || s.ends_with('A') => added.push(file_path),
-            s if s.starts_with('D') || s.ends_with('D') => deleted.push(file_path),
-            s if s.starts_with('M')
-                || s.ends_with('M')
-                || s.starts_with('R')
-                || s.ends_with('R')
-                || s.starts_with('C')
-                || s.ends_with('C') =>
-            {
-                modified.push(file_path)
-            }
+        match (index, tree) {
+            ('?', '?') => untracked.push(file_path),
+            _ if either('A') => added.push(file_path),
+            _ if either('D') => deleted.push(file_path),
+            _ if either('M') || either('R') || either('C') => modified.push(file_path),
             _ => {
                 // Catch-all: treat as modified
                 if !file_path.is_empty() {
@@ -86,16 +77,68 @@ pub async fn git_status(workspace_root: &Path) -> GitStatusInfo {
     }
 }
 
-/// Get git diff output for the workspace.
-///
-/// If `staged` is true, shows staged changes (--cached).
-/// Otherwise shows unstaged working tree changes.
-pub async fn git_diff(workspace_root: &Path, staged: bool) -> Result<String, String> {
-    let mut args = vec!["diff"];
-    if staged {
-        args.push("--cached");
+/// Which changes a diff shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/code/DiffScope.ts")]
+pub enum DiffScope {
+    /// Everything this branch did since it left its integration branch: the act checkpoints
+    /// the substrate commits for her (`wip(...)`) and the working tree. A resident's own work
+    /// is committed every act, so a working-tree-only diff is always empty and read as "my
+    /// edits were phantom" (Aiko re-read the same files for 80 minutes, 2026-11-02).
+    #[default]
+    YourWork,
+    /// Working-tree changes not yet staged.
+    Unstaged,
+    /// Staged changes (`--cached`).
+    Staged,
+}
+
+/// A diff and what it was taken against, so a reader knows what an empty one means.
+pub struct Diff {
+    pub text: String,
+    pub against: String,
+}
+
+/// Git diff output for the workspace, in `scope`.
+pub async fn git_diff(workspace_root: &Path, scope: DiffScope) -> Result<Diff, String> {
+    match scope {
+        DiffScope::Unstaged => Ok(Diff { text: run_git(workspace_root, &["diff"]).await?, against: "the index".into() }),
+        DiffScope::Staged => Ok(Diff { text: run_git(workspace_root, &["diff", "--cached"]).await?, against: "HEAD (staged)".into() }),
+        DiffScope::YourWork => match work_base(workspace_root).await {
+            Some((base, from)) => Ok(Diff {
+                text: run_git(workspace_root, &["diff", &base]).await?,
+                against: format!("{} ({from}, where this branch left it)", &base[..base.len().min(SHOWN_SHA)]),
+            }),
+            // No integration branch to fork from: nothing commits into such a checkout, so the
+            // working tree against HEAD is all of the work.
+            None => Ok(Diff { text: run_git(workspace_root, &["diff", "HEAD"]).await?, against: "HEAD".into() }),
+        },
     }
-    run_git(workspace_root, &args).await
+}
+
+/// How much of a commit id the `against` line shows: git's own short form.
+const SHOWN_SHA: usize = 12;
+
+/// The integration branches a card can fork from, newest first by preference of the repo:
+/// the origin's own default, then the conventional names.
+const INTEGRATION_REFS: &[&str] = &["origin/HEAD", "origin/canary", "origin/main", "origin/master"];
+
+/// Where this branch left its integration branch: the newest merge-base of HEAD with any of
+/// the origin's integration refs that exist, and that ref's name. `None` when the checkout has
+/// no such ref (no origin, or a fresh `git init`).
+pub async fn work_base(workspace_root: &Path) -> Option<(String, String)> {
+    let mut best: Option<(i64, String, String)> = None;
+    for reference in INTEGRATION_REFS {
+        let Ok(base) = run_git(workspace_root, &["merge-base", "HEAD", reference]).await else { continue };
+        let base = base.trim().to_owned();
+        let Ok(when) = run_git(workspace_root, &["log", "-1", "--format=%ct", &base]).await else { continue };
+        let Ok(when) = when.trim().parse::<i64>() else { continue };
+        if best.as_ref().is_none_or(|(newest, _, _)| when > *newest) {
+            best = Some((when, base, (*reference).to_owned()));
+        }
+    }
+    best.map(|(_, base, from)| (base, from))
 }
 
 /// The `owner/name` board key this checkout belongs to, read from `origin`.
