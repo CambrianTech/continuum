@@ -48,10 +48,10 @@ impl ServingDaemonModule {
     }
 
     pub(super) fn note_reconcile_busy(&self, skipped: &'static str) {
-        let started = self.reconcile_started_ms.load(Ordering::Acquire);
-        if started == 0 {
+        let Some(in_flight) = self.lifecycle.in_flight() else {
             return;
-        }
+        };
+        let started = in_flight.started_ms;
         let now = EpochMs::now().millis();
         let age = Duration::from_millis(now.saturating_sub(started));
         let said = self.reconcile_busy_said_ms.load(Ordering::Acquire);
@@ -59,7 +59,7 @@ impl ServingDaemonModule {
             return;
         }
         self.reconcile_busy_said_ms.store(now, Ordering::Release);
-        let step_kind = ReconcileStep::from_u8(self.reconcile_step.load(Ordering::Acquire));
+        let step_kind = in_flight.step;
         let step = step_kind.name();
         if reconcile_wedged_at(step_kind, age) {
             continuum_base::probe!(
@@ -94,11 +94,7 @@ impl ServingDaemonModule {
     }
 
     pub(super) fn reconcile_to_plan(&self) -> Option<JoinHandle<()>> {
-        let operation = match ServingOperation::acquire(
-            self.reconciling.clone(),
-            self.reconcile_started_ms.clone(),
-            self.reconcile_step.clone(),
-        ) {
+        let operation = match self.lifecycle.try_operation() {
             Some(operation) => operation,
             None => {
                 self.note_reconcile_busy("reconcile");

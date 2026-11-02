@@ -180,7 +180,7 @@ impl ServingDaemonModule {
     /// A current, ready, owned launch, preserving its original requested target.
     /// Unknown adopted origins and superseded/in-flight operations are ineligible.
     pub fn verified_serving_target(&self) -> Option<VerifiedServingCapture> {
-        if self.reconciling.load(Ordering::Acquire) {
+        if self.lifecycle.is_held() {
             return None;
         }
         let capture = self.verified_target.borrow().clone()?;

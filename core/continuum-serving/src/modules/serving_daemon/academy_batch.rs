@@ -72,11 +72,9 @@ impl ServingDaemonModule {
         request: TeacherBatchRequest,
     ) -> Result<RemediationCorpus, CommandError> {
         let capture = self.verified_serving_target();
-        let operation = ServingOperation::acquire(
-            self.reconciling.clone(),
-            self.reconcile_started_ms.clone(),
-            self.reconcile_step.clone(),
-        )
+        let operation = self
+            .lifecycle
+            .try_operation()
             .ok_or_else(|| failure("serving lifecycle is busy; teacher batch deferred"))?;
         // a teacher window borrows the engine; never one that hosts live work (step 1)
         let occupancy = self.engine_occupancy();

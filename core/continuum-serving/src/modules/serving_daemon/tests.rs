@@ -336,7 +336,7 @@ pub(crate) async fn exercise_cancelled_exclusive_teacher(
         1,
         "save confirmed before observed original exit"
     );
-    assert!(daemon.reconciling.load(Ordering::Acquire));
+    assert!(daemon.lifecycle.is_held());
     caller.abort();
     assert!(caller
         .await
@@ -374,7 +374,7 @@ pub(crate) async fn exercise_cancelled_exclusive_teacher(
     daemon.intent.set_pin(None, true);
     tokio::time::timeout(Duration::from_secs(20), async {
         let mut tick = tokio::time::interval(Duration::from_millis(10));
-        while daemon.reconciling.load(Ordering::Acquire) {
+        while daemon.lifecycle.is_held() {
             tick.tick().await;
             daemon.poll_teacher_batch();
         }

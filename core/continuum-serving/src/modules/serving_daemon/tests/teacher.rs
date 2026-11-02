@@ -128,7 +128,7 @@ async fn explicit_teacher_batch_keeps_shared_generation_owned_until_terminal() {
                 },
             }
         }).await.expect("teacher must reach fixture HTTP within its existing budget");
-    assert!(daemon.reconciling.load(Ordering::Acquire));
+    assert!(daemon.lifecycle.is_held());
     release.add_permits(1);
     let corpus = tokio::time::timeout(Duration::from_secs(20), first)
         .await
@@ -145,7 +145,7 @@ async fn explicit_teacher_batch_keeps_shared_generation_owned_until_terminal() {
     );
     tokio::time::timeout(Duration::from_secs(5), async {
         let mut tick = tokio::time::interval(Duration::from_millis(10));
-        while daemon.reconciling.load(Ordering::Acquire) {
+        while daemon.lifecycle.is_held() {
             tick.tick().await;
             daemon.poll_teacher_batch();
         }
@@ -168,14 +168,14 @@ async fn explicit_teacher_batch_keeps_shared_generation_owned_until_terminal() {
     next.abort();
     assert!(next.await.err().expect("cancelled command").is_cancelled());
     assert!(
-        daemon.reconciling.load(Ordering::Acquire),
+        daemon.lifecycle.is_held(),
         "caller cancellation does not cancel shared decoding"
     );
     assert!(daemon.run_teacher_batch(request(vec![])).await.is_err());
     release.add_permits(1);
     tokio::time::timeout(Duration::from_secs(20), async {
         let mut tick = tokio::time::interval(Duration::from_millis(10));
-        while daemon.reconciling.load(Ordering::Acquire) {
+        while daemon.lifecycle.is_held() {
             tick.tick().await;
             daemon.poll_teacher_batch();
         }
