@@ -203,6 +203,56 @@ async fn three_deadline_misses_make_the_lane_cold_and_the_next_request_fails_fas
     assert!(err.contains("df72dbf2"));
 }
 
+// what this catches: a miss that is not a `Timeout` resetting the breaker as if the peer had
+// answered. A seat that forms no session fails as a transport error (airc's "no session with the
+// peer before the deadline"); on IntelMac 2026-11-02 three residents retried such a seat every act,
+// ~630 s each, and the lane never went cold (card ce043fcc). No answer, of any kind, is a miss.
+#[tokio::test]
+async fn no_session_and_no_route_count_as_misses_and_make_the_lane_cold() {
+    let misses = [
+        RemoteInferenceError::Transport {
+            message: "transport: addressed: no session with the peer before the deadline".into(),
+        },
+        RemoteInferenceError::NoPeerReachable { message: "route: no route".into() },
+        RemoteInferenceError::Transport { message: "addressed transport: write failed".into() },
+    ];
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let transport = StubInferenceTransport::new(move |_| {
+        let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(misses[i % misses.len()].clone())
+    });
+    let adapter = AircRemoteInferenceAdapter::new(transport).with_target_peer("ce043fcc-no-session");
+    for _ in 0..COLD_AFTER_DEADLINES {
+        assert!(!adapter.is_cold(), "warm until the misses add up");
+        adapter.generate_text(req("hi")).await.unwrap_err();
+    }
+    assert!(adapter.is_cold(), "no session and no route are misses, not answers");
+    let err = adapter.generate_text(req("hi")).await.unwrap_err();
+    assert!(err.contains("cold"), "refused here, not after another full deadline: {err}");
+}
+
+// what this catches: the mirror. A peer that ANSWERS, even with a refusal, is alive: the misses
+// before it do not add up across it, so a lane is not exiled for a peer that evaluates its mail.
+#[tokio::test]
+async fn an_answering_refusal_resets_the_misses() {
+    let script: [Result<RemoteInferenceResponse, RemoteInferenceError>; 5] = [
+        Err(RemoteInferenceError::Transport { message: "no session".into() }),
+        Err(RemoteInferenceError::Timeout { elapsed_ms: 1 }),
+        Err(RemoteInferenceError::PeerAdapterFailed { message: "the peer's adapter refused".into() }),
+        Err(RemoteInferenceError::Transport { message: "no session".into() }),
+        Err(RemoteInferenceError::Timeout { elapsed_ms: 1 }),
+    ];
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let transport = StubInferenceTransport::new(move |_| {
+        script[next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % script.len()].clone()
+    });
+    let adapter = AircRemoteInferenceAdapter::new(transport).with_target_peer("ce043fcc-answers");
+    for _ in 0..5 {
+        adapter.generate_text(req("hi")).await.unwrap_err();
+    }
+    assert!(!adapter.is_cold(), "two misses, an answer, two misses: never three in a row");
+}
+
 #[tokio::test]
 async fn timeout_error_surfaces_with_elapsed_ms() {
     let transport = StubInferenceTransport::always_failing(RemoteInferenceError::Timeout {
