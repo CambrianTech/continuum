@@ -411,9 +411,13 @@ impl MemoryPressureMonitor {
                 match outcome {
                     ReporterCallOutcome::Report(report, priority) => {
                         entry.consecutive_panics = 0;
-                        match held_by_priority.iter_mut().find(|held| held.priority == priority) {
-                            Some(held) => held.bytes += report.bytes,
-                            None => held_by_priority.push(HeldAtPriority { priority, bytes: report.bytes }),
+                        // Only what can shed shares an overrun: an unsheddable reporter would claim a
+                        // share it never frees (Cormac on #5697).
+                        if report.can_shed {
+                            match held_by_priority.iter_mut().find(|held| held.priority == priority) {
+                                Some(held) => held.bytes += report.bytes,
+                                None => held_by_priority.push(HeldAtPriority { priority, bytes: report.bytes }),
+                            }
                         }
                         module_reports.push(report);
                     }
