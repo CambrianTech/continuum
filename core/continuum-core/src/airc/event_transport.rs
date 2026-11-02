@@ -70,9 +70,9 @@ mod tests {
             StoreAircEventTransport::new(Arc::new(InMemoryAircRealtimeStore::default()));
         let room_id = Uuid::from_u128(0xA1);
         let envelope = AircRealtimeEnvelope::new(
-            "evt-1".to_string(),
+            Uuid::from_u128(1),
             room_id,
-            "continuum".to_string(),
+            airc_core::PeerId::from_u128(0xC0),
             100,
             AircRealtimePayload::ExistingSchema {
                 payload: AircRealtimePayloadRef::inline(
@@ -103,6 +103,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(replay.events.len(), 1);
-        assert_eq!(replay.events[0].event_id, "evt-1");
+        assert_eq!(replay.events[0].event_id, Uuid::from_u128(1));
     }
 }

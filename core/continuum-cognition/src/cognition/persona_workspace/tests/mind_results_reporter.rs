@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::ai::types::ResultCustody;
 use crate::cognition::persona_workspace::mind_results_reporter::{
-    budget_of, over_gate, prove, resident_bytes, shed_to, LastCopy, Minds, ProvenCopies,
+    budget_of, prove, resident_bytes, shed_to, LastCopy, Minds, ProvenCopies,
 };
 use crate::cognition::tool_executor::spill::{self, LivePin};
 use crate::cognition::working_memory::WorkingMemory;
@@ -243,27 +243,3 @@ fn report_sums_resident_bytes_across_minds() {
     );
 }
 
-// what this catches: a shed target of our own invention. The bytes shed are how far the host's
-// used RAM stands past the monitor's own gate for this priority; nothing before the first poll.
-#[test]
-fn the_shed_target_is_the_hosts_overrun_past_the_monitors_gate() {
-    use continuum_kernel::system_resources::{MemoryPriority, PressureSnapshot};
-    assert_eq!(
-        over_gate(&PressureSnapshot::default()),
-        0,
-        "no poll yet: nothing to shed"
-    );
-    let total = 100 * 1024 * 1024 * 1024u64;
-    let gate = (total as f64 * MemoryPriority::Interactive.pressure_gate()) as u64;
-    let snapshot = |used: u64| PressureSnapshot {
-        total_bytes: total,
-        available_bytes: total - used,
-        ..Default::default()
-    };
-    assert_eq!(over_gate(&snapshot(gate)), 0, "at the gate: nothing");
-    assert_eq!(
-        over_gate(&snapshot(gate + 5 * BODY as u64)),
-        5 * BODY as u64,
-        "past it: exactly the overrun"
-    );
-}

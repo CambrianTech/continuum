@@ -28,7 +28,9 @@
         let executor = Arc::new(CommandExecutor::new(registry));
         // The relay this core publishes callers' lines as (the airc module registers it in
         // production); first registration wins process-wide.
-        crate::chat::publication::register_relay(airc_core::PeerId::from_u128(0x7e1a));
+        crate::persona::self_peer::scopes()
+            .designate(uuid::Uuid::from_u128(0x7e1a))
+            .expect("test: every chat test uses one relay");
         ChatModule::with_executor(executor)
     }
 

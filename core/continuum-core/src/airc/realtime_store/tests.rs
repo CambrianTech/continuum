@@ -11,26 +11,26 @@
     const CAMBRIANTECH: Uuid = Uuid::from_u128(0xA2);
     const OTHER: Uuid = Uuid::from_u128(0xA3);
 
-    fn durable_event(id: &str, room: Uuid, created_at_ms: u64) -> AircRealtimeEnvelope {
+    fn durable_event(id: u128, room: Uuid, created_at_ms: u64) -> AircRealtimeEnvelope {
         AircRealtimeEnvelope::new(
-            id.to_string(),
+            Uuid::from_u128(id),
             room,
-            "node-a".to_string(),
+            PeerId::from_u128(0xC1),
             created_at_ms,
             AircRealtimePayload::ExistingSchema {
                 payload: AircRealtimePayloadRef::inline(
                     AircRealtimeSchema::ChatTranscript,
-                    json!({"text": id}),
+                    json!({"text": format!("{id}")}),
                 ),
             },
         )
     }
 
-    fn typing_event(id: &str, started_at_ms: u64, expires_at_ms: u64) -> AircRealtimeEnvelope {
+    fn typing_event(id: u128, started_at_ms: u64, expires_at_ms: u64) -> AircRealtimeEnvelope {
         AircRealtimeEnvelope::new(
-            id.to_string(),
+            Uuid::from_u128(id),
             GENERAL,
-            "persona-1".to_string(),
+            PeerId::from_u128(0xC2),
             started_at_ms,
             AircRealtimePayload::Presence {
                 event: AircPresenceEvent {
@@ -47,7 +47,7 @@
     }
 
     fn peer_manifest_event(
-        id: &str,
+        id: u128,
         peer_id: &str,
         rooms: &[Uuid],
         capabilities: &[&str],
@@ -55,9 +55,9 @@
         expires_at_ms: Option<u64>,
     ) -> AircRealtimeEnvelope {
         AircRealtimeEnvelope::new(
-            id.to_string(),
+            Uuid::from_u128(id),
             GENERAL,
-            peer_id.to_string(),
+            PeerId::from_uuid(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, peer_id.as_bytes())),
             advertised_at_ms,
             AircRealtimePayload::PeerManifest {
                 manifest: AircPeerManifest {
@@ -94,7 +94,7 @@
         for idx in 1..=3 {
             store
                 .publish(AircRealtimePublishParams {
-                    envelope: durable_event(&format!("evt-{idx}"), GENERAL, idx),
+                    envelope: durable_event(idx as u128, GENERAL, idx),
                 })
                 .unwrap();
         }
@@ -105,7 +105,7 @@
                 after_cursor: Some(AircReplayCursor {
                     room_id: GENERAL,
                     lamport: 1,
-                    event_id: "evt-1".to_string(),
+                    event_id: Uuid::from_u128(1),
                     observed_at_ms: Some(1),
                 }),
                 limit: Some(10),
@@ -121,11 +121,11 @@
             result
                 .events
                 .iter()
-                .map(|event| event.event_id.as_str())
+                .map(|event| event.event_id)
                 .collect::<Vec<_>>(),
-            ["evt-2", "evt-3"]
+            [Uuid::from_u128(2), Uuid::from_u128(3)]
         );
-        assert_eq!(result.cursor.unwrap().event_id, "evt-3".to_string());
+        assert_eq!(result.cursor.unwrap().event_id, Uuid::from_u128(3));
     }
 
     #[test]
@@ -133,12 +133,12 @@
         let store = InMemoryAircRealtimeStore::new(10);
         let first = store
             .publish(AircRealtimePublishParams {
-                envelope: typing_event("typing-1", 100, 200),
+                envelope: typing_event(0x71, 100, 200),
             })
             .unwrap();
         let second = store
             .publish(AircRealtimePublishParams {
-                envelope: typing_event("typing-2", 120, 240),
+                envelope: typing_event(0x72, 120, 240),
             })
             .unwrap();
 
@@ -183,7 +183,7 @@
         let first = store
             .publish(AircRealtimePublishParams {
                 envelope: peer_manifest_event(
-                    "manifest-1",
+                    0x91,
                     "peer-a",
                     &[GENERAL],
                     &["continuum.lora.invoke"],
@@ -195,7 +195,7 @@
         let second = store
             .publish(AircRealtimePublishParams {
                 envelope: peer_manifest_event(
-                    "manifest-2",
+                    0x92,
                     "peer-a",
                     &[GENERAL, CAMBRIANTECH],
                     &["continuum.lora.invoke", "continuum.chat.turn"],
@@ -207,7 +207,7 @@
         store
             .publish(AircRealtimePublishParams {
                 envelope: peer_manifest_event(
-                    "manifest-3",
+                    0x93,
                     "peer-b",
                     &[GENERAL],
                     &["continuum.lora.invoke"],
@@ -310,13 +310,13 @@
     fn receipt_only_messages_are_not_replayed() {
         let store = InMemoryAircRealtimeStore::new(10);
         let mut receipt = AircRealtimeEnvelope::new(
-            "receipt-1".to_string(),
+            Uuid::from_u128(0xB1),
             GENERAL,
-            "peer-1".to_string(),
+            PeerId::from_u128(0xC3),
             10,
             AircRealtimePayload::Receipt {
                 receipt: crate::routing::airc_realtime::AircReceipt {
-                    event_id: "evt-1".to_string(),
+                    event_id: Uuid::from_u128(1),
                     peer_id: PeerId::from_uuid(uuid::Uuid::new_v5(
                         &uuid::Uuid::NAMESPACE_OID,
                         b"peer-1",
@@ -352,9 +352,9 @@
     fn control_messages_are_replayable_for_reconnect() {
         let store = InMemoryAircRealtimeStore::new(10);
         let envelope = AircRealtimeEnvelope::new(
-            "sub-1".to_string(),
+            Uuid::from_u128(0x51),
             GENERAL,
-            "browser-1".to_string(),
+            PeerId::from_uuid(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"browser-1")),
             10,
             AircRealtimePayload::Subscription {
                 event: AircSubscriptionEvent {
@@ -378,9 +378,9 @@
     fn subscription_events_project_active_room_subscribers() {
         let store = InMemoryAircRealtimeStore::new(10);
         for (id, room, subscriber, topic) in [
-            ("sub-1", GENERAL, "browser-1", "presence"),
-            ("sub-2", GENERAL, "persona-1", "media"),
-            ("sub-3", OTHER, "browser-2", "presence"),
+            (0x51, GENERAL, "browser-1", "presence"),
+            (0x62, GENERAL, "persona-1", "media"),
+            (0x63, OTHER, "browser-2", "presence"),
         ] {
             store
                 .publish(AircRealtimePublishParams {
@@ -419,7 +419,7 @@
         store
             .publish(AircRealtimePublishParams {
                 envelope: subscription_event(
-                    "sub-1",
+                    0x51,
                     GENERAL,
                     "browser-1",
                     "presence",
@@ -430,7 +430,7 @@
         let unsubscribe = store
             .publish(AircRealtimePublishParams {
                 envelope: subscription_event(
-                    "unsub-1",
+                    0x52,
                     GENERAL,
                     "browser-1",
                     "presence",
@@ -459,9 +459,9 @@
             result
                 .events
                 .iter()
-                .map(|event| event.event_id.as_str())
+                .map(|event| event.event_id)
                 .collect::<Vec<_>>(),
-            ["sub-1", "unsub-1"]
+            [Uuid::from_u128(0x51), Uuid::from_u128(0x52)]
         );
     }
 
@@ -470,7 +470,7 @@
         let store = InMemoryAircRealtimeStore::new(10);
         let error = store
             .publish(AircRealtimePublishParams {
-                envelope: durable_event("evt-1", Uuid::nil(), 1),
+                envelope: durable_event(1, Uuid::nil(), 1),
             })
             .unwrap_err();
 
@@ -478,16 +478,16 @@
     }
 
     fn subscription_event(
-        id: &str,
+        id: u128,
         room: Uuid,
         subscriber: &str,
         topic: &str,
         action: AircSubscriptionAction,
     ) -> AircRealtimeEnvelope {
         AircRealtimeEnvelope::new(
-            id.to_string(),
+            Uuid::from_u128(id),
             room,
-            subscriber.to_string(),
+            PeerId::from_uuid(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, subscriber.as_bytes())),
             10,
             AircRealtimePayload::Subscription {
                 event: AircSubscriptionEvent {
@@ -564,7 +564,7 @@
                 tasks.push(tokio::spawn(async move {
                     store
                         .publish(AircRealtimePublishParams {
-                            envelope: durable_event(&format!("evt-{i:03}"), GENERAL, i as u64 + 1),
+                            envelope: durable_event(i as u128, GENERAL, i as u64 + 1),
                         })
                         .expect("publish must succeed")
                 }));
@@ -589,7 +589,7 @@
                 .replay(AircRealtimeReplayParams {
                     room_id: GENERAL,
                     after_cursor: None,
-                    limit: Some(MAX_ROOM_REPLAY_LIMIT),
+                    limit: None,
                     include_presence: None,
                     include_subscriptions: None,
                     include_peer_manifests: None,
@@ -606,14 +606,14 @@
                 PARALLEL
             );
 
-            // The published event_ids ("evt-000".."evt-063") must all be
+            // The published event_ids (Uuid::from_u128(0..PARALLEL)) must all be
             // present exactly once. Order across event_ids is non-
             // deterministic (publishes raced); only completeness matters.
-            let mut observed_ids: Vec<String> =
-                replay.events.iter().map(|e| e.event_id.clone()).collect();
+            let mut observed_ids: Vec<Uuid> =
+                replay.events.iter().map(|e| e.event_id).collect();
             observed_ids.sort();
-            let mut expected_ids: Vec<String> =
-                (0..PARALLEL).map(|i| format!("evt-{i:03}")).collect();
+            let mut expected_ids: Vec<Uuid> =
+                (0..PARALLEL).map(|i| Uuid::from_u128(i as u128)).collect();
             expected_ids.sort();
             assert_eq!(
                 observed_ids, expected_ids,
@@ -672,7 +672,7 @@
                         store
                             .publish(AircRealtimePublishParams {
                                 envelope: durable_event(
-                                    &format!("evt-{:?}-{i:03}", room.as_u128()),
+                                    (room.as_u128() << 32) | i as u128,
                                     room,
                                     i as u64 + 1,
                                 ),
@@ -690,7 +690,7 @@
                     .replay(AircRealtimeReplayParams {
                         room_id: room,
                         after_cursor: None,
-                        limit: Some(MAX_ROOM_REPLAY_LIMIT),
+                        limit: None,
                         include_presence: None,
                         include_subscriptions: None,
                         include_peer_manifests: None,
@@ -732,7 +732,7 @@
                 publish_tasks.push(tokio::spawn(async move {
                     store
                         .publish(AircRealtimePublishParams {
-                            envelope: durable_event(&format!("evt-{i:03}"), GENERAL, i as u64 + 1),
+                            envelope: durable_event(i as u128, GENERAL, i as u64 + 1),
                         })
                         .expect("publish must succeed");
                 }));
@@ -745,7 +745,7 @@
                         .replay(AircRealtimeReplayParams {
                             room_id: GENERAL,
                             after_cursor: None,
-                            limit: Some(MAX_ROOM_REPLAY_LIMIT),
+                            limit: None,
                             include_presence: None,
                             include_subscriptions: None,
                             include_peer_manifests: None,
@@ -792,7 +792,7 @@
                 .replay(AircRealtimeReplayParams {
                     room_id: GENERAL,
                     after_cursor: None,
-                    limit: Some(MAX_ROOM_REPLAY_LIMIT),
+                    limit: None,
                     include_presence: None,
                     include_subscriptions: None,
                     include_peer_manifests: None,
@@ -833,7 +833,7 @@
                     }
                     store
                         .publish(AircRealtimePublishParams {
-                            envelope: durable_event(&format!("evt-{i:03}"), GENERAL, i as u64 + 1),
+                            envelope: durable_event(i as u128, GENERAL, i as u64 + 1),
                         })
                         .expect("publish must succeed");
                 }));
@@ -850,7 +850,7 @@
                         .replay(AircRealtimeReplayParams {
                             room_id: GENERAL,
                             after_cursor: cursor.clone(),
-                            limit: Some(MAX_ROOM_REPLAY_LIMIT),
+                            limit: None,
                             include_presence: None,
                             include_subscriptions: None,
                             include_peer_manifests: None,
@@ -859,7 +859,7 @@
                         })
                         .expect("replay must succeed");
                     for evt in &r.events {
-                        observed_ids.push(evt.event_id.clone());
+                        observed_ids.push(evt.event_id);
                     }
                     if let Some(c) = r.cursor.clone() {
                         cursor = Some(c);
@@ -872,7 +872,7 @@
             // Wait for all publishers to finish, THEN one more poll loop
             // to drain anything left.
             futures::future::join_all(publish_tasks).await;
-            let mut observed: Vec<String> = poll_task.await.expect("poll task must not panic");
+            let mut observed: Vec<Uuid> = poll_task.await.expect("poll task must not panic");
 
             // One final drain in case the poll loop exited before
             // observing the very last publishes.
@@ -897,7 +897,7 @@
                     .replay(AircRealtimeReplayParams {
                         room_id: GENERAL,
                         after_cursor: None,
-                        limit: Some(MAX_ROOM_REPLAY_LIMIT),
+                        limit: None,
                         include_presence: None,
                         include_subscriptions: None,
                         include_peer_manifests: None,
@@ -920,7 +920,7 @@
                             Some(AircReplayCursor {
                                 room_id: GENERAL,
                                 lamport: evt.created_at_ms, // == publish-time ts == approx Lamport
-                                event_id: evt.event_id.clone(),
+                                event_id: evt.event_id,
                                 observed_at_ms: Some(evt.created_at_ms),
                             })
                         } else {
@@ -933,7 +933,7 @@
                 .replay(AircRealtimeReplayParams {
                     room_id: GENERAL,
                     after_cursor: cursor,
-                    limit: Some(MAX_ROOM_REPLAY_LIMIT),
+                    limit: None,
                     include_presence: None,
                     include_subscriptions: None,
                     include_peer_manifests: None,
@@ -943,7 +943,7 @@
                 .unwrap();
             for evt in &final_drain.events {
                 if !observed.contains(&evt.event_id) {
-                    observed.push(evt.event_id.clone());
+                    observed.push(evt.event_id);
                 }
             }
 
@@ -959,9 +959,9 @@
         );
 
             // Eventually we saw every published event.
-            let expected: std::collections::HashSet<String> =
-                (0..PUBLISHERS).map(|i| format!("evt-{i:03}")).collect();
-            let actual: std::collections::HashSet<String> = observed.into_iter().collect();
+            let expected: std::collections::HashSet<Uuid> =
+                (0..PUBLISHERS).map(|i| Uuid::from_u128(i as u128)).collect();
+            let actual: std::collections::HashSet<Uuid> = observed.into_iter().collect();
             assert_eq!(
                 actual, expected,
                 "cursor polling + final drain must observe every published event (no losses)"

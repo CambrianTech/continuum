@@ -22,7 +22,7 @@ use crate::contracts::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedContractEvent {
-    pub replay_event_id: String,
+    pub replay_event_id: uuid::Uuid,
     pub room_id: uuid::Uuid,
     pub contract_id: String,
     pub event_name: String,
@@ -33,31 +33,31 @@ pub struct VerifiedContractEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContractVerificationError {
     MalformedContractEvent {
-        event_id: String,
+        event_id: uuid::Uuid,
         event_name: String,
         reason: String,
     },
     SignatureRejected {
-        event_id: String,
+        event_id: uuid::Uuid,
         event_name: String,
         reason: String,
     },
     MissingPeerManifest {
-        event_id: String,
+        event_id: uuid::Uuid,
         event_name: String,
         signer_peer_id: String,
     },
     ManifestPubkeyMismatch {
-        event_id: String,
+        event_id: uuid::Uuid,
         event_name: String,
         signer_peer_id: String,
         manifest_pubkey_hex: String,
         event_pubkey_hex: String,
     },
     SourcePeerMismatch {
-        event_id: String,
+        event_id: uuid::Uuid,
         event_name: String,
-        source_id: String,
+        source_id: airc_core::PeerId,
         signer_peer_id: String,
     },
 }
@@ -226,7 +226,7 @@ where
     let signed =
         serde_json::from_value::<SignedContractEvent<P>>(value.clone()).map_err(|error| {
             ContractVerificationError::MalformedContractEvent {
-                event_id: event.event_id.clone(),
+                event_id: event.event_id,
                 event_name: event_name.to_string(),
                 reason: error.to_string(),
             }
@@ -234,13 +234,13 @@ where
     signed
         .verify()
         .map_err(|error| ContractVerificationError::SignatureRejected {
-            event_id: event.event_id.clone(),
+            event_id: event.event_id,
             event_name: event_name.to_string(),
             reason: error.to_string(),
         })?;
     let (contract_id, signer_peer_id) = signer_fields(&signed.payload);
     Ok(VerifiedContractEvent {
-        replay_event_id: event.event_id.clone(),
+        replay_event_id: event.event_id,
         room_id: event.room_id,
         contract_id: contract_id.clone(),
         event_name: signed.event_name,
@@ -256,7 +256,7 @@ fn verify_manifest_binding(
 ) -> Result<(), ContractVerificationError> {
     let manifest = manifests.get(&contract.signer_peer_id).ok_or_else(|| {
         ContractVerificationError::MissingPeerManifest {
-            event_id: envelope.event_id.clone(),
+            event_id: envelope.event_id,
             event_name: contract.event_name.clone(),
             signer_peer_id: contract.signer_peer_id.clone(),
         }
@@ -267,7 +267,7 @@ fn verify_manifest_binding(
         .eq_ignore_ascii_case(&contract.signer_pubkey_hex)
     {
         return Err(ContractVerificationError::ManifestPubkeyMismatch {
-            event_id: envelope.event_id.clone(),
+            event_id: envelope.event_id,
             event_name: contract.event_name.clone(),
             signer_peer_id: contract.signer_peer_id.clone(),
             manifest_pubkey_hex: manifest.signing_pubkey_hex.clone(),
@@ -275,11 +275,13 @@ fn verify_manifest_binding(
         });
     }
 
-    if envelope.source_id != contract.signer_peer_id {
+    // The signed payload carries its signer as text (its own retype is a separate card); compare as
+    // ids at this boundary.
+    if uuid::Uuid::parse_str(&contract.signer_peer_id).ok() != Some(envelope.source_id.as_uuid()) { // wire boundary: the signed contract's signer id is text
         return Err(ContractVerificationError::SourcePeerMismatch {
-            event_id: envelope.event_id.clone(),
+            event_id: envelope.event_id,
             event_name: contract.event_name.clone(),
-            source_id: envelope.source_id.clone(),
+            source_id: envelope.source_id,
             signer_peer_id: contract.signer_peer_id.clone(),
         });
     }
@@ -354,9 +356,9 @@ mod tests {
             SignedContractEvent::sign(EVENT_CONTRACT_PROPOSED, proposed_payload(peer_id), key, 2)
                 .unwrap();
         AircRealtimeEnvelope {
-            event_id: "event-1".to_string(),
+            event_id: uuid::Uuid::from_u128(1),
             room_id: room(),
-            source_id: test_peer_str(peer_id),
+            source_id: test_peer_id(peer_id),
             target_id: None,
             created_at_ms: 2,
             delivery: AircRealtimeDelivery::Durable,
@@ -380,7 +382,7 @@ mod tests {
             cursor: Some(AircReplayCursor {
                 room_id: room(),
                 lamport: 1,
-                event_id: "event-1".to_string(),
+                event_id: uuid::Uuid::from_u128(1),
                 observed_at_ms: Some(2),
             }),
             active_presence: Vec::new(),
@@ -441,7 +443,7 @@ mod tests {
     fn rejects_contract_event_when_source_id_is_not_signer() {
         let key = ContractSigningKey::generate();
         let mut event = signed_contract_event("peer-a", &key);
-        event.source_id = "peer-b".to_string();
+        event.source_id = test_peer_id("peer-b");
         let error = verify_contract_replay(&replay(vec![event], vec![manifest("peer-a", &key)]))
             .unwrap_err();
 
@@ -454,9 +456,9 @@ mod tests {
     #[test]
     fn ignores_non_contract_event_bridge_payloads() {
         let event = AircRealtimeEnvelope::new(
-            "event-2".to_string(),
+            uuid::Uuid::from_u128(2),
             room(),
-            "peer-a".to_string(),
+            test_peer_id("peer-a"),
             2,
             AircRealtimePayload::ExistingSchema {
                 payload: AircRealtimePayloadRef::inline(

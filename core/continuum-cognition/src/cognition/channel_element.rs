@@ -36,18 +36,11 @@
 use std::sync::Arc;
 
 use airc_core::TranscriptEvent;
-use dashmap::DashMap;
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 use crate::ai::embedding::EmbeddingProvider;
 
-/// Soft bound on the shared element working set so a long-lived node servicing a
-/// busy room can't grow it without limit (the substrate pressure doctrine — an
-/// unbounded hot-path cache is a leak at scale). On overflow we evict one arbitrary
-/// entry; airc remains the system of record, so an evicted element just re-resolves
-/// on its next access. A proper LRU / `PagedResourcePool` tie-in is the follow-up.
-const CHANNEL_ELEMENT_CACHE_MAX: usize = 20_000;
 
 /// One room message + its lazily-computed, shared derived artifacts. Reference-
 /// passed (`Arc<ChannelElement>`); one per airc message, handed to every persona.
@@ -141,32 +134,43 @@ impl ChannelElement {
     }
 }
 
+/// What one element holds in RAM, in the ballpark the shed decision needs (no serialization):
+/// the struct, its text (counted twice: the extracted copy and the event body it came from), and
+/// its embedding once computed. Error bound: headers and a non-text body are not counted; they are
+/// small next to the text and the vector.
+impl continuum_kernel::system_resources::memory_pressure::ByteSized for ChannelElement {
+    fn byte_size(&self) -> u64 {
+        let text = self.text.as_ref().map_or(0, String::len) as u64;
+        let embedding = self.embedding.get().and_then(Option::as_ref).map_or(0, |v| v.len() * std::mem::size_of::<f32>()) as u64;
+        std::mem::size_of::<Self>() as u64 + 2 * text + embedding
+    }
+}
+
 /// The shared element working set: airc `EventId` → one `Arc<ChannelElement>`,
 /// handed to every persona so artifacts are computed once and referenced by all.
-/// Process-lifetime, bounded; not a durable store (airc is).
+/// Process-lifetime and rebuildable (airc is the system of record), so RAM sizes it: it answers
+/// to the memory pressure monitor as a background cache and sheds least recently used first,
+/// never by an entry count (Cormac on the pattern; Joel, 2026-10-29).
 pub struct ChannelElementCache {
-    elements: DashMap<Uuid, Arc<ChannelElement>>,
+    elements: Arc<continuum_kernel::system_resources::memory_pressure::ShedLru<Uuid, ChannelElement>>,
     embedder: Arc<dyn EmbeddingProvider>,
-    max: usize,
 }
 
 impl ChannelElementCache {
     /// Build against an embedder (the `CachingEmbeddingProvider` in production).
     pub fn new(embedder: Arc<dyn EmbeddingProvider>) -> Self {
         Self {
-            elements: DashMap::new(),
+            elements: Arc::new(continuum_kernel::system_resources::memory_pressure::ShedLru::new(
+                "channel_elements",
+                continuum_kernel::system_resources::MemoryPriority::Background,
+            )),
             embedder,
-            max: CHANNEL_ELEMENT_CACHE_MAX,
         }
     }
 
-    /// Build with an explicit soft cap (tests / isolated benches).
-    pub fn with_max(embedder: Arc<dyn EmbeddingProvider>, max: usize) -> Self {
-        Self {
-            elements: DashMap::new(),
-            embedder,
-            max: max.max(1),
-        }
+    /// Answer to the memory pressure monitor: it reads this cache's bytes and asks it to shed.
+    pub fn register(&self, monitor: &continuum_kernel::system_resources::MemoryPressureMonitor) {
+        self.elements.register(monitor);
     }
 
     /// Resolve the shared element for an airc message. The FIRST caller constructs
@@ -174,30 +178,8 @@ impl ChannelElementCache {
     /// shared, artifacts computed once. Keyed by airc's stable `EventId`.
     pub fn get_or_insert(&self, event: TranscriptEvent) -> Arc<ChannelElement> {
         let id = event.event_id.as_uuid();
-        // Fast path: an already-shared element (lock-free read on a hit).
-        if let Some(existing) = self.elements.get(&id) {
-            return existing.clone();
-        }
-        // Bound memory before admitting a genuinely new key. Soft cap: a small
-        // TOCTOU against concurrent inserts is acceptable for a working-set bound.
-        if self.elements.len() >= self.max && !self.elements.contains_key(&id) {
-            // Pick the victim in its OWN statement so the DashMap iterator's shard
-            // read-guard is dropped at the `;` — BEFORE `remove()` takes a write
-            // lock. Holding the iterator alive across `remove` (e.g. inside an
-            // `if let` scrutinee, whose temporaries outlive the body) deadlocks:
-            // the write waits on a read the same expression still holds.
-            let victim = self.elements.iter().next().map(|e| *e.key());
-            if let Some(victim) = victim {
-                self.elements.remove(&victim);
-            }
-        }
         let embedder = self.embedder.clone();
-        // entry() is atomic per key: if two personas race the same new message,
-        // exactly one element is kept and both receive that same shared `Arc`.
-        self.elements
-            .entry(id)
-            .or_insert_with(|| Arc::new(ChannelElement::new(event, embedder)))
-            .clone()
+        self.elements.get_or_insert_with(id, || ChannelElement::new(event, embedder))
     }
 
     /// Resolve a batch of messages to their shared elements at once — the
@@ -216,6 +198,12 @@ impl ChannelElementCache {
 
     pub fn is_empty(&self) -> bool {
         self.elements.is_empty()
+    }
+
+    /// Give back at least `bytes`, least recently used first (what the monitor's shed does).
+    #[cfg(test)]
+    fn shed(&self, bytes: u64) -> u64 {
+        self.elements.shed(bytes)
     }
 }
 
@@ -293,9 +281,9 @@ mod tests {
 
         let human = Uuid::new_v4(); // the operator identity chat/send carries
         let envelope = AircRealtimeEnvelope {
-            event_id: Uuid::new_v4().to_string(),
+            event_id: Uuid::new_v4(),
             room_id: RoomId::new().as_uuid(),
-            source_id: human.to_string(),
+            source_id: airc_core::PeerId::from_uuid(human),
             target_id: None,
             created_at_ms: 1,
             delivery: AircRealtimeDelivery::Durable,
@@ -403,16 +391,17 @@ mod tests {
         assert_eq!(cache.len(), 2);
     }
 
-    // what this catches: the working-set bound holds — past the soft cap, admitting
-    // a new element evicts one, so the cache never grows without limit. airc stays
-    // the system of record, so an evicted element just re-resolves later.
+    // what this catches: the working set answering to RAM, not a count: a shed gives back bytes
+    // least recently used first, so the cache never grows without limit under pressure. airc stays
+    // the system of record, so a shed element just re-resolves later.
     #[tokio::test]
-    async fn cache_evicts_past_soft_cap() {
-        let cache = ChannelElementCache::with_max(Arc::new(CountingEmbedder::new()), 2);
+    async fn the_cache_sheds_its_oldest_elements_by_bytes() {
+        let cache = ChannelElementCache::new(Arc::new(CountingEmbedder::new()));
         cache.get_or_insert(make_event(Some("a"), 1));
         cache.get_or_insert(make_event(Some("b"), 2));
         cache.get_or_insert(make_event(Some("c"), 3));
-        assert_eq!(cache.len(), 2, "soft cap bounds the working set");
+        assert!(cache.shed(1) > 0, "a shed gives back bytes");
+        assert_eq!(cache.len(), 2, "the least recently used element went first");
     }
 
     // what this catches: the batch consolidation read resolves a whole window of

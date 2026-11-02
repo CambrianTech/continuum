@@ -89,16 +89,10 @@ pub struct PublicationObligation {
     pub state: PublicationState,
 }
 
-/// The transport identity this core publishes relayed lines as (the airc module's scope peer),
-/// registered once at its construction.
-static RELAY: std::sync::OnceLock<PeerId> = std::sync::OnceLock::new();
-
-pub fn register_relay(peer: PeerId) {
-    let _ = RELAY.set(peer); // first registration wins: the airc module constructs once per process
-}
-
+/// The transport identity this core publishes relayed lines as: its project-scope peer
+/// (`persona::self_peer::scope`). A relayed line is delegated only when it arrives from it.
 pub fn relay() -> Option<PeerId> {
-    RELAY.get().copied()
+    crate::persona::self_peer::scope().map(PeerId::from_uuid)
 }
 
 /// Who a received line is from.

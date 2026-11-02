@@ -19,8 +19,8 @@
 //! proven bodies are planned and moved; an unproven one counts as pinned.
 //!
 //! NOT FULL GOVERNOR COVERAGE: the shed target is the host's RAM overrun past this priority's
-//! gate (`over_gate`). Pressure raised by swap activity alone, with RAM use under the gate,
-//! makes `over_gate` return 0 and sheds nothing here.
+//! gate (`PressureSnapshot::over_gate`). Pressure raised by swap activity alone, with RAM use
+//! under the gate, makes that overrun 0 and sheds nothing here.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -136,17 +136,6 @@ pub(crate) fn resident_bytes(minds: &Minds) -> u64 {
         .iter()
         .map(|(_, memory)| memory.resident_result_bytes())
         .sum()
-}
-
-/// What this consumer gives up: how far the host's used RAM stands past the line the monitor
-/// declares this priority sheds at (`MemoryPriority::pressure_gate`). Both numbers are the
-/// monitor's own; nothing here is a ratio of ours. `0` before the first poll (no total yet).
-pub(crate) fn over_gate(snapshot: &PressureSnapshot) -> u64 {
-    let used = snapshot
-        .total_bytes
-        .saturating_sub(snapshot.available_bytes);
-    let gate = (snapshot.total_bytes as f64 * PRIORITY.pressure_gate()) as u64;
-    used.saturating_sub(gate)
 }
 
 /// One mind's resident result bodies: what a shed may move (saved, not the newest, and its
@@ -340,17 +329,22 @@ impl MemoryReporter for MindResultsReporter {
         }
     }
 
+    fn priority(&self) -> MemoryPriority {
+        PRIORITY
+    }
+
     fn can_shed(&self) -> bool {
         true
     }
 
     fn shed_load(&self, level: PressureLevel) {
-        let over = over_gate(&self.pressure.borrow());
+        let minds = self.registry.resident_working_memories();
+        let before = resident_bytes(&minds);
+        // Its share of its priority's overrun, as every shedder computes it (Cormac on #5697).
+        let over = self.pressure.borrow().share_of_overrun(PRIORITY, before);
         if over == 0 {
             return;
         }
-        let minds = self.registry.resident_working_memories();
-        let before = resident_bytes(&minds);
         shed_to(&minds, before.saturating_sub(over), &self.proven);
         continuum_base::probe!(
             class = "wm.results.shed",

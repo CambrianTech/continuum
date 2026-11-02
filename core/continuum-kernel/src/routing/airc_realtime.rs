@@ -204,7 +204,8 @@ pub struct AircReplayCursor {
     #[ts(type = "string")]
     pub room_id: Uuid,
     pub lamport: u64,
-    pub event_id: String,
+    #[ts(type = "string")]
+    pub event_id: Uuid,
     #[ts(optional)]
     pub observed_at_ms: Option<u64>,
 }
@@ -219,18 +220,13 @@ impl AircReplayCursor {
         Self {
             room_id,
             lamport: cursor.lamport,
-            event_id: cursor.event_id.to_string(),
+            event_id: cursor.event_id.as_uuid(),
             observed_at_ms: None,
         }
     }
 
-    pub fn to_airc(&self) -> Result<airc_core::TranscriptCursor, String> {
-        let event_uuid = Uuid::parse_str(&self.event_id)
-            .map_err(|error| format!("invalid AIRC replay cursor event_id: {error}"))?;
-        Ok(airc_core::TranscriptCursor {
-            lamport: self.lamport,
-            event_id: airc_core::EventId::from_uuid(event_uuid),
-        })
+    pub fn to_airc(&self) -> airc_core::TranscriptCursor {
+        airc_core::TranscriptCursor { lamport: self.lamport, event_id: airc_core::EventId::from_uuid(self.event_id) }
     }
 }
 
@@ -413,10 +409,11 @@ impl std::error::Error for AircPeerManifestError {}
 /// validation is delegated to ed25519_dalek when a consumer parses; this
 /// check is the cheap structural gate at substrate ingress.
 fn validate_signing_pubkey_hex(hex: &str) -> Result<(), AircPeerManifestError> {
-    const EXPECTED_LEN: usize = 64; // 32 bytes * 2 hex chars
-    if hex.len() != EXPECTED_LEN {
+    // Two hex characters per key byte; the key length is ed25519's, not ours to restate.
+    let expected = 2 * ed25519_dalek::PUBLIC_KEY_LENGTH;
+    if hex.len() != expected {
         return Err(AircPeerManifestError::PubkeyWrongLength {
-            expected: EXPECTED_LEN,
+            expected,
             got: hex.len(),
         });
     }
@@ -433,7 +430,8 @@ fn validate_signing_pubkey_hex(hex: &str) -> Result<(), AircPeerManifestError> {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/airc/AircReceipt.ts")]
 pub struct AircReceipt {
-    pub event_id: String,
+    #[ts(type = "string")]
+    pub event_id: Uuid,
     #[ts(type = "string")]
     #[schemars(with = "String")]
     pub peer_id: crate::identity::PeerId,
@@ -485,12 +483,18 @@ impl AircRealtimePayload {
     export_to = "../../../protocol/typescript/airc/AircRealtimeEnvelope.ts"
 )]
 pub struct AircRealtimeEnvelope {
-    pub event_id: String,
+    /// The envelope's id (for a chat line, its stored message id). Typed: never a free-form name.
+    #[ts(type = "string")]
+    pub event_id: Uuid,
     #[ts(type = "string")]
     pub room_id: Uuid,
-    pub source_id: String,
-    #[ts(optional)]
-    pub target_id: Option<String>,
+    /// Who published it, or for a relayed person's line, who it speaks for: always a peer id.
+    #[ts(type = "string")]
+    #[schemars(with = "Uuid")]
+    pub source_id: airc_core::PeerId,
+    #[ts(optional, type = "string")]
+    #[schemars(with = "Option<Uuid>")]
+    pub target_id: Option<airc_core::PeerId>,
     pub created_at_ms: u64,
     pub delivery: AircRealtimeDelivery,
     pub payload: AircRealtimePayload,
@@ -500,9 +504,9 @@ pub struct AircRealtimeEnvelope {
 
 impl AircRealtimeEnvelope {
     pub fn new(
-        event_id: String,
+        event_id: Uuid,
         room_id: Uuid,
-        source_id: String,
+        source_id: airc_core::PeerId,
         created_at_ms: u64,
         payload: AircRealtimePayload,
     ) -> Self {
@@ -588,19 +592,19 @@ mod tests {
         let earlier = AircReplayCursor {
             room_id,
             lamport: 4,
-            event_id: "00000000-0000-0000-0000-000000000001".to_string(),
+            event_id: Uuid::from_u128(1),
             observed_at_ms: None,
         };
         let later_same_lamport = AircReplayCursor {
             room_id,
             lamport: 4,
-            event_id: "00000000-0000-0000-0000-000000000002".to_string(),
+            event_id: Uuid::from_u128(2),
             observed_at_ms: None,
         };
         let later_lamport = AircReplayCursor {
             room_id,
             lamport: 5,
-            event_id: "00000000-0000-0000-0000-000000000000".to_string(),
+            event_id: Uuid::from_u128(0),
             observed_at_ms: None,
         };
 
@@ -673,7 +677,7 @@ mod tests {
     fn envelope_delivery_must_match_payload_semantics() {
         let payload = AircRealtimePayload::Receipt {
             receipt: AircReceipt {
-                event_id: "evt-1".to_string(),
+                event_id: Uuid::from_u128(1),
                 peer_id: PeerId::from_uuid(uuid::Uuid::new_v5(
                     &uuid::Uuid::NAMESPACE_OID,
                     b"peer-1",
@@ -684,9 +688,9 @@ mod tests {
         };
 
         let mut envelope = AircRealtimeEnvelope::new(
-            "receipt-1".to_string(),
+            Uuid::from_u128(0xB1),
             Uuid::from_u128(0xA1),
-            "peer-1".to_string(),
+            PeerId::from_u128(0xC1),
             11,
             payload,
         );

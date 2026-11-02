@@ -122,10 +122,15 @@ impl ServiceModule for GridCapacityModule {
             return Ok(());
         };
 
+        // Published as this core's own scope peer: the beacon's author speaking for itself (a typed
+        // id, never a name). No scope peer means the airc module never attached, so nothing to beacon on.
+        let Some(source) = crate::persona::self_peer::scope() else {
+            return Ok(());
+        };
         let envelope = json!({
             "eventId": uuid::Uuid::new_v4().to_string(),
             "roomId": self.room.as_uuid().to_string(),
-            "sourceId": "grid-capacity",
+            "sourceId": source.to_string(),
             "createdAtMs": offer.at_ms,
             "delivery": "ephemeral_coalesced",
             "payload": {
