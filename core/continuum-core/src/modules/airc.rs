@@ -94,10 +94,9 @@ impl AircModule {
                 // construction, so it is in the self set before the first persona build
                 // reads a durable override — not only after this node hears its own
                 // beacon echo back.
-                crate::persona::self_peer::register(*peer_id);
-                // This scope peer is the relay `chat/send` publishes callers' lines as: its
-                // publication obligations name it, and only it may deliver them (#5696).
-                continuum_mind::chat::publication::register_relay(airc_core::PeerId::from_uuid(*peer_id));
+                // This scope peer is the identity the core publishes as: realtime publishes, the
+                // capacity beacon, and the relay `chat/send` publishes callers' lines as (#5696).
+                crate::persona::self_peer::register_scope(*peer_id);
                 Self {
                     queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
                     // #3849: the socket is re-resolved when the daemon

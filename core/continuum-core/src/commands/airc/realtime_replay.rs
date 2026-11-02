@@ -60,9 +60,9 @@ mod tests {
         transport
             .publish(AircRealtimePublishParams {
                 envelope: AircRealtimeEnvelope::new(
-                    "typing-1".to_string(),
+                    Uuid::from_u128(0x71),
                     TEST_ROOM_ID,
-                    "persona-1".to_string(),
+                    airc_core::PeerId::from_u128(0xC1),
                     100,
                     AircRealtimePayload::Presence {
                         event: AircPresenceEvent {

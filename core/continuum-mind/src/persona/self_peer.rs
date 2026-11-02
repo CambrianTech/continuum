@@ -33,6 +33,21 @@ pub fn register(peer: Uuid) {
     registered().lock().unwrap_or_else(|p| p.into_inner()).insert(peer); // JUSTIFIED unwrap_or_else: a poisoned set still holds the ids; membership is bookkeeping, never truth
 }
 
+/// The core's own project-scope peer: the identity it publishes as (airc realtime publishes, relayed
+/// callers' lines, the capacity beacon). One of the ids above, designated once by the airc module.
+static SCOPE: OnceLock<Uuid> = OnceLock::new();
+
+/// Designate the core's project-scope peer (and record it as one of this process's ids).
+pub fn register_scope(peer: Uuid) {
+    register(peer);
+    let _ = SCOPE.set(peer); // first designation wins: the airc module constructs once per process
+}
+
+/// The core's project-scope peer, once the airc module has attached.
+pub fn scope() -> Option<Uuid> {
+    SCOPE.get().copied()
+}
+
 /// Is `peer` one of the ids this process wears? A peer that is this node is never a
 /// remote seat: not for an offload, not for a return, not for a reservation ask, and a
 /// durable override naming it is a record of the old confusion, not an assignment.

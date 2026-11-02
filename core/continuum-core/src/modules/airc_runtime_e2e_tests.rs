@@ -32,6 +32,7 @@ use crate::runtime::{
 };
 
 const TEST_ROOM_ID: Uuid = Uuid::from_u128(0xA1);
+const TEST_ENVELOPE_EVENT_ID: Uuid = Uuid::from_u128(0xB2);
 const TEST_AIRC_EVENT_ID: EventId = EventId(Uuid::from_u128(0xB1));
 
 #[tokio::test]
@@ -54,9 +55,9 @@ async fn runtime_publish_attach_and_replay_use_daemon_ipc_path() {
     daemon.wait_for_attach().await;
 
     let envelope = AircRealtimeEnvelope::new(
-        "continuum-runtime-e2e".to_string(),
+        TEST_ENVELOPE_EVENT_ID,
         TEST_ROOM_ID,
-        "continuum-runtime-test".to_string(),
+        airc_core::PeerId::from_u128(0xC2),
         1_000,
         AircRealtimePayload::ExistingSchema {
             payload: AircRealtimePayloadRef::inline(
@@ -103,7 +104,7 @@ async fn runtime_publish_attach_and_replay_use_daemon_ipc_path() {
     assert_eq!(replay_value["events"].as_array().unwrap().len(), 1);
     assert_eq!(
         replay_value["events"][0]["eventId"],
-        "continuum-runtime-e2e"
+        TEST_ENVELOPE_EVENT_ID.to_string()
     );
     assert_eq!(replay_value["cursor"]["lamport"], 1);
     assert_eq!(

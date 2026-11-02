@@ -5,4 +5,12 @@ import type { AircRealtimePayload } from "./AircRealtimePayload";
 /**
  * Top-level realtime envelope persisted or transmitted by AIRC.
  */
-export type AircRealtimeEnvelope = { eventId: string, roomId: string, sourceId: string, targetId?: string, createdAtMs: bigint, delivery: AircRealtimeDelivery, payload: AircRealtimePayload, traceId?: string, };
+export type AircRealtimeEnvelope = { 
+/**
+ * The envelope's id (for a chat line, its stored message id). Typed: never a free-form name.
+ */
+eventId: string, roomId: string, 
+/**
+ * Who published it, or for a relayed person's line, who it speaks for: always a peer id.
+ */
+sourceId: string, targetId?: string, createdAtMs: bigint, delivery: AircRealtimeDelivery, payload: AircRealtimePayload, traceId?: string, };

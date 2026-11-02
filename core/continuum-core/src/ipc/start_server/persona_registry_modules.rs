@@ -100,6 +100,9 @@ pub(super) fn register_persona_registry_modules(
     );
     // Every mind's resident result bodies answer to the one memory owner: they stay in RAM
     // until the monitor sheds, never a size cap of ours (Joel, 2026-10-29).
+    // The shared channel-element cache is rebuildable (airc is the record): RAM sizes it, it sheds
+    // least recently used first under pressure, never an entry cap of ours.
+    crate::cognition::channel_substrate::global_channel_element_cache().register(pressure_monitor);
     pressure_monitor.add_reporter(Arc::new(crate::cognition::persona_workspace::MindResultsReporter::new(
         crate::cognition::persona_workspace::global(),
         pressure_monitor.subscribe(),

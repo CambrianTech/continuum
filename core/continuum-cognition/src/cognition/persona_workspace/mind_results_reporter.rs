@@ -142,11 +142,7 @@ pub(crate) fn resident_bytes(minds: &Minds) -> u64 {
 /// declares this priority sheds at (`MemoryPriority::pressure_gate`). Both numbers are the
 /// monitor's own; nothing here is a ratio of ours. `0` before the first poll (no total yet).
 pub(crate) fn over_gate(snapshot: &PressureSnapshot) -> u64 {
-    let used = snapshot
-        .total_bytes
-        .saturating_sub(snapshot.available_bytes);
-    let gate = (snapshot.total_bytes as f64 * PRIORITY.pressure_gate()) as u64;
-    used.saturating_sub(gate)
+    snapshot.over_gate(PRIORITY)
 }
 
 /// One mind's resident result bodies: what a shed may move (saved, not the newest, and its

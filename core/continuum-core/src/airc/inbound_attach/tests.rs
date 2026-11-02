@@ -86,9 +86,11 @@ fn transcript_event(body: Option<Body>, headers: airc_core::Headers) -> Transcri
 
 fn event_bridge_envelope() -> AircRealtimeEnvelope {
     AircRealtimeEnvelope::new(
-        "evt-1".to_string(),
+        Uuid::from_u128(1),
         Uuid::from_u128(2),
-        "continuum-peer".to_string(),
+        // A frame a core publishes itself: its source is its own transport peer (PeerId 3 in
+        // `transcript_event`), so it speaks for itself and makes no claim.
+        PeerId::from_u128(3),
         100,
         AircRealtimePayload::ExistingSchema {
             payload: AircRealtimePayloadRef::inline(
@@ -551,7 +553,7 @@ async fn a_claim_to_speak_for_someone_needs_its_exact_publication() {
     // A present sender header that is not an id: refused, never read as no claim.
     let malformed = continuum_mind::chat::line_store::RecordingImporter::default();
     let (mut garbled, _) = relayed_line(relay, joel, room, "hello", message);
-    garbled.headers.insert(crate::routing::airc_realtime_wire::HEADER_CONTINUUM_SENDER_ID.to_string(), "joel".to_string());
+    garbled.headers.insert(crate::routing::airc_realtime_wire::HEADER_CONTINUUM_SOURCE_ID.to_string(), "joel".to_string());
     publish_transcript_event(&Arc::new(garbled), &bus, &malformed).await.expect("a refusal is not an error");
     assert!(malformed.0.lock().expect("test: lock").is_empty(), "a malformed claim is refused before any consumer"); // test: a fixture step that must succeed
 
