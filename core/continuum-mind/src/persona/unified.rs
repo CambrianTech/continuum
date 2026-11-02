@@ -213,13 +213,17 @@ impl PersonaCognition {
         room: Option<uuid::Uuid>,
     ) -> ComposedTurn {
         let persona_id = self.engine.persona_id();
-        let rag_ctx = match room {
+        // The turn's id rides the context every source receives, so each capture names its turn:
+        // composes are concurrent (the brain is shared, never locked), so position cannot pair a
+        // delivery with its turn (Cormac on #5698).
+        let turn_id = Uuid::new_v4();
+        let mut rag_ctx = match room {
             Some(r) => RagContext::for_persona_in_room(persona_id, now_ms, r),
             None => RagContext::for_persona(persona_id, now_ms),
         };
+        rag_ctx.substrate.turn_id = Some(turn_id);
 
         let sources = self.airc_source.iter().chain(self.roster_source.iter());
-        let turn_id = Uuid::new_v4();
         // A turn in her mind room: no retrieval capture at all (sink 5).
         let captured = !crate::persona::rag_capture::turn_is_private(&rag_ctx);
         if captured {
@@ -378,5 +382,49 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, ["TurnStart", "SourceDelivered", "TurnEnd"]);
+        // what this catches: deliveries paired to turns by position, which interleaving composes
+        // break: every SourceDelivered names its turn, the same id TurnStart minted (#5698).
+        let turns: Vec<Option<Uuid>> = sink
+            .events()
+            .iter()
+            .map(|e| match e {
+                RagCaptureEvent::TurnStart { turn_id, .. }
+                | RagCaptureEvent::SourceDelivered { turn_id, .. }
+                | RagCaptureEvent::TurnEnd { turn_id, .. } => *turn_id,
+            })
+            .collect();
+        assert!(turns[0].is_some() && turns.iter().all(|t| *t == turns[0]), "one turn id throughout: {turns:?}");
+    }
+
+    // what this catches: deliveries paired to turns by position once the brain is shared (Cormac
+    // on #5698): two composes on one persona run at once, and each SourceDelivered names its own
+    // turn, one of the two the TurnStarts minted, never None.
+    #[tokio::test]
+    async fn concurrent_composes_tag_every_delivery_with_its_own_turn() {
+        let sink = Arc::new(InMemoryRagCaptureSink::new());
+        let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
+        let mut pc = PersonaCognition::with_capture_sink(Uuid::new_v4(), "TestBot".into(), Arc::new(RagEngine::new()), sink_dyn);
+        pc.set_airc_source(Arc::new(CannedSource { id: "airc", items: 2 }));
+        let pc = Arc::new(pc);
+        let (a, b) = (Arc::clone(&pc), Arc::clone(&pc));
+        let _ = tokio::join!(
+            tokio::spawn(async move { a.compose_for_turn(1_000_000, None).await }),
+            tokio::spawn(async move { b.compose_for_turn(1_000_001, None).await }),
+        );
+        let events = sink.events();
+        let started: Vec<Uuid> = events
+            .iter()
+            .filter_map(|e| match e {
+                RagCaptureEvent::TurnStart { turn_id, .. } => *turn_id,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started.len(), 2);
+        assert_ne!(started[0], started[1], "each compose is its own turn");
+        for event in events.iter() {
+            if let RagCaptureEvent::SourceDelivered { turn_id, .. } = event {
+                assert!(turn_id.is_some_and(|t| started.contains(&t)), "a delivery names its turn: {turn_id:?}");
+            }
+        }
     }
 }

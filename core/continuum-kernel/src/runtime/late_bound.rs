@@ -64,6 +64,8 @@ use std::sync::{Arc, OnceLock};
 /// Arc internally so callers don't repeat it.
 pub struct LateBound<T: ?Sized> {
     slot: OnceLock<Arc<T>>,
+    /// Wakes `ready()` waiters when the install lands: an event, never a poll.
+    installed: tokio::sync::Notify,
     name: &'static str,
 }
 
@@ -74,6 +76,7 @@ impl<T: ?Sized> LateBound<T> {
     pub const fn new(name: &'static str) -> Self {
         Self {
             slot: OnceLock::new(),
+            installed: tokio::sync::Notify::const_new(),
             name,
         }
     }
@@ -83,7 +86,25 @@ impl<T: ?Sized> LateBound<T> {
     /// substrate). Use `is_installed()` before to assert idempotency
     /// in tests if needed.
     pub fn install(&self, value: Arc<T>) {
-        let _ = self.slot.set(value);
+        if self.slot.set(value).is_ok() {
+            self.installed.notify_waiters();
+        }
+    }
+
+    /// The dependency once installed: for boot-internal readers that may start before the install
+    /// (an attach racing `install_executor_on_all`). Waits on the install event, never a poll; a
+    /// caller that must fail loud before install uses `require()` instead.
+    pub async fn ready(&self) -> Arc<T> {
+        loop {
+            let installed = self.installed.notified();
+            tokio::pin!(installed);
+            // Registered before the check, so an install between the check and the await wakes it.
+            installed.as_mut().enable();
+            if let Some(value) = self.slot.get() {
+                return Arc::clone(value);
+            }
+            installed.await;
+        }
     }
 
     /// Borrow the installed dependency, or produce a diagnostic
@@ -147,6 +168,22 @@ impl<T: ?Sized> std::fmt::Debug for LateBound<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a boot reader that starts before the install (the inbound seam racing
+    // install_executor_on_all) failing its first attempt, or polling: ready() wakes on the install
+    // whether the wait or the install comes first.
+    #[tokio::test]
+    async fn ready_wakes_on_the_install_whether_it_comes_before_or_after_the_wait() {
+        let slot: Arc<LateBound<u32>> = Arc::new(LateBound::new("test::ready"));
+        let waiter = tokio::spawn({
+            let slot = Arc::clone(&slot);
+            async move { *slot.ready().await }
+        });
+        tokio::task::yield_now().await;
+        slot.install(Arc::new(7));
+        assert_eq!(waiter.await.expect("the waiter joins"), 7, "a waiter before the install wakes on it");
+        assert_eq!(*slot.ready().await, 7, "after the install, ready() returns at once");
+    }
 
     #[derive(Debug)]
     struct Dep {

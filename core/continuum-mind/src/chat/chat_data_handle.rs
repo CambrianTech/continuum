@@ -52,9 +52,7 @@ impl ChatModule {
     /// real cross-module call path without going through `start_server`.
     #[cfg(test)]
     pub fn with_executor(executor: Arc<CommandExecutor>) -> Self {
-        let executor_slot = Arc::new(ChatSlot::new());
-        executor_slot.install(executor);
-        Self { executor_slot }
+        Self { executor_slot: Arc::new(ChatSlot::installed(executor)) }
     }
 
     /// Rebuild a chat module over an EXISTING late-bound executor slot.

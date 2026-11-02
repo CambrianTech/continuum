@@ -202,3 +202,17 @@ async fn a_retired_import_replays_once_after_a_reopen() {
         "a retired publication is not re-published"
     );
 }
+
+// what this catches: a second, different executor swapped into a slot whose store is already
+// ensured, so `collections_ready` would vouch for a store nobody ensured (Codex on #5698): the same
+// executor again is accepted, a different one refused, and the slot keeps the first.
+#[tokio::test]
+async fn a_ready_slot_refuses_a_different_executor_and_keeps_the_first() {
+    let chat = real_store_chat(relay(0, Arc::new(Mutex::new(Vec::new()))));
+    chat.query_rows(crate::chat::types::CHAT_MESSAGES_COLLECTION, json!({}), None, Some(1)).await.expect("the store is ensured");
+    let first = chat.executor_slot.cloned().expect("installed");
+    assert!(chat.executor_slot.install(Arc::clone(&first)).is_ok(), "the same executor again is a no-op");
+    let other = Arc::new(CommandExecutor::new(Arc::new(ModuleRegistry::new())));
+    assert!(chat.executor_slot.install(other).is_err(), "a different executor is refused");
+    assert!(Arc::ptr_eq(&chat.executor_slot.cloned().expect("still installed"), &first), "the first install stays");
+}
