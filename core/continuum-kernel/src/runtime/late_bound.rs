@@ -170,19 +170,32 @@ mod tests {
     use super::*;
 
     // what this catches: a boot reader that starts before the install (the inbound seam racing
-    // install_executor_on_all) failing its first attempt, or polling: ready() wakes on the install
-    // whether the wait or the install comes first.
+    // install_executor_on_all) failing its first attempt, or polling. Deterministic (Codex on
+    // #5698): the pinned ready() is polled once and proven Pending BEFORE the install, then woken
+    // by it; separately, a ready() after the install returns at once.
     #[tokio::test]
-    async fn ready_wakes_on_the_install_whether_it_comes_before_or_after_the_wait() {
-        let slot: Arc<LateBound<u32>> = Arc::new(LateBound::new("test::ready"));
-        let waiter = tokio::spawn({
-            let slot = Arc::clone(&slot);
-            async move { *slot.ready().await }
-        });
-        tokio::task::yield_now().await;
+    async fn ready_waits_for_the_install_and_wakes_on_it() {
+        use std::future::Future;
+        let slot: LateBound<u32> = LateBound::new("test::ready");
+        let waiting = slot.ready();
+        tokio::pin!(waiting);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(waiting.as_mut().poll(&mut cx).is_pending(), "before the install, ready() waits");
         slot.install(Arc::new(7));
-        assert_eq!(waiter.await.expect("the waiter joins"), 7, "a waiter before the install wakes on it");
-        assert_eq!(*slot.ready().await, 7, "after the install, ready() returns at once");
+        assert_eq!(*waiting.await, 7, "the install wakes the waiter registered before it");
+    }
+
+    #[tokio::test]
+    async fn ready_after_the_install_returns_at_once() {
+        let slot: LateBound<u32> = LateBound::new("test::ready_after");
+        slot.install(Arc::new(9));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let ready = slot.ready();
+        tokio::pin!(ready);
+        assert!(
+            matches!(std::future::Future::poll(ready.as_mut(), &mut cx), std::task::Poll::Ready(v) if *v == 9),
+            "installed: the first poll is ready"
+        );
     }
 
     #[derive(Debug)]

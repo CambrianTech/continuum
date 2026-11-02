@@ -421,10 +421,18 @@ mod tests {
             .collect();
         assert_eq!(started.len(), 2);
         assert_ne!(started[0], started[1], "each compose is its own turn");
-        for event in events.iter() {
-            if let RagCaptureEvent::SourceDelivered { turn_id, .. } = event {
-                assert!(turn_id.is_some_and(|t| started.contains(&t)), "a delivery names its turn: {turn_id:?}");
-            }
+        let delivered: Vec<Option<Uuid>> = events
+            .iter()
+            .filter_map(|e| match e {
+                RagCaptureEvent::SourceDelivered { turn_id, .. } => Some(*turn_id),
+                _ => None,
+            })
+            .collect();
+        // One source, so each turn has exactly one delivery: its own, named by its own id.
+        for turn in &started {
+            let own = delivered.iter().filter(|d| **d == Some(*turn)).count();
+            assert_eq!(own, 1, "turn {turn} has exactly its own delivery: {delivered:?}");
         }
+        assert_eq!(delivered.len(), started.len(), "no delivery outside a turn: {delivered:?}");
     }
 }
