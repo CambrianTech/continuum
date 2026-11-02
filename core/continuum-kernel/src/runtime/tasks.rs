@@ -173,8 +173,16 @@ impl TaskLedger {
 
     /// Only a supervisor that has observed execution ending calls this. A cancellation
     /// request alone is not an end. Competing endings return the durable winner.
-    pub async fn finish(&self, task: Uuid, owner: Uuid, end: TaskEnd) -> Result<TaskEnd, String> {
-        self.authorize(task, owner).await?;
+    pub async fn finish(
+        &self,
+        task: Uuid,
+        owner: Uuid,
+        execution: TaskExecution,
+        end: TaskEnd,
+    ) -> Result<TaskEnd, String> {
+        if self.execution(task, owner).await? != execution {
+            return Err("task completion belongs to a different execution incarnation".into());
+        }
         let id = Uuid::new_v5(&task, b"terminal");
         let row = TaskFact {
             task,
@@ -336,6 +344,27 @@ mod tests {
         assert_eq!(reopened.pending(task, owner).await?, None);
         // An old incarnation is unresolved, not automatically Lost at reopen.
         assert_eq!(reopened.terminal(task, owner).await?, None);
+        assert!(reopened
+            .finish(task, owner, replacement, TaskEnd::Lost)
+            .await
+            .is_err());
+        assert_eq!(reopened.terminal(task, owner).await?, None);
+        // Late evidence from the accepted incarnation remains valid after reopen.
+        assert_eq!(
+            reopened
+                .finish(task, owner, execution, TaskEnd::Stopped)
+                .await?,
+            TaskEnd::Stopped
+        );
+        // Even after a terminal exists, a replacement cannot claim its completion.
+        assert!(reopened
+            .finish(task, owner, replacement, TaskEnd::Lost)
+            .await
+            .is_err());
+        assert_eq!(
+            reopened.terminal(task, owner).await?,
+            Some(TaskEnd::Stopped)
+        );
         Ok(())
     }
 
@@ -354,8 +383,18 @@ mod tests {
             .await?;
         assert!(first.acknowledge(task, owner).await.is_err());
         let (a, b) = tokio::join!(
-            first.finish(task, owner, TaskEnd::Done(TaskOutput::Json(Value::Null))),
-            second.finish(task, owner, TaskEnd::Stopped),
+            first.finish(
+                task,
+                owner,
+                first.execution(task, owner).await?,
+                TaskEnd::Done(TaskOutput::Json(Value::Null))
+            ),
+            second.finish(
+                task,
+                owner,
+                second.execution(task, owner).await?,
+                TaskEnd::Stopped
+            ),
         );
         let winner = a?;
         assert_eq!(winner, b?);
@@ -367,7 +406,17 @@ mod tests {
             .pending_page(owner, None, NonZeroUsize::new(10).ok_or("test page size")?)
             .await?;
         assert_eq!(page.ends, vec![(task, winner.clone())]);
-        assert_eq!(reopened.finish(task, owner, TaskEnd::Lost).await?, winner);
+        assert_eq!(
+            reopened
+                .finish(
+                    task,
+                    owner,
+                    reopened.execution(task, owner).await?,
+                    TaskEnd::Lost
+                )
+                .await?,
+            winner
+        );
         assert!(reopened.pending(task, Uuid::new_v4()).await.is_err());
         reopened.acknowledge(task, owner).await?;
         reopened.acknowledge(task, owner).await?;
@@ -387,7 +436,14 @@ mod tests {
                 TaskExecution::new_command_executor(),
             )
             .await?;
-        ledger.finish(task, owner, TaskEnd::Stopped).await?;
+        ledger
+            .finish(
+                task,
+                owner,
+                ledger.execution(task, owner).await?,
+                TaskEnd::Stopped,
+            )
+            .await?;
         ledger
             .facts
             .save(
@@ -418,7 +474,14 @@ mod tests {
                 TaskExecution::new_command_executor(),
             )
             .await?;
-        ledger.finish(consumed, owner, TaskEnd::Stopped).await?;
+        ledger
+            .finish(
+                consumed,
+                owner,
+                ledger.execution(consumed, owner).await?,
+                TaskEnd::Stopped,
+            )
+            .await?;
         ledger.acknowledge(consumed, owner).await?;
         let pending = ledger
             .accept(
@@ -428,7 +491,12 @@ mod tests {
             )
             .await?;
         ledger
-            .finish(pending, owner, TaskEnd::Done(TaskOutput::Json(Value::Null)))
+            .finish(
+                pending,
+                owner,
+                ledger.execution(pending, owner).await?,
+                TaskEnd::Done(TaskOutput::Json(Value::Null)),
+            )
             .await?;
         let other = ledger
             .accept(
@@ -437,7 +505,14 @@ mod tests {
                 TaskExecution::new_command_executor(),
             )
             .await?;
-        ledger.finish(other, foreign, TaskEnd::Stopped).await?;
+        ledger
+            .finish(
+                other,
+                foreign,
+                ledger.execution(other, foreign).await?,
+                TaskEnd::Stopped,
+            )
+            .await?;
         let mut after = None;
         let mut found = Vec::new();
         let mut exhausted = false;
@@ -479,7 +554,14 @@ mod tests {
             .await?;
         adapter.fail_after_next_create();
         assert_eq!(
-            ledger.finish(task, owner, TaskEnd::Stopped).await?,
+            ledger
+                .finish(
+                    task,
+                    owner,
+                    ledger.execution(task, owner).await?,
+                    TaskEnd::Stopped
+                )
+                .await?,
             TaskEnd::Stopped
         );
         drop(ledger);
@@ -491,7 +573,14 @@ mod tests {
         let reopened = TaskLedger::new(adapter.clone()).await?;
         assert_eq!(reopened.pending(task, owner).await?, None);
         assert_eq!(
-            reopened.finish(task, owner, TaskEnd::Lost).await?,
+            reopened
+                .finish(
+                    task,
+                    owner,
+                    reopened.execution(task, owner).await?,
+                    TaskEnd::Lost
+                )
+                .await?,
             TaskEnd::Stopped
         );
         reopened.acknowledge(task, owner).await?;
@@ -530,7 +619,16 @@ mod tests {
             )
             .await?;
         let pause = gated.pause_next_write();
-        let writer = tokio::spawn(async move { delayed.finish(task, owner, TaskEnd::Lost).await });
+        let writer = tokio::spawn(async move {
+            delayed
+                .finish(
+                    task,
+                    owner,
+                    delayed.execution(task, owner).await?,
+                    TaskEnd::Lost,
+                )
+                .await
+        });
         notified(&pause.entered).await?;
         writer.abort();
         assert!(matches!(writer.await, Err(error) if error.is_cancelled()));
@@ -538,7 +636,17 @@ mod tests {
         // The competing supervisor observed the actual execution ending. Its result
         // reaches the sink while the abandoned storage operation is still pending.
         let winner = TaskEnd::Done(TaskOutput::Json(serde_json::json!({"saved": true})));
-        assert_eq!(current.finish(task, owner, winner.clone()).await?, winner);
+        assert_eq!(
+            current
+                .finish(
+                    task,
+                    owner,
+                    current.execution(task, owner).await?,
+                    winner.clone()
+                )
+                .await?,
+            winner
+        );
         assert_eq!(current.pending(task, owner).await?, Some(winner.clone()));
         current.acknowledge(task, owner).await?;
         pause.release.notify_one();
@@ -546,7 +654,17 @@ mod tests {
         drop(current);
 
         let reopened = TaskLedger::new(adapter).await?;
-        assert_eq!(reopened.finish(task, owner, TaskEnd::Lost).await?, winner);
+        assert_eq!(
+            reopened
+                .finish(
+                    task,
+                    owner,
+                    reopened.execution(task, owner).await?,
+                    TaskEnd::Lost
+                )
+                .await?,
+            winner
+        );
         assert_eq!(reopened.pending(task, owner).await?, None);
         assert!(reopened
             .pending_page(owner, None, NonZeroUsize::new(10).ok_or("test page size")?)

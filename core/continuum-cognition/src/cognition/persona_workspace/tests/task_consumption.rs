@@ -250,7 +250,14 @@ async fn ledger_ack_requires_perception_and_restart_replays_unread_ends(
     let end = TaskEnd::Done(TaskOutput::Json(
         serde_json::json!({"result":"useful result"}),
     ));
-    ledger.finish(task, owner, end.clone()).await?;
+    ledger
+        .finish(
+            task,
+            owner,
+            ledger.execution(task, owner).await?,
+            end.clone(),
+        )
+        .await?;
     let limit = std::num::NonZeroUsize::new(32).ok_or("invalid fixture page")?;
     assert!(ledger
         .deliver_page(owner, None, limit, &sink)

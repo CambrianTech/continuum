@@ -112,8 +112,22 @@ mod tests {
         let blocked = ledger.accept(refused, "blocked".into(), execution).await?;
         let ready = ledger.accept(healthy, "ready".into(), execution).await?;
         let running = ledger.accept(healthy, "running".into(), execution).await?;
-        ledger.finish(blocked, refused, TaskEnd::Stopped).await?;
-        ledger.finish(ready, healthy, TaskEnd::Stopped).await?;
+        ledger
+            .finish(
+                blocked,
+                refused,
+                ledger.execution(blocked, refused).await?,
+                TaskEnd::Stopped,
+            )
+            .await?;
+        ledger
+            .finish(
+                ready,
+                healthy,
+                ledger.execution(ready, healthy).await?,
+                TaskEnd::Stopped,
+            )
+            .await?;
         let sink = Sink {
             refused,
             refuse: AtomicBool::new(true),
@@ -132,7 +146,14 @@ mod tests {
             Some(TaskEnd::Stopped)
         );
         // End an already-scanned acceptance. Fresh sweeps must find it.
-        ledger.finish(running, healthy, TaskEnd::Lost).await?;
+        ledger
+            .finish(
+                running,
+                healthy,
+                ledger.execution(running, healthy).await?,
+                TaskEnd::Lost,
+            )
+            .await?;
         sink.refuse.store(false, Ordering::SeqCst);
         for _ in 0..16 {
             sweep

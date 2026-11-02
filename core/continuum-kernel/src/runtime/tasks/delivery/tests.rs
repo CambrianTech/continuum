@@ -34,8 +34,22 @@ async fn only_page_scoped_perception_can_ack_and_invalid_batch_has_no_partial_ef
             TaskExecution::new_command_executor(),
         )
         .await?;
-    ledger.finish(first, owner, TaskEnd::Stopped).await?;
-    ledger.finish(second, owner, TaskEnd::Lost).await?;
+    ledger
+        .finish(
+            first,
+            owner,
+            ledger.execution(first, owner).await?,
+            TaskEnd::Stopped,
+        )
+        .await?;
+    ledger
+        .finish(
+            second,
+            owner,
+            ledger.execution(second, owner).await?,
+            TaskEnd::Lost,
+        )
+        .await?;
     let sink = PerceptionSink(Default::default());
     let limit = NonZeroUsize::new(32).ok_or("invalid fixture page")?;
     assert_eq!(
@@ -109,7 +123,14 @@ async fn refused_consumption_remains_pending_and_replay_needs_no_registered_hand
     let task = ledger
         .accept(owner, "build".into(), TaskExecution::new_command_executor())
         .await?;
-    ledger.finish(task, owner, TaskEnd::Stopped).await?;
+    ledger
+        .finish(
+            task,
+            owner,
+            ledger.execution(task, owner).await?,
+            TaskEnd::Stopped,
+        )
+        .await?;
     let sink = Sink {
         ledger: ledger.clone(),
         refuse: AtomicBool::new(true),
@@ -161,8 +182,22 @@ async fn page_delivery_keeps_owner_isolation_and_crosses_empty_pages(
             TaskExecution::new_command_executor(),
         )
         .await?;
-    ledger.finish(mine, owner, TaskEnd::Lost).await?;
-    ledger.finish(theirs, foreign, TaskEnd::Stopped).await?;
+    ledger
+        .finish(
+            mine,
+            owner,
+            ledger.execution(mine, owner).await?,
+            TaskEnd::Lost,
+        )
+        .await?;
+    ledger
+        .finish(
+            theirs,
+            foreign,
+            ledger.execution(theirs, foreign).await?,
+            TaskEnd::Stopped,
+        )
+        .await?;
     let sink = Sink {
         ledger: ledger.clone(),
         refuse: AtomicBool::new(false),
@@ -213,8 +248,22 @@ async fn one_owner_page_is_consumed_once_before_its_acknowledgements(
             TaskExecution::new_command_executor(),
         )
         .await?;
-    ledger.finish(first, owner, TaskEnd::Stopped).await?;
-    ledger.finish(second, owner, TaskEnd::Lost).await?;
+    ledger
+        .finish(
+            first,
+            owner,
+            ledger.execution(first, owner).await?,
+            TaskEnd::Stopped,
+        )
+        .await?;
+    ledger
+        .finish(
+            second,
+            owner,
+            ledger.execution(second, owner).await?,
+            TaskEnd::Lost,
+        )
+        .await?;
     let sink = Sink {
         ledger: ledger.clone(),
         refuse: AtomicBool::new(false),

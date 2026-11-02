@@ -115,7 +115,7 @@ impl CommandExecutor {
                     outcome: error.outcome,
                 },
             };
-            let winner = match ledger.finish(handle, owner, end).await {
+            let winner = match ledger.finish(handle, owner, this.task_execution, end).await {
                 Ok(winner) => winner,
                 Err(error) => {
                     tracing::error!(%handle, %owner, %error, "task ended but terminal persistence failed; acceptance remains unresolved");
@@ -303,7 +303,14 @@ mod tests {
                 outcome: DispatchOutcome::Uncertain,
             };
             if !unwind {
-                ledger.finish(task, owner, winner.clone()).await?;
+                ledger
+                    .finish(
+                        task,
+                        owner,
+                        ledger.execution(task, owner).await?,
+                        winner.clone(),
+                    )
+                    .await?;
             }
             gate.release.notify_one();
             let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())

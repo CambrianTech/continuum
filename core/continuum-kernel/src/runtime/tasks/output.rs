@@ -75,10 +75,20 @@ mod tests {
             )
             .await?;
         ledger
-            .finish(binary_task, owner, TaskEnd::Done(binary.clone()))
+            .finish(
+                binary_task,
+                owner,
+                ledger.execution(binary_task, owner).await?,
+                TaskEnd::Done(binary.clone()),
+            )
             .await?;
         ledger
-            .finish(handle_task, owner, TaskEnd::Done(handle.clone()))
+            .finish(
+                handle_task,
+                owner,
+                ledger.execution(handle_task, owner).await?,
+                TaskEnd::Done(handle.clone()),
+            )
             .await?;
         ledger.acknowledge(binary_task, owner).await?;
         assert_eq!(ledger.pending(binary_task, owner).await?, None);
