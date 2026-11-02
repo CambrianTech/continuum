@@ -14,7 +14,7 @@ use uuid::Uuid;
 mod output;
 pub use output::TaskOutput;
 mod execution;
-pub use execution::TaskExecution;
+pub use execution::{FinishError, TaskExecution};
 mod delivery;
 pub use delivery::{DeliveryError, DeliveryPage, TaskOwnerSink};
 
@@ -179,9 +179,17 @@ impl TaskLedger {
         owner: Uuid,
         execution: TaskExecution,
         end: TaskEnd,
-    ) -> Result<TaskEnd, String> {
-        if self.execution(task, owner).await? != execution {
-            return Err("task completion belongs to a different execution incarnation".into());
+    ) -> Result<TaskEnd, FinishError> {
+        let accepted = self
+            .execution(task, owner)
+            .await
+            .map_err(FinishError::Authorization)?;
+        if accepted != execution {
+            return Err(FinishError::ExecutionMismatch {
+                task,
+                accepted,
+                offered: execution,
+            });
         }
         let id = Uuid::new_v5(&task, b"terminal");
         let row = TaskFact {
@@ -191,14 +199,19 @@ impl TaskLedger {
         };
         match self.facts.save(id, &row).await {
             Ok(()) => Ok(end),
-            Err(write_error) => match self.facts.find_by_id(id).await.map_err(|e| e.to_string())? {
+            Err(write_error) => match self
+                .facts
+                .find_by_id(id)
+                .await
+                .map_err(|e| FinishError::Persistence(e.to_string()))?
+            {
                 Some(TaskFact {
                     task: stored_task,
                     owner: stored_owner,
                     fact: Fact::Ended(winner),
                 }) if stored_task == task && stored_owner == owner => Ok(winner),
                 // Never reinterpret an arbitrary store failure as a successful completion.
-                _ => Err(write_error.to_string()),
+                _ => Err(FinishError::Persistence(write_error.to_string())),
             },
         }
     }
@@ -344,10 +357,16 @@ mod tests {
         assert_eq!(reopened.pending(task, owner).await?, None);
         // An old incarnation is unresolved, not automatically Lost at reopen.
         assert_eq!(reopened.terminal(task, owner).await?, None);
-        assert!(reopened
-            .finish(task, owner, replacement, TaskEnd::Lost)
-            .await
-            .is_err());
+        assert_eq!(
+            reopened
+                .finish(task, owner, replacement, TaskEnd::Lost)
+                .await,
+            Err(FinishError::ExecutionMismatch {
+                task,
+                accepted: execution,
+                offered: replacement
+            })
+        );
         assert_eq!(reopened.terminal(task, owner).await?, None);
         // Late evidence from the accepted incarnation remains valid after reopen.
         assert_eq!(
@@ -357,10 +376,16 @@ mod tests {
             TaskEnd::Stopped
         );
         // Even after a terminal exists, a replacement cannot claim its completion.
-        assert!(reopened
-            .finish(task, owner, replacement, TaskEnd::Lost)
-            .await
-            .is_err());
+        assert_eq!(
+            reopened
+                .finish(task, owner, replacement, TaskEnd::Lost)
+                .await,
+            Err(FinishError::ExecutionMismatch {
+                task,
+                accepted: execution,
+                offered: replacement
+            })
+        );
         assert_eq!(
             reopened.terminal(task, owner).await?,
             Some(TaskEnd::Stopped)
@@ -624,7 +649,10 @@ mod tests {
                 .finish(
                     task,
                     owner,
-                    delayed.execution(task, owner).await?,
+                    delayed
+                        .execution(task, owner)
+                        .await
+                        .map_err(FinishError::Authorization)?,
                     TaskEnd::Lost,
                 )
                 .await

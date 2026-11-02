@@ -17,3 +17,28 @@ impl TaskExecution {
         }
     }
 }
+
+/// A refused terminal publication, distinct from a completed task's outcome.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FinishError {
+    #[error("task completion authorization failed: {0}")]
+    Authorization(String),
+    #[error(
+        "task {task} completion execution mismatch: accepted {accepted:?}, offered {offered:?}"
+    )]
+    ExecutionMismatch {
+        task: Uuid,
+        accepted: TaskExecution,
+        offered: TaskExecution,
+    },
+    #[error("task terminal persistence failed: {0}")]
+    Persistence(String),
+}
+
+// Command/test boundaries that expose textual errors can render the typed refusal;
+// reconciliation inside the task owner matches FinishError directly.
+impl From<FinishError> for String {
+    fn from(error: FinishError) -> Self {
+        error.to_string()
+    }
+}
