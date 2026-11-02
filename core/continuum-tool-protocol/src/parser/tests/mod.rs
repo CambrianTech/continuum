@@ -778,10 +778,10 @@ Please provide the output so I can review it.";
         // Should be grouped by category: code/ and work/
         assert!(output.contains("code:"), "expected 'code:' in output, got:\n{output}");
         assert!(output.contains("work:"), "expected 'work:' in output, got:\n{output}");
-        // Each tool should appear in its category
-        assert!(output.contains("read()"));
-        assert!(output.contains("write()"));
-        assert!(output.contains("list()"));
+        // Each tool should appear in its category (no params → no parens)
+        assert!(output.contains("read"));
+        assert!(output.contains("write"));
+        assert!(output.contains("list"));
     }
 
     #[test]
