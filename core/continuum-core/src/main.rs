@@ -75,16 +75,20 @@ fn install_shutdown_handlers() {
             if let Ok(mut sig) =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             {
-                sig.recv().await;
-                eprintln!("[continuum-core] SIGTERM — save-and-join broadcast, then exit");
-                // The CBAR stop (2026-09-02): every module saves and joins in
-                // parallel under a bound — replacing a flat 2s sleep during
-                // which NOTHING saved. Sentinels last (they are children, not
-                // modules), then the fast _exit that skips llama.cpp's
-                // double-free-prone static destructors (note above).
-                continuum_core::runtime::run_signal_shutdown().await;
-                continuum_sentinel::shutdown_all_sentinels();
-                unsafe { libc::_exit(0) };
+                while sig.recv().await.is_some() {
+                    eprintln!("[continuum-core] SIGTERM — save-and-join broadcast, then exit");
+                    // The CBAR stop (2026-09-02): every module saves and joins in
+                    // parallel under a bound — replacing a flat 2s sleep during
+                    // which NOTHING saved. Sentinels last (they are children, not
+                    // modules), then the fast _exit that skips llama.cpp's
+                    // double-free-prone static destructors (note above).
+                    if let Err(reason) = continuum_core::runtime::run_signal_shutdown().await {
+                        eprintln!("[continuum-core] {reason}; awaiting another shutdown request");
+                        continue;
+                    }
+                    continuum_sentinel::shutdown_all_sentinels();
+                    unsafe { libc::_exit(0) };
+                }
             }
         });
 
@@ -93,11 +97,15 @@ fn install_shutdown_handlers() {
             if let Ok(mut sig) =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
             {
-                sig.recv().await;
-                eprintln!("[continuum-core] SIGINT — save-and-join broadcast, then exit");
-                continuum_core::runtime::run_signal_shutdown().await;
-                continuum_sentinel::shutdown_all_sentinels();
-                unsafe { libc::_exit(0) };
+                while sig.recv().await.is_some() {
+                    eprintln!("[continuum-core] SIGINT — save-and-join broadcast, then exit");
+                    if let Err(reason) = continuum_core::runtime::run_signal_shutdown().await {
+                        eprintln!("[continuum-core] {reason}; awaiting another shutdown request");
+                        continue;
+                    }
+                    continuum_sentinel::shutdown_all_sentinels();
+                    unsafe { libc::_exit(0) };
+                }
             }
         });
     }
@@ -118,43 +126,48 @@ fn install_shutdown_handlers() {
             let mut ctrl_close = tokio::signal::windows::ctrl_close().ok();
             let mut ctrl_shutdown = tokio::signal::windows::ctrl_shutdown().ok();
 
-            let close_fut = async {
-                match ctrl_close.as_mut() {
-                    Some(s) => {
-                        s.recv().await;
+            loop {
+                let close_fut = async {
+                    match ctrl_close.as_mut() {
+                        Some(s) => s.recv().await,
+                        None => std::future::pending::<Option<()>>().await,
                     }
-                    None => std::future::pending::<()>().await,
-                }
-            };
-            let shutdown_fut = async {
-                match ctrl_shutdown.as_mut() {
-                    Some(s) => {
-                        s.recv().await;
+                };
+                let shutdown_fut = async {
+                    match ctrl_shutdown.as_mut() {
+                        Some(s) => s.recv().await,
+                        None => std::future::pending::<Option<()>>().await,
                     }
-                    None => std::future::pending::<()>().await,
-                }
-            };
+                };
 
-            tokio::select! {
-                _ = ctrl_c.recv() => {}
-                _ = close_fut => {}
-                _ = shutdown_fut => {}
+                let signal = tokio::select! {
+                    signal = ctrl_c.recv() => signal,
+                    signal = close_fut => signal,
+                    signal = shutdown_fut => signal,
+                };
+                if signal.is_none() {
+                    eprintln!("[continuum-core] shutdown signal stream closed; listener stopped");
+                    return;
+                }
+                eprintln!("[continuum-core] shutdown signal — save-and-join broadcast, then exit");
+                // THE SAME BROADCAST THE UNIX ARMS RUN. This arm killed sentinels, slept a
+                // flat 2 seconds, and `_exit`ed — which is precisely the behaviour the SIGTERM
+                // arm's own comment says was replaced on 2026-09-02 ("a flat 2s sleep during
+                // which NOTHING saved"). The unix half was fixed and this half was not, so on
+                // Windows no module has ever saved on a signal stop: not the citizens'
+                // workspaces, not the log queue, nothing. The node that runs the citizens is a
+                // Windows node.
+                //
+                // Ordering matches unix deliberately: modules drain and save FIRST, sentinels
+                // are killed after (they are children, not modules), then the fast `_exit`
+                // that skips llama.cpp's double-free-prone static destructors.
+                if let Err(reason) = continuum_core::runtime::run_signal_shutdown().await {
+                    eprintln!("[continuum-core] {reason}; awaiting another shutdown request");
+                    continue;
+                }
+                continuum_sentinel::shutdown_all_sentinels();
+                unsafe { libc::_exit(0) };
             }
-            eprintln!("[continuum-core] shutdown signal — save-and-join broadcast, then exit");
-            // THE SAME BROADCAST THE UNIX ARMS RUN. This arm killed sentinels, slept a
-            // flat 2 seconds, and `_exit`ed — which is precisely the behaviour the SIGTERM
-            // arm's own comment says was replaced on 2026-09-02 ("a flat 2s sleep during
-            // which NOTHING saved"). The unix half was fixed and this half was not, so on
-            // Windows no module has ever saved on a signal stop: not the citizens'
-            // workspaces, not the log queue, nothing. The node that runs the citizens is a
-            // Windows node.
-            //
-            // Ordering matches unix deliberately: modules drain and save FIRST, sentinels
-            // are killed after (they are children, not modules), then the fast `_exit`
-            // that skips llama.cpp's double-free-prone static destructors.
-            continuum_core::runtime::run_signal_shutdown().await;
-            continuum_sentinel::shutdown_all_sentinels();
-            unsafe { libc::_exit(0) };
         });
     }
 }

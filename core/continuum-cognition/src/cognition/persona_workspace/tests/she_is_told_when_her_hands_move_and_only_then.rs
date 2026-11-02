@@ -533,7 +533,7 @@ use super::*;
     pub(super) async fn every_resident_at_a_seam_measures_her_own_tree_including_untracked_files() {
         let home = tempfile::tempdir().unwrap();
         let _native = crate::paths::NativeHomeOverride::install(home.path());
-        let registry = PersonaWorkspaceRegistry::new();
+        let registry = Arc::new(PersonaWorkspaceRegistry::new());
         let mut residents = Vec::new();
         for i in 0..3 {
             let persona = Uuid::new_v4();
@@ -588,7 +588,7 @@ use super::*;
     pub(super) async fn her_mind_room_runs_on_its_own_cycle_never_checkpointed() {
         let home = tempfile::tempdir().unwrap();
         let _native = crate::paths::NativeHomeOverride::install(home.path());
-        let registry = PersonaWorkspaceRegistry::new();
+        let registry = Arc::new(PersonaWorkspaceRegistry::new());
         let her = Uuid::new_v4();
         let live = registry.register_from_cfg(cfg_for(her)).expect("live cycle");
         let mind_room = crate::cognition::mind_room::mind_room_id(her);
@@ -609,7 +609,7 @@ use super::*;
     pub(super) async fn resident_checkpoint_excludes_replaced_cycles_and_eval_forks() {
         let home = tempfile::tempdir().unwrap();
         let _native = crate::paths::NativeHomeOverride::install(home.path());
-        let registry = PersonaWorkspaceRegistry::new();
+        let registry = Arc::new(PersonaWorkspaceRegistry::new());
         let persona = Uuid::new_v4();
         let old_cycle = registry
             .register_from_cfg(cfg_for(persona))
@@ -710,7 +710,7 @@ use super::*;
     pub(super) async fn resident_checkpoint_reports_io_failure_and_saves_other_residents() {
         let home = tempfile::tempdir().unwrap();
         let _native = crate::paths::NativeHomeOverride::install(home.path());
-        let registry = PersonaWorkspaceRegistry::new();
+        let registry = Arc::new(PersonaWorkspaceRegistry::new());
         let failed = Uuid::new_v4();
         let healthy = Uuid::new_v4();
         for id in [failed, healthy] {
@@ -725,7 +725,7 @@ use super::*;
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         // Deterministic on Unix and Windows: a directory cannot be overwritten
         // by the temporary checkpoint file, regardless of user permissions.
-        std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        std::fs::create_dir(&path).expect("test: obstruct only the failed resident checkpoint");
         let outcomes = registry.flush_volatile_all();
         assert_eq!(outcomes.len(), 2);
         assert!(outcomes

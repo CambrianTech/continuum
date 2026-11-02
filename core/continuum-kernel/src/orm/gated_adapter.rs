@@ -32,11 +32,26 @@ pub(crate) struct PausedWrite {
 pub(crate) struct GatedAdapter {
     inner: Arc<dyn StorageAdapter>,
     next: Mutex<Option<PausedWrite>>,
+    unwind_next: std::sync::atomic::AtomicBool,
+    fail_after_create: std::sync::atomic::AtomicBool,
+    fail_query: std::sync::atomic::AtomicBool,
 }
 
 impl GatedAdapter {
     pub(crate) fn new(inner: Arc<dyn StorageAdapter>) -> Self {
-        Self { inner, next: Mutex::new(None) }
+        Self { inner, next: Mutex::new(None), unwind_next: std::sync::atomic::AtomicBool::new(false), fail_after_create: std::sync::atomic::AtomicBool::new(false), fail_query: std::sync::atomic::AtomicBool::new(false) }
+    }
+
+    pub(crate) fn unwind_next_write(&self) {
+        self.unwind_next.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn fail_after_next_create(&self) {
+        self.fail_after_create.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn fail_next_query(&self) {
+        self.fail_query.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Hold the next write at a gate. Only that one write is held.
@@ -55,6 +70,9 @@ impl GatedAdapter {
         &self,
         write: impl FnOnce(Arc<dyn StorageAdapter>) -> BoxFuture<'static, R> + Send + 'static,
     ) -> R {
+        if self.unwind_next.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            std::panic::resume_unwind(Box::new("injected storage unwind"));
+        }
         let gate = self.next.lock().expect("gate lock").take(); // test fixture: a poisoned gate means an earlier test thread panicked
         let inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
@@ -88,12 +106,21 @@ impl StorageAdapter for GatedAdapter {
         Err("the gated fixture does not own its adapter".to_string())
     }
     async fn create(&self, record: DataRecord) -> StorageResult<DataRecord> {
-        self.write(move |a| Box::pin(async move { a.create(record).await })).await
+        let fail = self.fail_after_create.swap(false, std::sync::atomic::Ordering::SeqCst);
+        let result = self.write(move |a| Box::pin(async move { a.create(record).await })).await;
+        if fail && result.success {
+            StorageResult::err("injected loss of write acknowledgement after commit")
+        } else {
+            result
+        }
     }
     async fn read(&self, collection: &str, id: &UUID) -> StorageResult<DataRecord> {
         self.inner.read(collection, id).await
     }
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
+        if self.fail_query.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return StorageResult::err("injected query failure");
+        }
         self.inner.query(query).await
     }
     async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {

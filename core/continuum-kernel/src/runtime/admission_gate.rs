@@ -20,6 +20,8 @@
 //! not fail when the production copy regressed.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use tokio::sync::Notify;
 
 /// High bit. Leaves 63 bits of count, which is not a limit anyone reaches: the count is
 /// concurrent units of work, bounded by citizens or queue capacity.
@@ -28,14 +30,26 @@ const CLOSED: u64 = 1 << 63;
 /// Admission state for one resource: open/closed plus the in-flight count, in one word.
 pub struct AdmissionGate {
     word: AtomicU64,
+    idle: Notify,
+}
+
+tokio::task_local! {
+    // Execution context, not a second owner: the RAII permit still owns the count.
+    static EXECUTING_GATES: Vec<Arc<AdmissionGate>>;
 }
 
 impl AdmissionGate {
+    pub(crate) fn held_by_current_task(&self) -> bool {
+        EXECUTING_GATES
+            .try_with(|gates| gates.iter().any(|gate| std::ptr::eq(gate.as_ref(), self)))
+            .is_ok_and(|held| held)
+    }
     /// A new, OPEN gate with nothing in flight. `const` so it can be a `static` without
     /// a lazy initialiser.
     pub const fn new() -> Self {
         Self {
             word: AtomicU64::new(0),
+            idle: Notify::const_new(),
         }
     }
 
@@ -64,6 +78,32 @@ impl AdmissionGate {
     pub fn admit(&self) -> Option<Permit<'_>> {
         // A no-op hook, monomorphised away: production runs the identical loop.
         self.admit_hooked(|| {})
+    }
+
+    /// Transfer admission into an owned task without releasing it at the spawn.
+    pub fn admit_owned(self: &Arc<Self>) -> Option<OwnedPermit> {
+        let permit = self.admit()?;
+        let gate = Arc::clone(self);
+        // Transfer the single counted admission to the owned RAII permit.
+        std::mem::forget(permit);
+        Some(OwnedPermit { gate })
+    }
+
+    /// Close admission and await all existing permits. Cancelling a waiter never
+    /// reopens the gate or releases another task's custody; another waiter can resume.
+    pub async fn close_and_wait(&self) {
+        self.close();
+        loop {
+            let idle = self.idle.notified();
+            tokio::pin!(idle);
+            // Register before checking the count so the final release cannot
+            // occur between observing work and subscribing to its completion.
+            idle.as_mut().enable();
+            if self.in_flight() == 0 {
+                return;
+            }
+            idle.await;
+        }
     }
 
     /// `admit`, with a hook run between the LOAD and the compare-exchange.
@@ -109,16 +149,16 @@ impl AdmissionGate {
     /// an entry still sitting in the channel, and a drain would then call the module quiet
     /// while the writer still had work.
     ///
-    /// So the contract for this method is narrow and must stay narrow: **it is only
-    /// correct when a permit was `mem::forget`ed at a hand-off, and it must be called
-    /// exactly once for each one.** Anywhere both ends are in the same scope, use the
+    /// The contract is narrow: release exactly one counted admission, either from
+    /// a permit's Drop or after a permit was forgotten at the log-thread hand-off.
+    /// Anywhere both ends are in the same scope, use the
     /// permit and let it drop — a manual decrement has to be repeated at every exit path
     /// and will be missed at the next one added.
     ///
     /// Saturating, so a double release cannot wrap the count into the closed bit and
     /// reopen a shut gate. A double release is still a bug; this only bounds the damage.
     pub fn release_one(&self) {
-        let _ = self
+        let released = self
             .word
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
                 let count = cur & !CLOSED;
@@ -130,6 +170,9 @@ impl AdmissionGate {
                     Some((cur & CLOSED) | (count - 1))
                 }
             });
+        if matches!(released, Ok(previous) if previous & !CLOSED == 1) {
+            self.idle.notify_waiters();
+        }
     }
 
     /// Shut the gate. Returns whether THIS call closed it, so a second caller — a signal
@@ -157,15 +200,76 @@ pub struct Permit<'a> {
 
 impl Drop for Permit<'_> {
     fn drop(&mut self) {
-        // Subtracting 1 from the whole word decrements the low-bit count and cannot reach
-        // the closed bit, because a permit only exists when the count was at least 1.
-        self.gate.word.fetch_sub(1, Ordering::AcqRel);
+        self.gate.release_one();
+    }
+}
+
+/// An admitted task's custody, retained through persistence and execution.
+#[must_use = "retain the permit until the admitted work and its persistence finish"]
+pub struct OwnedPermit {
+    gate: Arc<AdmissionGate>,
+}
+
+impl OwnedPermit {
+    /// Carry custody through the future and mark its causal scope, so it cannot
+    /// synchronously shut down the runtime that must wait for this same future.
+    pub(crate) async fn scope<F: std::future::Future>(self, work: F) -> F::Output {
+        let mut gates = match EXECUTING_GATES.try_with(Clone::clone) {
+            Ok(gates) => gates,
+            Err(_) => Vec::new(), // No enclosing admitted execution on this task.
+        };
+        gates.push(Arc::clone(&self.gate));
+        let result = EXECUTING_GATES.scope(gates, work).await;
+        drop(self);
+        result
+    }
+}
+
+impl Drop for OwnedPermit {
+    fn drop(&mut self) {
+        self.gate.release_one();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelling_drain_keeps_admission_closed_and_custody_owned() -> Result<(), String> {
+        let gate = Arc::new(AdmissionGate::new());
+        let permit = gate.admit_owned().ok_or("open gate refused admission")?;
+        {
+            let drain = gate.close_and_wait();
+            tokio::pin!(drain);
+            assert!(futures::poll!(drain.as_mut()).is_pending());
+        }
+        assert!(!gate.is_open());
+        assert_eq!(gate.in_flight(), 1);
+        assert!(gate.admit_owned().is_none());
+        let successor = gate.close_and_wait();
+        let peer = gate.close_and_wait();
+        tokio::pin!(successor, peer);
+        assert!(futures::poll!(successor.as_mut()).is_pending());
+        assert!(futures::poll!(peer.as_mut()).is_pending());
+        drop(permit);
+        assert!(futures::poll!(successor.as_mut()).is_ready());
+        assert!(futures::poll!(peer.as_mut()).is_ready());
+        assert_eq!(gate.in_flight(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn release_before_drain_subscription_is_observed() -> Result<(), String> {
+        let gate = Arc::new(AdmissionGate::new());
+        let permit = gate.admit_owned().ok_or("open gate refused admission")?;
+        gate.close();
+        drop(permit);
+        let drain = gate.close_and_wait();
+        tokio::pin!(drain);
+        assert!(futures::poll!(drain.as_mut()).is_ready());
+        Ok(())
+    }
 
     // what this catches: THE RACE, driven through the REAL admit/close rather than a
     // reimplementation of them. With an open flag and a count as separate atomics this
@@ -201,8 +305,15 @@ mod tests {
         );
         assert!(gate.admit().is_none());
         drop(permit);
-        assert_eq!(gate.in_flight(), 0, "the drain's wait ends when the work does");
-        assert!(!gate.is_open(), "releasing the last permit must not reopen the gate");
+        assert_eq!(
+            gate.in_flight(),
+            0,
+            "the drain's wait ends when the work does"
+        );
+        assert!(
+            !gate.is_open(),
+            "releasing the last permit must not reopen the gate"
+        );
     }
 
     // what this catches: the closed bit and the count disturbing each other. They share
@@ -217,7 +328,11 @@ mod tests {
         assert_eq!(gate.in_flight(), 3);
         drop(b); // one finishes BEFORE the close
         gate.close();
-        assert_eq!(gate.in_flight(), 2, "the close carries what was still running");
+        assert_eq!(
+            gate.in_flight(),
+            2,
+            "the close carries what was still running"
+        );
         drop(a);
         drop(c); // and the rest finish after it, out of admission order
         assert_eq!(gate.in_flight(), 0);
@@ -232,7 +347,10 @@ mod tests {
         let gate = AdmissionGate::new();
         let _held = gate.admit().expect("open");
         assert!(gate.close(), "first close closed it");
-        assert!(!gate.close(), "second close must report it was already shut");
+        assert!(
+            !gate.close(),
+            "second close must report it was already shut"
+        );
         assert_eq!(gate.in_flight(), 1, "and must not disturb the count");
     }
 
@@ -320,7 +438,11 @@ mod tests {
         let gate = AdmissionGate::new();
         let permit = gate.admit().expect("open");
         std::mem::forget(permit); // handed to another thread
-        assert_eq!(gate.in_flight(), 1, "the work is still in flight after the hand-off");
+        assert_eq!(
+            gate.in_flight(),
+            1,
+            "the work is still in flight after the hand-off"
+        );
         gate.release_one(); // the holder finished it
         assert_eq!(gate.in_flight(), 0);
     }

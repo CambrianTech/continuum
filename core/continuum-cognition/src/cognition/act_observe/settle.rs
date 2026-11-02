@@ -15,7 +15,7 @@ use crate::cognition::workspace::{Burst, Decision, Situation, TurnFraming, TurnM
 
 use super::apply::apply_act;
 use super::perception::{any_real_receipt, batch_evidence, claimed_file_without_act, collect_touched_paths, mutated_workspace, ConcernPhase, wrote_without_observation};
-use super::types::{SettleOutcome, SettleStep};
+use super::types::{SettleOutcome, SettleStep, SettlementFailure};
 use crate::inference::turn_bound::TICK_DEADLINE;
 
 mod tick_deadline;

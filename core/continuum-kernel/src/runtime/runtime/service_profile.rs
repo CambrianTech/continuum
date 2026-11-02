@@ -159,6 +159,8 @@ impl ModuleStop {
     export_to = "../../../protocol/typescript/system/ShutdownReceipt.ts"
 )]
 pub struct ShutdownReceipt {
+    /// Background acceptance and terminal persistence must settle before modules stop.
+    pub tasks: DrainOutcome,
     pub modules: Vec<ModuleStop>,
     #[ts(type = "number")]
     pub total_ms: u64,
@@ -176,11 +178,17 @@ impl ShutdownReceipt {
 
     /// Every module drained, saved, and completed its final shutdown flush.
     pub fn state_is_durable(&self) -> bool {
-        self.unsaved().is_empty()
+        self.tasks.is_quiet() && self.unsaved().is_empty()
     }
 
     /// One line a human can act on, without reading the process's log after it exited.
     pub fn summary(&self) -> String {
+        if !self.tasks.is_quiet() {
+            return format!(
+                "module shutdown withheld: background task custody {:?}",
+                self.tasks
+            );
+        }
         let unsaved = self.unsaved();
         if unsaved.is_empty() {
             return format!(
@@ -216,14 +224,14 @@ impl ShutdownReceipt {
 /// tests drift into testing something adjacent.
 pub(super) struct ShutdownOperation {
     pub(super) result: tokio::sync::watch::Sender<Option<ShutdownReceipt>>,
-    pub(super) started: std::sync::atomic::AtomicBool,
+    pub(super) started: Arc<parking_lot::Mutex<bool>>,
 }
 
 impl ShutdownOperation {
     pub(super) fn new() -> Self {
         Self {
             result: tokio::sync::watch::channel(None).0,
-            started: std::sync::atomic::AtomicBool::new(false),
+            started: Arc::new(parking_lot::Mutex::new(false)),
         }
     }
 
@@ -231,6 +239,8 @@ impl ShutdownOperation {
     /// result. Idempotent: a second caller — a signal racing the stop verb, a retried
     /// request — joins the first broadcast rather than running `save_state` twice over
     /// the same state.
+    /// A custody refusal stops no modules and permits an explicit new attempt;
+    /// once module shutdown starts its receipt remains the single retained result.
     ///
     /// `settle` is how long the citizens' turns may still finish before the modules drain
     /// (card 32fa22ba): the turns' measured remaining time, never more than this. ZERO =
@@ -241,10 +251,21 @@ impl ShutdownOperation {
         rt: Option<Arc<Runtime>>,
         settle: std::time::Duration,
     ) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
-        if !self.started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        // Check before spawning: a spawned shutdown owner no longer carries the
+        // requesting command's execution scope. Refusal must precede turn settle.
+        if let Some(receipt) = rt.as_ref().and_then(|rt| rt.self_shutdown_refusal()) {
+            return tokio::sync::watch::channel(Some(receipt)).1;
+        }
+        let mut running = self.started.lock();
+        if !*running {
+            *running = true;
+            // A retry is permitted only after custody withheld every module stop.
+            // Do not hand its caller the previous attempt's terminal receipt.
+            self.result.send_replace(None);
             match rt {
                 Some(rt) => {
                     let tx = self.result.clone();
+                    let started = Arc::clone(&self.started);
                     // Detached ON PURPOSE: this is the task whose whole point is that no
                     // connection owns it. A socket handler is cancelled when its client
                     // goes away, and a shutdown cancelled after ingress closed leaves the
@@ -263,7 +284,15 @@ impl ShutdownOperation {
                         // receipt in precisely the case this design exists for. A later
                         // subscriber would then wait forever on a `None` that never
                         // changes.
+                        // Serialize publication with a new begin: a caller that
+                        // observes the withheld receipt can immediately retry,
+                        // without racing an old publisher over its new attempt.
+                        let mut running = started.lock();
+                        let withheld = !receipt.tasks.is_quiet();
                         let _ = tx.send_replace(Some(receipt));
+                        if withheld {
+                            *running = false;
+                        }
                     });
                 }
                 None => {
@@ -271,6 +300,7 @@ impl ShutdownOperation {
                     // Publishing an empty receipt says exactly that, rather than leaving
                     // every observer waiting on a broadcast that will never run.
                     let _ = self.result.send_replace(Some(ShutdownReceipt {
+                        tasks: DrainOutcome::Drained,
                         modules: Vec::new(),
                         total_ms: 0,
                     }));
@@ -298,7 +328,9 @@ pub(super) fn process_shutdown() -> &'static ShutdownOperation {
 ///
 /// Delegates to the process's single [`ShutdownOperation`]. See that type for why the
 /// operation is owned rather than free-standing.
-pub fn begin_shutdown(settle: std::time::Duration) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+pub fn begin_shutdown(
+    settle: std::time::Duration,
+) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
     process_shutdown().begin(signal_runtime(), settle)
 }
 
@@ -347,7 +379,7 @@ pub fn signal_runtime() -> Option<Arc<Runtime>> {
     SIGNAL_RUNTIME.get().cloned()
 }
 
-pub async fn run_signal_shutdown() {
+pub async fn run_signal_shutdown() -> Result<(), String> {
     // Through the SAME idempotent operation the `system/shutdown` verb triggers, so a
     // signal arriving while the verb is running joins that broadcast instead of starting
     // a second one over the same state. The bound is deliberately larger than one phase:
@@ -357,22 +389,59 @@ pub async fn run_signal_shutdown() {
     // No settle: a signal's deadline is the supervisor's (launchd's ExitTimeOut, a
     // console close), not ours to spend waiting on turns.
     let rx = begin_shutdown(std::time::Duration::ZERO);
+    await_signal_shutdown(rx).await
+}
+
+async fn await_signal_shutdown(
+    rx: tokio::sync::watch::Receiver<Option<ShutdownReceipt>>,
+) -> Result<(), String> {
     match await_shutdown(rx, std::time::Duration::from_secs(8)).await {
         Some(receipt) => {
-            // A signal handler cannot return an exit code to anyone, so the receipt's only
-            // readers are the log and the probe ledger — which is exactly why it is
-            // written here rather than dropped. `_exit` follows immediately.
+            // Withheld custody forbids process exit. Keep the signal listener alive
+            // so a later explicit request can retry the same shutdown owner.
+            if !receipt.tasks.is_quiet() {
+                return Err(receipt.summary());
+            }
             if !receipt.state_is_durable() {
                 eprintln!(
                     "[continuum-core] STOPPED WITH UNSAVED STATE: {}",
                     receipt.summary()
                 );
             }
+            Ok(())
         }
-        None => {
-            eprintln!(
-                "[continuum-core] shutdown did not finish within 8s — state durability is UNKNOWN"
-            );
+        None => Err("shutdown did not finish within 8s; process exit withheld".into()),
+    }
+}
+
+#[cfg(test)]
+mod signal_custody_tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn signal_timeout_preserves_owner_and_requires_a_quiet_receipt() {
+        let (owner, observer) = tokio::sync::watch::channel(None);
+        assert!(await_signal_shutdown(observer).await.is_err());
+        // The timed-out observer must not authorize exit or destroy the retained
+        // operation. A later signal reads its actual receipt.
+        for tasks in [
+            DrainOutcome::Incomplete { in_flight: 1 },
+            DrainOutcome::Unknown {
+                reason: "terminal persistence failed".into(),
+            },
+        ] {
+            owner.send_replace(Some(ShutdownReceipt {
+                tasks,
+                modules: vec![],
+                total_ms: 0,
+            }));
+            assert!(await_signal_shutdown(owner.subscribe()).await.is_err());
         }
+        owner.send_replace(Some(ShutdownReceipt {
+            tasks: DrainOutcome::Drained,
+            modules: vec![],
+            total_ms: 0,
+        }));
+        assert!(await_signal_shutdown(owner.subscribe()).await.is_ok());
     }
 }

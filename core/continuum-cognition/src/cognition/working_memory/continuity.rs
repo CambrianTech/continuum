@@ -212,6 +212,7 @@ impl WorkingMemory {
             context_view: self.view.lock().clone(),
             receipt_children: self.receipt_children.lock().clone(),
             open_views: self.open_views.lock().saved(),
+            task_results: self.task_results.lock().clone(),
         }
     }
 
@@ -240,6 +241,11 @@ impl WorkingMemory {
     }
 
     pub fn restore(&self, mut snap: VolatileSnapshot) {
+        {
+            let mut results = snap.task_results.clone();
+            results.publish_restored();
+            *self.task_results.lock() = results;
+        }
         // Read before any field moves out of the snapshot below.
         let records = snap.action_records();
         // A restored mind keeps only the newest concern evidence its existing

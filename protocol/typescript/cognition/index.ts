@@ -58,7 +58,6 @@ export type { GatingRagMetadata } from './GatingRagMetadata';
 export type { GatingRecipeStrategy } from './GatingRecipeStrategy';
 export type { GatingTriggerMessage } from './GatingTriggerMessage';
 export type { GenerateRecipeOrchestratorParams } from './GenerateRecipeOrchestratorParams';
-export type { GenerateResponseAdmissionPolicy } from './GenerateResponseAdmissionPolicy';
 export type { GenerateResponseRequest } from './GenerateResponseRequest';
 export type { GenerateResponseResult } from './GenerateResponseResult';
 export type { GetStateParams } from './GetStateParams';
@@ -116,7 +115,6 @@ export type { RegisterDomainKeywordsParams } from './RegisterDomainKeywordsParam
 export type { RegisterDomainKeywordsResult } from './RegisterDomainKeywordsResult';
 export type { ResolutionError } from './ResolutionError';
 export type { ResolvedModel } from './ResolvedModel';
-export type { ResourceAdmissionPolicy } from './ResourceAdmissionPolicy';
 export type { ResourceClass } from './ResourceClass';
 export type { ResponseDecision } from './ResponseDecision';
 export type { ResponseProposal } from './ResponseProposal';

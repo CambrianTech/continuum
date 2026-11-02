@@ -311,6 +311,15 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                     < LlmDeliberationFaculty::messages_cost(&pair[0].messages));
             }
             assert_eq!(outcome.receipts.len(), seen.len());
+            let served: Vec<_> = outcome.receipts.iter().filter(|receipt| {
+                matches!(receipt.outcome, crate::ai::provenance::GenerationOutcome::Served { .. })
+            }).collect();
+            assert_eq!(outcome.render_receipts.len(), served.len());
+            for (rendered, generation) in outcome.render_receipts.iter().zip(served) {
+                assert_eq!(rendered.owner, persona);
+                assert_eq!(rendered.incarnation, wm.incarnation());
+                assert_eq!(rendered.request, generation.submitted_request_id);
+            }
             for (receipt, request) in outcome.receipts.iter().zip(seen.iter()) {
                 assert_eq!(
                     Some(&receipt.submitted_request_id),
@@ -428,6 +437,7 @@ async fn provider_context_feedback_faults_when_required_input_cannot_fit() {
     let outcome = faculty.contribute(&ws).await.expect("fault contribution");
     assert!(outcome.fault.is_none());
     assert!(outcome.capacity_refusal.is_some());
+    assert!(outcome.render_receipts.is_empty(), "a refused prompt cannot retire task ends");
     assert_eq!(
         outcome.receipts.len(),
         1,

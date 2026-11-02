@@ -176,7 +176,7 @@ use super::*;
     // this is exactly what fed a dead reference to a doomed 10s eval.
     #[test]
     pub(super) fn resolve_persona_takes_uuid_short_id_or_name_and_fails_loud() {
-        let registry = PersonaWorkspaceRegistry::new();
+        let registry = Arc::new(PersonaWorkspaceRegistry::new());
         let asha = Uuid::new_v4();
         let atlas = Uuid::new_v4();
         let mut asha_cfg = cfg_for(asha);
@@ -233,7 +233,7 @@ use super::*;
     // room it services (the "one soul, many rooms" / anti-Severance invariant).
     #[tokio::test]
     pub(super) async fn registry_keeps_one_mind_per_persona() {
-        let registry = PersonaWorkspaceRegistry::new();
+        let registry = Arc::new(PersonaWorkspaceRegistry::new());
         let persona = Uuid::new_v4();
         let first = registry
             .get_or_build(cfg_for(persona))
@@ -260,7 +260,7 @@ use super::*;
     // discarded the fresh config — the bug this guards.)
     #[tokio::test]
     pub(super) async fn register_overwrites_on_respawn() {
-        let registry = PersonaWorkspaceRegistry::new();
+        let registry = Arc::new(PersonaWorkspaceRegistry::new());
         let persona = Uuid::new_v4();
         // register_from_cfg IS the production overwrite path (supervisor.rs spawn);
         // it builds + caches and returns the fresh Arc.
@@ -288,7 +288,7 @@ use super::*;
     pub(super) async fn failed_checkpoint_load_preserves_the_registered_resident() {
         let home = tempfile::tempdir().unwrap();
         let _native = crate::paths::NativeHomeOverride::install(home.path());
-        let registry = PersonaWorkspaceRegistry::new();
+        let registry = Arc::new(PersonaWorkspaceRegistry::new());
         let persona = Uuid::new_v4();
         assert!(load_volatile(persona).unwrap().is_none());
         let current = registry.register_from_cfg(cfg_for(persona)).unwrap();
@@ -319,7 +319,7 @@ use super::*;
     pub(super) async fn resident_registration_refuses_checkpoint_and_lock_errors() {
         let home = tempfile::tempdir().unwrap();
         let _native = crate::paths::NativeHomeOverride::install(home.path());
-        let registry = PersonaWorkspaceRegistry::new();
+        let registry = Arc::new(PersonaWorkspaceRegistry::new());
         for fault in ["schema", "read", "lock"] {
             let persona = Uuid::new_v4();
             let path = volatile_path(persona).unwrap();
@@ -547,7 +547,7 @@ use super::*;
     #[tokio::test]
     pub(super) async fn eval_fork_drops_hands_describing_grounding_when_tools_stripped() {
         const HANDS_MARKER: &str = "drill in with code/list and code/tree";
-        let registry = PersonaWorkspaceRegistry::new();
+        let registry = Arc::new(PersonaWorkspaceRegistry::new());
         let persona = Uuid::new_v4();
         // SlowGrounding's fixed roster line stands in for capability-NEUTRAL
         // grounding; the hands-describing source is its own tiny stub.
@@ -629,7 +629,7 @@ use super::*;
     #[tokio::test]
     pub(super) async fn suppress_recall_omits_the_recall_faculty_from_the_eval_fork() {
         use crate::cognition::workspace::FacultyId;
-        let registry = PersonaWorkspaceRegistry::new();
+        let registry = Arc::new(PersonaWorkspaceRegistry::new());
         let persona = Uuid::new_v4();
         registry
             .register_from_cfg(cfg_for(persona))

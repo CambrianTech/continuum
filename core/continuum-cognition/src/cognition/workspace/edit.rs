@@ -308,6 +308,9 @@ pub struct Contribution {
     /// Neither field can be derived from the other and neither should be removed for
     /// the other's sake.
     pub receipts: Vec<crate::ai::provenance::GenerationReceipt>,
+    /// Submitted render facts return through the same owned faculty result.
+    /// They are evidence for the resident checkpoint owner, never an acknowledgement.
+    pub render_receipts: Vec<crate::cognition::render_receipt::RenderReceipt>,
     /// The model's **verbatim generation** for this verdict — the raw response text
     /// EXACTLY as the model emitted it, BEFORE the tool-call/PASS parser lifted a
     /// [`Decision`] from it. Set ONLY by the deliberation faculty on its verdict
@@ -411,6 +414,7 @@ impl Contribution {
             fault: None,
             capacity_refusal: None,
             receipts: Vec::new(),
+            render_receipts: Vec::new(),
             raw_generation: None,
             trailing: false,
         }
@@ -486,6 +490,7 @@ impl Contribution {
             fault: None,
             capacity_refusal: None,
             receipts: Vec::new(),
+            render_receipts: Vec::new(),
             raw_generation: None,
             trailing: false,
         }
@@ -535,6 +540,7 @@ impl Contribution {
             fault: Some(error),
             capacity_refusal: None,
             receipts: Vec::new(),
+            render_receipts: Vec::new(),
             raw_generation: None,
             trailing: false,
         }

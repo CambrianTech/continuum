@@ -105,9 +105,9 @@ pub fn signal_if_same(who: ProcessIdentity) -> Result<bool, String> {
 #[cfg(windows)]
 fn signal_windows_identity(who: ProcessIdentity) -> Result<bool, String> {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use windows_sys::Win32::Foundation::{FILETIME, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0};
+    use windows_sys::Win32::Foundation::{FILETIME, ERROR_INVALID_PARAMETER};
     use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, WaitForSingleObject,
+        GetProcessTimes, OpenProcess,
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, PROCESS_SYNCHRONIZE,
     };
     // Pin the incarnation before inspecting or signalling it: taskkill's PID
@@ -134,11 +134,27 @@ fn signal_windows_identity(who: ProcessIdentity) -> Result<bool, String> {
     let ticks = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
     let started = (ticks / 10_000_000).checked_sub(11_644_473_600)
         .ok_or("process creation time precedes the Unix epoch")?;
-    // SAFETY: the owned handle stays open through the nonblocking wait.
-    if started != who.start_time || unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } == WAIT_OBJECT_0 {
+    if started != who.start_time || windows_handle_has_exited(&process)? {
         return Ok(false);
     }
     terminate_windows_handle(&process, who)
+}
+
+// A failed observation is neither a live process nor proof of exit. Keep the
+// native error, rather than permitting termination after an indeterminate wait.
+#[cfg(windows)]
+fn windows_handle_has_exited(
+    process: &impl std::os::windows::io::AsRawHandle,
+) -> Result<bool, String> {
+    use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+    // SAFETY: caller retains the handle throughout this nonblocking wait.
+    match unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } {
+        WAIT_OBJECT_0 => Ok(true),
+        WAIT_TIMEOUT => Ok(false),
+        WAIT_FAILED => Err(format!("WaitForSingleObject: {}", std::io::Error::last_os_error())),
+        status => Err(format!("unexpected process wait status: {status}")),
+    }
 }
 
 // The caller has verified creation time while holding this handle. Keep the

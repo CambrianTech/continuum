@@ -38,7 +38,11 @@ impl Staging {
     pub fn new(dir: &Dir) -> io::Result<Self> {
         let dir = dir.try_clone()?;
         loop {
-            let name = format!(".{}-{}.staging", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed));
+            let name = format!(
+                ".{}-{}.staging",
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::Relaxed)
+            );
             match dir.open_with(&name, OpenOptions::new().write(true).create_new(true)) {
                 Ok(file) => return Ok(Staging { dir, name, file }),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -64,6 +68,10 @@ impl Staging {
 
     /// Sync and move over `name` in the same directory, replacing what is there.
     pub fn replace(self, name: &Path) -> io::Result<()> {
+        #[cfg(any(test, feature = "test-fixtures"))]
+        if super::fault_injection::fence_fails() {
+            return Err(io::Error::other("injected durability fence failure"));
+        }
         self.file.sync_all()?;
         self.dir.rename(&self.name, &self.dir, name)?;
         super::os::sync_placed(&self.dir, name)
@@ -72,6 +80,10 @@ impl Staging {
     /// Sync and publish at `name` in the same directory: `AlreadyExists` if it is taken (a racing
     /// identical publisher calls [`fence_existing`] on it), never an overwrite.
     pub fn publish_new(self, name: &Path) -> io::Result<()> {
+        #[cfg(any(test, feature = "test-fixtures"))]
+        if super::fault_injection::fence_fails() {
+            return Err(io::Error::other("injected durability fence failure"));
+        }
         self.file.sync_all()?;
         self.dir.hard_link(&self.name, &self.dir, name)?;
         super::os::sync_placed(&self.dir, name)
@@ -91,7 +103,8 @@ impl Drop for Staging {
 /// Complete the durability fence of `name` in `dir`, a name another publisher created and may not
 /// have synced yet, so a reader never trusts an unfenced name.
 pub fn fence_existing(dir: &Dir, name: &Path) -> io::Result<()> {
-    dir.open_with(name, OpenOptions::new().read(true).write(true))?.sync_all()?;
+    dir.open_with(name, OpenOptions::new().read(true).write(true))?
+        .sync_all()?;
     super::os::sync_placed(dir, name)
 }
 
@@ -104,9 +117,19 @@ pub struct Lock {
 /// Lock `name` in `dir` exclusively, waiting for a holder when `wait`, else refusing with
 /// `WouldBlock`.
 pub fn lock(dir: &Dir, name: &Path, wait: bool) -> io::Result<Lock> {
-    let file = dir.open_with(name, OpenOptions::new().read(true).write(true).create(true).truncate(false))?;
+    let file = dir.open_with(
+        name,
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false),
+    )?;
     if !file.metadata()?.is_file() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("lock {} is not a regular file", name.display())));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("lock {} is not a regular file", name.display()),
+        ));
     }
     let file = file.into_std();
     if wait {
@@ -114,7 +137,9 @@ pub fn lock(dir: &Dir, name: &Path, wait: bool) -> io::Result<Lock> {
     } else {
         match file.try_lock() {
             Ok(()) => {}
-            Err(TryLockError::WouldBlock) => return Err(io::Error::from(io::ErrorKind::WouldBlock)),
+            Err(TryLockError::WouldBlock) => {
+                return Err(io::Error::from(io::ErrorKind::WouldBlock))
+            }
             Err(TryLockError::Error(error)) => return Err(error),
         }
     }
@@ -124,12 +149,26 @@ pub fn lock(dir: &Dir, name: &Path, wait: bool) -> io::Result<Lock> {
 /// Lock the file at `path` (its directory opened and held).
 pub fn lock_path(path: &Path, wait: bool) -> io::Result<Lock> {
     let (dir, name) = split(path)?;
-    lock(&Dir::open_ambient_dir(dir, cap_std::ambient_authority())?, Path::new(name), wait)
+    lock(
+        &Dir::open_ambient_dir(dir, cap_std::ambient_authority())?,
+        Path::new(name),
+        wait,
+    )
 }
 
 fn split(path: &Path) -> io::Result<(&Path, &std::ffi::OsStr)> {
     match (path.parent(), path.file_name()) {
-        (Some(dir), Some(name)) => Ok((if dir.as_os_str().is_empty() { Path::new(".") } else { dir }, name)),
-        _ => Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{} names no file in a directory", path.display()))),
+        (Some(dir), Some(name)) => Ok((
+            if dir.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                dir
+            },
+            name,
+        )),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} names no file in a directory", path.display()),
+        )),
     }
 }

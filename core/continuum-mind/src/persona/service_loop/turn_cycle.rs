@@ -6,6 +6,9 @@ pub(super) enum CycleVerdict {
     Spoke(SpokenTurn),
     /// No reply to publish this turn (deferred, acted, silent, failed, or yielded).
     Skip,
+    /// Custody failed after generation. The loop must leave its durable
+    /// obligation open and return to lifecycle supervision, not close a skip.
+    CheckpointFailed(std::sync::Arc<crate::cognition::persona_workspace::TaskSinkError>),
 }
 
 /// The L2 producer's two provenance inputs are BORN inside the cycle — credit on her hands
@@ -61,7 +64,9 @@ pub(super) async fn run_turn_cycle(
             // flip clears her KV). Unreadable: the genome she has. The receipt names the
             // genes that ran (GenerationReceipt::genes).
             let need = crate::cognition::recall_faculty::focused_query(&workspace_burst.rendered);
-            if let Some(phenotype) = crate::genome::composer::compose(ctx.identity.peer_id.as_uuid(), need).await {
+            if let Some(phenotype) =
+                crate::genome::composer::compose(ctx.identity.peer_id.as_uuid(), need).await
+            {
                 continuum_base::probe!(
                     class = "persona.genome.turn_genes",
                     persona = %ctx.identity.agent_name,
@@ -203,7 +208,8 @@ pub(super) async fn run_turn_cycle(
                 // and got no record, so nothing on disk ever described a lived turn.
                 // The driver stays a driver: no learning policy at any call site.
                 turn_act_count = outcome.acts;
-                let (step, metrics, receipts) = crate::cognition::act_observe::SettleStep::from_settled(outcome);
+                let (step, metrics, receipts) =
+                    crate::cognition::act_observe::SettleStep::from_settled(outcome);
                 (step, metrics, receipts, credit, card_sync)
             };
             // The credit is the turn's held CARD, captured with it, NOT read back out of
@@ -240,9 +246,14 @@ pub(super) async fn run_turn_cycle(
                     "deliberation generation cost"
                 );
             }
-            deferred_input.settle(msg, wake_engram, attention, &step);
-            // The room that chose this turn's cycle above, so the notices it read are the ones answered.
-            deferred_input.notices_read(turn_room, &turn_generation_receipts);
+            deferred_input.observe_settlement(
+                turn_room,
+                msg,
+                wake_engram,
+                attention,
+                &step,
+                &turn_generation_receipts,
+            );
             // A turn with a reply hands its card sync to the publish; any other runs it now.
             let card_sync = if matches!(step, crate::cognition::act_observe::SettleStep::Spoke(_)) {
                 card_sync
@@ -257,10 +268,10 @@ pub(super) async fn run_turn_cycle(
                 }
                 crate::cognition::act_observe::SettleStep::Spoke(text) => {
                     CycleVerdict::Spoke(SpokenTurn {
-                    response_text: text,
-                    turn_credit,
-                    turn_generation_receipts,
-                    card_sync,
+                        response_text: text,
+                        turn_credit,
+                        turn_generation_receipts,
+                        card_sync,
                     })
                 }
                 crate::cognition::act_observe::SettleStep::Acted { calls, intent } => {
@@ -344,6 +355,11 @@ pub(super) async fn run_turn_cycle(
                     deferred_input.settle_work(&work);
                     outcome.turns_skipped += 1;
                     return CycleVerdict::Skip;
+                }
+                crate::cognition::act_observe::SettleStep::ReceiptPersistenceFailed { error } => {
+                    tracing::error!(persona = %ctx.identity.agent_name, lamport = msg.lamport,
+                        error = %error, "render receipt checkpoint failed; generation served, action not executed");
+                    return CycleVerdict::CheckpointFailed(error);
                 }
                 crate::cognition::act_observe::SettleStep::InferenceFailed { error } => {
                     // The model call FAILED (timeout, 5xx, the serving lane

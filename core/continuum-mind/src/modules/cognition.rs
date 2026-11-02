@@ -31,15 +31,19 @@
 //!
 //! Uses `Params` helper for typed parameter extraction.
 
+use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
 use crate::gpu::GpuMemoryManager;
 use crate::logging::TimingGuard;
-use continuum_text_analysis::LoopDetector;
-use crate::persona::{PersonaCognition, PersonaInboxFrame, PersonaTurnFrame, PersonaTurnFrameReplayRecord};
-use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
+use crate::persona::{
+    PersonaCognition, PersonaInboxFrame, PersonaTurnFrame, PersonaTurnFrameReplayRecord,
+};
 use crate::rag::RagEngine;
-use crate::runtime::{CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::runtime::params::Params;
+use crate::runtime::{
+    CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
+};
 use async_trait::async_trait;
+use continuum_text_analysis::LoopDetector;
 use dashmap::DashMap;
 use serde_json::Value;
 use std::any::Any;
@@ -105,8 +109,11 @@ impl CognitionState {
     }
 }
 
+mod task_delivery;
+
 pub struct CognitionModule {
     state: Arc<CognitionState>,
+    task_replay: tokio::sync::Mutex<task_delivery::ReplaySweep>,
     /// Shared late-bound executor slot. `Arc`-wrapped so the `cognition/vision-describe`
     /// command object can hold the same slot and re-enter the bus for `ai/generate`
     /// (same pattern as the `chat/*` family).
@@ -117,6 +124,7 @@ impl CognitionModule {
     pub fn new(state: Arc<CognitionState>) -> Self {
         Self {
             state,
+            task_replay: tokio::sync::Mutex::new(task_delivery::ReplaySweep::default()),
             executor: Arc::new(LateBound::new("cognition::executor")),
         }
     }
@@ -189,7 +197,13 @@ impl ServiceModule for CognitionModule {
             in_flight = crate::cognition::turn_ingress::in_flight(),
             "citizens inside a turn right now — the drain budget's competitor, sampled before the drain instead of only at it"
         );
-        checkpoint_residents(CheckpointBoundary::Periodic).await
+        let replay = self.reconcile_tasks().await;
+        let checkpoint = checkpoint_residents(CheckpointBoundary::Periodic).await;
+        match (replay, checkpoint) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(replay), Err(checkpoint)) => Err(format!("{replay}; {checkpoint}")),
+        }
     }
 
     async fn shutdown(&self) -> Result<(), String> {

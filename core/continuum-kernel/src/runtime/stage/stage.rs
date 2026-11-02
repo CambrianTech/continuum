@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use super::control::{ControlRequest, StopReceipt};
 use super::cost::Cost;
 use super::identity::{RunId, StageId};
-use super::topic::{InputRevision, Provenance};
+use super::topic::InputRevision;
 use super::triggers::Triggers;
 
 /// What the substrate hands a run: its identity and the control requests it checks at its yield
@@ -26,8 +26,9 @@ impl StageContext {
 /// What one run produced.
 #[derive(Debug)]
 pub enum RunOutcome<O> {
-    /// Outputs to publish under the publication rule, each with its provenance.
-    Produced(Vec<(O, Provenance)>),
+    /// Outputs to publish. The runner stamps the actual run and submitted inputs;
+    /// a stage cannot substitute provenance.
+    Produced(Vec<O>),
     /// Work handed to the task owner; its completion re-triggers the stage.
     Dispatched,
     /// Nothing to do for these inputs.

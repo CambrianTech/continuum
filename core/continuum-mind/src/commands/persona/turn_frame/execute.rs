@@ -319,6 +319,9 @@ fn settle_step_to_json(
         SettleStep::InferenceFailed { error } => serde_json::json!({
             "outcome": "inferenceFailed", "error": error,
         }),
+        SettleStep::ReceiptPersistenceFailed { error } => serde_json::json!({
+            "outcome": "receiptPersistenceFailed", "error": error.to_string(),
+        }),
     };
     if let Some(m) = metrics {
         base["metrics"] = serde_json::json!({

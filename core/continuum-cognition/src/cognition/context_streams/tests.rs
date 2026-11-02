@@ -78,6 +78,9 @@ fn a_view_from_an_older_build_is_dropped_and_authoritative_state_survives() {
     use crate::cognition::working_memory::VolatileSnapshot;
 
     let memory = WorkingMemory::new(8);
+    let task = uuid::Uuid::new_v4();
+    memory.stage_task_ends(vec![(task, continuum_kernel::runtime::tasks::TaskEnd::Stopped)])
+        .expect("stage authoritative terminal");
     memory.record_receipt("I ran code/list Result: 4 files");
     memory.record_settlement("listed the four files", None);
     let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
@@ -85,6 +88,7 @@ fn a_view_from_an_older_build_is_dropped_and_authoritative_state_survives() {
     let (view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap();
     memory.keep_view(Some(view));
     // Text, never `serde_json::Value`: the view's element ids are u128, which a Value cannot hold.
+    let terminals = serde_json::to_string(&memory.snapshot().task_results).expect("terminal references");
     let good = serde_json::to_string(&memory.snapshot()).expect("encode");
 
     // The older build's shape: the same real view, its `level` pairs removed and nothing else.
@@ -105,6 +109,8 @@ fn a_view_from_an_older_build_is_dropped_and_authoritative_state_survives() {
     restored.restore(snap);
     assert!(restored.take_view().is_none(), "the stale view is dropped: her next act opens a new epoch");
     assert!(restored.has_receipt(), "her newest result survives");
+    assert_eq!(restored.pending_task_wakes(), vec![task], "discarding a view must not acknowledge an end");
+    assert_eq!(serde_json::to_string(&restored.snapshot().task_results).expect("terminal references"), terminals);
     let settled = |m: &WorkingMemory| m.recent_entries().iter().any(|entry| entry.text.contains("listed the four files"));
     assert!(settled(&restored), "her settlement survives");
 
@@ -118,7 +124,10 @@ fn a_view_from_an_older_build_is_dropped_and_authoritative_state_survives() {
     let saved = serde_json::to_string(&restored.snapshot()).expect("encode");
     assert!(!saved.contains("\"context_view\""));
     let again = WorkingMemory::new(8);
+    assert_eq!(serde_json::to_string(&restored.snapshot().task_results).expect("terminal references"), terminals,
+        "terminal identity and fingerprint survive the next save");
     again.restore(serde_json::from_str(&saved).expect("the repaired save decodes"));
+    assert_eq!(again.pending_task_wakes(), vec![task]);
     assert!(again.has_receipt() && settled(&again), "authoritative state survives the repaired save");
 
     // A corrupt authoritative field is still refused: only the derived view is forgiven.

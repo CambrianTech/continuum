@@ -126,7 +126,7 @@ async fn acted_then_capacity_refused_retains_work_without_replay() {
     assert_eq!(outcome.metrics.output_tokens, 40);
     assert_eq!(outcome.metrics.latency_ms, 1200);
     assert!(!outcome.deferred_before_dispatch);
-    assert!(outcome.inference_error.is_none());
+    assert!(outcome.failure.is_none());
     assert!(matches!(
         SettleStep::from_settled(outcome).0,
         SettleStep::CapacityRefused {
@@ -164,7 +164,7 @@ async fn capacity_refusal_leaves_the_driver_once_with_typed_custody() {
     let outcome =
         drive_to_settle(&cycle, "keep the complete input", 8, TurnFraming::ambient()).await;
     assert_eq!(faculty.0.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert!(outcome.inference_error.is_none());
+    assert!(outcome.failure.is_none());
     assert!(outcome.deferred_before_dispatch);
     assert_eq!(outcome.acts, 0);
     assert!(outcome.generation_receipts.is_empty());
@@ -574,4 +574,53 @@ async fn settle_step_defers_the_act_without_executing_when_may_act_is_false() {
         exec.seen_context.lock().unwrap().is_some(),
         "a permitted act DOES reach the executor"
     );
+}
+
+#[tokio::test]
+async fn receipt_custody_failure_stops_settlement_without_retrying_inference() {
+    use crate::ai::provenance::{GenerationOutcome, GenerationReceipt};
+    use crate::cognition::act_observe::SettlementFailure;
+    use crate::cognition::persona_workspace::{PersonaWorkspaceRegistry, TaskSinkError};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Served {
+        contribution: Contribution,
+        calls: AtomicUsize,
+    }
+    #[async_trait]
+    impl Faculty for Served {
+        fn id(&self) -> FacultyId { FacultyId::Deliberation }
+        fn reacts_to_broadcast(&self) -> bool { true }
+        async fn contribute(&self, _: &Workspace) -> Option<Contribution> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Some(self.contribution.clone())
+        }
+    }
+    let owner = Uuid::new_v4();
+    let incarnation = Uuid::new_v4();
+    let registry = Arc::new(PersonaWorkspaceRegistry::new());
+    let mut contribution = Contribution::verdict(Decision::Speak { text: "must not be emitted".into() }, 1.0, "served");
+    contribution.receipts.push(GenerationReceipt {
+        submitted_request_id: "served-before-owner-loss".into(),
+        outcome: GenerationOutcome::Served { model: "fixture".into(), provider: "fixture".into(), provider_request_id: None },
+        capture: None, genes: Vec::new(), gene_scales: Vec::new(), allocation: None,
+    });
+    contribution.render_receipts.push(crate::cognition::render_receipt::RenderReceipt {
+        owner, incarnation, request: "served-before-owner-loss".into(),
+        view: continuum_context::view::Receipt { epoch: 1, items: Vec::new() },
+    });
+    let faculty = Arc::new(Served { contribution, calls: AtomicUsize::new(0) });
+    let cycle = WorkspaceCycle::new(vec![faculty.clone()], Arc::new(SalienceArbiter))
+        .with_render_custody(&registry, owner, incarnation);
+    drop(registry);
+    let outcome = drive_to_settle(&cycle, "observe the task".to_owned(), 2, TurnFraming::directed()).await;
+    assert_eq!(faculty.calls.load(Ordering::SeqCst), 1, "persistence must not spend an inference retry");
+    assert!(outcome.spoken.is_none());
+    assert_eq!(outcome.acts, 0);
+    assert!(!outcome.deferred_before_dispatch, "the generation really was served");
+    assert!(matches!(&outcome.failure, Some(SettlementFailure::ReceiptPersistence(error))
+        if matches!(error.as_ref(), TaskSinkError::OwnerGone(id) if *id == owner)));
+    assert_eq!(outcome.generation_receipts.len(), 1);
+    let (step, _, receipts) = SettleStep::from_settled(outcome);
+    assert!(matches!(step, SettleStep::ReceiptPersistenceFailed { .. }));
+    assert!(matches!(receipts[0].outcome, GenerationOutcome::Served { .. }));
 }

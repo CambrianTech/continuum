@@ -298,6 +298,8 @@ pub struct WorkingMemory {
     /// has read: her cursors, kept here because the history that carried each page is the
     /// first thing a tight window's fit drops ([`super::open_views`]).
     open_views: Mutex<super::open_views::OpenViews>,
+    task_results: Mutex<task_results::TaskResults>,
+    incarnation: Uuid,
     /// Her learned tool head: every call she makes is noted here, and the deliberation faculty
     /// reads and adopts the head at each epoch turnover ([`super::tool_head`]).
     tool_head: Arc<super::tool_head::ToolHead>,
@@ -440,6 +442,8 @@ pub struct VolatileSnapshot {
     /// written before this field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub open_views: Vec<super::open_views::OpenView>,
+    /// Consumed terminal references and outstanding wake obligations, checkpointed together.
+    pub(crate) task_results: task_results::TaskResults,
 }
 
 impl VolatileSnapshot {
@@ -603,6 +607,8 @@ pub struct WmEntry {
 mod derived;
 mod action_log;
 mod continuity;
+mod task_results;
+pub use task_results::{TaskReceiptConflict, TaskReceiptError};
 mod ledger;
 mod perception;
 mod residency;

@@ -1,7 +1,10 @@
 use super::*;
 
-impl Runtime {
+#[cfg(test)]
+#[path = "runtime_tests.rs"]
+mod tests;
 
+impl Runtime {
     /// `shutdown`, with the per-phase bound passed IN.
     ///
     /// A parameter rather than a constant because the TIMEOUT arms could not otherwise be
@@ -9,13 +12,44 @@ impl Runtime {
     /// were only ever constructed as literals and asserted on. Deleting the timeout
     /// handling here would have left every one of those tests green — the outcomes were
     /// described by the suite and never produced by it. Found by IntelMac.
+    pub(super) fn self_shutdown_refusal(&self) -> Option<ShutdownReceipt> {
+        self.registry.task_admission.held_by_current_task().then(|| ShutdownReceipt {
+            tasks: DrainOutcome::Unknown {
+                reason: "an admitted task cannot shut down its own runtime; request shutdown outside its execution scope".into(),
+            },
+            modules: Vec::new(),
+            total_ms: 0,
+        })
+    }
+
     pub(super) async fn shutdown_within(&self, per_phase: std::time::Duration) -> ShutdownReceipt {
+        if let Some(receipt) = self.self_shutdown_refusal() {
+            return receipt;
+        }
+        let started = std::time::Instant::now();
+        // The same registry is held by every executor. Close before waiting so
+        // acceptance cannot race past a zero count. Cancellation leaves it closed.
+        let tasks = match tokio::time::timeout(per_phase, self.registry.task_admission.close_and_wait()).await {
+            Err(_) => DrainOutcome::Unknown {
+                reason: format!("background task custody did not settle within {}ms; modules remain running", per_phase.as_millis()),
+            },
+            Ok(()) if self.registry.task_persistence_failed.load(std::sync::atomic::Ordering::Acquire) => DrainOutcome::Unknown {
+                reason: "background task persistence did not settle; durable acceptances require reconciliation".into(),
+            },
+            Ok(()) => DrainOutcome::Drained,
+        };
+        if !tasks.is_quiet() {
+            return ShutdownReceipt {
+                tasks,
+                modules: Vec::new(),
+                total_ms: started.elapsed().as_millis() as u64,
+            };
+        }
         let modules = self.registry.list_modules();
         info!(
             "Stopping {} modules (drain → save → join, parallel, 2s bound per phase)...",
             modules.len()
         );
-        let started = std::time::Instant::now();
         let futs = modules.iter().filter_map(|name| {
             self.registry.get_by_name(name).map(|module| {
                 // Deref, not clone: `list_modules` yields `Vec<&'static str>`, so `name`
@@ -72,6 +106,7 @@ impl Runtime {
             })
         });
         let receipt = ShutdownReceipt {
+            tasks,
             modules: futures::future::join_all(futs).await,
             total_ms: started.elapsed().as_millis() as u64,
         };
@@ -153,7 +188,6 @@ impl Runtime {
         );
         Ok(())
     }
-
 }
 
 /// Quarantine threshold for the per-module tick loop. After this many
@@ -450,7 +484,11 @@ pub struct ModuleSpec {
 }
 
 impl ModuleSpec {
-    pub(super) const fn new(name: &'static str, group: ServiceGroup, category: ModuleCategory) -> Self {
+    pub(super) const fn new(
+        name: &'static str,
+        group: ServiceGroup,
+        category: ModuleCategory,
+    ) -> Self {
         Self {
             name,
             group,

@@ -20,3 +20,5 @@ mod final_checkpoint_drains_admitted_periodic_writer_before_ack;
 use final_checkpoint_drains_admitted_periodic_writer_before_ack::*;
 mod gated_grounding;
 use gated_grounding::*;
+
+mod task_consumption;

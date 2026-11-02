@@ -40,7 +40,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use continuum_kernel::runtime::stage::{
-    Cost, ExecutionCost, InputRevision, MindId, Provenance, Ran, ResidencyCost, RunOutcome, Stage,
+    Cost, ExecutionCost, InputRevision, MindId, Ran, ResidencyCost, RunOutcome, Stage,
     StageContext, StageId, StageIncarnation, StageRunner, TopicName, Triggers,
 };
 use uuid::Uuid;
@@ -97,9 +97,9 @@ impl Stage for FacultyStage {
 
     async fn run(
         &self,
-        ctx: &StageContext,
+        _ctx: &StageContext,
         ws: &Workspace,
-        revisions: &[InputRevision],
+        _revisions: &[InputRevision],
     ) -> RunOutcome<Option<StampedFinding>> {
         let finding = self.inner.contribute(ws).await.map(|mut c| {
             // Stamp with the cycle it reasoned against AND the room it reasoned about: the late
@@ -112,13 +112,7 @@ impl Stage for FacultyStage {
                 contribution: c,
             }
         });
-        RunOutcome::Produced(vec![(
-            finding,
-            Provenance {
-                by: ctx.run,
-                from: revisions.to_vec(),
-            },
-        )])
+        RunOutcome::Produced(vec![finding])
     }
 }
 

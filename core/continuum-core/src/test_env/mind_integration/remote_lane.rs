@@ -56,7 +56,7 @@ async fn rehome_requires_a_readable_local_assignment() {
     crate::persona::cognition_extensions::install(); // her remote binding is persona's to read
     let root = tempfile::tempdir().expect("root");
     let _native = crate::paths::NativeHomeOverride::install(root.path());
-    let registry = PersonaWorkspaceRegistry::new();
+    let registry = Arc::new(PersonaWorkspaceRegistry::new());
     let id = Uuid::new_v4();
     let cycle = registry.register_from_cfg(cfg_for(id, "Ivar")).expect("resident");
     let (original, original_model) = cycle.current_model_route().expect("binding");
@@ -91,7 +91,7 @@ async fn a_resident_bound_at_the_provisional_window_is_rehomed_to_the_served_win
     crate::persona::cognition_extensions::install();
     let root = tempfile::tempdir().expect("root");
     let _native = crate::paths::NativeHomeOverride::install(root.path());
-    let registry = PersonaWorkspaceRegistry::new();
+    let registry = Arc::new(PersonaWorkspaceRegistry::new());
     let local = registry.register_from_cfg(cfg_for(Uuid::new_v4(), "Aiko")).expect("local resident");
     let remote = registry.register_from_cfg(cfg_for(Uuid::new_v4(), "Kira")).expect("remote resident");
     let airc = crate::identity::citizen_path::citizen_home_path(root.path(), crate::identity::IdentityKind::Persona, None, "Kira");

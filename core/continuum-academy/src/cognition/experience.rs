@@ -225,7 +225,7 @@ impl ExperienceRecord {
     ///   the honest, end-to-end-instrumented lived verdict is whether she *converged*
     ///   — reached a real settle-verdict (`Speak`/`Pass`/`RaiseUnprompted`) without
     ///   an inference/serving fault. Two magic-number-free failure signals make a
-    ///   lived turn salient: an infra fault (`inference_error`), and NON-CONVERGENCE
+    ///   lived turn salient: an infra fault (`failure`), and NON-CONVERGENCE
     ///   — the settle loop ran out its action budget mid-`Act` and never reached a
     ///   verdict (`SettleOutcome.decision` is still `Act`, the "did not finish" the
     ///   eval grader already recognizes). Both are structural facts of the outcome,
@@ -240,7 +240,7 @@ impl ExperienceRecord {
         // eval's "did not finish", and an honest capability signal with no threshold.
         let converged = !matches!(settled.decision, Decision::Act { .. });
         let clean =
-            converged && settled.inference_error.is_none() && settled.capacity_refusal.is_none();
+            converged && settled.failure.is_none() && settled.capacity_refusal.is_none();
         Self {
             // The stimulus IS the task for a lived turn: the message she answered,
             // posed as the prompt. No `test`/`expect` — nothing objective to grade
@@ -253,11 +253,16 @@ impl ExperienceRecord {
             // correctness claim — a lived turn has no grader (see doc above).
             ok: clean,
             grade: match (
-                &settled.inference_error,
+                &settled.failure,
                 &settled.capacity_refusal,
                 converged,
             ) {
-                (Some(cause), _, _) => format!("lived turn: inference fault — {cause}"),
+                (Some(crate::cognition::act_observe::SettlementFailure::Inference(cause)), _, _) => {
+                    format!("lived turn: inference fault — {cause}")
+                }
+                (Some(crate::cognition::act_observe::SettlementFailure::ReceiptPersistence(cause)), _, _) => {
+                    format!("lived turn: receipt persistence fault — {cause}")
+                }
                 (None, Some(error), _) => format!("lived turn: prompt capacity refused — {error}"),
                 (None, None, false) => {
                     "lived turn: did not converge (action budget exhausted mid-act)".to_string()

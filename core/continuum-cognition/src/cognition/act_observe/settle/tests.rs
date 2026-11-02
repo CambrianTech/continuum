@@ -255,7 +255,7 @@
             &mut conversation,
         )
         .await;
-        assert!(settled.inference_error.is_some(), "a failed act");
+        assert!(settled.failure.is_some(), "a failed act");
         assert!(!settled.deferred_before_dispatch, "never a lane wait");
         assert!(settled.generation_receipts.is_empty(), "no completion");
         assert_eq!(start.elapsed(), crate::inference::turn_bound::TICK_DEADLINE, "one bound, no in-place retry");

@@ -268,21 +268,27 @@
         );
     }
 
-    // what this catches: dispatch_background returns a handle IMMEDIATELY (fire-and-poll)
+    // what this catches: dispatch_background returns after durable acceptance, before execution,
     // and its completion event carries BOTH the handle and the result — so a subscriber
     // (a persona that sent a sentinel away) matches the completion to its dispatch and
     // folds the outcome in without a second call. This is the producer for the WM async
     // recency channel.
     #[tokio::test]
-    async fn dispatch_background_completion_carries_handle_and_result() {
+    async fn dispatch_background_completion_carries_handle_and_result() -> Result<(), String> {
         let registry = Arc::new(ModuleRegistry::new());
         registry.register(Arc::new(CannedModule::answering(Ok(serde_json::json!({ "built": true, "warnings": 0 })))));
         let bus = Arc::new(MessageBus::new());
         let mut rx = bus.receiver();
         let executor = Arc::new(CommandExecutor::new(registry).with_message_bus(bus));
 
-        // Fire in the background — returns a handle immediately, does not await the work.
-        let handle = executor.dispatch_background("canned/ping", serde_json::json!({}), None);
+        let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+        let ledger = Arc::new(crate::runtime::tasks::TaskLedger::new(adapter).await?);
+        executor.set_task_ledger(ledger.clone())?;
+        let owner = uuid::Uuid::new_v4();
+        let caller = crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(owner));
+        // Await durable acceptance, not the command's execution.
+        let handle = executor.dispatch_background("canned/ping", serde_json::json!({}), Some(caller))
+            .await.map_err(|e| e.message)?;
 
         let event = next_command_completed(&mut rx).await;
         assert_eq!(event.command_name, "canned/ping");
@@ -297,6 +303,58 @@
             Some(serde_json::json!({ "built": true, "warnings": 0 })),
             "completion carries the result — no second call needed"
         );
+        assert!(matches!(ledger.pending(handle, owner).await?, Some(crate::runtime::tasks::TaskEnd::Done(_))),
+            "terminal receipt must be durable before the completion event");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn background_acceptance_refusal_never_reaches_dispatch() {
+        let seen = Arc::new(AtomicUsize::new(0));
+        let executor = Arc::new(CommandExecutor::new(Arc::new(ModuleRegistry::new()))
+            .with_interceptor(Arc::new(RecordingDecliner { name: "effect", seen: seen.clone(), mark: 1 })));
+        let anonymous = executor.dispatch_background("effect/run", serde_json::json!({}), None).await;
+        assert!(matches!(anonymous, Err(DispatchFailure { outcome: DispatchOutcome::NotCommitted, .. })));
+        let caller = crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4()));
+        // Identity alone is insufficient: no storage provider means no durable acceptance.
+        let no_store = executor.dispatch_background("effect/run", serde_json::json!({}), Some(caller)).await;
+        assert!(matches!(no_store, Err(DispatchFailure { outcome: DispatchOutcome::NotCommitted, .. })));
+        tokio::task::yield_now().await;
+        assert_eq!(seen.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn background_failure_retains_effect_classification_after_reopen() -> Result<(), String> {
+        use crate::runtime::tasks::{TaskEnd, TaskLedger};
+        let (adapter, _directory) = crate::orm::store::fresh_adapter().await;
+        let ledger = Arc::new(TaskLedger::new(adapter.clone()).await?);
+        let registry = Arc::new(ModuleRegistry::new());
+        registry.register(Arc::new(CannedModule::answering(Err("handler failed after possible effect".into()))));
+        let bus = Arc::new(MessageBus::new());
+        let mut rx = bus.receiver();
+        let executor = Arc::new(CommandExecutor::new(registry).with_message_bus(bus));
+        executor.set_task_ledger(ledger)?;
+        let owner = uuid::Uuid::new_v4();
+        for (command, expected) in [
+            ("canned/boom", DispatchOutcome::Uncertain),
+            ("absent/command", DispatchOutcome::NotCommitted),
+        ] {
+            let caller = crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(owner));
+            let handle = executor.dispatch_background(command, serde_json::json!({}), Some(caller))
+                .await.map_err(|error| error.message)?;
+            let event = next_command_completed(&mut rx).await;
+            assert_eq!(event.handle, Some(handle));
+            assert!(!event.success);
+            let reopened = TaskLedger::new(adapter.clone()).await?;
+            match reopened.pending(handle, owner).await? {
+                Some(TaskEnd::Failed { message, outcome }) => {
+                    assert_eq!(outcome, expected);
+                    assert_eq!(Some(message), event.error);
+                }
+                other => return Err(format!("expected durable failure, got {other:?}")),
+            }
+        }
+        Ok(())
     }
 
     #[tokio::test]

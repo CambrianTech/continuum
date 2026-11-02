@@ -28,16 +28,32 @@ impl OwnSpeechPersisted {
 }
 
 pub(super) fn volatile_path(persona_id: Uuid) -> std::io::Result<std::path::PathBuf> {
-    let home = crate::paths::home_dir().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "cannot resolve persistent home directory",
-        )
-    })?;
-    Ok(home
-        .join(".continuum/personas")
-        .join(persona_id.to_string())
-        .join("volatile.json"))
+    checkpoint_storage::path(persona_id)
+}
+
+/// Proof returned only after the exact snapshot is synced and renamed. The registry
+/// must match the incarnation against its current resident before using these IDs.
+#[derive(Debug)]
+pub struct VolatileReceipt {
+    owner: Uuid,
+    incarnation: Uuid,
+    consumed_tasks: Vec<Uuid>,
+    perceived_tasks: std::collections::BTreeSet<Uuid>,
+}
+
+impl VolatileReceipt {
+    pub fn owner(&self) -> Uuid {
+        self.owner
+    }
+    pub fn incarnation(&self) -> Uuid {
+        self.incarnation
+    }
+    pub fn consumed_tasks(&self) -> &[Uuid] {
+        &self.consumed_tasks
+    }
+    pub fn perceived_tasks(&self) -> &std::collections::BTreeSet<Uuid> {
+        &self.perceived_tasks
+    }
 }
 
 /// Persist the volatile tier — atomic tmp+rename so a crash mid-write never
@@ -48,9 +64,9 @@ pub(super) fn save_volatile(
     reason: SaveReason,
     staged_deadline: Option<std::time::Instant>,
     wm: &super::super::working_memory::WorkingMemory,
-) -> std::io::Result<()> {
-    let path = volatile_path(persona_id)?;
-    let _checkpoint_lock = checkpoint_adoption::lock_checkpoint(&path, true)?;
+) -> std::io::Result<VolatileReceipt> {
+    let writer = checkpoint_storage::writer(persona_id)?;
+    let _checkpoint_lock = writer.lock(std::path::Path::new(".volatile.lock"), true)?;
     let mut snapshot = wm.snapshot();
     // THE HANDOFF (card 49b5e806): composed from what her turns already stamped (rooting,
     // work/note, the seam walk) plus the two things only the seam knows — what tears this
@@ -75,23 +91,27 @@ pub(super) fn save_volatile(
     snapshot.acting_card = wm
         .peek_restored_acting_card()
         .or_else(|| acting_card_of(persona_id));
+    let receipt = VolatileReceipt {
+        owner: persona_id,
+        incarnation: wm.incarnation(),
+        consumed_tasks: snapshot.task_results.consumed_ids(),
+        perceived_tasks: snapshot.task_results.perceived_ids(),
+    };
+    let task_publication = snapshot.task_results.publication();
     let persisted = PersistedVolatile {
         wm: snapshot,
-        own_speech: OwnSpeechPersisted::ByRoom(super::super::deliberation_budget::own_speech_by_room(
-            crate::identity::PeerId::from_uuid(persona_id),
-        )),
+        own_speech: OwnSpeechPersisted::ByRoom(
+            super::super::deliberation_budget::own_speech_by_room(
+                crate::identity::PeerId::from_uuid(persona_id),
+            ),
+        ),
     };
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    use std::io::Write;
-    let mut file = std::fs::File::create(&tmp)?;
-    file.write_all(&serde_json::to_vec(&persisted)?)?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&tmp, &path)?;
-    checkpoint_adoption::sync_parent(&path)
+    writer.replace(
+        std::path::Path::new("volatile.json"),
+        &serde_json::to_vec(&persisted)?,
+    )?;
+    wm.publish_task_checkpoint(task_publication);
+    Ok(receipt)
 }
 
 /// Load the previous life's volatile tier under the same owner lock as saves
@@ -108,14 +128,19 @@ pub(super) fn save_volatile(
 pub(crate) fn persisted_result_handles(
     persona_id: Uuid,
 ) -> std::io::Result<std::sync::Arc<std::collections::HashSet<String>>> {
-    result_handles_at(&volatile_path(persona_id)?)
+    let path = volatile_path(persona_id)?;
+    let _lock = checkpoint_adoption::lock_checkpoint(&path, true)?;
+    result_handles_at(&path)
 }
 
 /// [`persisted_result_handles`] for the checkpoint at `path` (the filesystem seam).
 pub(super) fn result_handles_at(
     path: &std::path::Path,
 ) -> std::io::Result<std::sync::Arc<std::collections::HashSet<String>>> {
-    type Cached = (std::time::SystemTime, std::sync::Arc<std::collections::HashSet<String>>);
+    type Cached = (
+        std::time::SystemTime,
+        std::sync::Arc<std::collections::HashSet<String>>,
+    );
     static CACHE: std::sync::OnceLock<
         parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, Cached>>,
     > = std::sync::OnceLock::new();
@@ -137,16 +162,33 @@ pub(super) fn result_handles_at(
             .map(|persisted| persisted.wm.reachable_handles())
             .unwrap_or_default(),
     );
-    cache.lock().insert(path.to_path_buf(), (modified, std::sync::Arc::clone(&handles)));
+    cache.lock().insert(
+        path.to_path_buf(),
+        (modified, std::sync::Arc::clone(&handles)),
+    );
     Ok(handles)
 }
 
 pub(super) fn load_volatile(persona_id: Uuid) -> std::io::Result<Option<PersistedVolatile>> {
-    load_volatile_at(&volatile_path(persona_id)?)
+    let path = volatile_path(persona_id)?;
+    let _lock = checkpoint_adoption::lock_checkpoint(&path, true)?;
+    if !path.try_exists()? {
+        let native = crate::paths::home_dir()
+            .ok_or_else(|| std::io::Error::other("cannot inspect prior checkpoint location"))?;
+        let previous = native
+            .join(".continuum/personas")
+            .join(persona_id.to_string())
+            .join("volatile.json");
+        if previous != path && previous.try_exists()? {
+            return Err(std::io::Error::other(format!("checkpoint exists at {}; explicit offline checkpoint adoption is required before using {}", previous.display(), path.display())));
+        }
+    }
+    load_volatile_at(&path)
 }
 
-pub(super) fn load_volatile_at(path: &std::path::Path) -> std::io::Result<Option<PersistedVolatile>> {
-    let _lock = checkpoint_adoption::lock_checkpoint(path, true)?;
+pub(super) fn load_volatile_at(
+    path: &std::path::Path,
+) -> std::io::Result<Option<PersistedVolatile>> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),

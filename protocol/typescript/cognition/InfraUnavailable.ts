@@ -13,7 +13,7 @@ export type InfraUnavailable = {
 /**
  * Human cause: which axis broke (not-ready / connect-refused / not-the-served-model
  * / compute-error / stream-idle timeout), naming the task it broke on. Display-only
- * — the classification that produced it is [`SettleOutcome::inference_error`], never
+ * — the classification that produced it is [`SettleOutcome::failure`], never
  * re-parsed from this string.
  */
 reason: string, 

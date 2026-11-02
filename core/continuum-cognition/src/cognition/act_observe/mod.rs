@@ -37,7 +37,7 @@ pub(crate) use observation::call_args;
 pub use observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
 
 mod types;
-pub use types::{SettleOutcome, SettleStep};
+pub use types::{SettleOutcome, SettleStep, SettlementFailure};
 
 mod apply;
 /// Marks committed before an effect reaches the world (stop-drain S2, card 68811445).

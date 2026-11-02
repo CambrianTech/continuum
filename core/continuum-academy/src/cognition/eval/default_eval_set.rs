@@ -153,13 +153,6 @@ where
 /// step over — the living persona's lane.
 pub(super) const EVAL_LANE_BASE_PORT: u16 = 58_200;
 
-/// How much of a graded answer to persist in the result. A coder answer (code + reasoning)
-/// fits far under this; the generous bound exists ONLY to cap a pathological loop-to-length
-/// generation (which is captured up to here, still a diagnosable signal). The old 200-char
-/// cap stored only the preamble and blinded every failure diagnosis + correction-corpus mine.
-// context-budget-exempt: observability: how much of an answer is CAPTURED into the run ledger for humans, never text sent to a model
-pub(super) const ANSWER_CAPTURE_CHARS: usize = 24_000;
-
 /// Per-task detail retained in the DURABLE run ledger row (`append_progress_ledger`).
 /// The ledger stored only the summary (score/total), so a detached run's per-task
 /// verdicts were unrecoverable — a webdev pass/fail could not be glass-boxed after the

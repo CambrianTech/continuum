@@ -131,6 +131,7 @@ pub(super) mod conditional_modules_tests {
                 "giving up watching must not end the shutdown"
             );
             let receipt = ShutdownReceipt {
+                tasks: DrainOutcome::Drained,
                 modules: Vec::new(),
                 total_ms: 3,
             };
@@ -429,6 +430,7 @@ pub(super) mod conditional_modules_tests {
         #[test]
         fn the_summary_names_the_modules_that_did_not_save() {
             let receipt = ShutdownReceipt {
+                tasks: DrainOutcome::Drained,
                 modules: vec![
                     stop("logger", ModuleStopOutcome::Clean),
                     stop("cognition", ModuleStopOutcome::SaveTimedOut),
@@ -452,6 +454,7 @@ pub(super) mod conditional_modules_tests {
         #[test]
         fn an_empty_receipt_reports_the_count_it_actually_stopped() {
             let receipt = ShutdownReceipt {
+                tasks: DrainOutcome::Drained,
                 modules: Vec::new(),
                 total_ms: 0,
             };
@@ -548,7 +551,6 @@ pub(super) mod conditional_modules_tests {
                 "{err}"
             );
         }
-
     }
     /// The mesh states the census reads, as the kernel sees them: through `MeshPresence`
     /// alone (airc's `AircDiscovery` is the real implementor, above the kernel).
@@ -567,11 +569,17 @@ pub(super) mod conditional_modules_tests {
     }
 
     fn healthy() -> Mesh {
-        Mesh { can_host: true, kind: "healthy" }
+        Mesh {
+            can_host: true,
+            kind: "healthy",
+        }
     }
 
     fn degraded() -> Mesh {
-        Mesh { can_host: false, kind: "degraded" }
+        Mesh {
+            can_host: false,
+            kind: "degraded",
+        }
     }
 
     /// FullCitizen + Healthy → must include persona hosting.

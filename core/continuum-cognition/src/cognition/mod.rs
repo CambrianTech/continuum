@@ -65,6 +65,7 @@ pub use continuum_capture::prompt_capture;
 pub mod rag_source_faculty;
 pub mod rate_proposals;
 pub mod recall_faculty;
+pub mod render_receipt;
 pub mod recent_message;
 pub use continuum_prompt::audience;
 pub use continuum_engram::recall_ranker;

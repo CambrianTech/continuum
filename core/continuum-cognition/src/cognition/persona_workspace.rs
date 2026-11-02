@@ -29,19 +29,20 @@ use uuid::Uuid;
 use crate::identity::{PeerId, PersonaRef};
 
 use super::deferred_faculty::DeferredFaculty;
-use crate::ai::embedding::{CachingEmbeddingProvider, EmbeddingProvider, LexicalEmbedder};
 use super::llm_deliberation_faculty::LlmDeliberationFaculty;
 use super::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
 use super::recall_faculty::RecallFaculty;
 use super::working_memory::WorkingMemory;
 use super::workspace::{ActingBody, Faculty, SituationFocusArbiter, WorkspaceCycle};
 use crate::ai::adapter::AIProviderAdapter;
+use crate::ai::embedding::{CachingEmbeddingProvider, EmbeddingProvider, LexicalEmbedder};
 use crate::cognition::admission_state::AdmissionState;
 use crate::cognition::rag_budget::RagSource;
 
 /// Explicit offline adoption of a selected legacy checkpoint; shares this
 /// owner's schema, native path, and cross-process checkpoint exclusion.
 pub mod checkpoint_adoption;
+mod checkpoint_storage;
 
 mod act_output;
 mod rehome;
@@ -58,7 +59,12 @@ mod acting_hands;
 pub use acting_hands::*;
 mod root_acting_workspace;
 pub use root_acting_workspace::*;
+mod owner_checkpoint;
+pub use owner_checkpoint::OwnerCheckpointError;
+mod task_consumption;
+pub use task_consumption::{ResidentTaskSink, TaskConsumptionError, TaskSinkError};
 mod own_speech_persisted;
+pub use own_speech_persisted::VolatileReceipt;
 mod mind_results_reporter;
 pub use mind_results_reporter::MindResultsReporter;
 pub(crate) use own_speech_persisted::*;

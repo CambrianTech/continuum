@@ -1,23 +1,25 @@
 #![cfg(test)]
 
-    // what this catches: PROVENANCE BEING FILTERED BY ATTENTION. Card 0d51573a.
-    // `ws.broadcast` is the FOCUSED set, so deriving receipts from it would drop the
-    // generations of any faculty attention dropped (the arbiter cut by a count until card
-    // c537d687; it forwards every bid now, and receipts must still not depend on it). Astra found that in my first implementation,
-    // which flat_mapped broadcast; my previous test could not catch it because it
-    // hand-assembled `ws.broadcast` and never ran the arbiter at all.
-    //
-    // THIS TEST DRIVES THE REAL CYCLE so the truncation actually happens. A fault
-    // receipt from a losing faculty is precisely the record worth keeping — a failed
-    // call that got truncated away is invisible exactly when someone needs it.
+    // Every faculty's generation and render evidence returns through the real
+    // cycle. The arbiter now forwards every bid, so this test does not exercise
+    // dropped-bid behavior; collection still reads all_bids, not the broadcast.
     #[tokio::test]
-    async fn a_losing_faculty_keeps_its_receipt_even_though_attention_dropped_its_bid() {
+    async fn the_cycle_returns_every_facultys_generation_and_render_receipts() {
         use crate::ai::provenance::GenerationReceipt;
 
         let mut loud = Contribution::context(FacultyId::Recall, "loud", 0.9, "wins attention");
         loud.receipts = vec![GenerationReceipt::faulted("req-loud", "served after retry")];
         let mut quiet = Contribution::context(FacultyId::WorldModel, "quiet", 0.1, "loses attention");
         quiet.receipts = vec![GenerationReceipt::faulted("req-quiet", "lane refused the model")];
+        // A previous successful attempt can have rendered before this faculty's
+        // later attempt faulted. Neither fact may disappear with its losing bid.
+        let rendered = crate::cognition::render_receipt::RenderReceipt {
+            owner: uuid::Uuid::new_v4(),
+            incarnation: uuid::Uuid::new_v4(),
+            request: "req-quiet-earlier-served".to_owned(),
+            view: continuum_context::view::Receipt { epoch: 1, items: Vec::new() },
+        };
+        quiet.render_receipts.push(rendered.clone());
 
         let faculties: Vec<Arc<dyn Faculty>> = vec![
             Arc::new(FixedFaculty(loud)),
@@ -25,6 +27,7 @@
         ];
         let ws = cycle(faculties).run("burst").await;
         assert_eq!(ws.broadcast.len(), 2, "attention forwards every bid");
+        assert_eq!(ws.render_receipts, vec![rendered]);
 
         let ids: Vec<&str> = ws
             .generation_receipts()
