@@ -4,6 +4,11 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// These tests model ONE core at a time on the per-process store (a test opens it, stops, and
+/// reopens it): each holds the store for its whole body, so two tests' data modules never open and
+/// set up the same database at once (CI on #5698: "database is locked" in ensure-schema).
+static ONE_CORE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 use crate::chat::arrival::ArrivalKind;
 use crate::chat::line_store::{Imported, PostedLine};
 use crate::chat::publication::{
@@ -60,6 +65,7 @@ fn params_in(room: Uuid, text: &str) -> ChatSendParams {
 // process publishes it once the relay accepts.
 #[tokio::test]
 async fn a_refused_publish_recovers_without_a_restart() {
+    let _one_core = ONE_CORE_AT_A_TIME.lock().await;
     let accepted = Arc::new(Mutex::new(Vec::new()));
     let chat = real_store_chat(relay(2, accepted.clone()));
     let params = params_in(Uuid::new_v4(), "said while the relay was down");
@@ -101,6 +107,7 @@ async fn a_refused_publish_recovers_without_a_restart() {
 // committed together survive a reopen of the store, and the reopened core publishes it.
 #[tokio::test]
 async fn a_pending_publication_survives_a_reopen_and_publishes() {
+    let _one_core = ONE_CORE_AT_A_TIME.lock().await;
     let params = params_in(Uuid::new_v4(), "stored, then the core stopped");
     let sent = real_store_chat(relay(usize::MAX, Arc::new(Mutex::new(Vec::new()))))
         .send_with_wire(params.clone(), crate::chat::WireLeg::Envelope)
@@ -126,6 +133,7 @@ async fn a_pending_publication_survives_a_reopen_and_publishes() {
 // arrival, the retired obligation still proves the exact line, and an altered one is refused.
 #[tokio::test]
 async fn a_retired_import_replays_once_after_a_reopen() {
+    let _one_core = ONE_CORE_AT_A_TIME.lock().await;
     let params = params_in(Uuid::new_v4(), "relayed and seen back");
     let sent = real_store_chat(relay(0, Arc::new(Mutex::new(Vec::new()))))
         .send_with_wire(params.clone(), crate::chat::WireLeg::Envelope)
@@ -210,6 +218,7 @@ async fn a_retired_import_replays_once_after_a_reopen() {
 // executor again is accepted, a different one refused, and the slot keeps the first.
 #[tokio::test]
 async fn a_ready_slot_refuses_a_different_executor_and_keeps_the_first() {
+    let _one_core = ONE_CORE_AT_A_TIME.lock().await;
     let chat = real_store_chat(relay(0, Arc::new(Mutex::new(Vec::new()))));
     chat.query_rows(crate::chat::types::CHAT_MESSAGES_COLLECTION, json!({}), None, Some(1)).await.expect("the store is ensured");
     let first = chat.executor_slot.cloned().expect("installed");
