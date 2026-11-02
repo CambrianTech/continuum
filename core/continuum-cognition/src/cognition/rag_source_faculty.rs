@@ -256,7 +256,9 @@ impl RagSourceFaculty {
     /// Returns the streak length WHEN IT REPORTED, so the decision to report is
     /// testable without standing up a tracing subscriber to watch for the probe.
     fn note_absence(&self, room: Uuid) -> Option<u32> {
-        if !self.cold_start_critical {
+        // In her mind room a shared-room source (the roster, the board) has nothing by design:
+        // that absence is the room's privacy, not a wrong turn.
+        if !self.cold_start_critical || crate::cognition::mind_room::is_private_room(self.persona_id, room) {
             return None;
         }
         let streak = {

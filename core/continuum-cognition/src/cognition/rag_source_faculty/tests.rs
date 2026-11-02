@@ -82,6 +82,17 @@
         // abstains silently and a second live path carried the same content. The
         // tier whose absence is a WRONG turn must not be able to be quietly
         // absent. Powers of two: 1,2,4,8 report; 3,5,6,7 do not.
+        // what this catches: a shared-room source's absence in her mind room reported as a WRONG
+        // turn (live 2026-11-02: Atlas's private turns raised rag.coldstart.absent for the roster
+        // every streak): the room is private by design, so nothing there is absent.
+        #[tokio::test]
+        async fn her_mind_room_is_never_a_cold_start_absence() {
+            let faculty = critical(Arc::new(StubSource::new("roster", &[])));
+            let mind = crate::cognition::mind_room::mind_room_id(persona());
+            let reported: Vec<Option<u32>> = (0..4).map(|_| faculty.note_absence(mind)).collect();
+            assert_eq!(reported, vec![None; 4], "her mind room's empty roster is privacy, not absence");
+        }
+
         #[tokio::test]
         async fn a_cold_start_critical_source_reports_its_absence_on_a_log2_schedule() {
             let faculty = critical(Arc::new(StubSource::new("room-doctrine", &[])));
