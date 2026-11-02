@@ -60,7 +60,7 @@ pub(super) async fn admit_trigger(
     // threaded into a per-turn RespondInput (that path is gone); only the side-
     // effects and the admit remain.
     if !admitted_retry {
-        let cognition = ctx.cognition.lock().await;
+        let cognition = &ctx.cognition;
         // recall BEFORE admit so the ranking is "what I knew going in" — the
         // current message is the trigger, not recall.
         // Per #195 slice 1: time the L2 retrieval pass.
@@ -68,13 +68,12 @@ pub(super) async fn admit_trigger(
         let scored = cognition.admission.recall_scored(now_ms, 8);
         phase_timings.recall_ms = recall_started.elapsed().as_millis() as u64;
         for (rank, (engram, salience)) in scored.iter().enumerate() {
-            let preview: String = engram.content.chars().take(80).collect();
             tracing::info!(
                 lamport = msg.lamport,
                 rank,
-                engram_id = %&engram.id.to_string()[..8],
+                engram_id = %engram.id,
                 salience = format!("{:.3}", salience),
-                content = %preview,
+                content_chars = engram.content.chars().count(),
                 "recall_scored — engram ranked (introspection; RecallFaculty feeds the prompt)"
             );
         }
@@ -118,8 +117,8 @@ pub(super) async fn admit_trigger(
     wake_engram
 }
 
-/// Lease the brain for compose_for_turn (budget + multi-source RAG composition), then
-/// harvest the roster resolution it fetched into the admit-time name memory.
+/// Compose the turn (budget + multi-source RAG composition), then harvest the roster resolution
+/// it fetched into the admit-time name memory.
 pub(super) async fn compose_turn(
     ctx: &HostedPersona,
     turn_room: Uuid,
@@ -127,15 +126,13 @@ pub(super) async fn compose_turn(
     phase_timings: &mut PhaseTimings,
     roster_names: &mut std::collections::HashMap<Uuid, String>,
 ) -> crate::persona::unified::ComposedTurn {
-    // 2. Lease the brain again for compose_for_turn — the budget
-    //    + multi-source RAG composition via the
-    //    FlexboxRagBudgetAdapter. Inference runs WITHOUT holding
-    //    the mutex so the persona stays responsive to a future
-    //    "stop" or shutdown signal while the model decodes.
+    // 2. compose_for_turn: the budget + multi-source RAG composition via the
+    //    FlexboxRagBudgetAdapter. The brain is shared, never locked: it is wired once at
+    //    materialize, so composition, recall and admission run concurrently.
     // Per #195 slice 1: time the RAG flexbox composer.
     let compose_started = std::time::Instant::now();
     let composed = {
-        let cognition = ctx.cognition.lock().await;
+        let cognition = &ctx.cognition;
         // Stamp the WHERE axis: this turn is happening INSIDE `turn_room`.
         // Without it every room-scoped source abstains and she perceives no
         // board, no roster, no doctrine, no wall (#331 / #127).
