@@ -263,8 +263,11 @@ What this adds to the design above:
 - **All (2026-11-02, the population larger than the grid):** decided: a persona creates minds
   with the same ability a user has. Open: what is "incubation": a newborn mind's first activity, and
   who teaches her? When a mind moves to a different base model, how do her genes follow
-  (re-fit, re-train, or wait for a node with her base)? How does a user see the whole
-  population across devices, and choose who is online when capacity is short?
+  (re-fit, re-train, or wait for a node with her base)? Decided: a user sees the whole
+  population as presence, like any chat app (Joel, 2026-11-02: "Users would just see them as
+  offline if not active"): a mind not placed now reads offline (see Presence above), still
+  there to message or call, which wakes her. Open: how a user chooses who is online when
+  capacity is short (the person's choice beats the allocator, as above).
 
 ## Gates (done when)
 
