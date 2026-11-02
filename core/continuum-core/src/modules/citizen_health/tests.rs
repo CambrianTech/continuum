@@ -1,6 +1,10 @@
 #![cfg(test)]
     use super::*;
 
+    /// The ledger is a process global, and a close resets every counter: the tests that close
+    /// it hold this so one's close cannot empty the window another is asserting on.
+    static LEDGER_CLOSES: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
         CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, lanes_sustained: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, stops: StopCounts::default(), lane_starved: 0, generations: 0, generations_dropped: 0, knee: None, prompt_cached_tokens: 0, prompt_prefill_tokens: 0, moves_opportunity: 0, moves_failure: 0, oldest_dormant_turn_age_ms: None, held_for: None }
     }
@@ -10,6 +14,7 @@
     // nobody) — and the move ledger is a window like the rest.
     #[test]
     fn the_line_carries_the_moves_and_the_oldest_dormant_turn() {
+        let _closes = LEDGER_CLOSES.lock();
         let x = h(4, 2, 10, 2);
         let l = line(&x, &verdict(&x));
         assert!(l.contains("moves: 0 on opportunity / 0 on failure"), "{l}");
@@ -65,6 +70,7 @@
     // lets READING outrank it, puts the blame back on the minds.
     #[test]
     fn a_dropped_generation_is_counted_rendered_and_outranks_the_reading_verdict() {
+        let _closes = LEDGER_CLOSES.lock();
         let _ = hour(Read::Close); // start this assertion from a known floor
         note_generation_outcome(false);
         note_generation_outcome(true);
@@ -83,25 +89,26 @@
         assert!(line(&clean, &verdict(&clean)).contains("dropped 0 of 50 (0%)"));
         assert!(line(&h(4, 2, 10, 2), &verdict(&h(4, 2, 10, 2))).contains("dropped n/a"));
 
-        // The measured night: 18 of 50 = 36% thrown away, a pattern in the pipe.
-        let m5 = CitizenHealth { generations: 50, generations_dropped: 18, ..h(4, 2, 13, 0) };
-        assert_eq!(dropped_pct(&m5), Some(36));
+        // A night that lost more than it delivered: 30 of 50 thrown away.
+        let m5 = CitizenHealth { generations: 50, generations_dropped: 30, ..h(4, 2, 13, 0) };
+        assert_eq!(dropped_pct(&m5), Some(60));
         assert_eq!(
             verdict(&m5),
-            Verdict::Dropping { dropped: 18, generations: 50 },
-            "36% thrown away is a PIPE fault; it must not render as READING"
+            Verdict::Dropping { dropped: 30, generations: 50 },
+            "more thrown away than delivered is a PIPE fault; it must not render as READING"
         );
         let l = line(&m5, &verdict(&m5));
-        assert!(l.contains("dropped 18 of 50 (36%)"), "{l}");
+        assert!(l.contains("dropped 30 of 50 (60%)"), "{l}");
         assert!(l.contains("DROPPING"), "{l}");
         assert!(!l.contains("READING"), "{l}");
-        // One drop is a bound trimming an outlier: the older verdicts still stand. More than one
-        // is a pattern (two is already one more than an outlier).
-        let occasional = CitizenHealth { generations: 50, generations_dropped: 1, ..h(4, 2, 13, 0) };
-        assert_eq!(verdict(&occasional), Verdict::Reading { acts: 13 }, "one drop is an outlier");
-        let pattern = CitizenHealth { generations: 50, generations_dropped: 2, ..h(4, 2, 13, 0) };
-        assert_eq!(verdict(&pattern), Verdict::Dropping { dropped: 2, generations: 50 }, "two drops are a pattern");
-        let healthy = CitizenHealth { generations: 50, generations_dropped: 1, ..h(4, 2, 13, 4) };
+        // Fewer drops than deliveries leave the minds' own verdict standing (Cormac on #5713: two
+        // drops in a busy hour must not hide "Reading, 0 writes"); more lost than delivered is a
+        // pipe fault.
+        let occasional = CitizenHealth { generations: 50, generations_dropped: 2, ..h(4, 2, 13, 0) };
+        assert_eq!(verdict(&occasional), Verdict::Reading { acts: 13 }, "a few drops do not hide the minds' verdict");
+        let lossy = CitizenHealth { generations: 50, generations_dropped: 26, ..h(4, 2, 13, 0) };
+        assert_eq!(verdict(&lossy), Verdict::Dropping { dropped: 26, generations: 50 }, "more lost than delivered is the pipe");
+        let healthy = CitizenHealth { generations: 50, generations_dropped: 2, ..h(4, 2, 13, 4) };
         assert_eq!(verdict(&healthy), Verdict::Healthy);
     }
 
@@ -165,6 +172,7 @@
     // hour starts from zero rather than accumulating the day.
     #[test]
     fn the_tick_reads_a_window_not_a_lifetime() {
+        let _closes = LEDGER_CLOSES.lock();
         note_act(true);
         note_act(false);
         note_lane_granted();
@@ -338,6 +346,7 @@
     // window it covers; a close keeps the closed hour for the next reader.
     #[test]
     fn a_reading_reports_the_window_it_covers_and_the_closed_hour_is_kept() {
+        let _closes = LEDGER_CLOSES.lock();
         let opened = continuum_base::time::EpochMs::now().millis().saturating_sub(120_000);
         super::rest_seats::open_window_at_for_test(opened);
         let peek = super::rest_seats::peek_for_test();

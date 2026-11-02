@@ -598,12 +598,12 @@ pub fn verdict(h: &CitizenHealth) -> Verdict {
             _ => Verdict::Starved { resident: h.resident, lanes: h.lanes_sustained },
         };
     }
-    // BEFORE blaming the minds: did the substrate throw their work away? A node losing
-    // this share of its generations has a bound problem, and every verdict below reads as
-    // a capability verdict about the citizens.
-    // One dropped turn in a window is a bound trimming a genuine outlier; more than one is a
-    // pattern in the pipe, and every drop is a full prefill spent and discarded.
-    if h.generations_dropped > 1 {
+    // BEFORE blaming the minds: did the substrate throw their work away? When the pipe drops
+    // more generations than it delivers, the minds' own verdicts below would describe a pipe
+    // fault as a capability one. Fewer drops than deliveries leave the minds' verdict standing
+    // (the line still counts every drop): two drops in a 66-act hour must not hide
+    // "Reading, 0 writes" (Cormac on #5713). Derived from the window's own generations.
+    if h.generations_dropped > h.generations.saturating_sub(h.generations_dropped) {
         return Verdict::Dropping { dropped: h.generations_dropped, generations: h.generations };
     }
     if h.writes == 0 {
