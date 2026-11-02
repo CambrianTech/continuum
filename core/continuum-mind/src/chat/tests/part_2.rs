@@ -70,7 +70,7 @@ use super::*;
             .expect_err("data executor failure must propagate as command-level Err");
 
         assert!(
-            err.contains("chat/send: chat line: data/batch failed"),
+            err.contains("chat/send: chat store: data/batch failed"),
             "error must name the failing surface: {err}"
         );
         assert!(
@@ -112,7 +112,7 @@ use super::*;
             .expect_err("success=false from data must propagate as Err");
 
         assert!(
-            err.contains("the store refused the line"),
+            err.contains("the store refused data/batch"),
             "error must name the failure mode: {err}"
         );
         assert!(

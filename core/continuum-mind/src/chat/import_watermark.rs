@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::chat_data_handle::{ChatModule, CHAT_DATA_HANDLE};
+use super::chat_data_handle::ChatModule;
 use crate::orm::types::{BatchOperation, BatchOperationType};
 
 /// A position in a room's airc transcript (the daemon's cursor), typed.
@@ -63,20 +63,12 @@ impl ChatModule {
         &self,
         room: RoomId,
     ) -> Result<Option<ImportedThrough>, String> {
-        let executor = self.executor()?;
-        let params = json!({ "dbPath": CHAT_DATA_HANDLE, "collection": COLLECTION, "id": room.as_uuid().to_string() });
-        let result = executor
-            .execute_json("data/read", params)
-            .await
-            .map_err(|e| format!("import watermark: data/read failed: {e}"))?;
-        if result.get("success").and_then(Value::as_bool) != Some(true) {
-            return Ok(None); // no row: the store has never imported this room
-        }
-        let Some(data) = result.get("data").and_then(|d| d.get("data")).cloned() else {
-            return Ok(None);
+        let Some(row) = self
+            .row::<ImportWatermarkRow>(COLLECTION, room.as_uuid())
+            .await?
+        else {
+            return Ok(None); // the store confirms no row: it has never imported this room
         };
-        let row: ImportWatermarkRow = serde_json::from_value(data)
-            .map_err(|e| format!("import watermark: malformed row: {e}"))?; // storage boundary: the adapter's row format
         Ok(Some(ImportedThrough {
             position: ImportWatermark {
                 epoch: row.epoch,
@@ -131,7 +123,6 @@ impl ChatModule {
         room: RoomId,
         writes: Vec<(BatchOperationType, Value)>,
     ) -> Result<(), String> {
-        let executor = self.executor()?;
         let operations: Vec<BatchOperation> = writes
             .into_iter()
             .map(|(operation_type, data)| BatchOperation {
@@ -141,15 +132,7 @@ impl ChatModule {
                 data: Some(data),
             })
             .collect();
-        let params = json!({ "dbPath": CHAT_DATA_HANDLE, "operations": operations });
-        let result = executor
-            .execute_json("data/batch", params)
-            .await
-            .map_err(|e| format!("import watermark: data/batch failed: {e}"))?;
-        match result.get("success").and_then(Value::as_bool) {
-            Some(true) => Ok(()),
-            _ => Err(format!("import watermark: the store refused it: {result}")),
-        }
+        self.run_batch(operations).await.map(drop)
     }
 }
 

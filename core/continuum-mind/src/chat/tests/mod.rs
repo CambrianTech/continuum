@@ -26,6 +26,9 @@
             registry.register(module);
         }
         let executor = Arc::new(CommandExecutor::new(registry));
+        // The relay this core publishes callers' lines as (the airc module registers it in
+        // production); first registration wins process-wide.
+        crate::chat::publication::register_relay(airc_core::PeerId::from_u128(0x7e1a));
         ChatModule::with_executor(executor)
     }
 
@@ -93,6 +96,11 @@
             command: &str,
             params: Value,
         ) -> Result<CommandResult, String> {
+            // A stand-in store has no schema: the chat store's ensure of its own collections
+            // (its first call, `store.rs`) succeeds here, and the test's responder sees the rest.
+            if command == "data/ensure-schema" {
+                return Ok(CommandResult::Json(json!({ "success": true })));
+            }
             (self.responder)(command, params).map(CommandResult::Json)
         }
 
@@ -117,6 +125,7 @@
             direct_to: Some(airc_core::PeerId::new()),
             occurred_at_ms: 1_784_227_923_000,
             text: text.to_string(),
+            retires_publication: false,
         }
     }
 
@@ -136,12 +145,7 @@
         let chat = chat_with_stubs(vec![Arc::new(data)]);
         let line = imported_line("I see the word LIGHTHOUSE in the room.");
         let imported = chat
-            .commit_line(
-                &line,
-                crate::chat::line_store::LineWrite::Import,
-                None,
-                json!({ "text": line.text }),
-            )
+            .commit_line(&line, None, json!({ "text": line.text }))
             .await
             .expect("the import commits");
         assert_eq!(
@@ -194,12 +198,7 @@
         let chat = chat_with_stubs(vec![Arc::new(data)]);
         let line = imported_line("already stored by send()");
         let imported = chat
-            .commit_line(
-                &line,
-                crate::chat::line_store::LineWrite::Import,
-                None,
-                json!({ "text": line.text }),
-            )
+            .commit_line(&line, None, json!({ "text": line.text }))
             .await
             .expect("a duplicate is a committed import");
         assert_eq!(
@@ -216,7 +215,7 @@
         let chat = chat_with_stubs(vec![Arc::new(data)]);
         let line = imported_line("unconfirmed");
         let err = chat
-            .commit_line(&line, crate::chat::line_store::LineWrite::Import, None, json!({ "text": line.text }))
+            .commit_line(&line, None, json!({ "text": line.text }))
             .await
             .expect_err("a reply without freshness is malformed");
         assert!(err.contains("did not say whether it was fresh"), "named: {err}");
@@ -233,12 +232,7 @@
         let chat = chat_with_stubs(vec![Arc::new(data)]);
         let line = imported_line("lost?");
         let err = chat
-            .commit_line(
-                &line,
-                crate::chat::line_store::LineWrite::Import,
-                None,
-                json!({ "text": line.text }),
-            )
+            .commit_line(&line, None, json!({ "text": line.text }))
             .await
             .expect_err("a refusal is an error");
         assert!(err.contains("disk full"), "the cause is named: {err}");
@@ -316,6 +310,17 @@
         assert_eq!(result.count, 0);
         assert!(result.messages.is_empty());
         assert!(result.after_message_id.is_none());
+    }
+
+    // what this catches: a malformed store answer read as fewer rows (Codex on #5696): only a
+    // well-formed empty list is "no rows"; a missing list or a record without its entity is an error.
+    #[tokio::test]
+    pub(super) async fn a_malformed_query_answer_is_an_error_never_fewer_rows() {
+        for answer in [json!({ "success": true }), json!({ "success": true, "data": [{ "id": "x" }] })] {
+            let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(move |_p| answer.clone()))]);
+            let err = chat.poll(ChatPollParams::default()).await.expect_err("a malformed answer is refused");
+            assert!(err.contains("malformed"), "names the malformed answer: {err}");
+        }
     }
 
     // what this catches: #201 boot-race — a chat command that arrives BEFORE
@@ -612,11 +617,11 @@
     #[tokio::test]
     pub(super) async fn send_happy_path_returns_message_id_and_event_id() {
         let chat = chat_with_stubs(vec![
-            Arc::new(StubDataModule::new(|cmd, _p| {
-                assert_eq!(
-                    cmd, "data/batch",
-                    "happy path only writes (no other data ops)"
-                );
+            Arc::new(StubDataModule::new(|cmd, p| {
+                assert_eq!(cmd, "data/batch", "happy path only writes (no other data ops)");
+                // The envelope leg relays for the caller: the publication obligation commits in the
+                // SAME batch as the row and its arrival (#5696), never a separate write.
+                assert_eq!(p["operations"][1]["collection"], "chat_publications", "obligation in the line's batch: {p}");
                 Ok(batch_ok())
             })),
             Arc::new(StubAircModule::ok(airc_ok_response("evt-happy-001"))),
@@ -679,3 +684,4 @@
 mod paging;
 mod part_2;
 mod part_3;
+mod restart;

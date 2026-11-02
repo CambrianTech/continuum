@@ -53,7 +53,7 @@ impl ChatModule {
         tie.insert("timestamp".to_string(), json!({ "$eq": anchor_timestamp }));
         tie.insert("id".to_string(), operator(strictly, json!(anchor.to_string())));
         let mut rows = self
-            .query_rows(tie, json!([{ "field": "id", "direction": sort }]), limit)
+            .query_rows(CHAT_MESSAGES_COLLECTION, Value::Object(tie), Some(json!([{ "field": "id", "direction": sort }])), Some(limit))
             .await?;
 
         if rows.len() < limit {
@@ -63,7 +63,7 @@ impl ChatModule {
                 { "field": "timestamp", "direction": sort },
                 { "field": "id", "direction": sort },
             ]);
-            rows.extend(self.query_rows(past, order, limit - rows.len()).await?);
+            rows.extend(self.query_rows(CHAT_MESSAGES_COLLECTION, Value::Object(past), Some(order), Some(limit - rows.len())).await?);
         }
         Ok(rows)
     }
@@ -74,28 +74,7 @@ impl ChatModule {
             { "field": "timestamp", "direction": "desc" },
             { "field": "id", "direction": "desc" },
         ]);
-        self.query_rows(room_filter(room_id), order, limit).await
-    }
-
-    async fn query_rows(
-        &self,
-        filter: serde_json::Map<String, Value>,
-        sort: Value,
-        limit: usize,
-    ) -> Result<Vec<Value>, String> {
-        let query = json!({
-            "dbPath": CHAT_DATA_HANDLE,
-            "collection": CHAT_MESSAGES_COLLECTION,
-            "filter": filter,
-            "sort": sort,
-            "limit": limit,
-        });
-        let result = self
-            .executor()?
-            .execute_json("data/query", query)
-            .await
-            .map_err(|e| format!("chat/poll: query failed: {e}"))?;
-        Ok(extract_records_as_data(&result))
+        self.query_rows(CHAT_MESSAGES_COLLECTION, Value::Object(room_filter(room_id)), Some(order), Some(limit)).await
     }
 }
 

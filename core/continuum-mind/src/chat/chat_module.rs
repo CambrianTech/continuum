@@ -108,34 +108,3 @@ impl ServiceModule for ChatModule {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
-/// Extract a single field from the first record in a data-module
-/// `data/query` response. The data module returns
-/// `{ success, data: [{ id, data: {...} }] }`, where each entry's
-/// `data` is the entity payload. Returns the field as a JSON string
-/// (which is the shape the TS impl threads downstream) or `None` if
-/// the response shape doesn't have it.
-pub(super) fn extract_first_record_field(query_result: &Value, field: &str) -> Option<String> {
-    let records = query_result.get("data")?.as_array()?;
-    let first = records.first()?;
-    let data = first.get("data")?;
-    let value = data.get(field)?;
-    match value {
-        Value::String(s) => Some(s.clone()),
-        other => Some(other.to_string()),
-    }
-}
-
-/// Extract message payloads from a data-module `data/query` response.
-/// The response shape is `{ success, data: [{ id, data: <entity> }] }`;
-/// we lift each `entity` out of its `DataRecord` envelope.
-pub(super) fn extract_records_as_data(query_result: &Value) -> Vec<Value> {
-    query_result
-        .get("data")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|record| record.get("data").cloned())
-                .collect()
-        })
-        .unwrap_or_default()
-}
