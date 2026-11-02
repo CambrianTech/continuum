@@ -37,7 +37,7 @@ impl SourceRule for NoGrabBagModules {
         }
         vec![Violation {
             rule: self.name(),
-            file: file.rel.clone(),
+            file: file.repo.clone(),
             line: 1,
             source: "a grab-bag module name: move each item to the type or package it is about".to_string(),
         }]

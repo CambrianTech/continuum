@@ -49,6 +49,35 @@ pub fn hold(name: &str, count: usize, advice: impl FnOnce() -> String) {
     eprintln!("{name}: {before} -> {count}");
 }
 
+/// Hold the ratchet `name` at its violations' count, and record where they live: one
+/// `name@crate count` line per crate beside the total, so the receipt says which crate owns
+/// the debt. Every rule that has its sites holds through this, never through a bare count.
+pub fn hold_sites(name: &str, violations: &[Violation], advice: impl FnOnce() -> String) {
+    if let Ok(path) = std::env::var(RECORD) {
+        let mut by_crate: BTreeMap<&str, usize> = BTreeMap::new();
+        for violation in violations {
+            *by_crate.entry(crate_of(&violation.file)).or_default() += 1;
+        }
+        for (owner, count) in by_crate {
+            record(&path, &format!("{name}{BY_CRATE}{owner}"), count);
+        }
+    }
+    hold(name, violations.len(), advice);
+}
+
+/// The separator between a ratchet and the crate a per-crate record line counts.
+pub const BY_CRATE: &str = "@";
+
+/// The crate a repository path belongs to (`core/<crate>/...`), or its first directory.
+fn crate_of(file: &str) -> &str {
+    let mut parts = file.split('/');
+    match (parts.next(), parts.next()) {
+        (Some("core"), Some(owner)) => owner,
+        (Some(first), _) => first,
+        (None, _) => file,
+    }
+}
+
 /// Judge that a change leaves none of `name`'s violations in a file it touched. The driver
 /// lists the change's files (repository paths, one per line) in `SOURCE_HYGIENE_TOUCHED` for
 /// the head run; unset, as in the base run or a plain `cargo test`, there is nothing to judge.
@@ -113,6 +142,14 @@ pub fn parse(text: &str) -> BTreeMap<String, usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a per-crate record keyed by the wrong path segment, which would
+    // attribute every count to `core` and name no owner.
+    #[test]
+    fn a_site_is_attributed_to_its_crate() {
+        assert_eq!(crate_of("core/continuum-mind/src/persona/act.rs"), "continuum-mind");
+        assert_eq!(crate_of("tools/scripts/x.rs"), "tools");
+    }
 
     // what this catches: a record the head run misreads (a name with a colon or space, a
     // trailing newline), which would judge the wrong ratchet or none.

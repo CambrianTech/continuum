@@ -57,7 +57,7 @@ impl SourceRule for PlannerFloorOutsideThePlanner {
             .filter(|(_, line)| split_code_and_comment(line).0.contains(FLOOR))
             .map(|(i, line)| Violation {
                 rule: self.name(),
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line: i + 1,
                 source: line.trim().to_string(),
             })
@@ -76,8 +76,8 @@ mod tests {
     #[test]
     fn the_planner_floor_outside_the_planner_never_rises() {
         let violations = scan(&[&PlannerFloorOutsideThePlanner]);
-        let count = violations.len();
-        crate::ratchet::hold("planner_floor_outside_the_planner", count, || {
+                let count = violations.len();
+                crate::ratchet::hold_sites("planner_floor_outside_the_planner", &violations, || {
             format!(
                 "MIN_SERVE_CTX is named outside the serving planner on {count} lines. It is the \
                  smallest lane the planner serves, not a window: an unknown window is `None`, and \

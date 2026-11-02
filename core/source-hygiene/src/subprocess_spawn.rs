@@ -65,7 +65,7 @@ impl SourceRule for SubprocessSpawn {
             }
             out.push(Violation {
                 rule: "subprocess-spawn",
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line: line_no,
                 source: code.trim().to_string(),
             });

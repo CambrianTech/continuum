@@ -28,7 +28,7 @@ impl SourceRule for FileSize {
         }
         vec![Violation {
             rule: "file-size",
-            file: file.rel.clone(),
+            file: file.repo.clone(),
             line: READABLE_FILE_LINES + 1,
             source: format!("{lines} lines: {} past {READABLE_FILE_LINES}", lines - READABLE_FILE_LINES),
         }]

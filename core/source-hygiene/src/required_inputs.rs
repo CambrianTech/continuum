@@ -59,7 +59,7 @@ impl SourceRule for RequiredInputComplaints {
             })
             .map(|(i, l)| Violation {
                 rule: self.name(),
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line: i + 1,
                 source: l.trim().to_string(),
             })
@@ -85,7 +85,7 @@ mod tests {
     fn required_input_complaints_only_fall() {
         let violations = scan(&[&RequiredInputComplaints]);
         let count = violations.len();
-        let advice = || {
+                let advice = || {
             format!(
                 "required_input_complaints rose to {count}: a required input is enforced by its \
                  type, never an Option plus a run-time 'missing'/'required'/'not installed' \
@@ -99,7 +99,7 @@ mod tests {
                     .join("\n")
             )
         };
-        crate::ratchet::hold("required_input_complaints", count, advice);
+        crate::ratchet::hold_sites("required_input_complaints", &violations, advice);
         crate::ratchet::touched_clean("required_input_complaints", &violations, || {
             "a file this change touches still complains at run time about a required input: \
              make the input required by its type"

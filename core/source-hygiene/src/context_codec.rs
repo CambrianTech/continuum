@@ -71,8 +71,8 @@ mod tests {
 
     fn hold(rule: &dyn SourceRule, instead: &str) {
         let violations = scan(&[rule]);
-        let count = violations.len();
-        crate::ratchet::hold(rule.name(), count, || {
+                let count = violations.len();
+                crate::ratchet::hold_sites(rule.name(), &violations, || {
             format!(
                 "{} rose to {count}. {instead} The recipe: docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md, \
                  \"How to add a layer\".\nFirst {} of {count} (not necessarily new):\n{}",
