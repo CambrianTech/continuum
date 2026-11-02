@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::arrival::{Arrival, ArrivalKind};
-use super::chat_data_handle::{now_iso, ChatModule, CHAT_DATA_HANDLE};
+use super::chat_data_handle::{now_iso, ChatModule};
 use super::import_watermark::{ImportHistory, ImportWatermark, ImportedThrough};
 use super::publication::PublicationObligation;
 use super::types::CHAT_MESSAGES_COLLECTION;
@@ -54,6 +54,11 @@ pub trait LineImporter: Send + Sync {
     /// the store has not committed.
     async fn import(&self, line: PostedLine) -> Result<Imported, String>;
 
+    /// Publish again the lines this core relayed into `room` and has not seen back (pending
+    /// obligations): run by the room's attach owner on every (re)attach, so a refused publish is
+    /// retried with the attach's backoff, never left for the next process start.
+    async fn recover_publications(&self, room: RoomId) -> Result<usize, String>;
+
     /// The publication obligation `id` names, if this core published that line for a caller.
     async fn publication(&self, id: Uuid) -> Result<Option<PublicationObligation>, String>;
 
@@ -77,6 +82,10 @@ impl LineImporter for ChatStore {
         installed()?
             .commit_line(&line, None, json!({ "text": line.text }))
             .await
+    }
+
+    async fn recover_publications(&self, room: RoomId) -> Result<usize, String> {
+        installed()?.republish_pending(room).await
     }
 
     async fn publication(&self, id: Uuid) -> Result<Option<PublicationObligation>, String> {
@@ -127,26 +136,6 @@ fn message_row(
     }
 }
 
-impl ChatModule {
-    /// Run `operations` as one atomic batch; a refusal is an error naming the store's reason.
-    async fn run_batch(&self, operations: Vec<BatchOperation>) -> Result<Value, String> {
-        let params = json!({ "dbPath": CHAT_DATA_HANDLE, "operations": operations });
-        let result = self
-            .executor()?
-            .execute_json("data/batch", params)
-            .await
-            .map_err(|e| format!("chat line: data/batch failed: {e}"))?;
-        if result.get("success").and_then(Value::as_bool) != Some(true) {
-            let detail = result
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("success=false without an error");
-            return Err(format!("chat line: the store refused the line: {detail}"));
-        }
-        Ok(result)
-    }
-}
-
 /// Records every imported line and reports each as fresh, in order: the seam's test importer.
 #[cfg(any(test, feature = "test-fixtures"))]
 #[derive(Default)]
@@ -174,6 +163,10 @@ impl LineImporter for RecordingImporter {
         Ok(Imported::Fresh {
             arrival_seq: lines.len() as u64,
         })
+    }
+
+    async fn recover_publications(&self, _room: RoomId) -> Result<usize, String> {
+        Ok(0)
     }
 
     async fn publication(&self, id: Uuid) -> Result<Option<PublicationObligation>, String> {
@@ -306,6 +299,10 @@ pub struct RefusingImporter;
 impl LineImporter for RefusingImporter {
     async fn import(&self, _line: PostedLine) -> Result<Imported, String> {
         Err("test: the store refused the line".to_string())
+    }
+
+    async fn recover_publications(&self, _room: RoomId) -> Result<usize, String> {
+        Err("test: the relay refused the publish".to_string())
     }
 
     async fn publication(&self, _id: Uuid) -> Result<Option<PublicationObligation>, String> {

@@ -14,7 +14,6 @@
 
 use std::sync::Arc;
 
-use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::DynCommand;
 
 pub mod history;
@@ -26,7 +25,7 @@ use send::ChatSend;
 
 /// The `chat/*` command objects over the module's shared late-bound executor slot.
 /// Called from [`ChatModule::commands`](crate::chat::ChatModule::commands).
-pub fn command_objects(executor_slot: Arc<LateBound<CommandExecutor>>) -> Vec<Arc<dyn DynCommand>> {
+pub fn command_objects(executor_slot: Arc<crate::chat::ChatSlot>) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(ChatPoll {
             executor_slot: executor_slot.clone(),

@@ -14,8 +14,7 @@ use airc_core::{PeerId, RoomId};
 use serde_json::{json, Value};
 
 use super::arrival::Arrival;
-use super::chat_data_handle::{ChatModule, CHAT_DATA_HANDLE};
-use super::chat_module::extract_records_as_data;
+use super::chat_data_handle::ChatModule;
 
 /// Why history between two sequences cannot be perceived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,36 +100,21 @@ impl ChatModule {
         rooms: &[RoomId],
         intake: usize,
     ) -> Result<(StoreFacts, Vec<Arrival>), String> {
-        let executor = self.executor()?;
         let collection = <Arrival as crate::orm::OrmEntity>::COLLECTION;
         let rooms_typed = rooms;
         let rooms: Vec<String> = rooms.iter().map(|r| r.as_uuid().to_string()).collect();
-        let page = json!({
-            "dbPath": CHAT_DATA_HANDLE,
-            "collection": collection,
-            "filter": { "arrivalSeq": { "$gt": cursor.through }, "room": { "$in": rooms } },
-            "sort": [{ "field": "arrivalSeq", "direction": "asc" }],
-            "limit": intake,
-        });
-        let floor = json!({
-            "dbPath": CHAT_DATA_HANDLE,
-            "collection": collection,
-            "filter": {},
-            "sort": [{ "field": "arrivalSeq", "direction": "asc" }],
-            "limit": 1,
-        });
-        let rows = executor
-            .execute_json("data/query", page)
-            .await
-            .map_err(|e| format!("drain: page query failed: {e}"))?;
-        let oldest = executor
-            .execute_json("data/query", floor)
-            .await
-            .map_err(|e| format!("drain: floor query failed: {e}"))?;
-        let arrivals = decode(extract_records_as_data(&rows))?;
-        let retained_floor = decode(extract_records_as_data(&oldest))?
-            .first()
-            .map(|a| a.arrival_seq);
+        let by_sequence = || Some(json!([{ "field": "arrivalSeq", "direction": "asc" }]));
+        let page = json!({ "arrivalSeq": { "$gt": cursor.through }, "room": { "$in": rooms } });
+        let arrivals = decode(
+            self.query_rows(collection, page, by_sequence(), Some(intake))
+                .await?,
+        )?;
+        let retained_floor = decode(
+            self.query_rows(collection, json!({}), by_sequence(), Some(1))
+                .await?,
+        )?
+        .first()
+        .map(|a| a.arrival_seq);
         let mut unvouched_import = false;
         for room in rooms_typed {
             if let Some(imported) = self.import_watermark(*room).await? {
@@ -152,7 +136,9 @@ impl ChatModule {
 
 fn decode(rows: Vec<Value>) -> Result<Vec<Arrival>, String> {
     let decode_row = |row: Value| serde_json::from_value::<Arrival>(row); // storage boundary: the adapter's row format
-    rows.into_iter().map(|row| decode_row(row).map_err(|e| format!("drain: malformed arrival row: {e}"))).collect()
+    rows.into_iter()
+        .map(|row| decode_row(row).map_err(|e| format!("drain: malformed arrival row: {e}")))
+        .collect()
 }
 
 #[cfg(test)]

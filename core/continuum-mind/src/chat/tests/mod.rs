@@ -96,6 +96,11 @@
             command: &str,
             params: Value,
         ) -> Result<CommandResult, String> {
+            // A stand-in store has no schema: the chat store's ensure of its own collections
+            // (its first call, `store.rs`) succeeds here, and the test's responder sees the rest.
+            if command == "data/ensure-schema" {
+                return Ok(CommandResult::Json(json!({ "success": true })));
+            }
             (self.responder)(command, params).map(CommandResult::Json)
         }
 
@@ -214,40 +219,6 @@
             .await
             .expect_err("a reply without freshness is malformed");
         assert!(err.contains("did not say whether it was fresh"), "named: {err}");
-    }
-
-    // what this catches: a relayed line stored with its publication obligation but never published
-    // because the core stopped between (Codex on #5696): the restart sweep re-publishes it, rebuilt
-    // from its stored row, as the same line (its message id and sender).
-    #[tokio::test]
-    pub(super) async fn a_pending_publication_is_republished_from_its_stored_row() {
-        let (message, room, sender) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
-        let obligation = json!({
-            "id": message, "room": room, "sender": sender, "relay": Uuid::from_u128(0x7e1a),
-            "digest": vec![0u8; 32], "state": "pending",
-        });
-        let row = json!({
-            "id": message, "roomId": room, "senderId": sender, "timestamp": "2026-11-02T01:00:00Z",
-            "content": { "text": "left pending by the last stop", "media": [] }, "replyToId": null,
-        });
-        let published: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
-        let seen = published.clone();
-        let chat = chat_with_stubs(vec![
-            Arc::new(StubDataModule::new(move |cmd, _p| match cmd {
-                "data/query" => Ok(json!({ "success": true, "data": [{ "data": obligation.clone() }] })),
-                "data/read" => Ok(json!({ "success": true, "data": { "data": row.clone() } })),
-                other => panic!("the sweep only reads: {other}"),
-            })),
-            Arc::new(StubAircModule::with(move |p| {
-                seen.lock().unwrap().push(p);
-                Ok(airc_ok_response("evt-republished"))
-            })),
-        ]);
-        assert_eq!(chat.republish_pending().await.expect("the sweep runs"), 1);
-        let calls = published.lock().unwrap();
-        assert_eq!(calls.len(), 1, "re-published once");
-        assert_eq!(calls[0]["envelope"]["eventId"], message.to_string(), "the same line, by its message id");
-        assert_eq!(calls[0]["envelope"]["sourceId"], sender.to_string(), "for the same sender");
     }
 
     // what this catches: a store refusal swallowed as a calm skip. The import is awaited by the
@@ -702,3 +673,4 @@
 mod paging;
 mod part_2;
 mod part_3;
+mod restart;

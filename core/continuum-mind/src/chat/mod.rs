@@ -47,7 +47,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::runtime::{command_executor::CommandExecutor, CommandResult, LateBound, ModuleConfig, ModulePriority, ServiceModule};
+use crate::runtime::{command_executor::CommandExecutor, CommandResult, ModuleConfig, ModulePriority, ServiceModule};
 use crate::sdk_codegen::DynCommand;
 
 pub mod types;
@@ -68,7 +68,8 @@ pub mod orm_entities;
 mod chat_data_handle;
 pub use chat_data_handle::*;
 mod chat_module;
-use chat_module::*;
+mod store;
+pub use store::ChatSlot;
 mod keyset_page;
 pub mod commands;
 use keyset_page::{chronological, PageDirection};

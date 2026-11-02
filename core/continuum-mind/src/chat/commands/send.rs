@@ -18,7 +18,6 @@ use uuid::Uuid;
 
 use crate::chat::types::{ChatSendParams, ChatSendResult};
 use crate::chat::ChatModule;
-use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::CommandError;
 
 /// The caller-facing wire shape — `senderId` is OPTIONAL here and resolved by
@@ -55,7 +54,7 @@ crate::action_command! {
     /// (personas act as themselves; the operator's CLI speaks as the operator
     /// self-peer). This is a persona's primary voice: it stores the message locally
     /// AND broadcasts it over airc.
-    pub struct ChatSend { executor_slot: Arc<LateBound<CommandExecutor>> }
+    pub struct ChatSend { executor_slot: Arc<crate::chat::ChatSlot> }
     name: "chat/send",
     access: AiSafe,
     params: ChatSendWireParams,
@@ -241,7 +240,7 @@ mod tests {
     // anyone but itself is refused before anything is stored or published.
     #[tokio::test]
     async fn an_authenticated_caller_cannot_speak_as_someone_else() {
-        let command = ChatSend { executor_slot: Arc::new(LateBound::new("test::chat_send")) };
+        let command = ChatSend { executor_slot: Arc::new(crate::chat::ChatSlot::new()) };
         let caller = crate::identity::PeerId::from_uuid(Uuid::new_v4());
         let ctx = crate::sdk_codegen::Ctx {
             caller: Some(crate::routing::CallerIdentity::airc(caller)),

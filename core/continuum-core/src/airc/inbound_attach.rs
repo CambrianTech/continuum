@@ -261,6 +261,21 @@ pub async fn run_daemon_attach(
         .attach(request)
         .await
         .map_err(|error| format!("failed to attach to airc daemon: {error}"))?;
+    // The room's transport is ready: publish again what this core relayed into it and has not seen
+    // back (#5696). This attach owns the recovery; an error ends it, and the supervisor's backoff
+    // retries, so a publish refused at boot recovers without another process start.
+    let recovered = lines
+        .recover_publications(channel)
+        .await
+        .map_err(|e| format!("pending publications not recovered; re-attaching to retry: {e}"))?;
+    if recovered > 0 {
+        continuum_base::probe!(
+            class = "airc.attach.publications_recovered",
+            room = %channel.as_uuid(),
+            recovered = recovered as u64,
+            "re-published lines this core relayed and had not seen back"
+        );
+    }
 
     // WATERMARK DISCIPLINE (#261, both PR #2057 review findings): the attach
     // NEVER pre-persists the room tip. The old tip-probe persisted a cursor

@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use crate::chat::types::{ChatPollParams, ChatPollResult};
 use crate::chat::ChatModule;
-use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::CommandError;
 
 crate::action_command! {
@@ -21,7 +20,7 @@ crate::action_command! {
     /// the room (`roomId`, optional: omit for latest across all rooms) and how many
     /// messages to retrieve (`limit`, default 50). Pass `afterMessageId` to page
     /// forward and return only messages newer than one you've already seen.
-    pub struct ChatPoll { executor_slot: Arc<LateBound<CommandExecutor>> }
+    pub struct ChatPoll { executor_slot: Arc<crate::chat::ChatSlot> }
     name: "chat/poll",
     access: AiSafe,
     params: ChatPollParams,

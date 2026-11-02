@@ -218,73 +218,56 @@ impl ChatModule {
         params: &super::types::ChatSendParams,
     ) -> Result<(), String> {
         let op = Self::publication_op(message_id, params)?;
-        let params = serde_json::json!({ "dbPath": super::chat_data_handle::CHAT_DATA_HANDLE, "operations": [op] });
-        let result = self
-            .executor()?
-            .execute_json("data/batch", params)
-            .await
-            .map_err(|e| format!("publication: data/batch failed: {e}"))?;
-        match result.get("success").and_then(serde_json::Value::as_bool) {
-            Some(true) => Ok(()),
-            _ => Err(format!(
-                "publication: the store refused the obligation: {result}"
-            )),
-        }
+        self.run_batch(vec![op]).await.map(drop)
     }
 
-    /// Restart recovery (Codex on #5696): an obligation still pending had its line stored but may
-    /// never have been published (the core stopped between). Each is published again, rebuilt
-    /// from its stored row; an echo that arrives twice is one line, because the import dedupes by
-    /// message id and a duplicate is never perceived again. Returns how many were re-published.
-    pub async fn republish_pending(&self) -> Result<usize, String> {
-        let query = serde_json::json!({
-            "dbPath": super::chat_data_handle::CHAT_DATA_HANDLE,
-            "collection": <PublicationObligation as crate::orm::OrmEntity>::COLLECTION,
-            "filter": { "state": { "$eq": "pending" } },
-        });
-        let result = self
-            .executor()?
-            .execute_json("data/query", query)
-            .await
-            .map_err(|e| format!("publication: pending query failed: {e}"))?;
+    /// Publication recovery for `room` (Codex on #5696): an obligation still pending had its line
+    /// stored but may never have been published (the core stopped between, or the relay refused).
+    /// Each is published again, rebuilt from its stored row; an echo that arrives twice is one line,
+    /// because the import dedupes by message id and a duplicate is never perceived again. Run by the
+    /// room's attach owner on every (re)attach; an error ends that attach and its backoff retries it.
+    /// Returns how many were re-published.
+    pub async fn republish_pending(&self, room: RoomId) -> Result<usize, String> {
+        let pending = self
+            .query_rows(<PublicationObligation as crate::orm::OrmEntity>::COLLECTION, serde_json::json!({ "state": { "$eq": "pending" }, "room": { "$eq": room.as_uuid().to_string() } }), None, None)
+            .await?;
         let mut republished = 0;
-        for row in super::chat_module::extract_records_as_data(&result) {
+        for row in pending {
             let parsed = serde_json::from_value::<PublicationObligation>(row); // storage boundary: the adapter's row format
             let obligation = parsed.map_err(|e| format!("publication: malformed row: {e}"))?;
+            // A confirmed-absent line (never stored, or pruned) has nothing to publish; a failed
+            // read is an error, never mistaken for absence.
             let Some((params, at_ms)) = self.sent_line(obligation.id).await? else {
-                continue; // no stored line: nothing to publish (the obligation was written with it, so this is a pruned row)
+                continue;
             };
-            self.broadcast_envelope(obligation.id, &params, at_ms)
+            // `broadcast_envelope` reports a refused publish as a warning (chat/send's partial
+            // success); for recovery a line not published is a failure, never "recovered".
+            let sent = self
+                .broadcast_envelope(obligation.id, &params, at_ms)
                 .await?;
+            if let Some(warning) = sent.warning {
+                return Err(format!(
+                    "publication: line {} not re-published: {warning}",
+                    obligation.id
+                ));
+            }
             republished += 1;
         }
         Ok(republished)
     }
 
-    /// The parameters `chat/send` stored a line with, read back from its row, and its time.
+    /// The parameters `chat/send` stored a line with, read back from its row, and its time; `None`
+    /// only when the store confirms there is no such row.
     async fn sent_line(
         &self,
         message: Uuid,
     ) -> Result<Option<(super::types::ChatSendParams, u64)>, String> {
-        let params = serde_json::json!({
-            "dbPath": super::chat_data_handle::CHAT_DATA_HANDLE,
-            "collection": super::types::CHAT_MESSAGES_COLLECTION,
-            "id": message.to_string(),
-        });
-        let result = self
-            .executor()?
-            .execute_json("data/read", params)
-            .await
-            .map_err(|e| format!("publication: line read failed: {e}"))?;
-        let Some(row) = result
-            .get("data")
-            .and_then(|d| d.get("data"))
-            .filter(|_| result.get("success").and_then(serde_json::Value::as_bool) == Some(true))
+        let Some(stored) = self
+            .row::<StoredLine>(super::types::CHAT_MESSAGES_COLLECTION, message)
+            .await?
         else {
             return Ok(None);
         };
-        let parsed = serde_json::from_value::<StoredLine>(row.clone()); // storage boundary: the adapter's row format
-        let stored = parsed.map_err(|e| format!("publication: malformed line: {e}"))?;
         let at_ms = chrono::DateTime::parse_from_rfc3339(&stored.timestamp)
             .map_err(|e| format!("publication: line time: {e}"))?
             .timestamp_millis()
@@ -306,25 +289,11 @@ impl ChatModule {
         &self,
         id: Uuid,
     ) -> Result<Option<PublicationObligation>, String> {
-        let params = serde_json::json!({
-            "dbPath": super::chat_data_handle::CHAT_DATA_HANDLE,
-            "collection": <PublicationObligation as crate::orm::OrmEntity>::COLLECTION,
-            "id": id.to_string(),
-        });
-        let result = self
-            .executor()?
-            .execute_json("data/read", params)
-            .await
-            .map_err(|e| format!("publication: data/read failed: {e}"))?;
-        if result.get("success").and_then(serde_json::Value::as_bool) != Some(true) {
-            return Ok(None);
-        }
-        let Some(data) = result.get("data").and_then(|d| d.get("data")).cloned() else {
-            return Ok(None);
-        };
-        let row = serde_json::from_value(data); // storage boundary: the adapter's row format
-        row.map(Some)
-            .map_err(|e| format!("publication: malformed row: {e}"))
+        self.row(
+            <PublicationObligation as crate::orm::OrmEntity>::COLLECTION,
+            id,
+        )
+        .await
     }
 }
 

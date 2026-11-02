@@ -22,7 +22,7 @@ pub struct ChatModule {
     /// via `install_executor` (the same path every other module uses).
     /// `with_executor` lets tests inject a custom chain without
     /// installing into the global registry.
-    pub(super) executor_slot: Arc<LateBound<CommandExecutor>>,
+    pub(super) executor_slot: Arc<ChatSlot>,
 }
 
 /// Which wire leg a send takes after the data row is written. ONE leg per
@@ -42,7 +42,7 @@ impl ChatModule {
     /// `start_server` via `ServiceModule::install_executor` (task #224).
     pub fn new() -> Self {
         Self {
-            executor_slot: Arc::new(LateBound::new("chat::executor")),
+            executor_slot: Arc::new(ChatSlot::new()),
         }
     }
 
@@ -52,7 +52,7 @@ impl ChatModule {
     /// real cross-module call path without going through `start_server`.
     #[cfg(test)]
     pub fn with_executor(executor: Arc<CommandExecutor>) -> Self {
-        let executor_slot = Arc::new(LateBound::new("chat::executor"));
+        let executor_slot = Arc::new(ChatSlot::new());
         executor_slot.install(executor);
         Self { executor_slot }
     }
@@ -66,7 +66,7 @@ impl ChatModule {
     /// the command surface and the module's own tests. The slot is an
     /// `Arc`, so this is a pointer clone, and it stays the SAME slot
     /// `start_server` installs the executor into.
-    pub(crate) fn from_slot(executor_slot: Arc<LateBound<CommandExecutor>>) -> Self {
+    pub(crate) fn from_slot(executor_slot: Arc<ChatSlot>) -> Self {
         Self { executor_slot }
     }
 
@@ -94,23 +94,24 @@ impl ChatModule {
     /// filter on id). Fails loud when the anchor doesn't exist — silently
     /// returning unfiltered history would hand the caller the wrong page.
     pub(super) async fn anchor_timestamp(&self, anchor_id: Uuid) -> Result<String, String> {
-        let anchor_query = json!({
-            "dbPath": CHAT_DATA_HANDLE,
-            "collection": CHAT_MESSAGES_COLLECTION,
-            "filter": { "id": { "$eq": anchor_id.to_string() } },
-            "limit": 1,
-        });
-
-        let anchor_result = self
-            .executor()?
-            .execute_json("data/query", anchor_query)
+        let anchor = self
+            .query_rows(
+                CHAT_MESSAGES_COLLECTION,
+                json!({ "id": { "$eq": anchor_id.to_string() } }),
+                None,
+                Some(1),
+            )
             .await
             .map_err(|e| format!("chat/poll: anchor lookup failed: {e}"))?;
-
-        extract_first_record_field(&anchor_result, "timestamp").ok_or_else(|| {
-            // Matches the TS impl's "Message not found" path.
-            format!("chat/poll: anchor message not found: {anchor_id}")
-        })
+        anchor
+            .first()
+            .and_then(|row| row.get("timestamp"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                // Matches the TS impl's "Message not found" path.
+                format!("chat/poll: anchor message not found: {anchor_id}")
+            })
     }
 
     /// `chat/poll` — return recent messages, optionally filtered by
@@ -139,7 +140,10 @@ impl ChatModule {
             (None, None) => None,
         };
         let mut messages = match cursor {
-            Some((anchor, direction)) => self.keyset_page(params.room_id, anchor, direction, limit).await?,
+            Some((anchor, direction)) => {
+                self.keyset_page(params.room_id, anchor, direction, limit)
+                    .await?
+            }
             None => self.newest_page(params.room_id, limit).await?,
         };
         chronological(&mut messages);
@@ -223,9 +227,17 @@ impl ChatModule {
     /// minted message id and the timestamp the row carries.
     /// `relayed`: this core will publish the line for its caller (the envelope leg), so its
     /// publication obligation commits in the same batch as the row and arrival.
-    pub(super) async fn persist(&self, params: &ChatSendParams, relayed: bool) -> Result<(Uuid, u64), String> {
+    pub(super) async fn persist(
+        &self,
+        params: &ChatSendParams,
+        relayed: bool,
+    ) -> Result<(Uuid, u64), String> {
         let message_id = Uuid::new_v4();
-        let extra = if relayed { vec![Self::publication_op(message_id, params)?] } else { Vec::new() };
+        let extra = if relayed {
+            vec![Self::publication_op(message_id, params)?]
+        } else {
+            Vec::new()
+        };
         let now_ms = continuum_base::time::EpochMs::now().millis();
         // Ground truth first: the row (and, when this core relays it, its publication obligation)
         // commit together, or the send fails and no airc publish is attempted. Its arrival is
@@ -412,12 +424,6 @@ pub fn install_line_importer(handle: &tokio::runtime::Handle, module: Arc<ChatMo
                 error,
                 "speech-ring hydration failed — repetition facts start cold this boot (#265)"
             );
-        }
-        // Restart recovery: re-publish the relayed lines stored but never seen back (#5696).
-        match module.republish_pending().await {
-            Ok(0) => {}
-            Ok(count) => tracing::info!(count, "re-published relayed lines left pending by the last stop"),
-            Err(error) => tracing::warn!(error, "pending relayed lines stay pending until the next start"),
         }
     });
 }
