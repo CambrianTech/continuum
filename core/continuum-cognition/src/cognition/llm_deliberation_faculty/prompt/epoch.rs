@@ -444,6 +444,14 @@ pub(in super::super) fn turnover_due<E>(
     next_act_tokens: Option<usize>,
     would_restore: impl FnOnce() -> Result<bool, E>,
 ) -> Result<Turnover, E> {
+    // NO GRANT, NO TURNOVER: a turn sized before her served window is known (the spawn's
+    // placeholder MIN_SERVE_CTX, 2048) allows her view nothing, and turning over against that
+    // started her view empty; the next act re-appended every item her sources hold (~2,000
+    // items, 20-56M chars on the M5, 2026-11-02 22:29-22:31Z) and turned over again. Her held
+    // view is kept; the turn itself is refused for capacity.
+    if allowed == 0 {
+        return Ok(Turnover::Keep);
+    }
     if view_tokens > allowed {
         return Ok(Turnover::Overflow);
     }
