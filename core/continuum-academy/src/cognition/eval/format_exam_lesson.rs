@@ -1,4 +1,5 @@
 use super::*;
+use continuum_kernel::system_resources::disk_reporters::ClassWriter;
 
 /// Build the durable LESSON string for one graded exam task — what she was asked
 /// and how she did. Pure and answer-key-agnostic (the caller's redaction policy
@@ -370,14 +371,34 @@ crate::register_stateless_command!(CognitionEvalStatus);
 
 /// The progress-ledger directory (`~/.continuum/progress`), the ONE place
 /// [`append_progress_ledger`] writes and `cognition/eval-status` reads.
-pub(crate) fn progress_ledger_dir() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|home| home.join(".continuum/progress"))
+/// The disk class exam ledgers live in (registered in `disk_reporters::standard`).
+const PROGRESS_CLASS: &str = "progress";
+
+pub(crate) fn progress_ledger() -> std::io::Result<ClassWriter> {
+    ClassWriter::of(PROGRESS_CLASS)
+}
+
+/// A persona's exam ledger file in the progress class: the one place its name is formed.
+fn ledger_file(persona_id: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{persona_id}.jsonl"))
+}
+
+/// Append one row to `persona_id`'s ledger, through the class (never a path picked here).
+/// A ledger that cannot be written is logged, never silently dropped.
+fn append_ledger_row(persona_id: &str, row: &serde_json::Value) {
+    use std::io::Write;
+    let written = progress_ledger()
+        .and_then(|class| class.append(&ledger_file(persona_id)))
+        .and_then(|mut file| writeln!(file, "{row}"));
+    if let Err(error) = written {
+        tracing::warn!(persona_id, %error, "the exam ledger row was not written");
+    }
 }
 
 /// The terminal ledger row for `run_id` in a KNOWN persona's ledger, newest-first.
 /// `None` = no such row yet (the run is still in flight, or the id is wrong).
 pub(super) fn find_run_row_for_persona(persona_id: &str, run_id: &str) -> Option<serde_json::Value> {
-    let path = progress_ledger_dir()?.join(format!("{persona_id}.jsonl"));
+    let path = progress_ledger().ok()?.path(&ledger_file(persona_id)).ok()?;
     let text = std::fs::read_to_string(&path).ok()?;
     row_with_run_id(&text, run_id)
 }
@@ -388,12 +409,12 @@ pub(super) fn find_run_row_for_persona(persona_id: &str, run_id: &str) -> Option
 /// one persona's ledger). Keeps run_id a sufficient key so a matrix/CI poller never
 /// hangs on a false pending just because it didn't also thread the persona_id.
 pub(crate) fn find_run_row_any_persona(run_id: &str) -> Option<serde_json::Value> {
-    let dir = progress_ledger_dir()?;
-    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+    let class = progress_ledger().ok()?;
+    for name in class.files().ok()? {
+        if name.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
+        let Ok(path) = class.path(&name) else { continue };
         if let Ok(text) = std::fs::read_to_string(&path) {
             if let Some(row) = row_with_run_id(&text, run_id) {
                 return Some(row);
@@ -449,14 +470,6 @@ pub(super) fn append_failed_ledger(
     error: &str,
 ) {
     let persona_id = persona.as_str();
-    let Some(home) = std::env::var("HOME").ok() else {
-        return;
-    };
-    let dir = std::path::PathBuf::from(home).join(".continuum/progress");
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    let path = dir.join(format!("{persona_id}.jsonl"));
     let row = serde_json::json!({
         "capturedAtMs": EpochMs::now().millis(),
         "personaId": persona_id,
@@ -467,14 +480,7 @@ pub(super) fn append_failed_ledger(
         "score": 0,
         "total": 0,
     });
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = writeln!(f, "{row}");
-    }
+    append_ledger_row(persona_id, &row);
 }
 
 /// `clean_lane`: whether an eval-preemption quiesce lease was held for this run
@@ -587,12 +593,6 @@ pub(super) fn append_task_ledger_row(
     ok: bool,
     acts: u32,
 ) {
-    let Some(dir) = progress_ledger_dir() else {
-        return;
-    };
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
     let row = serde_json::json!({
         "kind": "task",
         "capturedAtMs": EpochMs::now().millis(),
@@ -603,14 +603,7 @@ pub(super) fn append_task_ledger_row(
         "ok": ok,
         "acts": acts,
     });
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join(format!("{persona_id}.jsonl")))
-    {
-        let _ = writeln!(f, "{row}");
-    }
+    append_ledger_row(persona_id, &row);
 }
 
 pub(super) fn append_progress_ledger(
@@ -619,18 +612,14 @@ pub(super) fn append_progress_ledger(
     eval_set: &str,
     clean_lane: Option<bool>,
     measured_gene: Option<&crate::genome::adapter_manifest::TrainedAdapter>,
+    policy: ExamPolicy,
 ) {
-    let Some(dir) = progress_ledger_dir() else {
-        return;
-    };
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    let path = dir.join(format!("{}.jsonl", result.persona_id));
     let row = serde_json::json!({
         "capturedAtMs": EpochMs::now().millis(),
         "personaId": result.persona_id,
         "evalSet": eval_set,
+        // The declared policy this score was measured under.
+        "policy": policy,
         "cleanLane": clean_lane,
         "score": result.score,
         "total": result.total,
@@ -665,20 +654,13 @@ pub(super) fn append_progress_ledger(
             // Without it the two read identical in the ledger and get hand-diagnosed each time.
             let mut t = serde_json::json!({ "id": r.id, "ok": r.ok, "acts": r.acts, "outputTokens": r.output_tokens });
             if !r.ok {
-                t["grade"] = serde_json::json!(r.grade.chars().take(LEDGER_FAIL_GRADE_CHARS).collect::<String>());
-                t["answerHead"] = serde_json::json!(r.answer.chars().take(LEDGER_FAIL_ANSWER_CHARS).collect::<String>());
+                t["grade"] = serde_json::json!(r.grade);
+                t["answerHead"] = serde_json::json!(r.answer);
             }
             t
         }).collect::<Vec<_>>(),
     });
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = writeln!(f, "{row}");
-    }
+    append_ledger_row(&result.persona_id, &row);
     // TERMINAL completion event (the fire-and-stream close, #86). Every finished eval —
     // gene A/B, base-model, single-pass — funnels through here, so this ONE publish gives a
     // monitoring widget/persona "done + final score + per-task detail" as a single push
@@ -692,15 +674,6 @@ pub(super) fn append_progress_ledger(
     }
 }
 
-/// Run the full task set once through the persona's LIVE cognition, returning the
-/// pass count and per-task results. Operates over whatever genome is currently
-/// paged into `cycle` — the A/B pages a gene in/out around two calls to this, so
-/// the base and candidate arms run the IDENTICAL motion (the only difference is
-/// the genome). That sameness is what makes the lift a fair measurement.
-/// How many times a FAILED (test-graded) task is handed its compiler/test output to fix
-/// before we score it a miss. This is the agentic-recovery budget — the edge over one-shot
-/// inference. 3 keeps a full eval bounded while giving real iteration room.
-pub(super) const MAX_FAIL_RETRIES: u32 = 3;
 
 /// Seconds to wait (1s/try) for a persona's fork-template to appear before failing the
 /// eval. Covers the post-reboot window where the supervisor's `register_from_cfg` is

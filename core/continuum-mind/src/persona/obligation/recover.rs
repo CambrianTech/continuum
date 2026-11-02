@@ -320,7 +320,7 @@ mod tests {
             "a new line in the room".into(),
         );
         let framing = crate::cognition::workspace::TurnFraming::message(TurnAttention::default());
-        let settled = drive_to_settle_with_input(&cycle, burst, 8, framing, &mut conversation).await;
+        let settled = drive_to_settle_with_input(&cycle, burst, crate::cognition::act_observe::TurnBudget::Steps(8), framing, &mut conversation).await;
         let (_, _, receipts) = SettleStep::from_settled(settled);
         let served: Vec<String> = requests
             .lock()

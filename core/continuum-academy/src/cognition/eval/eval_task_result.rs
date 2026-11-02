@@ -15,9 +15,9 @@ pub struct EvalTaskResult {
     /// the act budget mid-action — an honest "did not finish", never fabricated). For a
     /// coder exam the answer IS the code, so this must carry the whole thing: a 200-char
     /// cap stored only the "Sure, I can help..." preamble and made every failure
-    /// undiagnosable AND un-minable for a correction corpus (2026-07-21). Bounded by
-    /// ANSWER_CAPTURE_CHARS against a pathological loop-to-length, which is itself a
-    /// signal worth capturing up to the cap.
+    /// undiagnosable AND un-minable for a correction corpus (2026-07-21). Kept whole: the
+    /// generation's own token bound already sizes it, and a loop-to-length is a signal to
+    /// keep complete, never a reason to cut her newest words (2026-11-02).
     pub answer: String,
     /// Wall-clock latency to SETTLE this task: the summed deliberation-generation
     /// time across every act→observe tick (the model's own measured request time,

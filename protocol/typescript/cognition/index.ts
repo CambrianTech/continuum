@@ -158,6 +158,7 @@ export type { ToolOutput } from './ToolOutput';
 export type { ToolVerb } from './ToolVerb';
 export type { TrackResponseParams } from './TrackResponseParams';
 export type { TrackResponseResult } from './TrackResponseResult';
+export type { TurnBudget } from './TurnBudget';
 export type { ValidateResponseDecision } from './ValidateResponseDecision';
 export type { ValidateResponseRequest } from './ValidateResponseRequest';
 export type { VisionDescribeOptions } from './VisionDescribeOptions';

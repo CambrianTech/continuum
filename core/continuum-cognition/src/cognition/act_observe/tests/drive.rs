@@ -68,7 +68,7 @@ async fn drive_to_settle_acts_then_settles_on_speak() {
     let outcome = drive_to_settle(
         &cycle,
         "[eval]\npeer: what is 2+2?",
-        8,
+        crate::cognition::act_observe::TurnBudget::Steps(8),
         TurnFraming::ambient(),
     )
     .await;
@@ -119,7 +119,7 @@ async fn acted_then_capacity_refused_retains_work_without_replay() {
         Arc::new(SalienceArbiter),
     )
     .with_acting(body_with_wm(exec, admission(), wm));
-    let outcome = drive_to_settle(&cycle, "perform the task", 8, TurnFraming::ambient()).await;
+    let outcome = drive_to_settle(&cycle, "perform the task", crate::cognition::act_observe::TurnBudget::Steps(8), TurnFraming::ambient()).await;
     assert_eq!(outcome.acts, 1);
     assert_eq!(outcome.turn_acts.len(), 1);
     assert_eq!(outcome.metrics.input_tokens, 700);
@@ -162,7 +162,7 @@ async fn capacity_refusal_leaves_the_driver_once_with_typed_custody() {
     let faculty = Arc::new(Refusing(std::sync::atomic::AtomicUsize::new(0)));
     let cycle = WorkspaceCycle::new(vec![faculty.clone()], Arc::new(SalienceArbiter));
     let outcome =
-        drive_to_settle(&cycle, "keep the complete input", 8, TurnFraming::ambient()).await;
+        drive_to_settle(&cycle, "keep the complete input", crate::cognition::act_observe::TurnBudget::Steps(8), TurnFraming::ambient()).await;
     assert_eq!(faculty.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(outcome.inference_error.is_none());
     assert!(outcome.deferred_before_dispatch);
@@ -205,7 +205,7 @@ async fn a_zero_change_speak_reperceives_within_the_turns_step_budget_when_the_w
     let outcome = drive_to_settle(
         &cycle,
         "fix the bug in sympy/core/basic.py",
-        8,
+        crate::cognition::act_observe::TurnBudget::Steps(8),
         TurnFraming::directed().on_workspace(),
     )
     .await;
@@ -255,7 +255,7 @@ async fn an_ordinary_turn_still_settles_on_the_first_speak() {
     .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm)));
 
     let outcome =
-        drive_to_settle(&cycle, "what do you think?", 8, TurnFraming::directed()).await;
+        drive_to_settle(&cycle, "what do you think?", crate::cognition::act_observe::TurnBudget::Steps(8), TurnFraming::directed()).await;
 
     assert_eq!(
         speaker.generations(),
@@ -330,7 +330,7 @@ async fn drive_to_settle_gates_discovery_at_half_budget_on_workspace_deliverable
     let outcome = drive_to_settle(
         &cycle,
         "fix the bug",
-        20,
+        crate::cognition::act_observe::TurnBudget::Steps(20),
         TurnFraming::ambient().on_workspace(),
     )
     .await;
@@ -360,7 +360,7 @@ async fn drive_to_settle_gates_discovery_at_half_budget_on_workspace_deliverable
         Arc::new(SalienceArbiter),
     )
     .with_acting(body(exec2, admission()));
-    let ambient = drive_to_settle(&cycle2, "look around", 20, TurnFraming::ambient()).await;
+    let ambient = drive_to_settle(&cycle2, "look around", crate::cognition::act_observe::TurnBudget::Steps(20), TurnFraming::ambient()).await;
     assert_eq!(
         ambient.acts, 20,
         "a non-workspace turn reads to the full budget — the gate scopes to \
@@ -393,7 +393,7 @@ async fn act_budget_facts_reach_working_memory_on_workspace_turns_only() {
     drive_to_settle(
         &cycle,
         "fix the bug",
-        6,
+        crate::cognition::act_observe::TurnBudget::Steps(6),
         TurnFraming::ambient().on_workspace(),
     )
     .await;
@@ -430,7 +430,7 @@ async fn act_budget_facts_reach_working_memory_on_workspace_turns_only() {
         Arc::new(SalienceArbiter),
     )
     .with_acting(body2);
-    drive_to_settle(&cycle2, "look around", 6, TurnFraming::ambient()).await;
+    drive_to_settle(&cycle2, "look around", crate::cognition::act_observe::TurnBudget::Steps(6), TurnFraming::ambient()).await;
     assert!(
         !wm2.recent_entries()
             .iter()
@@ -453,7 +453,7 @@ async fn drive_to_settle_returns_unsettled_act_when_budget_exhausted() {
     let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), adm.clone()));
 
-    let outcome = drive_to_settle(&cycle, "go", 2, TurnFraming::ambient()).await;
+    let outcome = drive_to_settle(&cycle, "go", crate::cognition::act_observe::TurnBudget::Steps(2), TurnFraming::ambient()).await;
 
     assert_eq!(outcome.acts, 2, "spent exactly the observer's budget");
     assert!(
@@ -488,7 +488,7 @@ async fn repeated_calls_respect_the_callers_budget() {
         let exec = Arc::new(ScriptedExecutor::new(results));
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter))
             .with_acting(body(exec.clone(), admission()));
-        let outcome = drive_to_settle(&cycle, "go", 6, TurnFraming::ambient()).await;
+        let outcome = drive_to_settle(&cycle, "go", crate::cognition::act_observe::TurnBudget::Steps(6), TurnFraming::ambient()).await;
         assert_eq!(outcome.acts, expected_acts);
         assert_eq!(exec.results.lock().unwrap().len(), 6 - expected_acts);
         assert!(matches!(outcome.decision, Decision::Act { .. }));
@@ -505,8 +505,8 @@ async fn two_turns_in_one_room_are_two_turns() {
     let exec = Arc::new(RecordingExecutor { seen_context: Arc::new(Mutex::new(None)), result_content: "src/".into() });
     let cycle = WorkspaceCycle::new(vec![Arc::clone(&speaker) as Arc<dyn Faculty>], Arc::new(SalienceArbiter))
         .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm)));
-    let _ = drive_to_settle(&cycle, "first", 8, TurnFraming::ambient()).await;
-    let _ = drive_to_settle(&cycle, "second", 8, TurnFraming::ambient()).await;
+    let _ = drive_to_settle(&cycle, "first", crate::cognition::act_observe::TurnBudget::Steps(8), TurnFraming::ambient()).await;
+    let _ = drive_to_settle(&cycle, "second", crate::cognition::act_observe::TurnBudget::Steps(8), TurnFraming::ambient()).await;
     let steps = speaker.steps();
     assert_eq!(steps.len(), 2, "one generation per ambient turn");
     let (a, b) = (steps[0].expect("first turn's step"), steps[1].expect("second turn's step"));
