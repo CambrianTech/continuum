@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+use crate::ToolInputSchema;
+use std::fmt::Write;
 use super::*;
 
 pub type ResolveName = fn(&str) -> String;
@@ -715,3 +718,78 @@ pub(super) fn json_unescape_scalars(s: &str) -> String {
 /// honest feedback that teaches the real surface (NarratedBareArgs precedent).
 /// ACL unchanged: a lifted call is gated identically to a hand-written envelope.
 pub(super) struct CliFlagFormat;
+
+/// Extract the leading category segment from a tool name (everything before the first `/`).
+/// Returns `"root"` if no slash is present.
+pub(super) fn extract_category(tool_name: &str) -> &str {
+    match tool_name.find('/') {
+        Some(idx) => &tool_name[..idx],
+        None => "root",
+    }
+}
+
+/// Render one tool's parameter field names as a compact `(required, optional?)` hint.
+fn render_param_hint(schema: &ToolInputSchema) -> String {
+    let required: Vec<&str> = schema
+        .required
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(String::as_str)
+        .collect();
+
+    let mut optional: Vec<&str> = schema
+        .properties
+        .as_object()
+        .map(|m| {
+            m.keys()
+                .map(String::as_str)
+                .filter(|k| !required.contains(k))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    optional.sort_unstable();
+
+    if required.is_empty() && optional.is_empty() {
+        return String::new();
+    }
+
+    let parts: Vec<String> = required
+        .iter()
+        .map(|r| (*r).to_string())
+        .chain(optional.iter().map(|o| format!("{o}?")))
+        .collect();
+
+    format!("({})", parts.join(", "))
+}
+
+/// Render a compact tool catalog grouped by category, with parameter hints.
+/// Replaces the verbose JSON-in-prompt serialization (`render_tool_instructions`).
+pub fn render_tool_catalog_text(tools: &[NativeToolSpec]) -> String {
+    if tools.is_empty() {
+        return String::new();
+    }
+
+    let mut by_cat: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for t in tools {
+        let cat = extract_category(&t.name);
+        let verb = t
+            .name
+            .strip_prefix(cat)
+            .and_then(|r| r.strip_prefix('/'))
+            .unwrap_or(&t.name);
+
+        by_cat.entry(cat).or_default().push(
+            format!("{}{}", verb, render_param_hint(&t.input_schema))
+        );
+    }
+
+    let mut out = String::new();
+    for (cat, mut verbs) in by_cat {
+        verbs.sort_unstable();
+        let _ = writeln!(out, "{cat}: {}", verbs.join(", "));
+    }
+
+    out
+}
