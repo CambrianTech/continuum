@@ -41,7 +41,14 @@ pub struct Triggers { pub inputs: Vec<&'static str>, pub completions: bool, pub 
 /// weights, buffers: bytes that stay charged while paused or yielded). CPU work has a cost and
 /// bounded outstanding demand too; recall's embedding and reranking are not free.
 pub struct Cost { pub execution: ExecutionCost, pub residency: ResidencyCost }
-pub enum ExecutionCost { Cpu { estimated: Duration }, Model { tier: ModelTier } }
+pub enum ExecutionCost {
+    Cpu { estimated: Duration },
+    Model { tier: ModelTier },
+    /// A share of one lane's engine time under a learn grant, debited against the engine-side
+    /// ledger shared with /train (grant id, engine incarnation, period, share_ppm), so the authority
+    /// sums learning across minds without guessing it from tiers (Cormac on #5692).
+    Learn { share_ppm: u32, period: Duration },
+}
 ```
 
 The stage context carries a typed **authorized capability** for its admitted execution and
@@ -104,10 +111,28 @@ they derived from: an older run's result never overwrites state derived from new
   execution and residency separately. The stage scheduler ranks ready demand by each mind's
   state (arousal, engagement, age; THE-WHOLE-MIND §4.2), holds no FIFO in front of a mind, and
   never grants more than the authority admitted.
-- **The dream consumer (Cormac).** Dreaming is a stage with a model execution cost and a
-  residency cost (its shadow adapter and optimizer state), run in chunks: each chunk is a yield
-  point, so pause and yield land within one chunk (the wake latency). Its inputs are the
-  settled-experience topic (replayable) and her dream-share setpoint (replaceable snapshot).
+- **The dream consumer (Cormac).** Dreaming is a stage with a `Learn` execution cost and a
+  residency cost (its shadow adapter and optimizer moments). Its inputs are the settled-experience
+  topic (replayable) and her dream-share setpoint (replaceable snapshot). Amended from Cormac's
+  measurements (#5692 review, fork 832d78cb1):
+  - **The chunk is one engine learn step, sized by measurement.** One `/learn` step is a single
+    non-preemptible forward+backward graph: 962 ms median on the IntelMac CPU with Qwen2.5-0.5B,
+    and a streaming decode's max inter-token gap rose from 288 ms to 991 ms beside it (p50/p95
+    unchanged). Pause and yield land at the next step boundary, so the wake latency is one step,
+    stated per node class as measured (IntelMac CPU ~1 s; M5/Metal pending, Fable). A smaller bound
+    needs the step's graph split across layers, never token chunking.
+  - **Every dream step is `Dispatched` work** through the task owner (Codex): the completion
+    carries `{ step, loss }` (fork #86 adds the committed step) and re-triggers the stage. The
+    #5693 runner refuses `Dispatched` until the task owner's registration exists; the dream stage
+    lands after it.
+  - **Receipts:** `Cancelled.committed_effects` = optimizer steps committed by this run;
+    `Yielded.residency_kept` = 0 when the stage snapshots its shadow and releases the optimizer
+    moments (fork #86's snapshot), else the shadow + moments bytes; `Paused` keeps both. A pause or
+    cancel requested mid-step gets its receipt only when that step's outcome arrives (quiescence).
+  - **The input ack is the committed step, not admission:** the settled-experience topic is
+    acknowledged through cursor N only when the step that consumed N reports its step committed,
+    and the snapshot's `Provenance.from` is the cursor range it consumed (commit-once,
+    ONE-RESIDENT-MODEL §9.3).
 
 ## 3. First migrations (Fable)
 
@@ -127,7 +152,8 @@ global map, the four per-site attention derivations.
 
 Recall, reflex and dream under contention on one replayed engine, each case followed by useful
 work (the mind keeps working, both ways: law 8):
-- a stimulus during work: the reflex trips; the dream yields within one chunk (receipt);
+- a stimulus during work: the reflex trips; the dream yields at its next step boundary, the receipt
+  carrying the measured expected latency for the node class beside the observed one;
 - late and duplicate completions; a late terminal delivery after a restart, adopted with a receipt;
 - a stale incarnation's mutation refused while its completion stays adoptable;
 - a forgotten continuation (nobody resumes a paused run): its custody is reclaimed, reported;
