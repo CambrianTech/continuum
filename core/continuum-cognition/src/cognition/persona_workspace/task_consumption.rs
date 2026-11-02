@@ -124,12 +124,21 @@ impl ResidentTaskSink {
         // Carry the existing test filesystem scope onto the blocking worker.
         #[cfg(test)]
         let test_home = crate::paths::NativeHomeOverride::current();
+        #[cfg(test)]
+        let fence_fault = continuum_host::durable::fault_injection::FenceFault::capture();
         Ok(tokio::task::spawn_blocking(move || {
             #[cfg(test)]
             let _native = test_home
                 .as_deref()
                 .map(crate::paths::NativeHomeOverride::install);
-            operation(&registry)
+            #[cfg(test)]
+            {
+                fence_fault.run(|| operation(&registry))
+            }
+            #[cfg(not(test))]
+            {
+                operation(&registry)
+            }
         })
         .await??)
     }
