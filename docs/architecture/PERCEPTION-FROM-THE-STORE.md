@@ -202,3 +202,13 @@ attention from mentions (probe `persona.turn.input_perceived`, fired live 02:13Z
    drain cursor; the capacity error, `seen_ids` and the lamport watermark are deleted.
 2. A line arriving mid-act waits out the generation. The reflex reader plus her glance close it,
    after P2.
+
+### P2 also deletes the self-tick's text dedup (Fable, 2026-11-02)
+`loop_dedup::dedup_loop_filler` collapses near-duplicate airc items before the self-tick
+fingerprints its re-read projection AND before they become her workspace turns. So it decides
+both whether she wakes and what she perceives by body-text similarity. Both jobs belong to the
+re-read-and-fingerprint self-tick that P2 replaces: under P2 she wakes on a store commit (an
+arrival is news by construction), and repetition reaches her as the view's `[repetition]` fact,
+never as copies silently removed from her perception. P2 deletes `dedup_loop_filler`, its
+constants (`FUZZY_WINDOW`, `CONTAINMENT_MIN_WORDS`) and the now test-only
+`defer_as_loop_filler` (whose message-path gate #5698 already deleted).
