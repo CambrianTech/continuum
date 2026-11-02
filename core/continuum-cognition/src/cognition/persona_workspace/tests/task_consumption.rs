@@ -84,8 +84,7 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
     }
     assert!(sink.record_rendered(receipt).await?.is_none());
     assert_eq!(memory.pending_task_wakes(), vec![task]);
-    let obstruction = volatile_path(owner)?.with_extension("json.tmp");
-    std::fs::create_dir(&obstruction)?;
+    let fence_fault = continuum_host::durable::fault_injection::FailedFenceScope::enter();
     assert!(matches!(
         sink.record_rendered(exact.clone()).await,
         Err(TaskSinkError::Consumption(TaskConsumptionError::Owner(
@@ -96,7 +95,7 @@ async fn durable_terminal_source_receipts_retire_only_the_exact_published_end(
     let before_retry = WorkingMemory::new(8);
     before_retry.restore(load_volatile(owner)?.ok_or("checkpoint absent")?.wm);
     assert_eq!(before_retry.pending_task_wakes(), vec![task]);
-    std::fs::remove_dir(&obstruction)?;
+    drop(fence_fault);
     cycle.persist_render_receipts(vec![exact.clone()]).await?;
     assert!(memory.pending_task_wakes().is_empty());
     let checkpoint = std::fs::read(volatile_path(owner)?)?;
@@ -202,10 +201,9 @@ async fn failed_checkpoint_returns_no_receipt_and_replay_commits_staged_end(
     }
     let path = volatile_path(owner)?;
     let before = std::fs::read(&path)?;
-    // A directory at the writer's temp-file path forces a real filesystem refusal.
+    // The shared durability fault refuses placement before replacing the checkpoint.
     // The existing committed checkpoint is never removed or replaced by the test.
-    let obstruction = path.with_extension("json.tmp");
-    std::fs::create_dir(&obstruction)?;
+    let fence_fault = continuum_host::durable::fault_injection::FailedFenceScope::enter();
     assert!(matches!(
         registry.consume_task_ends(owner, vec![(task, TaskEnd::Lost)]),
         Err(TaskConsumptionError::Owner(
@@ -216,7 +214,7 @@ async fn failed_checkpoint_returns_no_receipt_and_replay_commits_staged_end(
     let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
     assert!(memory.pending_task_wakes().is_empty());
     assert!(memory.stage_task_reads(&[task]).is_err());
-    std::fs::remove_dir(&obstruction)?;
+    drop(fence_fault);
     // The ordinary checkpoint owner also publishes a staged end after IO recovers.
     for (_, result) in registry.flush_volatile_all() {
         result?;
@@ -262,14 +260,13 @@ async fn ledger_ack_requires_perception_and_restart_replays_unread_ends(
     registry.register_from_cfg(cfg_for(owner))?;
     let checkpoint = volatile_path(owner)?;
     std::fs::create_dir_all(checkpoint.parent().ok_or("checkpoint parent absent")?)?;
-    let obstruction = checkpoint.with_extension("json.tmp");
-    std::fs::create_dir(&obstruction)?;
+    let fence_fault = continuum_host::durable::fault_injection::FailedFenceScope::enter();
     assert!(ledger
         .deliver_page(owner, None, limit, &sink)
         .await
         .is_err());
     assert_eq!(ledger.pending(task, owner).await?, Some(end.clone()));
-    std::fs::remove_dir(&obstruction)?;
+    drop(fence_fault);
     assert_eq!(
         ledger
             .deliver_page(owner, None, limit, &sink)
@@ -310,14 +307,14 @@ async fn ledger_ack_requires_perception_and_restart_replays_unread_ends(
         request: "served-task-result".into(),
         view: view.receipt(),
     };
-    std::fs::create_dir(&obstruction)?;
+    let fence_fault = continuum_host::durable::fault_injection::FailedFenceScope::enter();
     assert!(sink.record_rendered(receipt.clone()).await.is_err());
     assert!(reopened
         .deliver_page(owner, None, limit, &sink)
         .await
         .is_err());
     assert_eq!(reopened.pending(task, owner).await?, Some(end.clone()));
-    std::fs::remove_dir(&obstruction)?;
+    drop(fence_fault);
     sink.record_rendered(receipt).await?;
     // Crash after the perception checkpoint but before ACK: replay uses the
     // restored exact receipt, without prompting her again or remembering a handle.
@@ -358,8 +355,7 @@ async fn failed_read_checkpoint_keeps_wake_pending_until_retry(
     registry.consume_task_ends(owner, vec![(task, TaskEnd::Stopped)])?;
     let memory = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
     assert!(memory.stage_task_reads(&[task])?);
-    let obstruction = volatile_path(owner)?.with_extension("json.tmp");
-    std::fs::create_dir(&obstruction)?;
+    let fence_fault = continuum_host::durable::fault_injection::FailedFenceScope::enter();
     let failed = registry.flush_volatile_all();
     assert_eq!(failed.len(), 1);
     assert!(failed[0].1.is_err());
@@ -371,7 +367,7 @@ async fn failed_read_checkpoint_keeps_wake_pending_until_retry(
         !memory.stage_task_reads(&[task])?,
         "already staged is not durable success"
     );
-    std::fs::remove_dir(&obstruction)?;
+    drop(fence_fault);
     for (_, result) in registry.flush_volatile_all() {
         result?;
     }
@@ -398,8 +394,7 @@ async fn task_read_receipt_rejects_replaced_memory_and_retries_failed_commit(
         matches!(registry.record_task_reads(owner, accepted.incarnation(), &[task]), Err(TaskConsumptionError::Replaced(id)) if id == owner)
     );
     assert_eq!(current.pending_task_wakes(), vec![task]);
-    let obstruction = volatile_path(owner)?.with_extension("json.tmp");
-    std::fs::create_dir(&obstruction)?;
+    let fence_fault = continuum_host::durable::fault_injection::FailedFenceScope::enter();
     assert!(matches!(
         registry.record_task_reads(owner, current.incarnation(), &[task]),
         Err(TaskConsumptionError::Owner(
@@ -407,7 +402,7 @@ async fn task_read_receipt_rejects_replaced_memory_and_retries_failed_commit(
         ))
     ));
     assert_eq!(current.pending_task_wakes(), vec![task]);
-    std::fs::remove_dir(&obstruction)?;
+    drop(fence_fault);
     registry.record_task_reads(owner, current.incarnation(), &[task])?;
     assert!(current.pending_task_wakes().is_empty());
     let restored = WorkingMemory::new(8);

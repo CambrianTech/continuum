@@ -5,11 +5,10 @@
 //! caller's offline check, and never claims the selected snapshot was flushed
 //! at shutdown or authenticated to a process lifetime.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -263,90 +262,48 @@ fn exists(path: &Path) -> io::Result<bool> {
 /// Same file lock used by save, load and adoption. Callers keep the returned
 /// handle alive until their complete file operation ends. Readers wait rather
 /// than interpreting another owner's work as an absent checkpoint.
-pub(super) fn lock_checkpoint(path: &Path, wait: bool) -> io::Result<File> {
-    let parent = path
+pub(super) fn lock_checkpoint(
+    path: &Path,
+    wait: bool,
+) -> io::Result<continuum_host::durable::Lock> {
+    super::checkpoint_storage::for_path(path)?.lock(Path::new(".volatile.lock"), wait)
+}
+
+fn relative<'a>(
+    writer: &continuum_kernel::system_resources::disk_reporters::ClassWriter,
+    path: &'a Path,
+) -> io::Result<PathBuf> {
+    let checkpoint = writer.path(Path::new("volatile.json"))?;
+    let parent = checkpoint
         .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "checkpoint has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let lock_path = parent.join(".volatile.lock");
-    match fs::symlink_metadata(&lock_path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            return Err(io::Error::new(
+        .ok_or_else(|| io::Error::other("checkpoint has no parent"))?;
+    path.strip_prefix(parent)
+        .map(Path::to_path_buf)
+        .map_err(|_| {
+            io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "checkpoint lock is not a regular file",
-            ));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
-    if wait {
-        FileExt::lock_exclusive(&file)?;
-    } else {
-        FileExt::try_lock_exclusive(&file)?;
-    }
-    Ok(file)
+                "adoption evidence is outside owner class",
+            )
+        })
 }
 
-pub(super) fn sync_parent(path: &Path) -> io::Result<()> {
-    // POSIX directory durability. Windows file contents are flushed below;
-    // this receipt does not promise power-loss directory-journal guarantees.
-    #[cfg(unix)]
-    File::open(
-        path.parent()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no parent"))?,
-    )?
-    .sync_all()?;
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
-}
-
-fn preserve(path: &Path, bytes: &[u8]) -> Result<(), AdoptionError> {
-    if exists(path)? {
-        return if read_bounded(path)? == bytes {
-            // A previous publication may have reached its final name before
-            // parent sync failed; equality alone does not complete that step.
-            sync_parent(path)?;
-            Ok(())
-        } else {
-            Err(AdoptionError::EvidenceConflict(path.display().to_string()))
-        };
-    }
-    let parent = path
-        .parent()
-        .ok_or_else(|| invalid("evidence has no parent"))?;
-    let temporary = parent.join(format!(".preserve-{}.tmp", Uuid::new_v4()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    // Publish a complete inode without overwriting existing evidence. Unlike a
-    // direct create+write, an interrupted write never occupies the final name.
-    // Both paths are on the same filesystem. Unsupported hard links are an IO
-    // refusal, not a fallback to a partially visible or destructive write.
-    let published = fs::hard_link(&temporary, path);
-    match published {
-        Ok(()) => {}
+fn preserve(
+    writer: &continuum_kernel::system_resources::disk_reporters::ClassWriter,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), AdoptionError> {
+    let name = relative(writer, path)?;
+    match writer.publish_new(&name, bytes) {
+        Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             if read_bounded(path)? != bytes {
                 return Err(AdoptionError::EvidenceConflict(path.display().to_string()));
             }
+            writer.fence_existing(&name)?;
+            Ok(())
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => Err(error.into()),
     }
-    fs::remove_file(&temporary)?;
-    sync_parent(path)?;
-    Ok(())
 }
 
 /// Adopt the selected bytes under the checkpoint owner's exclusion. The
@@ -371,7 +328,8 @@ pub fn adopt(
             "plan paths no longer match declared identity and native destination",
         ));
     }
-    let _lock = lock_checkpoint(&destination, false)?;
+    let writer = super::checkpoint_storage::for_path(&destination)?;
+    let _lock = writer.lock(Path::new(".volatile.lock"), false)?;
     ensure_offline()?;
     let encoded_plan = serde_json::to_vec(plan).map_err(|error| invalid(error.to_string()))?;
     let parent = destination
@@ -425,10 +383,10 @@ pub fn adopt(
         {
             // Complete a previous rename's directory durability step before
             // acknowledging recovery, even if its first attempt failed here.
-            sync_parent(&destination)?;
+            writer.fence_existing(Path::new("volatile.json"))?;
             let encoded_receipt =
                 serde_json::to_vec(&receipt).map_err(|error| invalid(error.to_string()))?;
-            preserve(&receipt_path, &encoded_receipt)?;
+            preserve(&writer, &receipt_path, &encoded_receipt)?;
             receipt.already_applied = true;
             return Ok(receipt);
         }
@@ -439,24 +397,23 @@ pub fn adopt(
     if current_destination != plan.prior_destination {
         return Err(AdoptionError::DestinationChanged);
     }
-    fs::create_dir_all(&evidence)?;
     // Archives before intent: a visible plan always has complete preserved
     // inputs. Partial files are a refusal on retry, never silently overwritten.
-    preserve(&archive, &source_bytes)?;
+    preserve(&writer, &archive, &source_bytes)?;
     if let Some(expected) = &plan.prior_destination {
         let (current, bytes) = selection(&destination)?;
         if &current != expected {
             return Err(AdoptionError::DestinationChanged);
         }
-        preserve(&prior, &bytes)?;
+        preserve(&writer, &prior, &bytes)?;
     }
-    preserve(&intent, &encoded_plan)?;
+    preserve(&writer, &intent, &encoded_plan)?;
     // Separate inode from immutable evidence, so future in-place writes to the
     // live file cannot alter the source archive.
     // One staged payload per explicit plan: repeated offline/precondition
     // refusals reuse its verified bytes instead of accumulating full copies.
     let staged = evidence.join("staged.json");
-    preserve(&staged, &source_bytes)?;
+    preserve(&writer, &staged, &source_bytes)?;
     ensure_offline()?;
     if selection(&plan.source.path)?.0 != plan.source {
         return Err(AdoptionError::SourceChanged);
@@ -464,8 +421,7 @@ pub fn adopt(
     if optional_selection(&destination)? != plan.prior_destination {
         return Err(AdoptionError::DestinationChanged);
     }
-    fs::rename(&staged, &destination)?;
-    sync_parent(&destination)?;
+    writer.replace(Path::new("volatile.json"), &source_bytes)?;
     let published = optional_selection(&destination)?;
     if published
         .as_ref()
@@ -477,6 +433,6 @@ pub fn adopt(
     }
     let encoded_receipt =
         serde_json::to_vec(&receipt).map_err(|error| invalid(error.to_string()))?;
-    preserve(&receipt_path, &encoded_receipt)?;
+    preserve(&writer, &receipt_path, &encoded_receipt)?;
     Ok(receipt)
 }

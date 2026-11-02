@@ -30,7 +30,10 @@ pub struct ClassWriter {
 
 impl TrackedDir {
     pub fn writer(self: &Arc<Self>) -> ClassWriter {
-        ClassWriter { dir: Arc::clone(self), scope: PathBuf::new() }
+        ClassWriter {
+            dir: Arc::clone(self),
+            scope: PathBuf::new(),
+        }
     }
 }
 
@@ -56,7 +59,10 @@ impl ClassWriter {
     /// a citizen's. The one place an owner's directory name is formed; a caller names only its
     /// file.
     pub fn owned_by(&self, owner: uuid::Uuid) -> Self {
-        ClassWriter { dir: Arc::clone(&self.dir), scope: self.scope.join(owner.to_string()) }
+        ClassWriter {
+            dir: Arc::clone(&self.dir),
+            scope: self.scope.join(owner.to_string()),
+        }
     }
 
     /// This scope's directory, held open (created on first use).
@@ -67,8 +73,18 @@ impl ClassWriter {
     /// `relative`'s directory, held open, and its file name.
     fn held_parent<'a>(&self, relative: &'a Path) -> io::Result<(confine::Dir, &'a Path)> {
         let relative = confine::plain(relative)?;
-        let name = relative.file_name().map(Path::new).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{} names no file", relative.display())))?;
-        let dirs = relative.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{} names no file", relative.display())))?;
+        let name = relative.file_name().map(Path::new).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} names no file", relative.display()),
+            )
+        })?;
+        let dirs = relative.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} names no file", relative.display()),
+            )
+        })?;
         Ok((confine::subdir(&self.held()?, dirs)?, name))
     }
 
@@ -80,7 +96,11 @@ impl ClassWriter {
         for entry in self.held()?.entries()? {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
-                if let Some(owner) = entry.file_name().to_str().and_then(|name| uuid::Uuid::parse_str(name).ok()) {
+                if let Some(owner) = entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| uuid::Uuid::parse_str(name).ok())
+                {
                     owners.push(owner);
                 }
             }
@@ -93,7 +113,11 @@ impl ClassWriter {
     /// type: refused unless it is plain names. Writes never go through it; they go through the
     /// held directory.
     pub fn path(&self, relative: &Path) -> io::Result<PathBuf> {
-        Ok(self.dir.path().join(&self.scope).join(confine::plain(relative)?))
+        Ok(self
+            .dir
+            .path()
+            .join(&self.scope)
+            .join(confine::plain(relative)?))
     }
 
     /// Replace a file whole: a reader sees the old bytes or the new ones, never half, and the
@@ -103,6 +127,12 @@ impl ClassWriter {
         let mut staging = durable::Staging::new(&dir)?;
         staging.write_all(bytes)?;
         staging.replace(name)
+    }
+
+    /// Finish the durability fence of an existing class-owned publication.
+    pub fn fence_existing(&self, relative: &Path) -> io::Result<()> {
+        let (dir, name) = self.held_parent(relative)?;
+        durable::fence_existing(&dir, name)
     }
 
     /// Publish an immutable file once: `AlreadyExists` if the name is taken, never an overwrite.
@@ -117,7 +147,9 @@ impl ClassWriter {
     /// Open a file to append to (a log, a capture stream), creating it on first use.
     pub fn append(&self, relative: &Path) -> io::Result<File> {
         let (dir, name) = self.held_parent(relative)?;
-        Ok(dir.open_with(name, confine::OpenOptions::new().create(true).append(true))?.into_std())
+        Ok(dir
+            .open_with(name, confine::OpenOptions::new().create(true).append(true))?
+            .into_std())
     }
 
     /// Lock `relative` exclusively (a lock file in the class), waiting for a holder when `wait`,
@@ -144,7 +176,10 @@ mod tests {
     fn a_path_outside_the_class_is_refused() {
         let (_root, writer) = class();
         for escape in ["", "/etc/passwd", "../sibling", "a/../../b", "./a"] {
-            assert!(writer.path(Path::new(escape)).is_err(), "{escape:?} must be refused");
+            assert!(
+                writer.path(Path::new(escape)).is_err(),
+                "{escape:?} must be refused"
+            );
         }
         assert!(writer.path(Path::new("peers/a/emission.json")).is_ok());
     }
@@ -159,10 +194,22 @@ mod tests {
         writer.replace(name, b"two").expect("second");
         let path = writer.path(name).expect("path");
         assert_eq!(std::fs::read(&path).expect("read"), b"two");
-        let left: Vec<_> = std::fs::read_dir(path.parent().expect("parent")).expect("dir").collect();
+        let left: Vec<_> = std::fs::read_dir(path.parent().expect("parent"))
+            .expect("dir")
+            .collect();
         assert_eq!(left.len(), 1, "no staging file left beside it");
-        assert_eq!(writer.publish_new(name, b"three").expect_err("taken").kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(std::fs::read(&path).expect("read"), b"two", "a refused publish changed nothing");
+        assert_eq!(
+            writer
+                .publish_new(name, b"three")
+                .expect_err("taken")
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("read"),
+            b"two",
+            "a refused publish changed nothing"
+        );
     }
 
     // what this catches: an owner's file landing outside its owner's directory, or a caller
@@ -172,17 +219,35 @@ mod tests {
         let (_root, writer) = class();
         let owner = uuid::Uuid::from_u128(7);
         let mine = writer.owned_by(owner);
-        mine.replace(Path::new("emission.json"), b"{}").expect("write");
+        mine.replace(Path::new("emission.json"), b"{}")
+            .expect("write");
         assert_eq!(
             mine.path(Path::new("emission.json")).expect("path"),
-            writer.path(Path::new(&owner.to_string())).expect("owner dir").join("emission.json")
+            writer
+                .path(Path::new(&owner.to_string()))
+                .expect("owner dir")
+                .join("emission.json")
         );
-        assert!(mine.path(Path::new("../other")).is_err(), "an owner cannot reach a sibling");
+        assert!(
+            mine.path(Path::new("../other")).is_err(),
+            "an owner cannot reach a sibling"
+        );
         // The mirror: the owners read back are exactly those written, and a stray file is not one.
-        writer.owned_by(uuid::Uuid::from_u128(3)).replace(Path::new("demand.json"), b"{}").expect("second owner");
-        writer.replace(Path::new("README"), b"not an owner").expect("stray");
-        assert_eq!(writer.owners().expect("owners"), vec![uuid::Uuid::from_u128(3), owner]);
-        assert_eq!(class().1.owners().expect("empty class"), Vec::<uuid::Uuid>::new());
+        writer
+            .owned_by(uuid::Uuid::from_u128(3))
+            .replace(Path::new("demand.json"), b"{}")
+            .expect("second owner");
+        writer
+            .replace(Path::new("README"), b"not an owner")
+            .expect("stray");
+        assert_eq!(
+            writer.owners().expect("owners"),
+            vec![uuid::Uuid::from_u128(3), owner]
+        );
+        assert_eq!(
+            class().1.owners().expect("empty class"),
+            Vec::<uuid::Uuid>::new()
+        );
     }
 
     // what this catches: a symlink inside the class sending a write outside the measured root
@@ -193,30 +258,50 @@ mod tests {
     fn a_redirect_inside_the_class_writes_nothing_outside_it() {
         let (root, writer) = class();
         let outside = tempfile::tempdir().expect("outside");
-        writer.replace(Path::new("seed"), b"x").expect("the class root exists");
-        std::os::unix::fs::symlink(outside.path(), root.path().join("class/away")).expect("dir link");
-        assert!(writer.replace(Path::new("away/state.json"), b"leak").is_err());
+        writer
+            .replace(Path::new("seed"), b"x")
+            .expect("the class root exists");
+        std::os::unix::fs::symlink(outside.path(), root.path().join("class/away"))
+            .expect("dir link");
+        assert!(writer
+            .replace(Path::new("away/state.json"), b"leak")
+            .is_err());
         assert!(writer.append(Path::new("away/log")).is_err());
         assert!(writer.lock(Path::new("away/.lock"), false).is_err());
         std::fs::write(outside.path().join("target"), b"").expect("target");
-        std::os::unix::fs::symlink(outside.path().join("target"), root.path().join("class/file-link")).expect("file link");
+        std::os::unix::fs::symlink(
+            outside.path().join("target"),
+            root.path().join("class/file-link"),
+        )
+        .expect("file link");
         assert!(writer.append(Path::new("file-link")).is_err());
-        assert_eq!(std::fs::read_dir(outside.path()).expect("outside").count(), 1, "nothing written outside the class");
+        assert_eq!(
+            std::fs::read_dir(outside.path()).expect("outside").count(),
+            1,
+            "nothing written outside the class"
+        );
     }
 
     // what this catches: a writer that guesses a directory when its class is not registered.
     #[test]
     fn an_unregistered_class_has_no_writer() {
-        assert_eq!(ClassWriter::of("no-such-class").err().map(|e| e.kind()), Some(io::ErrorKind::NotFound));
+        assert_eq!(
+            ClassWriter::of("no-such-class").err().map(|e| e.kind()),
+            Some(io::ErrorKind::NotFound)
+        );
     }
 
     // what this catches: two holders of one lock at once.
     #[test]
     fn a_held_lock_refuses_a_second_holder() {
         let (_root, writer) = class();
-        let held = writer.lock(Path::new("p/.volatile.lock"), false).expect("first");
+        let held = writer
+            .lock(Path::new("p/.volatile.lock"), false)
+            .expect("first");
         assert!(writer.lock(Path::new("p/.volatile.lock"), false).is_err());
         drop(held);
-        writer.lock(Path::new("p/.volatile.lock"), false).expect("free again");
+        writer
+            .lock(Path::new("p/.volatile.lock"), false)
+            .expect("free again");
     }
 }

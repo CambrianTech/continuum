@@ -42,6 +42,7 @@ use crate::cognition::rag_budget::RagSource;
 /// Explicit offline adoption of a selected legacy checkpoint; shares this
 /// owner's schema, native path, and cross-process checkpoint exclusion.
 pub mod checkpoint_adoption;
+mod checkpoint_storage;
 
 mod act_output;
 mod rehome;

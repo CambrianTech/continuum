@@ -92,3 +92,22 @@ fn a_held_lock_refuses_a_second_holder() {
     // between fork and exec (O_CLOEXEC releases it at exec), so "free" is "free once that ends".
     lock_path(&path, true).expect("free again");
 }
+
+// The managed class path uses Staging, not the legacy path-based fence helper.
+#[test]
+fn staged_replacement_fault_preserves_old_bytes_and_retry_succeeds() -> io::Result<()> {
+    let root = tempfile::tempdir()?;
+    let path = root.path().join("state");
+    std::fs::write(&path, b"old")?;
+    let replace = || -> io::Result<()> {
+        let mut stage = Staging::new_in(root.path())?;
+        stage.write_all(b"new")?;
+        stage.replace(Path::new("state"))
+    };
+    assert!(fault_injection::with_failed_fence(replace).is_err());
+    assert_eq!(std::fs::read(&path)?, b"old");
+    assert_eq!(std::fs::read_dir(root.path())?.count(), 1);
+    replace()?;
+    assert_eq!(std::fs::read(path)?, b"new");
+    Ok(())
+}

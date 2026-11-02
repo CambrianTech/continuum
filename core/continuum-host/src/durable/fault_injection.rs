@@ -9,6 +9,27 @@ pub(super) fn fence_fails() -> bool {
     FAIL_FENCE.with(Cell::get)
 }
 
+/// Thread-bound fault scope; an async fixture must stay on its current-thread runtime.
+pub struct FailedFenceScope {
+    previous: bool,
+    thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl FailedFenceScope {
+    pub fn enter() -> Self {
+        Self {
+            previous: FAIL_FENCE.with(|fault| fault.replace(true)),
+            thread_bound: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for FailedFenceScope {
+    fn drop(&mut self) {
+        FAIL_FENCE.with(|fault| fault.set(self.previous));
+    }
+}
+
 /// Captured fixture state. Capturing alone does not affect another thread.
 #[derive(Clone, Copy)]
 pub struct FenceFault(bool);
