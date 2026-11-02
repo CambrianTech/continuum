@@ -121,7 +121,9 @@ they derived from: an older run's result never overwrites state derived from new
     unchanged). Pause and yield land at the next step boundary, so the wake latency is one step,
     stated per node class as measured (IntelMac CPU ~1 s; M5/Metal pending, Fable). A smaller bound
     needs the step's graph split across layers, never token chunking.
-  - **Every dream step is `Dispatched` work** through the task owner (Codex): the completion
+  - **Every dream step is `Dispatched` work** through the task owner (Codex), bound before any
+    effect to the stage `RunId` (provenance), the task owner's `TaskExecution` (custody), its input
+    revisions and the admitted grant. The completion
     carries `{ step, loss }` (fork #86 adds the committed step) and re-triggers the stage. The
     #5693 runner refuses `Dispatched` until the task owner's registration exists; the dream stage
     lands after it.
@@ -129,6 +131,13 @@ they derived from: an older run's result never overwrites state derived from new
     `Yielded.residency_kept` = 0 when the stage snapshots its shadow and releases the optimizer
     moments (fork #86's snapshot), else the shadow + moments bytes; `Paused` keeps both. A pause or
     cancel requested mid-step gets its receipt only when that step's outcome arrives (quiescence).
+    If the engine's incarnation changes mid-step, that outcome never arrives, so quiescence is
+    proved by the fence, never by waiting: fork #88 stamps each learn with `{ execution, base_step,
+    engine_incarnation }`, a step under an old incarnation can no longer commit, and
+    `committed_effects` comes from `/learn/receipt` for that execution, else from the adapter's
+    `base_step` against the step the run dispatched, under #5695's lost-reply order (task terminal,
+    then the same-incarnation receipt, then redispatch, then rewind to the binding snapshot, else
+    unresolved).
   - **The input ack is the committed step, not admission:** the settled-experience topic is
     acknowledged through cursor N only when the step that consumed N reports its step committed,
     and the snapshot's `Provenance.from` is the cursor range it consumed (commit-once,
@@ -154,6 +163,8 @@ Recall, reflex and dream under contention on one replayed engine, each case foll
 work (the mind keeps working, both ways: law 8):
 - a stimulus during work: the reflex trips; the dream yields at its next step boundary, the receipt
   carrying the measured expected latency for the node class beside the observed one;
+- the engine relaunches mid-step: the dream's cancel receipt arrives with the committed count from
+  the fence, and nothing re-applies the step;
 - late and duplicate completions; a late terminal delivery after a restart, adopted with a receipt;
 - a stale incarnation's mutation refused while its completion stays adoptable;
 - a forgotten continuation (nobody resumes a paused run): its custody is reclaimed, reported;
