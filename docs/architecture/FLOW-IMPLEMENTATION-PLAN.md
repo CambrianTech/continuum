@@ -358,6 +358,66 @@ Pure scheduler + MindMemory + a fake engine on a virtual clock. Each case states
 The simulator reports what the live read reports: each resident's wait between acts, first-token latency
 for directed and live calls, switch freeze, aggregate tokens per second, and each class's worst wait.
 
+## 6b. Proving the flow does not block itself: the wait ledger (Joel, 2026-11-02)
+
+Joel: "we can make sure the data flow isn't blocking. We might need to develop analysis and
+simulations to make sure it's not blocking itself." A slow act is a symptom; a wait is the cause.
+On 2026-11-02 the M5 showed acts of 452 s with 334 s outside the model, and the cause (residents'
+own builds, a relaunch condemning acts, a session that never formed) had to be inferred from logs.
+The flow should report its waits directly, in the simulator first and live after.
+
+**One record per wait.** Every point where a mind's work can wait (lane admission, the store, a
+task handle, a reader's wake, a page in, a remote session, a lock) records one `Wait`:
+who waited (`ActAt`: persona, turn, step), on what (a typed `WaitOn`: Engine, Store, Task,
+Reader, Page, RemoteSession, Lock), on whom (the holder, when there is one), how long, and how it
+ended (granted, timed out, cancelled). A wait point that records nothing is a defect the
+census below counts.
+
+**In the simulator (§6), as validators:**
+- no wait cycle: the wait graph (waiter -> holder) is acyclic in every case;
+- a reader never waits on another reader: perception, reflex, dream and retention each wait only
+  on the store or the engine (PERCEPTION-FROM-THE-STORE.md, "Many readers, one stream");
+- the engine is the only shared bottleneck: with N residents and the engine idle, no mind waits;
+- a directed line's first token is bounded by one decode step plus her glance, whatever the
+  deep act is doing (THE-WHOLE-MIND §2.2).
+Each case in §6 reports its wait table beside its pass rule.
+
+**Live, the same table.** The `Wait` record is a probe, so the live node produces the table the
+simulator does: per resident and per hour, time waiting by `WaitOn`, the longest waits, and any
+cycle. `citizen/health` reads it, so "she is slow" names what she waited on.
+
+**Static ratchets, one per blocking pattern, each only falls:** a lock held across an `.await`;
+an await with no bound and no cancellation owner; a number standing for "unbounded" (the
+`usize::MAX` act budget removed 2026-11-02); a constant where a measurement exists; a runtime
+complaint about a required input (`required_input_complaints`, landed 2026-11-02).
+
+Built alongside P2 (perception from the store cursor), because P2 removes the most waiting: the
+sim proves the new flow before it touches a live node.
+
+## 6c. Status of the flow (2026-11-02)
+
+Merged:
+- intake is durable and ordered: every room line commits with a commit-ordered arrival (P1,
+  #5694); one chat-store door, proven attribution, relayed lines survive a restart (#5696);
+- the brain is shared, never locked: compose, recall and admission run concurrently (#5698);
+- one step budget per turn (acts, plans, retries), and no substrate stop on identical result
+  text (#5700);
+- required inputs are enforced by type, starting with grounding (`CriticalSource` returns
+  `Grounded`), with the `required_input_complaints` ratchet over the rest (#5701).
+
+Open, in order:
+
+| piece | removes | waits on |
+|---|---|---|
+| P2: perception from the store cursor | the in-memory inbox (its capacity error ends her turn), `seen_ids`, `loop_dedup` | #5585 (task lifecycle) |
+| the wait ledger (§6b) | inferring blocking from slow acts | built with P2 |
+| the reflex and her glance | a mid-act line waiting out the generation | P2 |
+| the dream as a reader of the same stream | learning as a batch beside serving | the experience ORM (card ccc0a165) |
+| one admission owner | two lane gates in series | Codex |
+| no engine relaunch while serving | acts condemned mid-generation | Codex |
+| keyed room state in airc (doctrine, purpose) | "not in the last 200 events" | Codex |
+| the typed sweep | the remaining runtime complaints, `Params`, `LateBound`'s "not installed" | by crate (plan on airc 2026-11-02) |
+
 ## 6a. The dyno and the simulator: how to use them (both proved their worth on 2026-10-28)
 
 Answer "will this be faster?" here before touching the live node. Live reads under load are road
