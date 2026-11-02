@@ -1,6 +1,10 @@
 #![cfg(test)]
 use super::*;
-use crate::cognition::working_memory::{AcceptedPage, PerceptionGap, PerceptionRef};
+use crate::cognition::working_memory::{
+    AcceptedPage, PerceptionGap, PerceptionRef, SequenceDomain,
+};
+
+const ARRIVALS: SequenceDomain = SequenceDomain::ChatArrivals;
 
 fn line(seq: u64) -> PerceptionRef {
     PerceptionRef {
@@ -29,22 +33,26 @@ async fn accepted_perception_survives_restart_exactly_once(
     registry.accept_perception(
         owner,
         incarnation,
-        AcceptedPage::Gap(PerceptionGap::UnvouchedImport),
+        AcceptedPage::Gap {
+            domain: ARRIVALS,
+            gap: PerceptionGap::UnvouchedImport,
+        },
     )?;
     let (a, b) = (line(1), line(3));
     let page = AcceptedPage::Rows {
+        domain: ARRIVALS,
         rows: vec![a, b],
         scanned_through: 3,
     };
     registry.accept_perception(owner, incarnation, page.clone())?;
     assert_eq!(
-        memory.pending_perception_lines(),
+        memory.pending_perception_lines(ARRIVALS),
         vec![a, b],
         "published only after the saved snapshot"
     );
     registry.accept_perception(owner, incarnation, page)?; // a lost reply replays
     assert_eq!(
-        memory.pending_perception_lines().len(),
+        memory.pending_perception_lines(ARRIVALS).len(),
         2,
         "a replayed page is inert"
     );
@@ -54,6 +62,7 @@ async fn accepted_perception_survives_restart_exactly_once(
                 owner,
                 Uuid::new_v4(),
                 AcceptedPage::Rows {
+                    domain: ARRIVALS,
                     rows: vec![line(4)],
                     scanned_through: 4
                 }
@@ -66,25 +75,25 @@ async fn accepted_perception_survives_restart_exactly_once(
     registry.register_from_cfg(cfg_for(owner))?; // restart: restored from the checkpoint
     let restored = Arc::clone(&registry.cycles.lock()[&owner].working_memory);
     assert_eq!(
-        restored.perception_cursor(),
+        restored.perception_cursor(ARRIVALS),
         (3, true),
         "cursor and the unvouched receipt survive"
     );
     assert_eq!(
-        restored.pending_perception_lines(),
+        restored.pending_perception_lines(ARRIVALS),
         vec![a, b],
         "the accepted lines survive, wakes intact"
     );
 
-    registry.record_perception_reads(owner, restored.incarnation(), &[1])?;
+    registry.record_perception_reads(owner, restored.incarnation(), ARRIVALS, &[1])?;
     assert_eq!(
-        restored.pending_perception_lines(),
+        restored.pending_perception_lines(ARRIVALS),
         vec![b],
         "only a shown line retires"
     );
     assert!(
         registry
-            .record_perception_reads(owner, restored.incarnation(), &[9])
+            .record_perception_reads(owner, restored.incarnation(), ARRIVALS, &[9])
             .is_err(),
         "an unknown line cannot retire"
     );

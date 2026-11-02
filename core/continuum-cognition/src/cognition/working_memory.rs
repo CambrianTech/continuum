@@ -614,7 +614,7 @@ mod action_log;
 mod continuity;
 mod task_results;
 mod perception_pending;
-pub use perception_pending::{AcceptedPage, PerceptionAcceptError, PerceptionGap, PerceptionRef};
+pub use perception_pending::{AcceptedPage, PerceptionAcceptError, PerceptionGap, PerceptionRef, SequenceDomain};
 pub use task_results::{TaskReceiptConflict, TaskReceiptError};
 mod ledger;
 mod perception;
