@@ -39,6 +39,7 @@ pub mod layer_discipline;
 pub mod lexer;
 pub mod module_cycles;
 pub mod os_branches;
+pub mod planner_floor;
 pub mod production_reachability;
 pub mod ratchet;
 pub mod tenant_neutrality;
