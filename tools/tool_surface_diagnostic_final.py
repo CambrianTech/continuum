@@ -38,71 +38,68 @@ def get_description(file_path, line_num):
     except Exception:
         return ""
 
-    # Look for DESCRIPTION on nearby lines (within 20 lines before NAME)
+    # Look for DESCRIPTION on nearby lines (within 20 before or up to 100 after NAME)
     start = max(0, line_num - 20)
-    end = min(len(lines), line_num + 1)
+    end = min(len(lines), line_num + 100)  # Extended past NAME — DESCRIPTION often follows
 
     desc_start_line = None
     for i in range(start, end):
         stripped = lines[i].strip()
         if 'DESCRIPTION:' in stripped:
-            # Check if this is a single-line description (quote opens and closes on same line)
-            single_match = re.search(r'DESCRIPTION:\s*&?["\'](.+?)["\'\)]', stripped)
-            if single_match:
-                val = single_match.group(1).strip('"').strip("'").strip()
-                # Verify the closing quote is on this line
-                after_desc = stripped[stripped.find('DESCRIPTION:') + len('DESCRIPTION'):]
-                q_start = after_desc.find('"')
-                if q_start != -1:
-                    rest_of_line = after_desc[q_start:]
-                    # Count quotes - odd number means unclosed on this line
-                    quote_count = rest_of_line.count('"')
-                    if quote_count >= 2 and not rest_of_line.rstrip().endswith('\\'):
-                        return val
-
-            # Multi-line: the string starts here but doesn't close, or has backslash continuation
             desc_start_line = i
             break
 
     if desc_start_line is None:
         return ""
 
-    # Collect continuation lines until we find the closing quote
+    # From the DESCRIPTION line onward, collect text inside quotes.
+    # Handles both single-line and multi-line (backslash-continued) strings.
     parts = []
     current_line = desc_start_line
 
-    # Get text after DESCRIPTION: on start line
-    desc_text = lines[desc_start_line]
-    idx = desc_text.find('DESCRIPTION:')
-    if idx != -1:
-        rest = desc_text[idx + len('DESCRIPTION'):]
-        rest = rest.lstrip().lstrip('&').lstrip()
-        q_start = rest.find('"')
-        if q_start == -1:
-            return ""
-        rest = rest[q_start + 1:]
+    while True:
+        line_content = lines[current_line]
 
-        while True:
-            line_stripped = rest.rstrip()
-            if line_stripped.endswith('\\'):
-                # Backslash continuation: remove backslash, add to parts
-                parts.append(line_stripped[:-1].rstrip())
-                current_line += 1
-                if current_line >= len(lines):
-                    break
-                rest = lines[current_line]
-            elif '"' in line_stripped:
-                # Found closing quote
-                before_quote = line_stripped[:line_stripped.index('"')]
-                parts.append(before_quote.rstrip())
-                break
-            else:
-                current_line += 1
-                if current_line >= len(lines):
-                    break
-                rest = lines[current_line]
+        # Look for opening quote on this line
+        q_open = line_content.find('"')
+        if q_open != -1:
+            # Check if there's content between DESCRIPTION: and the first "
+            desc_idx = line_content.find('DESCRIPTION:')
+            if desc_idx != -1:
+                before_quote = line_content[desc_idx + len('DESCRIPTION'):]
+                before_q = before_quote.lstrip().lstrip('&').lstrip()
+                q_open2 = before_q.find('"')
+                if q_open2 == 0 and not before_q.strip():
+                    # The " starts immediately — nothing to capture from this segment
+                    pass
+            
+            rest = line_content[q_open + 1:]  # After the opening quote
 
-    return ' '.join(parts)
+            while True:
+                r_stripped = rest.rstrip()
+                if '\\' in r_stripped and r_stripped.endswith('\\'):
+                    # Backslash continuation: grab content before backslash
+                    parts.append(r_stripped[:-1].rstrip())
+                    current_line += 1
+                    if current_line >= len(lines):
+                        return ' '.join(parts)
+                    rest = lines[current_line]
+                elif '"' in r_stripped:
+                    # Found closing quote — grab everything before it
+                    before_close = r_stripped[:r_stripped.index('"')]
+                    parts.append(before_close.rstrip())
+                    return ' '.join(parts)
+                else:
+                    # Continuation line with no closing quote yet
+                    current_line += 1
+                    if current_line >= len(lines):
+                        return ' '.join(parts) if parts else ""
+                    rest = lines[current_line]
+        elif current_line < end - 1:
+            # No quote on this DESCRIPTION marker line; try next
+            current_line += 1
+        else:
+            break
 
 
 def estimate_tokens(text):
