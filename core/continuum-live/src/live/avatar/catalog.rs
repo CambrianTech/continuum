@@ -181,6 +181,9 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
         ),
         source_kind: "vroid-zip",
         license: "CC0",
+        receipt_frame: Some(
+            r#"{"expected_render":"full-body anime character","known_issues":["no exact vertex count verified — standard VRoid template ~90k vertices"],"body_present":true,"vertex_count_approx":90713,"meshes":2,"skins":2,"nodes":21}"#
+        ),
     },
 ];
 
