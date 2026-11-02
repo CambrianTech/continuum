@@ -6,14 +6,12 @@
 //! in-process (and the grid leases remotely). Gated `Privileged`: leased inference,
 //! not a citizen-facing action.
 //!
-//! ## Faithful migration
+//! ## Typed input
 //!
-//! Ported verbatim off `AIProviderModule::handle_command`'s `ai/generate` arm. The
-//! input is polymorphic (a `messages` array OR a `prompt` string, with snake_case
-//! AND camelCase aliases across a dozen sampling fields), so `Params = Value` and
-//! [`parse_request`] reproduces the legacy alias surface byte-for-byte — the canonical
-//! typed input [`TextGenerationRequest`] is the eventual convergence target, not this
-//! migration's job. The output [`AiGenerateResult`] reuses the canonical sub-types
+//! The params ARE the canonical [`TextGenerationRequest`], decoded by serde at the boundary:
+//! the same shape the grid's remote path sends, one wire name per field (camelCase), and no
+//! field a handler has to find missing. The legacy alias table (`prompt` OR `messages`,
+//! snake_case AND camelCase) is gone (2026-11-02). The output [`AiGenerateResult`] reuses the canonical sub-types
 //! ([`UsageMetrics`]/[`ContentPart`]/[`ToolCall`]/[`RoutingInfo`]) and mirrors the
 //! exact camelCase wire shape the old hand-rolled `response_to_json` produced.
 
@@ -29,7 +27,21 @@ use crate::ai::{
 };
 use crate::logging::TimingGuard;
 use crate::ai::adapter::select_failure_message;
-use crate::runtime::params::Params;
+
+/// The params of `ai/generate`: the inference request itself, plus the stream a caller
+/// registered a sink under (`stream_sinks::register`), which the airc responder stamps so
+/// every chunk reaches the remote mind as it is produced. The stream is the call's, never
+/// the request's; a plain call has none and gets the assembled response.
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/ai/GenerateParams.ts")]
+pub struct GenerateParams {
+    #[serde(flatten)]
+    pub request: TextGenerationRequest,
+    #[serde(default)]
+    #[ts(optional, type = "string")]
+    pub stream_id: Option<uuid::Uuid>,
+}
 
 /// Result of `ai/generate` — the exact camelCase shape the inference seam has always
 /// returned. `success` is always `true` on the Ok path (errors return `Err`, which the
@@ -80,75 +92,6 @@ impl From<TextGenerationResponse> for AiGenerateResult {
     }
 }
 
-/// Parse a [`TextGenerationRequest`] from the polymorphic JSON params — a `messages`
-/// array or a single `prompt` string, with snake_case + camelCase aliases on every
-/// sampling field. Lifted verbatim from the legacy `AIProviderModule::parse_request`.
-fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
-    let p = Params::new(params);
-
-    // Parse messages (array) or simple prompt (string)
-    let messages: Vec<ChatMessage> = if let Some(msgs) = p.value("messages") {
-        serde_json::from_value(msgs.clone())
-            .map_err(|e| format!("Failed to parse messages: {}", e))?
-    } else if let Some(prompt) = p.str_opt("prompt") {
-        vec![ChatMessage {
-            role: "user".to_string(),
-            content: MessageContent::Text(prompt.to_string()),
-            name: None,
-        }]
-    } else {
-        return Err("Missing messages or prompt".to_string());
-    };
-
-    if messages.is_empty() {
-        return Err("Messages cannot be empty".to_string());
-    }
-
-    Ok(TextGenerationRequest {
-        messages,
-        system_prompt: p.string_opt_alias("system_prompt", "systemPrompt"),
-        model: p.str_opt("model").map(String::from),
-        provider: p.str_opt("provider").map(String::from),
-        temperature: p.f32_opt("temperature"),
-        max_tokens: p.u64_opt_alias("max_tokens", "maxTokens").map(|t| t as u32),
-        top_p: p.f64_opt_alias("top_p", "topP").map(|t| t as f32),
-        top_k: p.u64_opt_alias("top_k", "topK").map(|t| t as u32),
-        repeat_penalty: p
-            .f32_opt("repeat_penalty")
-            .or_else(|| p.f32_opt("repeatPenalty")),
-        frequency_penalty: p
-            .f32_opt("frequency_penalty")
-            .or_else(|| p.f32_opt("frequencyPenalty")),
-        repeat_last_n: p
-            .u64_opt_alias("repeat_last_n", "repeatLastN")
-            .map(|n| n as u32),
-        stop_sequences: p
-            .json_opt("stop_sequences")
-            .or_else(|| p.json_opt("stopSequences")),
-        tools: p.json_opt("tools"),
-        tail_tools: None,
-        view_messages: None,
-        tool_choice: p.json_opt("tool_choice"),
-        response_format: None,
-        active_adapters: p.json_opt("activeAdapters"),
-        request_id: p.string_opt_alias("request_id", "requestId"),
-        user_id: p.string_opt_alias("user_id", "userId"),
-        room_id: p.string_opt_alias("room_id", "roomId"),
-        purpose: p.str_opt("purpose").map(String::from),
-        // Caller-provided persona attribution. TS sends `personaId` (camelCase)
-        // per Continuum convention; snake_case alias accepted for symmetry.
-        persona_id: p.string_opt_alias("persona_id", "personaId"),
-        // The turn's own wire bound (card ba82d0a0): the requesting mind's measured
-        // expectation with headroom, serde's `{secs, nanos}`. A remote turn arrives
-        // here on the SERVING peer, whose lane must wait out the same prefill the
-        // requester is waiting out — dropped here, the peer's 300 s floor would kill
-        // the very turn the requester sized a 1200 s bound for. Absent = the floor.
-        turn_bound: p
-            .json_opt::<std::time::Duration>("turn_bound")
-            .or_else(|| p.json_opt("turnBound")),
-    })
-}
-
 crate::action_command! {
     /// Generate text from an AI provider: select the best adapter for the requested
     /// provider/model (or the default), run the request, and return the completion
@@ -158,12 +101,17 @@ crate::action_command! {
     pub struct AiGenerate { registry: Arc<RwLock<AdapterRegistry>> }
     name: "ai/generate",
     access: Privileged,
-    params: Value,
+    params: GenerateParams,
     output: AiGenerateResult,
     run(this, ctx, p) => {
         let _timer = TimingGuard::new("module", "ai_generate");
 
-        let request = parse_request(&p)?;
+        let GenerateParams { request, stream_id } = p;
+        // The one shape check serde cannot express on today's `Vec`: an empty conversation.
+        // Follow-up (Fable): `TextGenerationRequest::messages` becomes non-empty by type.
+        if request.messages.is_empty() {
+            return Err(crate::sdk_codegen::CommandError::Invalid("ai/generate: the request has no messages".into()));
+        }
 
         let registry = this.registry.read().await;
 
@@ -192,7 +140,7 @@ crate::action_command! {
         // every chunk the instant the backend produces it — the same primitive the
         // local persona turn rides — and the assembled response at the end. No sink
         // registered (a plain call) = the drain, exactly as before.
-        let sink = crate::ai::stream_sinks::stream_id_of(&p).and_then(crate::ai::stream_sinks::take);
+        let sink = stream_id.and_then(crate::ai::stream_sinks::take);
         let mut response = match sink {
             Some(sink) => adapter.generate_stream(request, sink).await?,
             None => adapter.generate_text(request).await?,

@@ -10,7 +10,7 @@ use serde_json::Value;
 use ts_rs::TS;
 
 /// Chat message for text generation
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ChatMessage.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
@@ -22,7 +22,7 @@ pub struct ChatMessage {
 }
 
 /// Message content - either plain text or multimodal content blocks
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/MessageContent.ts"
@@ -34,7 +34,7 @@ pub enum MessageContent {
 }
 
 /// Content part for multimodal and tool protocol messages
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ContentPart.ts")]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
@@ -65,7 +65,7 @@ pub enum ContentPart {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ImageInput.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ImageInput {
@@ -80,7 +80,7 @@ pub struct ImageInput {
     pub mime_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/AudioInput.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct AudioInput {
@@ -95,7 +95,7 @@ pub struct AudioInput {
     pub mime_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/VideoInput.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct VideoInput {
@@ -165,7 +165,7 @@ impl ResultCustody {
 }
 
 /// Tool choice specification
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ToolChoice.ts")]
 #[serde(untagged)]
 pub enum ToolChoice {
@@ -178,7 +178,7 @@ pub enum ToolChoice {
 // ============================================================================
 
 /// Active LoRA adapter to apply during generation
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/ActiveAdapterRequest.ts"
@@ -198,7 +198,7 @@ fn default_adapter_scale() -> f64 {
 }
 
 /// Text generation request
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/TextGenerationRequest.ts"
@@ -329,6 +329,7 @@ pub struct TextGenerationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "{ secs: number, nanos: number }")]
     pub turn_bound: Option<std::time::Duration>,
+
 }
 
 /// Constrains the model's output format. OpenAI-compatible serialization:
@@ -337,7 +338,7 @@ pub struct TextGenerationRequest {
 /// can only emit valid JSON (when JsonObject) — no thinking prose, no
 /// commentary, no leading/trailing text. The right way to enforce structured
 /// output: at the model level, not via a downstream parser fallback.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/ResponseFormat.ts"

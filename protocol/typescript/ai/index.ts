@@ -11,6 +11,7 @@ export type { EmbeddingInput } from './EmbeddingInput';
 export type { EmbeddingRequest } from './EmbeddingRequest';
 export type { EmbeddingResponse } from './EmbeddingResponse';
 export type { FinishReason } from './FinishReason';
+export type { GenerateParams } from './GenerateParams';
 export type { HealthState } from './HealthState';
 export type { HealthStatus } from './HealthStatus';
 export type { ImageInput } from './ImageInput';

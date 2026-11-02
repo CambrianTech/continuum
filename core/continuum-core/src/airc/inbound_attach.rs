@@ -421,6 +421,7 @@ pub async fn publish_transcript_event(
             class = "mind.feed.event",
             room = %event.room_id.as_uuid(),
             from = %event.peer_id.as_uuid(),
+            event_id = %event.event_id.as_uuid(),
             residents = fed,
             "a room event fed to resident minds"
         );
