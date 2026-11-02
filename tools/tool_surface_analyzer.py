@@ -239,7 +239,7 @@ def compute_token_costs(tools):
         'tool_count': len(tools)
     }
 
-def print_report(costs):
+def print_report(costs, tools=None):
     """Print a summary report."""
     print("\n" + "=" * 80)
     print("TOOL SURFACE TOKEN COST ANALYSIS")
@@ -252,20 +252,21 @@ def print_report(costs):
     print(f"  Discovery pair overhead:             {costs['discovery_pair']:>6}")
     print(f"  {'─' * 40}")
     print(f"  GRAND TOTAL:                         {costs['grand_total']:>6} tokens")
-    
+
     # Top 10 tools by name+description cost
-    top_tools = sorted(
-        [(t.name, t.token_cost_estimate) for t in tools],
-        key=lambda x: x[1],
-        reverse=True
-    )[:10]
-    
-    print(f"\nTop 10 tools by description size:")
-    for name, cost in top_tools:
-        desc_preview = f'"{name}" - {cost} tokens'
-        if len(desc_preview) > 70:
-            desc_preview = desc_preview[:67] + "..."
-        print(f"  {desc_preview}")
+    if tools:
+        top_tools = sorted(
+            [(t.name, t.token_cost_estimate) for t in tools],
+            key=lambda x: x[1],
+            reverse=True
+        )[:10]
+
+        print(f"\nTop 10 tools by description size:")
+        for name, cost in top_tools:
+            desc_preview = f'"{name}" - {cost} tokens'
+            if len(desc_preview) > 70:
+                desc_preview = desc_preview[:67] + "..."
+            print(f"  {desc_preview}")
 
 def main():
     print("Finding Rust source files...")
@@ -281,15 +282,4 @@ def main():
         return
     
     costs = compute_token_costs(tools)
-    print_report(costs)
-    
-    # Print all tools for detailed analysis
-    print("\n" + "=" * 80)
-    print("ALL TOOLS (sorted by name)")
-    print("=" * 80)
-    for tool in sorted(tools, key=lambda t: t.name):
-        schema_info = f", {len(tool.param_fields)} params" if tool.param_fields else ""
-        print(f"{tool.name:<45} | {tool.token_cost_estimate:>4} tokens (schema: ~{tool.estimated_schema_chars} chars){schema_info}")
-
-if __name__ == '__main__':
-    main()
+    print_report(costs, tools)
