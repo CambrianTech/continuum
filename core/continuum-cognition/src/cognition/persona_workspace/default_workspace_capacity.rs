@@ -213,8 +213,6 @@ impl GroundingSource {
         self
     }
 
-    /// Framing whose CONTENT mutates per turn (see field doc): keeps the
-    /// attention floor, loses the stable-tier placement.
     /// This source's content exists only in shared rooms (a room's airc channel or
     /// projection); in her private mind room it has none by design.
     pub fn shared_rooms_only(mut self) -> Self {
@@ -222,6 +220,8 @@ impl GroundingSource {
         self
     }
 
+    /// Framing whose CONTENT mutates per turn (see field doc): keeps the
+    /// attention floor, loses the stable-tier placement.
     pub fn volatile_content(mut self) -> Self {
         self.volatile_content = true;
         self
