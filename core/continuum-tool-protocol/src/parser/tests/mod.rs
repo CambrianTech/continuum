@@ -730,6 +730,83 @@ Please provide the output so I can review it.";
         assert!(parse_tool_calls("I'll consider this and/or(that) approach.").is_empty());
     }
 
+    #[test]
+    fn render_tool_catalog_text_empty_returns_empty() {
+        let tools: Vec<NativeToolSpec> = vec![];
+        assert_eq!(render_tool_catalog_text(&tools), "");
+    }
+
+    #[test]
+    fn render_tool_catalog_text_groups_by_category() {
+        use serde_json::json;
+
+        let tools = vec![
+            NativeToolSpec {
+                name: "code/read".to_string(),
+                description: "Read a file".to_string(),
+                input_schema: ToolInputSchema {
+                    schema_type: "object".into(),
+                    properties: json!({}),
+                    required: None,
+                    definitions: None,
+                },
+            },
+            NativeToolSpec {
+                name: "code/write".to_string(),
+                description: "Write a file".to_string(),
+                input_schema: ToolInputSchema {
+                    schema_type: "object".into(),
+                    properties: json!({}),
+                    required: None,
+                    definitions: None,
+                },
+            },
+            NativeToolSpec {
+                name: "work/list".to_string(),
+                description: "List work cards".to_string(),
+                input_schema: ToolInputSchema {
+                    schema_type: "object".into(),
+                    properties: json!({}),
+                    required: None,
+                    definitions: None,
+                },
+            },
+        ];
+
+        let output = render_tool_catalog_text(&tools);
+
+        // Should be grouped by category: code/ and work/
+        assert!(output.contains("code:"), "expected 'code:' in output, got:\n{output}");
+        assert!(output.contains("work:"), "expected 'work:' in output, got:\n{output}");
+        // Each tool should appear in its category
+        assert!(output.contains("read()"));
+        assert!(output.contains("write()"));
+        assert!(output.contains("list()"));
+    }
+
+    #[test]
+    fn render_tool_catalog_text_with_params() {
+        use serde_json::json;
+
+        let tools = vec![NativeToolSpec {
+            name: "code/read".to_string(),
+            description: "Read a file".to_string(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: json!({
+                    "file_path": {"type": "string"},
+                    "start_line": {"type": ["integer", "null"]},
+                }),
+                required: Some(vec!["file_path".to_string()]),
+                definitions: None,
+            },
+        }];
+
+        let output = render_tool_catalog_text(&tools);
+
+        // Should show code: read(file_path, start_line?)
+        assert!(output.contains("read(file_path, start_line?)"), "expected param hints in output, got:\n{output}");
+    }
 mod part_2;
 
 mod part_3;
