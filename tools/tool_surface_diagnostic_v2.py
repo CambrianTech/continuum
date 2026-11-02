@@ -78,7 +78,7 @@ def extract_command_info(filepath: Path):
         'access_level': access_level,
         'param_fields': field_count,
         'params_content': params_content,
-        'filepath': str(filepath.relative_to(repo_root)),
+        'filepath': str(filepath.relative_to(REPO_ROOT)),
     }
 
 
