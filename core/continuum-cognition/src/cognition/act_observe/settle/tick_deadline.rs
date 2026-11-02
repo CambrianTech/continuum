@@ -251,10 +251,10 @@ impl PaceCadence {
 pub fn drive_to_settle(
     cycle: &WorkspaceCycle,
     burst: impl Into<Burst>,
-    budget: TurnBudget,
+    budget: impl Into<TurnBudget>,
     framing: TurnFraming,
 ) -> impl std::future::Future<Output = SettleOutcome> + Send + '_ {
-    drive_with_input(cycle, burst.into(), budget, framing, None, None)
+    drive_with_input(cycle, burst.into(), budget.into(), framing, None, None)
 }
 
 /// The live driver leases its existing conversation between steps. No second
@@ -262,11 +262,11 @@ pub fn drive_to_settle(
 pub fn drive_to_settle_with_input<'a>(
     cycle: &'a WorkspaceCycle,
     burst: Burst,
-    budget: TurnBudget,
+    budget: impl Into<TurnBudget>,
     framing: TurnFraming,
     conversation: &'a mut dyn crate::cognition::conversation::PersonaConversation,
 ) -> impl std::future::Future<Output = SettleOutcome> + Send + 'a {
-    drive_with_input(cycle, burst, budget, framing, Some(conversation), None)
+    drive_with_input(cycle, burst, budget.into(), framing, Some(conversation), None)
 }
 
 /// A live card-linked turn uses the same driver with its own credit capture.
@@ -274,14 +274,14 @@ pub fn drive_to_settle_with_input<'a>(
 pub fn drive_to_settle_with_credit<'a>(
     cycle: &'a WorkspaceCycle,
     burst: Burst,
-    budget: TurnBudget,
+    budget: impl Into<TurnBudget>,
     framing: TurnFraming,
     conversation: &'a mut dyn crate::cognition::conversation::PersonaConversation,
     credit: Option<&'a mut dyn TurnCredit>,
 ) -> impl std::future::Future<Output = SettleOutcome> + Send + 'a {
     // Return the shared driver directly: an async forwarding wrapper needlessly
     // nests its state in every live/eval caller and inflates future layout depth.
-    drive_with_input(cycle, burst, budget, framing, Some(conversation), credit)
+    drive_with_input(cycle, burst, budget.into(), framing, Some(conversation), credit)
 }
 
 pub(super) async fn drive_with_input<'c>(

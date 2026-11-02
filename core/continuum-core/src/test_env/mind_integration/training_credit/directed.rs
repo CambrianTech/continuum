@@ -105,7 +105,7 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
     let mut drive = Box::pin(drive_to_settle_with_credit(
         &cycle,
         "review first card".into(),
-        crate::cognition::act_observe::TurnBudget::Steps(8),
+        8,
         TurnFraming::ambient(),
         &mut conversation,
         Some(&mut capture),

@@ -295,7 +295,7 @@
         let settled = crate::cognition::act_observe::drive_to_settle_with_input(
             &cycle,
             Burst::raw_in(room, "a line".into()),
-            crate::cognition::act_observe::TurnBudget::Steps(8),
+            8,
             TurnFraming::message(TurnAttention::default()),
             &mut conversation,
         )

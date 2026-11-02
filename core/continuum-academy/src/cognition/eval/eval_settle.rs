@@ -36,7 +36,7 @@ pub(super) async fn eval_settle(
     crate::cognition::act_observe::drive_to_settle(
         cycle,
         burst,
-        crate::cognition::act_observe::TurnBudget::Steps(max_acts),
+        max_acts,
         crate::cognition::workspace::TurnFraming::directed(),
     )
     .await
