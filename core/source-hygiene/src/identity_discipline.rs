@@ -49,7 +49,7 @@ impl SourceRule for NoNilRoomInProductionCognition {
             })
             .map(|(line, l)| Violation {
                 rule: self.name(),
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line,
                 source: l.trim().to_string(),
             })
@@ -83,7 +83,7 @@ impl SourceRule for NoStringCompositeIdKeys {
             })
             .map(|(line, l)| Violation {
                 rule: self.name(),
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line,
                 source: l.trim().to_string(),
             })
@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn nil_room_literals_never_rise() {
         let violations = scan(&[&NoNilRoomInProductionCognition]);
-        crate::ratchet::hold("nil_room_lines", violations.len(), || {
+        crate::ratchet::hold_sites("nil_room_lines", &violations, || {
             format!(
             "production nil-room literals rose to {}.\n\
              An activity without a room is unrepresentable (#425) — mint or rejoin an \
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn string_composite_id_keys_never_rise() {
         let violations = scan(&[&NoStringCompositeIdKeys]);
-        crate::ratchet::hold("string_composite_keys", violations.len(), || {
+        crate::ratchet::hold_sites("string_composite_keys", &violations, || {
             format!(
             "string-composite id keys rose to {}.\n\
              Key on a typed struct of UUIDs, never a formatted string.\nOffenders:\n{}",

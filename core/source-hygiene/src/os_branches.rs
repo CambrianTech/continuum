@@ -40,7 +40,7 @@ impl SourceRule for OsBranches {
                 let code = crate::lexer::split_code_and_comment(l).0;
                 branches_on_os(code)
             })
-            .map(|(n, l)| Violation { rule: self.name(), file: file.rel.clone(), line: n, source: l.trim().to_string() })
+            .map(|(n, l)| Violation { rule: self.name(), file: file.repo.clone(), line: n, source: l.trim().to_string() })
             .collect()
     }
 }
@@ -55,8 +55,8 @@ mod tests {
     #[test]
     fn os_branches_in_logic_never_increase() {
         let violations = scan(&[&OsBranches]);
-        let count = violations.len();
-        crate::ratchet::hold("os_branches_in_logic", count, || {
+                let count = violations.len();
+                crate::ratchet::hold_sites("os_branches_in_logic", &violations, || {
             format!(
                 "OS branches in logic rose to {count}. An OS difference belongs in its capability's \
                  adapter in continuum-host (mod.rs holds the logic once, unix.rs/windows.rs only \

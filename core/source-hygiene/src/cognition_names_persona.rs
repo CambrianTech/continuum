@@ -27,7 +27,7 @@ impl SourceRule for CognitionNamesPersona {
             .filter(|(_, line)| names_persona(split_code_and_comment(line).0))
             .map(|(line_no, line)| Violation {
                 rule: "cognition-names-persona",
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line: line_no,
                 source: line.trim().to_string(),
             })
@@ -77,7 +77,7 @@ mod tests {
         let mut files: Vec<&str> = violations.iter().map(|v| v.file.as_str()).collect();
         files.dedup();
         eprintln!("cognition names persona: {} lines in {} files", violations.len(), files.len());
-        crate::ratchet::hold("cognition_names_persona", violations.len(), || {
+        crate::ratchet::hold_sites("cognition_names_persona", &violations, || {
             let newest: Vec<String> = violations.iter().take(8).map(|v| format!("  {}:{}: {}", v.file, v.line, v.source)).collect();
             format!(
                 "cognition now names persona on more lines. Move the fact down into cognition, or \

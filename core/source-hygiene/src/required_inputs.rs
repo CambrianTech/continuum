@@ -59,7 +59,7 @@ impl SourceRule for RequiredInputComplaints {
             })
             .map(|(i, l)| Violation {
                 rule: self.name(),
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line: i + 1,
                 source: l.trim().to_string(),
             })
@@ -85,7 +85,7 @@ mod tests {
     fn required_input_complaints_only_fall() {
         let violations = scan(&[&RequiredInputComplaints]);
         let count = violations.len();
-        let advice = || {
+                let advice = || {
             format!(
                 "required_input_complaints rose to {count}: a required input is enforced by its \
                  type, never an Option plus a run-time 'missing'/'required'/'not installed' \
@@ -99,7 +99,7 @@ mod tests {
                     .join("\n")
             )
         };
-        crate::ratchet::hold("required_input_complaints", count, advice);
+        crate::ratchet::hold_sites("required_input_complaints", &violations, advice);
         crate::ratchet::touched_clean("required_input_complaints", &violations, || {
             "a file this change touches still complains at run time about a required input: \
              make the input required by its type"
@@ -110,6 +110,19 @@ mod tests {
     // what this catches: the predicate drifting either way. It flags a complaint about a
     // required input at a complaint site, and spares a comment, a non-complaint string and a
     // build script.
+    // what this catches: a violation naming its file by a src-relative path, which never matches
+    // the touched list's repository paths, so a touched file with a complaint passed silently.
+    #[test]
+    fn a_touched_file_with_a_complaint_is_judged_by_its_repository_path() {
+        let file = SourceFile::fixture("a.rs", r#"let id = p.id.ok_or("id is required")?;"#, "");
+        let violations = RequiredInputComplaints.check(&file);
+        assert_eq!(violations.len(), 1);
+        let by_repo: std::collections::BTreeSet<&str> = [file.repo.as_str()].into();
+        let by_rel: std::collections::BTreeSet<&str> = [file.rel.as_str()].into();
+        assert_eq!(crate::ratchet::dirty_sites(&violations, &by_repo).len(), 1, "the touched repository path is judged");
+        assert!(crate::ratchet::dirty_sites(&violations, &by_rel).is_empty(), "a src-relative entry is not a touched file");
+    }
+
     #[test]
     fn the_predicate_flags_complaints_about_required_inputs() {
         let rule = RequiredInputComplaints;

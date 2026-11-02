@@ -74,7 +74,7 @@ impl SourceRule for UnwrapJustification {
             if !justified {
                 out.push(Violation {
                     rule: "unwrap-justification",
-                    file: file.rel.clone(),
+                    file: file.repo.clone(),
                     line: line_no,
                     source: code.trim().to_string(),
                 });
@@ -98,13 +98,13 @@ mod tests {
     #[test]
     fn the_unjustified_unwrap_count_never_rises() {
         let violations = scan(&[&UnwrapJustification]);
-        let count = violations.len();
-        // The scan cannot know which occurrences are NEW — it has no old set — so it does
+                // The scan cannot know which occurrences are NEW — it has no old set — so it does
         // not pretend to. The label used to say "First few new ones" and list the
         // alphabetically-first files in tree (anthropic_adapter.rs:52…), which sent the
         // reader to lines that predate the guard; the four real ones (#4211) were in
         // files starting with `b` and `s`. Say what is printed, and how to find yours.
-        crate::ratchet::hold("unjustified_unwraps", count, || {
+        let count = violations.len();
+        crate::ratchet::hold_sites("unjustified_unwraps", &violations, || {
             format!(
             "unjustified production unwraps rose to {count}.\n\
              Every unwrap/expect/unwrap_or needs a same-line `//` comment saying WHY it is safe.\n\

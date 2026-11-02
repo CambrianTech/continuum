@@ -59,7 +59,7 @@ impl SourceRule for ContinuumHomeResolvedOnce {
             .filter(|&i| hand_built(&lines, i))
             .map(|i| Violation {
                 rule: self.name(),
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line: i + 1,
                 source: lines[i].trim().to_string(),
             })
@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn hand_built_continuum_homes_only_fall() {
         let sites = scan(&[&ContinuumHomeResolvedOnce]);
-        crate::ratchet::hold("hand_built_homes", sites.len(), || {
+        crate::ratchet::hold_sites("hand_built_homes", &sites, || {
             format!(
                 "hand-built continuum homes rose. Resolve through crate::paths::continuum_home() instead:\n{}",
                 sites
