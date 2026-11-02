@@ -93,15 +93,21 @@ impl Faculty for AlwaysAct {
 /// Speak?".
 struct CountingSpeaker {
     generations: Mutex<usize>,
+    /// The step each generation ran as (`admission_clock::current_act`), in order.
+    steps: Mutex<Vec<Option<crate::cognition::llm_deliberation_faculty::admission_clock::ActAt>>>,
 }
 impl CountingSpeaker {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             generations: Mutex::new(0),
+            steps: Mutex::new(Vec::new()),
         })
     }
     fn generations(&self) -> usize {
         *self.generations.lock().expect("lock")
+    }
+    fn steps(&self) -> Vec<Option<crate::cognition::llm_deliberation_faculty::admission_clock::ActAt>> {
+        self.steps.lock().expect("lock").clone()
     }
 }
 #[async_trait]
@@ -114,6 +120,10 @@ impl Faculty for CountingSpeaker {
     }
     async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
         *self.generations.lock().expect("lock") += 1;
+        self.steps
+            .lock()
+            .expect("lock")
+            .push(crate::cognition::llm_deliberation_faculty::admission_clock::current_act());
         Some(Contribution::verdict(
             Decision::Speak {
                 text: "here is my analysis of the bug: the call to subs() is wrong".into(),

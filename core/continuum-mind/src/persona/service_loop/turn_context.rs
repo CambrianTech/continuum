@@ -225,4 +225,5 @@ pub(super) fn build_turn_burst(
             None => crate::cognition::workspace::Cause::Ambient,
         },
     )
+    .for_turn(composed.turn_id)
 }

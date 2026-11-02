@@ -7,6 +7,18 @@ use crate::inference::{
 use std::{future::Future, time::Duration};
 use tokio::{sync::watch, time::Instant};
 
+/// Which step a generation is: the persona, the turn (`Burst::turn`, the id its compose stamped
+/// on every capture) and the step's index in that turn, counting every generation (acts, spoken
+/// plans and retried faults each take their own step). Unique per generation of a turn. It
+/// rides the step's scope, so whatever ends the step (a condemned engine, a dropped
+/// generation) names exactly the generation it ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ActAt {
+    pub(crate) persona: uuid::Uuid,
+    pub(crate) turn: uuid::Uuid,
+    pub(crate) step: u64,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct QueueTime {
     base: Instant,
@@ -18,9 +30,11 @@ pub(crate) struct QueueTime {
     /// The step's model call was dispatched (its drop witness armed): a deadline that ends
     /// the step from here drops a generation, never a wait (card 843d5570).
     pub(crate) dispatched: bool,
+    /// The act this step is, when a mind is acting (a faculty test or replay has none).
+    pub(crate) act: Option<ActAt>,
 }
 impl QueueTime {
-    pub(crate) fn new(base: Instant, bound: Duration) -> Self {
+    pub(crate) fn new(base: Instant, bound: Duration, act: Option<ActAt>) -> Self {
         Self {
             base,
             bound,
@@ -29,6 +43,7 @@ impl QueueTime {
             waiting: 0,
             stalled: false,
             dispatched: false,
+            act,
         }
     }
     /// Generation extensions accrue only outside a registered wait. Completed
@@ -55,6 +70,11 @@ pub(crate) fn note_dispatched() {
     QUEUE_TIME
         .try_with(|tx| tx.send_modify(|state| state.dispatched = true))
         .unwrap_or(()); // unwrap_or: no step scope = no step deadline to tell a drop from a wait
+}
+
+/// The act the current step is, if this runs inside one; `None` outside a step's scope.
+pub(crate) fn current_act() -> Option<ActAt> {
+    QUEUE_TIME.try_with(|tx| tx.borrow().act).ok().flatten()
 }
 
 struct Waiting(watch::Sender<QueueTime>);
