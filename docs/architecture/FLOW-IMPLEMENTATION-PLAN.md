@@ -377,9 +377,15 @@ census below counts.
 - no wait cycle: the wait graph (waiter -> holder) is acyclic in every case;
 - a reader never waits on another reader: perception, reflex, dream and retention each wait only
   on the store or the engine (PERCEPTION-FROM-THE-STORE.md, "Many readers, one stream");
-- the engine is the only shared bottleneck: with N residents and the engine idle, no mind waits;
+- the engine is the only shared bottleneck: with the engine idle, no mind with READY work (its store,
+  task and remote dependencies satisfied) waits; an idle engine cannot make unfinished IO ready, so a
+  mind blocked on a dependency is reported by that dependency, and independent ready work proceeds
+  while another dependency is blocked (Codex, review of 5086c117);
 - a directed line's first token is bounded by one decode step plus her glance, whatever the
-  deep act is doing (THE-WHOLE-MIND §2.2).
+  deep act is doing (THE-WHOLE-MIND §2.2), in the locally admitted and resident case, tested with
+  the measured step and prefill costs; an unavailable remote endpoint, a page-in, a prefill or
+  exhausted physical capacity is outside that bound, and blocked or degraded admission is reported
+  separately, never silently excluded.
 Each case in §6 reports its wait table beside its pass rule.
 
 **Live, the same table.** The `Wait` record is a probe, so the live node produces the table the
@@ -430,9 +436,9 @@ an owner, and a ratchet or validator that only lets the old shape fall.
 | ONE door per resource: the one place that names the handle, ensures the schema and turns a refusal into an error | the chat store's seven hand-built calls (the door found the tables canary never created) | Fable (stores the mind owns) |
 | STATE is keyed, never scanned: a room fact is an indexed read | doctrine read from the newest 200 events; the work gate's 400-row page | Codex (airc room state); Fable (the work gate) |
 | MANY READERS, one stream (§6b, PERCEPTION-FROM-THE-STORE) | the in-memory inbox whose capacity error ends her turn; the text dedup filtering what she perceives | Fable (P2) |
-| LIFECYCLES have owners: every process is started, reaped and reported by its owner | a 20-hour orphaned `airc join` holding the machine identity; an engine relaunched under live acts; agent test windows restarting residents mid-work (0 writes in a disturbed hour, 26 in two undisturbed) | Codex (airc, serving); every agent (batch windows) |
+| LIFECYCLES have owners: every process is started, reaped and reported by its owner | a 20-hour `airc join` of unknown revision still running (its durable-feed role is distinct from owning an encrypted receiver; it is NOT a proven cause of the addressed fault); an engine relaunched under live acts; agent test windows restarting residents mid-work (0 writes in a disturbed hour, 26 in two undisturbed) | Codex (airc, serving); every agent (batch windows) |
 | EVERY fact answerable live: a probe names its subject; a boot fact is queryable, not a rotated log line | condemned acts named only by time; `mind.feed.event` with no event id; the node pump's online state lost to rotation | Fable (`ping` reports the node pump) |
-| SLEEP IS AS IMPORTANT AS RESPONSIVENESS (Joel, CBAR's signal-mutex-sleep): one wait primitive; a stage waits on a typed signal, drains, sleeps; backoff, coalescing and "unreachable until re-announce" are properties of the primitive, never consumer code; health reads owner-published snapshots, never probes; a known-unreachable send costs zero bytes and zero CPU | airc backfill and forwards storming a retired peer (2M refusals per daemon); polled health; interval ticks with no work | Codex (airc reachability owner); Fable (the primitive is `continuum-kernel` `Stage` + `StageRunner`, already signal-woken with a `floor` backstop and one adopter, the deferred faculty: every loop migrates onto it; the runner itself records the wait ledger and wakes-without-work, so every stage reports them free; the idle-core gate: a 10 s idle sample near zero) |
+| SLEEP IS AS IMPORTANT AS RESPONSIVENESS (Joel, CBAR's signal-mutex-sleep): one wait primitive; a stage waits on a typed signal, drains, sleeps; backoff, coalescing and "unreachable until re-announce" are properties of the primitive, never consumer code; health reads owner-published snapshots, never probes; a suppressed send does no encode, seal or network work and nothing runs periodically while idle (returning its typed result is the only cost); a NoReceiver is definitive only for that recipient/host incarnation and owner generation, a NoHandshakeReply is uncertainty; a receiver reattach on the same daemon wakes suppressed work, and a lost ready announcement is bounded by the backstop, never asleep forever (Phase A, shared suspect plus backstop: Cormac on #1649; Phase B, authenticated refusal and the ready protocol: under Codex's boundary review) | airc backfill and forwards storming a retired peer (2M refusals per daemon); polled health; interval ticks with no work | Codex (airc reachability owner); Fable (the primitive is `continuum-kernel` `Stage` + `StageRunner`, already signal-woken with a `floor` backstop and one adopter, the deferred faculty: every loop migrates onto it; the runner itself records the wait ledger and wakes-without-work, so every stage reports them free; the idle-core gate: a 10 s idle sample near zero) |
 | the WAIT LEDGER (§6b) | 300 s of non-model time per act inferred, not reported | Fable (with P2) |
 
 ## 6a. The dyno and the simulator: how to use them (both proved their worth on 2026-10-28)
