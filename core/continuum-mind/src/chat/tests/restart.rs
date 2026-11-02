@@ -26,7 +26,9 @@ fn real_store_chat(airc: StubAircModule) -> ChatModule {
     registry.register(Arc::new(airc));
     let executor = Arc::new(CommandExecutor::new(registry.clone()));
     registry.install_executor_on_all(executor.clone());
-    crate::chat::publication::register_relay(airc_core::PeerId::from_u128(0x7e1a));
+    crate::persona::self_peer::scopes()
+        .designate(Uuid::from_u128(0x7e1a))
+        .expect("test: every chat test designates the same relay"); // test: a fixture step that must succeed
     ChatModule::with_executor(executor)
 }
 
