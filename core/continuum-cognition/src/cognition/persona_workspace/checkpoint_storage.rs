@@ -39,7 +39,10 @@ pub(super) fn for_path(path: &Path) -> io::Result<ClassWriter> {
             io::Error::new(io::ErrorKind::InvalidInput, "checkpoint has no typed owner")
         })?;
     let writer = writer(owner)?;
-    if std::path::absolute(path)? != std::path::absolute(writer.path(Path::new("volatile.json"))?)?
+    if resolved_path(&std::path::absolute(path)?)?
+        != resolved_path(&std::path::absolute(
+            writer.path(Path::new("volatile.json"))?,
+        )?)?
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -47,4 +50,31 @@ pub(super) fn for_path(path: &Path) -> io::Result<ClassWriter> {
         ));
     }
     Ok(writer)
+}
+
+/// Resolve existing ancestors before comparing class custody. Temporary homes on
+/// macOS may use /var while canonical paths use /private/var. The ClassWriter
+/// still owns confinement and the actual held-directory write.
+pub(super) fn resolved_path(path: &Path) -> io::Result<PathBuf> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "symbolic checkpoint/evidence paths are not accepted",
+                ));
+            }
+            std::fs::canonicalize(path)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let parent = path
+                .parent()
+                .ok_or_else(|| io::Error::other("path has no parent"))?;
+            let name = path
+                .file_name()
+                .ok_or_else(|| io::Error::other("path has no filename"))?;
+            Ok(resolved_path(parent)?.join(name))
+        }
+        Err(error) => Err(error),
+    }
 }

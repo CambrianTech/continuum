@@ -725,7 +725,7 @@ use super::*;
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         // Deterministic on Unix and Windows: a directory cannot be overwritten
         // by the temporary checkpoint file, regardless of user permissions.
-        let _fence_fault = continuum_host::durable::fault_injection::FailedFenceScope::enter();
+        std::fs::create_dir(&path).expect("test: obstruct only the failed resident checkpoint");
         let outcomes = registry.flush_volatile_all();
         assert_eq!(outcomes.len(), 2);
         assert!(outcomes

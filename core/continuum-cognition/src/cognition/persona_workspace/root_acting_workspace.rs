@@ -438,6 +438,8 @@ impl PersonaWorkspaceRegistry {
                 let test_home = crate::paths::NativeHomeOverride::current();
                 #[cfg(test)]
                 let test_home = &test_home;
+                #[cfg(test)]
+                let fence_fault = continuum_host::durable::fault_injection::FenceFault::capture();
                 let results: Vec<(Uuid, std::io::Result<VolatileReceipt>)> = std::thread::scope(|scope| {
                     let handles: Vec<_> = residents
                         .into_iter()
@@ -447,7 +449,10 @@ impl PersonaWorkspaceRegistry {
                                 let _home = test_home
                                     .as_deref()
                                     .map(crate::paths::NativeHomeOverride::install);
-                                save_one(id, memory)
+                                #[cfg(test)]
+                                { fence_fault.run(|| save_one(id, memory)) }
+                                #[cfg(not(test))]
+                                { save_one(id, memory) }
                             });
                             (id, handle)
                         })

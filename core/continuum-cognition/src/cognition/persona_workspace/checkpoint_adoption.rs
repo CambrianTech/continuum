@@ -5,6 +5,7 @@
 //! caller's offline check, and never claims the selected snapshot was flushed
 //! at shutdown or authenticated to a process lifetime.
 
+use super::checkpoint_storage::resolved_path;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -187,27 +188,6 @@ fn optional_selection(path: &Path) -> Result<Option<CheckpointSelection>, Adopti
     }
 }
 
-fn resolved_path(path: &Path) -> Result<PathBuf, AdoptionError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() {
-                return Err(invalid(
-                    "symbolic checkpoint/evidence paths are not accepted",
-                ));
-            }
-            Ok(fs::canonicalize(path)?)
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let parent = path.parent().ok_or_else(|| invalid("path has no parent"))?;
-            let name = path
-                .file_name()
-                .ok_or_else(|| invalid("path has no filename"))?;
-            Ok(resolved_path(parent)?.join(name))
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
 fn source_path(path: &Path, persona: Uuid) -> Result<PathBuf, AdoptionError> {
     if persona.is_nil() {
         return Err(invalid("an explicit non-nil persona UUID is required"));
@@ -273,11 +253,12 @@ fn relative<'a>(
     writer: &continuum_kernel::system_resources::disk_reporters::ClassWriter,
     path: &'a Path,
 ) -> io::Result<PathBuf> {
-    let checkpoint = writer.path(Path::new("volatile.json"))?;
+    let checkpoint = resolved_path(&writer.path(Path::new("volatile.json"))?)?;
     let parent = checkpoint
         .parent()
         .ok_or_else(|| io::Error::other("checkpoint has no parent"))?;
-    path.strip_prefix(parent)
+    resolved_path(path)?
+        .strip_prefix(parent)
         .map(Path::to_path_buf)
         .map_err(|_| {
             io::Error::new(
