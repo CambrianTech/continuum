@@ -168,3 +168,37 @@ which stay with the task owner until durable acceptance and are never ordinary b
    cursor created for a mind in a room whose watermark is `UnvouchedThrough` drains
    `Gap { reason: UnvouchedImport }` once, before its first rows, with a test; a cursor below the
    retention floor drains `Gap { reason: Retention }`.
+
+## Many readers, one stream: snappy, deep, and dreaming (Joel, 2026-11-02)
+Joel: "a flowing mind to meet our rtos responsive mind. One with snappy responses and deep thoughts
+... and of course continual learning and dreams." The arrival stream is what lets those run at once
+without a queue in front of any of them. Each is a READER of the same durable stream, with its own
+cursor (the drain's cursor entity, one per reader per mind), woken by the same commit signal (the
+store's `sequence_revision` watch), and none waits on another:
+
+| Reader | Reads | Wakes on | Cadence | Gives back |
+|---|---|---|---|---|
+| reflex (salience) | the newest arrivals' typed headers only: addressed-to-her, sender, room | every commit | immediately | an interrupt she checks (THE-WHOLE-MIND §2.2), never an order |
+| deliberation (perception) | every arrival in her rooms since her cursor, as the epoch's appended tail | her act boundary, and the commit when idle | per act | her acts; the cursor advances through what she durably accepted |
+| experience / dream | the settled stretch behind her perception cursor | sleep pressure + opportunity (the governor) | between decode steps, low duty | engrams and dream steps on her shadow gene |
+| retention | the lowest cursor of every reader | byte pressure | background | prunes below it; a reader beneath the floor drains `Gap { Retention }` |
+
+Rules that keep it flowing:
+- **No reader holds another.** A reader is a task on its own interval or wake, writing its own
+  ready-buffer; the engine batches whatever the readers submit (never a FIFO in front of it).
+- **Routing reads the header.** The reflex decides on typed columns; only the addressed consumer
+  (her perception) opens the body.
+- **A cursor advances on durable acceptance only**, so a crash replays from the last accepted
+  arrival and nothing is lost or seen twice (the import dedupes by message id).
+- **The reflex's check is her own glance on her warm prefix** (the fast layer), concurrent with the
+  deep act; only her decision to switch pauses the act, at a token boundary with its KV kept.
+
+What exists today (canary, 2026-11-02): deliberation already perceives between acts. The live
+self-tick lends its conversation (`burst_fingerprint.rs` -> `drive_to_settle_with_input`), and
+`settle_to_outcome` calls `perceive_ready()` at every act boundary, admitting new lines and setting
+attention from mentions (probe `persona.turn.input_perceived`, fired live 02:13Z). Two gaps:
+1. Its source is the in-memory backlog, and at `INBOX_CAPACITY` `perceive_ready` returns an error
+   that ENDS her turn as an inference failure, so a busy room fails her work. P2 sources it from her
+   drain cursor; the capacity error, `seen_ids` and the lamport watermark are deleted.
+2. A line arriving mid-act waits out the generation. The reflex reader plus her glance close it,
+   after P2.
