@@ -165,6 +165,8 @@ pub struct GroundingSource {
     /// the salience floor but serializes the content in the volatile tail, nearest
     /// generation, where mutation costs only itself.
     pub volatile_content: bool,
+    /// Where this source applies (`RoomScope`): `Everywhere` unless declared shared-rooms-only.
+    pub scope: crate::cognition::rag_source_faculty::RoomScope,
 }
 
 impl GroundingSource {
@@ -178,6 +180,7 @@ impl GroundingSource {
             deferrability: Deferrability::ColdStartCritical,
             requires_hands: false,
             volatile_content: false,
+            scope: crate::cognition::rag_source_faculty::RoomScope::Everywhere,
         }
     }
 
@@ -196,6 +199,7 @@ impl GroundingSource {
             deferrability: Deferrability::ColdStartCritical,
             requires_hands: false,
             volatile_content: false,
+            scope: crate::cognition::rag_source_faculty::RoomScope::Everywhere,
         }
     }
 
@@ -206,6 +210,13 @@ impl GroundingSource {
     /// participation gate).
     pub fn defer_tolerant(mut self) -> Self {
         self.deferrability = Deferrability::DeferTolerant;
+        self
+    }
+
+    /// This source's content exists only in shared rooms (a room's airc channel or
+    /// projection); in her private mind room it has none by design.
+    pub fn shared_rooms_only(mut self) -> Self {
+        self.scope = crate::cognition::rag_source_faculty::RoomScope::SharedRoomsOnly;
         self
     }
 
@@ -441,7 +452,8 @@ pub(super) fn assemble_workspace_cycle(
             // source in this tier that delivers nothing says so in the probe
             // ledger instead of abstaining silently — which is how `room-doctrine`
             // sat at 0 bids in 873 consecutive ticks with nothing noticing.
-            .cold_start_critical(matches!(g.deferrability, Deferrability::ColdStartCritical));
+            .cold_start_critical(matches!(g.deferrability, Deferrability::ColdStartCritical))
+            .in_scope(g.scope);
         match g.deferrability {
             Deferrability::DeferTolerant if cfg.defer_grounding => {
                 faculties.push(Arc::new(DeferredFaculty::spawn(Arc::new(faculty))));

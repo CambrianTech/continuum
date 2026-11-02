@@ -115,6 +115,18 @@ fn wall_clock() -> Clock {
 /// faculty's identity IS the source's identity (`FacultyId::Custom(source_id)`) —
 /// one name, one source of truth, traceable straight back to the source in every
 /// workspace trace.
+/// Where a grounding source's content exists: in every room, or only in shared rooms (its
+/// content lives on a room's airc channel or projection, such as who is present). Her mind room
+/// is private and has no shared-room state, so a `SharedRoomsOnly` source delivering nothing
+/// there is the room's privacy, not a wrong turn; an `Everywhere` source that comes up empty
+/// there still says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RoomScope {
+    #[default]
+    Everywhere,
+    SharedRoomsOnly,
+}
+
 pub struct RagSourceFaculty {
     persona_id: Uuid,
     source: Arc<dyn RagSource>,
@@ -135,6 +147,8 @@ pub struct RagSourceFaculty {
     ///
     /// [`Deferrability::ColdStartCritical`]: super::persona_workspace::Deferrability::ColdStartCritical
     cold_start_critical: bool,
+    /// Where this source applies (see [`RoomScope`]).
+    scope: RoomScope,
     /// Consecutive ticks this source has delivered NOTHING, PER ROOM. See
     /// [`Self::note_absence`] for why a counter exists at all.
     ///
@@ -193,6 +207,7 @@ impl RagSourceFaculty {
             // source's ordinary silence in the ledger, which is how a real signal
             // gets buried ([[bounded-window-eviction-bug-class]]).
             cold_start_critical: false,
+            scope: RoomScope::Everywhere,
             empty_streak: Mutex::new(super::bounded_room_ledger::BoundedRoomLedger::new(
                 super::bounded_room_ledger::ROOMS_TRACKED,
             )),
@@ -205,6 +220,12 @@ impl RagSourceFaculty {
     /// [`Deferrability::ColdStartCritical`]: super::persona_workspace::Deferrability::ColdStartCritical
     pub fn cold_start_critical(mut self, critical: bool) -> Self {
         self.cold_start_critical = critical;
+        self
+    }
+
+    /// Where this source applies; see [`RoomScope`].
+    pub fn in_scope(mut self, scope: RoomScope) -> Self {
+        self.scope = scope;
         self
     }
 
@@ -256,7 +277,12 @@ impl RagSourceFaculty {
     /// Returns the streak length WHEN IT REPORTED, so the decision to report is
     /// testable without standing up a tracing subscriber to watch for the probe.
     fn note_absence(&self, room: Uuid) -> Option<u32> {
-        if !self.cold_start_critical {
+        // A source that exists only in shared rooms has nothing in her mind room by design:
+        // that absence is the room's privacy, not a wrong turn. Every other critical source
+        // that comes up empty there still says so (Codex on #5699).
+        let private_absence = self.scope == RoomScope::SharedRoomsOnly
+            && crate::cognition::mind_room::is_private_room(self.persona_id, room);
+        if !self.cold_start_critical || private_absence {
             return None;
         }
         let streak = {

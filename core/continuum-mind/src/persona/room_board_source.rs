@@ -425,6 +425,18 @@ impl RoomBoardSource {
                 );
                 return RagDelivery::empty(ROOM_BOARD);
             }
+            // Her mind room is private: no airc channel, so no shared board. Her own cards reach
+            // her there through the active-work source; asking airc for this room's board is a
+            // refusal by design, never a failure to warn about.
+            Some(t) if crate::cognition::mind_room::is_private_room(ctx.persona_id, t) => {
+                continuum_base::probe!(
+                    class = "rag.private_room.no_shared_board",
+                    source = ROOM_BOARD,
+                    persona_id = %ctx.persona_id,
+                    "a turn in her mind room: no shared board there; her own cards come through active work"
+                );
+                return RagDelivery::empty(ROOM_BOARD);
+            }
             Some(t) => Some(t),
             None => self.room_id,
         };

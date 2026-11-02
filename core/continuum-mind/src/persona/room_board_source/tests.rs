@@ -786,6 +786,13 @@
             "an exam context must not even reach the reader"
         );
 
+        // (3b) Her mind room → NOTHING, and the reader is never asked: the room is private, has no
+        // airc channel, and so no shared board (live 2026-11-02: Atlas's mind-room turns warned
+        // NotSubscribed every few minutes). Her own cards reach her through active work.
+        let mind = RagContext::for_persona_in_room(p, 1_000, crate::cognition::mind_room::mind_room_id(p));
+        assert!(source.deliver(&mind).await.items.is_empty(), "her mind room has no shared board");
+        assert_eq!(*reader.last_room.lock().unwrap(), None, "a mind-room turn must not reach the reader");
+
         // (4) Unstamped ctx (None) → pre-gate behavior: bound-room fallback.
         let unstamped = RagContext::for_persona(p, 1_000);
         assert!(
