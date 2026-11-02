@@ -121,6 +121,9 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
         ),
         source_kind: "vroid-zip",
         license: "CC0",
+        receipt_frame: Some(
+            r#"{"expected_render":"full-body anime character","known_issues":[],"body_present":true,"vertex_count_approx":765000,"meshes":3,"skins":3,"nodes":25}"#
+        ),
     },
     AvatarModel {
         id: "vroid-sample-d",
