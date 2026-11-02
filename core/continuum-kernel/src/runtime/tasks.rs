@@ -572,7 +572,7 @@ mod tests {
         let owner = Uuid::new_v4();
         let execution = TaskExecution::new_command_executor();
         let task = ledger.accept(owner, "code/shell".into(), execution).await?;
-        gated.fail_next_read();
+        gated.fail_next_query();
         assert!(matches!(
             ledger
                 .finish(task, owner, execution, TaskEnd::Stopped)

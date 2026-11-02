@@ -35,12 +35,11 @@ pub(crate) struct GatedAdapter {
     unwind_next: std::sync::atomic::AtomicBool,
     fail_after_create: std::sync::atomic::AtomicBool,
     fail_query: std::sync::atomic::AtomicBool,
-    fail_read: std::sync::atomic::AtomicBool,
 }
 
 impl GatedAdapter {
     pub(crate) fn new(inner: Arc<dyn StorageAdapter>) -> Self {
-        Self { inner, next: Mutex::new(None), unwind_next: std::sync::atomic::AtomicBool::new(false), fail_after_create: std::sync::atomic::AtomicBool::new(false), fail_query: std::sync::atomic::AtomicBool::new(false), fail_read: std::sync::atomic::AtomicBool::new(false) }
+        Self { inner, next: Mutex::new(None), unwind_next: std::sync::atomic::AtomicBool::new(false), fail_after_create: std::sync::atomic::AtomicBool::new(false), fail_query: std::sync::atomic::AtomicBool::new(false) }
     }
 
     pub(crate) fn unwind_next_write(&self) {
@@ -49,10 +48,6 @@ impl GatedAdapter {
 
     pub(crate) fn fail_after_next_create(&self) {
         self.fail_after_create.store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    pub(crate) fn fail_next_read(&self) {
-        self.fail_read.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub(crate) fn fail_next_query(&self) {
@@ -120,9 +115,6 @@ impl StorageAdapter for GatedAdapter {
         }
     }
     async fn read(&self, collection: &str, id: &UUID) -> StorageResult<DataRecord> {
-        if self.fail_read.swap(false, std::sync::atomic::Ordering::SeqCst) {
-            return StorageResult::err("injected acceptance read failure");
-        }
         self.inner.read(collection, id).await
     }
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
