@@ -148,8 +148,8 @@ mod tests {
     /// category, component, level or text), or reaching the fmt firehose as well as
     /// their category file — the "written twice" regression of the one-logging change.
     /// And `ModuleLogger` (card c7be807a): its lines take this same route to `modules/{name}`,
-    /// one writer per file, and its DEBUG line never reaches a category file (the command
-    /// executor's per-call routing line was all of a 2.7 GB file on the IntelMac).
+    /// one writer per file, and its DEBUG and per-call TIMING lines never reach a category file
+    /// (the command executor's per-call routing line was all of a 2.7 GB file on the IntelMac).
     #[test]
     fn clog_and_log_macros_route_to_their_category_and_skip_the_fmt_layer() {
         let sink = FixtureSink::default();
@@ -171,6 +171,7 @@ mod tests {
             let module = crate::runtime::ModuleLogger::for_component("command-executor");
             module.debug("Routing 'data/query' to local Rust module");
             module.timing_with_meta("query", 3, "collection=chat_messages");
+            module.warn("lane refused");
             tracing::info!("an ordinary fmt line");
         });
 
@@ -192,9 +193,9 @@ mod tests {
                 ),
                 (
                     "modules/command-executor".to_owned(),
-                    Level::INFO,
+                    Level::WARN,
                     "command-executor".to_owned(),
-                    "TIMING query took 3ms | collection=chat_messages".to_owned(),
+                    "lane refused".to_owned(),
                 ),
             ]
         );
