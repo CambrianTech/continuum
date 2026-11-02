@@ -173,11 +173,15 @@ impl ServingDaemonModule {
         // reading the guards that prevent them (#232's `apply_kv_quantization`, and the
         // credit-back-exactly-once ledger above). Nobody could say which arm had run, because
         // nothing said so. This says it.
-        let stable = if ledger_credited {
-            plan_serving_at_rest(&budget, candidates, incumbent.as_deref(), &demand)
+        let traced = if ledger_credited {
+            plan_serving_at_rest_traced(&budget, candidates, incumbent.as_deref(), &demand)
         } else {
-            plan_serving_stable(&budget, candidates, incumbent.as_deref(), &demand)
+            plan_serving_stable_traced(&budget, candidates, incumbent.as_deref(), &demand)
         };
+        // The chosen plan's training growth decision, reported by the change-gated
+        // serving.plan probe below instead of by the planner on every call.
+        let training_growth = traced.as_ref().and_then(|t| t.training_growth.clone());
+        let stable = traced.map(|t| t.plan);
         {
             let credited_bytes: u64 = self
                 .resource_daemon
@@ -461,16 +465,7 @@ impl ServingDaemonModule {
                 // a relative deadband (>1/8 from the last-emitted value), the
                 // same shape as the #415 prefill deadband: a real re-plan
                 // (16384→26368) clears it, measurement wobble never does.
-                let decisions = format!(
-                    "{}|{}|{}|{}|{}|{}|{}",
-                    plan.base_model.model_id,
-                    plan.lanes,
-                    plan.resident_models,
-                    plan.fits_on_gpu,
-                    candidates.len(),
-                    spike_of_served.unwrap_or(0),
-                    demand.lanes,
-                );
+                let decisions = plan_decisions(&plan, candidates.len(), spike_of_served, demand.lanes, training_growth.as_ref());
                 let plan_probe_changed = {
                     let mut last = self
                         .last_plan_probe
@@ -537,6 +532,9 @@ impl ServingDaemonModule {
                         // above says only whether the WINDOW came out below demand, whatever
                         // budget did it; this names the term that decided `lanes` (card eb8d1839).
                         lanes_bound = ?plan.lanes_bound,
+                        // The shared-window growth decision for training reservations, once per
+                        // change (it was a per-call probe of its own, ~4/s).
+                        training_growth = ?training_growth,
                         "serving plan recomputed",
                     );
                     // Warm-slot oversubscription for the ADOPTED plan (#266) —
@@ -640,6 +638,30 @@ fn account_training_leases(demand: &mut ServingDemand, leases: &[crate::resource
     }
 }
 
+
+/// The plan's decisions the `serving.plan` probe changes on: what was chosen and what chose it,
+/// never a measured byte figure that wobbles per tick. Includes the training growth decision, so
+/// the plan publisher reports it once per change instead of the planner on every call. Pure.
+fn plan_decisions(
+    plan: &ServingPlan,
+    candidates: usize,
+    spike_of_served: Option<u64>,
+    demand_lanes: u32,
+    training_growth: Option<&crate::inference::planning::window_allocator::TrainingGrowth>,
+) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{:?}",
+        plan.base_model.model_id,
+        plan.lanes,
+        plan.resident_models,
+        plan.fits_on_gpu,
+        candidates,
+        spike_of_served.unwrap_or(0), // JUSTIFIED unwrap_or: a key component; 0 is the deadband's documented disabled value, the same one the probe reports
+        demand_lanes,
+        training_growth,
+    )
+}
+
 #[cfg(test)]
 mod training_lease_tests {
     use super::*;
@@ -681,5 +703,35 @@ mod training_lease_tests {
         account_training_leases(&mut demand, &[]);
         let allocated = allocate(&demand.requirements, &[model], &budget, 1).expect("fixture fits");
         assert_eq!(allocated.training_growth, TrainingGrowth::Reserved { bytes: 100, target: 64_256, reached: true });
+    }
+
+    // what this catches: the training growth decision probed on every plan call (IntelMac
+    // 2026-11-02: 22,184 rows in 100 min, rotating the core log every ~23 min). It rides the
+    // plan into serving.plan's change key: an unchanged decision keeps the key, so the
+    // change-gated probe stays silent; a changed one changes it, so the probe says it once.
+    #[test]
+    fn a_training_growth_change_changes_the_plan_key_and_an_unchanged_one_does_not() {
+        use crate::inference::planning::serving_plan::LanesBound;
+        let model = ModelFootprint {
+            model_id: "fixture".into(), weights_bytes: 1 << 30, kv_per_token: 33_000,
+            context_window: 32_768, capability_rank: 1, fixed_per_lane_bytes: 0,
+        };
+        let plan = ServingPlan {
+            base_model: model,
+            served_context_window: 32_768,
+            lanes: 2,
+            grid_overflow_lanes: 0,
+            resident_models: 1,
+            fits_on_gpu: true,
+            rationale: String::new(),
+            lanes_bound: LanesBound::Demand,
+        };
+        let key = |growth: &TrainingGrowth| plan_decisions(&plan, 1, None, 2, Some(growth));
+        assert_eq!(key(&TrainingGrowth::NoDemand), key(&TrainingGrowth::NoDemand), "unchanged: the probe stays silent");
+        assert_ne!(
+            key(&TrainingGrowth::NoDemand),
+            key(&TrainingGrowth::Reserved { bytes: 100, target: 64_256, reached: false }),
+            "a changed growth decision changes the key, so the plan probe reports it once"
+        );
     }
 }
