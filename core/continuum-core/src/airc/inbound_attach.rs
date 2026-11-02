@@ -362,6 +362,14 @@ pub async fn publish_transcript_event(
     // core, instead of from a per-persona subscription (which on the 5090 never
     // carried other peers' durable pushes while this path did). Synchronous and
     // cheap: one classification, one lock per resident, no await.
+    // ATTRIBUTION BEFORE ANYTHING CONSUMES THE LINE (Codex on #5696): a line claiming to speak for
+    // someone other than its transport author reaches perception, the store and the projection only
+    // when this core's publication obligation proves it; otherwise it is refused here, said, and
+    // dropped, never relabeled.
+    let delegated = match attribution_gate(event, lines).await? {
+        Gate::Pass { delegated } => delegated,
+        Gate::Refused => return Ok(()),
+    };
     let fed = crate::persona::perception_feed::feed(&conversation, EpochMs::now().millis());
     if fed > 0 {
         continuum_base::probe!(
@@ -459,7 +467,8 @@ pub async fn publish_transcript_event(
                 "first capacity offer heard from a grid peer",
             );
         }
-    } else if let Some(line) = posted_from_envelope(&envelope, event) {
+    } else if let Some(mut line) = posted_from_envelope(&envelope, event) {
+        line.retires_publication = delegated;
         // The same awaited, idempotent import as the plain arm (a human line was stored by
         // chat/send under this id already; the import reuses its row and arrival).
         lines
@@ -522,6 +531,52 @@ fn posted_from_envelope(
     Some(line)
 }
 
+/// Whether a line may be consumed, decided by attribution.
+enum Gate {
+    Pass { delegated: bool },
+    Refused,
+}
+
+/// Attribute a line before it is consumed: no claim (or a claim naming its transport author) passes
+/// as the author's own; a claim to speak for someone else passes only on an exact publication
+/// obligation (`chat::publication::attribute`), read through the injected store.
+async fn attribution_gate(event: &airc_core::TranscriptEvent, lines: &dyn LineImporter) -> Result<Gate, String> {
+    use crate::routing::airc_realtime_wire::{claimed_message, claimed_sender, envelope_from_event};
+    use continuum_mind::chat::publication::{attribute, publication_digest, Attribution};
+    let claimed = claimed_sender(event);
+    if claimed.is_none() || claimed == Some(event.peer_id) {
+        return Ok(Gate::Pass { delegated: false });
+    }
+    let obligation = match claimed_message(event) {
+        Some(id) => lines.publication(id).await?,
+        None => None,
+    };
+    // The line as received, from the one chat_transcript decoder (its claimed sender, its text and
+    // media); a line that does not decode matches no publication.
+    let received = match (claimed_message(event), claimed, envelope_from_event(event)) {
+        (Some(message), Some(sender), Ok(Some(envelope))) => {
+            crate::cognition::conversation::room_event::chat_transcript_content(&envelope, sender.as_uuid())
+                .map(|turn| publication_digest(message, event.room_id, sender, &turn.text, &turn.media))
+        }
+        _ => None,
+    };
+    match attribute(event.peer_id, claimed, event.room_id, obligation.as_ref(), received) {
+        Attribution::Author(_) => Ok(Gate::Pass { delegated: false }),
+        Attribution::Delegated { .. } => Ok(Gate::Pass { delegated: true }),
+        Attribution::Refused { claimed, reason } => {
+            continuum_base::probe!(
+                class = "airc.inbound.delegation_refused",
+                room = %event.room_id.as_uuid(),
+                transport = %event.peer_id.as_uuid(),
+                claimed = %claimed.as_uuid(),
+                reason = ?reason,
+                "a line claimed to speak for someone it could not prove; refused, not relabeled"
+            );
+            Ok(Gate::Refused)
+        }
+    }
+}
+
 /// The typed line of a room event, from its header (kind, ids, addressee) and its decoded text;
 /// `None` when the event is not a room line.
 fn posted_line(event: &airc_core::TranscriptEvent, text: String) -> Option<PostedLine> {
@@ -534,6 +589,7 @@ fn posted_line(event: &airc_core::TranscriptEvent, text: String) -> Option<Poste
         direct_to: arrival.direct_to,
         occurred_at_ms: event.occurred_at_ms,
         text,
+        retires_publication: false,
     })
 }
 

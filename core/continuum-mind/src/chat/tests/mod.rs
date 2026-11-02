@@ -117,6 +117,7 @@
             direct_to: Some(airc_core::PeerId::new()),
             occurred_at_ms: 1_784_227_923_000,
             text: text.to_string(),
+            retires_publication: false,
         }
     }
 
@@ -612,10 +613,12 @@
     #[tokio::test]
     pub(super) async fn send_happy_path_returns_message_id_and_event_id() {
         let chat = chat_with_stubs(vec![
-            Arc::new(StubDataModule::new(|cmd, _p| {
-                assert_eq!(
-                    cmd, "data/batch",
-                    "happy path only writes (no other data ops)"
+            Arc::new(StubDataModule::new(|cmd, p| {
+                // The row batch, then the publication obligation recorded before the envelope leg
+                // publishes (#5696). Nothing else.
+                assert!(
+                    cmd == "data/batch" || (cmd == "data/create" && p["collection"] == "chat_publications"),
+                    "happy path only writes the line and its publication obligation: {cmd}"
                 );
                 Ok(batch_ok())
             })),
@@ -656,6 +659,10 @@
         let sent = media.clone();
         let chat = chat_with_stubs(vec![
             Arc::new(StubDataModule::new(move |cmd, p| {
+                if cmd == "data/create" {
+                    assert_eq!(p["collection"], "chat_publications", "the only create is the publication obligation");
+                    return Ok(json!({ "success": true }));
+                }
                 assert_eq!(cmd, "data/batch");
                 assert_eq!(p["operations"][0]["data"]["content"]["media"], json!([stored]));
                 assert_eq!(p["operations"][0]["data"]["content"]["text"], "Look at the page");

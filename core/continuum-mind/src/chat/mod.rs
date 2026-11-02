@@ -62,6 +62,7 @@ use types::{ChatPollParams, ChatPollResult, ChatSendParams, ChatSendResult, CHAT
 pub mod arrival;
 pub mod line_store;
 pub mod drain;
+pub mod publication;
 pub mod import_watermark;
 pub mod orm_entities;
 mod chat_data_handle;

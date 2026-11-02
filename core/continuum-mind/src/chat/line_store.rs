@@ -10,6 +10,7 @@ use uuid::Uuid;
 use super::arrival::{Arrival, ArrivalKind};
 use super::chat_data_handle::{now_iso, ChatModule, CHAT_DATA_HANDLE};
 use super::import_watermark::{ImportHistory, ImportWatermark, ImportedThrough};
+use super::publication::PublicationObligation;
 use super::types::CHAT_MESSAGES_COLLECTION;
 use crate::orm::types::{BatchOperation, BatchOperationType};
 use crate::runtime::late_bound::LateBound;
@@ -24,6 +25,9 @@ pub struct PostedLine {
     pub direct_to: Option<PeerId>,
     pub occurred_at_ms: u64,
     pub text: String,
+    /// The line was delegated through this core's publication obligation, which the import retires
+    /// in the same batch.
+    pub retires_publication: bool,
 }
 
 /// Where a line landed in arrival order.
@@ -57,6 +61,9 @@ pub trait LineImporter: Send + Sync {
     /// the store has not committed.
     async fn import(&self, line: PostedLine) -> Result<Imported, String>;
 
+    /// The publication obligation `id` names, if this core published that line for a caller.
+    async fn publication(&self, id: Uuid) -> Result<Option<PublicationObligation>, String>;
+
     /// How far the store has imported `room` from airc; `None` when it never has.
     async fn watermark(&self, room: RoomId) -> Result<Option<ImportedThrough>, String>;
 
@@ -77,6 +84,10 @@ impl LineImporter for ChatStore {
         installed()?
             .commit_line(&line, LineWrite::Import, None, json!({ "text": line.text }))
             .await
+    }
+
+    async fn publication(&self, id: Uuid) -> Result<Option<PublicationObligation>, String> {
+        installed()?.publication(id).await
     }
 
     async fn watermark(&self, room: RoomId) -> Result<Option<ImportedThrough>, String> {
@@ -104,6 +115,7 @@ fn installed() -> Result<std::sync::Arc<ChatModule>, String> {
 pub struct RecordingImporter(
     pub std::sync::Mutex<Vec<PostedLine>>,
     pub std::sync::Mutex<std::collections::HashMap<RoomId, ImportedThrough>>,
+    pub std::sync::Mutex<std::collections::HashMap<Uuid, PublicationObligation>>,
 );
 
 #[cfg(any(test, feature = "test-fixtures"))]
@@ -115,6 +127,10 @@ impl LineImporter for RecordingImporter {
         Ok(Imported::Fresh {
             arrival_seq: lines.len() as u64,
         })
+    }
+
+    async fn publication(&self, id: Uuid) -> Result<Option<PublicationObligation>, String> {
+        Ok(self.2.lock().unwrap_or_else(|p| p.into_inner()).get(&id).cloned()) // test fixture: a poisoned lock still holds the obligations
     }
 
     async fn watermark(&self, room: RoomId) -> Result<Option<ImportedThrough>, String> {
@@ -197,7 +213,17 @@ impl ChatModule {
             line.direct_to,
         );
         let append_op = arrival.append_op().map_err(|e| format!("chat line: {e}"))?;
-        let params = json!({ "dbPath": CHAT_DATA_HANDLE, "operations": [message_op, append_op] });
+        let mut operations = vec![message_op, append_op];
+        if line.retires_publication {
+            // The relayed line came back: its obligation retires with the import, atomically.
+            operations.push(BatchOperation {
+                operation_type: BatchOperationType::Delete,
+                collection: <super::publication::PublicationObligation as crate::orm::OrmEntity>::COLLECTION.to_string(),
+                id: Some(line.message_id.to_string()),
+                data: None,
+            });
+        }
+        let params = json!({ "dbPath": CHAT_DATA_HANDLE, "operations": operations });
         let result = executor
             .execute_json("data/batch", params)
             .await
@@ -236,6 +262,10 @@ pub struct RefusingImporter;
 impl LineImporter for RefusingImporter {
     async fn import(&self, _line: PostedLine) -> Result<Imported, String> {
         Err("test: the store refused the line".to_string())
+    }
+
+    async fn publication(&self, _id: Uuid) -> Result<Option<PublicationObligation>, String> {
+        Err("test: the store cannot read".to_string())
     }
 
     async fn watermark(&self, _room: RoomId) -> Result<Option<ImportedThrough>, String> {

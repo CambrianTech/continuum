@@ -33,6 +33,21 @@ pub fn logical_sender(event: &TranscriptEvent) -> uuid::Uuid {
         .unwrap_or_else(|| event.peer_id.as_uuid()) // the transport peer is the real author when no relay named one
 }
 
+/// The sender a line's header claims it speaks for, when it names one by id. `None` when no claim
+/// (or a non-id source) is made; the transport peer is then the author.
+pub fn claimed_sender(event: &TranscriptEvent) -> Option<airc_core::PeerId> {
+    event
+        .headers
+        .get(HEADER_CONTINUUM_SOURCE_ID)
+        .and_then(|value| uuid::Uuid::parse_str(value).ok()) // wire boundary: a header value is text
+        .map(airc_core::PeerId::from_uuid)
+}
+
+/// The message id a continuum envelope is named by (`continuum.event_id`), when it is an id.
+pub fn claimed_message(event: &TranscriptEvent) -> Option<uuid::Uuid> {
+    event.headers.get(HEADER_CONTINUUM_EVENT_ID).and_then(|value| uuid::Uuid::parse_str(value).ok()) // wire boundary: a header value is text
+}
+
 pub fn frame_kind_for_delivery(delivery: AircRealtimeDelivery) -> FrameKind {
     match delivery {
         AircRealtimeDelivery::Durable => FrameKind::Message,

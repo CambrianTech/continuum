@@ -234,6 +234,7 @@ impl ChatModule {
             direct_to: None,
             occurred_at_ms: now_ms,
             text: params.text.clone(),
+            retires_publication: false,
         };
         let content = json!({ "text": params.text, "media": params.media });
         self.commit_line(
@@ -276,6 +277,10 @@ impl ChatModule {
             now_ms,
         );
 
+        // Record the publication obligation BEFORE publishing (Codex on #5696): the exact envelope's
+        // digest, the room and the sender, under the message id. The inbound seam delegates the line
+        // to this sender only on an exact match, so the envelope published is the typed one digested.
+        self.record_publication(message_id, params).await?;
         let publish_params = json!({ "envelope": publish_envelope });
 
         // Partial failure path: data succeeded, airc failed. Return

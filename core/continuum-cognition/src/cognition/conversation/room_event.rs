@@ -244,7 +244,7 @@ pub fn chat_transcript_message(
     Some((turn.sender, render_room_content(&turn.text, &turn.media)))
 }
 
-fn chat_transcript_content(envelope: &AircRealtimeEnvelope, sender: uuid::Uuid) -> Option<RoomTurn> {
+pub fn chat_transcript_content(envelope: &AircRealtimeEnvelope, sender: uuid::Uuid) -> Option<RoomTurn> {
     let AircRealtimePayload::ExistingSchema { payload } = &envelope.payload else {
         return None;
     };
@@ -271,7 +271,9 @@ pub struct ChatTranscriptLine<'a> {
 /// caller-owned publication and a hydrated durable row all send.
 pub fn chat_transcript_envelope(message_id: uuid::Uuid, line: &ChatTranscriptLine<'_>, now_ms: u64) -> serde_json::Value {
     serde_json::json!({
-        "eventId": uuid::Uuid::new_v4().to_string(),
+        // The envelope is named by the stored message id, so its `continuum.event_id` header names
+        // the row and its publication obligation (attribution reads the header, never the body).
+        "eventId": message_id.to_string(),
         "roomId": line.room_id.to_string(),
         "sourceId": line.sender_id.to_string(),
         "createdAtMs": now_ms,
