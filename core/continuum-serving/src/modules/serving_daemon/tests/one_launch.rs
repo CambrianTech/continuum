@@ -113,24 +113,27 @@ fn model_swap_on_a_ready_lane_needs_a_sustained_streak() {
     );
 }
 
-// what this catches (b4be7bc59 on the M5, 2026-11-03 18:18Z, rolled back): a launch pool sized
-// from the cold boot plan. Its window was the bootstrap 2,048 and the plan's live budget fit
-// nothing at five sequences, so the engine launched at 5 x 2,048, and one launch is never
-// relaunched to resize. On the boot plan the pool is the fit at the physical budget, never the
-// plan's 2,048 (Cormac on #5733). Fixed inputs, so the result never depends on the host's RAM
-// (Cormac on #5739): the M5's model (20.69 GB weights, 8,317 B/token, read 11-03 12:51Z), a fixed
-// 96 GB physical budget, the boot plan (2,048 x 1), five sequences.
+// what this catches: a launch pool sized from anything but the published plan's LIVE budget. One
+// launch keeps its pool and `--kv-unified` allocates it up front, so b4be7bc59 (the cold boot's
+// first-tick 2,048 plan: 5 x 2,048) and 590df4bc3 (the host's physical total: 5 x 262,144, memory
+// pressure 91%) were both rolled back on the M5 on 2026-11-03. Fixed inputs, never the host's RAM
+// (Cormac on #5739): the pool is the larger of the plan's window x lanes and the fit at the live
+// budget, so the M5 at its 23 GB live budget gets its plan's 257,536 and the IntelMac its fit.
 #[test]
-fn the_launch_pool_never_comes_from_the_boot_plan() {
-    let trained = 262_144;
-    let mut fp = footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, trained, true, None)
-        .expect("a footprint from the weights");
-    fp.kv_per_token = 8_317;
-    let physical = 96 * GB;
-    let fit = u64::from(fp.window_within(physical, 5).min(trained)) * 5;
-    assert!(fit > 2_048, "the physical budget fits more than the bootstrap window: {fit}");
+fn the_launch_pool_is_the_live_plans_never_the_physical_totals() {
     let launch_pool = super::super::launch::launch_pool;
-    assert_eq!(launch_pool(Some(&fp), physical, 2_048, 1, 5, trained), fit, "the pool is the physical fit, not the boot plan");
-    assert_eq!(launch_pool(Some(&fp), 0, 2_048, 1, 5, trained), 2_048, "what b4be7bc59 fed it: a zero budget leaves only the boot plan");
-    assert_eq!(launch_pool(None, physical, 128_768, 2, 5, trained), 257_536, "no footprint: the plan's own window x lanes");
+    let m5_trained = 262_144;
+    let mut m5 = footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, m5_trained, true, None)
+        .expect("a footprint from the weights");
+    m5.kv_per_token = 8_317;
+    let m5_live = 23 * GB;
+    assert_eq!(m5.window_within(m5_live, 5), 0, "the M5's live budget fits no window at five sequences beside the plan");
+    assert_eq!(launch_pool(Some(&m5), m5_live, 128_768, 2, 5, m5_trained), 257_536, "the M5 launches its plan's 2 x 128,768");
+    assert!(launch_pool(Some(&m5), m5_live, 128_768, 2, 5, m5_trained) < 5 * u64::from(m5_trained), "never 5 x the trained window (590df4bc3)");
+
+    let intel_trained = 32_768;
+    let mut intel = footprint_from_parts("intelmac", 5 * GB, intel_trained, true, None).expect("a footprint");
+    intel.kv_per_token = 8_192;
+    assert_eq!(launch_pool(Some(&intel), 30 * GB, 32_768, 2, 9, intel_trained), 294_912, "the IntelMac: its fit, 9 x 32,768");
+    assert_eq!(launch_pool(None, 30 * GB, 32_768, 2, 9, intel_trained), 65_536, "no footprint: the plan's own window x lanes");
 }

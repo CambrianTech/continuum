@@ -23,13 +23,16 @@ impl ServingDaemonModule {
     /// window is her grant from her measured requirement (`grants.rs`), and under `--kv-unified`
     /// any one sequence may grow into the whole pool. The sequences are every seated mind, the
     /// minds leased in at the last plan, and the scratch traffic, so seating never relaunches.
-    /// The size is [`launch_pool`] at the host's PHYSICAL budget, never the plan's live one.
+    /// The size is [`launch_pool`] at the published plan's LIVE budget: what memory holds now, beside
+    /// everything else on the node. Never the host's physical total (590df4bc3 sized the M5 at
+    /// 5 x 262,144 from it: memory pressure 91%, 5.6 GB available, no resident hosted; rolled back)
+    /// and never a cold boot's first-tick fallback plan, which planning no longer publishes.
     fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> (u32, u32) {
         let leased_in = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed);
         let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes).max(1);
         let pool = launch_pool(
             footprint_for(model).as_ref(),
-            self.physical_budget().usable_bytes,
+            self.plan_budget_bytes.load(Ordering::Relaxed),
             served_ctx,
             lanes,
             sequences,
@@ -706,13 +709,12 @@ impl ServingDaemonModule {
 /// That is the fit at `sequences` (a window within `budget_bytes` for each, capped at the trained
 /// window) or the plan's own window x its lanes, whichever is larger.
 ///
-/// `budget_bytes` is the PHYSICAL budget (`physical_budget`, the capacity `launch_window` bounds by
-/// too), never the plan's live one. The engine launches once and is never relaunched to resize, so
-/// a pool sized at a transient is kept for the engine's life: b4be7bc59 launched the M5 at
-/// 5 x 2,048 from the cold boot plan, whose window was the bootstrap 2,048 and whose live budget
-/// fit nothing at five sequences (2026-11-03 18:18Z, rolled back; Cormac on #5733). On the M5
-/// (plan 2 x 128,768) the result is 257,536 for 5; on the IntelMac (plan 2 x 32,768, fit
-/// 9 x 32,768) 294,912 for 9, its healthy geometry.
+/// `budget_bytes` is the published plan's live budget. `--kv-unified` allocates the whole pool up
+/// front and one launch keeps it, so the budget must be what memory holds now: the host's physical
+/// total ignores everything else resident (590df4bc3: 5 x 262,144 on the M5, memory pressure 91%,
+/// rolled back), and a cold boot's first-tick plan is a transient (b4be7bc59: 5 x 2,048, rolled
+/// back), which planning no longer publishes. On the M5 (plan 2 x 128,768) the result is 257,536 for
+/// 5; on the IntelMac (plan 2 x 32,768, fit 9 x 32,768) 294,912 for 9, its healthy geometry.
 pub(super) fn launch_pool(
     footprint: Option<&crate::inference::planning::serving_plan::ModelFootprint>,
     budget_bytes: u64,

@@ -315,9 +315,11 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
         daemon.reconcile_to_plan().is_none(),
         "excluded retained model cannot dispatch"
     );
-    // With NO plan published (a cold boot) and a requirement the box cannot hold, the
-    // best runnable plan is still published — a dark node is worse than a starved seat
-    // (Cormac's condition on #4257: IntelMac's 32k-trained 1.5B against a 58k typical).
+    // With NO plan published (a cold boot) and a requirement the box cannot hold, the first
+    // starved plan is held back once, so the one launch never comes from a first-tick fallback
+    // (b4be7bc59: 5 x 2,048 on the M5, 2026-11-03), and the next recompute publishes the best
+    // runnable plan: a dark node is worse than a starved seat (Cormac's condition on #4257:
+    // IntelMac's 32k-trained 1.5B against a 58k typical).
     let mut cold = ServingDaemonModule::new(
         Arc::new(GpuMemoryManager::simulated("Intel", 16 * GB)),
         Arc::new(SystemResourceMonitor::new()),
@@ -330,14 +332,13 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
     cold.working_set.record_in_memory(uuid::Uuid::new_v4(), 200_000, 1);
     let rx_cold = cold.subscribe();
     let small = vec![footprint_from_parts("coder-1.5b", GB, 32_768, true, None).unwrap()];
-    cold.publish_plan(
-        HostBudget {
-            usable_bytes: 12 * GB,
-            perf_cores: 4,
-        },
-        &small,
-        &small,
-    );
+    let budget = HostBudget {
+        usable_bytes: 12 * GB,
+        perf_cores: 4,
+    };
+    cold.publish_plan(budget, &small, &small);
+    assert!(rx_cold.borrow().is_none(), "a cold boot's first starved plan is held back, so no launch comes from it");
+    cold.publish_plan(budget, &small, &small);
     let starved = rx_cold
         .borrow()
         .clone()

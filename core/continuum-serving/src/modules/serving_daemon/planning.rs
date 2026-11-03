@@ -274,6 +274,26 @@ impl ServingDaemonModule {
                         self.retain_plan_for_intent(intent_revision, candidates);
                         return;
                     }
+                    // A COLD BOOT'S FIRST starved plan is not published: the engine launches once
+                    // from whatever plan is published first and is never relaunched to resize, so a
+                    // first-tick fallback becomes the pool for the engine's life (b4be7bc59 launched
+                    // the M5 at 5 x 2,048 from the 2,048 plan at 18:18:26Z; the next tick, one second
+                    // later with the record retired, planned 2 x 184,320 at the same 23 GB). The next
+                    // recompute decides: a second starved plan is published as before, because a dark
+                    // node is worse than a starved seat (Cormac on #5739).
+                    let mut deferred = self.cold_deferred.lock();
+                    if deferred.as_deref() != Some(plan.base_model.model_id.as_str()) {
+                        *deferred = Some(plan.base_model.model_id.clone());
+                        continuum_base::probe!(
+                            target: "continuum_core::modules::serving_daemon", class = "serving.plan.cold_deferred",
+                            model = plan.base_model.model_id.as_str(),
+                            window = plan.served_context_window as u64,
+                            requirement = requirement.unwrap_or(0) as u64, // unwrap_or: probe label; this branch only fires with a requirement present
+                            usable_gb = (budget.usable_bytes / 1_000_000_000),
+                            "a cold boot's first plan is starved: not published, so the one launch waits for the next recompute"
+                        );
+                        return;
+                    }
                 }
                 // THE HOST FLOOR (Joel, 2026-09-16: "if this machine ever returns less than
                 // 27b we are sucking"). The debounce below separates jitter from a sustained

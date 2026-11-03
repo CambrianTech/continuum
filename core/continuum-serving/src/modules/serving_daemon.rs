@@ -357,6 +357,9 @@ pub struct ServingDaemonModule {
     /// Whether the engine process `pid` runs on the shared pool: read off its argv once per
     /// process, never every tick.
     shared_pool_of: Arc<parking_lot::Mutex<Option<(u32, bool)>>>,
+    /// The model whose cold-boot first plan was starved and held back once, so the one launch
+    /// waits for the next recompute (`planning.rs`); a second starved plan publishes.
+    cold_deferred: parking_lot::Mutex<Option<String>>,
     /// The pool the running engine reports (`served_pool_tokens`, its `context_geometry`), as
     /// the launch's ready path last read it; `0` = not read. The grants' one source for the pool.
     served_pool: Arc<std::sync::atomic::AtomicU32>,
@@ -552,6 +555,7 @@ impl ServingDaemonModule {
             shared_pool_move_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             grants_tx: watch::channel(None).0,
             shared_pool_of: Arc::new(parking_lot::Mutex::new(None)),
+            cold_deferred: parking_lot::Mutex::new(None),
             served_pool: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_model_change: Arc::new(std::sync::Mutex::new(None)),
