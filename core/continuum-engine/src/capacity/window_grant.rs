@@ -117,7 +117,17 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
         if total(&reclaimed) <= pool {
             return demands.iter().map(|d| (d.mind, reclaimed(d))).collect();
         }
-        // Not every need fits: admit whole needs in order, never a fraction.
+        // Not every need fits. What every holder is bound to is already spent: a holder's binding is
+        // her floor (down to her need when she is not in a turn and holds more; a turn in flight keeps
+        // what it holds), so a mind left out never adds to what the pool carries (Cormac on #5745: A
+        // grown first while B kept her 25k bound 75k on a 65,536 pool). Growth and newcomers are
+        // admitted whole, in order (turns in flight, holders, the rest), from what the floors leave.
+        let floor = |d: &Demand<K>| match (d.in_flight, held.contains_key(&d.mind)) {
+            (true, _) => holds(d),
+            (false, true) => holds(d).min(need(d)),
+            (false, false) => 0,
+        };
+        let mut left = pool.saturating_sub(total(&floor));
         let rank = |d: &Demand<K>| match (d.in_flight, held.contains_key(&d.mind)) {
             (true, _) => 0,
             (false, true) => 1,
@@ -125,17 +135,18 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
         };
         let mut order: Vec<&Demand<K>> = demands.to_vec();
         order.sort_by_key(|d| rank(d)); // stable: within a rank, the caller's order
-        let mut left = pool;
         let mut grants = BTreeMap::new();
         for d in order {
-            // A turn in flight is never cut: it takes its want when that fits, else what it holds,
-            // which already fit the pool when it was granted.
-            let amount = match (d.in_flight, reclaimed(d)) {
-                (true, want) if u64::from(want) > left => holds(d),
-                (_, amount) => amount,
+            let target = reclaimed(d).max(floor(d));
+            let growth = u64::from(target - floor(d));
+            let amount = match growth <= left {
+                true => {
+                    left -= growth;
+                    target
+                }
+                false => floor(d), // no room to grow: she keeps her floor (0 = a newcomer waits)
             };
-            if u64::from(amount) <= left {
-                left -= u64::from(amount);
+            if amount > 0 {
                 grants.insert(d.mind, amount);
             }
         }
@@ -207,6 +218,27 @@ mod tests {
         assert_eq!(tight[&1], 40_000, "a turn in flight keeps what it holds");
         assert_eq!(tight[&2], 10_000, "a mind not in a turn gives back her surplus to make room");
         assert!(!tight.contains_key(&3) || tight[&3] == 30_000, "a newcomer gets her whole need or waits");
+    }
+
+
+    // what this catches (Cormac on #5745): ordered admission overspending the pool. A mind left out
+    // keeps her binding, so what is bound (grants, plus the bindings of minds without one) never
+    // exceeds the pool. A holds 40k rising to 50k, B holds 25k, pool 65,536: B's 25k is a floor, A
+    // grows only into what is left.
+    #[test]
+    fn what_is_bound_never_exceeds_the_pool() {
+        let pool = 65_536;
+        let held = BTreeMap::from([(1, 40_000), (2, 25_000)]);
+        let demands = [demand(1, 50_000, false, pool), demand(2, 25_000, false, pool), demand(3, 20_000, false, pool)];
+        let grants = DemandFollowing.grant(&demands, &held, pool);
+        let bound: u64 = demands
+            .iter()
+            .map(|d| u64::from(grants.get(&d.mind).copied().or_else(|| held.get(&d.mind).copied()).unwrap_or(0)))
+            .sum();
+        assert!(bound <= u64::from(pool), "bound {bound} on a {pool} pool: {grants:?}");
+        assert_eq!(grants.get(&2), Some(&25_000), "B keeps her binding as a floor");
+        assert!(grants.get(&1).is_some_and(|&g| g >= 40_000), "A keeps at least what she holds: {grants:?}");
+        assert!(!grants.contains_key(&3), "the newcomer waits: no room for her whole need");
     }
 
 }
