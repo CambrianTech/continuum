@@ -46,6 +46,7 @@ pub mod tenant_neutrality;
 pub mod time_bounds;
 pub mod test_mod_singularity;
 pub mod tls_stack;
+pub mod ts_bindings;
 pub mod subprocess_spawn;
 pub mod unwrap_justification;
 pub mod vendor_pin;

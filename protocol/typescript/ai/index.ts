@@ -16,7 +16,6 @@ export type { HealthState } from './HealthState';
 export type { HealthStatus } from './HealthStatus';
 export type { ImageInput } from './ImageInput';
 export type { MessageContent } from './MessageContent';
-export type { ModelCapability } from './ModelCapability';
 export type { ModelInfo } from './ModelInfo';
 export type { NativeToolSpec } from './NativeToolSpec';
 export type { ResponseFormat } from './ResponseFormat';
