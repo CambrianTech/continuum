@@ -2,11 +2,9 @@
 //! kernel and crates below it; core re-exports these modules under their old names.
 
 pub use continuum_kernel::{
-    concurrency, docker_tier, docker_tier_pool, entity_schemas, governor, gpu, identity, logging,
-    message_processor, orm, paging, paths, policy, priority_queue, probe_query, probe_stream,
-    resource_broker, resources, routing, runtime, sdk_codegen, system_resources, ConcurrencyPolicy,
-    ConcurrentPriorityQueue, ConcurrentProcessor, MessageProcessor, Prioritized, PriorityWrapper,
-    TokioConcurrencyPolicy,
+    concurrency, docker_tier, docker_tier_pool, entity_schemas, governor, gpu, identity, logging, orm,
+    paging, paths, policy, probe_query, probe_stream, resource_broker, resources, routing, runtime,
+    sdk_codegen, system_resources, ConcurrencyPolicy, TokioConcurrencyPolicy,
 };
 
 pub mod ai;
