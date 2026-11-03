@@ -21,6 +21,7 @@ members = [
     "core/continuum-git",
     "core/continuum-host",
     "core/continuum-context",
+    "core/continuum-proving-types",
     "core/continuum-core",
     "core/continuum-sentinel",
     "core/continuum-kernel",
