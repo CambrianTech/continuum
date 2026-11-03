@@ -137,6 +137,7 @@ impl ServingDaemonModule {
         }
         let server = self.server.clone();
         let reading = self.prefill_knee_reading.clone();
+        let engine_idle = self.engine_idle.clone();
         // the model the rates are measured FOR; with the engine's pid (read on the task), two
         // reads pair only on the same engine process
         let model = self.serving_tx.borrow().active_model.clone();
@@ -153,6 +154,9 @@ impl ServingDaemonModule {
                 .zip(crate::inference::lane_pidfile::read())
                 .map(|(model, pid)| crate::inference::prefill_knee::EngineRead { model, pid });
             if let Some(slots) = server.slots_body().await {
+                if let Some(pid) = engine.as_ref().map(|e| e.pid) {
+                    *engine_idle.lock() = Some((pid, super::pool_growth::no_slot_processing(&slots)));
+                }
                 crate::inference::prefill_knee::observe_slots(
                     &slots,
                     EpochMs::now().millis(),

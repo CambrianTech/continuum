@@ -34,6 +34,14 @@ impl ServingDaemonModule {
         if !grows(self.serving_footprint_reported(), budget, running, wanted) {
             return false;
         }
+        // A relaunch loses what the engine is generating, and nothing else: a turn between
+        // generations (in a tool call) just waits for the engine. So it waits for a `/slots` read
+        // of THIS engine with no slot processing, and is retried on the next tick until one comes
+        // (Fable on #5741, card 5c9042f1). A turn's own durability is not the measure: the core
+        // stays up, so nothing would hand a cut generation back.
+        if *self.engine_idle.lock() != Some((engine.pid, true)) {
+            return false;
+        }
         self.pool_growth_tried.store(u64::from(engine.pid), Ordering::Relaxed);
         crate::inference::llama_server::request_pool_growth(engine.pid);
         continuum_base::probe!(
@@ -48,6 +56,12 @@ impl ServingDaemonModule {
     }
 }
 
+/// PURE: whether a `/slots` body shows no slot processing a request. Anything but an array of
+/// slots is unknown, and unknown is never idle.
+pub(super) fn no_slot_processing(slots: &serde_json::Value) -> bool {
+    slots.as_array().is_some_and(|all| all.iter().all(|slot| slot["is_processing"].as_bool() == Some(false)))
+}
+
 /// PURE: whether a steady plan proves the pool should grow. Steady (serving's footprint reported,
 /// so the budget was sampled with the engine up), a sampled budget, a known running pool, and a
 /// wanted pool strictly larger. Equal or smaller never relaunches.
@@ -57,7 +71,7 @@ pub(super) fn grows(steady: bool, budget_bytes: u64, running_tokens: u32, wanted
 
 #[cfg(test)]
 mod tests {
-    use super::grows;
+    use super::{grows, no_slot_processing};
 
     // what this catches (the M5 2026-11-03, 81aef1844: a 16,640 pool launched from a boot-time
     // transient and kept): a pool that never grows from a bad launch, or a bridge that relaunches
@@ -70,5 +84,17 @@ mod tests {
         assert!(!grows(true, 23_000_000_000, 0, 257_536), "the running pool unknown: never");
         assert!(!grows(true, 23_000_000_000, 257_536, 257_536), "equal: no relaunch");
         assert!(!grows(true, 23_000_000_000, 1_310_720, 257_536), "downward never relaunches (590df4bc3's pool stays)");
+    }
+
+    // what this catches (Fable on #5741): the growth relaunch cutting a generation mid-decode.
+    // It waits for a read with no slot processing; a slot whose state cannot be read is never
+    // taken as idle.
+    #[test]
+    fn the_growth_waits_for_no_slot_processing() {
+        let slots = |busy: &[bool]| serde_json::Value::Array(busy.iter().map(|b| serde_json::json!({ "is_processing": b })).collect());
+        assert!(no_slot_processing(&slots(&[false, false])), "every slot idle");
+        assert!(!no_slot_processing(&slots(&[false, true])), "one generation in flight");
+        assert!(!no_slot_processing(&serde_json::json!([{ "id": 0 }])), "a slot with no is_processing is unknown, not idle");
+        assert!(!no_slot_processing(&serde_json::json!({ "error": "unavailable" })), "not a slots array: unknown");
     }
 }
