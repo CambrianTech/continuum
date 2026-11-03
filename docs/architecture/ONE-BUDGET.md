@@ -474,8 +474,14 @@ iterates:
 2. **Exchange.** On a feasible clearing with indivisible levels the greedy order is a lower bound; passes over pairs
    (one claim down a level, another up) keep a swap only when total value rises, until a pass changes nothing.
    Value strictly rises on a finite set of states, so it ends, and each pass narrows the reported gap to the bound.
-3. **Capacity beyond the tier,** before any refusal: page another mind's cold context out, move pages to RAM, split
-   her turn (an oversized result read in pages), and on the grid place her where the window is larger.
+3. **Capacity beyond the tier,** before any refusal, in order of measured cost: page another mind's cold context out;
+   grant her a larger share of the shared pool for this turn (others' cold pages to RAM, back when her turn ends, a
+   temporary grant priced by its switch cost); move pages to RAM; split her turn (an oversized result read in pages);
+   serve her alone on the whole pool, every other mind paged out for one turn (the last rung, Joel: "or reduce to one
+   lane in worst case scenario"); grow the pool into free memory once the engine resizes live (SERVING-ENGINE S2);
+   and on the grid place her where the window is larger. Each exists only because every holder is a claim with levels,
+   a cost and custody: a fixed slot or a private cap anywhere is the one place the budgeter could not move (Joel: "If
+   we follow rich and strict architectural adherence we can always get ourselves out of a bind").
 4. Only then a refusal, naming what she needed and what was tried.
 
 Both loops are bounded by the claims and their rungs, never by an iteration count someone picked, and each step is in
