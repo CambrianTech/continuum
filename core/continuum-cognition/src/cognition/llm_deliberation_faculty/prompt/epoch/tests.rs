@@ -131,3 +131,14 @@ fn a_fitting_view_restores_only_when_the_next_act_would_turn_it_over() {
     assert_eq!(turnover_due(33_000, 32_000, Some(5_000), never), Ok(Turnover::Overflow), "over its grant: turn over");
     assert_eq!(turnover_due(30_000, 32_000, Some(5_000), || Err("mismatch")), Err("mismatch"), "a broken allocation refuses");
 }
+
+// what this catches: a turn sized before her window is known (granted nothing) turning her view
+// over to an empty start, after which the next act re-appends every item her sources hold and
+// turns over again (2026-11-02, every M5 resident at boot). With nothing allowed the view is kept.
+#[test]
+fn a_view_granted_nothing_is_kept_never_started_empty() {
+    let due = turnover_due::<()>(33_165, 0, Some(10_000), || Ok(true)).expect("pure");
+    assert_eq!(due, Turnover::Keep, "no grant is not an overflow");
+    let due = turnover_due::<()>(33_165, 29_000, Some(10_000), || Ok(true)).expect("pure");
+    assert_eq!(due, Turnover::Overflow, "a real grant it outgrew still turns over");
+}
