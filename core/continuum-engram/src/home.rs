@@ -40,9 +40,8 @@ use std::path::{Path, PathBuf};
 /// for ALL (Joel 2026-07-25): a coding agent (Claude Code / Codex) and a
 /// human get the SAME home shape a persona has — identity in `airc/`,
 /// engrams in `engrams.sqlite` — differing only in the top-level bucket,
-/// so an agent's OWN durable memory (the `/continuum:memory` skill's
-/// store) lives in its own dir and survives session death exactly like a
-/// persona's. The engram write-through + recall paths are kind-agnostic;
+/// so an agent's own durable state lives in its own dir and survives
+/// session death exactly like a persona's. The engram write-through + recall paths are kind-agnostic;
 /// they reach through the typed home either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CitizenKind {

@@ -31,21 +31,15 @@ use crate::sdk_codegen::DynCommand;
 pub mod append_event;
 pub mod append_memory;
 pub mod consciousness_context;
-pub mod import;
 pub mod load_corpus;
 pub mod multi_layer_recall;
-pub mod recall_hook;
-pub mod remember;
 pub mod share;
 
 use append_event::MemoryAppendEvent;
 use append_memory::MemoryAppendMemory;
 use consciousness_context::MemoryConsciousnessContext;
-use import::MemoryImport;
 use load_corpus::MemoryLoadCorpus;
 use multi_layer_recall::MemoryMultiLayerRecall;
-use recall_hook::MemoryRecallHook;
-use remember::MemoryRemember;
 use share::MemoryShare;
 
 /// Result of an incremental append (`memory/append-memory`, `memory/append-event`).
@@ -71,15 +65,6 @@ pub fn command_objects(state: Arc<MemoryState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(MemoryMultiLayerRecall {
             state: state.clone(),
         }),
-        Arc::new(MemoryImport {
-            state: state.clone(),
-        }),
-        Arc::new(MemoryRecallHook {
-            state: state.clone(),
-        }),
-        Arc::new(MemoryRemember {
-            state: state.clone(),
-        }),
         Arc::new(MemoryShare {
             state: state.clone(),
         }),
@@ -96,8 +81,7 @@ pub fn command_objects(state: Arc<MemoryState>) -> Vec<Arc<dyn DynCommand>> {
 // ─── Durable write-through + hydrate-on-miss (card aded8871) ────────────────
 //
 // The cache-only bug this closes: `memory/append-memory` mutated ONLY the
-// in-process corpus, so every memory a persona (or an agent via the
-// /continuum:memory skill) wrote died with the core process — recall after a
+// in-process corpus, so every memory a persona wrote died with the core process — recall after a
 // restart returned nothing. The durable truth is the persona's `longterm.db`
 // (the data layer); the corpus is a derived cache of it. Writes go durable
 // FIRST, then cache; a missing corpus hydrates FROM the store on first touch.
@@ -117,9 +101,8 @@ const EMBEDDING_KEY: &str = "embedding";
 /// SAME memory command serves persona / agent / human (first-class citizenship,
 /// Joel 2026-07-25):
 ///  - an EXPLICIT sentinel (`@agent:claude-code`, `@human:joel`, `@persona:Asha`)
-///    passes through verbatim → its own bucket (this is how an agent's
-///    `/continuum:memory` writes land in `agents/<name>/`, its durable
-///    amnesia-fixing home);
+///    passes through verbatim → its own bucket (`agents/<name>/`,
+///    `humans/<name>/`, `personas/<name>/`);
 ///  - a UUID-shaped id passes through → the live `personas/<uuid>/` layout;
 ///  - a bare slug defaults to `@persona:<slug>` (back-compat — the unchanged
 ///    persona contract).

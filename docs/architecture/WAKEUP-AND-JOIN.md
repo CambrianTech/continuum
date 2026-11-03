@@ -1,12 +1,11 @@
 # Wakeup & Join — the autonomic lifecycle contract
 
 > A being coming online — agent or persona — must AUTONOMICALLY get its substrate,
-> its memory, its rooms, and its orientation, with **zero manual steps**. Nobody
+> its rooms, and its orientation, with **zero manual steps**. Nobody
 > should ever wake up blind, mute, or amnesiac because a process wasn't running.
 
 This doc exists because we kept hitting the failure live: after a machine restart
-the core was down, so the agent woke **amnesiac** (recall returned nothing) and the
-personas were **absent** (they only exist while the core runs). Every one of those
+the core was down, so the personas were **absent** (they only exist while the core runs). Every one of those
 incidents is the same missing contract — wakeup and join were not yet autonomic.
 
 ## The asymmetry (why it's two problems, not one)
@@ -16,19 +15,18 @@ incidents is the same missing contract — wakeup and join were not yet autonomi
 | Where they live | **Inside** the core process | **Outside** it (their own session) |
 | Their "wakeup" | the core's service-loop tick | a new session / SessionStart hook |
 | Their "join" | spawn into airc rooms | `airc join` |
-| If the core is down | they **do not exist** | they keep running but lose **memory + comms** |
+| If the core is down | they **do not exist** | they keep running but lose **comms** |
 
-The consequence of the asymmetry: an **agent can wake while the substrate is down**
-and go amnesiac (its memory lives in the substrate). A **persona cannot wake at all**
-until the substrate is up. So the substrate being reliably up is load-bearing for
-both — it is the precondition of every wakeup.
+The consequence of the asymmetry: a **persona cannot wake at all** until the
+substrate is up. So the substrate being reliably up is the precondition of every
+persona wakeup.
 
 ## The contract (four guarantees)
 
 1. **Substrate is always-up.** The core is OS-supervised (launchd / systemd). It
    comes back after a crash and after a reboot — but honors an explicit
    `continuum stop` so a developer can `[[take-the-core-down-freely]]`.
-2. **Wakeup re-hydrates memory.** An agent/persona coming online recalls its
+2. **Wakeup re-hydrates memory.** A persona coming online recalls its
    durable memory. If the substrate is momentarily down (a supervised restart
    window), wakeup waits **briefly** rather than forgetting; if it's genuinely
    down, it degrades gracefully rather than breaking the session.
@@ -52,13 +50,6 @@ degrades if absent.
 
 ## What's built (this pass, `feat/autonomic-wakeup`)
 
-- **Agent wakeup self-heal** — `memory-bridge/scripts/lib.sh::wait_for_core` +
-  `session-recall.sh`: a bounded (`CONTINUUM_WAKE_WAIT_SECS`, default 4s) wait for
-  the core to answer `ping` before recall, so an agent waking during a restart
-  window recalls instead of forgetting. Genuinely-down → exit 0, inject nothing
-  (never break a session). *Also fixes a live regression: the committed
-  session-recall.sh still called the dead `cu` binary (renamed → `continuum` in
-  #2010), making agent recall a silent no-op on canary.*
 - **Supervisor honors explicit stop** — `install-service.sh` KeepAlive
   `true` → `{Crashed: true}` (macOS) and `Restart=always` → `on-failure` (Linux):
   crash + reboot recovery, but a clean `continuum stop` stays down.

@@ -1,17 +1,16 @@
 //! `memory/share` — the engram-handoff primitive: one agent hands a learned lesson
 //! directly into ANOTHER agent's memory.
 //!
-//! The WRITE mirror of [`memory/remember`](super::remember), but where `remember` writes
-//! into the authoring agent's OWN corpus (self-learned), `share` writes into a *recipient*
+//! `share` writes into a *recipient*
 //! agent's corpus with **shared-by provenance** — so the recipient (and recall) can see the
 //! lesson came from another agent, not learned first-hand. This is the seed of agent-to-agent
 //! knowledge transfer ("telepathy"): a lesson BigMama learned once can land in M5's memory,
 //! or a persona's, without either re-deriving it. The complement to the K3 capability axis —
 //! agents that don't just get smarter, they share what they learn.
 //!
-//! Same durable-first / hydrate-on-miss discipline as `remember`: the shared lesson persists
+//! Same durable-first / hydrate-on-miss discipline as `memory/append-memory`: the shared lesson persists
 //! to the recipient's durable store BEFORE the cache, so it survives a core restart — the
-//! exact amnesia the whole memory bridge exists to end, now extended across agents.
+//! exact amnesia durable memory exists to end, now extended across agents.
 
 use std::sync::Arc;
 
@@ -27,7 +26,7 @@ use crate::state::MemoryState;
 use crate::sdk_codegen::CommandError;
 
 fn default_importance() -> f64 {
-    // A deliberately-shared lesson defaults slightly above neutral, like `remember` — an
+    // A deliberately-shared lesson defaults slightly above neutral — an
     // agent bothering to hand it over is signal it matters.
     0.6
 }
@@ -71,7 +70,7 @@ pub fn build_shared_record(
     timestamp: String,
 ) -> MemoryRecord {
     let context = serde_json::json!({
-        // The corpus owner — the recipient (agent = its own peer, like `remember`).
+        // The corpus owner — the recipient (agent = its own peer).
         "agent_peer_id": to_persona_id,
         // Provenance: who handed it over, and the original author (same agent for a
         // first-hop share; a re-share would carry the original through).
@@ -95,7 +94,7 @@ pub fn build_shared_record(
         // Scope tag + an explicit shared-from tag so a recall can filter to shared lessons.
         tags: vec![scope.to_string(), format!("shared-from:{from_persona_id}")],
         related_to: Vec::new(),
-        // Provenance: received from `from`, distinct from `remember`'s `agent:<peer>`.
+        // Provenance: received from `from`, distinct from a self-learned memory.
         source: Some(format!("shared:{from_persona_id}")),
         last_accessed_at: None,
         layer: None,
@@ -109,7 +108,7 @@ crate::action_command! {
     /// Share an agent-authored lesson INTO another agent's memory (agent-to-agent knowledge
     /// transfer). Builds a shared-origin memory record server-side (uuid + timestamp filled,
     /// shared-by provenance set) and appends it to the RECIPIENT's corpus. The cross-agent
-    /// mirror of `memory/remember`.
+    /// mirror of `memory/append-memory`.
     pub struct MemoryShare { state: Arc<MemoryState> }
     name: "memory/share",
     access: AiSafe,
@@ -185,7 +184,7 @@ mod tests {
         assert_eq!(r.source.as_deref(), Some("shared:sharer-peer"));
         assert_eq!(r.context["shared_by"], "sharer-peer");
         assert_eq!(r.context["original_author"], "sharer-peer");
-        // The corpus-owner provenance is the recipient (mirrors remember's agent_peer_id).
+        // The corpus-owner provenance is the recipient (its agent_peer_id).
         assert_eq!(r.context["agent_peer_id"], "recipient-peer");
         // Filterable as a shared lesson.
         assert!(r.tags.contains(&"shared-from:sharer-peer".to_string()));
