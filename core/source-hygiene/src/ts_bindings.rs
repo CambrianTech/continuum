@@ -8,7 +8,6 @@
 //! and #5726 was about to add six more. This rule counts them; the count may only fall.
 
 use std::collections::BTreeSet;
-use std::path::Path;
 
 /// The `protocol/typescript/`-relative files a Rust source's `export_to` attributes name.
 /// A path ending in `/` is ts-rs's directory form: the file is the next item's name plus `.ts`.
@@ -27,7 +26,7 @@ pub fn exported_bindings(source: &str) -> BTreeSet<String> {
                 out.insert(rel.to_string());
             }
             true => {
-                if let Some(name) = next_item_name(&literal[end..]) {
+                if let Some(name) = next_item_name(&literal[end + 1..]) {
                     out.insert(format!("{rel}{name}.ts"));
                 }
             }
@@ -36,16 +35,43 @@ pub fn exported_bindings(source: &str) -> BTreeSet<String> {
     out
 }
 
-/// The name of the first `struct`, `enum` or `type` item after an attribute. Comment and attribute
-/// lines between them are skipped, so a doc line saying "the struct for X" never names a binding
-/// (Fable on #5730).
-fn next_item_name(after: &str) -> Option<&str> {
-    let item_lines = after.lines().map(str::trim_start).filter(|l| !(l.starts_with("//") || l.starts_with("#[")));
-    for line in item_lines {
-        let mut words = line.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty());
-        while let Some(word) = words.next() {
-            if matches!(word, "struct" | "enum" | "type") {
-                return words.next();
+/// The name of the first `struct`, `enum` or `type` item after an attribute. `after` starts inside
+/// the `export_to` attribute, so the rest of it is skipped by bracket depth, and so is every later
+/// attribute however many lines it spans, and every `//` comment. A doc line saying "the struct for
+/// X" or a continuation line saying `tag = "type"` never names a binding (Fable on #5730).
+fn next_item_name(after: &str) -> Option<String> {
+    let (mut depth, mut in_string) = (1_usize, false); // inside the `#[ts(...)]` holding export_to
+    let (mut word, mut after_keyword) = (String::new(), false);
+    let mut chars = after.chars().peekable();
+    while let Some(c) = chars.next() {
+        let ident = c.is_alphanumeric() || c == '_';
+        if depth == 0 && ident {
+            word.push(c);
+            continue;
+        }
+        // A word ended: the item's name is the word after its keyword.
+        if !word.is_empty() {
+            if after_keyword {
+                return Some(word);
+            }
+            after_keyword = matches!(word.as_str(), "struct" | "enum" | "type");
+            word.clear();
+        }
+        if depth > 0 {
+            match c {
+                '"' => in_string = !in_string,
+                '[' if !in_string => depth += 1,
+                ']' if !in_string => depth -= 1,
+                _ => {}
+            }
+        } else if c == '#' && chars.peek() == Some(&'[') {
+            chars.next();
+            depth = 1;
+        } else if c == '/' && chars.peek() == Some(&'/') {
+            for skipped in chars.by_ref() {
+                if skipped == '\n' {
+                    break;
+                }
             }
         }
     }
@@ -58,46 +84,47 @@ pub fn orphans(committed: &BTreeSet<String>, exported: &BTreeSet<String>) -> Vec
     committed.iter().filter(|f| !f.ends_with("index.ts") && !exported.contains(*f)).cloned().collect()
 }
 
-/// Every `.rs` file under `dir`, skipping build output and vendored trees.
-fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        if path.is_dir() {
-            if !matches!(name.to_str(), Some("target" | "vendor" | "node_modules" | ".git")) {
-                rust_files(&path, out);
-            }
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            out.push(path);
-        }
-    }
-}
-
-/// Every `.ts` file under `protocol/typescript/`, relative to it.
-fn committed_bindings(root: &Path) -> BTreeSet<String> {
-    fn walk(base: &Path, dir: &Path, out: &mut BTreeSet<String>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(base, &path, out);
-            } else if path.extension().is_some_and(|e| e == "ts") {
-                if let Ok(rel) = path.strip_prefix(base) {
-                    out.insert(rel.to_string_lossy().replace('\\', "/"));
-                }
-            }
-        }
-    }
-    let base = root.join("protocol/typescript");
-    let mut out = BTreeSet::new();
-    walk(&base, &base, &mut out);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    /// Every `.rs` file under `dir`, skipping build output and vendored trees.
+    fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            if path.is_dir() {
+                if !matches!(name.to_str(), Some("target" | "vendor" | "node_modules" | ".git")) {
+                    rust_files(&path, out);
+                }
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// Every `.ts` file under `protocol/typescript/`, relative to it.
+    fn committed_bindings(root: &Path) -> BTreeSet<String> {
+        fn walk(base: &Path, dir: &Path, out: &mut BTreeSet<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(base, &path, out);
+                } else if path.extension().is_some_and(|e| e == "ts") {
+                    if let Ok(rel) = path.strip_prefix(base) {
+                        out.insert(rel.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            }
+        }
+        let base = root.join("protocol/typescript");
+        let mut out = BTreeSet::new();
+        walk(&base, &base, &mut out);
+        out
+    }
 
     // what this catches: the parser missing a form ts-rs accepts, which would report a live
     // binding as an orphan (and invite deleting it) or hide a real one.
@@ -112,9 +139,17 @@ mod tests {
             pub enum Tier { A }
             #[ts(export, export_to = "bindings/Local.ts")]
             pub struct Local;
+            #[ts(export, export_to = "../../../protocol/typescript/scene/",
+                 rename = "Wire")]
+            #[serde(
+                tag = "type",
+                content = "value",
+            )]
+            // the enum's wire shape: a struct of one field per variant
+            pub(crate) enum Event<T> { A(T) }
         "#;
         let got = exported_bindings(src);
-        let want: BTreeSet<String> = ["rag/LlmMessage.ts", "genome/Tier.ts"].map(String::from).into();
+        let want: BTreeSet<String> = ["rag/LlmMessage.ts", "genome/Tier.ts", "scene/Event.ts"].map(String::from).into();
         assert_eq!(got, want);
         let committed: BTreeSet<String> = ["rag/LlmMessage.ts", "rag/index.ts", "rag/RagContext.ts"].map(String::from).into();
         assert_eq!(orphans(&committed, &got), vec!["rag/RagContext.ts".to_string()]);
