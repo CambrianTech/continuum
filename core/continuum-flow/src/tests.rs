@@ -209,12 +209,18 @@ async fn a_reliable_stage_never_drops_a_result_and_a_signal_stage_keeps_the_newe
     assert_eq!(results.push(1), Ok(0));
     tokio::task::yield_now().await; // the worker takes 1 and waits on the gate
     assert_eq!(results.push(2), Ok(0));
-    assert_eq!(results.push(3), Err(3), "full: the producer gets its result back, nothing is dropped");
-    for _ in 0..2 {
+    assert_eq!(results.push(3), Err(crate::PushError::Full(3)), "full: push hands the result back, nothing is dropped");
+    let waiting = results.clone();
+    let sent = tokio::spawn(async move { waiting.send(3).await });
+    tokio::task::yield_now().await;
+    assert!(!sent.is_finished(), "a reliable producer waits for the slot instead of spinning or dropping");
+    for _ in 0..3 {
         gate.notify_one();
         tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
     }
-    assert_eq!(*got.lock().unwrap_or_else(|e| e.into_inner()), vec![1, 2]); // test: plain data
+    assert_eq!(sent.await.expect("test: the sender task"), Ok(()));
+    assert_eq!(*got.lock().unwrap_or_else(|e| e.into_inner()), vec![1, 2, 3], "the awaited result is delivered"); // test: plain data
 
     let (seen, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()));
     let wakes = spawn_stage(Wakes(Arc::clone(&seen), Arc::clone(&hold)));
@@ -273,4 +279,28 @@ async fn simultaneous_last_producers_close_and_drain_the_stage() {
         seen.sort_unstable();
         assert_eq!(seen, if queued { vec![1] } else { vec![] });
     }
+}
+
+// what this catches (Cormac on #5729): a handler that panics leaving the stage looking full forever,
+// so a waiting producer hangs and a pushing one retries a slot nothing will take.
+#[tokio::test]
+async fn a_stage_whose_handler_panicked_hands_inputs_back() {
+    struct Breaks;
+    impl Stage for Breaks {
+        type Input = u32;
+        const QOS: Qos = Qos::Work;
+        async fn handle(&mut self, input: u32) {
+            assert_ne!(input, 1, "test: the handler breaks on its first input");
+        }
+    }
+    let stage = spawn_stage(Breaks);
+    assert_eq!(stage.push(1), Ok(0));
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+        if stage.push(2) == Err(crate::PushError::Stopped(2)) {
+            break;
+        }
+    }
+    assert_eq!(stage.push(2), Err(crate::PushError::Stopped(2)), "a stopped stage keeps nothing");
+    assert_eq!(stage.send(3).await, Err(crate::Stopped(3)), "a sender gets its input back instead of waiting");
 }
