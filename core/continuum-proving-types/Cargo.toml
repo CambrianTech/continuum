@@ -1,0 +1,13 @@
+[package]
+name = "continuum-proving-types"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The proving ground's data shapes, defined once: act reductions with no words in them, node profiles whose every value carries its measurement, and scenario files (docs/architecture/THE-PROVING-GROUND.md 4a, 8a). Data only: the harness, the grid world and the reducer all depend on it."
+
+[dependencies]
+serde = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

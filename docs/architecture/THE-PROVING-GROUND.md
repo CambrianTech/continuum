@@ -196,7 +196,7 @@ and asserts that none survive. A stray string fails the build, so no reviewer ha
   someone picked is refused, as R1 requires.
 - A `KnownBad` file states the criterion the prover must report as failing.
 
-**Home.** The types live in one small crate, `continuum-proving-types` (serde, ts-rs bindings, no logic).
+**Home.** The types live in one small crate, `continuum-proving-types` (serde only, no logic; TypeScript bindings come when a client reads these files, since every reader today is Rust).
 The T0/T1 harness (Fable), the grid world (Codex) and the reducer (Cormac) all depend on it, so no shape is
 defined twice.
 
@@ -287,7 +287,7 @@ The proving ground is trusted only as far as it is shown to be right.
 ## 8a. The harness's shape (Fable's part, for review before code)
 
 **Crates.**
-- `continuum-proving-types` (Cormac's proposal): the data only, serde and ts-rs, no logic. Reductions,
+- `continuum-proving-types` (Cormac's proposal): the data only, serde, no logic. Reductions,
   scenario files, node profiles, receipts, metrics.
 - `continuum-proving` (new): the harness, a library plus a `prove` binary. It depends on the types crate and
   on the production policy crates it drives, and on nothing in serving or the core binary. It is a dev and CI

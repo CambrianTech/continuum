@@ -3617,6 +3617,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-proving-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "continuum-rooms"
 version = "0.1.0"
 dependencies = [
