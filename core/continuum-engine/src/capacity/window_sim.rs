@@ -155,40 +155,33 @@ impl WindowPolicy for DemandFollowing {
         held: &BTreeMap<MindId, u32>,
         pool_tokens: u32,
     ) -> BTreeMap<MindId, u32> {
-        let demanded: u64 = demands.iter().map(|d| u64::from(d.required_tokens)).sum();
-        if demanded <= u64::from(pool_tokens) {
-            return demands
-                .iter()
-                .map(|d| (d.mind, d.required_tokens))
-                .collect();
-        }
-        // An in-flight turn keeps what it holds: a grant never shrinks under a turn using it.
-        let kept: BTreeMap<MindId, u32> = demands
+        // A turn in flight keeps at least what it holds: its grant is a floor whether or not
+        // every demand fits (Cormac on #5718: the fits branch granted the new, smaller demand
+        // and shrank a turn mid-flight). The floors fit the pool because they were granted
+        // inside it; what they leave is shared over the rest of each mind's demand, whole when
+        // it all fits and in proportion when it does not.
+        let floor = |d: &Demand| match d.in_flight {
+            true => held.get(&d.mind).copied().unwrap_or(0), // unwrap_or: a turn that holds nothing yet has no floor
+            false => 0,
+        };
+        let floors: u64 = demands.iter().map(|d| u64::from(floor(d))).sum();
+        let rest = u64::from(pool_tokens).saturating_sub(floors);
+        let needed: u64 = demands
             .iter()
-            .filter(|d| d.in_flight)
-            .filter_map(|d| held.get(&d.mind).map(|&h| (d.mind, h)))
-            .collect();
-        let kept_total: u64 = kept.values().map(|&g| u64::from(g)).sum();
-        let rest = u64::from(pool_tokens).saturating_sub(kept_total);
-        let rest_demand: u64 = demands
-            .iter()
-            .filter(|d| !kept.contains_key(&d.mind))
-            .map(|d| u64::from(d.required_tokens))
+            .map(|d| u64::from(d.required_tokens.saturating_sub(floor(d))))
             .sum();
-        let mut grants = kept;
-        for d in demands
+        demands
             .iter()
-            .filter(|d| !grants.contains_key(&d.mind))
-            .copied()
-            .collect::<Vec<_>>()
-        {
-            let share = (u64::from(d.required_tokens) * rest)
-                .checked_div(rest_demand)
-                .unwrap_or(0); // unwrap_or: no demand left to share means no share
-            let share = u32::try_from(share).unwrap_or(u32::MAX); // unwrap_or: a share past u32 is capped by her demand below
-            grants.insert(d.mind, share.min(d.required_tokens));
-        }
-        grants
+            .map(|d| {
+                let need = u64::from(d.required_tokens.saturating_sub(floor(d)));
+                let more = match needed <= rest {
+                    true => need,
+                    false => (need * rest).checked_div(needed).unwrap_or(0), // unwrap_or: nothing needed means nothing more
+                };
+                let more = u32::try_from(more).unwrap_or(u32::MAX); // unwrap_or: more is at most her need, a u32
+                (d.mind, floor(d).saturating_add(more))
+            })
+            .collect()
     }
 }
 
@@ -245,6 +238,20 @@ mod tests {
     #[test]
     fn demand_following_grants_every_mind_what_she_reads_within_the_pool() {
         let run = run(&m5_uneven_reading(), &mut DemandFollowing);
+        assert!(run.kept(), "{run:?}");
+    }
+
+    // what this catches (Cormac on #5718): a turn in flight shrunk when every demand fits
+    // because her demand fell mid-turn; the grant she is using holds until the turn ends.
+    #[test]
+    fn a_turn_in_flight_keeps_its_grant_when_her_demand_falls_and_everything_fits() {
+        let e = |at_ms, mind, required_tokens, in_flight| DemandEvent { at_ms, mind, required_tokens, in_flight };
+        let scenario = WindowScenario {
+            name: "falling-demand-in-flight",
+            pool_tokens: 100_000,
+            events: vec![e(0, 1, 60_000, true), e(1, 1, 30_000, true), e(2, 2, 20_000, false)],
+        };
+        let run = run(&scenario, &mut DemandFollowing);
         assert!(run.kept(), "{run:?}");
     }
 
