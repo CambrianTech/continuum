@@ -19,10 +19,22 @@ impl ServingDaemonModule {
             .any(|a| a.consumer_id == SERVING_CONSUMER_ID && a.kind == serving_pool_kind() && a.bytes > 0)
     }
 
-    /// Whether the running engine is due its one upward pool relaunch, asking the engine's owner
-    /// for it when it is. Read on the ready tick, beside the shared-pool move.
+    /// Whether the running engine is due its one upward pool relaunch now. Read on the ready tick,
+    /// beside the shared-pool move.
+    ///
+    /// The relaunch makes its own idle edge (card 2540194e): when the first steady plan proves a
+    /// larger pool, a task quiesces admission (every new inference request held, every entered one
+    /// run to its end) and only then asks the engine's owner for the relaunch, holding admission
+    /// until the new engine answers. #5742 instead waited for a `/slots` read with nothing
+    /// processing; on the M5 on 2026-11-03 five residents on 409-token windows acted without pause,
+    /// the read never came, and the 2,048-token launch pool was kept on two builds in a row.
     pub(super) fn pool_growth_due(&self, desired: &str, served_ctx: u32, lanes: u32) -> bool {
         let Some(engine) = self.server.served_incarnation() else { return false };
+        // A hold taken for an engine that is no longer the one serving ends here.
+        crate::inference::llama_server::end_stale_hold(engine.pid);
+        if crate::inference::llama_server::growth_requested(engine.pid) {
+            return true;
+        }
         if self.pool_growth_tried.load(Ordering::Relaxed) == u64::from(engine.pid) {
             return false;
         }
@@ -34,32 +46,35 @@ impl ServingDaemonModule {
         if !grows(self.serving_footprint_reported(), budget, running, wanted) {
             return false;
         }
-        // A relaunch loses what the engine is generating, and nothing else: a turn between
-        // generations (in a tool call) just waits for the engine. So it waits for a `/slots` read
-        // of THIS engine with no slot processing, and is retried on the next tick until one comes
-        // (Fable on #5741, card 5c9042f1). A turn's own durability is not the measure: the core
-        // stays up, so nothing would hand a cut generation back.
-        if *self.engine_idle.lock() != Some((engine.pid, true)) {
-            return false;
-        }
         self.pool_growth_tried.store(u64::from(engine.pid), Ordering::Relaxed);
-        crate::inference::llama_server::request_pool_growth(engine.pid);
+        let pid = engine.pid;
         continuum_base::probe!(
             target: "continuum_core::modules::serving_daemon", class = "serving.pool.grow_due",
-            pid = u64::from(engine.pid),
+            pid = u64::from(pid),
             running_tokens = u64::from(running),
             wanted_tokens = wanted,
             budget_gb = budget / 1_000_000_000,
-            "the first steady plan proves a larger pool than the engine launched with: one relaunch into it (S2 debt)"
+            "the first steady plan proves a larger pool than the engine launched with: quiescing admission for one relaunch into it (S2 debt)"
         );
-        true
+        tokio::spawn(async move {
+            let Some(held) = crate::inference::resource_admission::quiesce_admission().await else {
+                continuum_base::probe!(
+                    target: "continuum_core::modules::serving_daemon", class = "serving.pool.grow_quiesce_busy",
+                    pid = u64::from(pid),
+                    "admission is already quiescing: this engine's growth is not requested"
+                );
+                return;
+            };
+            continuum_base::probe!(
+                target: "continuum_core::modules::serving_daemon", class = "serving.pool.grow_quiesced",
+                pid = u64::from(pid),
+                drained_ms = held.held_ms(),
+                "admission quiesced: nothing is generating; the next ensure relaunches into the larger pool"
+            );
+            crate::inference::llama_server::request_pool_growth(pid, held);
+        });
+        false
     }
-}
-
-/// PURE: whether a `/slots` body shows no slot processing a request. Anything but an array of
-/// slots is unknown, and unknown is never idle.
-pub(super) fn no_slot_processing(slots: &serde_json::Value) -> bool {
-    slots.as_array().is_some_and(|all| all.iter().all(|slot| slot["is_processing"].as_bool() == Some(false)))
 }
 
 /// PURE: whether a steady plan proves the pool should grow. Steady (serving's footprint reported,
@@ -71,7 +86,7 @@ pub(super) fn grows(steady: bool, budget_bytes: u64, running_tokens: u32, wanted
 
 #[cfg(test)]
 mod tests {
-    use super::{grows, no_slot_processing};
+    use super::grows;
 
     // what this catches (the M5 2026-11-03, 81aef1844: a 16,640 pool launched from a boot-time
     // transient and kept): a pool that never grows from a bad launch, or a bridge that relaunches
@@ -86,15 +101,4 @@ mod tests {
         assert!(!grows(true, 23_000_000_000, 1_310_720, 257_536), "downward never relaunches (590df4bc3's pool stays)");
     }
 
-    // what this catches (Fable on #5741): the growth relaunch cutting a generation mid-decode.
-    // It waits for a read with no slot processing; a slot whose state cannot be read is never
-    // taken as idle.
-    #[test]
-    fn the_growth_waits_for_no_slot_processing() {
-        let slots = |busy: &[bool]| serde_json::Value::Array(busy.iter().map(|b| serde_json::json!({ "is_processing": b })).collect());
-        assert!(no_slot_processing(&slots(&[false, false])), "every slot idle");
-        assert!(!no_slot_processing(&slots(&[false, true])), "one generation in flight");
-        assert!(!no_slot_processing(&serde_json::json!([{ "id": 0 }])), "a slot with no is_processing is unknown, not idle");
-        assert!(!no_slot_processing(&serde_json::json!({ "error": "unavailable" })), "not a slots array: unknown");
-    }
 }

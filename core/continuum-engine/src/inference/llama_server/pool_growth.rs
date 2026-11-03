@@ -17,9 +17,54 @@
 /// is stale and never acts.
 static REQUESTED: parking_lot::Mutex<Option<u32>> = parking_lot::Mutex::new(None);
 
-/// Ask the engine owner to relaunch engine `pid` once into the larger pool its next target carries.
-pub fn request_pool_growth(pid: u32) {
+/// Admission held for the relaunch, with the engine process it was taken for (card 2540194e):
+/// the engine is idle by construction rather than by a sample. It is held across the relaunch
+/// until the new engine answers, because a request released into a relaunching engine just fails.
+static HELD: parking_lot::Mutex<Option<(u32, crate::inference::resource_admission::Quiesced)>> = parking_lot::Mutex::new(None);
+
+/// Ask the engine owner to relaunch engine `pid` once into the larger pool its next target carries,
+/// with admission already quiesced (`held`) so nothing is generating when it does.
+pub fn request_pool_growth(pid: u32, held: crate::inference::resource_admission::Quiesced) {
+    *HELD.lock() = Some((pid, held));
+    request(pid);
+}
+
+fn request(pid: u32) {
     *REQUESTED.lock() = Some(pid);
+}
+
+/// Whether engine `pid` has a growth relaunch requested and not yet decided.
+pub fn growth_requested(pid: u32) -> bool {
+    *REQUESTED.lock() == Some(pid)
+}
+
+/// After an ensure: end the hold once its relaunch was decided (the request is spent, so the
+/// relaunch ran to a serving engine or failed). A hold whose request is still pending stays.
+pub fn end_hold_if_decided() {
+    let mut held = HELD.lock();
+    if held.as_ref().is_some_and(|(pid, _)| !growth_requested(*pid)) {
+        end(held.take(), "relaunch_ended");
+    }
+}
+
+/// End a hold taken for an engine process other than `running`, the one now serving: a new engine
+/// answers, whatever replaced the old one. Never while no engine serves (mid-relaunch).
+pub fn end_stale_hold(running: u32) {
+    let mut held = HELD.lock();
+    if held.as_ref().is_some_and(|(pid, _)| *pid != running) {
+        end(held.take(), "engine_replaced");
+    }
+}
+
+fn end(held: Option<(u32, crate::inference::resource_admission::Quiesced)>, reason: &'static str) {
+    if let Some((pid, quiesced)) = held {
+        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.pool.grow_held",
+            pid = u64::from(pid),
+            held_ms = quiesced.held_ms(),
+            reason = reason,
+            "admission reopens: the pool's one relaunch held it this long (drain + relaunch to ready)"
+        );
+    }
 }
 
 /// Whether the running engine is due its one growth relaunch: the daemon asked for this process,
@@ -51,7 +96,7 @@ mod tests {
         // A pid no other test in this binary uses.
         let pid = 4_000_000_001;
         assert!(!growth_due(Some(pid), Some(16_640), 257_536), "never asked: no growth");
-        request_pool_growth(pid);
+        request(pid);
         assert!(!growth_due(Some(pid + 1), Some(16_640), 257_536), "asked for another process: stale");
         assert!(!growth_due(Some(pid), Some(257_536), 257_536), "not strictly larger: no relaunch");
         assert!(!growth_due(Some(pid), Some(300_000), 257_536), "downward never relaunches");

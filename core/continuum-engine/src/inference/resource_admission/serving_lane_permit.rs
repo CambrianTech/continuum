@@ -21,6 +21,9 @@ pub struct ServingLanePermit {
     pub(super) persona: Option<uuid::Uuid>,
     /// The gate this permit came from — its release wakes parked ambient callers.
     pub(super) released: &'static tokio::sync::Notify,
+    /// Its place in admission. LAST: fields drop in order, so the lane and the in-flight marker
+    /// are released before a quiesce can see this request gone (`quiesce`).
+    pub(super) _entry: super::quiesce::AdmissionEntry,
 }
 
 impl Drop for ServingLanePermit {
