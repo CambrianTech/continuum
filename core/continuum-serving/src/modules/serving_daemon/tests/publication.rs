@@ -658,62 +658,26 @@ fn each_sequence_is_published_its_share_of_the_shared_pool() {
     assert_eq!(sequence_share(290_560, 0, 262_144), (262_144, 1), "no sequence count is one, never a divide by zero");
 }
 
-// what this catches (b4be7bc59 on the M5, 2026-11-03 18:18Z, rolled back): a cold boot launching
-// from a plan computed off a footprint record that the same pass retired. That plan read 2,048 at a
-// sampled 23 GB, and the engine kept 5 x 2,048 for life; the next tick, without the record, planned
-// 2 x 184,320. A pass that retires its own record re-plans at once, and the plan that is published
-// (so launched) is the re-plan, never the starved one (Cormac's case 1 on #5739). The candidates
-// follow the record exactly as `footprint_for` does: its rate while it stands, the estimate after.
-#[tokio::test]
-async fn a_pass_that_retires_its_record_publishes_the_re_plan_never_the_starved_plan() {
-    let mut cold = ServingDaemonModule::new(
-        Arc::new(GpuMemoryManager::simulated("M5", 64 * GB)),
-        Arc::new(SystemResourceMonitor::new()),
-        test_resource_daemon(),
-        test_catalog(),
-        test_pin_store(),
-    );
-    cold.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
-    cold.set_leased_in_sent_source(Arc::new(Vec::new));
-    cold.working_set.record_in_memory(uuid::Uuid::new_v4(), 200_000, 1);
-    let rx = cold.subscribe();
-    let model = "cold-retire-fixture-35b";
-    let estimate = footprint_from_parts(model, 20 * GB, 262_144, true, None).unwrap();
-    let mut trapped = estimate.clone();
-    trapped.kv_per_token = 1_000_000; // a trapped record: ~10k tokens fit beside the weights, below the requirement
-    // Plant the record the way a live sample does: 8.192 GB beyond the floors over 8,192 tokens of
-    // one lane is 1,000,000 B/token. A sample straddling a residency change is refused; retry.
-    while crate::inference::lane_footprint::observe(
-        crate::inference::lane_footprint::begin_sample(),
-        model,
-        1,
-        8_192,
-        8_192,
-        8_192_000_000,
-        0,
-        0,
-    )
-    .is_err()
-    {}
-    let budget = HostBudget { usable_bytes: 60 * GB, perf_cores: 6 };
-    let mut seen = Vec::new();
-    cold.plan_until_decided(budget, cold.intent.snapshot().revision, &[], || {
-        let fp = match crate::inference::lane_footprint::measured_record(model) {
-            Some(_) => trapped.clone(),
-            None => estimate.clone(),
-        };
-        seen.push(fp.kv_per_token);
-        (vec![fp.clone()], vec![fp])
+// what this catches (b4be7bc59 on the M5, 2026-11-03 18:18Z, rolled back): a cold boot publishing
+// (so launching once, for the engine's life) a plan computed off the footprint record the same pass
+// retired: 2,048 at a sampled 23 GB; the next pass, without the record, planned 2 x 184,320. A
+// starved plan re-plans exactly when its own pass retired its record and nothing is published yet;
+// a published plan stands; a plan starved by inputs that survived is published (a dark node is
+// worse). And the loop re-runs a pass only while it retires its record (Cormac's case 1 on #5739).
+#[test]
+fn a_pass_that_retires_its_record_re_plans_never_publishing_the_starved_plan() {
+    use super::super::planning::{starved_plan, until_decided, PlanOutcome, Starved};
+    assert_eq!(starved_plan(false, true), Starved::Replan, "cold boot, record retired: re-plan, never publish");
+    assert_eq!(starved_plan(false, false), Starved::Publish, "cold boot, starved by surviving inputs: publish");
+    assert_eq!(starved_plan(true, true), Starved::PreviousStands, "a published plan stands");
+    assert_eq!(starved_plan(true, false), Starved::PreviousStands);
+    let mut passes = vec![PlanOutcome::RetiredItsRecord, PlanOutcome::RetiredItsRecord, PlanOutcome::Decided].into_iter();
+    let mut ran = 0;
+    until_decided(|| {
+        ran += 1;
+        passes.next().expect("no pass after the deciding one")
     });
-    assert_eq!(seen, vec![1_000_000, estimate.kv_per_token], "planned once from the record, once more after retiring it");
-    let published = rx.borrow().clone().expect("the re-plan is published");
-    assert!(
-        crate::inference::planning::serving_plan::persona_lane_holds(published.served_context_window, Some(70_071)),
-        "the launch takes the re-plan, which holds the requirement: {} x {}",
-        published.lanes,
-        published.served_context_window
-    );
-    assert!(crate::inference::lane_footprint::measured_record(model).is_none(), "the trapped record is retired");
+    assert_eq!(ran, 3, "re-plans while a pass retires its record, stops at the pass that decides");
 }
 
 // what this catches: a launch before any plan exists (no sampled budget, no plan published):

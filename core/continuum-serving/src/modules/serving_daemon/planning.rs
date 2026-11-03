@@ -62,12 +62,10 @@ impl ServingDaemonModule {
         leases: &[crate::resources::lease::ResourceLease],
         mut candidates: impl FnMut() -> (Vec<ModelFootprint>, Vec<ModelFootprint>),
     ) {
-        loop {
+        until_decided(|| {
             let (now, on_disk) = candidates();
-            if self.publish_plan_with_leases(budget, &now, &on_disk, intent_revision, leases) == PlanOutcome::Decided {
-                return;
-            }
-        }
+            self.publish_plan_with_leases(budget, &now, &on_disk, intent_revision, leases)
+        });
     }
 
     /// Pure publish step: run the classifier on the given inputs, publish the
@@ -293,10 +291,6 @@ impl ServingDaemonModule {
                         );
                         *last = Some(key);
                     }
-                    if previous_stands {
-                        self.retain_plan_for_intent(intent_revision, candidates);
-                        return PlanOutcome::Decided;
-                    }
                     // A starved plan whose own tick just retired the record it was computed from is
                     // invalid by construction, so it is never published on a cold boot: the engine
                     // launches once from the first published plan and keeps that pool for life.
@@ -306,16 +300,23 @@ impl ServingDaemonModule {
                     // count (Cormac on #5739): a record can be retired only once, so the next tick's
                     // plan comes from inputs that survived, and a plan starved by those (a node that
                     // genuinely cannot hold the requirement) is published as before.
-                    if retired {
-                        continuum_base::probe!(
-                            target: "continuum_core::modules::serving_daemon", class = "serving.plan.cold_withheld",
-                            model = plan.base_model.model_id.as_str(),
-                            window = plan.served_context_window as u64,
-                            requirement = requirement.unwrap_or(0) as u64, // unwrap_or: probe label; this branch only fires with a requirement present
-                            usable_gb = (budget.usable_bytes / 1_000_000_000),
-                            "a cold boot's starved plan came from the record this tick retired: withheld, so the one launch waits for the next tick's plan"
-                        );
-                        return PlanOutcome::RetiredItsRecord;
+                    match starved_plan(previous_stands, retired) {
+                        Starved::PreviousStands => {
+                            self.retain_plan_for_intent(intent_revision, candidates);
+                            return PlanOutcome::Decided;
+                        }
+                        Starved::Replan => {
+                            continuum_base::probe!(
+                                target: "continuum_core::modules::serving_daemon", class = "serving.plan.cold_withheld",
+                                model = plan.base_model.model_id.as_str(),
+                                window = plan.served_context_window as u64,
+                                requirement = requirement.unwrap_or(0) as u64, // unwrap_or: probe label; this branch only fires with a requirement present
+                                usable_gb = (budget.usable_bytes / 1_000_000_000),
+                                "a cold boot's starved plan came from the record this tick retired: withheld, so the one launch waits for the next tick's plan"
+                            );
+                            return PlanOutcome::RetiredItsRecord;
+                        }
+                        Starved::Publish => {}
                     }
                 }
                 // THE HOST FLOOR (Joel, 2026-09-16: "if this machine ever returns less than
@@ -788,5 +789,30 @@ mod training_lease_tests {
 pub(super) enum PlanOutcome {
     Decided,
     RetiredItsRecord,
+}
+
+/// What a plan below the residents' requirement does. A published plan stands instead when one
+/// exists. On a cold boot, a plan computed from the footprint record its own pass retired is
+/// invalid by construction, so the pass re-plans; one starved by inputs that survived the pass is
+/// published (a dark node is worse than a starved seat).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Starved {
+    PreviousStands,
+    Replan,
+    Publish,
+}
+
+pub(super) fn starved_plan(previous_stands: bool, retired_its_record: bool) -> Starved {
+    match (previous_stands, retired_its_record) {
+        (true, _) => Starved::PreviousStands,
+        (false, true) => Starved::Replan,
+        (false, false) => Starved::Publish,
+    }
+}
+
+/// Run planning passes until one decides: a pass that retired the record its plan came from
+/// re-runs at once. Each retire removes a record from a finite set, so this ends.
+pub(super) fn until_decided(mut pass: impl FnMut() -> PlanOutcome) {
+    while pass() == PlanOutcome::RetiredItsRecord {}
 }
 
