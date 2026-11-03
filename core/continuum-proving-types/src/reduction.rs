@@ -193,6 +193,24 @@ pub enum OutcomeKind {
     Unfulfilled,
 }
 
+/// Where the engine resumed the act's prompt from (`llama-server`'s `lcp after reuse`, its checkpoint
+/// restores, and the core's page probes). The tokens it then re-read are `Timing::prefill_tokens`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "from", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Resume {
+    /// Her KV was resident in the slot, and the engine kept this many tokens of it.
+    SlotPrefix { kept: u32 },
+    /// Rolled back to a context checkpoint ending at this token (a hybrid model resumes only there).
+    Checkpoint { at: u32 },
+    /// Paged in from disk, and the engine kept this many tokens of the page.
+    PageRestored { kept: u32 },
+    /// The page was refused, and the act prefilled cold. The class names why (`adapter_identity`,
+    /// `no_space`), never the engine's message.
+    PageRefused { class: Slug },
+    /// Nothing was reusable.
+    Cold {},
+}
+
 /// One act, with no words in it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -206,6 +224,9 @@ pub struct ActReduction {
     /// joins it from `delib.act.reasoning_budgeted` by persona and time.
     pub reasoning_budget: Joined<u32>,
     pub allocation: Joined<AllocationReduction>,
+    /// Joined from the engine log and page probes by slot and time; going forward the capture binds
+    /// it by request id.
+    pub resume: Joined<Resume>,
     /// Tokens of each view item, in order (count and size, no words).
     pub view_items: Vec<u32>,
     pub delivery: Delivery,
@@ -245,6 +266,7 @@ mod tests {
             }},
             "reasoning_budget": { "join": "ambiguous", "candidates": 2 },
             "allocation": { "join": "unresolved" },
+            "resume": { "join": "exact", "value": { "from": "page_refused", "class": "adapter_identity" } },
             "view_items": [1200, 300],
             "delivery": { "outcome": "completed", "elapsed_ms": 125000, "attempts": 1 },
             "outcomes": ["tool_error"]
@@ -277,6 +299,7 @@ mod tests {
             &["request", "tools", "0", "name"],
             &["response", "value", "tool_calls", "0", "name"],
             &["response", "value", "tool_calls", "0", "args"],
+            &["resume", "value", "class"],
         ];
         for path in slots {
             let mut v = reduction_json();

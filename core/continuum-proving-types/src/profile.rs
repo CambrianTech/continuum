@@ -66,14 +66,44 @@ pub struct PageCost {
     pub bytes_per_s: Measured<f64>,
 }
 
+/// A fixed holder of engine memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Holder {
+    Weights,
+    /// The compute graph: one for the shared pool under `--kv-unified`.
+    ComputeGraph,
+    /// The speculative draft model's whole context (its weights, KV and compute).
+    Draft,
+    /// The multimodal projector's weights and reserved compute.
+    Projector,
+    /// The host prompt cache's byte limit.
+    PromptCache,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HolderBytes {
+    pub holder: Holder,
+    pub tier: Tier,
+    pub bytes: Measured<u64>,
+}
+
 /// One model as served on this node.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelProfile {
     pub model: ModelId,
-    pub weight_bytes: Measured<u64>,
-    /// KV plus recurrent state per token (the engine's `memory_breakdown`).
-    pub state_bytes_per_token: Measured<u64>,
+    /// Everything the engine holds whatever the minds do, each where it lives (the fork's
+    /// `memory_breakdown` and `resident_state`, llama.cpp#91). Before #91 the draft and the
+    /// projector were invisible, and the plan inferred them from the process footprint.
+    pub holders: Vec<HolderBytes>,
+    /// Attention KV per token of a sequence's context.
+    pub kv_bytes_per_token: Measured<u64>,
+    /// A hybrid model's recurrent state, fixed per sequence whatever its length. Folding it into the
+    /// per-token rate overstates long sequences and short-changes many short ones (card c8b2e1df).
+    /// `Unmeasured` until the fork reports it apart from the KV.
+    pub recurrent_bytes_per_sequence: Measured<u64>,
     pub prefill: RateCurve,
     pub decode: RateCurve,
     pub page: Vec<PageCost>,
@@ -111,5 +141,40 @@ mod tests {
         let wire = serde_json::to_value(&declared).expect("ser");
         assert_eq!(wire["memory"][0]["bytes"], serde_json::json!({ "state": "unmeasured" }));
         assert_eq!(serde_json::from_value::<NodeProfile>(wire).expect("de"), declared);
+    }
+
+    // what this catches: a model profile that cannot carry what the fork reports, which is how the
+    // plan went wrong on the M5 (it saw weights and KV, not the draft, the projector or the graph).
+    #[test]
+    fn a_model_profile_carries_every_fixed_holder_and_the_recurrent_split() {
+        use crate::provenance::{Source, Spread};
+        let slug = |s: &str| Slug::try_from(s.to_string()).expect("slug");
+        let measured = |value: u64| Measured::Measured {
+            value,
+            at_ms: 1_793_710_260_000,
+            source: Source { kind: slug("engine/resident-state"), node: slug("m5") },
+            samples: 1,
+            error: Spread::NotYetMeasured,
+        };
+        let holder = |holder, bytes| HolderBytes { holder, tier: Tier::Unified, bytes: measured(bytes) };
+        let model = ModelProfile {
+            model: crate::closed::ModelId::try_from("continuum-ai/qwen3.6-35b-a3b-GGUF".to_string()).expect("model id"),
+            holders: vec![
+                holder(Holder::Weights, 20_690_000_000),
+                holder(Holder::ComputeGraph, 1_870_000_000),
+                holder(Holder::Draft, 3_150_000_000),
+                holder(Holder::Projector, 900_000_000),
+            ],
+            kv_bytes_per_token: measured(8_317),
+            recurrent_bytes_per_sequence: Measured::Unmeasured {},
+            prefill: RateCurve::Points { points: vec![] },
+            decode: RateCurve::Points { points: vec![] },
+            page: vec![],
+            checkpoint_bytes: measured(94_600_000),
+            slots: Measured::Unmeasured {},
+        };
+        let wire = serde_json::to_value(&model).expect("ser");
+        assert_eq!(wire["recurrent_bytes_per_sequence"], serde_json::json!({ "state": "unmeasured" }));
+        assert_eq!(serde_json::from_value::<ModelProfile>(wire).expect("de"), model);
     }
 }
