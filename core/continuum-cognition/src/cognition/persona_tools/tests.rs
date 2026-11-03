@@ -269,7 +269,7 @@
         // ── Authorized tools at Trusted trust (all AiSafe commands) ──
         use crate::routing::trust_level::TrustLevel;
         let authorized = crate::cognition::persona_tools::authorized_tool_specs(TrustLevel::Trusted);
-        println!("\n=== AUTHORIZED TOOLS AT CITIZEN ({}) ===", authorized.len());
+        println!("\n=== AUTHORIZED TOOLS AT TRUSTED ({}) ===", authorized.len());
         total_bytes = 0;
         total_tokens = 0;
         for spec in &authorized {
