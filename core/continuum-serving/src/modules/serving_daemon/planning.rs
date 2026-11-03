@@ -41,10 +41,31 @@ impl ServingDaemonModule {
         }
         let (budget, leases) = self.host_budget_snapshot();
         let intent = self.intent.snapshot();
-        let catalog = self.catalog.snapshot();
-        let candidates = servable_candidates(&catalog, &intent.suppressed, &intent.pinned);
-        let on_disk = servable_candidates(&catalog, &HashSet::new(), &intent.pinned);
-        self.publish_plan_with_leases(budget, &candidates, &on_disk, intent.revision, &leases);
+        self.plan_until_decided(budget, intent.revision, &leases, || {
+            let catalog = self.catalog.snapshot();
+            (
+                servable_candidates(&catalog, &intent.suppressed, &intent.pinned),
+                servable_candidates(&catalog, &HashSet::new(), &intent.pinned),
+            )
+        });
+    }
+
+    /// Plan, and re-plan at once while the pass retires the footprint record its plan was computed
+    /// from: such a plan is invalid by construction, and `candidates` recomputes the footprints
+    /// without the record (`footprint_for` reads it). Each retire removes one record from a finite
+    /// set, so this ends. On the M5 it turns the cold boot's 2,048 plan into the 2 x 184,320 the
+    /// next tick produced (b4be7bc59, 2026-11-03; Cormac on #5739).
+    pub(super) fn plan_until_decided(
+        &self,
+        budget: HostBudget,
+        intent_revision: u64,
+        leases: &[crate::resources::lease::ResourceLease],
+        mut candidates: impl FnMut() -> (Vec<ModelFootprint>, Vec<ModelFootprint>),
+    ) {
+        until_decided(|| {
+            let (now, on_disk) = candidates();
+            self.publish_plan_with_leases(budget, &now, &on_disk, intent_revision, leases)
+        });
     }
 
     /// Pure publish step: run the classifier on the given inputs, publish the
@@ -60,8 +81,8 @@ impl ServingDaemonModule {
         budget: HostBudget,
         candidates: &[ModelFootprint],
         on_disk: &[ModelFootprint],
-    ) {
-        self.publish_plan_for_intent(budget, candidates, on_disk, self.intent.snapshot().revision);
+    ) -> PlanOutcome {
+        self.publish_plan_for_intent(budget, candidates, on_disk, self.intent.snapshot().revision)
     }
 
     pub(super) fn publish_plan_snapshot(&self, intent_revision: u64, plan: Option<ServingPlan>) {
@@ -104,15 +125,15 @@ impl ServingDaemonModule {
         candidates: &[ModelFootprint],
         on_disk: &[ModelFootprint],
         intent_revision: u64,
-    ) {
-        self.publish_plan_with_leases(budget, candidates, on_disk, intent_revision, &[]);
+    ) -> PlanOutcome {
+        self.publish_plan_with_leases(budget, candidates, on_disk, intent_revision, &[])
     }
 
     fn publish_plan_with_leases(
         &self, budget: HostBudget, candidates: &[ModelFootprint],
         on_disk: &[ModelFootprint], intent_revision: u64,
         leases: &[crate::resources::lease::ResourceLease],
-    ) {
+    ) -> PlanOutcome {
         self.plan_budget_bytes.store(budget.usable_bytes, Ordering::Relaxed);
         // Hysteresis: pass the currently-served model as the incumbent so a
         // transient free-memory dip doesn't thrash the served model.
@@ -270,9 +291,32 @@ impl ServingDaemonModule {
                         );
                         *last = Some(key);
                     }
-                    if previous_stands {
-                        self.retain_plan_for_intent(intent_revision, candidates);
-                        return;
+                    // A starved plan whose own tick just retired the record it was computed from is
+                    // invalid by construction, so it is never published on a cold boot: the engine
+                    // launches once from the first published plan and keeps that pool for life.
+                    // b4be7bc59 launched the M5 at 5 x 2,048 from exactly this plan (18:18:26Z, budget
+                    // sampled at 23 GB, record_retired=true); the next tick, with the record gone and
+                    // the candidates recomputed, planned 2 x 184,320 at the same budget. State, not a
+                    // count (Cormac on #5739): a record can be retired only once, so the next tick's
+                    // plan comes from inputs that survived, and a plan starved by those (a node that
+                    // genuinely cannot hold the requirement) is published as before.
+                    match starved_plan(previous_stands, retired) {
+                        Starved::PreviousStands => {
+                            self.retain_plan_for_intent(intent_revision, candidates);
+                            return PlanOutcome::Decided;
+                        }
+                        Starved::Replan => {
+                            continuum_base::probe!(
+                                target: "continuum_core::modules::serving_daemon", class = "serving.plan.cold_withheld",
+                                model = plan.base_model.model_id.as_str(),
+                                window = plan.served_context_window as u64,
+                                requirement = requirement.unwrap_or(0) as u64, // unwrap_or: probe label; this branch only fires with a requirement present
+                                usable_gb = (budget.usable_bytes / 1_000_000_000),
+                                "a cold boot's starved plan came from the record this tick retired: withheld, so the one launch waits for the next tick's plan"
+                            );
+                            return PlanOutcome::RetiredItsRecord;
+                        }
+                        Starved::Publish => {}
                     }
                 }
                 // THE HOST FLOOR (Joel, 2026-09-16: "if this machine ever returns less than
@@ -378,7 +422,7 @@ impl ServingDaemonModule {
                                 }
                             }
                         }
-                        return;
+                        return PlanOutcome::Decided;
                     }
                     // COLD BOOT, no incumbent: a viable base the budget CAN serve beats a
                     // capability floor it cannot reach. Serve the plan instead of booting dark
@@ -432,7 +476,7 @@ impl ServingDaemonModule {
                                  incumbent plan until the squeeze proves sustained (#368)",
                             );
                             self.retain_plan_for_intent(intent_revision, candidates);
-                            return;
+                            return PlanOutcome::Decided;
                         }
                         // Sustained: a real squeeze. Adopt, and re-arm the gate.
                         self.downshift_streak.store(0, Ordering::Relaxed);
@@ -623,6 +667,7 @@ impl ServingDaemonModule {
                 self.publish_plan_snapshot(intent_revision, None);
             }
         }
+        PlanOutcome::Decided
     }
 }
 
@@ -736,3 +781,38 @@ mod training_lease_tests {
         );
     }
 }
+
+/// What one planning pass decided: a plan published, retained or refused (`Decided`), or nothing,
+/// because the plan was computed from a footprint record that this pass retired, so the caller
+/// re-plans at once from the candidates recomputed without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PlanOutcome {
+    Decided,
+    RetiredItsRecord,
+}
+
+/// What a plan below the residents' requirement does. A published plan stands instead when one
+/// exists. On a cold boot, a plan computed from the footprint record its own pass retired is
+/// invalid by construction, so the pass re-plans; one starved by inputs that survived the pass is
+/// published (a dark node is worse than a starved seat).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Starved {
+    PreviousStands,
+    Replan,
+    Publish,
+}
+
+pub(super) fn starved_plan(previous_stands: bool, retired_its_record: bool) -> Starved {
+    match (previous_stands, retired_its_record) {
+        (true, _) => Starved::PreviousStands,
+        (false, true) => Starved::Replan,
+        (false, false) => Starved::Publish,
+    }
+}
+
+/// Run planning passes until one decides: a pass that retired the record its plan came from
+/// re-runs at once. Each retire removes a record from a finite set, so this ends.
+pub(super) fn until_decided(mut pass: impl FnMut() -> PlanOutcome) {
+    while pass() == PlanOutcome::RetiredItsRecord {}
+}
+

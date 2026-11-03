@@ -343,6 +343,7 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
         .clone()
         .expect("a cold boot publishes the best runnable plan, starved or not");
     assert!(starved.served_context_window <= 32_768);
+    assert!(starved.served_context_window > 2_048, "a genuinely starved node launches its own measured window, never a 2,048 fallback (Cormac's case 2 on #5739)");
     assert!(
         !crate::inference::planning::serving_plan::persona_lane_holds(
             starved.served_context_window,
@@ -656,3 +657,35 @@ fn each_sequence_is_published_its_share_of_the_shared_pool() {
     assert_eq!(sequence_share(290_560, 1, 100_000), (100_000, 1), "one sequence is capped at the trained window");
     assert_eq!(sequence_share(290_560, 0, 262_144), (262_144, 1), "no sequence count is one, never a divide by zero");
 }
+
+// what this catches (b4be7bc59 on the M5, 2026-11-03 18:18Z, rolled back): a cold boot publishing
+// (so launching once, for the engine's life) a plan computed off the footprint record the same pass
+// retired: 2,048 at a sampled 23 GB; the next pass, without the record, planned 2 x 184,320. A
+// starved plan re-plans exactly when its own pass retired its record and nothing is published yet;
+// a published plan stands; a plan starved by inputs that survived is published (a dark node is
+// worse). And the loop re-runs a pass only while it retires its record (Cormac's case 1 on #5739).
+#[test]
+fn a_pass_that_retires_its_record_re_plans_never_publishing_the_starved_plan() {
+    use super::super::planning::{starved_plan, until_decided, PlanOutcome, Starved};
+    assert_eq!(starved_plan(false, true), Starved::Replan, "cold boot, record retired: re-plan, never publish");
+    assert_eq!(starved_plan(false, false), Starved::Publish, "cold boot, starved by surviving inputs: publish");
+    assert_eq!(starved_plan(true, true), Starved::PreviousStands, "a published plan stands");
+    assert_eq!(starved_plan(true, false), Starved::PreviousStands);
+    let mut passes = vec![PlanOutcome::RetiredItsRecord, PlanOutcome::RetiredItsRecord, PlanOutcome::Decided].into_iter();
+    let mut ran = 0;
+    until_decided(|| {
+        ran += 1;
+        passes.next().expect("no pass after the deciding one")
+    });
+    assert_eq!(ran, 3, "re-plans while a pass retires its record, stops at the pass that decides");
+}
+
+// what this catches: a launch before any plan exists (no sampled budget, no plan published):
+// the engine must not start from defaults (Cormac's case 3 on #5739).
+#[tokio::test]
+async fn no_plan_published_means_no_launch() {
+    let daemon = daemon_with(Arc::new(FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true)));
+    assert!(daemon.plan_tx.borrow().plan.is_none(), "nothing planned yet");
+    assert!(daemon.reconcile_to_plan().is_none(), "no plan, no launch");
+}
+
