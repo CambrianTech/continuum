@@ -185,3 +185,86 @@ gives memory back to the user's app.
   - The IPC cost is one request per act plus 30-120 token frames a second over a unix socket: microseconds against a 60 s act.
   - MODULE-ARCHITECTURE §9.2 rule 2 asks for one protocol per seam, local or remote.
   - The in-process `ServingPort` implementation exists only for the validator and tests.
+
+## 7. Memory is conserved across minds, and the engine says what it holds (2026-11-03)
+
+Joel, 2026-11-03: "One slot grows in context and the other shrinks and same for genome sizes. The
+goal here is dynamic allocation"; "think harder about conservation around multiple minds or sharing
+what you need across api boundaries so that intelligence can manage"; "you just treat llama.cpp
+like any other daemon and interface with it. It's fully under your control." The engine is our
+daemon. Nothing about a mind's memory is fixed at launch and guessed: the engine reports what it
+holds, the core tells it where her prompt's boundaries are, and the core's ledger decides.
+
+### 7.1 What the engine holds (fork `resident_state`, read live on the M5, 2026-11-03 12:51Z)
+
+Qwen3.6-35B-A3B, `-c 257214 --parallel 2 --ctx-checkpoints 32`, two 13.9k-token prompts in:
+
+| Holder | Bytes | Notes |
+|---|---|---|
+| Target weights | 20.69 GB | mmapped |
+| Target KV + recurrent state | 2.14 GB | 8,317 B/token over 257,536 tokens |
+| Target compute graph | 1.87 GB | one graph for the shared pool |
+| Draft (MTP) context | 3.15 GB | 1.34 weights, 0.53 KV, 1.29 compute: unreported before |
+| Projector | 0.90 GB | unreported before |
+| One checkpoint | 94.6 MB | x 32 per sequence = 3.03 GB per mind at the ceiling |
+
+`memory_breakdown` alone covered the first three. The rest was what the plan had been inferring from
+the process footprint as a per-lane fixed term (2.8 to 4.5 GB a minute apart).
+
+### 7.2 Why a mind's prompt re-reads: measured, not assumed
+
+Engine log, 1,244 checkpoint resumes: 80% resumed within 8k tokens of the end (median 2,431 tokens
+re-read, her changing tail). The other 20% fell back to her head-end checkpoint (~11k tokens).
+The prompt captures of the four residents (`fixtures/prompt-captures`, 611 consecutive pairs) say why:
+
+| Where her next prompt first differs | Pairs |
+|---|---|
+| Her changing tail | 441 |
+| Identical | 62 |
+| She moved to another room (activity) | 56 |
+| Live state in an early block: `room-wall` 12, `recall` 8, `workspace-map` 6, `room-kanban` 4 (a "557 claimable" counter), other 10 | 40 |
+| Tool surface changed | 12 |
+
+Minds share only 6,177 chars of system prompt with each other (it diverges inside it). The
+recurring 11,114-token checkpoint is each mind's own head end, not a shared one.
+
+So the blind every-4k checkpoints were covering three defects upstream of the engine: live values in
+blocks meant to be stable, a mind's activities each restarting her view, and an unstable tool
+surface (goal 10).
+
+### 7.3 The contract across the seam
+
+- **Core to engine, per request:** her prompt's boundaries as token positions: the head end, the
+  stable end (where her changing tail starts), and each activity's span. The request already
+  carries `view_messages` spans for this. The engine keeps a checkpoint exactly at the stable end
+  (one per mind per activity), never by a count or a step.
+- **Engine to core, live (`/slots`, read on the server thread):** per sequence, the tokens it holds,
+  its checkpoints and their bytes, and what is shared with another sequence; on `/props`, every
+  fixed holder (7.1). A core never infers a holding from the process or the device.
+- **The core's ledger, continuous:** weights and the graph are fixed claims; each mind's context is
+  her grant, growing with her and accommodated proportionally (Joel: "it might still be given less
+  than that, just try to accommodate"; her budget compresses to the grant); an in-flight turn's grant
+  never shrinks. Checkpoints and pages are held at their live bytes. Under pressure a cold mind's
+  unique state pages to RAM, then disk, by her activity temperature, before any grant shrinks.
+- **Conservation:** what is identical across sequences is held once. Today that is the first 6k
+  chars; ordering the shared constitution and the stable tool surface ahead of her identity makes
+  the shared head the system prompt plus the tools, one KV run and one checkpoint for every mind
+  (`seq_cp` of the attention cells plus the head checkpoint, §1). Genes follow the same rule: one
+  copy per adapter, attached to every mind whose focus selects it.
+
+### 7.4 Order of work
+
+1. Mind side: no live value in a stable block. The kanban counter, the wall, the workspace map and
+   recall move to her tail as appended events; a ratchet refuses a live value rendered into a block
+   before the stable end. Validator: rerun 7.2's classification on fresh captures, early-block
+   pairs to 0.
+2. Mind side: her activities are one view (she is one integrated mind across activities); a move
+   between rooms appends, it does not restart her. Validator: room-switch pairs re-read only the
+   switch.
+3. Fork: the boundary checkpoint verb (keep one at the stable end the request names) replaces
+   `--ctx-checkpoints N` / `--checkpoint-min-step`; per-sequence holdings on `/slots` (`resident_state`
+   and slot `checkpoints`, fork #91, are the first part).
+4. Core: the ledger reads live holdings (`ResidentReport`) and sizes the pool from them; every seated
+   mind is a sequence; the process-footprint inference (`lane_footprint`, `fixed_per_lane_bytes`) is
+   deleted.
+5. Shared head (S7): constitution and tools ahead of identity, one copy for all minds.
