@@ -33,7 +33,7 @@ The original draft listed P1/P3/Q5/Q7 as "hard prerequisites that MUST land in s
 
 - **Q1**: `bootstrap_planned` / `derive_spawn_plan` / `build_profile` take `&Registry` instead of `&Arc<Registry>`.
 - **Q3**: `PersonaAircRuntimeRegistry` extended to `PersonaSlot { runtime, service_loop }`. `attach_service_loop`, `is_service_loop_finished`, `shutdown_slot` methods added. One keyspace owns both.
-- **P2**: `plan_for_tier` returns single Helper. `debug_assert!(plan.len() <= 1)` at the producer. `slice_14_restores_helper_plus_coder_for_compat` test pinned `#[ignore]` until slice 14.
+- **P2**: `plan_for_tier` returns single Helper. `debug_assert!(plan.len() <= 1)` at the producer. Its ignored slice-14 spec test was deleted (#5395, never ran); slice 14 restores multi-role plans with its own test.
 - **Boot composition**: `crate::ipc::start_server` boot loop replaced by `bootstrap_planned → materialize_adapters → spawn_persona_service → attach_service_loop`. Old welcome-log-only path deleted per [[organization-purity-as-we-migrate]].
 - **Q2 (partial)**: boot uses `HwCapabilityTier::CpuOnly + HwTierCategory::Compat` hardcoded. `detect_host_capability(&gpu_monitor, &system_info)` is a 3-line replacement once a production `GpuMonitor` constructor exists (no production callsite builds one today; only tests do). TODO in `ipc/mod.rs` cites task #52.
 
