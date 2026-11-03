@@ -93,13 +93,24 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy) -> WindowRu
         if total > u64::from(scenario.pool_tokens) {
             out.over_pool += 1;
         }
-        let demanded: u64 = current.iter().map(|d| u64::from(d.required_tokens)).sum();
-        // Granted past demand: the room an idle mind holds that a reading mind could have used.
+        // What each mind is owed: her demand, and while a turn is in flight at least what it
+        // holds, since that room cannot be taken back mid-turn. "Every demand fits" and "slack"
+        // are both judged against it (Cormac on #5718: a fallen in-flight demand beside a big
+        // neighbour read as fitting when the floors did not).
+        let owed = |d: &Demand| -> u64 {
+            let floor = match d.in_flight {
+                true => held.get(&d.mind).copied().unwrap_or(0), // unwrap_or: a turn that holds nothing yet is owed only her demand
+                false => 0,
+            };
+            u64::from(d.required_tokens.max(floor))
+        };
+        let demanded: u64 = current.iter().map(owed).sum();
+        // Granted past what is owed: room an idle mind holds that a reading mind could have used.
         let slack: u64 = current
             .iter()
             .map(|d| {
                 let granted = grants.get(&d.mind).copied().unwrap_or(0); // unwrap_or: a mind granted nothing holds no slack
-                u64::from(granted).saturating_sub(u64::from(d.required_tokens))
+                u64::from(granted).saturating_sub(owed(d))
             })
             .sum();
         for demand in &current {
@@ -250,6 +261,21 @@ mod tests {
             name: "falling-demand-in-flight",
             pool_tokens: 100_000,
             events: vec![e(0, 1, 60_000, true), e(1, 1, 30_000, true), e(2, 2, 20_000, false)],
+        };
+        let run = run(&scenario, &mut DemandFollowing);
+        assert!(run.kept(), "{run:?}");
+    }
+
+    // what this catches (Cormac on #5718): the validator judging "every demand fits" on raw
+    // demands. A turn in flight holding 60k now asks 30k beside a 50k neighbour: the raw sum
+    // fits 100k, the floors do not, so the neighbour's 40k is the pool's limit, not a breach.
+    #[test]
+    fn fits_and_slack_count_a_turn_in_flight_at_what_it_holds() {
+        let e = |at_ms, mind, required_tokens, in_flight| DemandEvent { at_ms, mind, required_tokens, in_flight };
+        let scenario = WindowScenario {
+            name: "held-floor-beside-a-big-neighbour",
+            pool_tokens: 100_000,
+            events: vec![e(0, 1, 60_000, true), e(1, 1, 30_000, true), e(2, 2, 50_000, false)],
         };
         let run = run(&scenario, &mut DemandFollowing);
         assert!(run.kept(), "{run:?}");
