@@ -131,7 +131,7 @@ mod control;
 pub use control::{
     EngineRetirementError, EngineRetirementReceipt, EngineRetirementStatus, EnsureOutcome,
     LlamaServerControl, LlamaServerError, OwnedEngineIdentity, OwnedRestoreSession,
-    OwnedServingTarget, ServingLifecycleCheck,
+    ObservedGeometry, OwnedServingTarget, ServingLifecycleCheck,
 };
 mod prepared_launch;
 use prepared_launch::{unsupported_launch_environment, PreparedLocalLaunch};

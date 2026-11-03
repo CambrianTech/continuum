@@ -103,10 +103,16 @@ impl ServingDaemonModule {
                 .map(|footprint| {
                     attribute_serving(
                         footprint.peak_resident_bytes(
-                            launch.observed_context_window,
-                            launch.observed_lanes,
+                            // Each sequence's share of the pool, so window x lanes is the pool.
+                            sequence_share(
+                                launch.observed.pool_tokens,
+                                launch.observed.lanes,
+                                launch.target.model.context_window,
+                            )
+                            .0,
+                            launch.observed.lanes,
                         ),
-                        launch.observed_lanes,
+                        launch.observed.lanes,
                         launch.launched_host_prompt_cache_mib,
                     )
                 })

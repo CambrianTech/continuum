@@ -136,6 +136,10 @@ impl LlamaServerControl for FakeServer {
         // so the reconcile publishes a READY snapshot carrying a real window.
         Ok(11008)
     }
+    async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError> {
+        // One sequence's worth of the fixed window above: the share these tests publish.
+        Ok(11008)
+    }
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
         // 0 = "this fake's /props names no slot count", i.e. nothing to compare
         // on the lane axis. These daemon tests assert the window/readiness path,
@@ -284,8 +288,8 @@ pub(crate) async fn exercise_cancelled_exclusive_teacher(
     prior.adapters = original.target.adapter_paths();
     prior.base_url = format!("{root}/v1");
     prior.ready = true;
-    prior.served_context_window = original.observed_context_window;
-    prior.lanes = original.observed_lanes;
+    prior.served_context_window = original.observed.context_window;
+    prior.lanes = original.observed.lanes;
     prior.host_prompt_cache_mib = original.launched_host_prompt_cache_mib;
     daemon.serving_tx.send_replace(prior.clone());
     daemon.acknowledge_verified_target(&prior, daemon.intent.snapshot().revision);

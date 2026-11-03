@@ -326,15 +326,26 @@ impl ServingDaemonModule {
                 }
                 EnsureOutcome::Degraded { .. } | EnsureOutcome::Superseded => 0,
             };
-            // ONE SHARED POOL: an engine on it names the whole pool as each sequence's window
-            // in `/props`; each sequence is published its share (`sequence_share`), so what the
-            // readers budget and charge is the pool. An engine not known to be on it publishes
-            // its per-slot window as served.
+            // ONE SHARED POOL: each sequence is published its share of the pool the engine
+            // reports (`served_pool_tokens`), so what the readers budget and charge is the pool.
+            // Never the slot's `n_ctx`: the fork caps it at the trained window, and dividing that
+            // again halved the IntelMac's share (2026-11-03). An unreadable pool publishes the gap
+            // and retries next tick. An engine not known to be on the pool publishes its slot.
             let (served_window, served_lanes) =
                 match (served_window > 0, server.launched_on_shared_pool()) {
-                    (true, Some(true)) => {
-                        sequence_share(served_window, served_lanes, target.model.context_window)
-                    }
+                    (true, Some(true)) => match server.served_pool_tokens().await {
+                        Ok(pool) => sequence_share(pool, served_lanes, target.model.context_window),
+                        Err(e) => {
+                            continuum_base::probe!(
+                                target: "continuum_core::modules::serving_daemon", class = "serving.reconcile",
+                                desired = desired.as_str(),
+                                error = %e,
+                                "server ready on the shared pool but its pool is unreadable — \
+                                 publishing the gap (no guessed share; retries next tick)",
+                            );
+                            (0, served_lanes)
+                        }
+                    },
                     _ => (served_window, served_lanes),
                 };
             // The grant the engine was LAUNCHED with: the spawn fact on the control, or — for

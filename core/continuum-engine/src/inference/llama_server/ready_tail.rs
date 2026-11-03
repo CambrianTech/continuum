@@ -190,6 +190,7 @@ impl LlamaServerProcess {
         }
         let context = self.served_context_window().await?;
         let slots = self.served_lanes().await?;
+        let pool = self.served_pool_tokens().await?;
         if context == 0 || slots == 0 || self.child_exit_status().is_some() {
             return Err(LlamaServerError::Spawn(
                 "engine readiness lacks live slot geometry".into(),
@@ -231,7 +232,7 @@ impl LlamaServerProcess {
         transition
             .ready(
                 &self.root,
-                &generation,
+                generation,
                 crate::inference::slots::KvPageContract {
                     model_id: target.model.id.clone(),
                     model: gguf,
@@ -253,13 +254,12 @@ impl LlamaServerProcess {
             }
         }
         self.record_verified_target(
-            &generation,
+            generation,
             target,
             invocation,
             Some(prepared.clone()),
             &prepared.engine_program,
-            context,
-            slots,
+            ObservedGeometry { context_window: context, lanes: slots, pool_tokens: pool },
         );
         Ok(())
     }
