@@ -3,8 +3,11 @@
 //! launch keeps its pool (three rollbacks on the M5, 2026-11-03), so the first STEADY plan, whose
 //! budget was sampled after the engine is up with its own footprint credited back once, re-sizes
 //! the pool by the same `launch_pool` the launch used. When that proves a strictly larger pool than
-//! the engine reports holding, the daemon asks for one relaunch into it; never twice per engine
-//! process, never downward. Goes when the engine resizes live (S2).
+//! the engine reports holding, the daemon asks for one relaunch into it: once per model per core
+//! run, never downward. Not once per engine process: the relaunch makes a new process, and on the
+//! M5 on 2026-11-03 (b7c815484) a per-pid try grew 104,960 -> 152,064 and then, 70 s later, again
+//! to 161,130 (+6% for another 17 s of held admission), chaining while each steady plan read a little
+//! higher. Goes when the engine resizes live (S2).
 use super::*;
 
 impl ServingDaemonModule {
@@ -35,7 +38,7 @@ impl ServingDaemonModule {
         if crate::inference::llama_server::growth_requested(engine.pid) {
             return true;
         }
-        if self.pool_growth_tried.load(Ordering::Relaxed) == u64::from(engine.pid) {
+        if self.pool_growth_models.lock().contains(desired) {
             return false;
         }
         let Some(model) = (self.model_resolver)(desired) else { return false };
@@ -46,7 +49,9 @@ impl ServingDaemonModule {
         if !grows(self.serving_footprint_reported(), budget, running, wanted) {
             return false;
         }
-        self.pool_growth_tried.store(u64::from(engine.pid), Ordering::Relaxed);
+        if !first_try(&mut self.pool_growth_models.lock(), desired) {
+            return false;
+        }
         let pid = engine.pid;
         continuum_base::probe!(
             target: "continuum_core::modules::serving_daemon", class = "serving.pool.grow_due",
@@ -77,6 +82,13 @@ impl ServingDaemonModule {
     }
 }
 
+/// Record the one growth try for `model` this core run; `false` when it was already tried. The
+/// engine process is not part of the key: the relaunch makes a new one, and a per-pid try let every
+/// relaunch grow again.
+pub(super) fn first_try(tried: &mut std::collections::BTreeSet<String>, model: &str) -> bool {
+    tried.insert(model.to_owned())
+}
+
 /// PURE: whether a steady plan proves the pool should grow. Steady (serving's footprint reported,
 /// so the budget was sampled with the engine up), a sampled budget, a known running pool, and a
 /// wanted pool strictly larger. Equal or smaller never relaunches.
@@ -86,7 +98,7 @@ pub(super) fn grows(steady: bool, budget_bytes: u64, running_tokens: u32, wanted
 
 #[cfg(test)]
 mod tests {
-    use super::grows;
+    use super::{first_try, grows};
 
     // what this catches (the M5 2026-11-03, 81aef1844: a 16,640 pool launched from a boot-time
     // transient and kept): a pool that never grows from a bad launch, or a bridge that relaunches
@@ -99,6 +111,21 @@ mod tests {
         assert!(!grows(true, 23_000_000_000, 0, 257_536), "the running pool unknown: never");
         assert!(!grows(true, 23_000_000_000, 257_536, 257_536), "equal: no relaunch");
         assert!(!grows(true, 23_000_000_000, 1_310_720, 257_536), "downward never relaunches (590df4bc3's pool stays)");
+    }
+
+    // what this catches (the M5, 2026-11-03, b7c815484): the bridge chaining. It grew 104,960 to
+    // 152,064, and the relaunched engine (a new pid) was eligible again: 161,130 seventy seconds
+    // later, another 17 s of held admission. One try per model per core run, whatever process
+    // serves it; a different model is a new launch and gets its own.
+    #[test]
+    fn the_one_growth_is_per_model_never_per_engine_process() {
+        let mut tried = std::collections::BTreeSet::new();
+        assert!(first_try(&mut tried, "qwen3.6-35b-a3b"), "the first steady plan's growth");
+        assert!(
+            !first_try(&mut tried, "qwen3.6-35b-a3b"),
+            "the relaunched engine serves the same model: no second relaunch"
+        );
+        assert!(first_try(&mut tried, "qwen3.6-27b"), "a different model is a new launch");
     }
 
 }
