@@ -186,6 +186,7 @@ impl ServingDaemonModule {
         // lane forever, #175). Read+clear here so exactly one reconcile acts on it.
         let force_relaunch = self.force_relaunch.clone();
         let server = self.server.clone();
+        let served_pool = Arc::clone(&self.served_pool);
         let serving_tx = self.serving_tx.clone();
         let verified_target = self.verified_target.clone();
         let intent_owner = self.intent.clone();
@@ -336,7 +337,10 @@ impl ServingDaemonModule {
             let (served_window, served_lanes) =
                 match (served_window > 0, server.launched_on_shared_pool()) {
                     (true, Some(true)) => match server.served_pool_tokens().await {
-                        Ok(pool) => sequence_share(pool, served_lanes, target.model.context_window),
+                        Ok(pool) => {
+                            served_pool.store(pool, Ordering::Relaxed);
+                            sequence_share(pool, served_lanes, target.model.context_window)
+                        }
                         Err(e) => {
                             continuum_base::probe!(
                                 target: "continuum_core::modules::serving_daemon", class = "serving.reconcile",
@@ -345,10 +349,15 @@ impl ServingDaemonModule {
                                 "server ready on the shared pool but its pool is unreadable — \
                                  publishing the gap (no guessed share; retries next tick)",
                             );
+                            served_pool.store(0, Ordering::Relaxed);
                             (0, served_lanes)
                         }
                     },
-                    _ => (served_window, served_lanes),
+                    // Fixed slots: the engine's pool is literally its slots, each a full window.
+                    _ => {
+                        served_pool.store(served_window.saturating_mul(served_lanes), Ordering::Relaxed);
+                        (served_window, served_lanes)
+                    }
                 };
             // The grant the engine was LAUNCHED with: the spawn fact on the control, or — for
             // a lane this core did not spawn (ADOPTED; every deploy leaves the lane up for

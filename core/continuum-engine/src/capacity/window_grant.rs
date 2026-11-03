@@ -3,8 +3,11 @@
 //! accommodates it doesn't do stupid division"; "Stupid divisions or constants are always gonna
 //! fail").
 //!
-//! [`DemandFollowing`] grants every mind her required tokens when the pool holds them all. When it
-//! cannot, a turn in flight keeps at least what it holds (a grant never shrinks under a running
+//! [`DemandFollowing`] grants every mind her required tokens when the pool holds them all, and no
+//! more: what is left stays unallocated in the shared pool, where any sequence may grow into it and
+//! a mind whose need rises is granted it on the next tick. A slack share granted as a window would
+//! be pinned by a turn in flight while another mind's real need went unmet (Cormac on #5733). When
+//! the pool cannot hold every need, a turn in flight keeps at least what it holds (a grant never shrinks under a running
 //! turn) and the rest share what remains in proportion to what each still needs, so every prompt
 //! compresses to its grant instead of one mind being cut while another holds slack. The pool is
 //! the engine's; paging a cold mind out and making the next one wait for admission are how the
@@ -23,6 +26,9 @@ pub struct PoolGrants {
     /// window), a slot's window on fixed slots. No grant exceeds it.
     pub per_sequence_cap: u32,
     pub by_mind: BTreeMap<uuid::Uuid, u32>,
+    /// The minds whose requirement is not their own measurement yet but the population's (the
+    /// median measured requirement on the seat), marked so no reader takes it for hers.
+    pub from_population: std::collections::BTreeSet<uuid::Uuid>,
 }
 
 impl PoolGrants {
@@ -49,10 +55,9 @@ pub trait WindowPolicy<K> {
     fn grant(&mut self, demands: &[Demand<K>], held: &BTreeMap<K, u32>, pool_tokens: u32) -> BTreeMap<K, u32>;
 }
 
-/// Demand-following over one shared pool: every mind is granted her demand when the pool holds
-/// them all, and the slack beside it in proportion to her demand up to her ceiling, so she can
-/// grow before her next turn is measured and nothing sits idle; otherwise in-flight grants are
-/// kept whole and the rest share what remains in proportion to their demand.
+/// Demand-following over one shared pool: every mind is granted her demand, up to her ceiling,
+/// when the pool holds them all; otherwise in-flight grants are kept whole and the rest share what
+/// remains in proportion to their demand. Nothing beyond a demand is granted.
 pub struct DemandFollowing;
 
 impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
@@ -77,16 +82,12 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
             .iter()
             .map(|d| u64::from(d.required_tokens.saturating_sub(floor(d))))
             .sum();
-        // When every demand fits, what is left once each has hers is slack: shared in proportion
-        // to demand, each up to her ceiling. Shares round down, so they never exceed the slack.
-        let slack = rest.saturating_sub(needed);
-        let demanded: u64 = demands.iter().map(|d| u64::from(d.required_tokens)).sum();
         demands
             .iter()
             .map(|d| {
                 let need = u64::from(d.required_tokens.saturating_sub(floor(d)));
                 let more = match needed <= rest {
-                    true => need + (slack * u64::from(d.required_tokens)).checked_div(demanded).unwrap_or(0), // unwrap_or: no demand anywhere shares no slack
+                    true => need,
                     false => (need * rest).checked_div(needed).unwrap_or(0), // unwrap_or: nothing needed means nothing more
                 };
                 let granted = u64::from(floor(d)).saturating_add(more).min(u64::from(d.ceiling.max(floor(d))));
@@ -106,20 +107,28 @@ mod tests {
     }
 
     // what this catches: a window divided by a count (Joel, 2026-11-03: "What a mind needs not what
-    // you dictate"). Minds that fit get what they need plus a share of the slack by need, never an
-    // equal split, never past the pool or one sequence's ceiling.
+    // you dictate"). Minds that fit get exactly what they need, never an equal split, never past one
+    // sequence's ceiling; what is left stays in the pool, granted to no one.
     #[test]
-    fn every_mind_gets_what_she_needs_and_the_slack_follows_need() {
+    fn every_mind_gets_what_she_needs_and_the_rest_stays_in_the_pool() {
         let pool = 257_536;
         let demands = [demand(1, 70_000, false, pool), demand(2, 20_000, false, pool), demand(3, 10_000, false, pool)];
         let grants = DemandFollowing.grant(&demands, &BTreeMap::new(), pool);
-        for d in &demands {
-            assert!(grants[&d.mind] >= d.required_tokens, "mind {} needs {} and got {}", d.mind, d.required_tokens, grants[&d.mind]);
-        }
-        assert!(grants.values().map(|&g| u64::from(g)).sum::<u64>() <= u64::from(pool), "never past the pool");
-        assert!(grants[&1] > grants[&2] && grants[&2] > grants[&3], "the slack follows need, not a count: {grants:?}");
-        let capped = DemandFollowing.grant(&[demand(1, 10_000, false, 32_768)], &BTreeMap::new(), pool);
+        assert_eq!(grants, BTreeMap::from([(1, 70_000), (2, 20_000), (3, 10_000)]));
+        let capped = DemandFollowing.grant(&[demand(1, 40_000, false, 32_768)], &BTreeMap::new(), pool);
         assert_eq!(capped[&1], 32_768, "no grant past what one sequence can hold");
+    }
+
+    // what this catches: slack granted as windows and then pinned by a turn in flight while another
+    // mind's real need goes unmet (Cormac on #5733: pool 65,536, A and B each granted 32,768 for a
+    // 10,000 need; A in flight; B rose to 40,000 and got 32,768 while A held 22,768 unused).
+    #[test]
+    fn a_running_turn_pins_only_what_it_needed_and_a_rising_need_is_met() {
+        let pool = 65_536;
+        let first = DemandFollowing.grant(&[demand(1, 10_000, false, pool), demand(2, 10_000, false, pool)], &BTreeMap::new(), pool);
+        assert_eq!(first, BTreeMap::from([(1, 10_000), (2, 10_000)]));
+        let next = DemandFollowing.grant(&[demand(1, 10_000, true, pool), demand(2, 40_000, false, pool)], &first, pool);
+        assert_eq!(next, BTreeMap::from([(1, 10_000), (2, 40_000)]), "B's need is met beside A's running turn");
     }
 
     // what this catches: needs past the pool cutting a running turn, or anyone's grant decided by a
