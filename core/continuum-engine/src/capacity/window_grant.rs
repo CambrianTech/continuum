@@ -93,17 +93,20 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
     ) -> BTreeMap<K, u32> {
         // Her need is never trimmed: a need above what one sequence can hold right now (a small pool)
         // waits for room. The model's own trained limit is applied by the caller before this.
-        let need = |d: &Demand<K>| d.required_tokens;
-        // A turn in flight stays whatever its need now says: its window cannot change mid-turn.
-        let demands: Vec<&Demand<K>> = demands.iter().filter(|d| d.in_flight || need(d) <= d.ceiling).collect();
-        let demands = demands.as_slice();
         let holds = |d: &Demand<K>| held.get(&d.mind).copied().unwrap_or(0).min(d.ceiling); // unwrap_or: a mind with no grant yet holds nothing
+        // Only a mind who holds nothing is dropped for a need above what one sequence holds now (she
+        // waits). A holder whose need outgrew it keeps what she holds as her need: her binding stays
+        // counted, so it can never be bound beside the pool uncounted (Cormac on #5745: A holding 40k,
+        // need 70k, dropped while B was granted 60k bound 100k on a 65,536 pool).
+        let need = |d: &Demand<K>| match d.required_tokens > d.ceiling {
+            true => holds(d),
+            false => d.required_tokens,
+        };
+        let demands: Vec<&Demand<K>> = demands.iter().filter(|d| need(d) > 0).collect();
+        let demands = demands.as_slice();
         // What each mind keeps when there is room for everyone: at least her need, and what she already
         // holds when that is more (no shrink for drift).
-        let want = |d: &Demand<K>| match need(d) > d.ceiling {
-            true => holds(d), // a turn in flight whose need outgrew one sequence keeps what it holds
-            false => need(d).max(holds(d)),
-        };
+        let want = |d: &Demand<K>| need(d).max(holds(d));
         let total = |f: &dyn Fn(&Demand<K>) -> u32| demands.iter().map(|d| u64::from(f(d))).sum::<u64>();
         let pool = u64::from(pool_tokens);
         if total(&want) <= pool {
@@ -239,6 +242,24 @@ mod tests {
         assert_eq!(grants.get(&2), Some(&25_000), "B keeps her binding as a floor");
         assert!(grants.get(&1).is_some_and(|&g| g >= 40_000), "A keeps at least what she holds: {grants:?}");
         assert!(!grants.contains_key(&3), "the newcomer waits: no room for her whole need");
+    }
+
+
+    // what this catches (Cormac on #5745): a holder whose need outgrew one sequence dropped from the
+    // grants while keeping her binding, so a newcomer's grant bound past the pool. She keeps what she
+    // holds, counted; the newcomer is admitted only into what is left.
+    #[test]
+    fn a_holder_whose_need_outgrew_the_sequence_keeps_her_counted_binding() {
+        let pool = 65_536;
+        let held = BTreeMap::from([(1, 40_000)]);
+        let demands = [demand(1, 70_000, false, pool), demand(2, 60_000, false, pool)];
+        let grants = DemandFollowing.grant(&demands, &held, pool);
+        assert_eq!(grants.get(&1), Some(&40_000), "she keeps what she holds: {grants:?}");
+        let bound: u64 = demands
+            .iter()
+            .map(|d| u64::from(grants.get(&d.mind).copied().or_else(|| held.get(&d.mind).copied()).unwrap_or(0)))
+            .sum();
+        assert!(bound <= u64::from(pool), "bound {bound} on a {pool} pool: {grants:?}");
     }
 
 }
