@@ -2975,6 +2975,7 @@ dependencies = [
  "continuum-embedding",
  "continuum-engine",
  "continuum-experience",
+ "continuum-gateway",
  "continuum-genome",
  "continuum-git",
  "continuum-grid",
@@ -3204,6 +3205,23 @@ name = "continuum-flow"
 version = "0.1.0"
 dependencies = [
  "tokio",
+]
+
+[[package]]
+name = "continuum-gateway"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "continuum-base",
+ "continuum-capture",
+ "continuum-engine",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

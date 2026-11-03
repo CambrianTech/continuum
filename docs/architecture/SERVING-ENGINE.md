@@ -46,6 +46,244 @@
 
 **Page format.** Disk pages stay `llama_state_seq_save_file` output plus the `.ckpt` (0x434B5054) and `.lora` sidecars (2716-2826). `a-<persona>.bin` and `LEDGER_FORMAT 2` (saved_ledger.rs:36-62) then carry over unchanged. One gap: the `.bin` holds only `ctx_tgt` (2809), so the MTP draft KV comes back cold.
 
+## 1a. `MindMemory`: the `seq_table` and `pager` owner over today's llama-server (2026-10-27)
+
+**Why now.** On 2026-10-27 a mind's KV memory broke four ways in one afternoon on the M5:
+- the tool head changed at launch;
+- a save was cut by the core's exit;
+- a resident was left unsaved in her slot at the stop;
+- the boot plan was computed before the ledger was credited.
+
+Each was patched in one lifecycle path (#5538, #5540). The inventory that followed, at canary 107af9167, found 41 paths and 9 decisions made in 2 to 6 places each:
+- who may evict a resident;
+- when a page is restorable;
+- the save-the-evictee procedure, written three times;
+- save-all before the engine dies, four times, and missing in idle retirement;
+- recording residents lost unsaved;
+- quarantine;
+- slot ownership;
+- scratch policy;
+- page-dir ownership.
+
+Joel: "you can't get anything to work unless there is one daemon and centralized location." So `seq_table` and `pager` (§1) are built FIRST, as one owner speaking HTTP to today's llama-server (step 1 of §2). When S1–S5 land, its mechanism changes and its callers do not.
+
+**One owner per engine endpoint: `MindMemory`.** It holds the slot attribution, the saved set, the ledger file, page IO and the quarantine. Nothing else calls `/slots/*` or writes the ledger. It runs as a `ServiceModule` in the canonical shape (CONCURRENCY-STYLE-GUIDE). Its stop is its own `SettleBeforeStop`.
+
+| Request | Replaces | Contract |
+|---|---|---|
+| `seat(PageKey, Purpose) -> Seat` | `lease` + `pin_slot` + `plan_paging` + the turn's paging closure (turn_admission.rs:344-472); `borrow_slot_for_transient` (:517); `warm_ahead`'s paging; `cache_probe`'s raw `/slots` IO | RAII. She holds a pinned slot with her KV in it (resident, or restored from her page), or the seat says why she starts cold. `Purpose` is Turn, WarmAhead or Transient: a Transient seat may borrow the cheapest resident's slot, which is saved first. |
+| `pause(Why) -> PauseReceipt` | `checkpoint_before_replacement`, `checkpoint_owned_restore`, `checkpoint_adopted_before_replacement`, `checkpoint_every_endpoint` (stop), and the missing save in `idle_if_current` | Closes seating and drains the seats, then saves every resident with a confirmed save. A resident whose save fails is recorded as lost, by name. Every engine retirement goes through it: relaunch, academy, idle, adopted retirement, stop. |
+| `resume(PauseReceipt, Generation)` / `adopt(Generation)` | `ready()`'s pool swap and ledger carry or load; `adopt_engine_ledger`; `resume_suspension` | Boot, relaunch and adopt load the one ledger by the one rule (fingerprint plus incarnation), and seat nothing. |
+| `forget(PageKey, Why)` | `note_page_lost` on a refused restore; nothing today on an in-place gene change | A page whose KV no longer means what it did (a gene change, a refused restore) stops being restorable. |
+
+**Inside it, each decision exactly once:**
+- `evict(slot)`: the single save-the-evictee procedure (invalidate, save, confirm).
+- `restorable(key)`: the single rule for when a page is offered.
+- the ledger written only on its own transitions;
+- quarantine owned and cleared by it;
+- the scratch policy decided once, in `seat`.
+
+**Deleted when callers move:**
+- the paging block of `turn_admission.rs` and `borrow_slot_for_transient`;
+- `slots/page_io.rs` (#5540's gate, which becomes `MindMemory`'s own stop);
+- the four `checkpoint_*` variants;
+- public `take_resident` / `forget_resident` / `plan_paging` / `note_saved` / `note_page_lost`;
+- `trim_page_store_after_save`, which has no caller; the page store's trim moves into the owner or is deleted.
+
+**The API (published for the callers' migration; Codex's review of 2bd37de22 is built into the types).**
+
+```rust
+/// Which engine process a receipt or seat belongs to: its generation, and for an adopted
+/// engine the OS incarnation (pid, start time) verified independently of any launch handle.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EngineIdentity { pub generation: Uuid, pub incarnation: Option<(u32, u64)> }
+
+pub enum Purpose { Turn, WarmAhead, Transient }
+
+/// Where a seated mind's KV came from. Every cold seat names why.
+pub enum Resumed { Resident, Restored, Cold(ColdCause) }
+pub enum ColdCause { FirstVisit, PageRefused, DiscardedUnsaved(LossCause), Quarantined }
+
+/// RAII. The slot is pinned while the seat lives. `completed` commits the mind's attribution
+/// (and her tail size, the eviction price); a seat dropped without it detaches the slot.
+/// A Transient seat never holds a mind: it borrows the cheapest resident's slot, which is
+/// saved (confirmed) before the seat is granted, and is not a driver session (drivers seat
+/// as Turn with `PageKey::driver`).
+pub struct Seat { /* slot, key, resumed, engine */ }
+impl Seat {
+    pub fn slot(&self) -> u32;
+    pub fn resumed(&self) -> &Resumed;
+    pub fn engine(&self) -> EngineIdentity;
+    pub fn completed(self, tail_tokens: u64);
+}
+
+pub enum PauseWhy { Relaunch, Academy, Idle, AdoptedRetirement, Stop }
+pub enum LossCause { SaveFailed(String), DeadlineSpent, EngineExited, PagingUncertain }
+
+/// Not Clone, not serializable: one pause, one consumer. Bound to the engine it paused.
+pub struct PauseReceipt { /* engine, why, ... */ }
+impl PauseReceipt {
+    pub fn engine(&self) -> EngineIdentity;
+    pub fn saved(&self) -> &[PageKey];                    // confirmed by the engine's ack
+    pub fn lost(&self) -> &[(PageKey, LossCause)];        // named, and recorded for the successor
+    pub fn unresolved(&self) -> &[PageKey];               // IO whose outcome is unknown: quarantined
+}
+
+pub enum Attach { Launched, Adopted { incarnation: (u32, u64) } }
+
+impl MindMemory {
+    /// The only way onto a slot. Refused while paused, or once the deadline passes.
+    pub async fn seat(&self, key: Option<PageKey>, purpose: Purpose, deadline: Instant) -> Result<Seat, SeatRefused>;
+
+    /// Close seating, wait for every open seat to close (a seat closes BEFORE its slot is
+    /// detached or saved), then save every resident with a confirmed save. Returns only when
+    /// no page IO it started is in flight: IO still running at the deadline is listed
+    /// `unresolved` and the endpoint is quarantined, so a retirement can never race it.
+    pub async fn pause(&self, why: PauseWhy, deadline: Instant) -> Result<PauseReceipt, PauseRefused>;
+
+    /// Reopen the SAME engine (an academy batch done). Refused for a receipt of another
+    /// engine, for a quarantined endpoint, and for a Stop pause (an operator stop stays stopped).
+    pub fn resume(&self, receipt: PauseReceipt) -> Result<(), ResumeRefused>;
+
+    /// The engine may now be killed. Consumes the receipt; its losses go to the ledger the
+    /// successor reads. Refused for a receipt whose engine is not the current one.
+    pub fn retire(&self, receipt: PauseReceipt) -> Result<Retired, RetireRefused>;
+
+    /// Boot, relaunch or adopt: bind a new engine and load the one ledger by the one rule
+    /// (page-format fingerprint; residents in place only for an Adopted engine whose
+    /// incarnation matches the ledger's). Seats nothing.
+    pub async fn attach(&self, engine: EngineIdentity, how: Attach) -> Result<Attached, AttachRefused>;
+
+    /// A page whose KV no longer means what it did is never offered again.
+    pub fn forget(&self, key: PageKey, why: ForgetWhy);
+
+    /// For the one scheduler (G2, Codex): per mind, residency, frontier and last activity,
+    /// residents and drivers alike, as a watched snapshot.
+    pub fn snapshot(&self) -> tokio::sync::watch::Receiver<MemorySnapshot>;
+}
+```
+
+**Validator (S0 for this owner).** `turn_admission/tests/lifecycle.rs` already runs a fake engine whose slots hold `mind:tokens`, through turns, a stop and a boot. It moves to `MindMemory`'s own tests and gains:
+- a relaunch;
+- an adoption;
+- idle retirement;
+- an in-place gene change;
+- transient borrowing.
+
+The validator drives the actual retirement callers (relaunch, academy, idle, adopted retirement, stop) through `pause` and then `retire` or `resume`, never the checkpoint helper alone, including a second stop after an adoption (Codex).
+
+Each scenario asserts where every mind resumes, in seconds, before any live read.
+
+**Order and owners.**
+1. `MindMemory` with `seat` and its own stop, with turn, warm-ahead and transient moved onto it (Fable).
+2. `pause` and `resume`, with relaunch, academy, idle and adopted retirement moved onto them (Codex: the relaunch call sites are S4's).
+3. `forget` on gene change (Fable).
+
+Each step deletes what it replaces in the same PR, and the lifecycle validator gains that step's scenario first.
+
+## 1b. What concurrent minds cost on the M5: measured 2026-10-28
+
+These findings come from engine-c 741b0175b with Qwen3.6-35B-A3B Q4_K_M, on 64 GB of unified memory. Every number is a receipt, and each one answers "is it llama.cpp, the server, or continuum?"
+
+**Decode across layers** (short prompts, 256-token decodes; t/s per stream / aggregate):
+
+| Streams | llama-batched-bench (no server) | Our server, no draft | Our server, MTP draft n_max 4 |
+|---|---|---|---|
+| 1 | 59 / 59 | 57 / 57 | 80 / 80 |
+| 2 | 45 / 90 | 44 / 89 | 42 / 84 |
+| 4 | 31 / 124 | 31 / 122 | 23 / 91 |
+
+- Nothing serializes: the server batches like stock llama.cpp.
+- Batching amortizes weight reads, so the aggregate climbs. On this MoE model it reaches only about 2.1× at four streams, because each sequence routes to its own experts.
+- The MTP draft spends the same spare capacity that batching does. It wins alone and loses under concurrency.
+- Fix: `inference::speculation` drafts only while a turn decodes alone, set per request.
+
+**Live decode by concurrent engine work** (16k `tg_3s` samples, 2026-10-27):
+
+| What else is running | Median t/s |
+|---|---|
+| Nothing | 20.6 |
+| 1 other decoding | 11.2 |
+| 2 others decoding | 8.7 |
+| 3 others decoding | 8.3 |
+| Another slot prefilling | 14.7 |
+| Any page save or restore | 4.6–5.6 |
+
+A page save or restore stalls every stream, because SLOT_SAVE and SLOT_RESTORE run on the server's main loop.
+
+**Page IO, isolated against live:**
+
+| | Bytes | Save | Restore |
+|---|---|---|---|
+| Isolated (99k tokens, SSD) | 0.7 GB | 0.22 s (3.3 GB/s) | 0.1 s |
+| Live (92 saves, 95 restores) | 1.88 GB, of which 1.24 GB is checkpoint sidecar | 3.05 s median (0.59 GB/s) | 1.38 s (1.32 GB/s) |
+
+- The engine's IO code is fast.
+- Live pages carry about 2.5× the bytes, mostly checkpoints of the hybrid model's recurrent state.
+- Live pages also move 5–6× slower. The suspect is memory pressure: 8.4 GB of swap in use, with the engine's 17 GB `--cache-ram` and `--ctx-checkpoints 32` beside the 22 GB model and 4 × 159k KV. This is being sampled.
+- The size quote is cheap and is ruled out.
+
+**What follows:**
+1. Size the prompt cache and checkpoint retention from one measured memory budget, so the engine never pushes the machine into swap.
+2. Pages carry only the checkpoints a resume needs.
+3. Page IO goes RAM-first and off the main loop (S1), so a switch never stalls the other minds.
+4. Expert paging for capacity on unified memory (card 5eedda3e).
+5. A long-context sweep: per-sequence KV reads are what batching cannot amortize.
+
+## 1c. The engine is fed by queues and signals, never held by permits (2026-10-28)
+
+Joel, 2026-10-28: "Its got to flow or have MANY queues"; "Semaphore really only exists for queue
+inserts and signals typically. Otherwise you lock up every thread." The CBAR shape applied to
+serving: stages run concurrently, work is submitted, the engine drains what is ready.
+
+**What it replaces, measured on the M5 (176 acts, build 7ace74020).** A resident's model call
+passed four permit layers that each counted the same engine slots and were held for the whole
+call: cognition's serving lane (one of four reserved for directed calls, lent only to calls under
+60 s, which a 71 s median act never is), a prefill throttle (1 to 2 permits for 72% of the time,
+guarding a compute-buffer spike one engine never draws), the adapter's concurrency permit, and the
+slot pool. Waiting on the first two: a median 25.7 s plus 24.6 s, in a 155 s median act, while the
+engine itself was occupied 99.6% of the time and four streams decode 3.4x one stream at 64k. The
+locks, not the engine, made minds wait. Each was added after an incident instead of fixing it.
+
+**The rule.**
+- A mind *submits* a generation (request plus a reply handle) and keeps flowing: tools,
+  perception and the prefill of her appended items run while she waits.
+- **One dispatcher per engine**, woken by events only: a submission arrived, a slot finished, a
+  page landed. It fills free slots from per-class queues (directed, work, background), oldest first
+  within a class with aging, so nothing starves. Priority is queue order, never a reserved slot.
+- **Admission is memory, once.** `MindMemory::seat` admits a mind by KV bytes. No per-call permit
+  counts slots a second time.
+- A semaphore only signals: an item entered a queue, or a slot freed. No permit is held across a
+  model call, a tool, or an await on another subsystem.
+- The engine's own continuous batching is the concurrency: every seated sequence with tokens to
+  process rides the same forward pass.
+
+**Classes, the GCD way** (Joel, 2026-10-28: "no one is ever not getting their task done so a dream
+still happens just irregularly and doesn't eat into work"). Each mind is a serial queue (one act at
+a time) that targets a quality-of-service class; the engine is the concurrent pool beneath them.
+
+| class | work | rule |
+|---|---|---|
+| interactive | a directed reply | the next free slot; preempts a lower class at a decode-step boundary |
+| work | a resident's act on her card, with her tools | runs whenever ready; never waits behind the classes below |
+| utility | ambient thought, perception, gene exams | fills what the two above leave |
+| background | dreams, training, consolidation | runs in the gaps; yields at the next step to anything above |
+
+Background is throttled, never starved: a waiting task's effective priority ages upward, so a dream
+gets its step even on a busy node, irregularly and in small pieces, and it only ever takes a slot
+no higher class wants now (preempted by `page_out`, ~0.1 s, the moment one does). Training is the
+same: the engine's idle task, never a hold on serving.
+
+**One owner, one heap.** The dispatcher task owns its ready heap and receives events over a channel
+(submitted, slot freed, page landed, priority aged); it pops only when a slot is free. The kernel's
+`concurrency::ConcurrentPriorityQueue` forwards each item to an unbounded output channel as soon as
+it is signalled, so it does not keep priority order under load; the dispatcher does not build on it.
+
+**Done so far** (`fable/lanes-flow`): the reserved lane is lent whenever nothing directed is
+pending; the prefill throttle is deleted; deliberation and dreams take no lane. Left: the adapter's
+concurrency permit and the slot pool become the dispatcher above, the ambient anti-stampede permit
+becomes a class in it, and the act clock's queue-time registration goes with the lane.
+
 ## 2. Reuse versus write
 
 | Option | Speed | Effort | Risk |

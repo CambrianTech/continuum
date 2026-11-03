@@ -57,6 +57,10 @@ impl SlotClass {
     }
 }
 
+/// An external agent's call through the driver gateway: a Turn of its session's mind, so the
+/// session keeps a warm, paged page exactly as a resident does (DRIVER-GATEWAY.md G2).
+pub const DRIVER_PURPOSE: &str = "driver";
+
 /// The ONE purpose→class map. Unknown purposes default to `Background` —
 /// scratch placement — so a new producer can never clobber a citizen slot by
 /// omission; promoting it to `Turn` is an explicit edit here.
@@ -65,7 +69,8 @@ pub fn class_for(purpose: Option<&str>) -> SlotClass {
         Some("cognition/deliberation")
         | Some("cognition/act")
         | Some("persona-respond")
-        | Some("persona_decide_and_respond") => SlotClass::Turn,
+        | Some("persona_decide_and_respond")
+        | Some(DRIVER_PURPOSE) => SlotClass::Turn,
         Some("cognition/should-respond")
         | Some("cognition/generate-response")
         | Some("cognition/validate-response-decision")
@@ -289,7 +294,7 @@ pub(super) fn pages_in(dir: &std::path::Path) -> Result<std::collections::HashMa
         };
         let sidecar = PAGE_SIDECARS.iter().find_map(|s| name.strip_suffix(s));
         let page = sidecar.unwrap_or(&name).to_string(); // unwrap_or: a name with no sidecar suffix IS the page name
-        if !md.is_file() || !(page.starts_with("a-") && page.ends_with(".bin")) {
+        if !(md.is_file() && page.starts_with("a-") && page.ends_with(".bin")) {
             continue;
         }
         let entry = pages.entry(page).or_insert((std::time::SystemTime::UNIX_EPOCH, 0));

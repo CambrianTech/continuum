@@ -243,6 +243,14 @@ impl OpenAICompatibleAdapter {
             }
             let placement = decided.slot;
             _admission = Some(adm);
+            // The draft only while this turn decodes alone (`inference::speculation`).
+            let others = self
+                .permit_target
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .saturating_sub(self.concurrency.available_permits() + 1);
+            if let (Some(limit), Some(obj)) = (crate::inference::speculation::draft_limit(others), body.as_object_mut()) {
+                obj.insert("speculative.n_max".to_string(), json!(limit));
+            }
             // GLASS BOX (KV-reuse 0% hunt 2026-08-26): the whole cache-reuse win
             // rides on placement. Report class + room so a cached:0 streak names
             // WHICH activity thrashed — or which class strayed off scratch.
