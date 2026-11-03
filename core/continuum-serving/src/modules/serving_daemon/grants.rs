@@ -73,7 +73,9 @@ impl ServingDaemonModule {
                 };
                 Some(Demand {
                     mind: r.persona,
-                    required_tokens: required.min(per_sequence_cap),
+                    // The model's trained window is the one hard limit (her context compresses to it);
+                    // a need above what the pool holds now is not trimmed here, it waits.
+                    required_tokens: required.min(trained),
                     in_flight: crate::cognition::turn_ledger::turn_in_flight(r.persona),
                     ceiling: per_sequence_cap,
                 })
