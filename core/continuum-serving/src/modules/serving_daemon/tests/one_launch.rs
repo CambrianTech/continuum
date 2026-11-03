@@ -118,8 +118,8 @@ fn model_swap_on_a_ready_lane_needs_a_sustained_streak() {
 // nothing at five sequences, so the engine launched at 5 x 2,048, and one launch is never
 // relaunched to resize. On the boot plan the pool is never smaller than the fit at the host's
 // PHYSICAL budget, and never smaller than the plan's own window x lanes (Cormac on #5733).
-#[test]
-fn the_launch_pool_never_comes_from_the_boot_plan() {
+#[tokio::test]
+async fn the_launch_pool_never_comes_from_the_boot_plan() {
     let daemon = daemon_with(Arc::new(FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true)));
     assert_eq!(daemon.plan_budget_bytes.load(Ordering::Relaxed), 0, "a cold boot: no plan budget yet");
     let mut model = daemon
