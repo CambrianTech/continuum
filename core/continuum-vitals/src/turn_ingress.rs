@@ -308,17 +308,14 @@ mod tests {
 
         let persona = uuid::Uuid::new_v4();
         let now = EpochMs::now().millis();
-        let before = crate::turn_ledger::confirmed_in_flight();
         let turn = crate::turn_ledger::begin_turn(persona, now);
-        let mine = |confirmed: bool| {
-            crate::turn_ledger::in_flight_turns(now).iter().any(|t| t.confirmed == confirmed)
-        };
-        assert!(mine(false), "begun, not confirmed: the settle sizes its bound from it");
+        // Her own turn only: the global counts move under every other test thread (Fable on #5737).
+        assert!(crate::turn_ledger::turn_in_flight(persona), "begun");
+        assert_eq!(crate::turn_ledger::confirmed_turns_of(persona), 0, "begun, not confirmed: the settle sizes its bound from it");
         turn.confirm();
-        assert_eq!(crate::turn_ledger::confirmed_in_flight(), before + 1);
-        assert!(mine(true), "confirmed: left out of the bound");
+        assert_eq!(crate::turn_ledger::confirmed_turns_of(persona), 1, "confirmed: left out of the bound");
         drop(turn);
-        assert_eq!(crate::turn_ledger::confirmed_in_flight(), before, "the confirmation ends with the turn");
+        assert_eq!(crate::turn_ledger::confirmed_turns_of(persona), 0, "the confirmation ends with the turn");
     }
 
     // what this catches (stop-drain S4b, card 161d2590; the IntelMac 2026-11-03 07:31Z stop:

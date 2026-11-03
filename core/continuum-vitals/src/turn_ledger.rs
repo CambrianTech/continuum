@@ -54,19 +54,36 @@ impl TurnShape {
 pub(super) static TURN_SHAPES: std::sync::LazyLock<
     parking_lot::Mutex<std::collections::HashMap<uuid::Uuid, TurnShape>>,
 > = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
-pub(super) static IN_FLIGHT: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashSet<uuid::Uuid>>> =
-    std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
-/// The minds whose turn in flight holds a CONFIRMED obligation (stop-drain S2): a stop that
-/// cuts it leaves a durable row that the next start hands back (S3), so the stop need not
-/// wait for it (S4).
-pub(super) static CONFIRMED: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashSet<uuid::Uuid>>> =
-    std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
+/// One admitted turn's identity, issued by [`begin_turn`]. A mind can hold two turns at once (a
+/// fork beside her act), so a turn is keyed by its own id and her persona is its attribute:
+/// keyed by persona, two turns counted once and the first to end erased the other's mark (Fable
+/// on #5736, card 7471b449).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TurnId(u64);
+
+static NEXT_TURN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A turn in flight as the ledger holds it.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Turn {
+    pub(super) persona: uuid::Uuid,
+    /// The clock [`begin_turn`] was stamped with, ms.
+    pub(super) started_ms: u64,
+    /// Its obligation is confirmed durable (stop-drain S2): a stop that cuts it leaves a durable
+    /// row the next start hands back (S3), so the stop need not wait for it (S4).
+    pub(super) confirmed: bool,
+}
+
+/// Every turn in flight, by its own id.
+pub(super) static TURNS: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<TurnId, Turn>>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
 /// A turn in flight for `persona`: stamps the start (as [`note_turn_started`]) and marks
-/// her IN FLIGHT until dropped — so every exit of the service-loop turn, including a
+/// it IN FLIGHT until dropped — so every exit of the service-loop turn, including a
 /// `continue`, ends the turn and records its shape. The placement switch moves a mind
-/// only when this is not held (a move mid-turn is a torn turn).
+/// only when she holds none (a move mid-turn is a torn turn).
 pub struct TurnInFlight {
+    id: TurnId,
     persona: uuid::Uuid,
     started: std::time::Instant,
     previous_start_ms: Option<u64>,
@@ -74,22 +91,24 @@ pub struct TurnInFlight {
 
 pub fn begin_turn(persona: uuid::Uuid, now_ms: u64) -> TurnInFlight {
     let previous_start_ms = LAST_TURN_MS.lock().insert(persona, now_ms);
-    IN_FLIGHT.lock().insert(persona);
-    TurnInFlight { persona, started: std::time::Instant::now(), previous_start_ms }
+    let id = TurnId(NEXT_TURN.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    TURNS.lock().insert(id, Turn { persona, started_ms: now_ms, confirmed: false });
+    TurnInFlight { id, persona, started: std::time::Instant::now(), previous_start_ms }
 }
 
 impl TurnInFlight {
     /// This turn's obligation is confirmed durable: from here a stop may cut it, because the
     /// next start hands it back (stop-drain S3), so the stop no longer waits for it (S4).
     pub fn confirm(&self) {
-        CONFIRMED.lock().insert(self.persona);
+        if let Some(turn) = TURNS.lock().get_mut(&self.id) {
+            turn.confirmed = true;
+        }
     }
 }
 
 impl Drop for TurnInFlight {
     fn drop(&mut self) {
-        CONFIRMED.lock().remove(&self.persona);
-        IN_FLIGHT.lock().remove(&self.persona);
+        TURNS.lock().remove(&self.id);
         let turn_ms = self.started.elapsed().as_millis() as u64;
         let gap_ms = self
             .previous_start_ms
@@ -102,17 +121,19 @@ impl Drop for TurnInFlight {
 
 /// Is a turn of `persona`'s in flight right now?
 pub fn turn_in_flight(persona: uuid::Uuid) -> bool {
-    IN_FLIGHT.lock().contains(&persona)
+    TURNS.lock().values().any(|t| t.persona == persona)
 }
 
-/// Every mind with a turn in flight right now, and when that turn started (ms, the clock
-/// [`begin_turn`] was stamped with). A resident's service window reads this so a turn that
-/// never settles still counts as demand (card 1c157668). Locks taken one at a time.
+/// Every mind with a turn in flight right now, and when her longest-running one started (ms, the
+/// clock [`begin_turn`] was stamped with). A resident's service window reads this so a turn that
+/// never settles still counts as demand (card 1c157668).
 pub fn in_flight_starts() -> Vec<(uuid::Uuid, u64)> {
-    let personas: Vec<uuid::Uuid> = IN_FLIGHT.lock().iter().copied().collect();
-    let starts = LAST_TURN_MS.lock();
-    // begin_turn stamps the start before marking in flight, so a mind in flight has a start.
-    personas.into_iter().filter_map(|p| starts.get(&p).map(|s| (p, *s))).collect()
+    let mut earliest: std::collections::HashMap<uuid::Uuid, u64> = std::collections::HashMap::new();
+    for turn in TURNS.lock().values() {
+        let start = earliest.entry(turn.persona).or_insert(turn.started_ms);
+        *start = (*start).min(turn.started_ms);
+    }
+    earliest.into_iter().collect()
 }
 
 /// One turn in flight, as the settle before a stop reads it.
@@ -126,31 +147,31 @@ pub(crate) struct InFlightTurn {
     pub(crate) confirmed: bool,
 }
 
-/// Every turn in flight right now. The settle before a stop sizes its wait from the ones not
-/// yet confirmed ([`crate::turn_ingress::settle_bound_ms`]). `now_ms` is the clock
-/// [`begin_turn`] was stamped with. Locks taken one at a time, never nested.
+/// Every turn in flight right now, one per turn (a mind with two counts twice). The settle before
+/// a stop sizes its wait from the ones not yet confirmed ([`crate::turn_ingress::settle_bound_ms`]).
+/// `now_ms` is the clock [`begin_turn`] was stamped with.
 pub(crate) fn in_flight_turns(now_ms: u64) -> Vec<InFlightTurn> {
-    let personas: Vec<uuid::Uuid> = IN_FLIGHT.lock().iter().copied().collect();
-    let starts = LAST_TURN_MS.lock();
-    let started: Vec<(uuid::Uuid, u64)> = personas
+    let turns: Vec<Turn> = TURNS.lock().values().copied().collect();
+    turns
         .into_iter()
-        .map(|p| (p, starts.get(&p).map_or(0, |s| now_ms.saturating_sub(*s)))) // map_or: begin_turn stamps the start before marking in flight, so a miss is a race at most — 0 elapsed waits LONGER, never shorter
-        .collect();
-    drop(starts);
-    let confirmed = CONFIRMED.lock().clone();
-    started
-        .into_iter()
-        .map(|(p, elapsed_ms)| InFlightTurn {
-            elapsed_ms,
-            typical_ms: turn_shape_of(p).map(|s| s.turn_ms),
-            confirmed: confirmed.contains(&p),
+        .map(|t| InFlightTurn {
+            elapsed_ms: now_ms.saturating_sub(t.started_ms),
+            typical_ms: turn_shape_of(t.persona).map(|s| s.turn_ms),
+            confirmed: t.confirmed,
         })
         .collect()
 }
 
 /// How many turns in flight hold a confirmed obligation right now.
 pub(crate) fn confirmed_in_flight() -> u64 {
-    CONFIRMED.lock().len() as u64
+    TURNS.lock().values().filter(|t| t.confirmed).count() as u64
+}
+
+/// How many of `persona`'s turns in flight are confirmed. Tests count their own mind's turns, since
+/// the global count moves under every other test thread (Fable on #5737).
+#[cfg(test)]
+pub(crate) fn confirmed_turns_of(persona: uuid::Uuid) -> usize {
+    TURNS.lock().values().filter(|t| t.persona == persona && t.confirmed).count()
 }
 
 /// Self-ticks in flight: a mind's own initiative (`Wake::Tick` / `Wake::Mind`), which consumes
@@ -198,4 +219,33 @@ pub fn typical_turn_ms(personas: &[uuid::Uuid]) -> Option<u64> {
     }
     turns.sort_unstable();
     Some(turns[turns.len() / 2])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (Fable on #5736, card 7471b449): a ledger keyed by persona. Two turns of
+    // one mind (a fork beside her act) counted once, and the first to end erased the other's
+    // mark, so the settle and `awaited()` under-counted while both ran. Each turn is its own
+    // entry: ending one leaves the other in flight, confirmed or not, and her start is the
+    // longest-running turn's.
+    #[test]
+    fn two_turns_of_one_mind_are_two_turns() {
+        let persona = uuid::Uuid::new_v4();
+        let act = begin_turn(persona, 1_000);
+        let fork = begin_turn(persona, 2_000);
+        act.confirm();
+        assert_eq!(confirmed_turns_of(persona), 1, "only the confirmed one counts as confirmed");
+        let hers = |turns: &[(uuid::Uuid, u64)]| turns.iter().find(|(p, _)| *p == persona).map(|(_, s)| *s);
+        assert_eq!(hers(&in_flight_starts()), Some(1_000), "her start is the longest-running turn's");
+
+        drop(act);
+        assert!(turn_in_flight(persona), "ending the confirmed turn leaves the fork in flight");
+        assert_eq!(confirmed_turns_of(persona), 0, "and its confirmation ends with it, not the fork's state");
+        assert_eq!(hers(&in_flight_starts()), Some(2_000));
+
+        drop(fork);
+        assert!(!turn_in_flight(persona), "both ended: she has none");
+    }
 }
