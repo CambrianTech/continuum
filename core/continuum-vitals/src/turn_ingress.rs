@@ -190,14 +190,13 @@ pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
     let turns = crate::turn_ledger::in_flight_turns(EpochMs::now().millis());
     let unconfirmed: Vec<(u64, Option<u64>)> =
         turns.iter().filter(|t| !t.confirmed).map(|t| (t.elapsed_ms, t.typical_ms)).collect();
-    let not_waited = || crate::turn_ledger::confirmed_in_flight() + crate::turn_ledger::self_ticks_in_flight();
     // An admitted turn neither on the ledger nor a self-tick is a message turn still before
     // `begin_turn`: unknown, so it waits the cap, as before.
     let uncounted = in_flight_at_close > turns.len() as u64 + crate::turn_ledger::self_ticks_in_flight();
     let bound_ms = settle_bound_ms(&unconfirmed, uncounted, cap_ms);
     let bound_source = if in_flight_at_close == 0 {
         "nothing_in_flight"
-    } else if in_flight_at_close <= not_waited() {
+    } else if awaited() == 0 {
         "none_to_wait_for"
     } else if bound_ms >= cap_ms {
         "cap"
@@ -206,7 +205,7 @@ pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
     };
     let deadline = started + std::time::Duration::from_millis(bound_ms);
     let mut poll = tokio::time::interval(POLL);
-    while waits_for(in_flight(), not_waited()) && std::time::Instant::now() < deadline {
+    while awaited() > 0 && std::time::Instant::now() < deadline {
         poll.tick().await;
     }
     let handed_back = crate::turn_ledger::confirmed_in_flight();
@@ -216,18 +215,26 @@ pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
         on_ledger: turns.len() as u64,
         handed_back,
         self_ticks,
-        cut: in_flight().saturating_sub(handed_back + self_ticks),
+        cut: outstanding(in_flight(), handed_back + self_ticks),
         bound_ms,
         bound_source,
         waited_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
     }
 }
 
-/// PURE: does the settle still wait? Only while some admitted turn is neither confirmed nor a
-/// self-tick: `in_flight` counts every admitted turn, `not_waited` the confirmed turns a cut
-/// hands back plus the self-ticks a cut loses nothing of.
-pub(crate) fn waits_for(in_flight: u64, not_waited: u64) -> bool {
-    in_flight > not_waited
+/// The admitted turns a stop must wait for: every turn in flight that is neither confirmed (a cut
+/// hands it back, S4) nor a self-tick (a cut loses nothing of it, S4b). The ONE answer the settle
+/// waits on and the cognition module's drain reports, so the receipt never calls a stop
+/// non-durable over turns the settle rightly left (card b5219023: the M5's "cognition drain
+/// Incomplete { in_flight: 3 }" counted every admitted turn).
+pub fn awaited() -> u64 {
+    outstanding(in_flight(), crate::turn_ledger::confirmed_in_flight() + crate::turn_ledger::self_ticks_in_flight())
+}
+
+/// PURE: how many of `in_flight` admitted turns are owed a wait, given `not_waited` of them are
+/// confirmed turns or self-ticks.
+pub(crate) fn outstanding(in_flight: u64, not_waited: u64) -> u64 {
+    in_flight.saturating_sub(not_waited)
 }
 
 #[cfg(test)]
@@ -295,9 +302,9 @@ mod tests {
     // (admitted, not yet durable) still is; and the confirmation ends with the turn.
     #[test]
     fn the_settle_waits_only_for_turns_not_yet_confirmed() {
-        assert!(!waits_for(0, 0), "nothing in flight");
-        assert!(!waits_for(3, 3), "every turn confirmed: handed back, not waited for");
-        assert!(waits_for(3, 2), "one admitted turn is not durable yet: wait for it");
+        assert_eq!(outstanding(0, 0), 0, "nothing in flight");
+        assert_eq!(outstanding(3, 3), 0, "every turn confirmed: handed back, not waited for");
+        assert_eq!(outstanding(3, 2), 1, "one admitted turn is not durable yet: wait for it");
 
         let persona = uuid::Uuid::new_v4();
         let now = EpochMs::now().millis();
@@ -321,8 +328,8 @@ mod tests {
     // its mark ends with it.
     #[test]
     fn a_self_tick_is_never_waited_for() {
-        assert!(!waits_for(2, 2), "one confirmed turn and one self-tick: nothing to wait for");
-        assert!(waits_for(3, 2), "plus one message turn not yet durable: wait for it");
+        assert_eq!(outstanding(2, 2), 0, "one confirmed turn and one self-tick: nothing to wait for");
+        assert_eq!(outstanding(3, 2), 1, "plus one message turn not yet durable: wait for it");
         let before = crate::turn_ledger::self_ticks_in_flight();
         let tick = crate::turn_ledger::begin_self_tick();
         assert_eq!(crate::turn_ledger::self_ticks_in_flight(), before + 1);
