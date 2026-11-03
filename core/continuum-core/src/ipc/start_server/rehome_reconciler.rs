@@ -3,9 +3,11 @@
 use super::*;
 
 // ── Served-model re-home reconciler ─────────────────────────────────────
-// The base-model sibling of LoRA/genome paging. The serving snapshot is the ONE
-// owner of "the binding a local persona deliberates through": its active model
-// AND its served context window. This task owns the serving-SNAPSHOT watch and,
+// The base-model sibling of LoRA/genome paging. Serving is the ONE owner of "the
+// binding a local persona deliberates through": the snapshot's active model, and her
+// OWN window, the grant serving gives her on the engine's pool from her measured
+// requirement (`serving_daemon/grants.rs`). One window for everyone was the division
+// Joel ruled out on 2026-11-03 ("What a mind needs not what you dictate"). This task owns the serving-SNAPSHOT watch and,
 // on every ready snapshot, binds every local resident to exactly that pair —
 // WITHOUT losing the genome, working memory, or admission she accumulated. That
 // covers a `serving/pin`, a re-plan under memory pressure, a grid failover, AND a
@@ -29,6 +31,7 @@ pub(super) fn spawn_rehome_reconciler(
     serving_daemon: &Arc<crate::modules::serving_daemon::ServingDaemonModule>,
 ) {
     let mut serving_rx = serving_daemon.subscribe_serving();
+    let mut grants_rx = serving_daemon.subscribe_grants();
     rt_handle.spawn(async move {
         // LEVEL-TRIGGERED retry (#368): edge-only waking is how 4 citizens
         // stayed stranded on a torn-down model for 47 minutes — the adapter
@@ -50,6 +53,12 @@ pub(super) fn spawn_rehome_reconciler(
                         break;
                     }
                 }
+                changed = grants_rx.changed() => {
+                    if changed.is_err() {
+                        tracing::info!("serving-grants watch closed — re-home reconciler exiting (substrate shutdown)");
+                        break;
+                    }
+                }
                 _ = retry.tick() => {}
             }
             let snap = serving_rx.borrow_and_update().clone();
@@ -59,10 +68,13 @@ pub(super) fn spawn_rehome_reconciler(
             let Some(active) = snap.active_model.clone() else {
                 continue;
             };
-            let window = snap.served_context_window;
+            let Some(grants) = grants_rx.borrow_and_update().clone() else {
+                continue; // serving has granted no window yet: nobody's binding moves on a guess.
+            };
+            let window_of = |persona: uuid::Uuid| grants.grant_for(persona);
             let workspaces = crate::cognition::persona_workspace::global();
-            let Some(reason) = workspaces.rehome_reason(&active, window) else {
-                continue; // every local resident is already bound to (model, window).
+            let Some(reason) = workspaces.rehome_reason(&active, window_of) else {
+                continue; // every local resident is already bound to the model and her grant.
             };
             // A new model needs the ONE shared served-model adapter. Fail LOUD into
             // a log — a failed build leaves residents on their prior (still-live)
@@ -85,13 +97,13 @@ pub(super) fn spawn_rehome_reconciler(
                     }
                 }
             };
-            let n = workspaces.re_home_all(adapter, &active, window);
+            let n = workspaces.re_home_all(adapter, &active, window_of);
             tracing::info!(
                 model = %active,
-                context_window = window,
+                pool_tokens = grants.pool_tokens,
                 personas = n,
                 ?reason,
-                "re-homed local residents onto the served binding"
+                "re-homed local residents onto the served model and each one's grant"
             );
         }
     });

@@ -1,5 +1,6 @@
 //! Serving-edge model binding updates for registered residents: every LOCAL resident is
-//! bound to exactly what serving reports (model AND window), corrected per persona.
+//! bound to exactly what serving reports: its model, and HER window (her grant on the engine's
+//! pool, never one window for everyone), corrected per persona.
 use super::PersonaWorkspaceRegistry;
 use crate::ai::adapter::AIProviderAdapter;
 use crate::cognition::llm_deliberation_faculty::ModelBinding;
@@ -64,7 +65,7 @@ impl PersonaWorkspaceRegistry {
             .collect()
     }
 
-    /// What the served `(model, context_window)` asks of the local residents: `None` when
+    /// What the served model and each resident's own window (`window_of`) ask of the local residents: `None` when
     /// every one is already bound to it (the steady-state tick is free),
     /// `Some(ModelChanged)` when any needs the new model (the caller builds ONE shared
     /// adapter), else `Some(WindowChanged)` (each keeps her adapter).
@@ -72,24 +73,24 @@ impl PersonaWorkspaceRegistry {
         &self,
         root: &std::path::Path,
         model: &str,
-        context_window: u32,
+        window_of: impl Fn(Uuid) -> Option<u32>,
     ) -> Option<RehomeReason> {
         let assignments = self.assignments_at(root);
         let cycles = self.cycles.lock();
         cycles
             .iter()
             .filter(|(id, _)| matches!(assignments.get(*id), Some(Assignment::Local)))
-            .filter_map(|(_, entry)| entry.cycle.current_binding())
-            .filter_map(|binding| RehomeReason::of(&binding, model, context_window))
+            .filter_map(|(id, entry)| Some((entry.cycle.current_binding()?, window_of(*id)?)))
+            .filter_map(|(binding, window)| RehomeReason::of(&binding, model, window))
             .max_by_key(|reason| *reason == RehomeReason::ModelChanged)
     }
 
     /// [`rehome_reason_at`](Self::rehome_reason_at) under this process's continuum root.
-    pub fn rehome_reason(&self, model: &str, context_window: u32) -> Option<RehomeReason> {
-        self.rehome_reason_at(&crate::paths::continuum_root(), model, context_window)
+    pub fn rehome_reason(&self, model: &str, window_of: impl Fn(Uuid) -> Option<u32>) -> Option<RehomeReason> {
+        self.rehome_reason_at(&crate::paths::continuum_root(), model, window_of)
     }
 
-    /// Bind EVERY local resident to the served `(model, context_window)` — atomically
+    /// Bind EVERY local resident to the served model and her own window (`window_of`) — atomically
     /// swapping the shared {adapter, model, context_window} binding on each cycle (see
     /// [`crate::cognition::workspace::WorkspaceCycle::rebind_model`]). A resident already
     /// bound to it is untouched. A model change rebinds through the ONE shared `adapter`
@@ -104,7 +105,7 @@ impl PersonaWorkspaceRegistry {
         root: &std::path::Path,
         adapter: Option<Arc<dyn AIProviderAdapter>>,
         model: &str,
-        context_window: u32,
+        window_of: impl Fn(Uuid) -> Option<u32>,
     ) -> usize {
         let assignments = self.assignments_at(root);
         let cycles = self.cycles.lock();
@@ -127,6 +128,15 @@ impl PersonaWorkspaceRegistry {
             }
             let Some(current) = entry.cycle.current_binding() else {
                 continue; // no deliberation faculty shared a binding in: nothing to rebind.
+            };
+            let Some(context_window) = window_of(*id) else {
+                continuum_base::probe!(
+                    class = "persona.rehome.kept_binding",
+                    persona_id = %id,
+                    reason = "no_grant",
+                    "re-home skipped: serving has granted her no window on the engine's pool yet"
+                );
+                continue;
             };
             let Some(reason) = RehomeReason::of(&current, model, context_window) else {
                 continue;
@@ -169,13 +179,8 @@ impl PersonaWorkspaceRegistry {
         &self,
         adapter: Option<Arc<dyn AIProviderAdapter>>,
         model: &str,
-        context_window: u32,
+        window_of: impl Fn(Uuid) -> Option<u32>,
     ) -> usize {
-        self.re_home_all_at(
-            &crate::paths::continuum_root(),
-            adapter,
-            model,
-            context_window,
-        )
+        self.re_home_all_at(&crate::paths::continuum_root(), adapter, model, window_of)
     }
 }

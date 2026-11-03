@@ -38,24 +38,9 @@ pub struct WindowScenario {
     pub events: Vec<DemandEvent>,
 }
 
-/// The current demand of every mind on the pool, as a policy reads it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Demand {
-    pub mind: MindId,
-    pub required_tokens: u32,
-    pub in_flight: bool,
-}
-
-/// Grants every mind a window from the pool, given every mind's current demand and the grants
-/// they hold now.
-pub trait WindowPolicy {
-    fn grant(
-        &mut self,
-        demands: &[Demand],
-        held: &BTreeMap<MindId, u32>,
-        pool_tokens: u32,
-    ) -> BTreeMap<MindId, u32>;
-}
+/// The production grant types, keyed by the simulator's small mind ids.
+pub use super::window_grant::{DemandFollowing, WindowPolicy};
+pub type Demand = super::window_grant::Demand<MindId>;
 
 /// What a run measured, and every contract breach it saw.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -74,7 +59,7 @@ impl WindowRun {
 }
 
 /// Play `scenario` through `policy`, one regrant per demand event.
-pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy) -> WindowRun {
+pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> WindowRun {
     let mut demands: BTreeMap<MindId, Demand> = BTreeMap::new();
     let mut held: BTreeMap<MindId, u32> = BTreeMap::new();
     let mut out = WindowRun::default();
@@ -85,6 +70,8 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy) -> WindowRu
                 mind: event.mind,
                 required_tokens: event.required_tokens,
                 in_flight: event.in_flight,
+                // the shared pool: one sequence may hold all of it
+                ceiling: scenario.pool_tokens,
             },
         );
         let current: Vec<Demand> = demands.values().copied().collect();
@@ -142,7 +129,7 @@ pub struct EqualSplit {
     pub slots: u32,
 }
 
-impl WindowPolicy for EqualSplit {
+impl WindowPolicy<MindId> for EqualSplit {
     fn grant(
         &mut self,
         demands: &[Demand],
@@ -151,48 +138,6 @@ impl WindowPolicy for EqualSplit {
     ) -> BTreeMap<MindId, u32> {
         let each = pool_tokens / self.slots.max(1);
         demands.iter().map(|d| (d.mind, each)).collect()
-    }
-}
-
-/// Demand-following over one shared pool: every mind is granted her demand when the pool holds
-/// them all; otherwise in-flight grants are kept whole and the rest share what remains in
-/// proportion to their demand.
-pub struct DemandFollowing;
-
-impl WindowPolicy for DemandFollowing {
-    fn grant(
-        &mut self,
-        demands: &[Demand],
-        held: &BTreeMap<MindId, u32>,
-        pool_tokens: u32,
-    ) -> BTreeMap<MindId, u32> {
-        // A turn in flight keeps at least what it holds: its grant is a floor whether or not
-        // every demand fits (Cormac on #5718: the fits branch granted the new, smaller demand
-        // and shrank a turn mid-flight). The floors fit the pool because they were granted
-        // inside it; what they leave is shared over the rest of each mind's demand, whole when
-        // it all fits and in proportion when it does not.
-        let floor = |d: &Demand| match d.in_flight {
-            true => held.get(&d.mind).copied().unwrap_or(0), // unwrap_or: a turn that holds nothing yet has no floor
-            false => 0,
-        };
-        let floors: u64 = demands.iter().map(|d| u64::from(floor(d))).sum();
-        let rest = u64::from(pool_tokens).saturating_sub(floors);
-        let needed: u64 = demands
-            .iter()
-            .map(|d| u64::from(d.required_tokens.saturating_sub(floor(d))))
-            .sum();
-        demands
-            .iter()
-            .map(|d| {
-                let need = u64::from(d.required_tokens.saturating_sub(floor(d)));
-                let more = match needed <= rest {
-                    true => need,
-                    false => (need * rest).checked_div(needed).unwrap_or(0), // unwrap_or: nothing needed means nothing more
-                };
-                let more = u32::try_from(more).unwrap_or(u32::MAX); // unwrap_or: more is at most her need, a u32
-                (d.mind, floor(d).saturating_add(more))
-            })
-            .collect()
     }
 }
 
