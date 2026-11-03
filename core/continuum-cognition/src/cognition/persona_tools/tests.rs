@@ -266,9 +266,9 @@
         println!("  TOTAL:                            {} bytes | ~{} tokens",
                  total_bytes, total_tokens);
 
-        // ── Authorized tools at Citizen trust (all AiSafe commands) ──
+        // ── Authorized tools at Trusted trust (all AiSafe commands) ──
         use crate::routing::trust_level::TrustLevel;
-        let authorized = crate::cognition::persona_tools::authorized_tool_specs(TrustLevel::Citizen);
+        let authorized = crate::cognition::persona_tools::authorized_tool_specs(TrustLevel::Trusted);
         println!("\n=== AUTHORIZED TOOLS AT CITIZEN ({}) ===", authorized.len());
         total_bytes = 0;
         total_tokens = 0;
