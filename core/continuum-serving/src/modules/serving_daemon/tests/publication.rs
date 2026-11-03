@@ -643,14 +643,16 @@ async fn a_hold_is_published_keeps_its_start_and_is_cleared_on_release() {
     assert_eq!(daemon.serving_tx.borrow().held_for, None, "a released engine is not held");
 }
 
-// what this catches: a seated mind published the engine's whole shared pool as her window
-// (every mind budgeting 290k of a 290k pool), or a share that moves with the plan's per-tick
-// lane guess. Each seated mind gets an equal share, capped at the model's trained window; the
-// readers that charge `lanes x window` then charge the pool.
+// what this catches: a sequence published the engine's whole shared pool as its window (every
+// mind budgeting 290k of a 290k pool), shares that sum past the pool (a full pool fails the
+// whole decode batch), or a share that moves with the plan's per-tick lane guess. Each of the
+// engine's own sequences gets an equal share, capped at the model's trained window.
 #[test]
-fn each_seated_mind_is_published_her_share_of_the_shared_pool() {
-    use super::seated_share;
-    assert_eq!(seated_share(290_560, 4, 262_144), (72_640, 4), "the M5: four residents");
-    assert_eq!(seated_share(290_560, 1, 262_144), (262_144, 1), "one mind is capped at the trained window");
-    assert_eq!(seated_share(290_560, 0, 262_144), (262_144, 1), "no seated count is one mind, never a divide by zero");
+fn each_sequence_is_published_its_share_of_the_shared_pool() {
+    use super::sequence_share;
+    let (share, sequences) = sequence_share(290_560, 5, 262_144);
+    assert_eq!((share, sequences), (58_112, 5), "the M5: four residents and the scratch sequence");
+    assert!(share * sequences <= 290_560, "the shares fit the pool");
+    assert_eq!(sequence_share(290_560, 1, 100_000), (100_000, 1), "one sequence is capped at the trained window");
+    assert_eq!(sequence_share(290_560, 0, 262_144), (262_144, 1), "no sequence count is one, never a divide by zero");
 }

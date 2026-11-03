@@ -5,17 +5,10 @@
 //! The living-persona benchmark used to grab a bare hold and *assume* it was a
 //! co-tenant slot; the comment said "= `Placement::ShareLane`" but nothing computed it. This
 //! module makes it real: it runs the model-aware admission kernel ([`plan_placement`]), and
-//! for a share it drives the GROW → SETTLE sequence:
-//!   1. **GROW** — declare LUDICROUS ([`ServingLudicrousHold`] → `PowerMode::Performance`), so
-//!      the daemon re-plans the shared lane to the biggest window the machine fits. Never a
-//!      starved boot-window (the 2048-eco incident).
-//!   2. **SETTLE** — wait for any grow-relaunch to finish
-//!      ([`wait_for_serving_window_settle`](crate::inference::llama_server::wait_for_serving_window_settle)).
-//!      A naive "force Performance then run" thrashes: acquiring Ludicrous is itself a re-plan
-//!      → relaunch, and a relaunch mid-exam connection-refuses every generation (the reverted
-//!      `95dcec669`). Settling BEFORE the tasks run absorbs that relaunch once, up front.
-//! Nothing relaunches the engine for size since 2026-11-03 (one launch, a shared pool), so no
-//! pin is needed once the exam runs.
+//! for a share it declares LUDICROUS ([`ServingLudicrousHold`] → `PowerMode::Performance`) for
+//! the exam's run. Nothing relaunches the engine for a window since 2026-11-03 (one launch, a
+//! shared pool), so there is no grow-relaunch to absorb and no pin to hold; the exam's larger
+//! window becomes a grant request (S2).
 //! The verdict is CARRIED for observability + the curriculum ledger.
 //!
 //! The `SpawnLane`/`CpuSpill` arms are the rails a DIFFERENT-base exam or a grid placement
@@ -24,19 +17,9 @@
 //! [[proctored-exam-session-dependable-benchmark]] [[serving-mode-follows-activity-ludicrous-to-dream]]
 //! [[benchmark-window-must-be-big-not-a-clamped-prompt]] [[lane-admission-planner-scenario-driven]]
 
-use std::time::Duration;
 
 use crate::inference::serving_holds::ServingLudicrousHold;
 use crate::resources::placement::{plan_placement, LaneDemand, Placement, ResidentLane};
-
-/// How long to watch for a grow-relaunch to START (lane goes not-ready) after declaring
-/// Ludicrous. Must EXCEED the serving daemon's 5s re-plan `TICK` so a relaunch has time to
-/// fire; if none does in this window, the lane was already at the target window (no grow).
-const LUDICROUS_SETTLE_GRACE: Duration = Duration::from_secs(8);
-
-/// Bound for the whole grow-relaunch to finish (kill + respawn + model reload). A 24B reload
-/// is tens of seconds; generous so a real grow always completes, but never hangs the exam.
-const LUDICROUS_SETTLE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// The verdict the exam ACQUIRE reached — carried for observability + the curriculum ledger,
 /// so the strategic decision behind every measurement is inspectable.
@@ -142,21 +125,14 @@ impl ExamServingContext {
         }
     }
 
-    /// GROW (declare Ludicrous) → SETTLE. The Ludicrous hold is taken FIRST and kept, so
-    /// `host_budget` plans at Performance for the whole exam, and the exam starts on a settled
-    /// window.
+    /// Declare Ludicrous for the exam: `host_budget` plans at Performance for its whole run.
+    /// Nothing relaunches the engine for a window since one launch (2026-11-03), so there is no
+    /// grow to wait for; the exam's larger window becomes a grant request (S2).
     async fn grow_settle() -> ExamHold {
         let ludicrous = ServingLudicrousHold::acquire();
-        let settled = crate::inference::llama_server::wait_for_serving_window_settle(
-            LUDICROUS_SETTLE_GRACE,
-            LUDICROUS_SETTLE_TIMEOUT,
-        )
-        .await;
         continuum_base::probe!(
             class = "exam.acquire.ludicrous",
-            settled_window = settled.unwrap_or(0),
-            settled = settled.is_some(),
-            "exam lane grown to Ludicrous (Performance) and settled before pinning"
+            "exam serving declared Ludicrous (Performance) for its run"
         );
         ExamHold {
             _ludicrous: ludicrous,

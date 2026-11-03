@@ -97,7 +97,6 @@ use engine_install::{
 };
 mod snapshot;
 pub mod serving_hold;
-use snapshot::SERVING_STATE;
 pub use snapshot::{
     await_ready_serving, await_snapshot_resettle, current_serving, has_reconciled,
     install_serving_state, mark_first_reconcile, serving_state_receiver, MultimodalSupport,
@@ -107,7 +106,7 @@ mod vision;
 pub use vision::vision_lane_ready;
 use vision::{main_lane_mmproj_decision_for, MainLaneMmproj};
 mod external;
-pub use external::{external_serving_pin, probe_external_serving, wait_for_serving_window_settle};
+pub use external::{external_serving_pin, probe_external_serving};
 
 mod progress;
 pub(crate) use progress::{

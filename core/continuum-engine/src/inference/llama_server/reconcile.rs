@@ -180,7 +180,18 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // 2026-11-03) is moved to the shared pool by one relaunch; after that no window,
             // lane or cache change ever relaunches it. Unknown (no argv, a fake) is not a
             // mismatch.
-            let pool_ok = ctrl.launched_on_shared_pool().unwrap_or(true); // unwrap_or: unknown (no argv, a fake) is not a mismatch
+            let pool_ok = match ctrl.launched_on_shared_pool() {
+                Some(on_pool) => on_pool,
+                None => {
+                    // Unknown is not a mismatch (no spurious relaunch), but it is said, so a
+                    // node left on fixed slots is findable (Cormac on #5720).
+                    continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.pool.unknown",
+                        model = target.model_id(),
+                        "the running engine's argv is unreadable: whether it is on the shared pool is unknown, so it is kept as it is"
+                    );
+                    true
+                }
+            };
             // THE ENGINE ITSELF — the fourth operand (card 7c5f139d). A deploy installs the
             // engine the pin names (install-llama-server.sh, stamp-gated, atomic), but every
             // deploy leaves the lane up for the next core, so an adopted lane keeps running

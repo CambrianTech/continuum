@@ -581,7 +581,7 @@ mod publication;
 #[cfg(test)]
 use publication::SERVING_SNAPSHOT_EVENT;
 pub use publication::{published_lanes, VerifiedServingCapture};
-use publication::{seated_share, snapshot_from_outcome, verified_capture};
+use publication::{sequence_share, snapshot_from_outcome, verified_capture};
 mod placement;
 pub use placement::sidecar_window_for_headroom;
 use placement::{

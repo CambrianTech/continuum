@@ -476,7 +476,7 @@ async fn reconcile_is_noop_when_already_serving() {
     let verified_reads = server.verified_reads.clone();
     let daemon = daemon_with(Arc::new(server));
 
-    // Pretend coder-14b is already up and ready, serving the seated population.
+    // Pretend coder-14b is already up and ready.
     let _ = daemon.serving_tx.send_replace(ServingSnapshot {
         // test fixture: no live readiness was ever CONFIRMED here.
         ready_verified_at_ms: None,
@@ -485,7 +485,7 @@ async fn reconcile_is_noop_when_already_serving() {
         base_url: serving_v1_url(),
         adapters: Vec::new(),
         served_context_window: 11008,
-        lanes: daemon.seated(),
+        lanes: 4,
         host_prompt_cache_mib: 0,
         degraded_reason: None,
         vision_ready: false,

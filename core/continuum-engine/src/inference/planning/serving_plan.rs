@@ -43,7 +43,6 @@ mod max_lanes;
 pub use max_lanes::*;
 mod plan_serving;
 pub use plan_serving::*;
-mod pool;
 
 #[cfg(test)]
 mod tests;

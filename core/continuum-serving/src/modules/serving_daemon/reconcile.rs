@@ -318,16 +318,38 @@ impl ServingDaemonModule {
             // engine holds one shared pool sized once, so a plan that wants a wider window or
             // more lanes is not a relaunch. The re-home ladder that lived here (sustained
             // streaks, cooldowns, plan highs, holds, the cache-size re-home) relaunched the
-            // M5's engine 40 times. What changes at runtime is each seated mind's share: when
-            // the population moves, the launch path republishes it (an AlreadyServing ensure).
+            // M5's engine 40 times. Who holds how much of the pool is decided at runtime.
             if live.ready
                 && live.active_model.as_deref() == Some(desired.as_str())
                 && live.adapters == desired_adapter_paths
-                && live.lanes == self.seated()
             {
                 // The lanes this hour served: the health window's maximum (the lane-bound rest
                 // stands on it).
                 crate::cognition::health_ledger::note_lanes(live.lanes as u64);
+                // Remember the shape each mind is served for the next boot's plan: the engine's
+                // own generation and sequences, at the share published from its pool (its
+                // `/props` window is the whole pool on the shared engine). Settlement is
+                // idempotent per generation, so a ready tick may record it.
+                if let Some(model) = live.active_model.as_deref() {
+                    let endpoint = crate::ai::openai_endpoints::OpenAiBase::new(&live.base_url);
+                    if let Some(geometry) = crate::inference::slots::directory()
+                        .endpoint(endpoint.root())
+                        .served_geometry()
+                        .filter(|g| g.model_id == model && g.lanes == live.lanes)
+                    {
+                        // Samples carry the engine's own shape: match them on it, record the share.
+                        let observed = crate::inference::resource_admission::PromptSample::geometry_median(
+                            &(self.leased_in_sent)(),
+                            endpoint.root(),
+                            &geometry,
+                        );
+                        let served = crate::inference::served_window_store::ServedGeometry {
+                            per_slot_window: live.served_context_window,
+                            ..geometry
+                        };
+                        crate::inference::served_window_store::record_reconciled(served, true, observed);
+                    }
+                }
                 self.acknowledge_verified_target(&live, planned.intent_revision);
                 return None;
             }
