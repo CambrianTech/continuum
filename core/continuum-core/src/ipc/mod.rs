@@ -39,7 +39,6 @@ use crate::modules::vision::VisionModule;
 /// - Modular runtime routes commands through ServiceModule trait (Phase 1+)
 use crate::persona::ChannelRegistry;
 use crate::cognition::conversation::types::PersonaState;
-use crate::rag::RagEngine;
 use crate::runtime::{CommandResult, Runtime};
 use crate::system_resources::SystemResourceMonitor;
 use crate::{log_debug, log_error, log_info};

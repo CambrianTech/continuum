@@ -74,7 +74,6 @@ pub(super) struct ServerState {
     pub(super) voice_service: Arc<crate::live::session::voice_service::VoiceService>,
     /// Per-persona channel registries + state — DashMap: hot-path ops are &mut self.
     pub(super) channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
-    pub(super) rag_engine: Arc<RagEngine>,
     /// Server-side audio buffer pool for handle-based synthesis.
     pub(super) audio_pool: Arc<crate::live::audio::buffer::AudioBufferPool>,
     /// Tokio runtime handle for async operations from IPC threads.
@@ -108,7 +107,6 @@ impl ServerState {
         memory_manager: Arc<crate::memory::PersonaMemoryManager>,
         runtime: Arc<Runtime>,
         channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
-        rag_engine: Arc<RagEngine>,
         voice_service: Arc<crate::live::session::voice_service::VoiceService>,
         audio_pool: Arc<crate::live::audio::buffer::AudioBufferPool>,
         file_engines: Arc<DashMap<String, FileEngine>>,
@@ -120,7 +118,6 @@ impl ServerState {
         Self {
             voice_service,
             channel_registries,
-            rag_engine,
             audio_pool,
             rt_handle,
             memory_manager,

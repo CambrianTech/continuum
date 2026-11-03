@@ -100,7 +100,6 @@ pub fn start_server(
     inference_modules::register_inference_modules(&runtime);
 
     let cognition_modules::CognitionHandles {
-        rag_engine,
         channel_registries,
     } = cognition_modules::register_cognition_and_memory_modules(
         &runtime,
@@ -264,7 +263,6 @@ pub fn start_server(
         memory_manager,
         runtime,
         channel_registries,
-        rag_engine,
         call_plane.voice_service,
         audio_pool,
         file_engines,

@@ -11,10 +11,8 @@
 
 use super::inbox::PersonaInbox;
 use crate::cognition::conversation::types::{InboxMessage, PersonaState, SenderType};
-use crate::rag::RagEngine;
 use dashmap::DashSet;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::watch;
 use tracing::debug;
@@ -80,8 +78,6 @@ pub struct PersonaCognitionEngine {
     mention_marker: Box<str>,
     state: PersonaState,
     inbox: PersonaInbox,
-    #[allow(dead_code)] // Will be used for RAG context building
-    rag_engine: Arc<RagEngine>,
 
     // Deduplication
     evaluated_messages: DashSet<Uuid>,
@@ -95,7 +91,6 @@ impl PersonaCognitionEngine {
     pub fn new(
         persona_id: Uuid,
         persona_name: String,
-        rag_engine: Arc<RagEngine>,
         shutdown_rx: watch::Receiver<bool>,
     ) -> Self {
         let name_lower = persona_name.to_lowercase().into_boxed_str();
@@ -106,7 +101,6 @@ impl PersonaCognitionEngine {
             mention_marker,
             state: PersonaState::new(),
             inbox: PersonaInbox::new(persona_id),
-            rag_engine,
             evaluated_messages: DashSet::new(),
             shutdown_rx,
         }
@@ -333,9 +327,8 @@ mod tests {
     use tokio::sync::watch;
 
     async fn create_test_engine() -> PersonaCognitionEngine {
-        let rag_engine = Arc::new(RagEngine::new());
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-        PersonaCognitionEngine::new(Uuid::new_v4(), "TestBot".into(), rag_engine, shutdown_rx)
+        PersonaCognitionEngine::new(Uuid::new_v4(), "TestBot".into(), shutdown_rx)
     }
 
     #[tokio::test]
@@ -427,10 +420,9 @@ mod tests {
     async fn is_mentioned_uses_cached_lowercase_via_engine() {
         // Constructs the engine with a mixed-case name; verifies all
         // four casing variants resolve through the same cached state.
-        let rag_engine = Arc::new(RagEngine::new());
         let (_tx, rx) = watch::channel(false);
         let engine =
-            PersonaCognitionEngine::new(Uuid::new_v4(), "Helper AI".into(), rag_engine, rx);
+            PersonaCognitionEngine::new(Uuid::new_v4(), "Helper AI".into(), rx);
         assert!(engine.is_mentioned("@helper ai please"));
         assert!(engine.is_mentioned("@HELPER AI"));
         assert!(engine.is_mentioned("Hey helper ai, can you..."));
