@@ -145,7 +145,10 @@ eviction decision, not after: a `TrackedDir` row and an owner in `disk_eviction`
 `every_cache_class_has_a_decided_eviction_story` test), bounded by bytes, pruning oldest arrivals
 first. Pruning is safe by construction: the sequence high-water (#5694) never re-issues a number, and
 a mind whose cursor sits below the pruned floor drains `Drained::Gap { from, through, reason:
-Retention }`, which she perceives, never silence.
+Retention }`, which she perceives, never silence. Bytes decide; cursors never pin: a gone reader
+(despawned, or a peer that left) is withdrawn from the floor, so the store prunes to its byte bound
+whatever the lowest live cursor says, and a slow reader drains the `Gap` instead of holding the store
+open (Cormac on #5691, 2026-11-03).
 
 ### P2 decided (Codex, 2026-11-01): (a)
 One durable conversation-event record for every admitted kind: a typed routing header plus the
@@ -181,7 +184,7 @@ store's `sequence_revision` watch), and none waits on another:
 | reflex (salience) | the newest arrivals' typed headers only: addressed-to-her, sender, room | every commit | immediately | an interrupt she checks (THE-WHOLE-MIND §2.2), never an order |
 | deliberation (perception) | every arrival in her rooms since her cursor, as the epoch's appended tail | her act boundary, and the commit when idle | per act | her acts; the cursor advances through what she durably accepted |
 | experience / dream | the settled stretch behind her perception cursor | sleep pressure + opportunity (the governor) | between decode steps, low duty | engrams and dream steps on her shadow gene |
-| retention | the lowest cursor of every reader | byte pressure | background | prunes below it; a reader beneath the floor drains `Gap { Retention }` |
+| retention | the byte bound; live readers' cursors only report who drains a `Gap` | byte pressure | background | prunes below it; a reader beneath the floor drains `Gap { Retention }` |
 
 Rules that keep it flowing:
 - **No reader holds another.** A reader is a task on its own interval or wake, writing its own
@@ -209,6 +212,8 @@ fingerprints its re-read projection AND before they become her workspace turns. 
 both whether she wakes and what she perceives by body-text similarity. Both jobs belong to the
 re-read-and-fingerprint self-tick that P2 replaces: under P2 she wakes on a store commit (an
 arrival is news by construction), and repetition reaches her as the view's `[repetition]` fact,
-never as copies silently removed from her perception. P2 deletes `dedup_loop_filler`, its
+never as copies silently removed from her perception. The fact is appended, never withdrawn: when a
+repeat turns out not to be one (the IntelMac's retraction), the correction is a later appended
+fact, so the prefix she already holds is never rewritten (Cormac on #5691, 2026-11-03). P2 deletes `dedup_loop_filler`, its
 constants (`FUZZY_WINDOW`, `CONTAINMENT_MIN_WORDS`) and the now test-only
 `defer_as_loop_filler` (whose message-path gate #5698 already deleted).
