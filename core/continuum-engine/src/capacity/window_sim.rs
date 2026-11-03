@@ -98,9 +98,9 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy) -> WindowRu
         let slack: u64 = current
             .iter()
             .map(|d| {
-                u64::from(grants.get(&d.mind).copied().unwrap_or(0))
-                    .saturating_sub(u64::from(d.required_tokens))
-            }) // unwrap_or: a mind granted nothing holds no slack
+                let granted = grants.get(&d.mind).copied().unwrap_or(0); // unwrap_or: a mind granted nothing holds no slack
+                u64::from(granted).saturating_sub(u64::from(d.required_tokens))
+            })
             .sum();
         for demand in &current {
             let granted = grants.get(&demand.mind).copied().unwrap_or(0); // unwrap_or: a mind the policy granted nothing holds nothing
@@ -185,12 +185,8 @@ impl WindowPolicy for DemandFollowing {
             let share = (u64::from(d.required_tokens) * rest)
                 .checked_div(rest_demand)
                 .unwrap_or(0); // unwrap_or: no demand left to share means no share
-            grants.insert(
-                d.mind,
-                u32::try_from(share)
-                    .unwrap_or(u32::MAX)
-                    .min(d.required_tokens),
-            ); // unwrap_or: a share past u32 is capped by her demand anyway
+            let share = u32::try_from(share).unwrap_or(u32::MAX); // unwrap_or: a share past u32 is capped by her demand below
+            grants.insert(d.mind, share.min(d.required_tokens));
         }
         grants
     }
