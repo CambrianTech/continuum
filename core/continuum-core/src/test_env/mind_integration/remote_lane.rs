@@ -68,13 +68,13 @@ async fn rehome_requires_a_readable_local_assignment() {
     let replacement: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
     for corrupt in [false, true] {
         if corrupt { std::fs::write(home.model_override_json(), b"{").expect("corrupt"); }
-        assert_eq!(registry.re_home_all_at(root.path(), Some(replacement.clone()), "new/local", 4096), 0);
+        assert_eq!(registry.re_home_all_at(root.path(), Some(replacement.clone()), "new/local", |_| Some(4096)), 0);
         let (actual, model) = cycle.current_model_route().expect("preserved");
         assert!(Arc::ptr_eq(&original, &actual));
         assert_eq!(model, original_model);
     }
     PersonaModelOverride::new("local/model", None, 2).write(&home).expect("local override");
-    assert_eq!(registry.re_home_all_at(root.path(), Some(replacement.clone()), "new/local", 4096), 1);
+    assert_eq!(registry.re_home_all_at(root.path(), Some(replacement.clone()), "new/local", |_| Some(4096)), 1);
     let (actual, model) = cycle.current_model_route().expect("rebound");
     assert!(Arc::ptr_eq(&replacement, &actual));
     assert_eq!(model.as_deref(), Some("new/local"));
@@ -104,8 +104,8 @@ async fn a_resident_bound_at_the_provisional_window_is_rehomed_to_the_served_win
     assert_eq!(before.context_window, crate::inference::planning::MIN_SERVE_CTX, "bound at the provisional window");
     let served = 60_672;
 
-    assert_eq!(registry.rehome_reason_at(root.path(), &model, served), Some(RehomeReason::WindowChanged));
-    assert_eq!(registry.re_home_all_at(root.path(), None, &model, served), 1, "only the local resident moves");
+    assert_eq!(registry.rehome_reason_at(root.path(), &model, |_| Some(served)), Some(RehomeReason::WindowChanged));
+    assert_eq!(registry.re_home_all_at(root.path(), None, &model, |_| Some(served)), 1, "only the local resident moves");
     let after = local.current_binding().expect("rebound");
     assert_eq!(after.context_window, served);
     assert_eq!(after.requested_model(), model);
@@ -113,8 +113,8 @@ async fn a_resident_bound_at_the_provisional_window_is_rehomed_to_the_served_win
     let remote_after = remote.current_binding().expect("remote kept");
     assert!(Arc::ptr_eq(&remote_before, &remote_after), "the off-box resident keeps her binding");
 
-    assert_eq!(registry.rehome_reason_at(root.path(), &model, served), None, "steady state needs nothing");
-    assert_eq!(registry.re_home_all_at(root.path(), None, &model, served), 0, "already bound: untouched");
+    assert_eq!(registry.rehome_reason_at(root.path(), &model, |_| Some(served)), None, "steady state needs nothing");
+    assert_eq!(registry.re_home_all_at(root.path(), None, &model, |_| Some(served)), 0, "already bound: untouched");
     assert!(Arc::ptr_eq(&after, &local.current_binding().expect("still bound")), "no store on a matching binding");
 }
 

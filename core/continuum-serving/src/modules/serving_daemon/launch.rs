@@ -19,26 +19,28 @@ impl ServingDaemonModule {
     /// The engine's one KV pool, sized ONCE when the engine starts and never by a relaunch, as
     /// `(per-sequence tokens, sequences)` so `-c` is the pool and `--parallel` the ceiling.
     ///
-    /// The sequences: every seated mind, the minds leased in at the last plan, and the scratch
-    /// traffic beside them. Each is laid out on the budget the last plan sized against, by the
-    /// plan's own arithmetic, so the engine holds the memory the planner proved it may: on the
-    /// M5, 5 x 69,376, the geometry the planner gave the fixed-slot engine. Sizing it instead
-    /// from the physical budget less every board holder gave 5 x 36,505 (2026-11-03 04:23Z,
-    /// backed out at once), and from the cold plan's window x lanes 1 x 80k. The shared pool's
-    /// saving (one compute graph, not one per sequence) comes as a measured gain, not here. A
-    /// model with no measured footprint, or no plan yet, keeps the plan's total (window x lanes)
-    /// shared over the sequences: an unmeasured model is where over-allocating is least safe.
+    /// The launch decides only the pool's size; no mind's window comes from it. Each mind's
+    /// window is her grant from her measured requirement (`grants.rs`), and under `--kv-unified`
+    /// any one sequence may grow into the whole pool. The pool is the most memory the plan's own
+    /// arithmetic proves fits: its window x its lanes, or its fit at the sequences (a window
+    /// within the budget for each), whichever is larger. The sequences are every seated mind,
+    /// the minds leased in at the last plan, and the scratch traffic, so seating never relaunches.
+    /// On the M5 (plan 2 x 128,768) that is 257,536 for 5; on the IntelMac (plan 2 x 32,768,
+    /// fit 9 x 32,768) 294,912 for 9, what it serves healthy today. Dividing the pool by the
+    /// sequences as each mind's window gave the M5 5 x 10,803 (b03d7c5bc) and would have given
+    /// the IntelMac 7,281 against 13-30k acts (Joel, 2026-11-03: "System accommodates it doesn't
+    /// do stupid division").
     fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> (u32, u32) {
         let leased_in = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed);
-        let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes);
+        let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes).max(1);
         let budget = self.plan_budget_bytes.load(Ordering::Relaxed);
-        let fitted = footprint_for(model).map(|fp| fp.window_within(budget, sequences));
-        let per_sequence = match fitted.filter(|tokens| *tokens > 0) {
-            Some(tokens) => tokens,
-            None => u32::try_from(u64::from(served_ctx) * u64::from(lanes) / u64::from(sequences.max(1)))
-                .unwrap_or(served_ctx), // unwrap_or: lanes <= sequences, so the share is at most served_ctx
-        };
-        (per_sequence, sequences)
+        let plan_pool = u64::from(served_ctx) * u64::from(lanes);
+        let fit_pool = footprint_for(model)
+            .map_or(0, |fp| u64::from(fp.window_within(budget, sequences).min(model.context_window)) * u64::from(sequences)); // map_or: no footprint proves no fit beyond the plan's own pool
+        let pool = plan_pool.max(fit_pool);
+        // `-c` is the CLI's `slots x per-slot`: the pool carried in that shape, not anyone's window.
+        let per_slot = u32::try_from(pool / u64::from(sequences)).unwrap_or(u32::MAX); // unwrap_or: a pool over u32 x sequences is no real engine; the CLI caps it
+        (per_slot, sequences)
     }
 
     pub(super) fn launch_reconciled_plan(&self, launch: ReconcileLaunch) -> Option<JoinHandle<()>> {
@@ -184,6 +186,7 @@ impl ServingDaemonModule {
         // lane forever, #175). Read+clear here so exactly one reconcile acts on it.
         let force_relaunch = self.force_relaunch.clone();
         let server = self.server.clone();
+        let served_pool = Arc::clone(&self.served_pool);
         let serving_tx = self.serving_tx.clone();
         let verified_target = self.verified_target.clone();
         let intent_owner = self.intent.clone();
@@ -334,7 +337,10 @@ impl ServingDaemonModule {
             let (served_window, served_lanes) =
                 match (served_window > 0, server.launched_on_shared_pool()) {
                     (true, Some(true)) => match server.served_pool_tokens().await {
-                        Ok(pool) => sequence_share(pool, served_lanes, target.model.context_window),
+                        Ok(pool) => {
+                            served_pool.store(pool, Ordering::Relaxed);
+                            sequence_share(pool, served_lanes, target.model.context_window)
+                        }
                         Err(e) => {
                             continuum_base::probe!(
                                 target: "continuum_core::modules::serving_daemon", class = "serving.reconcile",
@@ -343,10 +349,15 @@ impl ServingDaemonModule {
                                 "server ready on the shared pool but its pool is unreadable — \
                                  publishing the gap (no guessed share; retries next tick)",
                             );
+                            served_pool.store(0, Ordering::Relaxed);
                             (0, served_lanes)
                         }
                     },
-                    _ => (served_window, served_lanes),
+                    // Fixed slots: the engine's pool is literally its slots, each a full window.
+                    _ => {
+                        served_pool.store(served_window.saturating_mul(served_lanes), Ordering::Relaxed);
+                        (served_window, served_lanes)
+                    }
                 };
             // The grant the engine was LAUNCHED with: the spawn fact on the control, or — for
             // a lane this core did not spawn (ADOPTED; every deploy leaves the lane up for

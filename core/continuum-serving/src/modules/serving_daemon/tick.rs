@@ -74,6 +74,7 @@ impl ServiceModule for ServingDaemonModule {
         self.take_reported_wedge();
         self.seed_reconcile_pages().await;
         let _ = self.reconcile_to_plan();
+        self.publish_grants();
         // Liveness heartbeat (#175 self-heal): on a slow cadence, re-verify that the lane
         // we believe is `ready` can ACTUALLY decode — the reconcile trusts the published
         // `ready` forever and would never notice an OOM-poisoned backend otherwise. Off the
