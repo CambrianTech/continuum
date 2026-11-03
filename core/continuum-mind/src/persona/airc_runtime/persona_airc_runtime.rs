@@ -422,7 +422,7 @@ impl PersonaAircRuntime {
                     // Renewal is per-card WARN-and-continue: a failed renewal degrades
                     // to exactly the old lapse, and never takes down presence.
                     let renewal_due =
-                        last_clean_renewal.map_or(true, |t| t.elapsed() >= renewal_period);
+                        last_clean_renewal.is_none_or(|t| t.elapsed() >= renewal_period);
                     if !renewal_due {
                         continue;
                     }
