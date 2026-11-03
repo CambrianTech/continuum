@@ -337,7 +337,7 @@ impl LlamaServerControl for LlamaServerProcess {
         let (_host, port) = split_host_port(&self.root);
         let record = crate::inference::lane_registry::live_lane().filter(|r| r.port == port)?;
         let argv = crate::inference::lane_process::command_args(record.pid)?;
-        Some(argv.iter().any(|a| a == "--kv-unified" || a == "-kvu"))
+        Some(super::shared_pool::launched_on_shared_pool(&argv))
     }
 
     fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {

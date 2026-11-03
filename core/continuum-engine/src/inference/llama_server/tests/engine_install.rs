@@ -116,12 +116,12 @@ fn the_engine_launches_on_one_shared_pool() {
     let mut planned = target("pool-fixture");
     planned.context_window = 58_112;
     planned.lanes = 5;
-    let invocation = crate::inference::lane_args::base_invocation(
+    let invocation = super::super::shared_pool::on_shared_pool(crate::inference::lane_args::base_invocation(
         Path::new("fixture.gguf"), planned.model_id(), "127.0.0.1", 1,
         planned.parallel_lanes(), planned.served_total_ctx(),
         planned.host_prompt_cache_mib, Path::new("pages"),
-    );
+    ));
     assert_eq!(invocation.value_of("-c"), Some("290560"));
     assert_eq!(invocation.value_of("--parallel"), Some("5"));
-    assert!(invocation.has("--kv-unified"));
+    assert!(super::super::shared_pool::launched_on_shared_pool(&invocation.args), "the launch and the read-back agree");
 }

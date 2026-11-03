@@ -55,6 +55,7 @@ pub use liveness::{
 
 mod convergence_attempt;
 mod reconcile;
+mod shared_pool;
 pub use reconcile::{ensure_model_serving, ensure_model_serving_if_current};
 
 mod smoke;
