@@ -49,7 +49,12 @@ pub struct Demand {
 /// Grants every mind a window from the pool, given every mind's current demand and the grants
 /// they hold now.
 pub trait WindowPolicy {
-    fn grant(&mut self, demands: &[Demand], held: &BTreeMap<MindId, u32>, pool_tokens: u32) -> BTreeMap<MindId, u32>;
+    fn grant(
+        &mut self,
+        demands: &[Demand],
+        held: &BTreeMap<MindId, u32>,
+        pool_tokens: u32,
+    ) -> BTreeMap<MindId, u32>;
 }
 
 /// What a run measured, and every contract breach it saw.
@@ -74,7 +79,14 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy) -> WindowRu
     let mut held: BTreeMap<MindId, u32> = BTreeMap::new();
     let mut out = WindowRun::default();
     for event in &scenario.events {
-        demands.insert(event.mind, Demand { mind: event.mind, required_tokens: event.required_tokens, in_flight: event.in_flight });
+        demands.insert(
+            event.mind,
+            Demand {
+                mind: event.mind,
+                required_tokens: event.required_tokens,
+                in_flight: event.in_flight,
+            },
+        );
         let current: Vec<Demand> = demands.values().copied().collect();
         let grants = policy.grant(&current, &held, scenario.pool_tokens);
         let total: u64 = grants.values().map(|&g| u64::from(g)).sum();
@@ -85,11 +97,18 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy) -> WindowRu
         // Granted past demand: the room an idle mind holds that a reading mind could have used.
         let slack: u64 = current
             .iter()
-            .map(|d| u64::from(grants.get(&d.mind).copied().unwrap_or(0)).saturating_sub(u64::from(d.required_tokens))) // unwrap_or: a mind granted nothing holds no slack
+            .map(|d| {
+                u64::from(grants.get(&d.mind).copied().unwrap_or(0))
+                    .saturating_sub(u64::from(d.required_tokens))
+            }) // unwrap_or: a mind granted nothing holds no slack
             .sum();
         for demand in &current {
             let granted = grants.get(&demand.mind).copied().unwrap_or(0); // unwrap_or: a mind the policy granted nothing holds nothing
-            if demand.in_flight && held.get(&demand.mind).is_some_and(|&before| granted < before) {
+            if demand.in_flight
+                && held
+                    .get(&demand.mind)
+                    .is_some_and(|&before| granted < before)
+            {
                 out.in_flight_shrinks += 1;
             }
             if granted < demand.required_tokens {
@@ -113,7 +132,12 @@ pub struct EqualSplit {
 }
 
 impl WindowPolicy for EqualSplit {
-    fn grant(&mut self, demands: &[Demand], _held: &BTreeMap<MindId, u32>, pool_tokens: u32) -> BTreeMap<MindId, u32> {
+    fn grant(
+        &mut self,
+        demands: &[Demand],
+        _held: &BTreeMap<MindId, u32>,
+        pool_tokens: u32,
+    ) -> BTreeMap<MindId, u32> {
         let each = pool_tokens / self.slots.max(1);
         demands.iter().map(|d| (d.mind, each)).collect()
     }
@@ -125,10 +149,18 @@ impl WindowPolicy for EqualSplit {
 pub struct DemandFollowing;
 
 impl WindowPolicy for DemandFollowing {
-    fn grant(&mut self, demands: &[Demand], held: &BTreeMap<MindId, u32>, pool_tokens: u32) -> BTreeMap<MindId, u32> {
+    fn grant(
+        &mut self,
+        demands: &[Demand],
+        held: &BTreeMap<MindId, u32>,
+        pool_tokens: u32,
+    ) -> BTreeMap<MindId, u32> {
         let demanded: u64 = demands.iter().map(|d| u64::from(d.required_tokens)).sum();
         if demanded <= u64::from(pool_tokens) {
-            return demands.iter().map(|d| (d.mind, d.required_tokens)).collect();
+            return demands
+                .iter()
+                .map(|d| (d.mind, d.required_tokens))
+                .collect();
         }
         // An in-flight turn keeps what it holds: a grant never shrinks under a turn using it.
         let kept: BTreeMap<MindId, u32> = demands
@@ -138,11 +170,27 @@ impl WindowPolicy for DemandFollowing {
             .collect();
         let kept_total: u64 = kept.values().map(|&g| u64::from(g)).sum();
         let rest = u64::from(pool_tokens).saturating_sub(kept_total);
-        let rest_demand: u64 = demands.iter().filter(|d| !kept.contains_key(&d.mind)).map(|d| u64::from(d.required_tokens)).sum();
+        let rest_demand: u64 = demands
+            .iter()
+            .filter(|d| !kept.contains_key(&d.mind))
+            .map(|d| u64::from(d.required_tokens))
+            .sum();
         let mut grants = kept;
-        for d in demands.iter().filter(|d| !grants.contains_key(&d.mind)).copied().collect::<Vec<_>>() {
-            let share = if rest_demand == 0 { 0 } else { u64::from(d.required_tokens) * rest / rest_demand };
-            grants.insert(d.mind, u32::try_from(share).unwrap_or(u32::MAX).min(d.required_tokens)); // unwrap_or: a share past u32 is capped by her demand anyway
+        for d in demands
+            .iter()
+            .filter(|d| !grants.contains_key(&d.mind))
+            .copied()
+            .collect::<Vec<_>>()
+        {
+            let share = (u64::from(d.required_tokens) * rest)
+                .checked_div(rest_demand)
+                .unwrap_or(0); // unwrap_or: no demand left to share means no share
+            grants.insert(
+                d.mind,
+                u32::try_from(share)
+                    .unwrap_or(u32::MAX)
+                    .min(d.required_tokens),
+            ); // unwrap_or: a share past u32 is capped by her demand anyway
         }
         grants
     }
@@ -157,7 +205,12 @@ pub fn m5_uneven_reading() -> WindowScenario {
     const ATLAS: MindId = 3;
     const BENCHY: MindId = 4;
     const SCRATCH: MindId = 5;
-    let e = |at_ms, mind, required_tokens, in_flight| DemandEvent { at_ms, mind, required_tokens, in_flight };
+    let e = |at_ms, mind, required_tokens, in_flight| DemandEvent {
+        at_ms,
+        mind,
+        required_tokens,
+        in_flight,
+    };
     WindowScenario {
         name: "m5-uneven-reading",
         pool_tokens: 290_560,
@@ -185,7 +238,10 @@ mod tests {
     fn todays_equal_split_squeezes_a_reading_mind_while_others_idle() {
         let run = run(&m5_uneven_reading(), &mut EqualSplit { slots: 5 });
         assert!(run.squeezes > 0, "{run:?}");
-        assert!(run.unmet_when_fits > 0, "every demand fit the pool and one was cut: {run:?}");
+        assert!(
+            run.unmet_when_fits > 0,
+            "every demand fit the pool and one was cut: {run:?}"
+        );
     }
 
     // what this catches: a demand-following grant breaking the contract: over the pool, an
@@ -199,11 +255,20 @@ mod tests {
     // what this catches: an overloaded pool shrinking a turn in flight to seat another.
     #[test]
     fn an_overloaded_pool_never_shrinks_a_turn_in_flight() {
-        let e = |at_ms, mind, required_tokens, in_flight| DemandEvent { at_ms, mind, required_tokens, in_flight };
+        let e = |at_ms, mind, required_tokens, in_flight| DemandEvent {
+            at_ms,
+            mind,
+            required_tokens,
+            in_flight,
+        };
         let scenario = WindowScenario {
             name: "overloaded",
             pool_tokens: 100_000,
-            events: vec![e(0, 1, 60_000, true), e(1, 2, 60_000, false), e(2, 3, 30_000, false)],
+            events: vec![
+                e(0, 1, 60_000, true),
+                e(1, 2, 60_000, false),
+                e(2, 3, 30_000, false),
+            ],
         };
         let run = run(&scenario, &mut DemandFollowing);
         assert_eq!(run.in_flight_shrinks, 0, "{run:?}");
