@@ -196,11 +196,9 @@ pub async fn materialize_adapters(
         // set_airc_source so compose_for_turn has engram + airc both
         // available the moment her service loop iterates (task #148).
         // The runtime IS an AircTranscriptReader by trait bound.
-        let rag_engine = Arc::new(crate::rag::RagEngine::new());
         let mut cognition = crate::persona::unified::PersonaCognition::new(
             identity.peer_id.as_uuid(),
             identity.agent_name.clone(),
-            rag_engine,
         );
         // One airc source: it delivers her rooms to cognition and takes the read receipt
         // of every sent prompt (her cursor moves through what she was shown, never at delivery).

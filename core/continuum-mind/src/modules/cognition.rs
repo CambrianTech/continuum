@@ -35,7 +35,6 @@
 use crate::gpu::GpuMemoryManager;
 use continuum_text_analysis::LoopDetector;
 use crate::persona::{PersonaCognition, PersonaInboxFrame, PersonaTurnFrame, PersonaTurnFrameReplayRecord};
-use crate::rag::RagEngine;
 use crate::runtime::{CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -50,23 +49,26 @@ use uuid::Uuid;
 /// One lock acquisition gives atomic access to engine + inbox + rate limiter +
 /// sleep state + adapter registry + genome engine.
 ///
-/// `rag_engine` and `loop_detector` are shared across all personas.
+/// `loop_detector` is shared across all personas.
 pub struct CognitionState {
     /// Unified per-persona state: 7 maps → 1.
     pub personas: Arc<DashMap<Uuid, PersonaCognition>>,
-    /// Shared RAG engine (not per-persona).
-    pub rag_engine: Arc<RagEngine>,
     /// Shared loop detector (not per-persona).
     pub loop_detector: LoopDetector,
     /// GPU memory manager — real VRAM budgets for genome paging.
     pub gpu_manager: Option<Arc<GpuMemoryManager>>,
 }
 
+impl Default for CognitionState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CognitionState {
-    pub fn new(rag_engine: Arc<RagEngine>) -> Self {
+    pub fn new() -> Self {
         Self {
             personas: Arc::new(DashMap::new()),
-            rag_engine,
             loop_detector: LoopDetector::new(),
             gpu_manager: None,
         }
@@ -98,7 +100,7 @@ impl CognitionState {
         // No lock is held across anything but the insert (a `len()` inside `or_insert_with`
         // re-entered the shard lock and self-deadlocked the live core once).
         self.personas.entry(persona_uuid).or_insert_with(|| {
-            PersonaCognition::new(persona_uuid, String::new(), self.rag_engine.clone())
+            PersonaCognition::new(persona_uuid, String::new())
         })
     }
 }
@@ -401,7 +403,6 @@ mod turn_frame_recording_tests {
     mod get_or_create_persona_locking {
         use super::*;
         use crate::gpu::GpuMemoryManager;
-        use crate::rag::RagEngine;
         use std::sync::mpsc;
         use std::time::Duration;
 
@@ -422,7 +423,6 @@ mod turn_frame_recording_tests {
         fn create_with_gpu_manager_does_not_self_deadlock() {
             let (done_tx, done_rx) = mpsc::channel();
             std::thread::spawn(move || {
-                let rag = Arc::new(RagEngine::new());
                 let (ptx, prx) = tokio::sync::watch::channel(0.0f32);
                 let gpu = Arc::new(GpuMemoryManager::new_for_test(
                     24 * 1024 * 1024 * 1024, // total VRAM
@@ -434,7 +434,7 @@ mod turn_frame_recording_tests {
                     ptx,
                     prx,
                 ));
-                let state = CognitionState::new(rag).with_gpu_manager(gpu);
+                let state = CognitionState::new().with_gpu_manager(gpu);
                 let id = Uuid::new_v4();
                 // First call runs the lazy-create closure (the budget read); the
                 // guard drops at the end of each statement, so the second call

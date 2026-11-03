@@ -74,7 +74,6 @@ use continuum_core::persona::message_cache::RecentMessageCache;
 use continuum_core::cognition::conversation::persona_identity::PersonaIdentity;
 use continuum_core::cognition::conversation::types::{PersonaState, SenderType};
 use continuum_core::persona::{analyze_burst, BurstEvaluateResult, RateLimiterState, SleepState};
-use continuum_core::rag::RagEngine;
 
 fn make_chat(room: Uuid, sender: &str, content: &str) -> Arc<dyn QueueItemBehavior> {
     Arc::new(ChatQueueItem {
@@ -114,9 +113,8 @@ impl PersonaHarness {
     fn new(name: &str) -> Self {
         let persona_id = Uuid::new_v4();
         let identity = PersonaIdentity::new(persona_id, name);
-        let rag_engine = Arc::new(RagEngine::new());
         let (_tx, rx) = tokio::sync::watch::channel(false);
-        let engine = PersonaCognitionEngine::new(persona_id, name.into(), rag_engine, rx);
+        let engine = PersonaCognitionEngine::new(persona_id, name.into(), rx);
         Self {
             persona_id,
             identity,

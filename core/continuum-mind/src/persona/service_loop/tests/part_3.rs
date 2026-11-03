@@ -78,7 +78,6 @@ fn test_obligations(hosted: &HostedPersona) -> crate::persona::obligation::Oblig
             cognition: Arc::new(crate::persona::unified::PersonaCognition::new(
                 persona_id,
                 "Paige".to_string(),
-                Arc::new(crate::rag::RagEngine::new()),
             )),
             // #195 slice 2: build via the same helper production
             // uses, NOT a copy-pasted template. If a future PR
