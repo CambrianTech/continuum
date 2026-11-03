@@ -38,7 +38,12 @@ The core serves two brokers, one per protocol, each speaking the protocol unchan
   files needs to stay secret. An unguessable value carried in the environment would not do: every resident and the
   core run as one OS user, and on macOS a same-user process reads another's environment (`ps -E`; Cormac, the
   IntelMac, 2026-11-03), so resident A could lift B's value and push as B, with the audit naming B. The capability is
-  revocable (the port or socket closes) and is never the GitHub token. On Windows the same per-resident endpoint is
+  revocable (the port or socket closes) and is never the GitHub token. The attribution holds only for confined
+  processes: an unconfined same-user process (anything outside every resident's profile, the core's own children
+  included) can also reach her port, so the audit's "her" means "a process her profile admits or one outside all
+  confinement". The core spawns nothing unconfined that a resident can drive, and the audit records the peer
+  process of each connection (`LOCAL_PEERPID` / `SO_PEERCRED`) beside her identity, so an outside caller is
+  visible rather than attributed to her (Cormac on #5628, 2026-11-03). On Windows the same per-resident endpoint is
   scoped by the firewall or an AppContainer; until that exists there, the broker answers with a typed refusal
   naming it, never a shared endpoint.
 - **Scope, from what the core records:** the broker forwards only to GitHub hosts, and only for the repositories
