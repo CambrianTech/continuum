@@ -24,7 +24,7 @@ impl ServingDaemonModule {
     /// any one sequence may grow into the whole pool. The sequences are every seated mind, the
     /// minds leased in at the last plan, and the scratch traffic, so seating never relaunches.
     /// The size is [`launch_pool`] at the host's PHYSICAL budget, never the plan's live one.
-    pub(super) fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> (u32, u32) {
+    fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> (u32, u32) {
         let leased_in = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed);
         let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes).max(1);
         let pool = launch_pool(
