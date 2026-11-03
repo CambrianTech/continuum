@@ -461,13 +461,35 @@ claims its summary with its handle as the floor, the rest as an increment (MIND-
 competes by value and collapses to a reopenable level. A loop needs her input to stop reflecting what she did; with the
 causal edge in the claim's type, no source's own rule can drop it (Benchy's 125 identical acts, 10-20).
 
+**Infeasible is where the budgeter starts working, not where her turn stops** (Joel: "The budgeter must iterate on
+things that while infeasible would break what she's doing or themselves entirely, till it hopefully finds a solution
+that best fits. It's a bit like a bubble sort"). The solver's pure core still reports `Infeasible`; the tier around it
+iterates:
+1. **Repair.** Every required claim declares its ladder of viable levels, each with its measured damage (how often a
+   mind held at that level re-reads, faults or loops: the behaviour model's data): her newest result whole, at its
+   summary with its handle, at a pointer she opens; her recall at summary, at pointers; a cold mind's context on the
+   GPU, paged to RAM. While the required floors do not fit, the claim whose next rung costs the least damage steps
+   down one rung and the tier clears again. Each step strictly lowers demand on finite ladders, so it ends: feasible,
+   or at every claim's last rung.
+2. **Exchange.** On a feasible clearing with indivisible levels the greedy order is a lower bound; passes over pairs
+   (one claim down a level, another up) keep a swap only when total value rises, until a pass changes nothing.
+   Value strictly rises on a finite set of states, so it ends, and each pass narrows the reported gap to the bound.
+3. **Capacity beyond the tier,** before any refusal: page another mind's cold context out, move pages to RAM, split
+   her turn (an oversized result read in pages), and on the grid place her where the window is larger.
+4. Only then a refusal, naming what she needed and what was tried.
+
+Both loops are bounded by the claims and their rungs, never by an iteration count someone picked, and each step is in
+the clearing's receipt, so the proving ground replays the exact sequence.
+
 **A small window is the same clearing at a lower capacity** (Joel: "even intelmacs severely limited context windows
 should be doable within an intelligent budgeting flexbox"). The IntelMac's 16,384 tokens per mind holds the causal floor
 whole, the stable head once, then the highest-valued increments: her card's files at summary, the room's last turns,
 recall at pointers she expands on demand. The M5 at 128,768 clears the same claims to fuller levels. No per-node rule
 exists; values are measured per node, so a small node learns which levels its residents reopen.
 
-**Acceptance cases** (proving ground, then each node's live read): (a) across every captured act of the four residents,
+**Acceptance cases** (proving ground, then each node's live read): (0) a scenario whose required floors exceed
+capacity ends in a clearing (repaired) whose damage is no more than a brute-forced optimum's on small cases, never a
+stalled turn; (a) across every captured act of the four residents,
 her newest act and result are present whole or at their summary with a handle, at the M5's and the IntelMac's
 capacities alike; (b) no two consecutive acts with identical calls and identical inputs (the loop signature) on the
 replay; (c) at 16,384 tokens a resident completes a card's read-edit-test cycle on replay with no `Infeasible` clearing.
