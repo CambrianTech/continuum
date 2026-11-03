@@ -32,7 +32,7 @@ pub(super) fn verified_capture(
     if snapshot.active_model.as_deref() != Some(launch.target.model.id.as_str())
         || snapshot.adapters != launch.target.adapter_paths()
         || (snapshot.served_context_window, snapshot.lanes)
-            != sequence_share(launch.observed_context_window, launch.observed_lanes, launch.target.model.context_window)
+            != sequence_share(launch.observed.pool_tokens, launch.observed.lanes, launch.target.model.context_window)
         || snapshot.host_prompt_cache_mib != launch.launched_host_prompt_cache_mib
         || server.owned_engine()? != launch.identity
     {

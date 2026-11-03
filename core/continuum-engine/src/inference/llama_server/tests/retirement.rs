@@ -185,8 +185,7 @@ async fn retiring_page_owner_requires_observed_child_exit() {
             &invocation,
             Some(prepared),
             &process.engine_bin().unwrap(),
-            11008,
-            4,
+            ObservedGeometry { context_window: 11008, lanes: 4, pool_tokens: 11008 * 4 },
         );
         drop(engine_install);
         let captured = process.owned_serving_target().unwrap();
@@ -272,15 +271,15 @@ async fn retiring_page_owner_requires_observed_child_exit() {
         true,
     );
     let launched = invocation.clone();
-    process.record_verified_target(&generation, &launch_target, &invocation, None, &process.engine_bin().unwrap(), 11008, 4);
+    process.record_verified_target(&generation, &launch_target, &invocation, None, &process.engine_bin().unwrap(), ObservedGeometry { context_window: 11008, lanes: 4, pool_tokens: 11008 * 4 });
     // A later resolved choice cannot mutate the already verified generation.
     invocation.args.push("--different-future-policy".into());
     let recorded = process
         .owned_serving_target()
         .expect("verified owned provenance");
     assert_eq!(recorded.target.context_window, launch_target.context_window);
-    assert_eq!(recorded.observed_context_window, 11008);
-    assert_eq!(recorded.observed_lanes, 4);
+    assert_eq!(recorded.observed.context_window, 11008);
+    assert_eq!(recorded.observed.lanes, 4);
     assert_eq!(recorded.engine_program, process.engine_bin().unwrap());
     assert_eq!(recorded.invocation, launched);
     let restore_admitted = std::sync::atomic::AtomicBool::new(false);
@@ -305,7 +304,7 @@ async fn retiring_page_owner_requires_observed_child_exit() {
     let mut drifted = launch_target.clone();
     // Downsize from what the engine actually serves, not the larger original
     // request: half of 32768 still exceeds this fixture's 11008-token lane.
-    drifted.context_window = recorded.observed_context_window / 2;
+    drifted.context_window = recorded.observed.context_window / 2;
     drifted.host_prompt_cache_mib = launch_target.host_prompt_cache_mib.saturating_add(1);
     let admissions = AtomicUsize::new(0);
     let admit = || {

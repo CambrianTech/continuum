@@ -183,8 +183,7 @@ where
         &prepared.invocation,
         Some(prepared.clone()),
         &process.engine_bin().unwrap(),
-        11008,
-        4,
+        ObservedGeometry { context_window: 11008, lanes: 4, pool_tokens: 11008 * 4 },
     );
     drop(transition);
     let captured = process.owned_serving_target().unwrap();
@@ -317,8 +316,7 @@ where
         &prepared.invocation,
         Some(prepared.clone()),
         &process.engine_bin().unwrap(),
-        11008,
-        4,
+        ObservedGeometry { context_window: 11008, lanes: 4, pool_tokens: 11008 * 4 },
     );
     let transition = endpoint.transition().await;
     transition

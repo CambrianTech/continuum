@@ -84,11 +84,21 @@ pub struct OwnedServingTarget {
     /// Public diagnostic projection of explicit arguments and managed environment.
     /// Only the private original prepared receipt can authorize exact replay.
     pub invocation: crate::inference::lane_args::LaneInvocation,
-    pub observed_context_window: u32,
-    pub observed_lanes: u32,
+    /// The geometry the running engine reported when it came ready.
+    pub observed: ObservedGeometry,
     pub launched_host_prompt_cache_mib: u32,
 }
 
+
+/// What a running engine reported about its context when it came ready, read off its own `/props`:
+/// each sequence's limit (`n_ctx`, capped at the trained window), its sequences (`total_slots`),
+/// and its whole KV pool (`context_geometry.allocated_tokens`, our fork's report).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObservedGeometry {
+    pub context_window: u32,
+    pub lanes: u32,
+    pub pool_tokens: u32,
+}
 
 /// Checked at the endpoint's drained lifecycle-admission boundary. Once admitted,
 /// the operation may settle even if newer intent arrives; its result keeps its epoch.
@@ -331,6 +341,13 @@ pub trait LlamaServerControl: Send + Sync {
     /// answering (pre-spawn), or a ready server whose `/props` shape is missing
     /// `n_ctx` (a loud invariant violation — never a guessed window).
     async fn served_context_window(&self) -> Result<u32, LlamaServerError>;
+
+    /// The tokens the engine's KV holds in all, from `/props` `context_geometry.allocated_tokens`
+    /// (`llama_n_ctx`): the ONE shared pool under `--kv-unified`, the sum of the slots without
+    /// it. Never `n_ctx` x slots: under a unified cache the fork caps each slot's `n_ctx` at the
+    /// model's trained window (server-context.cpp, "the slot context exceeds the training
+    /// context"), so `n_ctx` reads 32,768 on a 65,536 pool (IntelMac, 2026-11-03 07:32Z).
+    async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError>;
 
     /// The REAL number of continuous-batching slots the running server serves,
     /// read from its own `/props` (`total_slots`) — the LANE sibling of

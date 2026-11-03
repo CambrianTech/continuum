@@ -192,6 +192,10 @@ impl LlamaServerControl for FakeControl {
         // check is a no-op unless a test deliberately floors it.
         Ok(self.served_window)
     }
+    async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError> {
+        // The fake's pool: its window over its lanes (at least one), as an engine reports it.
+        Ok(self.served_window.saturating_mul(self.served_lanes.max(1)))
+    }
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
         // The slot count the fake's /props reports (configurable via
         // `with_served_lanes`). Defaults to 0 = "nothing to compare", so the
