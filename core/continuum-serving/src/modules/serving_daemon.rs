@@ -354,9 +354,6 @@ pub struct ServingDaemonModule {
     /// The engine process the one upward pool relaunch was asked for (`pool_growth`): once per
     /// engine, S2 debt.
     pool_growth_tried: Arc<std::sync::atomic::AtomicU64>,
-    /// The latest `/slots` read as `(engine pid, no slot processing)`: the moment the one upward
-    /// pool relaunch may cost no generation in flight (`pool_growth`).
-    engine_idle: Arc<parking_lot::Mutex<Option<(u32, bool)>>>,
     /// Each local mind's grant on the engine's pool (`grants.rs`): what her binding follows.
     /// `None` until a ready engine has been granted from.
     grants_tx: watch::Sender<Option<crate::capacity::window_grant::PoolGrants>>,
@@ -557,7 +554,6 @@ impl ServingDaemonModule {
             plan_budget_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             shared_pool_move_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pool_growth_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            engine_idle: Arc::new(parking_lot::Mutex::new(None)),
             grants_tx: watch::channel(None).0,
             shared_pool_of: Arc::new(parking_lot::Mutex::new(None)),
             served_pool: Arc::new(std::sync::atomic::AtomicU32::new(0)),
