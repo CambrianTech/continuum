@@ -241,7 +241,7 @@ pub(super) async fn serve_persona_loop_inner(
         // error, the spoke tail) drops it, which ends the turn on the admission ledger
         // — the in-flight mark the placement switch honours (a move lands between
         // turns only) and the measured turn shape it derives her cooldown from.
-        let _turn_in_flight = crate::cognition::turn_ledger::begin_turn(
+        let turn_in_flight = crate::cognition::turn_ledger::begin_turn(
             ctx.identity.peer_id.as_uuid(),
             EpochMs::now().millis(),
         );
@@ -285,7 +285,12 @@ pub(super) async fn serve_persona_loop_inner(
         // here, before any prompt could mark the trigger read.
         let candidate = admitted_retry.then(|| deferred_input.obligation_for(&msg)).flatten();
         let obligation = match obligations.admit(turn_room, &msg, wake_engram, now_ms, candidate).await {
-            crate::persona::obligation::Admission::Confirmed(turn) => turn,
+            crate::persona::obligation::Admission::Confirmed(turn) => {
+                // Durable from here: a stop that cuts this turn hands it back to the next
+                // start, so the stop no longer waits for it (stop-drain S4).
+                turn_in_flight.confirm();
+                turn
+            }
             crate::persona::obligation::Admission::Unconfirmed(candidate) => {
                 deferred_input.settle(
                     &msg,
