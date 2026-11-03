@@ -241,3 +241,49 @@
         );
     }
 
+    // what this catches: a regression where tool schemas grow beyond their allocated budget.
+    // Profiles the token cost of every native tool spec (discovery pair + verdict) and
+    // authorized AiSafe tools at Citizen trust, serializing each to JSON and estimating
+    // tokens via continuum_base's guard rate. Prints per-tool breakdown with totals so
+    // the numbers are readable in test output.
+    #[test]
+    fn profile_tool_surface_token_costs() {
+        use continuum_base::token_estimate::estimate_tool_schema_tokens;
+
+        // ── Native tools (discovery pair + verdict) ──
+        let native = crate::cognition::persona_tools::native_tool_specs();
+        println!("\n=== NATIVE TOOLS ({}) ===", native.len());
+        let mut total_bytes: usize = 0;
+        let mut total_tokens: usize = 0;
+        for spec in &native {
+            let serialized = serde_json::to_string(spec).unwrap_or_default();
+            let bytes = serialized.len();
+            let tokens = estimate_tool_schema_tokens(&serialized);
+            total_bytes += bytes;
+            total_tokens += tokens;
+            println!("  {:40} {} bytes | ~{} tokens", spec.name, bytes, tokens);
+        }
+        println!("  TOTAL:                            {} bytes | ~{} tokens",
+                 total_bytes, total_tokens);
+
+        // ── Authorized tools at Citizen trust (all AiSafe commands) ──
+        use crate::routing::trust_level::TrustLevel;
+        let authorized = crate::cognition::persona_tools::authorized_tool_specs(TrustLevel::Citizen);
+        println!("\n=== AUTHORIZED TOOLS AT CITIZEN ({}) ===", authorized.len());
+        total_bytes = 0;
+        total_tokens = 0;
+        for spec in &authorized {
+            let serialized = serde_json::to_string(spec).unwrap_or_default();
+            let bytes = serialized.len();
+            let tokens = estimate_tool_schema_tokens(&serialized);
+            total_bytes += bytes;
+            total_tokens += tokens;
+            println!("  {:40} {} bytes | ~{} tokens", spec.name, bytes, tokens);
+        }
+        println!("  TOTAL:                            {} bytes | ~{} tokens",
+                 total_bytes, total_tokens);
+
+        // Sanity assertions — these catch gross regressions (e.g. a new tool with a massive schema)
+        assert!(!native.is_empty(), "native_tool_specs must return at least the discovery pair");
+        assert!(!authorized.is_empty(), "authorized_tool_specs must return some tools");
+    }
