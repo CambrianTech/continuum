@@ -675,24 +675,27 @@ async fn a_pass_that_retires_its_record_publishes_the_re_plan_never_the_starved_
     );
     cold.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
     cold.set_leased_in_sent_source(Arc::new(Vec::new));
-    cold.working_set.record_in_memory(uuid::Uuid::new_v4(), 16_000, 1);
+    cold.working_set.record_in_memory(uuid::Uuid::new_v4(), 200_000, 1);
     let rx = cold.subscribe();
     let model = "cold-retire-fixture-35b";
     let estimate = footprint_from_parts(model, 20 * GB, 262_144, true, None).unwrap();
     let mut trapped = estimate.clone();
     trapped.kv_per_token = 1_000_000; // a trapped record: ~10k tokens fit beside the weights, below the requirement
-    crate::inference::lane_footprint::record_for_test(
+    // Plant the record the way a live sample does: 8.192 GB beyond the floors over 8,192 tokens of
+    // one lane is 1,000,000 B/token. A sample straddling a residency change is refused; retry.
+    while crate::inference::lane_footprint::observe(
+        crate::inference::lane_footprint::begin_sample(),
         model,
-        crate::inference::lane_footprint::MeasuredCost {
-            per_token_bytes: trapped.kv_per_token,
-            lanes: 1,
-            window: 8_192,
-            allocated_tokens: Some(8_192),
-            anon_bytes: 0,
-            last_ms: continuum_base::time::EpochMs::now().millis(),
-        },
-    );
-    let budget = HostBudget { usable_bytes: 30 * GB, perf_cores: 6 };
+        1,
+        8_192,
+        8_192,
+        8_192_000_000,
+        0,
+        0,
+    )
+    .is_err()
+    {}
+    let budget = HostBudget { usable_bytes: 60 * GB, perf_cores: 6 };
     let mut seen = Vec::new();
     cold.plan_until_decided(budget, cold.intent.snapshot().revision, &[], || {
         let fp = match crate::inference::lane_footprint::measured_record(model) {
@@ -705,7 +708,7 @@ async fn a_pass_that_retires_its_record_publishes_the_re_plan_never_the_starved_
     assert_eq!(seen, vec![1_000_000, estimate.kv_per_token], "planned once from the record, once more after retiring it");
     let published = rx.borrow().clone().expect("the re-plan is published");
     assert!(
-        crate::inference::planning::serving_plan::persona_lane_holds(published.served_context_window, Some(16_000)),
+        crate::inference::planning::serving_plan::persona_lane_holds(published.served_context_window, Some(70_071)),
         "the launch takes the re-plan, which holds the requirement: {} x {}",
         published.lanes,
         published.served_context_window
