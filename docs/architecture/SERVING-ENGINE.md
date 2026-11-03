@@ -202,7 +202,7 @@ Qwen3.6-35B-A3B, `-c 257214 --parallel 2 --ctx-checkpoints 32`, two 13.9k-token 
 | Holder | Bytes | Notes |
 |---|---|---|
 | Target weights | 20.69 GB | mmapped |
-| Target KV + recurrent state | 2.14 GB | 8,317 B/token over 257,536 tokens |
+| Target KV + recurrent state | 2.14 GB | 8,317 B/token over 257,536 tokens, reported as one figure. Two holders: attention cells per token (shareable by `seq_cp`) and recurrent state per sequence (never shared); #91 reports them separately |
 | Target compute graph | 1.87 GB | one graph for the shared pool |
 | Draft (MTP) context | 3.15 GB | 1.34 weights, 0.53 KV, 1.29 compute: unreported before |
 | Projector | 0.90 GB | unreported before |
