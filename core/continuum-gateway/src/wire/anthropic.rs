@@ -1,6 +1,6 @@
 //! Anthropic Messages (`POST /v1/messages`): Claude Code, via `ANTHROPIC_BASE_URL`.
 
-use super::{decode, event, place_system, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
+use super::{decode, event, place_system, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Finish, Frame, Wire};
 use continuum_engine::ai::adapter::GenerationChunk;
 use continuum_engine::ai::types::ImageInput;
 use continuum_engine::ai::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse, ToolChoice};
@@ -46,7 +46,7 @@ impl Wire for Anthropic {
         Ok(Call { request, stream: decode::streamed(&body)? })
     }
 
-    fn answer(response: &TextGenerationResponse, id: &str) -> Value {
+    fn answer(response: &TextGenerationResponse, finish: Finish, id: &str) -> Value {
         let mut content = Vec::new();
         if let Some(reasoning) = response.reasoning.as_deref().filter(|r| !r.is_empty()) {
             content.push(json!({"type": "thinking", "thinking": reasoning, "signature": ""}));
@@ -60,7 +60,7 @@ impl Wire for Anthropic {
         json!({
             "id": id, "type": "message", "role": "assistant", "model": response.model,
             "content": content,
-            "stop_reason": stop_reason(response), "stop_sequence": null,
+            "stop_reason": stop_reason(response, finish), "stop_sequence": null,
             "usage": usage(response),
         })
     }
@@ -99,7 +99,7 @@ impl Wire for Anthropic {
         events
     }
 
-    fn finished(&mut self, response: &TextGenerationResponse) -> Vec<Frame> {
+    fn finished(&mut self, response: &TextGenerationResponse, finish: Finish) -> Vec<Frame> {
         let mut events = self.close();
         for (call_id, name, input) in tool_calls(response) {
             let index = self.next_index();
@@ -110,7 +110,7 @@ impl Wire for Anthropic {
             events.push(event(Some("content_block_stop"), &json!({"type": "content_block_stop", "index": index})));
         }
         events.push(event(Some("message_delta"), &json!({"type": "message_delta",
-            "delta": {"stop_reason": stop_reason(response), "stop_sequence": null},
+            "delta": {"stop_reason": stop_reason(response, finish), "stop_sequence": null},
             "usage": usage(response)})));
         events.push(event(Some("message_stop"), &json!({"type": "message_stop"})));
         events
@@ -163,13 +163,11 @@ fn usage(response: &TextGenerationResponse) -> Value {
         "cache_read_input_tokens": cached})
 }
 
-fn stop_reason(response: &TextGenerationResponse) -> &'static str {
-    if stopped_for_tools(response) {
-        "tool_use"
-    } else if response.finish_reason == continuum_engine::ai::FinishReason::Length {
-        "max_tokens"
-    } else {
-        "end_turn"
+fn stop_reason(response: &TextGenerationResponse, finish: Finish) -> &'static str {
+    match finish {
+        _ if stopped_for_tools(response, finish) => "tool_use",
+        Finish::Length => "max_tokens",
+        Finish::Stop | Finish::ToolUse => "end_turn",
     }
 }
 

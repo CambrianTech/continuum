@@ -30,7 +30,7 @@ pub(crate) trait Wire: Send + Unpin + 'static {
     const NAME: &'static str;
     fn decode(body: Value) -> Result<Call, BadRequest>;
     /// The whole answer, for a call that did not ask to stream.
-    fn answer(response: &TextGenerationResponse, id: &str) -> Value;
+    fn answer(response: &TextGenerationResponse, finish: Finish, id: &str) -> Value;
     /// The body of a refusal, in the format's own error shape.
     fn error(kind: ErrorKind, message: &str) -> Value;
     /// A new encoder for one streamed answer.
@@ -39,7 +39,7 @@ pub(crate) trait Wire: Send + Unpin + 'static {
     fn opened(&mut self) -> Vec<Frame>;
     fn chunk(&mut self, chunk: &GenerationChunk) -> Vec<Frame>;
     /// What closes a completed answer: its tool calls, stop reason and usage.
-    fn finished(&mut self, response: &TextGenerationResponse) -> Vec<Frame>;
+    fn finished(&mut self, response: &TextGenerationResponse, finish: Finish) -> Vec<Frame>;
     /// What closes an answer the engine failed mid-stream.
     fn failed(&mut self, message: &str) -> Vec<Frame>;
 }
@@ -97,9 +97,35 @@ pub(crate) fn tool_calls(response: &TextGenerationResponse) -> Vec<(String, Stri
         .collect()
 }
 
+/// How an answer the engine finished ended: the only endings an answer may claim. An engine
+/// error or a stream that ended without a finish reason is not one (#5638: an absent marker
+/// read as a stop made reasoning-only completions look answered), so it never reaches an
+/// encoder's `answer`/`finished`; the call fails with why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Finish {
+    Stop,
+    Length,
+    ToolUse,
+}
+
+impl Finish {
+    /// The finish the engine reported, or why the response is not a finished answer.
+    pub(crate) fn reported(response: &TextGenerationResponse) -> Result<Self, String> {
+        match response.finish_reason {
+            FinishReason::Stop => Ok(Self::Stop),
+            FinishReason::Length => Ok(Self::Length),
+            FinishReason::ToolUse => Ok(Self::ToolUse),
+            FinishReason::Error => Err("the engine reported an error finishing this answer".into()),
+            FinishReason::Unreported => {
+                Err("the engine ended this answer without reporting why (no finish reason), so it is not presented as finished".into())
+            }
+        }
+    }
+}
+
 /// Whether the answer stopped to call tools.
-pub(crate) fn stopped_for_tools(response: &TextGenerationResponse) -> bool {
-    response.finish_reason == FinishReason::ToolUse || !tool_calls(response).is_empty()
+pub(crate) fn stopped_for_tools(response: &TextGenerationResponse, finish: Finish) -> bool {
+    finish == Finish::ToolUse || !tool_calls(response).is_empty()
 }
 
 /// A text field that is a string, or an array of `{type: "text", text}` blocks.

@@ -4,7 +4,7 @@
 //! mind's memory, which arrives with session identity (DRIVER-GATEWAY.md G2); until then a
 //! call that names one is refused rather than answered without its history.
 
-use super::{chat, decode, event, place_system, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
+use super::{chat, decode, event, place_system, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Finish, Frame, Wire};
 use continuum_engine::ai::adapter::GenerationChunk;
 use continuum_engine::ai::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse};
 use serde_json::{json, Value};
@@ -48,8 +48,8 @@ impl Wire for Responses {
         Ok(Call { request, stream: decode::streamed(&body)? })
     }
 
-    fn answer(response: &TextGenerationResponse, id: &str) -> Value {
-        envelope(id, &response.model, continuum_base::time::EpochMs::now().secs(), "completed", output(response, id), Some(response))
+    fn answer(response: &TextGenerationResponse, finish: Finish, id: &str) -> Value {
+        envelope(id, &response.model, continuum_base::time::EpochMs::now().secs(), "completed", output(response, id), Some((response, finish)))
     }
 
     fn error(kind: ErrorKind, message: &str) -> Value {
@@ -90,7 +90,7 @@ impl Wire for Responses {
         events
     }
 
-    fn finished(&mut self, response: &TextGenerationResponse) -> Vec<Frame> {
+    fn finished(&mut self, response: &TextGenerationResponse, finish: Finish) -> Vec<Frame> {
         let mut events = Vec::new();
         let mut index = 0;
         if let Some(text) = self.text.take() {
@@ -113,7 +113,7 @@ impl Wire for Responses {
             events.push(self.emit("response.output_item.done", json!({"output_index": index, "item": item})));
             index += 1;
         }
-        let response = envelope(&self.id, &self.model, self.created, "completed", output(response, &self.id), Some(response));
+        let response = envelope(&self.id, &self.model, self.created, "completed", output(response, &self.id), Some((response, finish)));
         events.push(self.emit("response.completed", json!({"response": response})));
         events
     }
@@ -142,14 +142,14 @@ fn message_id(response_id: &str) -> String {
     format!("msg_{}", response_id.trim_start_matches("resp_"))
 }
 
-fn envelope(id: &str, model: &str, created: u64, status: &str, output: Vec<Value>, response: Option<&TextGenerationResponse>) -> Value {
+fn envelope(id: &str, model: &str, created: u64, status: &str, output: Vec<Value>, response: Option<(&TextGenerationResponse, Finish)>) -> Value {
     json!({
         "id": id, "object": "response", "created_at": created, "status": status, "model": model,
         "output": output,
-        "usage": response.map(|r| json!({"input_tokens": r.usage.input_tokens, "output_tokens": r.usage.output_tokens,
+        "usage": response.map(|(r, _)| json!({"input_tokens": r.usage.input_tokens, "output_tokens": r.usage.output_tokens,
             "total_tokens": r.usage.input_tokens + r.usage.output_tokens,
             "input_tokens_details": {"cached_tokens": super::cached_tokens(r).unwrap_or(0)}})), // unwrap_or: no measured reuse reads as none
-        "incomplete_details": response.filter(|r| r.finish_reason == continuum_engine::ai::FinishReason::Length && !stopped_for_tools(r))
+        "incomplete_details": response.filter(|&(r, finish)| finish == Finish::Length && !stopped_for_tools(r, finish))
             .map(|_| json!({"reason": "max_output_tokens"})),
     })
 }

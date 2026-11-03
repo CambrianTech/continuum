@@ -1,7 +1,7 @@
 //! OpenAI Chat Completions (`POST /v1/chat/completions`): Hermes, opencode, and most agents.
 
 use super::decode::{self, present};
-use super::{event, place_system, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Frame, Wire};
+use super::{event, place_system, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Finish, Frame, Wire};
 use continuum_engine::ai::adapter::GenerationChunk;
 use continuum_engine::ai::types::ImageInput;
 use continuum_engine::ai::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse, ToolChoice};
@@ -38,7 +38,7 @@ impl Wire for Chat {
         Ok(Call { request, stream: decode::streamed(&body)? })
     }
 
-    fn answer(response: &TextGenerationResponse, id: &str) -> Value {
+    fn answer(response: &TextGenerationResponse, finish: Finish, id: &str) -> Value {
         let mut message = json!({"role": "assistant", "content": if response.text.is_empty() { Value::Null } else { json!(response.text) }});
         if let Some(reasoning) = response.reasoning.as_deref().filter(|r| !r.is_empty()) {
             message["reasoning_content"] = json!(reasoning);
@@ -49,7 +49,7 @@ impl Wire for Chat {
         }
         json!({
             "id": id, "object": "chat.completion", "created": continuum_base::time::EpochMs::now().secs(), "model": response.model,
-            "choices": [{"index": 0, "message": message, "finish_reason": finish_reason(response)}],
+            "choices": [{"index": 0, "message": message, "finish_reason": finish_reason(response, finish)}],
             "usage": usage(response),
         })
     }
@@ -80,7 +80,7 @@ impl Wire for Chat {
         }
     }
 
-    fn finished(&mut self, response: &TextGenerationResponse) -> Vec<Frame> {
+    fn finished(&mut self, response: &TextGenerationResponse, finish: Finish) -> Vec<Frame> {
         let mut events = Vec::new();
         let calls: Vec<Value> = tool_calls(response)
             .iter()
@@ -94,7 +94,7 @@ impl Wire for Chat {
         if !calls.is_empty() {
             events.push(self.delta(json!({"tool_calls": calls}), Value::Null));
         }
-        events.push(self.delta(json!({}), json!(finish_reason(response))));
+        events.push(self.delta(json!({}), json!(finish_reason(response, finish))));
         events.push(event(None, &json!({"id": self.id, "object": "chat.completion.chunk", "created": self.created,
             "model": self.model, "choices": [], "usage": usage(response)})));
         events.push(Frame::done());
@@ -113,13 +113,11 @@ impl Chat {
     }
 }
 
-fn finish_reason(response: &TextGenerationResponse) -> &'static str {
-    if stopped_for_tools(response) {
-        "tool_calls"
-    } else if response.finish_reason == continuum_engine::ai::FinishReason::Length {
-        "length"
-    } else {
-        "stop"
+fn finish_reason(response: &TextGenerationResponse, finish: Finish) -> &'static str {
+    match finish {
+        _ if stopped_for_tools(response, finish) => "tool_calls",
+        Finish::Length => "length",
+        Finish::Stop | Finish::ToolUse => "stop",
     }
 }
 

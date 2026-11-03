@@ -72,7 +72,10 @@ async fn serve<W: Wire>(State(abandoned): State<Signal>, headers: axum::http::He
         };
         crate::session::settle(&mut lease, &outcome);
         return match outcome {
-            Ok(response) => Json(W::answer(&response, &id)).into_response(),
+            Ok(response) => match crate::wire::Finish::reported(&response) {
+                Ok(finish) => Json(W::answer(&response, finish, &id)).into_response(),
+                Err(why) => refuse::<W>(StatusCode::BAD_GATEWAY, ErrorKind::Engine, &why),
+            },
             Err(error) => refused::<W>(error),
         };
     }

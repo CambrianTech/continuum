@@ -62,7 +62,7 @@ fn anthropic_carries_tools_both_ways_and_streams_blocks_in_order() {
     assert!(matches!(&parts(&call.request.messages[2])[0], ContentPart::ToolUse { id, .. } if id == "call_0"));
     assert!(matches!(&parts(&call.request.messages[3])[0], ContentPart::ToolResult { content, .. } if content == "fn b() {}"));
 
-    let whole = Anthropic::answer(&tool_answer(), "msg_1");
+    let whole = Anthropic::answer(&tool_answer(), Finish::ToolUse, "msg_1");
     assert_eq!(whole["stop_reason"], "tool_use");
     assert_eq!(whole["content"][1]["id"], "call_1");
 
@@ -71,7 +71,7 @@ fn anthropic_carries_tools_both_ways_and_streams_blocks_in_order() {
     frames.extend(s.chunk(&GenerationChunk::Reasoning("hmm".into())));
     frames.extend(s.chunk(&GenerationChunk::Token("Reading".into())));
     frames.extend(s.chunk(&GenerationChunk::Token(" it.".into())));
-    frames.extend(s.finished(&tool_answer()));
+    frames.extend(s.finished(&tool_answer(), Finish::ToolUse));
     let names: Vec<_> = frames.iter().map(|f| f.name.clone().expect("test: named")).collect();
     assert_eq!(names, [
         "message_start",
@@ -108,14 +108,14 @@ fn chat_completions_keeps_one_leading_system_and_ends_its_stream() {
     assert_eq!(call.request.messages[3].role, "user", "a later system message is not sent as system");
     assert!(matches!(&call.request.tool_choice, Some(ToolChoice::Mode(m)) if m == "any"));
 
-    let whole = Chat::answer(&tool_answer(), "chatcmpl_1");
+    let whole = Chat::answer(&tool_answer(), Finish::ToolUse, "chatcmpl_1");
     assert_eq!(whole["choices"][0]["finish_reason"], "tool_calls");
     assert_eq!(whole["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"], "{\"path\":\"a.rs\"}");
 
     let mut s = Chat::streamer("qwen", "chatcmpl_1");
     let mut frames = s.opened();
     frames.extend(s.chunk(&GenerationChunk::Token("Reading it.".into())));
-    frames.extend(s.finished(&tool_answer()));
+    frames.extend(s.finished(&tool_answer(), Finish::ToolUse));
     assert_eq!(frames.last(), Some(&Frame::done()));
     assert_eq!(frames[2].json()["choices"][0]["delta"]["tool_calls"][0]["index"], 0);
     assert_eq!(frames[3].json()["choices"][0]["finish_reason"], "tool_calls");
@@ -153,7 +153,7 @@ fn responses_groups_items_refuses_missing_state_and_numbers_its_events() {
     let mut frames = s.opened();
     frames.extend(s.chunk(&GenerationChunk::Token("Reading".into())));
     frames.extend(s.chunk(&GenerationChunk::Token(" it.".into())));
-    frames.extend(s.finished(&tool_answer()));
+    frames.extend(s.finished(&tool_answer(), Finish::ToolUse));
     let sequence: Vec<u64> = frames.iter().map(|f| f.json()["sequence_number"].as_u64().expect("test: numbered")).collect();
     assert_eq!(sequence, (0..frames.len() as u64).collect::<Vec<_>>());
     let last = frames.last().expect("test: frames").json();
@@ -247,4 +247,23 @@ fn malformed_sampling_refuses_the_call() {
     refused_by_every_format(json!({"stream": "yes"}));
     let call = Chat::decode(json!({"model": "qwen", "stop": ["END", "STOP"], "messages": [{"role": "user", "content": "go"}]}));
     assert_eq!(call.expect("test: decodes").request.stop_sequences, Some(vec!["END".to_string(), "STOP".to_string()]));
+}
+
+// what this catches (#5638 on the gateway): a stream that ended without a finish reason, or an
+// engine error, presented to an agent as a finished answer (`end_turn` / `stop`). Neither is a
+// finish: the call fails with why, and only reported finishes map to a wire stop.
+#[test]
+fn only_a_finish_the_engine_reported_is_an_answer() {
+    let with = |finish_reason| TextGenerationResponse { finish_reason, tool_calls: None, ..tool_answer() };
+    assert!(Finish::reported(&with(FinishReason::Unreported)).is_err(), "no finish reason is not a stop");
+    assert!(Finish::reported(&with(FinishReason::Error)).is_err(), "an engine error is not a stop");
+    for (reason, finish, chat, anthropic) in [
+        (FinishReason::Stop, Finish::Stop, "stop", "end_turn"),
+        (FinishReason::Length, Finish::Length, "length", "max_tokens"),
+    ] {
+        let response = with(reason);
+        assert_eq!(Finish::reported(&response), Ok(finish));
+        assert_eq!(Chat::answer(&response, finish, "c")["choices"][0]["finish_reason"], chat);
+        assert_eq!(Anthropic::answer(&response, finish, "m")["stop_reason"], anthropic);
+    }
 }

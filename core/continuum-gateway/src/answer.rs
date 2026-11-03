@@ -93,7 +93,10 @@ impl<W: Wire> Answer<W> {
     /// The frames that close an answer the generation returned.
     fn closing(&mut self, outcome: Result<TextGenerationResponse, RouteError>) -> Vec<Frame> {
         match outcome {
-            Ok(response) => self.encoder.finished(&response),
+            Ok(response) => match crate::wire::Finish::reported(&response) {
+                Ok(finish) => self.encoder.finished(&response, finish),
+                Err(why) => self.encoder.failed(&why),
+            },
             Err(RouteError::Engine(why)) => self.encoder.failed(&why),
             Err(RouteError::UnknownModel { model, .. }) => self
                 .encoder
