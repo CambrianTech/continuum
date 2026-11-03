@@ -16,6 +16,49 @@ pub(super) struct ReconcileLaunch {
 }
 
 impl ServingDaemonModule {
+    /// The engine's one KV pool, sized ONCE when the engine starts and never by a relaunch, as
+    /// `(per-sequence tokens, sequences)` so `-c` is the pool and `--parallel` the ceiling.
+    ///
+    /// The sequences: every seated mind, the minds leased in from other nodes at the last plan,
+    /// and the scratch traffic beside them. The pool: what serving may hold AT REST (the
+    /// physical budget at the current mode, less every other consumer's measured residency on
+    /// the board, less the prompt cache's grant where it is the same memory), laid out by the
+    /// plan's own arithmetic, so each sequence fits its compute and never exceeds the trained
+    /// window. Not the live plan budget, which counts the outgoing engine against itself, and
+    /// not the cold plan's window x lanes, which was 1 x 80k on a boot that counted two
+    /// residents (the M5, 2026-11-03 00:52Z). A model with no measured footprint has no fit,
+    /// so its sequences take the plan's window: a fit, not a constant.
+    fn engine_pool(
+        &self,
+        model: &crate::model_registry::types::Model,
+        served_ctx: u32,
+        lanes: u32,
+        host_prompt_cache_mib: u32,
+    ) -> (u32, u32) {
+        let leased_in = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed);
+        let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes);
+        let kind = serving_pool_kind();
+        let others: u64 = self
+            .resource_daemon
+            .board()
+            .attributions
+            .iter()
+            .filter(|a| a.consumer_id != SERVING_CONSUMER_ID && a.kind == kind)
+            .map(|a| a.bytes)
+            .sum();
+        let cache = match self.system.gpu_memory_mode() {
+            Some(crate::gpu::monitor::MemoryMode::Unified) => u64::from(host_prompt_cache_mib) << 20,
+            _ => 0,
+        };
+        let at_rest = self.physical_budget().usable_bytes.saturating_sub(others).saturating_sub(cache);
+        let fitted = footprint_for(model).map(|fp| fp.window_within(at_rest, sequences));
+        let per_sequence = match fitted.filter(|tokens| *tokens > 0) {
+            Some(tokens) => tokens,
+            None => served_ctx,
+        };
+        (per_sequence, sequences)
+    }
+
     pub(super) fn launch_reconciled_plan(&self, launch: ReconcileLaunch) -> Option<JoinHandle<()>> {
         let ReconcileLaunch {
             operation,
@@ -27,9 +70,9 @@ impl ServingDaemonModule {
             desired_adapters,
             desired_adapter_paths,
         } = launch;
-        // Past the no-relaunch guard a relaunch WILL happen: the window it takes is the plan's
-        // through the sticky, wedge-heal and physical-fit laws (`launch_window`, the one owner the
-        // tick's page seed reads too), each step that moved it reported here.
+        // Past the no-relaunch guard the ensure runs: it adopts a serving engine, or launches one
+        // whose window starts from the plan's through the sticky, wedge-heal and physical-fit laws
+        // (`launch_window`, the one owner the tick's page seed reads too), each step reported here.
         let window = self.launch_window(&desired, served_ctx, lanes);
         if window.floored != window.sticky {
             continuum_base::probe!(
@@ -118,11 +161,12 @@ impl ServingDaemonModule {
         // separates "a bit small" from "structurally cannot cache anything".
         let one_conversation_mib = prompt_cache.one_conversation_mib;
         let host_prompt_cache_mib = prompt_cache.mib;
+        let (per_sequence, sequences) = self.engine_pool(&model, served_ctx, lanes, host_prompt_cache_mib);
         let target = ServingTarget {
             host_prompt_cache_mib,
             model,
-            context_window: served_ctx,
-            lanes,
+            context_window: per_sequence,
+            lanes: sequences,
             adapters: desired_adapters,
             // The living persona lane: GPU-resident for throughput (every
             // offloadable layer). [[LanePlacement]].
@@ -148,7 +192,7 @@ impl ServingDaemonModule {
             plan_lanes = lanes,
             plan_window = served_ctx,
             host_prompt_cache_mib,
-            "reconcile launch requested from this plan; engine convergence may retain incumbent geometry",
+            "reconcile launch requested from this plan: the engine relaunches only for a different model, genome, sight, KV decision, binary or a cache not yet on the shared pool",
         );
         let served_resident = self.served_resident.clone();
         let division = self.division.clone();
@@ -175,7 +219,6 @@ impl ServingDaemonModule {
         let persona_floor: Option<u32> = self.serving_demand().typical_prompt_floor();
         let last_healthy_window = self.last_healthy_window.clone();
         let last_healthy_lanes = self.last_healthy_lanes.clone();
-        let rehome_cooldown = self.rehome_cooldown.clone();
         // ARM the discrete footprint arm's baseline: every tick until the lane is ready
         // lowers it to the sampled trough (see the field doc — a single read here sees
         // the dying predecessor).
@@ -241,22 +284,6 @@ impl ServingDaemonModule {
                 return;
             }
             force_probe.pending = false;
-            // EVERY LAUNCH GETS THE SETTLE WINDOW A RE-HOME GETS (9/18, the mirror): the
-            // cooldown was armed only at the re-home fire point, so a boot's first spawn
-            // could be re-homed 40 s later by its own load transient (the weights counted
-            // as external before the ledger credited them — 8 lanes declined at tick 1,
-            // re-homed at tick 3). A lane just launched is not evidence against itself.
-            if matches!(outcome, EnsureOutcome::Spawned { .. }) {
-                rehome_cooldown.store(REHOME_COOLDOWN_TICKS, Ordering::Relaxed);
-                continuum_base::probe!(
-                    target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
-                    decision = "spawn-settling",
-                    plan_lanes = target.lanes,
-                    plan_window = target.context_window,
-                    cooling = REHOME_COOLDOWN_TICKS as u64,
-                    "a fresh launch settles for the same cooldown a re-home gets before any re-home evidence counts"
-                );
-            }
             // For a ready outcome, read the REAL per-slot window the running
             // server serves from its own `/props` — the authoritative model
             // metadata every persona budgets its prompt to. llama.cpp pads the
@@ -317,6 +344,17 @@ impl ServingDaemonModule {
                 }
                 EnsureOutcome::Degraded { .. } | EnsureOutcome::Superseded => 0,
             };
+            // ONE SHARED POOL: an engine on it names the whole pool as each sequence's window
+            // in `/props`; each sequence is published its share (`sequence_share`), so what the
+            // readers budget and charge is the pool. An engine not known to be on it publishes
+            // its per-slot window as served.
+            let (served_window, served_lanes) =
+                match (served_window > 0, server.launched_on_shared_pool()) {
+                    (true, Some(true)) => {
+                        sequence_share(served_window, served_lanes, target.model.context_window)
+                    }
+                    _ => (served_window, served_lanes),
+                };
             // The grant the engine was LAUNCHED with: the spawn fact on the control, or — for
             // a lane this core did not spawn (ADOPTED; every deploy leaves the lane up for
             // the next core, so this is the common case, not the rare one) — read off the
@@ -391,10 +429,12 @@ impl ServingDaemonModule {
                             served_window = served_window as u64,
                             served_lanes = served_lanes as u64,
                             "the running engine holds LESS host prompt cache than today's \
-                             decision wants — `--cache-ram` is fixed at spawn, so this gap \
-                             closes only on a relaunch (card ab27b914). Read \
-                             `below_one_conversation`: true means the grant cannot retain a \
-                             single prefix and reuse is structurally impossible, not merely poor"
+                             decision wants — `--cache-ram` is fixed at spawn and the engine is \
+                             never relaunched for a size (one launch, 2026-11-03), so the gap \
+                             stands until its next launch; the cache becomes a runtime grant \
+                             with the seat API. Read `below_one_conversation`: true means the \
+                             grant cannot retain a single prefix and reuse is structurally \
+                             impossible, not merely poor"
                         ),
                         None => continuum_base::probe!(
                             target: "continuum_core::modules::serving_daemon", class = "serving.prompt_cache.divergence_closed",
@@ -404,7 +444,7 @@ impl ServingDaemonModule {
                             was_held_mib = previous.as_ref().map(|(_, h, _, _)| *h).unwrap_or(0) as u64, // unwrap_or: no prior state recorded
                             was_wanted_mib = previous.as_ref().map(|(_, _, w, _)| *w).unwrap_or(0) as u64, // unwrap_or: as above
                             "the prompt-cache divergence closed — the engine's grant now meets \
-                             today's decision (a relaunch, or the target fell back to it)"
+                             today's decision (a new launch, or the target fell back to it)"
                         ),
                     }
                 }

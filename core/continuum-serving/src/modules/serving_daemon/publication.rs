@@ -31,8 +31,8 @@ pub(super) fn verified_capture(
     let launch = server.owned_serving_target()?;
     if snapshot.active_model.as_deref() != Some(launch.target.model.id.as_str())
         || snapshot.adapters != launch.target.adapter_paths()
-        || snapshot.served_context_window != launch.observed_context_window
-        || snapshot.lanes != launch.observed_lanes
+        || (snapshot.served_context_window, snapshot.lanes)
+            != sequence_share(launch.observed_context_window, launch.observed_lanes, launch.target.model.context_window)
         || snapshot.host_prompt_cache_mib != launch.launched_host_prompt_cache_mib
         || server.owned_engine()? != launch.identity
     {
@@ -51,6 +51,20 @@ pub(super) fn verified_capture(
 /// ambient budget the citizens get.
 pub fn published_lanes(served: Option<u32>, target_lanes: u32) -> u32 {
     served.filter(|n| *n > 0).unwrap_or(target_lanes)
+}
+
+/// PURE: each sequence's window inside the engine's one shared pool, and the sequences. An
+/// engine on the pool names the whole pool as every sequence's window in `/props`; each is
+/// published its share, capped at the model's trained window, so every reader that charges
+/// `lanes x window` charges the pool and never more. The sequences are the engine's own,
+/// fixed at its one launch (the seated minds, those leased in, and the scratch traffic), so
+/// the share never moves with the plan's per-tick lane guess, and the shares never sum past
+/// the pool: a pool every sequence fills at once fails the WHOLE decode batch ("Context size
+/// has been exceeded", llama.cpp server-context.cpp; Cormac on #5720). Per-mind grants from
+/// measured demand (#5718's contract) replace this equal share.
+pub fn sequence_share(served_pool: u32, sequences: u32, trained_window: u32) -> (u32, u32) {
+    let sequences = sequences.max(1);
+    ((served_pool / sequences).min(trained_window), sequences)
 }
 
 pub(super) fn snapshot_from_outcome(

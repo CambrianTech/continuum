@@ -107,23 +107,21 @@ fn a_debug_build_is_refused_at_the_door_and_a_release_build_passes() {
     assert!(!super::is_debug_build("version: 0.3.0-dev (build 10751, commit 0a637ba22)\nbuilt with AppleClang 21.0.0.21000101 for Darwin arm64"));
 }
 
-// The engine-only M5 convergence must preserve the incumbent's actual launch geometry.
+// what this catches: the engine launched as fixed slots again (no `--kv-unified`), the shape
+// whose slot count could change only by a relaunch (the M5 loaded its model 40 times on
+// 2026-11-02/03). `-c` is the pool laid out as `--parallel` sequences, and every sequence may
+// draw on all of it.
 #[test]
-fn engine_only_convergence_preserves_incumbent_launch_arguments() {
-    for (lanes, window, planned_window) in [(2, 187136, 187136), (3, 76032, 76800)] {
-        let mut planned = target("convergence-fixture");
-        planned.lanes = 1;
-        planned.context_window = planned_window;
-        let selected = super::super::reconcile::engine_convergence_target(&planned, window, lanes).unwrap();
-        let invocation = crate::inference::lane_args::base_invocation(
-            Path::new("fixture.gguf"), selected.model_id(), "127.0.0.1", 1,
-            selected.parallel_lanes(), selected.served_total_ctx(),
-            selected.host_prompt_cache_mib, Path::new("pages"),
-        );
-        assert_eq!(invocation.value_of("--parallel"), Some(lanes.to_string().as_str()));
-        assert_eq!(invocation.value_of("-c"), Some((lanes * window).to_string().as_str()));
-    }
-    let planned = target("convergence-fixture");
-    assert!(super::super::reconcile::engine_convergence_target(&planned, 0, 2).is_err());
-    assert!(super::super::reconcile::engine_convergence_target(&planned, 76032, 0).is_err());
+fn the_engine_launches_on_one_shared_pool() {
+    let mut planned = target("pool-fixture");
+    planned.context_window = 58_112;
+    planned.lanes = 5;
+    let invocation = super::super::shared_pool::on_shared_pool(crate::inference::lane_args::base_invocation(
+        Path::new("fixture.gguf"), planned.model_id(), "127.0.0.1", 1,
+        planned.parallel_lanes(), planned.served_total_ctx(),
+        planned.host_prompt_cache_mib, Path::new("pages"),
+    ));
+    assert_eq!(invocation.value_of("-c"), Some("290560"));
+    assert_eq!(invocation.value_of("--parallel"), Some("5"));
+    assert!(super::super::shared_pool::launched_on_shared_pool(&invocation.args), "the launch and the read-back agree");
 }

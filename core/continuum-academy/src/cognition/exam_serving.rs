@@ -2,19 +2,13 @@
 //! explicit at the exam seam, and the LUDICROUS window-grow that gives a benchmark the
 //! biggest window the model+machine allow.
 //!
-//! The living-persona benchmark used to grab a bare steady-hold and *assume* it was a
+//! The living-persona benchmark used to grab a bare hold and *assume* it was a
 //! co-tenant slot; the comment said "= `Placement::ShareLane`" but nothing computed it. This
 //! module makes it real: it runs the model-aware admission kernel ([`plan_placement`]), and
-//! for a share it drives the correct GROW → SETTLE → PIN sequence:
-//!   1. **GROW** — declare LUDICROUS ([`ServingLudicrousHold`] → `PowerMode::Performance`), so
-//!      the daemon re-plans the shared lane to the biggest window the machine fits. Never a
-//!      starved boot-window (the 2048-eco incident).
-//!   2. **SETTLE** — wait for any grow-relaunch to finish
-//!      ([`wait_for_serving_window_settle`](crate::inference::llama_server::wait_for_serving_window_settle)).
-//!      A naive "force Performance then run" thrashes: acquiring Ludicrous is itself a re-plan
-//!      → relaunch, and a relaunch mid-exam connection-refuses every generation (the reverted
-//!      `95dcec669`). Settling BEFORE the tasks run absorbs that relaunch once, up front.
-//!   3. **PIN** — take the steady-hold so no FURTHER relaunch bounces the running exam.
+//! for a share it declares LUDICROUS ([`ServingLudicrousHold`] → `PowerMode::Performance`) for
+//! the exam's run. Nothing relaunches the engine for a window since 2026-11-03 (one launch, a
+//! shared pool), so there is no grow-relaunch to absorb and no pin to hold; the exam's larger
+//! window becomes a grant request (S2).
 //! The verdict is CARRIED for observability + the curriculum ledger.
 //!
 //! The `SpawnLane`/`CpuSpill` arms are the rails a DIFFERENT-base exam or a grid placement
@@ -23,19 +17,9 @@
 //! [[proctored-exam-session-dependable-benchmark]] [[serving-mode-follows-activity-ludicrous-to-dream]]
 //! [[benchmark-window-must-be-big-not-a-clamped-prompt]] [[lane-admission-planner-scenario-driven]]
 
-use std::time::Duration;
 
-use crate::inference::serving_holds::{ServingLudicrousHold, ServingSteadyHold};
+use crate::inference::serving_holds::ServingLudicrousHold;
 use crate::resources::placement::{plan_placement, LaneDemand, Placement, ResidentLane};
-
-/// How long to watch for a grow-relaunch to START (lane goes not-ready) after declaring
-/// Ludicrous. Must EXCEED the serving daemon's 5s re-plan `TICK` so a relaunch has time to
-/// fire; if none does in this window, the lane was already at the target window (no grow).
-const LUDICROUS_SETTLE_GRACE: Duration = Duration::from_secs(8);
-
-/// Bound for the whole grow-relaunch to finish (kill + respawn + model reload). A 24B reload
-/// is tens of seconds; generous so a real grow always completes, but never hangs the exam.
-const LUDICROUS_SETTLE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// The verdict the exam ACQUIRE reached — carried for observability + the curriculum ledger,
 /// so the strategic decision behind every measurement is inspectable.
@@ -43,7 +27,7 @@ const LUDICROUS_SETTLE_TIMEOUT: Duration = Duration::from_secs(180);
 pub enum ExamAcquire {
     /// The exam base is already resident → she is measured as a co-tenant decode slot on the
     /// live lane (`lane_id`), NO second weight copy. The lane is grown to LUDICROUS
-    /// (Performance → biggest window), settled, then held steady for the exam. The validated
+    /// (Performance → biggest window) and settled for the exam. The validated
     /// single-GPU path. `reclaim` names any lower-tier lanes the daemon should tier down first
     /// (empty in the common case).
     SharedLane {
@@ -71,12 +55,10 @@ impl ExamAcquire {
     }
 }
 
-/// The RAII holds a shared-lane exam binds for its whole run: LUDICROUS (serve at Performance)
-/// + STEADY (no further relaunch). Both release together when the context drops, reverting
-/// serving to the live pressure-adaptive mode.
+/// The RAII hold a shared-lane exam binds for its whole run: LUDICROUS (serve at Performance).
+/// It releases when the context drops, reverting serving to the live pressure-adaptive mode.
 struct ExamHold {
     _ludicrous: ServingLudicrousHold,
-    _steady: ServingSteadyHold,
 }
 
 /// A held exam serving context. While alive, a shared-lane exam serves at the biggest window
@@ -109,7 +91,7 @@ impl ExamServingContext {
     pub async fn acquire(capacity: u64, resident: &[ResidentLane], demand: &LaneDemand) -> Self {
         let acquire = Self::decide(capacity, resident, demand);
         let hold = if matches!(acquire, ExamAcquire::SharedLane { .. }) {
-            Some(Self::grow_settle_pin().await)
+            Some(Self::grow_settle().await)
         } else {
             None
         };
@@ -126,7 +108,7 @@ impl ExamServingContext {
     }
 
     /// The live serving inputs weren't resolvable (ungoverned host, model row missing, or the
-    /// lane isn't ready yet) — fall back to the share posture (grow → settle → pin) but MARK the
+    /// lane isn't ready yet) — fall back to the share posture (grow → settle) but MARK the
     /// verdict `unresolved` so the gap is visible rather than silently assumed. The exam still
     /// gets the biggest window; only the placement decision is recorded as "couldn't compute".
     pub async fn ludicrous_fallback() -> Self {
@@ -139,31 +121,21 @@ impl ExamServingContext {
                 lane_id: "live(unresolved)".to_string(),
                 reclaim: Vec::new(),
             },
-            _hold: Some(Self::grow_settle_pin().await),
+            _hold: Some(Self::grow_settle().await),
         }
     }
 
-    /// GROW (declare Ludicrous) → SETTLE (absorb any grow-relaunch) → PIN (steady-hold). The
-    /// Ludicrous hold is taken FIRST and kept, so `host_budget` plans at Performance for the
-    /// whole exam; the settle happens BEFORE the steady-hold so the pin lands on the grown,
-    /// stable lane — never on a lane about to relaunch.
-    async fn grow_settle_pin() -> ExamHold {
+    /// Declare Ludicrous for the exam: `host_budget` plans at Performance for its whole run.
+    /// Nothing relaunches the engine for a window since one launch (2026-11-03), so there is no
+    /// grow to wait for; the exam's larger window becomes a grant request (S2).
+    async fn grow_settle() -> ExamHold {
         let ludicrous = ServingLudicrousHold::acquire();
-        let settled = crate::inference::llama_server::wait_for_serving_window_settle(
-            LUDICROUS_SETTLE_GRACE,
-            LUDICROUS_SETTLE_TIMEOUT,
-        )
-        .await;
         continuum_base::probe!(
             class = "exam.acquire.ludicrous",
-            settled_window = settled.unwrap_or(0),
-            settled = settled.is_some(),
-            "exam lane grown to Ludicrous (Performance) and settled before pinning"
+            "exam serving declared Ludicrous (Performance) for its run"
         );
-        let steady = ServingSteadyHold::acquire("eval");
         ExamHold {
             _ludicrous: ludicrous,
-            _steady: steady,
         }
     }
 
@@ -181,7 +153,7 @@ impl ExamServingContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::serving_holds::{serving_held_steady, serving_ludicrous_active};
+    use crate::inference::serving_holds::serving_ludicrous_active;
     use crate::resources::placement::DemandTier;
 
     const GIB: u64 = 1 << 30;
@@ -267,43 +239,33 @@ mod tests {
         assert!(matches!(v, ExamAcquire::CpuSpill { .. }));
     }
 
-    // what this catches: the async ACQUIRE for a share holds BOTH Ludicrous and steady for the
-    // exam's lifetime and releases both on drop (RAII). With no live serving state the settle is
-    // a fast no-op, so this exercises the grow→settle→pin holds without a daemon. A spawn verdict
-    // holds nothing local. Guards the reverted-thrash regression: the exam pins the lane (steady)
-    // AND declares Ludicrous (Performance) — both, together.
+    // what this catches: the async ACQUIRE for a share holds Ludicrous for the exam's lifetime
+    // and releases it on drop (RAII). With no live serving state the settle is a fast no-op, so
+    // this exercises the grow→settle hold without a daemon. A spawn verdict holds nothing local.
     #[tokio::test]
-    async fn share_acquire_holds_ludicrous_and_steady_then_releases_on_drop() {
+    async fn share_acquire_holds_ludicrous_then_releases_on_drop() {
         // Spawn verdict first: holds nothing local, no global gauge touched.
         let resident = [live_lane("devstral-24b")];
         let spawn =
             ExamServingContext::acquire(64 * GIB, &resident, &exam_demand("qwen-coder-32b")).await;
-        assert!(!spawn.holds(), "a spawn verdict holds no local grow/pin");
+        assert!(!spawn.holds(), "a spawn verdict holds no local grow");
 
         // Share verdict (under memory pressure — a dedicated copy won't fit at 28 GiB, so the
-        // isolate demand falls back to a co-tenant share): grows Ludicrous + pins steady.
+        // isolate demand falls back to a co-tenant share): grows Ludicrous.
         let ctx =
             ExamServingContext::acquire(28 * GIB, &resident, &exam_demand("devstral-24b")).await;
         assert!(
             ctx.holds(),
-            "a shared-lane exam holds the grown, pinned lane"
+            "a shared-lane exam holds the grown lane"
         );
         assert!(
             serving_ludicrous_active(),
             "Ludicrous (Performance) is declared for the exam"
         );
-        assert!(
-            serving_held_steady(),
-            "and the lane is pinned steady against further relaunch"
-        );
         drop(ctx);
         assert!(
             !serving_ludicrous_active(),
             "drop reverts to the pressure-adaptive mode (RAII)"
-        );
-        assert!(
-            !serving_held_steady(),
-            "drop releases the steady pin (RAII)"
         );
     }
 }

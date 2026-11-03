@@ -435,6 +435,14 @@ pub trait LlamaServerControl: Send + Sync {
         None
     }
 
+    /// Was the RUNNING engine launched on one shared KV pool (`--kv-unified`), read off its
+    /// own argv? An engine on fixed slots can change its slot count only by a relaunch, so
+    /// the reconcile moves it to the shared pool once. `None` = unknown (no live lane, argv
+    /// unreadable, a fake): an absence is not a mismatch.
+    fn launched_on_shared_pool(&self) -> Option<bool> {
+        None
+    }
+
     /// Fingerprint of the server's `/slots` activity state (see
     /// [`slots_activity_fingerprint_of`]). The health heartbeat compares the value
     /// across two consecutive smoke-probe MISSES: changed → the serve loop is

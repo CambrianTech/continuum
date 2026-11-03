@@ -55,9 +55,8 @@ pub use liveness::{
 
 mod convergence_attempt;
 mod reconcile;
+mod shared_pool;
 pub use reconcile::{ensure_model_serving, ensure_model_serving_if_current};
-#[cfg(test)]
-pub(crate) use reconcile::{grow_refused_by_memory_gate, lane_grow_would_narrow_the_window};
 
 mod smoke;
 use smoke::{
@@ -98,7 +97,6 @@ use engine_install::{
 };
 mod snapshot;
 pub mod serving_hold;
-use snapshot::SERVING_STATE;
 pub use snapshot::{
     await_ready_serving, await_snapshot_resettle, current_serving, has_reconciled,
     install_serving_state, mark_first_reconcile, serving_state_receiver, MultimodalSupport,
@@ -108,7 +106,7 @@ mod vision;
 pub use vision::vision_lane_ready;
 use vision::{main_lane_mmproj_decision_for, MainLaneMmproj};
 mod external;
-pub use external::{external_serving_pin, probe_external_serving, wait_for_serving_window_settle};
+pub use external::{external_serving_pin, probe_external_serving};
 
 mod progress;
 pub(crate) use progress::{
