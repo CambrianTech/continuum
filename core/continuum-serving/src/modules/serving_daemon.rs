@@ -30,7 +30,7 @@ use crate::capacity::placement::PlacementRequest;
 use crate::cognition::model_resolver::types::HwCapabilityTier;
 use crate::inference::planning::serving_plan::footprint::{footprint_for, footprint_from_parts};
 use crate::inference::planning::serving_plan::{
-    host_budget_from, plan_serving, plan_serving_at_rest, plan_serving_stable, HostBudget,
+    host_budget_from, plan_serving, plan_serving_at_rest_traced, plan_serving_stable_traced, HostBudget,
     HostBudgetInputs, ModelFootprint, ServingDemand, ServingPlan,
 };
 use crate::gpu::GpuMemoryManager;
