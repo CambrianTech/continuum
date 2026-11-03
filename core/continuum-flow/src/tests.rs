@@ -189,9 +189,8 @@ async fn a_reliable_stage_never_drops_a_result_and_a_signal_stage_keeps_the_newe
     impl Stage for Results {
         type Input = u32;
         const QOS: Qos = Qos::Work;
-        const DEPTH: usize = 2;
         async fn handle(&mut self, input: u32) {
-            self.1.notified().await; // hold the worker so the queue fills
+            self.1.notified().await; // hold the worker so the pending slot fills
             self.0.lock().unwrap_or_else(|e| e.into_inner()).push(input); // test: plain data
         }
     }
@@ -199,7 +198,6 @@ async fn a_reliable_stage_never_drops_a_result_and_a_signal_stage_keeps_the_newe
     impl Stage for Wakes {
         type Input = u32;
         const QOS: Qos = Qos::Utility;
-        const DEPTH: usize = 1;
         const OVERFLOW: Overflow = Overflow::KeepNewest;
         async fn handle(&mut self, input: u32) {
             self.1.notified().await;
@@ -211,13 +209,12 @@ async fn a_reliable_stage_never_drops_a_result_and_a_signal_stage_keeps_the_newe
     assert_eq!(results.push(1), Ok(0));
     tokio::task::yield_now().await; // the worker takes 1 and waits on the gate
     assert_eq!(results.push(2), Ok(0));
-    assert_eq!(results.push(3), Ok(0));
-    assert_eq!(results.push(4), Err(4), "full: the producer gets its result back, nothing is dropped");
-    for _ in 0..3 {
+    assert_eq!(results.push(3), Err(3), "full: the producer gets its result back, nothing is dropped");
+    for _ in 0..2 {
         gate.notify_one();
         tokio::task::yield_now().await;
     }
-    assert_eq!(*got.lock().unwrap_or_else(|e| e.into_inner()), vec![1, 2, 3]); // test: plain data
+    assert_eq!(*got.lock().unwrap_or_else(|e| e.into_inner()), vec![1, 2]); // test: plain data
 
     let (seen, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()));
     let wakes = spawn_stage(Wakes(Arc::clone(&seen), Arc::clone(&hold)));
@@ -243,7 +240,6 @@ async fn simultaneous_last_producers_close_and_drain_the_stage() {
     impl Stage for Drain {
         type Input = u32;
         const QOS: Qos = Qos::Work;
-        const DEPTH: usize = 2;
         async fn handle(&mut self, input: u32) { self.seen.push(input); }
     }
     impl Drop for Drain {
@@ -268,7 +264,6 @@ async fn simultaneous_last_producers_close_and_drain_the_stage() {
             });
             scope.spawn(move || {
                 barrier.wait();
-                if queued { assert_eq!(second.push(2), Ok(0)); }
                 drop(second);
             });
         });
@@ -276,6 +271,6 @@ async fn simultaneous_last_producers_close_and_drain_the_stage() {
             .await.expect("test: the closed stage must terminate")
             .expect("test: stage drop reports drained input");
         seen.sort_unstable();
-        assert_eq!(seen, if queued { vec![1, 2] } else { vec![] });
+        assert_eq!(seen, if queued { vec![1] } else { vec![] });
     }
 }

@@ -4,7 +4,6 @@
 //! queue, its bound, waking and shutdown live here, never in the subsystem.
 
 use crate::Qos;
-use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -28,18 +27,18 @@ pub trait Stage: Send + 'static {
     type Input: Send + 'static;
     /// Its class, for any capacity it submits to.
     const QOS: Qos;
-    /// How many inputs it holds before `OVERFLOW` applies.
-    const DEPTH: usize = 1;
     /// What a full stage does: never drops unless a signal stage opts in.
     const OVERFLOW: Overflow = Overflow::Reliable;
     fn handle(&mut self, input: Self::Input) -> impl Future<Output = ()> + Send;
 }
 
+/// A stage holds one input in hand (the one it is handling) and one pending: CBAR's double
+/// buffer. A producer that finds the pending slot full gets its input back (`Reliable`) or replaces
+/// the pending one (`KeepNewest`), so no stage sizes a queue of its own.
 struct Inbox<T> {
     producers: AtomicUsize,
-    items: Mutex<VecDeque<T>>,
+    pending: Mutex<Option<T>>,
     signal: Notify,
-    depth: usize,
     overflow: Overflow,
 }
 
@@ -57,25 +56,19 @@ impl<T> Clone for StageInput<T> {
 }
 
 impl<T> StageInput<T> {
-    /// Insert and signal. A `KeepNewest` stage drops its oldest past its depth and returns how
-    /// many it dropped; a `Reliable` stage at its depth hands the item back (`Err`) and drops
-    /// nothing. The lock is held for the insert alone, never across work (CBAR's `addItem`).
+    /// Put `item` in the pending slot and signal. A `Reliable` stage whose slot is full hands the
+    /// item back (`Err`) and drops nothing; a `KeepNewest` stage replaces the pending input and
+    /// returns how many it dropped (0 or 1). The lock is held for the insert alone, never across
+    /// work (CBAR's `addItem`).
     pub fn push(&self, item: T) -> Result<usize, T> {
         let dropped = {
-            let mut items = self.inbox.items.lock().unwrap_or_else(|e| e.into_inner()); // a poisoned queue still holds plain data: keep serving it
-            let mut dropped = 0;
-            if items.len() >= self.inbox.depth {
-                match self.inbox.overflow {
-                    Overflow::Reliable => return Err(item),
-                    Overflow::KeepNewest => {
-                        while items.len() >= self.inbox.depth {
-                            items.pop_front();
-                            dropped += 1;
-                        }
-                    }
-                }
-            }
-            items.push_back(item);
+            let mut pending = self.inbox.pending.lock().unwrap_or_else(|e| e.into_inner()); // a poisoned slot still holds plain data: keep serving it
+            let dropped = match (pending.is_some(), self.inbox.overflow) {
+                (true, Overflow::Reliable) => return Err(item),
+                (true, Overflow::KeepNewest) => 1,
+                (false, _) => 0,
+            };
+            *pending = Some(item);
             dropped
         };
         self.inbox.signal.notify_one();
@@ -94,13 +87,13 @@ impl<T> Drop for StageInput<T> {
 
 /// Start `stage` on its own task; returns its input.
 pub fn spawn_stage<S: Stage>(mut stage: S) -> StageInput<S::Input> {
-    let inbox = Arc::new(Inbox { producers: AtomicUsize::new(1), items: Mutex::new(VecDeque::new()), signal: Notify::new(), depth: S::DEPTH.max(1), overflow: S::OVERFLOW });
+    let inbox = Arc::new(Inbox { producers: AtomicUsize::new(1), pending: Mutex::new(None), signal: Notify::new(), overflow: S::OVERFLOW });
     let input = StageInput { inbox: Arc::clone(&inbox) };
     tokio::spawn(async move {
         loop {
             let (next, closed) = {
-                let mut items = inbox.items.lock().unwrap_or_else(|e| e.into_inner()); // see push
-                (items.pop_front(), inbox.producers.load(Ordering::Acquire) == 0)
+                let mut pending = inbox.pending.lock().unwrap_or_else(|e| e.into_inner()); // a poisoned slot still holds plain data, as in push
+                (pending.take(), inbox.producers.load(Ordering::Acquire) == 0)
             };
             match next {
                 Some(item) => stage.handle(item).await,

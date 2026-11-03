@@ -4,6 +4,7 @@
 //! - prefill: each prefilling job gets `304 / sqrt(n)` tok/s with `n` jobs on the engine (152 at
 //!   four, measured 146-163);
 //! - a yield costs a page-out (`0.1 s`, fork #70).
+//!
 //! Minds act (prefill, decode, then tools off the engine), directed calls arrive, dreams and
 //! training run in the gaps. Every case in FLOW-IMPLEMENTATION-PLAN §6 runs here in milliseconds
 //! and reports what a live read reports.
