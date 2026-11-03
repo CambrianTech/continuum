@@ -315,11 +315,9 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
         daemon.reconcile_to_plan().is_none(),
         "excluded retained model cannot dispatch"
     );
-    // With NO plan published (a cold boot) and a requirement the box cannot hold, the first
-    // starved plan is held back once, so the one launch never comes from a first-tick fallback
-    // (b4be7bc59: 5 x 2,048 on the M5, 2026-11-03), and the next recompute publishes the best
-    // runnable plan: a dark node is worse than a starved seat (Cormac's condition on #4257:
-    // IntelMac's 32k-trained 1.5B against a 58k typical).
+    // With NO plan published (a cold boot) and a requirement the box cannot hold, the
+    // best runnable plan is still published — a dark node is worse than a starved seat
+    // (Cormac's condition on #4257: IntelMac's 32k-trained 1.5B against a 58k typical).
     let mut cold = ServingDaemonModule::new(
         Arc::new(GpuMemoryManager::simulated("Intel", 16 * GB)),
         Arc::new(SystemResourceMonitor::new()),
@@ -332,18 +330,20 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
     cold.working_set.record_in_memory(uuid::Uuid::new_v4(), 200_000, 1);
     let rx_cold = cold.subscribe();
     let small = vec![footprint_from_parts("coder-1.5b", GB, 32_768, true, None).unwrap()];
-    let budget = HostBudget {
-        usable_bytes: 12 * GB,
-        perf_cores: 4,
-    };
-    cold.publish_plan(budget, &small, &small);
-    assert!(rx_cold.borrow().is_none(), "a cold boot's first starved plan is held back, so no launch comes from it");
-    cold.publish_plan(budget, &small, &small);
+    cold.publish_plan(
+        HostBudget {
+            usable_bytes: 12 * GB,
+            perf_cores: 4,
+        },
+        &small,
+        &small,
+    );
     let starved = rx_cold
         .borrow()
         .clone()
         .expect("a cold boot publishes the best runnable plan, starved or not");
     assert!(starved.served_context_window <= 32_768);
+    assert!(starved.served_context_window > 2_048, "a genuinely starved node launches its own measured window, never a 2,048 fallback (Cormac's case 2 on #5739)");
     assert!(
         !crate::inference::planning::serving_plan::persona_lane_holds(
             starved.served_context_window,
@@ -657,3 +657,68 @@ fn each_sequence_is_published_its_share_of_the_shared_pool() {
     assert_eq!(sequence_share(290_560, 1, 100_000), (100_000, 1), "one sequence is capped at the trained window");
     assert_eq!(sequence_share(290_560, 0, 262_144), (262_144, 1), "no sequence count is one, never a divide by zero");
 }
+
+// what this catches (b4be7bc59 on the M5, 2026-11-03 18:18Z, rolled back): a cold boot launching
+// from a plan computed off a footprint record that the same pass retired. That plan read 2,048 at a
+// sampled 23 GB, and the engine kept 5 x 2,048 for life; the next tick, without the record, planned
+// 2 x 184,320. A pass that retires its own record re-plans at once, and the plan that is published
+// (so launched) is the re-plan, never the starved one (Cormac's case 1 on #5739). The candidates
+// follow the record exactly as `footprint_for` does: its rate while it stands, the estimate after.
+#[tokio::test]
+async fn a_pass_that_retires_its_record_publishes_the_re_plan_never_the_starved_plan() {
+    let mut cold = ServingDaemonModule::new(
+        Arc::new(GpuMemoryManager::simulated("M5", 64 * GB)),
+        Arc::new(SystemResourceMonitor::new()),
+        test_resource_daemon(),
+        test_catalog(),
+        test_pin_store(),
+    );
+    cold.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
+    cold.set_leased_in_sent_source(Arc::new(Vec::new));
+    cold.working_set.record_in_memory(uuid::Uuid::new_v4(), 16_000, 1);
+    let rx = cold.subscribe();
+    let model = "cold-retire-fixture-35b";
+    let estimate = footprint_from_parts(model, 20 * GB, 262_144, true, None).unwrap();
+    let mut trapped = estimate.clone();
+    trapped.kv_per_token = 1_000_000; // a trapped record: ~10k tokens fit beside the weights, below the requirement
+    crate::inference::lane_footprint::record_for_test(
+        model,
+        crate::inference::lane_footprint::MeasuredCost {
+            per_token_bytes: trapped.kv_per_token,
+            lanes: 1,
+            window: 8_192,
+            allocated_tokens: Some(8_192),
+            anon_bytes: 0,
+            last_ms: continuum_base::time::EpochMs::now().millis(),
+        },
+    );
+    let budget = HostBudget { usable_bytes: 30 * GB, perf_cores: 6 };
+    let mut seen = Vec::new();
+    cold.plan_until_decided(budget, cold.intent.snapshot().revision, &[], || {
+        let fp = match crate::inference::lane_footprint::measured_record(model) {
+            Some(_) => trapped.clone(),
+            None => estimate.clone(),
+        };
+        seen.push(fp.kv_per_token);
+        (vec![fp.clone()], vec![fp])
+    });
+    assert_eq!(seen, vec![1_000_000, estimate.kv_per_token], "planned once from the record, once more after retiring it");
+    let published = rx.borrow().clone().expect("the re-plan is published");
+    assert!(
+        crate::inference::planning::serving_plan::persona_lane_holds(published.served_context_window, Some(16_000)),
+        "the launch takes the re-plan, which holds the requirement: {} x {}",
+        published.lanes,
+        published.served_context_window
+    );
+    assert!(crate::inference::lane_footprint::measured_record(model).is_none(), "the trapped record is retired");
+}
+
+// what this catches: a launch before any plan exists (no sampled budget, no plan published):
+// the engine must not start from defaults (Cormac's case 3 on #5739).
+#[tokio::test]
+async fn no_plan_published_means_no_launch() {
+    let daemon = daemon_with(Arc::new(FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true)));
+    assert!(daemon.plan_tx.borrow().plan.is_none(), "nothing planned yet");
+    assert!(daemon.reconcile_to_plan().is_none(), "no plan, no launch");
+}
+

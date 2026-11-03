@@ -267,6 +267,13 @@ pub fn retire_if_sampled_since(model: &str, since_ms: u64) -> bool {
 
 /// The fresh measured record for `model`, if any — per-token AND the geometry it was
 /// taken at, so a caller can turn an excess over a known rate into fixed bytes.
+/// TEST FIXTURE: a measured record for `model`, in memory only (no save), as a sample would leave
+/// it. Lets a planner test reproduce a trapped record without a live process to measure.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn record_for_test(model: &str, cost: MeasuredCost) {
+    COSTS.lock().insert(model.to_string(), cost);
+}
+
 pub fn measured_record(model: &str) -> Option<MeasuredCost> {
     let now = EpochMs::now().millis();
     COSTS.lock().get(model).filter(|c| c.fresh_at(now)).cloned()

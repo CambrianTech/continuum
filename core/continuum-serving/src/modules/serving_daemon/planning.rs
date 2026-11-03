@@ -41,10 +41,33 @@ impl ServingDaemonModule {
         }
         let (budget, leases) = self.host_budget_snapshot();
         let intent = self.intent.snapshot();
-        let catalog = self.catalog.snapshot();
-        let candidates = servable_candidates(&catalog, &intent.suppressed, &intent.pinned);
-        let on_disk = servable_candidates(&catalog, &HashSet::new(), &intent.pinned);
-        self.publish_plan_with_leases(budget, &candidates, &on_disk, intent.revision, &leases);
+        self.plan_until_decided(budget, intent.revision, &leases, || {
+            let catalog = self.catalog.snapshot();
+            (
+                servable_candidates(&catalog, &intent.suppressed, &intent.pinned),
+                servable_candidates(&catalog, &HashSet::new(), &intent.pinned),
+            )
+        });
+    }
+
+    /// Plan, and re-plan at once while the pass retires the footprint record its plan was computed
+    /// from: such a plan is invalid by construction, and `candidates` recomputes the footprints
+    /// without the record (`footprint_for` reads it). Each retire removes one record from a finite
+    /// set, so this ends. On the M5 it turns the cold boot's 2,048 plan into the 2 x 184,320 the
+    /// next tick produced (b4be7bc59, 2026-11-03; Cormac on #5739).
+    pub(super) fn plan_until_decided(
+        &self,
+        budget: HostBudget,
+        intent_revision: u64,
+        leases: &[crate::resources::lease::ResourceLease],
+        mut candidates: impl FnMut() -> (Vec<ModelFootprint>, Vec<ModelFootprint>),
+    ) {
+        loop {
+            let (now, on_disk) = candidates();
+            if self.publish_plan_with_leases(budget, &now, &on_disk, intent_revision, leases) == PlanOutcome::Decided {
+                return;
+            }
+        }
     }
 
     /// Pure publish step: run the classifier on the given inputs, publish the
@@ -60,8 +83,8 @@ impl ServingDaemonModule {
         budget: HostBudget,
         candidates: &[ModelFootprint],
         on_disk: &[ModelFootprint],
-    ) {
-        self.publish_plan_for_intent(budget, candidates, on_disk, self.intent.snapshot().revision);
+    ) -> PlanOutcome {
+        self.publish_plan_for_intent(budget, candidates, on_disk, self.intent.snapshot().revision)
     }
 
     pub(super) fn publish_plan_snapshot(&self, intent_revision: u64, plan: Option<ServingPlan>) {
@@ -104,15 +127,15 @@ impl ServingDaemonModule {
         candidates: &[ModelFootprint],
         on_disk: &[ModelFootprint],
         intent_revision: u64,
-    ) {
-        self.publish_plan_with_leases(budget, candidates, on_disk, intent_revision, &[]);
+    ) -> PlanOutcome {
+        self.publish_plan_with_leases(budget, candidates, on_disk, intent_revision, &[])
     }
 
     fn publish_plan_with_leases(
         &self, budget: HostBudget, candidates: &[ModelFootprint],
         on_disk: &[ModelFootprint], intent_revision: u64,
         leases: &[crate::resources::lease::ResourceLease],
-    ) {
+    ) -> PlanOutcome {
         self.plan_budget_bytes.store(budget.usable_bytes, Ordering::Relaxed);
         // Hysteresis: pass the currently-served model as the incumbent so a
         // transient free-memory dip doesn't thrash the served model.
@@ -272,27 +295,27 @@ impl ServingDaemonModule {
                     }
                     if previous_stands {
                         self.retain_plan_for_intent(intent_revision, candidates);
-                        return;
+                        return PlanOutcome::Decided;
                     }
-                    // A COLD BOOT'S FIRST starved plan is not published: the engine launches once
-                    // from whatever plan is published first and is never relaunched to resize, so a
-                    // first-tick fallback becomes the pool for the engine's life (b4be7bc59 launched
-                    // the M5 at 5 x 2,048 from the 2,048 plan at 18:18:26Z; the next tick, one second
-                    // later with the record retired, planned 2 x 184,320 at the same 23 GB). The next
-                    // recompute decides: a second starved plan is published as before, because a dark
-                    // node is worse than a starved seat (Cormac on #5739).
-                    let mut deferred = self.cold_deferred.lock();
-                    if deferred.as_deref() != Some(plan.base_model.model_id.as_str()) {
-                        *deferred = Some(plan.base_model.model_id.clone());
+                    // A starved plan whose own tick just retired the record it was computed from is
+                    // invalid by construction, so it is never published on a cold boot: the engine
+                    // launches once from the first published plan and keeps that pool for life.
+                    // b4be7bc59 launched the M5 at 5 x 2,048 from exactly this plan (18:18:26Z, budget
+                    // sampled at 23 GB, record_retired=true); the next tick, with the record gone and
+                    // the candidates recomputed, planned 2 x 184,320 at the same budget. State, not a
+                    // count (Cormac on #5739): a record can be retired only once, so the next tick's
+                    // plan comes from inputs that survived, and a plan starved by those (a node that
+                    // genuinely cannot hold the requirement) is published as before.
+                    if retired {
                         continuum_base::probe!(
-                            target: "continuum_core::modules::serving_daemon", class = "serving.plan.cold_deferred",
+                            target: "continuum_core::modules::serving_daemon", class = "serving.plan.cold_withheld",
                             model = plan.base_model.model_id.as_str(),
                             window = plan.served_context_window as u64,
                             requirement = requirement.unwrap_or(0) as u64, // unwrap_or: probe label; this branch only fires with a requirement present
                             usable_gb = (budget.usable_bytes / 1_000_000_000),
-                            "a cold boot's first plan is starved: not published, so the one launch waits for the next recompute"
+                            "a cold boot's starved plan came from the record this tick retired: withheld, so the one launch waits for the next tick's plan"
                         );
-                        return;
+                        return PlanOutcome::RetiredItsRecord;
                     }
                 }
                 // THE HOST FLOOR (Joel, 2026-09-16: "if this machine ever returns less than
@@ -398,7 +421,7 @@ impl ServingDaemonModule {
                                 }
                             }
                         }
-                        return;
+                        return PlanOutcome::Decided;
                     }
                     // COLD BOOT, no incumbent: a viable base the budget CAN serve beats a
                     // capability floor it cannot reach. Serve the plan instead of booting dark
@@ -452,7 +475,7 @@ impl ServingDaemonModule {
                                  incumbent plan until the squeeze proves sustained (#368)",
                             );
                             self.retain_plan_for_intent(intent_revision, candidates);
-                            return;
+                            return PlanOutcome::Decided;
                         }
                         // Sustained: a real squeeze. Adopt, and re-arm the gate.
                         self.downshift_streak.store(0, Ordering::Relaxed);
@@ -643,6 +666,7 @@ impl ServingDaemonModule {
                 self.publish_plan_snapshot(intent_revision, None);
             }
         }
+        PlanOutcome::Decided
     }
 }
 
@@ -756,3 +780,13 @@ mod training_lease_tests {
         );
     }
 }
+
+/// What one planning pass decided: a plan published, retained or refused (`Decided`), or nothing,
+/// because the plan was computed from a footprint record that this pass retired, so the caller
+/// re-plans at once from the candidates recomputed without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PlanOutcome {
+    Decided,
+    RetiredItsRecord,
+}
+
