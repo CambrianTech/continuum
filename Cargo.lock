@@ -3214,6 +3214,7 @@ dependencies = [
  "async-trait",
  "axum",
  "continuum-base",
+ "continuum-capture",
  "continuum-engine",
  "serde",
  "serde_json",
