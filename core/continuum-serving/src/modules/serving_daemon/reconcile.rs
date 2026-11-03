@@ -87,6 +87,35 @@ impl ServingDaemonModule {
 
     /// against together, so a stale high can never make a later climb read as flat.
 
+    /// An ADOPTED engine on fixed slots moves to the shared pool once its pool can be
+    /// checkpointed: a core that adopts the engine its predecessor left learns the slot pool
+    /// only after serving it, so the move asked for at boot is refused and handed back ("adopted
+    /// checkpoint requires a known pool", the M5 2026-11-03 04:22Z), and a ready lane never
+    /// re-enters the launch path on its own. One try per engine process; the check is one lock
+    /// per tick until the pool is known, and the argv is read once.
+    fn shared_pool_move_due(&self, base_url: &str) -> bool {
+        let endpoint = crate::ai::openai_endpoints::OpenAiBase::new(base_url);
+        if !crate::inference::slots::directory().adopted_replacement_ready(endpoint.root()) {
+            return false;
+        }
+        let Some(engine) = self.server.served_incarnation() else {
+            return false;
+        };
+        let pid = u64::from(engine.pid);
+        if self.shared_pool_move_tried.swap(pid, Ordering::Relaxed) == pid {
+            return false;
+        }
+        let due = self.server.launched_on_shared_pool() == Some(false);
+        if due {
+            continuum_base::probe!(
+                target: "continuum_core::modules::serving_daemon", class = "serving.pool.move",
+                pid,
+                "an adopted engine on fixed slots can now be checkpointed: moving it onto the shared pool, once"
+            );
+        }
+        due
+    }
+
     pub(super) fn reconcile_to_plan(&self) -> Option<JoinHandle<()>> {
         let operation = match self.lifecycle.try_operation() {
             Some(operation) => operation,
@@ -318,6 +347,7 @@ impl ServingDaemonModule {
             if live.ready
                 && live.active_model.as_deref() == Some(desired.as_str())
                 && live.adapters == desired_adapter_paths
+                && !self.shared_pool_move_due(&live.base_url)
             {
                 // The lanes this hour served: the health window's maximum (the lane-bound rest
                 // stands on it).

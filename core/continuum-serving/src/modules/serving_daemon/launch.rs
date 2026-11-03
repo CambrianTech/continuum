@@ -19,42 +19,24 @@ impl ServingDaemonModule {
     /// The engine's one KV pool, sized ONCE when the engine starts and never by a relaunch, as
     /// `(per-sequence tokens, sequences)` so `-c` is the pool and `--parallel` the ceiling.
     ///
-    /// The sequences: every seated mind, the minds leased in from other nodes at the last plan,
-    /// and the scratch traffic beside them. The pool: what serving may hold AT REST (the
-    /// physical budget at the current mode, less every other consumer's measured residency on
-    /// the board, less the prompt cache's grant where it is the same memory), laid out by the
-    /// plan's own arithmetic, so each sequence fits its compute and never exceeds the trained
-    /// window. Not the live plan budget, which counts the outgoing engine against itself, and
-    /// not the cold plan's window x lanes, which was 1 x 80k on a boot that counted two
-    /// residents (the M5, 2026-11-03 00:52Z). A model with no measured footprint has no fit,
-    /// so its sequences take the plan's window: a fit, not a constant.
-    fn engine_pool(
-        &self,
-        model: &crate::model_registry::types::Model,
-        served_ctx: u32,
-        lanes: u32,
-        host_prompt_cache_mib: u32,
-    ) -> (u32, u32) {
+    /// The sequences: every seated mind, the minds leased in at the last plan, and the scratch
+    /// traffic beside them. Each is laid out on the budget the last plan sized against, by the
+    /// plan's own arithmetic, so the engine holds the memory the planner proved it may: on the
+    /// M5, 5 x 69,376, the geometry the planner gave the fixed-slot engine. Sizing it instead
+    /// from the physical budget less every board holder gave 5 x 36,505 (2026-11-03 04:23Z,
+    /// backed out at once), and from the cold plan's window x lanes 1 x 80k. The shared pool's
+    /// saving (one compute graph, not one per sequence) comes as a measured gain, not here. A
+    /// model with no measured footprint, or no plan yet, keeps the plan's total (window x lanes)
+    /// shared over the sequences: an unmeasured model is where over-allocating is least safe.
+    fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> (u32, u32) {
         let leased_in = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed);
         let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes);
-        let kind = serving_pool_kind();
-        let others: u64 = self
-            .resource_daemon
-            .board()
-            .attributions
-            .iter()
-            .filter(|a| a.consumer_id != SERVING_CONSUMER_ID && a.kind == kind)
-            .map(|a| a.bytes)
-            .sum();
-        let cache = match self.system.gpu_memory_mode() {
-            Some(crate::gpu::monitor::MemoryMode::Unified) => u64::from(host_prompt_cache_mib) << 20,
-            _ => 0,
-        };
-        let at_rest = self.physical_budget().usable_bytes.saturating_sub(others).saturating_sub(cache);
-        let fitted = footprint_for(model).map(|fp| fp.window_within(at_rest, sequences));
+        let budget = self.plan_budget_bytes.load(Ordering::Relaxed);
+        let fitted = footprint_for(model).map(|fp| fp.window_within(budget, sequences));
         let per_sequence = match fitted.filter(|tokens| *tokens > 0) {
             Some(tokens) => tokens,
-            None => served_ctx,
+            None => u32::try_from(u64::from(served_ctx) * u64::from(lanes) / u64::from(sequences.max(1)))
+                .unwrap_or(served_ctx), // unwrap_or: lanes <= sequences, so the share is at most served_ctx
         };
         (per_sequence, sequences)
     }
@@ -161,7 +143,7 @@ impl ServingDaemonModule {
         // separates "a bit small" from "structurally cannot cache anything".
         let one_conversation_mib = prompt_cache.one_conversation_mib;
         let host_prompt_cache_mib = prompt_cache.mib;
-        let (per_sequence, sequences) = self.engine_pool(&model, served_ctx, lanes, host_prompt_cache_mib);
+        let (per_sequence, sequences) = self.engine_pool(&model, served_ctx, lanes);
         let target = ServingTarget {
             host_prompt_cache_mib,
             model,

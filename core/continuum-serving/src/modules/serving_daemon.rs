@@ -345,6 +345,12 @@ pub struct ServingDaemonModule {
     /// asked for divides every mind's window for nothing (the 4-slots-for-2-
     /// personas starvation, 2026-07-10). Default 1 — window-first.
     lane_demand: Arc<std::sync::atomic::AtomicU32>,
+    /// The usable bytes the last plan sized against: the budget the one launch lays its pool
+    /// out on, so the engine holds the memory the planner just proved it may.
+    plan_budget_bytes: Arc<std::sync::atomic::AtomicU64>,
+    /// The engine process this core last asked to move onto the shared pool: one try per
+    /// engine, so a refused move is never retried every tick.
+    shared_pool_move_tried: Arc<std::sync::atomic::AtomicU64>,
 
     /// L10 (#438): consecutive plan ticks wanting a DIFFERENT base model than the
     /// ready incumbent, and which model that was. A model swap re-homes every
@@ -533,6 +539,8 @@ impl ServingDaemonModule {
             pin_store,
             intent,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
+            plan_budget_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            shared_pool_move_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_model_change: Arc::new(std::sync::Mutex::new(None)),
             serving_hold: Arc::new(parking_lot::Mutex::new(None)),
