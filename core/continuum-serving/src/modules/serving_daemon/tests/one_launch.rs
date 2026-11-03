@@ -122,9 +122,15 @@ fn model_swap_on_a_ready_lane_needs_a_sustained_streak() {
 fn the_launch_pool_never_comes_from_the_boot_plan() {
     let daemon = daemon_with(Arc::new(FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true)));
     assert_eq!(daemon.plan_budget_bytes.load(Ordering::Relaxed), 0, "a cold boot: no plan budget yet");
-    let mut model = daemon.catalog.snapshot().values().next().expect("the catalog has a model").model.clone();
+    let mut model = daemon
+        .catalog
+        .snapshot()
+        .get("ggml-org/Qwen3.6-35B-A3B-GGUF")
+        .expect("the catalog has the M5's model")
+        .model
+        .clone();
     model.weights_bytes = Some(9 * GB);
-    let fp = crate::inference::planning::serving_plan::footprint_for(&model).expect("a footprint from the weights");
+    let fp = footprint_for(&model).expect("a footprint from the weights");
     let (per_slot, sequences) = daemon.engine_pool(&model, 2_048, 1);
     let pool = u64::from(per_slot) * u64::from(sequences);
     let fit = u64::from(fp.window_within(daemon.physical_budget().usable_bytes, sequences).min(model.context_window))
