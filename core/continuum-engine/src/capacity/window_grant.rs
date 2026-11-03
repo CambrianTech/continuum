@@ -69,9 +69,19 @@ pub trait WindowPolicy<K> {
     fn grant(&mut self, demands: &[Demand<K>], held: &BTreeMap<K, u32>, pool_tokens: u32) -> BTreeMap<K, u32>;
 }
 
-/// Demand-following over one shared pool: every mind is granted her demand, up to her ceiling,
-/// when the pool holds them all; otherwise in-flight grants are kept whole and the rest share what
-/// remains in proportion to their demand. Nothing beyond a demand is granted.
+/// Demand-following over one shared pool. A grant is never below a mind's need: below it she cannot
+/// hold her turn, so a sub-need window is the hard cut Joel ruled out ("System accommodates it doesn't
+/// do stupid division"), and on the M5 on 2026-11-03 proportional shares of a 2,048-token launch pool
+/// bound every resident to 409-819 tokens and rebound them every few seconds. So:
+/// - her want is her need, capped at what one sequence holds; a mind already holding at least her need
+///   keeps what she holds, so a drifting estimate never rebinds her (each rebind resizes her view and
+///   costs her prompt cache: the M5 rebound all four every 2-3 minutes);
+/// - when the wants do not all fit, surplus is reclaimed first: a mind not in a turn gives back what
+///   she holds above her need; a turn in flight keeps what it holds;
+/// - when the needs still do not all fit, minds are admitted in order (turns in flight, then minds
+///   already holding a grant, then the rest as given), each with her whole need or nothing. A mind
+///   left out keeps her current binding and is admitted when the pool has room (the engine's
+///   admission queues her turn); she is never granted a fraction of what she needs.
 pub struct DemandFollowing;
 
 impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
@@ -81,33 +91,55 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
         held: &BTreeMap<K, u32>,
         pool_tokens: u32,
     ) -> BTreeMap<K, u32> {
-        // A turn in flight keeps at least what it holds: its grant is a floor whether or not
-        // every demand fits (Cormac on #5718: the fits branch granted the new, smaller demand
-        // and shrank a turn mid-flight). The floors fit the pool because they were granted
-        // inside it; what they leave is shared over the rest of each mind's demand, whole when
-        // it all fits and in proportion when it does not.
-        let floor = |d: &Demand<K>| match d.in_flight {
-            true => held.get(&d.mind).copied().unwrap_or(0), // unwrap_or: a turn that holds nothing yet has no floor
-            false => 0,
+        // Her need is never trimmed: a need above what one sequence can hold right now (a small pool)
+        // waits for room. The model's own trained limit is applied by the caller before this.
+        let need = |d: &Demand<K>| d.required_tokens;
+        // A turn in flight stays whatever its need now says: its window cannot change mid-turn.
+        let demands: Vec<&Demand<K>> = demands.iter().filter(|d| d.in_flight || need(d) <= d.ceiling).collect();
+        let demands = demands.as_slice();
+        let holds = |d: &Demand<K>| held.get(&d.mind).copied().unwrap_or(0).min(d.ceiling); // unwrap_or: a mind with no grant yet holds nothing
+        // What each mind keeps when there is room for everyone: at least her need, and what she already
+        // holds when that is more (no shrink for drift).
+        let want = |d: &Demand<K>| match need(d) > d.ceiling {
+            true => holds(d), // a turn in flight whose need outgrew one sequence keeps what it holds
+            false => need(d).max(holds(d)),
         };
-        let floors: u64 = demands.iter().map(|d| u64::from(floor(d))).sum();
-        let rest = u64::from(pool_tokens).saturating_sub(floors);
-        let needed: u64 = demands
-            .iter()
-            .map(|d| u64::from(d.required_tokens.saturating_sub(floor(d))))
-            .sum();
-        demands
-            .iter()
-            .map(|d| {
-                let need = u64::from(d.required_tokens.saturating_sub(floor(d)));
-                let more = match needed <= rest {
-                    true => need,
-                    false => (need * rest).checked_div(needed).unwrap_or(0), // unwrap_or: nothing needed means nothing more
-                };
-                let granted = u64::from(floor(d)).saturating_add(more).min(u64::from(d.ceiling.max(floor(d))));
-                (d.mind, u32::try_from(granted).unwrap_or(u32::MAX)) // unwrap_or: a grant is at most her ceiling, a u32
-            })
-            .collect()
+        let total = |f: &dyn Fn(&Demand<K>) -> u32| demands.iter().map(|d| u64::from(f(d))).sum::<u64>();
+        let pool = u64::from(pool_tokens);
+        if total(&want) <= pool {
+            return demands.iter().map(|d| (d.mind, want(d))).collect();
+        }
+        // Surplus reclaimed: only a turn in flight keeps more than its need.
+        let reclaimed = |d: &Demand<K>| match d.in_flight {
+            true => want(d),
+            false => need(d),
+        };
+        if total(&reclaimed) <= pool {
+            return demands.iter().map(|d| (d.mind, reclaimed(d))).collect();
+        }
+        // Not every need fits: admit whole needs in order, never a fraction.
+        let rank = |d: &Demand<K>| match (d.in_flight, held.contains_key(&d.mind)) {
+            (true, _) => 0,
+            (false, true) => 1,
+            (false, false) => 2,
+        };
+        let mut order: Vec<&Demand<K>> = demands.to_vec();
+        order.sort_by_key(|d| rank(d)); // stable: within a rank, the caller's order
+        let mut left = pool;
+        let mut grants = BTreeMap::new();
+        for d in order {
+            // A turn in flight is never cut: it takes its want when that fits, else what it holds,
+            // which already fit the pool when it was granted.
+            let amount = match (d.in_flight, reclaimed(d)) {
+                (true, want) if u64::from(want) > left => holds(d),
+                (_, amount) => amount,
+            };
+            if u64::from(amount) <= left {
+                left -= u64::from(amount);
+                grants.insert(d.mind, amount);
+            }
+        }
+        grants
     }
 }
 
@@ -129,32 +161,52 @@ mod tests {
         let demands = [demand(1, 70_000, false, pool), demand(2, 20_000, false, pool), demand(3, 10_000, false, pool)];
         let grants = DemandFollowing.grant(&demands, &BTreeMap::new(), pool);
         assert_eq!(grants, BTreeMap::from([(1, 70_000), (2, 20_000), (3, 10_000)]));
-        let capped = DemandFollowing.grant(&[demand(1, 40_000, false, 32_768)], &BTreeMap::new(), pool);
-        assert_eq!(capped[&1], 32_768, "no grant past what one sequence can hold");
+        let too_big = DemandFollowing.grant(&[demand(1, 40_000, false, 32_768)], &BTreeMap::new(), pool);
+        assert!(too_big.is_empty(), "a need above what one sequence holds now waits, never trimmed: {too_big:?}");
     }
 
-    // what this catches: slack granted as windows and then pinned by a turn in flight while another
-    // mind's real need goes unmet (Cormac on #5733: pool 65,536, A and B each granted 32,768 for a
-    // 10,000 need; A in flight; B rose to 40,000 and got 32,768 while A held 22,768 unused).
+    // what this catches (the M5, 2026-11-03, 2bbfa56c9): a grant below need. The 2,048-token launch
+    // pool was shared in proportion, binding every resident to 409-819 tokens. A mind gets her whole
+    // need or no grant (she keeps her binding and waits for room), never a fraction.
     #[test]
-    fn a_running_turn_pins_only_what_it_needed_and_a_rising_need_is_met() {
+    fn a_grant_is_never_below_need_a_mind_that_does_not_fit_waits() {
+        let grants = DemandFollowing.grant(
+            &[demand(1, 20_000, false, 2_048), demand(2, 30_000, false, 2_048)],
+            &BTreeMap::new(),
+            2_048,
+        );
+        assert!(grants.is_empty(), "a 2,048 pool holds no one's need: nobody is bound to a sliver: {grants:?}");
         let pool = 65_536;
-        let first = DemandFollowing.grant(&[demand(1, 10_000, false, pool), demand(2, 10_000, false, pool)], &BTreeMap::new(), pool);
-        assert_eq!(first, BTreeMap::from([(1, 10_000), (2, 10_000)]));
-        let next = DemandFollowing.grant(&[demand(1, 10_000, true, pool), demand(2, 40_000, false, pool)], &first, pool);
-        assert_eq!(next, BTreeMap::from([(1, 10_000), (2, 40_000)]), "B's need is met beside A's running turn");
-    }
-
-    // what this catches: needs past the pool cutting a running turn, or anyone's grant decided by a
-    // count. A turn in flight keeps what it holds; the others share the rest in proportion to need.
-    #[test]
-    fn past_the_pool_a_running_turn_keeps_its_grant_and_the_rest_share_by_need() {
-        let pool = 65_536;
-        let held = BTreeMap::from([(1, 30_000)]);
-        let demands = [demand(1, 20_000, true, pool), demand(2, 40_000, false, pool), demand(3, 20_000, false, pool)];
-        let grants = DemandFollowing.grant(&demands, &held, pool);
-        assert_eq!(grants[&1], 30_000, "a running turn's grant never shrinks under it");
+        let grants = DemandFollowing.grant(
+            &[demand(1, 40_000, false, pool), demand(2, 20_000, false, pool), demand(3, 30_000, false, pool)],
+            &BTreeMap::new(),
+            pool,
+        );
+        assert!(grants.iter().all(|(m, g)| *g == [0, 40_000, 20_000, 30_000][*m as usize]), "whole needs only: {grants:?}");
         assert!(grants.values().map(|&g| u64::from(g)).sum::<u64>() <= u64::from(pool));
-        assert_eq!(grants[&2], 2 * grants[&3], "the rest share by need: {grants:?}");
+        assert_eq!(grants.len(), 2, "the third need does not fit and waits: {grants:?}");
     }
+
+    // what this catches (the M5, 2026-11-03): every resident rebound every 2-3 minutes as her estimate
+    // drifted, each rebind resizing her view and dropping her prompt cache. Holding at least her need,
+    // she keeps her grant; a turn in flight keeps what it holds even when room must be made.
+    #[test]
+    fn a_held_grant_survives_drift_and_a_running_turn_keeps_its_grant() {
+        let pool = 257_536;
+        let held = BTreeMap::from([(1, 50_000), (2, 30_000)]);
+        let drift = DemandFollowing.grant(&[demand(1, 44_000, false, pool), demand(2, 31_000, false, pool)], &held, pool);
+        assert_eq!(drift[&1], 50_000, "her need drifted down: she keeps what she holds");
+        assert_eq!(drift[&2], 31_000, "her need rose above what she holds: she grows to it");
+        let pool = 65_536;
+        let held = BTreeMap::from([(1, 40_000), (2, 20_000)]);
+        let tight = DemandFollowing.grant(
+            &[demand(1, 20_000, true, pool), demand(2, 10_000, false, pool), demand(3, 30_000, false, pool)],
+            &held,
+            pool,
+        );
+        assert_eq!(tight[&1], 40_000, "a turn in flight keeps what it holds");
+        assert_eq!(tight[&2], 10_000, "a mind not in a turn gives back her surplus to make room");
+        assert!(!tight.contains_key(&3) || tight[&3] == 30_000, "a newcomer gets her whole need or waits");
+    }
+
 }
