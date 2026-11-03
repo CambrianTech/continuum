@@ -187,6 +187,7 @@ impl ServiceModule for CognitionModule {
         continuum_base::probe!(
             class = "cognition.turn_ingress.depth",
             in_flight = crate::cognition::turn_ingress::in_flight(),
+            awaited = crate::cognition::turn_ingress::awaited(),
             "citizens inside a turn right now — the drain budget's competitor, sampled before the drain instead of only at it"
         );
         checkpoint_residents(CheckpointBoundary::Periodic).await
@@ -247,16 +248,21 @@ impl ServiceModule for CognitionModule {
 
         let first_to_close = crate::cognition::turn_ingress::close();
         let deadline = std::time::Instant::now() + BUDGET;
+        // Only the turns a stop owes a wait (`turn_ingress::awaited`): a confirmed turn is handed
+        // back to the next start and a self-tick holds nothing durable, so neither makes the
+        // saved state a mid-turn snapshot (card b5219023).
+        let mut poll = tokio::time::interval(POLL);
         while std::time::Instant::now() < deadline {
-            if crate::cognition::turn_ingress::in_flight() == 0 {
+            if crate::cognition::turn_ingress::awaited() == 0 {
                 return Ok(0);
             }
-            tokio::time::sleep(POLL).await;
+            poll.tick().await;
         }
-        let left = crate::cognition::turn_ingress::in_flight();
+        let left = crate::cognition::turn_ingress::awaited();
         continuum_base::probe!(
             class = "cognition.drain.incomplete",
-            in_flight = left,
+            awaited = left,
+            in_flight = crate::cognition::turn_ingress::in_flight(),
             first_to_close = first_to_close,
             "citizens were still inside turns when the drain budget expired — whatever is saved next is a snapshot taken mid-turn, and the receipt says so"
         );
