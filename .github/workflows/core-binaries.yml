@@ -75,7 +75,7 @@ jobs:
         id: select
         with:
           script: |
-            const { selectChecks } = require('./tools/scripts/ci-change-scope.cjs');
+            const { selectChecks, readWorkspace, publishedBinaries } = require('./tools/scripts/ci-change-scope.cjs');
             let publication = true;
             try {
               if (context.eventName === 'pull_request') {
@@ -83,7 +83,8 @@ jobs:
                   ...context.repo, pull_number: context.issue.number, per_page: 100
                 });
                 const evidence = { eventName: context.eventName,
-                  complete: files.length === context.payload.pull_request.changed_files && files.length < 3000 };
+                  complete: files.length === context.payload.pull_request.changed_files && files.length < 3000,
+                  workspace: readWorkspace('.'), binaries: publishedBinaries('.') };
                 const path = '.github/workflows/core-binaries.yml';
                 if (files.some(f => f.filename === path || f.previous_filename === path)) {
                   const YAML = require(`${process.env.RUNNER_TEMP}/publication-yaml/node_modules/yaml`);
