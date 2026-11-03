@@ -56,6 +56,7 @@ pub mod score;
 pub mod serving_pager;
 pub mod settlement;
 pub mod sim;
+pub mod window_sim;
 pub mod system_profile;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod profile_fixtures;
