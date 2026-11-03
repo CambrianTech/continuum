@@ -216,9 +216,9 @@ async fn a_response_without_usage_is_counted_by_what_it_carries() {
     for (resp, landed) in [(answer, 1), (think, 0), (cut, 2)] {
         let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", Arc::new(ScriptedAdapter::new(vec![resp])))
             .with_context_window(32_768);
-        let before = crate::cognition::health_ledger::read_stops();
+        let before = crate::cognition::health_ledger::hour(crate::cognition::health_ledger::Read::Peek).stops;
         faculty.contribute(&Workspace::new("is the parser right?")).await.expect("verdict");
-        let after = crate::cognition::health_ledger::read_stops();
+        let after = crate::cognition::health_ledger::hour(crate::cognition::health_ledger::Read::Peek).stops;
         if landed == 2 {
             assert!(after.cut_answer > before.cut_answer, "a cut answer with no usage is a cut answer: {before:?} -> {after:?}");
         } else if landed == 1 {
@@ -254,12 +254,12 @@ async fn a_turn_cancelled_at_its_read_receipt_still_counts_its_stop() {
     let source = crate::cognition::workspace::TurnSource { room: Uuid::new_v4(), event: Uuid::new_v4(), lamport: 1 };
     ws.turns = vec![crate::cognition::workspace::BurstTurn::attributed(false, "Joel", "fix the parser", None).from_event(source)];
 
-    let before = crate::cognition::health_ledger::read_stops();
+    let before = crate::cognition::health_ledger::hour(crate::cognition::health_ledger::Read::Peek).stops;
     tokio::select! {
         _ = faculty.contribute(&ws) => panic!("the receipt never returns, so the turn cannot finish"),
         _ = entered.notified() => {}
     }
-    let after = crate::cognition::health_ledger::read_stops();
+    let after = crate::cognition::health_ledger::hour(crate::cognition::health_ledger::Read::Peek).stops;
     assert!(after.cut_think > before.cut_think, "the stop was counted before the receipt: {before:?} -> {after:?}");
 }
 
@@ -277,9 +277,9 @@ async fn a_length_cut_inside_reasoning_is_counted_as_a_cut_think() {
         .with_tools(vec![read_tool()])
         .with_context_window(32_768);
 
-    let before = crate::cognition::health_ledger::read_stops();
+    let before = crate::cognition::health_ledger::hour(crate::cognition::health_ledger::Read::Peek).stops;
     faculty.contribute(&Workspace::new("fix the parser")).await.expect("verdict");
-    let after = crate::cognition::health_ledger::read_stops();
+    let after = crate::cognition::health_ledger::hour(crate::cognition::health_ledger::Read::Peek).stops;
     // The ledger is process-wide and other tests run beside this one, so the claim is a
     // rise, not an absolute count.
     assert!(after.cut_think > before.cut_think, "the cut think is on the hour's ledger: {before:?} -> {after:?}");

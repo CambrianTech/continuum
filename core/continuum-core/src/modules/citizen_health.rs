@@ -41,10 +41,3 @@ pub(super) fn oldest_dormant_turn_age_ms() -> Option<u64> {
     crate::modules::grid_allocator::current().and_then(|p| p.oldest_dormant_turn_age_ms())
 }
 
-/// Why a seat rests — each rule that pages out, with its own receipt.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum RestCause {
-    Mindless,
-    /// The slow clip: a dormant mind is waiting and this seat's hour held nothing.
-    Rotation,
-}

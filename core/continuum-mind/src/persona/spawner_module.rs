@@ -138,8 +138,8 @@ pub fn plan_for_roles(
         );
     }
     roles
-        .iter()
-        .take(1)
+        .first()
+        .into_iter()
         .map(|role| DesiredRole {
             role: role.clone(),
             // Fallback model when no ServingPlan is published yet: the FLOOR, which
@@ -442,7 +442,7 @@ impl PersonaSpawnerModule {
         // published (card 10bba591); the warm-slot bound is the prior before it.
         let seats = match self.grid_roster {
             Some(r) => unbounded.min(r.seats() as usize),
-            None => bounded_by_warm_slots(unbounded, lanes),
+            None => bounded_by_warm_slots(unbounded, lanes, continuum_base::population::persona_floor()),
         };
         // One row when the bound CHANGES what is drawn, not one per reconcile pass.
         static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
@@ -763,15 +763,15 @@ pub fn seats_under(population: usize, hold: Option<&crate::persona::roster_hold:
 /// minds loaded, their residency left the 27B a 20 GB Eco budget, the plan launched ONE
 /// lane at 2,048 tokens, and the hourly rest was fifty minutes away. The bound belongs at
 /// the draw: `seats` never exceeds `lanes × MINDS_PER_LANE_STARVED_ABOVE` (never below the
-/// resident floor), so the memory the roster would have taken is the plan's for lanes. No
+/// declared population `floor`), so the memory the roster would have taken is the plan's for lanes. No
 /// lane known (`None`, a node that has never served) bounds nothing — an absence is not a
 /// number. The mirror is free: the reconciler re-reads `seats()` every pass, so lanes that
 /// grow draw more; lanes that shrink are the hourly rest's (`citizen_health`). Pure.
-pub fn bounded_by_warm_slots(seats: usize, lanes: Option<u32>) -> usize {
+pub fn bounded_by_warm_slots(seats: usize, lanes: Option<u32>, floor: usize) -> usize {
     match lanes {
         Some(l) if l > 0 => {
             let edge = (l as usize).saturating_mul(crate::cognition::health_ledger::MINDS_PER_LANE_STARVED_ABOVE as usize);
-            seats.min(edge.max(crate::cognition::health_ledger::MINDLESS_RESIDENT_FLOOR as usize))
+            seats.min(edge.max(floor))
         }
         _ => seats,
     }
