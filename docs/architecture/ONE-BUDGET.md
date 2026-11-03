@@ -453,6 +453,25 @@ allocator's GPU tiers. The fork keeps checkpoints only where the core names them
 3. Pages and genes on the same levels; their victim rules deleted.
 4. The zero gate: `allocators_outside_the_flexbox` (a sizer outside the solver) at 0, failing on any new one.
 
+**Her own actions' results are the causal floor** (Joel: "this should help prevent the causal loops too ... anything
+where the inference needs to see a state of results from its own actions"). Her newest act, its result, a reply she is
+waiting on, and the state her action changed are `Floor::Required` claims at every tier: reserved before anything is
+traded, never shrunk, and `Infeasible` (named, refused) when they cannot all fit, never cut. An oversized newest result
+claims its summary with its handle as the floor, the rest as an increment (MIND-CONTEXT invariant 2). Everything older
+competes by value and collapses to a reopenable level. A loop needs her input to stop reflecting what she did; with the
+causal edge in the claim's type, no source's own rule can drop it (Benchy's 125 identical acts, 10-20).
+
+**A small window is the same clearing at a lower capacity** (Joel: "even intelmacs severely limited context windows
+should be doable within an intelligent budgeting flexbox"). The IntelMac's 16,384 tokens per mind holds the causal floor
+whole, the stable head once, then the highest-valued increments: her card's files at summary, the room's last turns,
+recall at pointers she expands on demand. The M5 at 128,768 clears the same claims to fuller levels. No per-node rule
+exists; values are measured per node, so a small node learns which levels its residents reopen.
+
+**Acceptance cases** (proving ground, then each node's live read): (a) across every captured act of the four residents,
+her newest act and result are present whole or at their summary with a handle, at the M5's and the IntelMac's
+capacities alike; (b) no two consecutive acts with identical calls and identical inputs (the loop signature) on the
+replay; (c) at 16,384 tokens a resident completes a card's read-edit-test cycle on replay with no `Infeasible` clearing.
+
 **Validators:** replay the four residents' captures (`fixtures/prompt-captures`) against the fork's measured
 holdings: every clearing fits the reported capacity, resumes land at the predicted divergence, and fewer tokens are
 re-read than today's 1,244-resume baseline (80% within 8k, 10% past 25k).
