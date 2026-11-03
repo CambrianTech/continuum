@@ -18,8 +18,6 @@ export type { OutcomeWindow } from './OutcomeWindow';
 export type { PageKind } from './PageKind';
 export type { PageOffset } from './PageOffset';
 export type { PageRef } from './PageRef';
-export type { PeerId } from './PeerId';
-export type { PersonaId } from './PersonaId';
 export type { RankedPool } from './RankedPool';
 export type { RecallBudget } from './RecallBudget';
 export type { RecallContext } from './RecallContext';
