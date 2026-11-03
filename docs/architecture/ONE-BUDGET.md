@@ -539,7 +539,11 @@ day:
 The cost is not only disk: airc #1618 walked every row of those resident stores at open (93 s per GB, measured
 on the IntelMac), which hung persona bootstrap for a day on every build that carried it.
 
-**The rule.** Nothing accumulates without a drain, and a drain is never a patch: it is the class.
+**The rule.** Nothing accumulates without a drain, and a drain is never a patch: it is the class. There is ONE
+drain, low in the stack and on by default (Joel: "low level default drain behavior not a million drains"): the
+class base (and, for a store, the store base) runs it; a class or a row kind only DECLARES its retention as data
+where it is defined (dead on arrival, newest per key, by age under the grant, or durable). A new class or kind
+gets its drain by being defined, and one without a declaration does not compile. No per-class drain code exists.
 
 1. **One class per thing written, and the only way to write it.** A writer asks the class owner for a handle;
    the handle is constructed from the class's grant (contract §5: no grant, no handle), so an unbudgeted
