@@ -153,6 +153,33 @@ pub(crate) fn confirmed_in_flight() -> u64 {
     CONFIRMED.lock().len() as u64
 }
 
+/// Self-ticks in flight: a mind's own initiative (`Wake::Tick` / `Wake::Mind`), which consumes
+/// no external input. What it writes is in-memory and recomputed from the world each beat, and
+/// its notices are marked read only after its generation, so a stop that cuts one loses nothing
+/// a restart does not rebuild (Fable on card 161d2590). It holds the turn gate but no turn mark
+/// and no obligation, so the settle counts it here and never waits for it (stop-drain S4b).
+static SELF_TICKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A self-tick in flight until dropped.
+#[must_use = "the guard IS the self-tick's mark; dropping it ends the mark"]
+pub struct SelfTickInFlight(());
+
+pub fn begin_self_tick() -> SelfTickInFlight {
+    SELF_TICKS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    SelfTickInFlight(())
+}
+
+impl Drop for SelfTickInFlight {
+    fn drop(&mut self) {
+        SELF_TICKS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// How many self-ticks are in flight right now.
+pub(crate) fn self_ticks_in_flight() -> u64 {
+    SELF_TICKS.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// Her measured turn shape; `None` until a turn has finished this boot.
 pub fn turn_shape_of(persona: uuid::Uuid) -> Option<TurnShape> {
     TURN_SHAPES.lock().get(&persona).copied().filter(|s| s.turns > 0)

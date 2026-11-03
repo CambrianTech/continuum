@@ -120,14 +120,19 @@ pub(crate) fn settle_bound_ms(turns: &[(u64, Option<u64>)], uncounted: bool, cap
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TurnSettle {
     pub in_flight_at_close: u64,
+    /// Admitted turns on the turn ledger (a message turn past `begin_turn`).
+    pub on_ledger: u64,
     /// Turns the stop leaves running with a confirmed obligation: not waited for, and handed
     /// back by the next start (stop-drain S3/S4).
     pub handed_back: u64,
-    /// Turns the stop tore with no confirmed obligation: these are the loss.
+    /// Self-ticks the stop leaves running: they consume no external input, so a cut loses
+    /// nothing a restart does not rebuild, and they are never waited for (S4b).
+    pub self_ticks: u64,
+    /// Message turns the stop tore with no confirmed obligation: these are the loss.
     pub cut: u64,
     pub bound_ms: u64,
-    /// Where the bound came from: `nothing_in_flight`, `all_confirmed` (every turn in flight
-    /// is handed back, so none is waited for), `measured` (the unconfirmed turns' own
+    /// Where the bound came from: `nothing_in_flight`, `none_to_wait_for` (every turn in
+    /// flight is confirmed or a self-tick, so none is waited for), `measured` (the unconfirmed turns' own
     /// remaining time), or `cap` (an unknown turn, or measured past the cap).
     pub bound_source: &'static str,
     pub waited_ms: u64,
@@ -151,13 +156,15 @@ impl continuum_kernel::runtime::extensions::SettleBeforeStop for TurnsSettle {
             continuum_base::probe!(
                 class = "cognition.turns.settled",
                 in_flight_at_close = s.in_flight_at_close,
+                on_ledger = s.on_ledger,
                 handed_back = s.handed_back,
+                self_ticks = s.self_ticks,
                 cut = s.cut,
                 bound_ms = s.bound_ms,
                 bound_source = s.bound_source,
                 waited_ms = s.waited_ms,
                 cap_ms = cap.as_millis() as u64,
-                "the stop let unconfirmed turns finish before saving; `handed_back` are confirmed turns the next start resumes, `cut` the ones it still tore"
+                "the stop let unconfirmed message turns finish before saving; `handed_back` are confirmed turns the next start resumes, `self_ticks` initiative a cut loses nothing of, `cut` the ones it still tore"
             );
         })
     }
@@ -183,11 +190,15 @@ pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
     let turns = crate::turn_ledger::in_flight_turns(EpochMs::now().millis());
     let unconfirmed: Vec<(u64, Option<u64>)> =
         turns.iter().filter(|t| !t.confirmed).map(|t| (t.elapsed_ms, t.typical_ms)).collect();
-    let bound_ms = settle_bound_ms(&unconfirmed, in_flight_at_close > turns.len() as u64, cap_ms);
+    let not_waited = || crate::turn_ledger::confirmed_in_flight() + crate::turn_ledger::self_ticks_in_flight();
+    // An admitted turn neither on the ledger nor a self-tick is a message turn still before
+    // `begin_turn`: unknown, so it waits the cap, as before.
+    let uncounted = in_flight_at_close > turns.len() as u64 + crate::turn_ledger::self_ticks_in_flight();
+    let bound_ms = settle_bound_ms(&unconfirmed, uncounted, cap_ms);
     let bound_source = if in_flight_at_close == 0 {
         "nothing_in_flight"
-    } else if in_flight_at_close <= crate::turn_ledger::confirmed_in_flight() {
-        "all_confirmed"
+    } else if in_flight_at_close <= not_waited() {
+        "none_to_wait_for"
     } else if bound_ms >= cap_ms {
         "cap"
     } else {
@@ -195,24 +206,28 @@ pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
     };
     let deadline = started + std::time::Duration::from_millis(bound_ms);
     let mut poll = tokio::time::interval(POLL);
-    while waits_for(in_flight(), crate::turn_ledger::confirmed_in_flight()) && std::time::Instant::now() < deadline {
+    while waits_for(in_flight(), not_waited()) && std::time::Instant::now() < deadline {
         poll.tick().await;
     }
     let handed_back = crate::turn_ledger::confirmed_in_flight();
+    let self_ticks = crate::turn_ledger::self_ticks_in_flight();
     TurnSettle {
         in_flight_at_close,
+        on_ledger: turns.len() as u64,
         handed_back,
-        cut: in_flight().saturating_sub(handed_back),
+        self_ticks,
+        cut: in_flight().saturating_sub(handed_back + self_ticks),
         bound_ms,
         bound_source,
         waited_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
     }
 }
 
-/// PURE: does the settle still wait? Only while some admitted turn holds no confirmed
-/// obligation: `in_flight` counts every admitted turn, `confirmed` the ones a cut hands back.
-pub(crate) fn waits_for(in_flight: u64, confirmed: u64) -> bool {
-    in_flight > confirmed
+/// PURE: does the settle still wait? Only while some admitted turn is neither confirmed nor a
+/// self-tick: `in_flight` counts every admitted turn, `not_waited` the confirmed turns a cut
+/// hands back plus the self-ticks a cut loses nothing of.
+pub(crate) fn waits_for(in_flight: u64, not_waited: u64) -> bool {
+    in_flight > not_waited
 }
 
 #[cfg(test)]
@@ -297,5 +312,21 @@ mod tests {
         assert!(mine(true), "confirmed: left out of the bound");
         drop(turn);
         assert_eq!(crate::turn_ledger::confirmed_in_flight(), before, "the confirmation ends with the turn");
+    }
+
+    // what this catches (stop-drain S4b, card 161d2590; the IntelMac 2026-11-03 07:31Z stop:
+    // in_flight 4, handed_back 0, cut 4, the 300 s cap): a self-tick blocked on a lane held the
+    // turn gate with no turn mark and no obligation, so the settle could not tell it from an
+    // unknown message turn and waited the cap. A self-tick is counted apart and never waited for;
+    // its mark ends with it.
+    #[test]
+    fn a_self_tick_is_never_waited_for() {
+        assert!(!waits_for(2, 2), "one confirmed turn and one self-tick: nothing to wait for");
+        assert!(waits_for(3, 2), "plus one message turn not yet durable: wait for it");
+        let before = crate::turn_ledger::self_ticks_in_flight();
+        let tick = crate::turn_ledger::begin_self_tick();
+        assert_eq!(crate::turn_ledger::self_ticks_in_flight(), before + 1);
+        drop(tick);
+        assert_eq!(crate::turn_ledger::self_ticks_in_flight(), before, "the mark ends with the self-tick");
     }
 }

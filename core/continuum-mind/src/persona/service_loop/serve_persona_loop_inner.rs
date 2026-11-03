@@ -151,6 +151,8 @@ pub(super) async fn serve_persona_loop_inner(
                 if deferred_input.take_ready_self(wake_room) {
                     last_burst_fp = 0;
                 }
+                // Never waited for by a stop: a self-tick consumes no external input (S4b).
+                let _self_tick = crate::cognition::turn_ledger::begin_self_tick();
                 serve_self_tick(
                     ctx,
                     conversation,
