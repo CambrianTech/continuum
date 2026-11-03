@@ -26,7 +26,8 @@ impl ServingDaemonModule {
     /// from the physical budget less every board holder gave 5 x 36,505 (2026-11-03 04:23Z,
     /// backed out at once), and from the cold plan's window x lanes 1 x 80k. The shared pool's
     /// saving (one compute graph, not one per sequence) comes as a measured gain, not here. A
-    /// model with no measured footprint, or no plan yet, takes the plan's window.
+    /// model with no measured footprint, or no plan yet, keeps the plan's total (window x lanes)
+    /// shared over the sequences: an unmeasured model is where over-allocating is least safe.
     fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> (u32, u32) {
         let leased_in = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed);
         let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes);
@@ -34,7 +35,8 @@ impl ServingDaemonModule {
         let fitted = footprint_for(model).map(|fp| fp.window_within(budget, sequences));
         let per_sequence = match fitted.filter(|tokens| *tokens > 0) {
             Some(tokens) => tokens,
-            None => served_ctx,
+            None => u32::try_from(u64::from(served_ctx) * u64::from(lanes) / u64::from(sequences.max(1)))
+                .unwrap_or(served_ctx), // unwrap_or: lanes <= sequences, so the share is at most served_ctx
         };
         (per_sequence, sequences)
     }
