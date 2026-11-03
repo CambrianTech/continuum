@@ -97,9 +97,6 @@ impl PersonaAircRuntime {
             // live `bootstrap` path always starts the pump; test/demo callers
             // that want roster presence start it themselves after construction.
             _heartbeat: None,
-            // from_attached is sync; the periodic card re-publisher (async spawn)
-            // is a bootstrap-path concern. Test/demo callers don't need it.
-            identity_republish: None,
             owned_tasks: std::sync::Mutex::new(Vec::new()),
             source,
         }
@@ -579,10 +576,6 @@ impl Drop for PersonaAircRuntime {
             // explicit-shutdown callers use. Tokio reaps the
             // aborted task.
             pump.abort();
-        }
-        if let Some(handle) = self.identity_republish.take() {
-            // Stop re-emitting the identity card once the persona leaves the grid.
-            handle.abort();
         }
         if let Ok(mut owned) = self.owned_tasks.lock() {
             for handle in owned.drain(..) {
