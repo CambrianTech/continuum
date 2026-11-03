@@ -568,6 +568,11 @@ on the IntelMac), which hung persona bootstrap for a day on every build that car
    same background drain for its own files (`~/.airc` and the resident stores under `citizens/*/airc`), under
    a byte budget it reads from its own config, and reports its sizes. Continuum's authority tracks those bytes
    and grants airc its disk claim; it never deletes airc's files itself.
+   airc is millisecond latency across the board (Joel, 2026-11-03), and these are gates with validators and
+   live receipts, the same with a drain running as without: a store open in milliseconds whatever its size
+   (no data work); the newest page of a room in milliseconds; a local send to its delivery acknowledgement in
+   milliseconds; a persona's airc bootstrap (identity, room join, seed) in milliseconds per persona. On
+   2026-11-03 an open took 91 s for 976 MB and persona bootstrap minutes, which is what these exist to forbid.
 
 6. **Clean and fast, measured** (Joel: "It's gotta all drain cleanly and be performant"):
    - a drain deletes by an indexed key (the store's age or sequence index), a range at a time: never a scan, never
