@@ -24,6 +24,7 @@ impl ServiceModule for ServingDaemonModule {
         // free functions + adapters read "what's live" as a pointer instead of
         // each probing /v1/models. Set-once (singleton daemon).
         let _ = crate::inference::llama_server::install_serving_state(self.subscribe_serving());
+        let _ = crate::capacity::window_grant::install_grants(self.subscribe_grants());
         // THE DEVICE-BUDGET AUTHORITY, wired here rather than promised in a doc comment.
         // Without it `EphemeralServingLane::spawn` admits every engine with only a
         // free-port check — which is how three sidecars once shared one GPU. Set-once

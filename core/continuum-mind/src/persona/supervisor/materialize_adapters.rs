@@ -158,23 +158,24 @@ pub async fn materialize_adapters(
             }
         } else if profile.tier_category != crate::persona::hw_tier_descriptor::HwTierCategory::Cloud
         {
-            let snap = crate::inference::llama_server::current_serving();
-            // A ready snapshot always carries a real window (the daemon refuses to
-            // publish ready with 0). Guard on both so a not-yet-ready/empty
-            // snapshot never clobbers the provisional window with 0; the re-home
-            // reconciler corrects the binding once serving is ready.
-            if snap.ready && snap.served_context_window > 0 {
-                if snap.served_context_window != profile.context_length {
+            // Her window is her grant on the engine's pool (`serving_daemon/grants.rs`), never the
+            // per-sequence share the snapshot publishes (the pool divided by its sequences: 51,507
+            // on the M5; Cormac on #5733). No grant yet (the engine not serving, or no one on the
+            // seat measured) keeps her provisional window; the re-home reconciler binds her to her
+            // grant once she has one.
+            if let Some(grant) = crate::capacity::window_grant::current_grant(profile.persona_id) {
+                if grant != profile.context_length {
                     continuum_base::probe!(
                         class = "persona.upstart.window",
                         persona = %profile.persona_name,
                         persona_id = %profile.persona_id,
                         planned = profile.context_length,
-                        served = snap.served_context_window,
-                        "pinning persona context window to the gateway's real /props slot (was the drifting plan value)",
+                        served = grant,
+                        source = "grant",
+                        "binding persona context window to her grant on the engine's pool",
                     );
                 }
-                profile.context_length = snap.served_context_window;
+                profile.context_length = grant;
             }
         }
         // Register the persona's adapter in the global provider

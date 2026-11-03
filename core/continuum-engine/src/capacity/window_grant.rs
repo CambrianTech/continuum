@@ -38,6 +38,20 @@ impl PoolGrants {
     }
 }
 
+static GRANTS: std::sync::OnceLock<tokio::sync::watch::Receiver<Option<PoolGrants>>> = std::sync::OnceLock::new();
+
+/// Install the serving daemon's grants as the process-wide readable seam, beside
+/// `install_serving_state`. Set once; a second call is ignored. `true` iff this call installed it.
+pub fn install_grants(rx: tokio::sync::watch::Receiver<Option<PoolGrants>>) -> bool {
+    GRANTS.set(rx).is_ok()
+}
+
+/// Her current grant on this node's engine: `None` before the daemon installs its grants, before
+/// the engine serves, or while she has none yet. A `watch` borrow, no I/O.
+pub fn current_grant(persona: uuid::Uuid) -> Option<u32> {
+    GRANTS.get()?.borrow().as_ref()?.grant_for(persona)
+}
+
 /// One mind's current demand on the pool: what her next turn requires, and whether a turn of hers
 /// is in flight now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
