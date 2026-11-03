@@ -185,3 +185,108 @@ gives memory back to the user's app.
   - The IPC cost is one request per act plus 30-120 token frames a second over a unix socket: microseconds against a 60 s act.
   - MODULE-ARCHITECTURE §9.2 rule 2 asks for one protocol per seam, local or remote.
   - The in-process `ServingPort` implementation exists only for the validator and tests.
+
+## 7. Memory is conserved across minds, and the engine says what it holds (2026-11-03)
+
+Joel, 2026-11-03: "One slot grows in context and the other shrinks and same for genome sizes. The
+goal here is dynamic allocation"; "think harder about conservation around multiple minds or sharing
+what you need across api boundaries so that intelligence can manage"; "you just treat llama.cpp
+like any other daemon and interface with it. It's fully under your control." The engine is our
+daemon. Nothing about a mind's memory is fixed at launch and guessed: the engine reports what it
+holds, the core tells it where her prompt's boundaries are, and the core's ledger decides.
+
+### 7.1 What the engine holds (fork `resident_state`, read live on the M5, 2026-11-03 12:51Z)
+
+Qwen3.6-35B-A3B, `-c 257214 --parallel 2 --ctx-checkpoints 32`, two 13.9k-token prompts in:
+
+| Holder | Bytes | Notes |
+|---|---|---|
+| Target weights | 20.69 GB | mmapped |
+| Target KV + recurrent state | 2.14 GB | 8,317 B/token over 257,536 tokens, reported as one figure. Two holders: attention cells per token (shareable by `seq_cp`) and recurrent state per sequence (never shared); #91 reports them separately |
+| Target compute graph | 1.87 GB | one graph for the shared pool |
+| Draft (MTP) context | 3.15 GB | 1.34 weights, 0.53 KV, 1.29 compute: unreported before |
+| Projector | 0.90 GB | unreported before |
+| One checkpoint | 94.6 MB | x 32 per sequence = 3.03 GB per mind at the ceiling |
+
+`memory_breakdown` alone covered the first three. The rest was what the plan had been inferring from
+the process footprint as a per-lane fixed term (2.8 to 4.5 GB a minute apart).
+
+### 7.2 Why a mind's prompt re-reads: measured, not assumed
+
+Engine log, 1,244 checkpoint resumes: 80% resumed within 8k tokens of the end (median 2,431 tokens
+re-read, her changing tail). The other 20% fell back to her head-end checkpoint (~11k tokens).
+The prompt captures of the four residents (`fixtures/prompt-captures`, 611 consecutive pairs) say why:
+
+| Where her next prompt first differs | Pairs |
+|---|---|
+| Her changing tail (the prompt only appended before it) | 435 |
+| Identical | 62 |
+| She moved to another room (activity); 52 of 59 keep her first 3 messages | 59 |
+| A turnover: her view restarted, and an early block differs | 29 |
+| Live state in an early block with no turnover (`room-kanban`'s "557 claimable" counter, `room-wall`, `workspace-map`, `recall`) | 11 |
+| Tool surface changed | 9 |
+| A turnover with only later messages different | 6 |
+
+Of the 40 turnovers, 26 came on the same core at the same window: her view filled its grant, the
+codec's one designed re-read. 12 came across a core restart (the day's deploys and rollbacks): her
+view is not carried over a restart, so a deploy starts every mind over. 2 came with a changed window
+on the same core (one grown, one shrunk).
+
+Minds share only 6,177 chars of system prompt with each other (it diverges inside it). The
+recurring 11,114-token checkpoint is each mind's own head end, not a shared one.
+
+So the blind every-4k checkpoints were covering defects upstream of the engine: a view that does not
+survive a restart, live values in blocks meant to be stable, and an unstable tool surface (goal 10).
+The fills themselves are by design, and one checkpoint at her stable end serves every act between them.
+
+### 7.3 The contract across the seam
+
+- **Core to engine, per request:** her prompt's boundaries as token positions: the head end, the
+  stable end (where her changing tail starts), and each activity's span. The request already
+  carries `view_messages` spans for this. The engine keeps a checkpoint exactly at the stable end
+  (one per mind per activity), never by a count or a step.
+- **Engine to core, live (`/slots`, read on the server thread):** per sequence, the tokens it holds,
+  its checkpoints and their bytes, and what is shared with another sequence; on `/props`, every
+  fixed holder (7.1). A core never infers a holding from the process or the device.
+- **The core's ledger, continuous:** weights and the graph are fixed claims; each mind's context is
+  her grant, growing with her and accommodated proportionally (Joel: "it might still be given less
+  than that, just try to accommodate"; her budget compresses to the grant); an in-flight turn's grant
+  never shrinks. Checkpoints and pages are held at their live bytes. Under pressure a cold mind's
+  unique state pages to RAM, then disk, by her activity temperature, before any grant shrinks.
+- **Conservation:** what is identical across sequences is held once. Today that is the first 6k
+  chars; ordering the shared constitution and the stable tool surface ahead of her identity makes
+  the shared head the system prompt plus the tools, one KV run and one checkpoint for every mind
+  (`seq_cp` of the attention cells plus the head checkpoint, §1). Genes follow the same rule: one
+  copy per adapter, attached to every mind whose focus selects it.
+
+### 7.4 One solver for prompt and memory (ONE-BUDGET.md)
+
+Joel: "it's always collapsing flexbox style ... everywhere same base classes and interfaces." The base exists:
+`cambrian-flex` (airc `crates/flex`, merged as airc#1630), ONE-BUDGET slice 1. Claims are cleared by measured value
+per unit against a scarcity price; an item's levels are indivisible increments with their own value; a move between
+levels carries its measured `switch_cost`; custody, provenance and generation fencing are in the type. A mind's prompt
+and the engine's memory are two tiers of the same solver, and each keeps only its levels and how to move between them.
+The engine-memory slice, with caching, collapsing and expansion as one decision valued by prediction, is ONE-BUDGET.md
+"Slice 3b". The hand-rolled memory allocators (`window_within`, `lanes_that_fit`, `pool_within`,
+`window_allocator::allocate`, the kernel `memory_manager` budgets, `gene_residency::victims`, the persona allocator's
+tiers and the rest) converge on it and are deleted; the gate goes to zero.
+
+### 7.5 Order of work
+
+0. The base: the prompt's callers move to `cambrian-flex` and `flex_allocate` is deleted (ONE-BUDGET slice 1).
+1. Her view survives a restart: the epoch (its start, its items' levels, its appends) is durable
+   state beside her KV page, so a deploy pages her back in where she was instead of starting her
+   over. Validator: replay the captures across the day's restarts; turnovers at a restart go to 0.
+2. Mind side: no live value in a stable block. The kanban counter, the wall, the workspace map and
+   recall arrive as appended item versions (the keyed-item contract above), never as an in-place
+   rewrite; a ratchet refuses one. Validator: rerun 7.2 on fresh captures, in-place early changes
+   to 0. Her activities stay one view: a move between rooms appends.
+3. Fork: the boundary checkpoint verb (keep one at the stable end the request names) replaces
+   `--ctx-checkpoints N` / `--checkpoint-min-step`; per-sequence holdings on `/slots` (`resident_state`
+   and slot `checkpoints`, fork #91, are the first part).
+4. Core: serving's memory is claims and items on the base, fed by the engine's live holdings
+   (`ResidentReport`); every seated mind is a sequence; the hand-rolled allocators above and the
+   process-footprint inference (`lane_footprint`, `fixed_per_lane_bytes`) are deleted. `Motion` over
+   token runs, fed by the divergence point the engine reports per request, places checkpoints and
+   finds what minds share.
+5. Shared head (S7): constitution and tools ahead of identity, one copy for all minds.
