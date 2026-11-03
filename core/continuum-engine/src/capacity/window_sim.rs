@@ -8,7 +8,7 @@
 //! - the grants never exceed the pool;
 //! - when every demand fits the pool, every mind is granted her demand;
 //! - a grant held by an in-flight turn never shrinks under it;
-//! - a SQUEEZE (a turn granted less than she demanded while the pool had room) is counted: it
+//! - a SQUEEZE (a turn granted less than she demanded while another mind is granted past her own demand) is counted: it
 //!   is what made the residents re-read what fell out of view (2026-11-02: 54-92% re-reads).
 //!
 //! The outliers prove the interface, the same shape as [`super::sim`]: the equal split the
@@ -82,6 +82,11 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy) -> WindowRu
             out.over_pool += 1;
         }
         let demanded: u64 = current.iter().map(|d| u64::from(d.required_tokens)).sum();
+        // Granted past demand: the room an idle mind holds that a reading mind could have used.
+        let slack: u64 = current
+            .iter()
+            .map(|d| u64::from(grants.get(&d.mind).copied().unwrap_or(0)).saturating_sub(u64::from(d.required_tokens))) // unwrap_or: a mind granted nothing holds no slack
+            .sum();
         for demand in &current {
             let granted = grants.get(&demand.mind).copied().unwrap_or(0); // unwrap_or: a mind the policy granted nothing holds nothing
             if demand.in_flight && held.get(&demand.mind).is_some_and(|&before| granted < before) {
@@ -91,7 +96,7 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy) -> WindowRu
                 if demanded <= u64::from(scenario.pool_tokens) {
                     out.unmet_when_fits += 1;
                 }
-                if total < u64::from(scenario.pool_tokens) {
+                if slack > 0 {
                     out.squeezes += 1;
                 }
             }
