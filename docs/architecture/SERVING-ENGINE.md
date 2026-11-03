@@ -259,36 +259,21 @@ The fills themselves are by design, and one checkpoint at her stable end serves 
   (`seq_cp` of the attention cells plus the head checkpoint, §1). Genes follow the same rule: one
   copy per adapter, attached to every mind whose focus selects it.
 
-### 7.4 One base: the collapsing flexbox (Joel: "it's always collapsing flexbox style ... everywhere same base classes and interfaces")
+### 7.4 One solver for prompt and memory (ONE-BUDGET.md)
 
-A mind's prompt is already allocated by one base. `flex_allocate` (continuum-grounding,
-rag_budget/flex_allocate.rs) grants each claim between its floor and its want by priority, and the
-view's `allot` (continuum-context, view/allot.rs) gives each of a claim's items the most detail that
-fits, newest first, collapsing the oldest to its summary, its pointer or a fold, each reopenable.
-`Motion` (continuum-context, motion.rs) measures what stays the same between starts and orders the
-view by it, so the consistent part leads and is kept.
-
-Memory is the same shape, so it uses the same base, never its own:
-
-| Prompt | Memory |
-|---|---|
-| a claim: a source, with floor, want, priority | a mind (her context, her checkpoints, her genes), a cache tier; floor = her in-flight turn, want = her demand, priority = her activity temperature |
-| an item: one keyed result, file, card | one keyed run of her context, one checkpoint, one gene |
-| Full / Summary / Pointer / Folded | on the GPU / paged to RAM / paged to disk (a page-in reopens it) / dropped, rebuilt from her prompt |
-| newest whole, oldest collapses first | hottest resident, coldest pages out first |
-| `Motion`: what stays the same between starts leads | what stays the same between her prompts, and between minds, is held once and checkpointed |
-
-The memory side today has a dozen hand-rolled allocators with their own rules, each a special case
-of this: `window_within`, `lanes_that_fit`, `ModelFootprint::pool_within`, `window_allocator::allocate`,
-`plan_expert_residency_budgeted`, continuum-kernel's `memory_manager` budgets and `eviction_weight`,
-`paging/pool.rs` eviction, the broker's `lane_budgets`, `training_plan::fit`. They converge on the base
-and are deleted. The base moves down to one floor crate, generic over the unit (tokens, bytes) and the
-item, with the prompt side its first caller unchanged (the pattern-bubbles-up rule).
+Joel: "it's always collapsing flexbox style ... everywhere same base classes and interfaces." The base exists:
+`cambrian-flex` (airc `crates/flex`, merged as airc#1630), ONE-BUDGET slice 1. Claims are cleared by measured value
+per unit against a scarcity price; an item's levels are indivisible increments with their own value; a move between
+levels carries its measured `switch_cost`; custody, provenance and generation fencing are in the type. A mind's prompt
+and the engine's memory are two tiers of the same solver, and each keeps only its levels and how to move between them.
+The engine-memory slice, with caching, collapsing and expansion as one decision valued by prediction, is ONE-BUDGET.md
+"Slice 3b". The hand-rolled memory allocators (`window_within`, `lanes_that_fit`, `pool_within`,
+`window_allocator::allocate`, the kernel `memory_manager` budgets, `gene_residency::victims`, the persona allocator's
+tiers and the rest) converge on it and are deleted; the gate goes to zero.
 
 ### 7.5 Order of work
 
-0. The base: `flex_allocate`, the claim and level types and `allot`'s collapse move down to one floor
-   crate, generic over unit and item; every prompt caller migrated, test counts unchanged.
+0. The base: the prompt's callers move to `cambrian-flex` and `flex_allocate` is deleted (ONE-BUDGET slice 1).
 1. Her view survives a restart: the epoch (its start, its items' levels, its appends) is durable
    state beside her KV page, so a deploy pages her back in where she was instead of starting her
    over. Validator: replay the captures across the day's restarts; turnovers at a restart go to 0.

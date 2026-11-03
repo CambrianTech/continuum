@@ -395,6 +395,68 @@ with fast decode), replaying captured traces under each: a read stays whole acro
 has room; no turnover while unclaimed window remains; prefix reuse per act reported. A new machine is
 covered by its own measured profile, never by a list of boxes. Then one deploy per node and a 15-minute read: reads per edit, writes per hour, act time.
 
+### Slice 3b in detail: a mind's memory in the engine, granted by level and valued by prediction (2026-11-03)
+
+Joel, 2026-11-03: "One slot grows in context and the other shrinks and same for genome sizes. The goal here is
+dynamic allocation"; "Every part of prompts and these kinds of caches need to comply or the whole shebang doesn't
+work, plus it's less code and easier"; "it lets you do really advanced prediction when inputs and outputs to LLMs
+(or world models) are entirely under the same systems"; "You can then prioritize both caching and collapsing,
+expansion, in the flexbox or any of your memory constraints."
+
+**What the engine holds, by its own report** (fork `resident_state`, CambrianTech/llama.cpp#91, read live on the M5
+2026-11-03 12:51Z, Qwen3.6-35B-A3B at 2 x 128,768): target weights 20.69 GB, target KV and recurrent state 2.14 GB
+(8,317 B/token), one compute graph 1.87 GB, the draft model 3.15 GB, the projector 0.90 GB, one checkpoint 94.6 MB
+(x 32 per slot at today's `--ctx-checkpoints` = 3.0 GB per mind). Before #91 the plan saw only the first three and
+inferred the rest from the process footprint as a per-lane term that read 2.8 to 4.5 GB a minute apart.
+
+**The claims, on the node's device tier** (one pool on unified memory, normalized per part 2's pool rule):
+
+| Holder | Claim on `cambrian-flex` |
+|---|---|
+| Weights, graph, draft, projector of the serving model | `Floor::Required`, the engine's reported bytes |
+| A mind's context, resident | `Floor::Required` = what her in-flight turn holds (a grant never shrinks under a running turn); then one indivisible increment per block of her context, valued as below |
+| Her checkpoint | one indivisible increment of its reported bytes, at her predicted divergence point |
+| Prompt cache | divisible increments, valued by measured restore hits |
+| Her genes | one indivisible increment per adapter her focus selects; an adapter shared by several minds is ONE claim |
+
+**Caching, collapsing, expanding are one decision.** Each item has levels: on the GPU, paged to RAM, paged to disk,
+rebuilt from her prompt. A level is an increment on that tier's clearing (the GPU tier, the RAM tier, the disk tier),
+with its bytes as width, its value as below and its move (a page-in, a page-out, a re-prefill) as `switch_cost`.
+Caching is a level held; collapsing is a grant lowered (a `ShrinkRequested` the holder reports when done);
+expanding is a grant raised, which a prediction may raise early (prefetch). No owner has its own victim rule.
+
+**Values come from prediction, because her inputs and the engine's memory are one system.** The core writes her
+prompt and holds the memory it lands in, so the next prompt is mostly known before it is sent:
+- *who acts next*: her activity temperature, her tool calls in flight, an unread turn in her room. The value of her
+  context resident on the GPU is that chance times the prefill seconds a resident page-in saves;
+- *where her next prompt diverges*: `Motion` (continuum-context) and her view's stable end. Her checkpoint goes
+  there, valued by the tokens a resume from it saves; the engine reports each request's actual divergence (`lcp`), so
+  a miss is measured and names the defect at its source (a live value in a stable block, an unstable tool surface);
+- *how much she appends*: `appended_per_act`, so her grant grows ahead of her and a turnover is scheduled when cheap;
+- *what minds share*: identical runs across sequences are held once (`seq_cp`), one claim with several owners.
+A value without its measurement is the population's for the activity, marked so (provenance), and an unmeasured
+claim is granted only its floor.
+
+**What this deletes:** `window_within`, `lanes_that_fit`, `ModelFootprint::pool_within`,
+`window_allocator::allocate`, the process-footprint inference (`lane_footprint`, `fixed_per_lane_bytes`),
+`host_prompt_cache_mib`'s own affordable figure, the `--ctx-checkpoints` / `--checkpoint-min-step` derivation,
+`gene_residency::victims`, the slots' page victim logic, `coordinator.rs evict_under_pressure`, the persona
+allocator's GPU tiers. The fork keeps checkpoints only where the core names them (the boundary rule, fork branch
+`fable/boundary-checkpoints`).
+
+**Order** (each lands before the next, each deletes its sizers):
+1. Slice 1's migration: continuum's airc pin moves to include `cambrian-flex` (38a22ab09, 3 commits past the current
+   pin); the turn's allocation, the view's start grants, the reply claim and grounding claim from it with measured
+   values; `flex_allocate` and its priorities are deleted. Proven on the proving ground's T0 first.
+2. The engine tier: serving's claims above, from the fork's report, as a child tier of the `ResourceDaemon`'s device
+   tier (slice 2's shape; until slice 2 lands, the serving daemon clears its own grant from the plan's budget).
+3. Pages and genes on the same levels; their victim rules deleted.
+4. The zero gate: `allocators_outside_the_flexbox` (a sizer outside the solver) at 0, failing on any new one.
+
+**Validators:** replay the four residents' captures (`fixtures/prompt-captures`) against the fork's measured
+holdings: every clearing fits the reported capacity, resumes land at the predicted divergence, and fewer tokens are
+re-read than today's 1,244-resume baseline (80% within 8k, 10% past 25k).
+
 ### Acceptance: the user's own load (Joel, 2026-10-30: "What if we start this and someone is playing a video game or starts one later? Or Photoshop")
 
 The product runs on someone's computer while they use it. Today (canary, `serving_daemon/reconcile.rs`):
