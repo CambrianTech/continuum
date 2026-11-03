@@ -32,7 +32,8 @@ pub enum ReadScope {
     /// Also any absolute path the OS user can read or write, except `deny`: the operator
     /// (`deny` empty: the core runs as the operator, whose files are the operator's), and
     /// this node's resident (`deny` = her confinement's [`host_denials`]: every credential
-    /// path and every other citizen's directory, Joel 2026-10-18 "keep creds off-limits").
+    /// path and every other citizen's private state, Joel 2026-10-18 "keep creds
+    /// off-limits"; other citizens' workspaces are the commons, never denied).
     ///
     /// [`host_denials`]: crate::system_resources::confinement::Confinement::host_denials
     Host { deny: Vec<PathBuf> },
