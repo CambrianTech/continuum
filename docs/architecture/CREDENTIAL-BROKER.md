@@ -1,7 +1,8 @@
 # The credential broker: a resident's shell matches an agent's, and no secret enters it
 
-Status: design for review, 2026-10-31. Owner: Fable (broker, shell environment). Reviewer: Codex (the credential
-path).
+Status: design for review, 2026-10-31; revised 2026-11-03 for Cormac's review (the scope comes from core-held state,
+and the capability is a per-resident endpoint only her confinement reaches, never a value in her environment). Owner:
+Fable (broker, shell environment). Reviewers: Cormac, Codex (the credential path).
 
 Joel, 2026-10-31, on Benchy's push failing from her shell while an agent pushes from its own: "Why is her shell
 confined if yours isn't. Bad design." And: "They are supposed to match your abilities."
@@ -28,14 +29,22 @@ The core serves two brokers, one per protocol, each speaking the protocol unchan
 
 | Tool | How her shell reaches the broker | What the broker does |
 |---|---|---|
-| `git` over HTTPS to GitHub | per-command environment config, no file changed: `GIT_CONFIG_COUNT` with `url.<broker>.insteadOf = https://github.com/` | a loopback smart-HTTP reverse proxy; forwards each request to `https://github.com` over TLS, adding the authorization itself |
-| `gh` (API and git operations) | `gh`'s own `http_unix_socket` setting pointed at her broker socket, with `GH_TOKEN` set to a placeholder so `gh` considers itself authenticated | a per-resident Unix-socket proxy to `api.github.com`; replaces the placeholder authorization with the real one |
+| `git` over HTTPS to GitHub | `url.http://127.0.0.1:<her port>/.insteadOf = https://github.com/` (environment config, no file changed). The port is hers: her confinement profile allows outbound to that one localhost port and no other resident's | a loopback smart-HTTP reverse proxy on her port; forwards each request to `https://github.com` over TLS, adding the authorization itself |
+| `gh` (API and git operations) | `gh`'s own `http_unix_socket` setting pointed at her broker socket, with `GH_TOKEN` set to a placeholder so `gh` considers itself authenticated | a per-resident Unix-socket proxy to `api.github.com`, the socket reachable only in her profile; replaces the placeholder authorization with the real one |
 
-- **Per-resident capability, not the token:** each broker endpoint carries a capability issued to her for her
-  session (an unguessable path segment for the loopback proxy; a socket only her confinement can reach). It names
-  her identity, is revocable, and is never the GitHub token.
-- **Scope:** the broker forwards only to GitHub hosts, and only for the repositories her workspace remotes name.
-  An operation outside that scope is a typed refusal in the tool result, saying what was refused and why.
+- **Per-resident capability, not the token, and not a secret:** her capability is an endpoint only her
+  confinement can reach: her own loopback port (the sandbox profile allows `network-outbound` to that one localhost
+  port) and her own socket. Which endpoint a connection arrived on names who she is; nothing in her environment or
+  files needs to stay secret. An unguessable value carried in the environment would not do: every resident and the
+  core run as one OS user, and on macOS a same-user process reads another's environment (`ps -E`; Cormac, the
+  IntelMac, 2026-11-03), so resident A could lift B's value and push as B, with the audit naming B. The capability is
+  revocable (the port or socket closes) and is never the GitHub token. On Windows the same per-resident endpoint is
+  scoped by the firewall or an AppContainer; until that exists there, the broker answers with a typed refusal
+  naming it, never a shared endpoint.
+- **Scope, from what the core records:** the broker forwards only to GitHub hosts, and only for the repositories
+  the core has recorded for her: the cards she holds and her workspace's allocation. Her git config is hers to
+  write, so her remotes never decide scope (a `git remote add` of any repository the token can write would widen it).
+  An operation outside the recorded scope is a typed refusal in the tool result, saying what was refused and why.
 - **Attribution and audit:** every brokered operation is recorded with her identity, repository, operation and
   outcome (an ORM entity, never a log line read back). PRs and comments she opens keep the existing footer naming
   her.
@@ -54,16 +63,17 @@ so there is one credentialed path, not two.
 1. Benchy's exact case: in a confined resident workspace, `git push` then `gh pr create` from her own shell
    succeed, and the PR carries her attribution.
 2. Reading `~/.config/gh/hosts.yml`, the token in her environment, or the broker's process memory from her shell
-   all fail; her environment and files never contain the token.
-3. A push to a repository her remotes do not name is refused with a typed reason.
+   all fail; her environment and files never contain the token. Connecting to another resident's port or socket
+   from her shell fails (her profile does not allow it), and so does reading another resident's process environment.
+3. A push to a repository the core has not recorded for her is refused with a typed reason, including one she added
+   as a remote herself (`git remote add`).
 4. Revoking her capability makes the next push fail with a typed reason; reissuing restores it.
 5. Every brokered operation appears in the audit entity with her identity.
 
-## Questions for review (Codex)
+## Decided in review
 
-1. Loopback port versus a per-resident socket for git: git's HTTP transport cannot use a Unix socket directly; is
-   a loopback port with an unguessable capability path, reachable only from her confinement, acceptable on every
-   platform (Windows: a named pipe is not an option for git's HTTP), or should the git side ride `gh`'s
-   socket via `gh auth git-credential` instead?
-2. Should the broker sit in `continuum-hands` (beside the verbs it now also serves) or in its own crate under the
-   kernel's confinement?
+1. **Git over a socket** (Cormac, 2026-11-03): not through `gh auth git-credential`, which prints the real token to
+   git and so into her process. Git's HTTP transport reaches the loopback proxy on her own port, the port being the
+   capability her profile alone can reach.
+2. **Where the broker lives:** its own crate under the kernel's confinement, since it is the only code that holds the
+   token; `continuum-hands`' verbs call it like any other client.
