@@ -73,12 +73,11 @@ pub enum Holder {
     Weights,
     /// The compute graph: one for the shared pool under `--kv-unified`.
     ComputeGraph,
-    /// The speculative draft model's whole context (its weights, KV and compute).
+    /// The speculative draft model's weights and compute. Its KV grows with the pool, so it is
+    /// `ModelProfile::draft_kv_bytes_per_token`, not here.
     Draft,
     /// The multimodal projector's weights and reserved compute.
     Projector,
-    /// The host prompt cache's byte limit.
-    PromptCache,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -94,12 +93,16 @@ pub struct HolderBytes {
 #[serde(deny_unknown_fields)]
 pub struct ModelProfile {
     pub model: ModelId,
-    /// Everything the engine holds whatever the minds do, each where it lives (the fork's
+    /// Everything the engine holds whatever the minds do, each where it lives. The prompt cache is
+    /// not one: it is a divisible claim that sheds first, cleared with the minds' claims (the fork's
     /// `memory_breakdown` and `resident_state`, llama.cpp#91). Before #91 the draft and the
     /// projector were invisible, and the plan inferred them from the process footprint.
     pub holders: Vec<HolderBytes>,
     /// Attention KV per token of a sequence's context.
     pub kv_bytes_per_token: Measured<u64>,
+    /// The speculative draft's KV per token of the pool (0.53 GB at 257,536 tokens on the M5,
+    /// ~2,048 B/token); `Unmeasured` on a model served without a draft.
+    pub draft_kv_bytes_per_token: Measured<u64>,
     /// A hybrid model's recurrent state, fixed per sequence whatever its length. Folding it into the
     /// per-token rate overstates long sequences and short-changes many short ones (card c8b2e1df).
     /// `Unmeasured` until the fork reports it apart from the KV.
@@ -162,10 +165,11 @@ mod tests {
             holders: vec![
                 holder(Holder::Weights, 20_690_000_000),
                 holder(Holder::ComputeGraph, 1_870_000_000),
-                holder(Holder::Draft, 3_150_000_000),
+                holder(Holder::Draft, 2_630_000_000), // 1.34 weights + 1.29 compute; its KV is per token
                 holder(Holder::Projector, 900_000_000),
             ],
             kv_bytes_per_token: measured(8_317),
+            draft_kv_bytes_per_token: measured(2_048),
             recurrent_bytes_per_sequence: Measured::Unmeasured {},
             prefill: RateCurve::Points { points: vec![] },
             decode: RateCurve::Points { points: vec![] },
