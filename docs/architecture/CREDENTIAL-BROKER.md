@@ -41,9 +41,11 @@ The core serves two brokers, one per protocol, each speaking the protocol unchan
   revocable (the port or socket closes) and is never the GitHub token. The attribution holds only for confined
   processes: an unconfined same-user process (anything outside every resident's profile, the core's own children
   included) can also reach her port, so the audit's "her" means "a process her profile admits or one outside all
-  confinement". The core spawns nothing unconfined that a resident can drive, and the audit records the peer
-  process of each connection (`LOCAL_PEERPID` / `SO_PEERCRED`) beside her identity, so an outside caller is
-  visible rather than attributed to her (Cormac on #5628, 2026-11-03). On Windows the same per-resident endpoint is
+  confinement". The core spawns nothing unconfined that a resident can drive. On `gh`'s Unix socket the audit
+  records the connecting process (`LOCAL_PEERPID` / `SO_PEERCRED`) beside her identity, so an outside caller is
+  visible. Git's loopback port has no such credential: a TCP caller there is attributed to her profile, not proven
+  to be her, and the audit says so; carrying git over a socket as well (a local helper her profile runs, speaking
+  smart-HTTP to her socket) is the follow-up that makes it proven (Cormac on #5628, 2026-11-03). On Windows the same per-resident endpoint is
   scoped by the firewall or an AppContainer; until that exists there, the broker answers with a typed refusal
   naming it, never a shared endpoint.
 - **Scope, from what the core records:** the broker forwards only to GitHub hosts, and only for the repositories
