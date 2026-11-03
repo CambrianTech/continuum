@@ -36,12 +36,17 @@ pub fn exported_bindings(source: &str) -> BTreeSet<String> {
     out
 }
 
-/// The name of the first `struct`, `enum` or `type` item after an attribute.
+/// The name of the first `struct`, `enum` or `type` item after an attribute. Comment and attribute
+/// lines between them are skipped, so a doc line saying "the struct for X" never names a binding
+/// (Fable on #5730).
 fn next_item_name(after: &str) -> Option<&str> {
-    let mut words = after.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty());
-    while let Some(word) = words.next() {
-        if matches!(word, "struct" | "enum" | "type") {
-            return words.next();
+    let item_lines = after.lines().map(str::trim_start).filter(|l| !(l.starts_with("//") || l.starts_with("#[")));
+    for line in item_lines {
+        let mut words = line.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty());
+        while let Some(word) = words.next() {
+            if matches!(word, "struct" | "enum" | "type") {
+                return words.next();
+            }
         }
     }
     None
@@ -102,6 +107,7 @@ mod tests {
             #[ts(export, export_to = "../../../protocol/typescript/rag/LlmMessage.ts")]
             pub struct LlmMessage;
             #[ts(export, export_to = "../../../protocol/typescript/genome/")]
+            /// The struct for one tier of a type's memory.
             #[serde(rename_all = "camelCase")]
             pub enum Tier { A }
             #[ts(export, export_to = "bindings/Local.ts")]
