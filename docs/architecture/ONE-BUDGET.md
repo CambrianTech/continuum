@@ -504,8 +504,9 @@ Both loops are bounded by the claims and their rungs, never by an iteration coun
 the clearing's receipt, so the proving ground replays the exact sequence.
 
 **A small window is the same clearing at a lower capacity** (Joel: "even intelmacs severely limited context windows
-should be doable within an intelligent budgeting flexbox"). The IntelMac's 16,384 tokens per mind holds the causal floor
-whole, the stable head once, then the highest-valued increments: her card's files at summary, the room's last turns,
+should be doable within an intelligent budgeting flexbox"). A mind granted a small window (16,384 tokens, say: a capacity chosen
+for the replay, not a node's measured grant; the IntelMac's "16,384 per mind" on 11-03 was a publication bug) holds
+the causal floor whole, the stable head once, then the highest-valued increments: her card's files at summary, the room's last turns,
 recall at pointers she expands on demand. The M5 at 128,768 clears the same claims to fuller levels. No per-node rule
 exists; values are measured per node, so a small node learns which levels its residents reopen.
 
@@ -514,7 +515,7 @@ capacity ends in a clearing (repaired) whose damage is no more than a brute-forc
 stalled turn; (a) across every captured act of the four residents,
 her newest act and result are present whole or at their summary with a handle, at the M5's and the IntelMac's
 capacities alike; (b) no two consecutive acts with identical calls and identical inputs (the loop signature) on the
-replay; (c) at 16,384 tokens a resident completes a card's read-edit-test cycle on replay with no `Infeasible` clearing.
+replay; (c) at a chosen replay capacity of 16,384 tokens a resident completes a card's read-edit-test cycle on replay with no `Infeasible` clearing.
 
 **Validators:** replay the four residents' captures (`fixtures/prompt-captures`) against the fork's measured
 holdings: every clearing fits the reported capacity, resumes land at the predicted divergence, and fewer tokens are
