@@ -259,8 +259,36 @@ The fills themselves are by design, and one checkpoint at her stable end serves 
   (`seq_cp` of the attention cells plus the head checkpoint, §1). Genes follow the same rule: one
   copy per adapter, attached to every mind whose focus selects it.
 
-### 7.4 Order of work
+### 7.4 One base: the collapsing flexbox (Joel: "it's always collapsing flexbox style ... everywhere same base classes and interfaces")
 
+A mind's prompt is already allocated by one base. `flex_allocate` (continuum-grounding,
+rag_budget/flex_allocate.rs) grants each claim between its floor and its want by priority, and the
+view's `allot` (continuum-context, view/allot.rs) gives each of a claim's items the most detail that
+fits, newest first, collapsing the oldest to its summary, its pointer or a fold, each reopenable.
+`Motion` (continuum-context, motion.rs) measures what stays the same between starts and orders the
+view by it, so the consistent part leads and is kept.
+
+Memory is the same shape, so it uses the same base, never its own:
+
+| Prompt | Memory |
+|---|---|
+| a claim: a source, with floor, want, priority | a mind (her context, her checkpoints, her genes), a cache tier; floor = her in-flight turn, want = her demand, priority = her activity temperature |
+| an item: one keyed result, file, card | one keyed run of her context, one checkpoint, one gene |
+| Full / Summary / Pointer / Folded | on the GPU / paged to RAM / paged to disk (a page-in reopens it) / dropped, rebuilt from her prompt |
+| newest whole, oldest collapses first | hottest resident, coldest pages out first |
+| `Motion`: what stays the same between starts leads | what stays the same between her prompts, and between minds, is held once and checkpointed |
+
+The memory side today has a dozen hand-rolled allocators with their own rules, each a special case
+of this: `window_within`, `lanes_that_fit`, `ModelFootprint::pool_within`, `window_allocator::allocate`,
+`plan_expert_residency_budgeted`, continuum-kernel's `memory_manager` budgets and `eviction_weight`,
+`paging/pool.rs` eviction, the broker's `lane_budgets`, `training_plan::fit`. They converge on the base
+and are deleted. The base moves down to one floor crate, generic over the unit (tokens, bytes) and the
+item, with the prompt side its first caller unchanged (the pattern-bubbles-up rule).
+
+### 7.5 Order of work
+
+0. The base: `flex_allocate`, the claim and level types and `allot`'s collapse move down to one floor
+   crate, generic over unit and item; every prompt caller migrated, test counts unchanged.
 1. Her view survives a restart: the epoch (its start, its items' levels, its appends) is durable
    state beside her KV page, so a deploy pages her back in where she was instead of starting her
    over. Validator: replay the captures across the day's restarts; turnovers at a restart go to 0.
@@ -271,7 +299,9 @@ The fills themselves are by design, and one checkpoint at her stable end serves 
 3. Fork: the boundary checkpoint verb (keep one at the stable end the request names) replaces
    `--ctx-checkpoints N` / `--checkpoint-min-step`; per-sequence holdings on `/slots` (`resident_state`
    and slot `checkpoints`, fork #91, are the first part).
-4. Core: the ledger reads live holdings (`ResidentReport`) and sizes the pool from them; every seated
-   mind is a sequence; the process-footprint inference (`lane_footprint`, `fixed_per_lane_bytes`) is
-   deleted.
+4. Core: serving's memory is claims and items on the base, fed by the engine's live holdings
+   (`ResidentReport`); every seated mind is a sequence; the hand-rolled allocators above and the
+   process-footprint inference (`lane_footprint`, `fixed_per_lane_bytes`) are deleted. `Motion` over
+   token runs, fed by the divergence point the engine reports per request, places checkpoints and
+   finds what minds share.
 5. Shared head (S7): constitution and tools ahead of identity, one copy for all minds.
