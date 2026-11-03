@@ -59,6 +59,18 @@ jobs:
               base=$(git rev-parse FETCH_HEAD)
             fi
           fi
+          # The ratchets take the merge base of this and HEAD (ratchets.rs), so the history between
+          # them must be here. A PR's base is HEAD's parent already; a push's base can be many
+          # commits back (a main promotion) or fetched alone (canary's tip), so the head's history is
+          # fetched back to the base commit's own date, and in full only if that still cannot join them
+          # (Cormac on #5738).
+          if ! git merge-base "$base" HEAD >/dev/null 2>&1; then
+            git fetch --no-tags --shallow-since="$(git show -s --format=%cI "$base")" origin "$GITHUB_SHA" || true
+          fi
+          if ! git merge-base "$base" HEAD >/dev/null 2>&1; then
+            git fetch --no-tags --unshallow origin
+          fi
+          git merge-base "$base" HEAD >/dev/null
           echo "RATCHET_BASE=$base" >> "$GITHUB_ENV"
 
       # crate_wiring runs tools/scripts/ci-change-scope.cjs through node to check that the selector
