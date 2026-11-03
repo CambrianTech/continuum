@@ -84,10 +84,11 @@ They're short." The reference is `cb-mobile-sdk/cpp/utility/Threads.h` `QueueThr
 pub trait Stage: Send + 'static {
     type Input: Send;              // what wakes it (a signal, a digest handle, a frame)
     const QOS: Qos;                // its class
-    const DEPTH: usize = 1;        // bounded queue; when full, the oldest is dropped (keep-latest)
+    const OVERFLOW: Overflow;      // Reliable (default: a full slot hands the input back) or KeepNewest (signals)
     async fn handle(&mut self, input: Self::Input);
 }
-// spawn_stage(stage) -> StageInput<Input>: push() inserts, drops the oldest past DEPTH, and signals.
+// spawn_stage(stage) -> StageInput<Input>: a stage holds one input in hand and one pending (CBAR's
+// double buffer); push() fills the pending slot, or hands the input back / replaces it when full, and signals.
 // A stage that needs a shared capacity (the engine, a TTS model) submits to that capacity's Flow.
 ```
 

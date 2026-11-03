@@ -18,6 +18,7 @@ members = [
     "core/continuum-cli-lifecycle",
     "core/continuum-tool-protocol",
     "core/continuum-base",
+    "core/continuum-flow",
     "core/continuum-git",
     "core/continuum-host",
     "core/continuum-context",
