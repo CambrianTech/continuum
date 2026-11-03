@@ -51,30 +51,6 @@ fn a_refused_demotion_with_no_plan_adopts_the_inherited_engine_at_its_geometry()
     );
 }
 
-// what this catches (card 628dc958): the plan grew into free memory while the host
-// was pushing other processes' pages out to make it, then fed on the memory its own
-// relaunch freed — six relaunches in 75 min on the M5 at HIGH. Pure decision.
-#[test]
-fn a_plan_never_grows_while_the_host_pages_out() {
-    use super::grow_refused_while_paging;
-    let gib = |n: u64| n << 30;
-    // paging out + a bigger plan = refused; flat or falling swap, a shrink, or no
-    // previous reading (boot on a node that always has swap) flows.
-    assert!(!grow_refused_while_paging(
-        80_000,
-        120_000,
-        u64::MAX,
-        gib(2)
-    ));
-    assert!(grow_refused_while_paging(80_000, 120_000, gib(1), gib(2)));
-    assert!(!grow_refused_while_paging(80_000, 120_000, gib(2), gib(2)));
-    assert!(!grow_refused_while_paging(80_000, 120_000, gib(2), gib(1)));
-    assert!(
-        !grow_refused_while_paging(120_000, 80_000, gib(1), gib(2)),
-        "a shrink while paging is the remedy, never refused"
-    );
-}
-
 // what this catches: a pin SWAPS — serve() kills the incumbent llama-server
 // child, THEN launches the candidate (never co-resident) — so the fit-check must
 // credit the outgoing model's weights back into the budget. Without it, swapping
@@ -150,14 +126,6 @@ fn pin_swap_down_credits_the_evicted_incumbents_weights() {
     );
 }
 
-// what this catches: the ServingSteadyHold RAII gauge — acquiring sets
-// serving_held_steady() true; dropping clears it; nesting is reference-counted so a
-// concurrent second eval doesn't release the first's hold. This is the gate that stops
-// the grow-back re-home from relaunching the lane under a running eval (hard-rs 0/8).
-// regression for the 2026-07-20 shared-lane bounce.
-// what this catches (2026-09-17, the M5): a steady hold pinning a boot shape of
-// 8 × 12,800 against a plan of 3 × 67,340 for 255 ticks. The hold yields to a
-// shortfall of REHOME_HOLD_OVERRIDE_PCT or more; a few-percent grow-back stays held.
 // what this catches: a machine-specific constant sizing every plan. The plan fills the mode's
 // fraction of the sustained budget, the same on unified and discrete memory; the M5's 2026-10-29
 // plan withheld a flat 12 GiB on top (three lanes for four residents, 17 s median slot wait).
@@ -187,46 +155,6 @@ fn a_foundry_headroom_of_one_still_keeps_the_process_overhead() {
         plan_fraction(0.8),
         0.8,
         "the everyday default is the operator's own number"
-    );
-}
-
-#[test]
-fn a_steady_hold_yields_to_a_large_shortfall_and_keeps_a_small_one() {
-    let (live, _plan, gain, _) = rehome_gain_evidence(12_800, 8, 67_340, 3);
-    assert!(
-        hold_overridden_by_shortfall(live, gain),
-        "8 × 12.8k vs 3 × 67k is starvation, not a slot to protect"
-    );
-    let (live, _plan, gain, worth) = rehome_gain_evidence(56_000, 5, 67_000, 5);
-    assert!(worth, "a ~20% grow-back is worth a re-home in general");
-    assert!(
-        !hold_overridden_by_shortfall(live, gain),
-        "but not worth dropping a held slot for"
-    );
-    assert!(
-        !hold_overridden_by_shortfall(0, 1),
-        "no live space = nothing to compare"
-    );
-}
-
-#[test]
-fn serving_steady_hold_is_refcounted_and_raii() {
-    assert!(!serving_held_steady(), "no hold at rest");
-    {
-        let _h1 = ServingSteadyHold::acquire("test");
-        assert!(serving_held_steady(), "one hold ⇒ steady");
-        {
-            let _h2 = ServingSteadyHold::acquire("test");
-            assert!(serving_held_steady(), "two holds ⇒ still steady");
-        }
-        assert!(
-            serving_held_steady(),
-            "inner drop must not release the outer hold"
-        );
-    }
-    assert!(
-        !serving_held_steady(),
-        "all holds dropped ⇒ grow-back resumes"
     );
 }
 
@@ -746,4 +674,53 @@ fn the_live_free_read_keeps_the_same_os_floor_the_planned_term_keeps() {
     );
     // An over-full box yields zero, never a wrap.
     assert_eq!(sidecar_admissible_bytes(floor / 2, 31 * GB, physical), 0);
+}
+
+// what this catches (card 7c72c0f0, Intel Mac 2026-09-17): the plan's budget is the
+// row the lane's PLACEMENT puts its bytes in. A CPU-placed lane budgets against the
+// Ram row — the 30 GB the KV actually fills — not the 4 GB Vram row of a card that
+// holds nothing of it (nine citizens sized against 5.7 GB on a 34.4 GB box: one warm
+// slot, eight exiled to a remote lane). The GPU arm is byte-identical to before.
+#[tokio::test]
+async fn a_cpu_placed_lane_budgets_against_the_ram_row_not_the_card() {
+    use crate::inference::llama_server::LanePlacement;
+    use crate::resources::{DaemonConfig, GovernorConfig, MockCapacitySource, ResourceDaemon};
+    let vram = Arc::new(MockCapacitySource::new(
+        crate::resources::ResourceKind::Vram,
+        4_000,
+    ));
+    let ram = Arc::new(MockCapacitySource::new(
+        crate::resources::ResourceKind::Ram,
+        30_000,
+    ));
+    let daemon = ResourceDaemon::start(
+        vec![vram, ram],
+        vec![],
+        DaemonConfig {
+            tick_interval: std::time::Duration::from_millis(20),
+            min_reclaim_budget: std::time::Duration::from_millis(100),
+            governor: GovernorConfig {
+                min_dwell_ms: 0,
+                graceful_grace_ms: 50,
+            },
+        },
+    );
+    assert_eq!(
+        LanePlacement::Cpu.pool_kind(),
+        crate::resources::ResourceKind::Ram
+    );
+    assert_eq!(
+        LanePlacement::Gpu.pool_kind(),
+        crate::resources::ResourceKind::Vram
+    );
+    assert_eq!(
+        governed_pool_ceiling(&daemon, LanePlacement::Cpu.pool_kind()),
+        Some(30_000),
+        "a CPU-placed lane plans against the RAM its KV lives in"
+    );
+    assert_eq!(
+        governed_pool_ceiling(&daemon, LanePlacement::Gpu.pool_kind()),
+        Some(4_000),
+        "a GPU-placed lane plans against the card"
+    );
 }

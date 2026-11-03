@@ -45,54 +45,6 @@ fn a_reconcile_in_flight_names_its_step_and_a_wedge_is_declared_past_the_bound()
     ));
 }
 
-// what this catches (2026-09-19, the M5 pinned at one lane across boots): the store is
-// written on the tick a launch SETTLES — cooldown 1 → 0 with the lane serving — and on
-// no other tick: not at spawn (cooling = full), not while cooling, not after (0), not
-// for a lane that is not ready, not for zero lanes.
-#[test]
-fn only_the_tick_a_launch_settles_on_remembers_its_geometry() {
-    use super::{settles_this_tick, REHOME_COOLDOWN_TICKS};
-    assert!(settles_this_tick(1, true, 2));
-    assert!(
-        !settles_this_tick(REHOME_COOLDOWN_TICKS, true, 2),
-        "spawn tick: cooling is full"
-    );
-    assert!(!settles_this_tick(2, true, 2), "still cooling");
-    assert!(
-        !settles_this_tick(0, true, 2),
-        "already settled — no re-save every tick"
-    );
-    assert!(!settles_this_tick(1, false, 2), "not ready is not settled");
-    assert!(
-        !settles_this_tick(1, true, 0),
-        "no lanes is nothing to remember"
-    );
-}
-
-// what this catches (the M5, 2026-09-19 23:13–23:15Z): the spawn cooldown (18 ticks) was
-// spent DURING the 27B's 90 s cold load — the old lane kept serving, so the ticks
-// counted — and the new lane came ready with zero settle left; its predecessor's freed
-// memory read as a 32 GB budget for a minute, the plan said 3 lanes, and a second
-// relaunch fired 15 s after the first came ready (12 settles in the hour, acts 5). A
-// launch settles AFTER it is ready: a ready stamp not yet settled on is the edge; the
-// same stamp again is not; a not-ready snapshot never is.
-#[test]
-fn a_launch_settles_after_it_is_ready_not_after_it_was_spawned() {
-    assert!(
-        ready_edge(0, Some(1_000)),
-        "the first ready stamp: settle from here"
-    );
-    assert!(
-        !ready_edge(1_000, Some(1_000)),
-        "the same stamp is the same launch"
-    );
-    assert!(
-        ready_edge(1_000, Some(2_000)),
-        "a new stamp is a new launch: settle again"
-    );
-    assert!(!ready_edge(1_000, None), "not ready: nothing to settle on");
-}
-
 // what this catches (5090, 2026-09-06 — BigMama's third bug): an empty plan
 // publishing "idle" while the llama-server stays alive. At the live → empty
 // transition the daemon takes the lane down exactly once; a second tick with
@@ -464,7 +416,7 @@ async fn reconcile_brings_planned_model_up() {
     *cancelled.pending_model_change.lock().unwrap() = Some("coder-14b".into());
     cancelled
         .model_change_streak
-        .store(REHOME_SUSTAINED_TICKS, Ordering::Relaxed);
+        .store(MODEL_CHANGE_SUSTAINED_TICKS, Ordering::Relaxed);
     cancelled.force_relaunch.store(true, Ordering::Release);
     let admitted = cancelled.reconcile_to_plan().expect("admitted serve");
     tokio::time::timeout(Duration::from_secs(5), entered.notified())
@@ -524,7 +476,7 @@ async fn reconcile_is_noop_when_already_serving() {
     let verified_reads = server.verified_reads.clone();
     let daemon = daemon_with(Arc::new(server));
 
-    // Pretend coder-14b is already up and ready.
+    // Pretend coder-14b is already up and ready, serving the seated population.
     let _ = daemon.serving_tx.send_replace(ServingSnapshot {
         // test fixture: no live readiness was ever CONFIRMED here.
         ready_verified_at_ms: None,
@@ -533,7 +485,7 @@ async fn reconcile_is_noop_when_already_serving() {
         base_url: serving_v1_url(),
         adapters: Vec::new(),
         served_context_window: 11008,
-        lanes: 4,
+        lanes: daemon.seated(),
         host_prompt_cache_mib: 0,
         degraded_reason: None,
         vision_ready: false,

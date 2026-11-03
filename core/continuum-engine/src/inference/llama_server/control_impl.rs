@@ -333,6 +333,13 @@ impl LlamaServerControl for LlamaServerProcess {
         Some(crate::inference::lane_process::launch_kv_in(&argv))
     }
 
+    fn launched_on_shared_pool(&self) -> Option<bool> {
+        let (_host, port) = split_host_port(&self.root);
+        let record = crate::inference::lane_registry::live_lane().filter(|r| r.port == port)?;
+        let argv = crate::inference::lane_process::command_args(record.pid)?;
+        Some(argv.iter().any(|a| a == "--kv-unified" || a == "-kvu"))
+    }
+
     fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {
         self.wedge.clone()
     }

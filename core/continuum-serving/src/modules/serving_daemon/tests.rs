@@ -472,64 +472,6 @@ pub(super) fn inherited_27b() -> LaneRecord {
     }
 }
 
-/// A lane whose live per-slot window sits at `live_pct` of what the plan
-/// actually affords, ready to have `reconcile_to_plan` driven at it repeatedly.
-/// Returns the daemon and the REAL planned window.
-///
-/// Two things this fixture exists to get right, both of which a hand-written
-/// pair of numbers gets wrong:
-///
-/// 1. A plan is capped by MEASURED demand ([`ServingDemand`]). With nothing
-///    recorded it falls back to [`BOOTSTRAP_WORKING_SET`] — 16,384, which is
-///    exactly the number the live lane was stranded at, so a fixture that skips
-///    this reproduces a plan == live and no gain to sustain at all.
-/// 2. The planner is free to serve less than the model's max context (host fit,
-///    lane split). Asserting against a window we merely ASKED for tests the
-///    fixture; deriving the live window from the plan we GOT tests the guard.
-pub(super) fn lane_under_plan(
-    serves: Arc<AtomicUsize>,
-    plan_model_ctx: u32,
-    live_pct: u32,
-) -> (ServingDaemonModule, u32) {
-    let daemon = daemon_with(Arc::new(FakeServer::healthy(serves, true)));
-    // A measured peak is what lets a plan exceed the cold-start prior.
-    daemon
-        .working_set()
-        .record_in_memory(uuid::Uuid::new_v4(), plan_model_ctx, 0);
-    let budget = HostBudget {
-        usable_bytes: 45 * GB,
-        perf_cores: 6,
-    };
-    let candidates =
-        vec![footprint_from_parts("coder-14b", 9 * GB, plan_model_ctx, true, None).unwrap()];
-    daemon.publish_plan(budget, &candidates, &candidates);
-    let (plan_window, plan_lanes) = {
-        let plan = daemon.plan_tx.borrow();
-        let plan = plan.plan.as_ref().expect("plan published");
-        (plan.served_context_window, plan.lanes)
-    };
-    let _ = daemon.serving_tx.send_replace(ServingSnapshot {
-        ready_verified_at_ms: None,
-        active_model: Some("coder-14b".into()),
-        ready: true,
-        base_url: serving_v1_url(),
-        adapters: Vec::new(),
-        served_context_window: plan_window * live_pct / 100,
-        // Live lanes match the plan's so these fixtures isolate the WINDOW
-        // dimension of re-home evidence; the lanes dimension has its own test
-        // (rehome_evidence_counts_lanes_not_just_per_slot_window).
-        lanes: plan_lanes,
-        host_prompt_cache_mib: 0,
-        degraded_reason: None,
-        vision_ready: false,
-        vision_base_url: None,
-        vision_model: None,
-        loading_model: None,
-        held_for: None,
-    });
-    (daemon, plan_window)
-}
-
 /// Believe-ready snapshot fixture for the liveness-heartbeat tests.
 pub(super) fn ready_snapshot() -> ServingSnapshot {
     ServingSnapshot {
@@ -604,5 +546,5 @@ mod prompt_cache;
 mod publication;
 use publication::test_pin_store;
 mod reconciliation;
-mod rehome;
+mod one_launch;
 mod teacher;

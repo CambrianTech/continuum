@@ -22,6 +22,8 @@ struct FakeControl {
     /// The KV decision the fake's running engine was launched with; `None` = unknown
     /// (the default, so every pre-existing case adopts on the other axes alone).
     launched_kv: Option<crate::inference::lane_process::LaunchKv>,
+    /// Launched with fixed slots (no `--kv-unified`).
+    partitioned: bool,
     /// Whether the fake "owns" the running child (we spawned it). `false` =
     /// an adopted orphan (the conservative default that exercises the
     /// smoke-probe gate).
@@ -58,6 +60,7 @@ impl FakeControl {
             decode_ok: true,
             slots_busy: None,
             launched_kv: None,
+            partitioned: false,
             owns: false,
             served_lanes: 0,
             served_window: 32768,
@@ -119,6 +122,11 @@ impl FakeControl {
     /// Model an engine launched with this KV decision (read off its argv in production).
     fn launched_with(mut self, cache_type: Option<&str>, flash_attn: bool) -> Self {
         self.launched_kv = Some(crate::inference::lane_process::LaunchKv { cache_type: cache_type.map(str::to_string), flash_attn, cache_ram_mib: None });
+        self
+    }
+    /// Model an engine launched with fixed slots, no shared pool.
+    fn launched_partitioned(mut self) -> Self {
+        self.partitioned = true;
         self
     }
     /// Model an engine launched on THIS KV decision with a `--cache-ram` grant of `mib`.
@@ -200,6 +208,9 @@ impl LlamaServerControl for FakeControl {
     }
     fn launch_kv(&self) -> Option<crate::inference::lane_process::LaunchKv> {
         self.launched_kv.clone()
+    }
+    fn launched_on_shared_pool(&self) -> Option<bool> {
+        self.partitioned.then_some(false)
     }
     fn owns_child(&self) -> bool {
         self.owns

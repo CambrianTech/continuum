@@ -56,8 +56,6 @@ pub use liveness::{
 mod convergence_attempt;
 mod reconcile;
 pub use reconcile::{ensure_model_serving, ensure_model_serving_if_current};
-#[cfg(test)]
-pub(crate) use reconcile::{grow_refused_by_memory_gate, lane_grow_would_narrow_the_window};
 
 mod smoke;
 use smoke::{

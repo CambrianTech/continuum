@@ -31,8 +31,8 @@ pub(super) fn verified_capture(
     let launch = server.owned_serving_target()?;
     if snapshot.active_model.as_deref() != Some(launch.target.model.id.as_str())
         || snapshot.adapters != launch.target.adapter_paths()
-        || snapshot.served_context_window != launch.observed_context_window
-        || snapshot.lanes != launch.observed_lanes
+        || (snapshot.served_context_window, snapshot.lanes)
+            != seated_share(launch.observed_context_window, snapshot.lanes, launch.target.model.context_window)
         || snapshot.host_prompt_cache_mib != launch.launched_host_prompt_cache_mib
         || server.owned_engine()? != launch.identity
     {
@@ -51,6 +51,20 @@ pub(super) fn verified_capture(
 /// ambient budget the citizens get.
 pub fn published_lanes(served: Option<u32>, target_lanes: u32) -> u32 {
     served.filter(|n| *n > 0).unwrap_or(target_lanes)
+}
+
+/// PURE: each seated mind's window inside the engine's one shared pool, and the minds that
+/// share it. Under `--kv-unified` the engine's `/props` names the whole pool as every
+/// sequence's window; a mind is published her share, capped at the model's trained window,
+/// so every reader that charges `lanes x window` charges the pool. The seated count is the
+/// node's population, not the plan's per-tick guess (which read 1, 2 and 3 of four residents
+/// on the M5 2026-11-03 and relaunched the engine at each).
+///
+/// Every seated mind may fill her share at once only with no room for scratch traffic
+/// beside them; per-mind grants from demand (#5718's contract) replace this equal share.
+pub fn seated_share(served_pool: u32, seated: u32, trained_window: u32) -> (u32, u32) {
+    let seated = seated.max(1);
+    ((served_pool / seated).min(trained_window), seated)
 }
 
 pub(super) fn snapshot_from_outcome(

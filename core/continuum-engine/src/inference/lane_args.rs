@@ -312,17 +312,18 @@ pub fn base_invocation(
             host.to_string(),
             arg("--port"),
             port.to_string(),
-            // llama-server's `-c` is the TOTAL KV cache, split evenly across the
-            // `--parallel` slots; each request only sees `-c / n_parallel` tokens.
-            // The plan's `context_window` is PER-LANE, so the total we must request
-            // is `context_window * lanes` — then each of `lanes` slots holds exactly
-            // one planned window. We pass `--parallel` EXPLICITLY (never inherit
-            // llama.cpp's default, which is 4 and silently quartered the window in
-            // the prior bug). See `served_total_ctx` / `parallel_lanes`.
+            // ONE SHARED POOL (2026-11-03): `-c` is the whole KV pool and `--parallel` the
+            // most sequences that may draw on it; under `--kv-unified` each sequence can use
+            // the whole pool and an idle one holds none. Both are fixed for the process's
+            // life: which minds hold how much is decided at runtime, never by a relaunch (the
+            // M5 loaded its model 40 times as the slot count moved 1 -> 2 -> 1, every
+            // reload wiping every mind's cache). `--parallel` stays explicit: llama.cpp's
+            // default is 4. See `served_total_ctx` / `parallel_lanes`.
             arg("-c"),
             total_ctx.to_string(),
             arg("--parallel"),
             lanes.to_string(),
+            arg("--kv-unified"),
             // KV PREFIX REUSE across a persona's turns. `cache_prompt:true` (sent
             // per-request) only reuses a slot's prior content when the *exact*
             // prefix still sits in that slot; with the volatile grounding tail
