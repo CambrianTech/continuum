@@ -38,7 +38,9 @@ struct BatchState {
     capture: Option<VerifiedServingCapture>,
     prior: ServingSnapshot,
     restore_bytes: Option<u64>,
-    session: Option<OwnedRestoreSession>,
+    /// The incumbent's restoration, once begun: the session with the capture and footprint it
+    /// was begun from, so cleanup never has a session without what restores it.
+    restoring: Option<Restoring>,
     borrower: Option<PrivateTeacherLane>,
     phase: Phase,
     cancellation: watch::Receiver<bool>,
@@ -53,6 +55,13 @@ pub(super) struct BatchSlot {
     owner: std::sync::Weak<ServingDaemonModule>,
     cancellation: watch::Sender<bool>,
     shutdown: Arc<AtomicBool>,
+}
+
+/// An owned restore in progress and what it restores to.
+struct Restoring {
+    session: OwnedRestoreSession,
+    capture: VerifiedServingCapture,
+    bytes: u64,
 }
 
 struct CancelOnDrop(watch::Sender<bool>);
@@ -72,11 +81,9 @@ impl ServingDaemonModule {
         request: TeacherBatchRequest,
     ) -> Result<RemediationCorpus, CommandError> {
         let capture = self.verified_serving_target();
-        let operation = ServingOperation::acquire(
-            self.reconciling.clone(),
-            self.reconcile_started_ms.clone(),
-            self.reconcile_step.clone(),
-        )
+        let operation = self
+            .lifecycle
+            .try_operation()
             .ok_or_else(|| failure("serving lifecycle is busy; teacher batch deferred"))?;
         // a teacher window borrows the engine; never one that hosts live work (step 1)
         let occupancy = self.engine_occupancy();
@@ -111,7 +118,7 @@ impl ServingDaemonModule {
             capture,
             prior: self.serving_tx.borrow().clone(),
             restore_bytes,
-            session: None,
+            restoring: None,
             borrower: None,
             phase: Phase::Untouched,
             cancellation: cancel_rx,
@@ -182,7 +189,7 @@ impl ServingDaemonModule {
                 }
                 Err(error) => {
                     let detail = error.to_string();
-                    if batch.session.is_some() {
+                    if batch.restoring.is_some() {
                         let mut snapshot = owner.serving_tx.borrow().clone();
                         snapshot.ready = false;
                         snapshot.ready_verified_at_ms = None;
@@ -277,27 +284,30 @@ impl ServingDaemonModule {
             .await;
         }
         // An independently admitted teacher does not require incumbent retirement.
-        batch.borrower = tokio::select! {
+        let prepared = tokio::select! {
             result = PrivateTeacherLane::prepare(&base, &self.resource_daemon) => result?,
             _ = cancellation.changed() => return Err(failure("teacher cancelled during admission")),
         };
-        if batch.borrower.is_none() {
+        let lane = if let Some(lane) = prepared {
+            lane
+        } else {
             let capture = batch
                 .capture
-                .as_ref()
+                .clone()
                 .ok_or_else(|| failure("incumbent has no current owned restoration receipt"))?;
-            if batch.restore_bytes.is_none() {
-                return Err(failure("incumbent restoration footprint is unknown"));
-            }
+            let bytes = batch
+                .restore_bytes
+                .ok_or_else(|| failure("incumbent restoration footprint is unknown"))?;
             if self.intent.snapshot().revision != capture.intent_revision {
                 return Err(failure("serving intent changed before teacher admission"));
             }
-            batch.session = Some(
-                self.server
-                    .begin_owned_restore(&capture.launch)
-                    .await
-                    .map_err(|e| failure(e.to_string()))?,
-            );
+            let session = self
+                .server
+                .begin_owned_restore(&capture.launch)
+                .await
+                .map_err(|e| failure(e.to_string()))?;
+            let restoring: &Restoring = batch.restoring.insert(Restoring { session, capture, bytes });
+            let capture = &restoring.capture;
             batch.phase = Phase::Checkpoint;
             let admitted = AtomicBool::new(false);
             let current = || {
@@ -316,10 +326,7 @@ impl ServingDaemonModule {
                 }
                 true
             };
-            let session = batch
-                .session
-                .as_ref()
-                .ok_or_else(|| failure("missing original restore session"))?;
+            let session = &restoring.session;
             let receipt = self
                 .server
                 .checkpoint_owned_restore(session, &current)
@@ -348,17 +355,14 @@ impl ServingDaemonModule {
                         .map_err(|_| failure("resource authority ended"))?;
                 }
             };
-            batch.borrower = Some(tokio::select! {
+            tokio::select! {
                 result = tokio::time::timeout(Duration::from_secs(30), admission) => result
                     .map_err(|_| failure("teacher capacity did not become available"))??,
                 _ = cancellation.changed() => return Err(failure("teacher cancelled while awaiting capacity")),
-            });
-        }
+            }
+        };
         batch.phase = Phase::Borrowing;
-        let borrower = batch
-            .borrower
-            .as_mut()
-            .ok_or_else(|| failure("private teacher missing"))?;
+        let borrower = batch.borrower.insert(lane);
         let mut cancellation = batch.cancellation.clone();
         tokio::select! {
             result = borrower.start() => result?,
@@ -409,13 +413,10 @@ impl ServingDaemonModule {
                 .map_err(|_| failure("private teacher exit remains unconfirmed"))??;
             batch.borrower.take();
         }
-        let Some(session) = batch.session.as_ref() else {
+        let Some(Restoring { session, capture, bytes }) = batch.restoring.as_ref() else {
             return Ok(());
         };
-        let capture = batch
-            .capture
-            .as_ref()
-            .ok_or_else(|| failure("restore capture missing"))?;
+        let bytes = *bytes;
         let current = || self.intent.snapshot().revision == capture.intent_revision;
         if batch.phase == Phase::Checkpoint
             && self.server.owned_engine().as_ref() == Some(&capture.launch.identity)
@@ -458,9 +459,6 @@ impl ServingDaemonModule {
         }
         batch.phase = Phase::Restoring;
         self.publish_teacher_unavailable("restoring original owned launch after teacher batch");
-        let bytes = batch
-            .restore_bytes
-            .ok_or_else(|| failure("original serving footprint missing"))?;
         let mut board = self.resource_daemon.subscribe();
         let grant = async {
             // Require a subsequent authority publication after borrower exit;

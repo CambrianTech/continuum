@@ -130,7 +130,7 @@ impl ServingDaemonModule {
     /// window discards that interval itself (a task counter going backwards, or a read gap
     /// past `MAX_READ_GAP_MS`), so a sample never spans an engine replacement.
     pub(super) fn spawn_prefill_knee_read(&self) -> Option<JoinHandle<()>> {
-        if self.reconciling.load(Ordering::Acquire)
+        if self.lifecycle.is_held()
             || self.prefill_knee_reading.swap(true, Ordering::AcqRel)
         {
             return None;
@@ -246,12 +246,12 @@ impl ServingDaemonModule {
         // The M5's verified 34-minute freeze motivated this; its cause is unproven.
         let frozen_age = (self.decode_age)();
         if !frozen_age.is_some_and(|age| age >= FROZEN_ENGINE_MS)
-            || self.reconciling.load(Ordering::Acquire)
+            || self.lifecycle.is_held()
         {
             *self.frozen_slots.lock() = None;
         }
         if let Some(since) = frozen_age {
-            if since >= FROZEN_ENGINE_MS && !self.reconciling.load(Ordering::Acquire) {
+            if since >= FROZEN_ENGINE_MS && !self.lifecycle.is_held() {
                 let root = self
                     .serving_tx
                     .borrow()
@@ -271,7 +271,7 @@ impl ServingDaemonModule {
                         let server = self.server.clone();
                         let serving_tx = self.serving_tx.clone();
                         let force_relaunch = self.force_relaunch.clone();
-                        let reconciling = self.reconciling.clone();
+                        let lifecycle = self.lifecycle.clone();
                         let health_probing = self.health_probing.clone();
                         let observation = self.frozen_slots.clone();
                         let decode_age = self.decode_age.clone();
@@ -283,7 +283,7 @@ impl ServingDaemonModule {
                                 state.ready
                                     && state.active_model.is_some()
                                     && state.base_url.strip_suffix("/v1") == Some(root.as_str())
-                                    && !reconciling.load(Ordering::Acquire)
+                                    && !lifecycle.is_held()
                                     && endpoint.is_ready()
                                     && directory.page_discovery_generation(&root)
                                         == Some(generation)
@@ -344,7 +344,7 @@ impl ServingDaemonModule {
             }
         }
         // Never race the reconcile's own spawn/kill/swap, and never stack heartbeat probes.
-        if self.reconciling.load(Ordering::Acquire) {
+        if self.lifecycle.is_held() {
             return None;
         }
         if self.health_probing.swap(true, Ordering::AcqRel) {

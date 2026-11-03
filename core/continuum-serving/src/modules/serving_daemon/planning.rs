@@ -35,7 +35,7 @@ impl ServingDaemonModule {
         // deeper fix — serving holding an explicit board lease so `granted` pins its residency
         // and the scan transient never reaches `available` at all — is the #56 consumers-LEASE
         // residual; this breaks the feedback loop cleanly in the meantime.)
-        if self.reconciling.load(Ordering::Acquire) {
+        if self.lifecycle.is_held() {
             self.note_reconcile_busy("recompute");
             return;
         }

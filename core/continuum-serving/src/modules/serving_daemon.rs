@@ -168,14 +168,11 @@ pub struct ServingDaemonModule {
     /// allocator reads it to contract `(model, genome)` leases. Node down →
     /// empties; node up → republished. The grid seam.
     serving_tx: watch::Sender<ServingSnapshot>,
-    /// Gate so at most one reconcile (which may spawn + wait for model load) is
-    /// in flight. A tick that finds a reconcile already running skips — no
-    /// stacked relaunches thrashing the GPU.
-    reconciling: Arc<AtomicBool>,
-    /// When the in-flight reconcile began (ms; 0 = none) and which await it is in
-    /// (`ReconcileStep`), written by the operation, read by whoever skips on the gate.
-    reconcile_started_ms: Arc<AtomicU64>,
-    reconcile_step: Arc<AtomicU8>,
+    /// The serving lifecycle gate: at most one operation (a reconcile, which may spawn and wait
+    /// for a model load; a teacher batch; a training admission) in flight. A tick that finds
+    /// one running skips, so relaunches never stack. The operation stamps its start and step;
+    /// whoever skips on the gate reads them, and a release wakes whoever waits for it.
+    lifecycle: LifecycleGate,
     /// When the gate skip last spoke (ms), so a busy reconcile is said once per
     /// [`RECONCILE_BUSY_SAY_EVERY`], never per tick.
     reconcile_busy_said_ms: Arc<AtomicU64>,
@@ -487,6 +484,7 @@ impl ServingDaemonModule {
             }
         };
         let intent = ServingIntent::new(honoured);
+        let plan_published = Arc::new(AtomicBool::new(false));
         Self {
             verified_target,
             gpu,
@@ -501,11 +499,9 @@ impl ServingDaemonModule {
             plan_view_tx,
             server,
             serving_tx,
-            reconciling: Arc::new(AtomicBool::new(false)),
-            reconcile_started_ms: Arc::new(AtomicU64::new(0)),
-            reconcile_step: Arc::new(AtomicU8::new(0)),
+            lifecycle: LifecycleGate::new(plan_published.clone()),
             reconcile_busy_said_ms: Arc::new(AtomicU64::new(0)),
-            plan_published: Arc::new(AtomicBool::new(false)),
+            plan_published,
             academy_batch: parking_lot::Mutex::new(None),
             health_ticks: Arc::new(AtomicU64::new(0)),
             plan_none_live_lane_ticks: Arc::new(AtomicU64::new(0)),

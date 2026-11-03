@@ -7,31 +7,20 @@ use super::*;
 // step are one operation: acquire sets them, drop clears them, a second acquire fails.
 #[test]
 fn a_reconcile_in_flight_names_its_step_and_a_wedge_is_declared_past_the_bound() {
-    use super::{reconcile_wedged, ReconcileStep, ServingOperation, RECONCILE_WEDGE_BOUND};
-    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+    use super::{reconcile_wedged, LifecycleGate, ReconcileStep, RECONCILE_WEDGE_BOUND};
+    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
-    let gate = Arc::new(AtomicBool::new(false));
-    let started = Arc::new(AtomicU64::new(0));
-    let step = Arc::new(AtomicU8::new(0));
-    let op = ServingOperation::acquire(gate.clone(), started.clone(), step.clone())
-        .expect("first acquire");
-    assert!(ServingOperation::acquire(gate.clone(), started.clone(), step.clone()).is_none());
-    assert!(started.load(Ordering::Acquire) > 0, "the start is stamped");
+    let gate = LifecycleGate::new(Arc::new(AtomicBool::new(true)));
+    let op = gate.try_operation().expect("first acquire");
+    assert!(gate.try_operation().is_none());
+    let stamped = gate.in_flight().expect("an operation holds the gate");
+    assert!(stamped.started_ms > 0, "the start is stamped");
     op.step(ReconcileStep::Ensure);
-    assert_eq!(
-        ReconcileStep::from_u8(step.load(Ordering::Acquire)),
-        ReconcileStep::Ensure
-    );
-    assert_eq!(
-        ReconcileStep::from_u8(step.load(Ordering::Acquire)).name(),
-        "ensure_serving"
-    );
+    let in_flight = gate.in_flight().expect("still held");
+    assert_eq!(in_flight.step, ReconcileStep::Ensure);
+    assert_eq!(in_flight.step.name(), "ensure_serving");
     drop(op);
-    assert!(!gate.load(Ordering::Acquire) && started.load(Ordering::Acquire) == 0);
-    assert_eq!(
-        ReconcileStep::from_u8(step.load(Ordering::Acquire)),
-        ReconcileStep::None
-    );
+    assert!(!gate.is_held() && gate.in_flight().is_none());
     assert!(!reconcile_wedged(RECONCILE_WEDGE_BOUND));
     assert!(reconcile_wedged(
         RECONCILE_WEDGE_BOUND + std::time::Duration::from_secs(1)
@@ -79,7 +68,7 @@ async fn an_empty_plan_takes_the_live_lane_down_once() {
     queued.abort();
     assert!(queued.await.unwrap_err().is_cancelled());
     assert!(
-        !daemon.reconciling.load(Ordering::Acquire),
+        !daemon.lifecycle.is_held(),
         "abort before first poll releases gate"
     );
     assert_eq!(idles.load(Ordering::SeqCst), 0);
@@ -386,7 +375,7 @@ async fn reconcile_brings_planned_model_up() {
     let queued = stale.reconcile_to_plan().expect("queued serve");
     queued.abort();
     assert!(queued.await.unwrap_err().is_cancelled());
-    assert!(!stale.reconciling.load(Ordering::Acquire));
+    assert!(!stale.lifecycle.is_held());
     stale
         .reconcile_to_plan()
         .expect("probe reconcile")
@@ -433,7 +422,7 @@ async fn reconcile_brings_planned_model_up() {
     );
     admitted.abort();
     assert!(admitted.await.unwrap_err().is_cancelled());
-    assert!(!cancelled.reconciling.load(Ordering::Acquire));
+    assert!(!cancelled.lifecycle.is_held());
     assert!(
         cancelled.force_relaunch.load(Ordering::Acquire),
         "cancelled forced probe is still owed"
@@ -459,7 +448,7 @@ async fn reconcile_brings_planned_model_up() {
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     assert!(probing.force_relaunch.load(Ordering::Acquire));
-    assert!(!probing.reconciling.load(Ordering::Acquire));
+    assert!(!probing.lifecycle.is_held());
     assert!(
         probing.serving_tx.borrow().loading_model.is_none(),
         "no admission before probe completes"
@@ -650,7 +639,7 @@ async fn degraded_reconcile_clears_gate_and_publishes_empty() {
     assert!(!snap.ready, "degraded → not ready");
     assert_eq!(snap.active_model, None);
     assert!(
-        !daemon.reconciling.load(Ordering::SeqCst),
+        !daemon.lifecycle.is_held(),
         "gate cleared for retry"
     );
 
