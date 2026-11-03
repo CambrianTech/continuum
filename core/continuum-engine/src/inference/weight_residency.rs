@@ -197,10 +197,13 @@ impl ContextGeometry {
     }
 }
 
-/// The pool, when the fork's geometry agrees with the slot geometry `/props` reports beside it.
+/// The pool, when the fork's geometry agrees with the slot geometry `/props` reports beside it:
+/// the same sequences, and a slot window within one sequence's limit. Within, not equal: the
+/// server caps a slot's `n_ctx` at the trained window, below the per-sequence limit whenever the
+/// pool is larger (IntelMac 2026-11-03: n_ctx 32,768 beside 65,536; Cormac on #5722).
 fn allocated_capacity(props: &serde_json::Value, slots: u32, n_ctx_per_slot: u32) -> Option<u64> {
     let geometry = ContextGeometry::from_props(props)?;
-    (geometry.sequence_capacity == u64::from(slots) && geometry.max_tokens_per_sequence == u64::from(n_ctx_per_slot))
+    (geometry.sequence_capacity == u64::from(slots) && u64::from(n_ctx_per_slot) <= geometry.max_tokens_per_sequence)
         .then_some(geometry.allocated_tokens)
 }
 
@@ -266,10 +269,20 @@ mod tests {
             "allocated_tokens": 2048, "max_tokens_per_sequence": 2048, "sequence_capacity": 2
         });
         assert_eq!(EngineContext::from_props(&unified).expect("unified receipt").allocated_tokens, 2048);
+        // a pool larger than the trained window: the slot's n_ctx is capped below the
+        // per-sequence limit, and the reading still stands (the IntelMac's 65,536 / 32,768)
+        let mut capped = with_slots.clone();
+        capped["default_generation_settings"] = serde_json::json!({"n_ctx": 32_768});
+        capped["context_geometry"] = serde_json::json!({
+            "allocated_tokens": 65_536, "max_tokens_per_sequence": 65_536, "sequence_capacity": 2
+        });
+        assert_eq!(EngineContext::from_props(&capped).expect("capped slot window").allocated_tokens, 65_536);
         for invalid in [
             serde_json::Value::Null,
             serde_json::json!({"allocated_tokens": 0, "max_tokens_per_sequence": 2048, "sequence_capacity": 2}),
             serde_json::json!({"allocated_tokens": 2048, "max_tokens_per_sequence": 2048, "sequence_capacity": 3}),
+            // a slot window past one sequence's limit is not this engine's geometry
+            serde_json::json!({"allocated_tokens": 2048, "max_tokens_per_sequence": 1024, "sequence_capacity": 2}),
         ] {
             unified["context_geometry"] = invalid;
             assert_eq!(EngineContextReading::of(&unified), EngineContextReading::Invalid);
