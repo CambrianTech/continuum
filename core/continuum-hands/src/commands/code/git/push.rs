@@ -87,6 +87,15 @@ async fn pull_request_for(root: &std::path::Path, branch: &str) -> BranchPullReq
     }
 }
 
+/// The branch a push named, as GitHub knows it: a refspec's destination (`src:dst`), without
+/// `refs/heads/`. `None` when the push named the current branch (nothing, or `HEAD`), which the
+/// caller resolves from the workspace; `gh --head HEAD` would read as no PR (Cormac on #5719).
+fn pushed_branch(branch: &str) -> Option<String> {
+    let dst = branch.rsplit_once(':').map_or(branch, |(_, dst)| dst).trim_start_matches('+');
+    let name = dst.strip_prefix("refs/heads/").unwrap_or(dst); // unwrap_or: a short name has no refs/heads/ prefix to strip
+    (!name.is_empty() && name != "HEAD").then(|| name.to_string())
+}
+
 /// `gh pr list`'s answer: `<number> <url>` for an open PR, nothing for none.
 fn listed(line: &str) -> BranchPullRequest {
     match line
@@ -126,6 +135,18 @@ mod tests {
             }
         );
     }
+
+    // what this catches: a push naming `HEAD` or a refspec asking GitHub for a PR whose head is
+    // literally `HEAD` or `src:dst`, which lists nothing and reads as "no PR yet" (Cormac on #5719).
+    #[test]
+    fn the_pushed_branch_is_the_name_github_knows() {
+        assert_eq!(pushed_branch(""), None, "the current branch, resolved from the workspace");
+        assert_eq!(pushed_branch("HEAD"), None, "the current branch, resolved from the workspace");
+        assert_eq!(pushed_branch("fable/x"), Some("fable/x".into()));
+        assert_eq!(pushed_branch("HEAD:fable/x"), Some("fable/x".into()), "a refspec's destination");
+        assert_eq!(pushed_branch("+local:refs/heads/fable/x"), Some("fable/x".into()));
+        assert_eq!(pushed_branch("local:HEAD"), None);
+    }
 }
 
 crate::action_command! {
@@ -147,9 +168,9 @@ crate::action_command! {
         let remote = p.remote.unwrap_or_default();
         let branch = p.branch.unwrap_or_default();
         let output = git_bridge::git_push(&root, &remote, &branch).await.map_err(CommandError::Internal)?;
-        let pushed = match branch.is_empty() {
-            true => git_bridge::run_git(&root, &["rev-parse", "--abbrev-ref", "HEAD"]).await.map(|b| b.trim().to_string()),
-            false => Ok(branch),
+        let pushed = match pushed_branch(&branch) {
+            Some(name) => Ok(name),
+            None => git_bridge::run_git(&root, &["rev-parse", "--abbrev-ref", "HEAD"]).await.map(|b| b.trim().to_string()),
         };
         let pull_request = match pushed {
             Ok(pushed) => pull_request_for(&root, &pushed).await,
