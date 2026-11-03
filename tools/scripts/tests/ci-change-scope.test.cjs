@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { selectChecks, readWorkspace, readPolicy, deriveCrates, TESTED_CRATES, TEST_FEATURES, LIB_TESTS } = require('../ci-change-scope.cjs');
+const { selectChecks, readWorkspace, readPolicy, deriveCrates, publishedBinaries, TESTED_CRATES, TEST_FEATURES, LIB_TESTS } = require('../ci-change-scope.cjs');
 const ALL = { crates: TESTED_CRATES, cli: true };
 const NONE = { crates: [], cli: false };
 const select = (...paths) => {
@@ -83,6 +83,42 @@ test('missing or malformed publication source cannot prove a skip', () => {
     assert.equal(publication([publisher], { ...evidence(), publicationAfter: invalid }), true);
   }
   assert.equal(selectChecks([{ filename: publisher, previous_filename: 12 }], evidence()).publication, true);
+});
+
+// A PR adding a crate no published binary compiles skips the three platforms of binaries
+// (#5727, #5729: each new leaf crate edited this test, so the publisher ran, and its other paths
+// forced the build). Only a provable addition skips: the closure is read from the publisher's own
+// --bin list and the workspace graph; a patch that changes anything else builds.
+const bins = { bins: ['server'], manifests: [] };
+const graph = { crates: [
+  { name: 'core', dir: 'core/core', deps: ['core/kernel'], bins: [{ name: 'server', path: 'src/main.rs' }] },
+  { name: 'kernel', dir: 'core/kernel', deps: [], bins: [] },
+  { name: 'leaf', dir: 'core/leaf', deps: ['core/kernel'], bins: [] },
+] };
+const addsMember = { filename: 'Cargo.toml', patch: '@@ -10,6 +10,7 @@\n     "core/kernel",\n+    "core/leaf",\n     "core/core",' };
+const addsLock = { filename: 'Cargo.lock', patch: '@@ -1,3 +1,10 @@\n+[[package]]\n+name = "leaf"\n+version = "0.1.0"\n+dependencies = [\n+ "kernel",\n+]\n+\n [[package]]' };
+const leafPR = [{ filename: 'core/leaf/src/lib.rs' }, { filename: 'core/leaf/Cargo.toml' }, addsMember, addsLock,
+  { filename: 'tools/scripts/tests/ci-change-scope.test.cjs' }];
+const proof = { eventName: 'pull_request', complete: true, workspace: graph, binaries: bins };
+
+test('a new crate no published binary compiles skips the binaries, and only a provable one', () => {
+  assert.equal(selectChecks(leafPR, proof).publication, false, 'a leaf crate, its member line and its lock block');
+  const builds = (files, why) => assert.equal(selectChecks(files, proof).publication, true, why);
+  builds([...leafPR, { filename: 'core/kernel/src/lib.rs' }], 'a crate the binary compiles');
+  builds([{ filename: 'core/leaf/src/lib.rs' }, { ...addsLock, patch: addsLock.patch + '\n+source = "registry+https://github.com/rust-lang/crates.io-index"' }], 'a new external crate in the lock');
+  builds([{ filename: 'core/leaf/src/lib.rs' }, { ...addsLock, patch: addsLock.patch + '\n-version = "1.0.0"' }], 'a lock line changed');
+  builds([{ filename: 'core/leaf/src/lib.rs' }, { ...addsMember, patch: addsMember.patch + '\n+[profile.release]' }], 'a manifest change beyond member lines');
+  builds([{ filename: 'core/leaf/src/lib.rs' }, { filename: 'Cargo.lock' }], 'a lock diff too large to carry its patch');
+  assert.equal(selectChecks(leafPR, { ...proof, binaries: { bins: ['missing'], manifests: [] } }).publication, true, 'a binary whose owner is unknown');
+  assert.equal(selectChecks(leafPR, { ...proof, eventName: 'workflow_dispatch' }).publication, true, 'outside a pull request');
+});
+
+test('the real publisher names binaries every one of which has an owner in the workspace', () => {
+  const real = publishedBinaries(repo);
+  assert.ok(real.bins.includes('continuum-core-server') && real.manifests.includes('core/livekit-bridge'), JSON.stringify(real));
+  const files = [{ filename: 'core/continuum-core/src/lib.rs' }];
+  const realProof = { eventName: 'pull_request', complete: true, workspace: readWorkspace(repo), binaries: real, root: repo };
+  assert.equal(selectChecks(files, realProof).publication, true, 'the core itself is in the closure');
 });
 
 // The crate scope reads the real workspace, so a new member or dependency edge is covered

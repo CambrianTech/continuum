@@ -30,10 +30,82 @@ function publicationConfig(value) {
   return copy;
 }
 
-function selectPublication(paths, evidence) {
+// The binaries the publication builds, read from the publisher so the list is written once: every
+// `--bin <name>` in core-binaries.yml, and every crate it builds by a literal `--manifest-path`.
+function publishedBinaries(root = '.') {
+  const text = fs.readFileSync(path.join(root, publisherPath), 'utf8');
+  const bins = [...new Set([...text.matchAll(/--bin\s+([A-Za-z0-9_-]+)/g)].map(([, name]) => name))];
+  const manifests = [...new Set([...text.matchAll(/--manifest-path\s+"?([A-Za-z0-9_./-]+)\/Cargo\.toml/g)].map(([, dir]) => dir))];
+  return { bins, manifests };
+}
+
+// Every workspace crate a published binary compiles: the crates owning its bins (declared, or the
+// implicit `src/bin/<name>.rs` / `src/bin/<name>/main.rs`) and the crates the publisher builds by
+// manifest, then everything they depend on by path. `null` when a binary's owner cannot be found:
+// nothing narrower can be proven then.
+function binaryClosure(workspace, binaries, root = '.') {
+  if (!workspace || !Array.isArray(workspace.crates) || !binaries) return null;
+  const exists = file => fs.existsSync(path.join(root, file));
+  const owns = (c, name) => (c.bins ?? []).some(b => b.name === name)
+    || exists(`${c.dir}/src/bin/${name}.rs`) || exists(`${c.dir}/src/bin/${name}/main.rs`);
+  const roots = new Set(binaries.manifests);
+  for (const name of binaries.bins) {
+    const owner = workspace.crates.find(c => owns(c, name));
+    if (!owner) return null;
+    roots.add(owner.dir);
+  }
+  const byDir = new Map(workspace.crates.map(c => [c.dir, c]));
+  const closure = new Set();
+  const visit = dir => {
+    if (closure.has(dir)) return true;
+    const crate = byDir.get(dir);
+    if (!crate) return false;
+    closure.add(dir);
+    return crate.deps.every(visit);
+  };
+  return [...roots].every(visit) ? closure : null;
+}
+
+// Whether a manifest or lock change only adds workspace members the binaries never compile, read
+// from the PR's own patch: the root Cargo.toml adds member lines and nothing else; Cargo.lock adds
+// whole `[[package]]` blocks of those members (no `source`, so no new external crate) and changes
+// nothing else. A missing patch (too large for the API) proves nothing.
+function onlyAddsMembers(file, inert) {
+  if (typeof file.patch !== 'string') return false;
+  const lines = file.patch.split('\n').filter(l => !l.startsWith('@@') && !l.startsWith('\\'));
+  if (lines.some(l => l.startsWith('-'))) return false;
+  const added = lines.filter(l => l.startsWith('+')).map(l => l.slice(1).trim()).filter(Boolean);
+  if (file.filename === 'Cargo.toml') {
+    return added.length > 0 && added.every(l => inert.has(l.match(/^"([^"]+)",?$/)?.[1]));
+  }
+  const names = added.map(l => l.match(/^name = "([^"]+)"$/)?.[1]).filter(Boolean);
+  return names.length > 0
+    && names.every(name => inert.has(`name:${name}`))
+    && added.filter(l => l === '[[package]]').length === names.length
+    && !added.some(l => l.startsWith('source ') || l.startsWith('checksum '));
+}
+
+// A changed path that cannot alter a published binary: a member outside the binaries' closure, or a
+// manifest/lock edit that only adds such members (#5727, #5729: each new leaf crate edited the CI
+// scope test and paid for three platforms of binaries it cannot affect).
+function inertToBinaries(files, evidence) {
+  const closure = binaryClosure(evidence.workspace, evidence.binaries, evidence.root);
+  if (!closure) return () => false;
+  const outside = evidence.workspace.crates.filter(c => !closure.has(c.dir));
+  const inert = new Set([...outside.map(c => c.dir), ...outside.map(c => `name:${c.name}`)]);
+  const byPath = new Map(files.map(f => [f.filename, f]));
+  return p => {
+    if (p === 'Cargo.toml' || p === 'Cargo.lock') return byPath.has(p) && onlyAddsMembers(byPath.get(p), inert);
+    if (global(p)) return false;
+    return outside.some(c => p.startsWith(`${c.dir}/`));
+  };
+}
+
+function selectPublication(paths, evidence, files = []) {
   if (evidence.eventName !== 'pull_request' || evidence.complete !== true) return true;
+  const inert = inertToBinaries(files, evidence);
   if (paths.some(p => p !== publisherPath && !docs(p) && !schedulingPaths.has(p)
-      && p !== 'core/continuum-cli-lifecycle/src/prebuilt_artifact/tests.rs')) return true;
+      && p !== 'core/continuum-cli-lifecycle/src/prebuilt_artifact/tests.rs' && !inert(p))) return true;
   if (!paths.includes(publisherPath)) return false;
   try {
     return !isDeepStrictEqual(publicationConfig(evidence.publicationBefore), publicationConfig(evidence.publicationAfter));
@@ -216,9 +288,9 @@ function selectChecks(files, evidence = {}) {
   const workspace = evidence.eventName === 'push' ? null : evidence.workspace;
   const scope = !rust ? { crates: [], cli: false } : selectCrates(rustPaths, workspace);
   const targets = selectTargets(rustPaths, workspace, scope.crates);
-  return { rust, installer: rust || paths.some(windows), publication: selectPublication(paths, evidence), ...scope, ...targets };
+  return { rust, installer: rust || paths.some(windows), publication: selectPublication(paths, evidence, files), ...scope, ...targets };
 }
-module.exports = { selectChecks, readWorkspace, readPolicy, deriveCrates, TESTED_CRATES, TEST_FEATURES, LIB_TESTS };
+module.exports = { selectChecks, readWorkspace, readPolicy, deriveCrates, publishedBinaries, TESTED_CRATES, TEST_FEATURES, LIB_TESTS };
 
 // Shell and Rust readers take the derived sets from here, as JSON: `warning-crates` (the warnings
 // ratchet), `crate-sets` (source-hygiene's guard, which checks its own Rust derivation against it).
