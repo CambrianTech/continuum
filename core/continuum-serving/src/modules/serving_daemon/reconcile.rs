@@ -348,6 +348,7 @@ impl ServingDaemonModule {
                 && live.active_model.as_deref() == Some(desired.as_str())
                 && live.adapters == desired_adapter_paths
                 && !self.shared_pool_move_due(&live.base_url)
+                && !self.pool_growth_due(&desired, served_ctx, lanes)
             {
                 // The lanes this hour served: the health window's maximum (the lane-bound rest
                 // stands on it).
