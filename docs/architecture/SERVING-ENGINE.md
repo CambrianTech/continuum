@@ -219,18 +219,24 @@ The prompt captures of the four residents (`fixtures/prompt-captures`, 611 conse
 
 | Where her next prompt first differs | Pairs |
 |---|---|
-| Her changing tail | 441 |
+| Her changing tail (the prompt only appended before it) | 435 |
 | Identical | 62 |
-| She moved to another room (activity) | 56 |
-| Live state in an early block: `room-wall` 12, `recall` 8, `workspace-map` 6, `room-kanban` 4 (a "557 claimable" counter), other 10 | 40 |
-| Tool surface changed | 12 |
+| She moved to another room (activity); 52 of 59 keep her first 3 messages | 59 |
+| A turnover: her view restarted, and an early block differs | 29 |
+| Live state in an early block with no turnover (`room-kanban`'s "557 claimable" counter, `room-wall`, `workspace-map`, `recall`) | 11 |
+| Tool surface changed | 9 |
+| A turnover with only later messages different | 6 |
+
+Of the 40 turnovers, 37 came with a new `context_window` on the request: 10,803, 16,640, 49,152,
+69,376, 82,944, 96,256, 128,768 tokens across the day's relaunches. Her grant changed and her view
+refit from the start. A grant that grows must never restart her; only a grant below what she holds
+does, and then her view compresses to it oldest first (goal 7).
 
 Minds share only 6,177 chars of system prompt with each other (it diverges inside it). The
 recurring 11,114-token checkpoint is each mind's own head end, not a shared one.
 
-So the blind every-4k checkpoints were covering three defects upstream of the engine: live values in
-blocks meant to be stable, a mind's activities each restarting her view, and an unstable tool
-surface (goal 10).
+So the blind every-4k checkpoints were covering defects upstream of the engine: her grant moving
+under her (turnovers), live values in blocks meant to be stable, and an unstable tool surface (goal 10).
 
 ### 7.3 The contract across the seam
 
@@ -254,13 +260,13 @@ surface (goal 10).
 
 ### 7.4 Order of work
 
-1. Mind side: no live value in a stable block. The kanban counter, the wall, the workspace map and
-   recall move to her tail as appended events; a ratchet refuses a live value rendered into a block
-   before the stable end. Validator: rerun 7.2's classification on fresh captures, early-block
-   pairs to 0.
-2. Mind side: her activities are one view (she is one integrated mind across activities); a move
-   between rooms appends, it does not restart her. Validator: room-switch pairs re-read only the
-   switch.
+1. A grant change is not a restart: her view turns over only when her grant falls below what she
+   holds, and a grown grant is room to append into. Validator: replay the captures with the day's
+   grants; turnovers with a grown window go to 0.
+2. Mind side: no live value in a stable block. The kanban counter, the wall, the workspace map and
+   recall arrive as appended item versions (the keyed-item contract above), never as an in-place
+   rewrite; a ratchet refuses one. Validator: rerun 7.2 on fresh captures, in-place early changes
+   to 0. Her activities stay one view: a move between rooms appends.
 3. Fork: the boundary checkpoint verb (keep one at the stable end the request names) replaces
    `--ctx-checkpoints N` / `--checkpoint-min-step`; per-sequence holdings on `/slots` (`resident_state`
    and slot `checkpoints`, fork #91, are the first part).
