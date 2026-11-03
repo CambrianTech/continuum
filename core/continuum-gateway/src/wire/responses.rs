@@ -18,32 +18,49 @@ pub(crate) struct Responses {
     text: Option<String>,
 }
 
+/// A Responses request's required fields; everything else stays in `rest`.
+#[derive(serde::Deserialize)]
+struct Required {
+    model: String,
+    input: Input,
+    #[serde(flatten)]
+    rest: serde_json::Map<String, Value>,
+}
+
+/// `input`: one user text, or a list of items.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum Input {
+    Text(String),
+    Items(Vec<Value>),
+}
+
 impl Wire for Responses {
     const NAME: &'static str = "openai_responses";
 
     fn decode(body: Value) -> Result<Call, BadRequest> {
-        let model = body.get("model").and_then(Value::as_str).ok_or_else(|| BadRequest("`model` is required".into()))?;
+        let Required { model, input, rest } = decode::fields(body)?;
+        let body = Value::Object(rest);
         if body.get("previous_response_id").is_some_and(|v| !v.is_null()) {
             return Err(BadRequest(
                 "`previous_response_id` needs server-side session memory, which this gateway does not keep yet; send the full `input` with `store: false`".into(),
             ));
         }
-        let messages = match body.get("input") {
-            Some(Value::String(text)) => vec![ChatMessage { role: "user".into(), content: MessageContent::Text(text.clone()), name: None }],
-            Some(Value::Array(items)) => items_to_messages(items)?,
-            _ => return Err(BadRequest("`input` is required".into())),
+        let messages = match input {
+            Input::Text(text) => vec![ChatMessage { role: "user".into(), content: MessageContent::Text(text), name: None }],
+            Input::Items(items) => items_to_messages(&items)?,
         };
         let mut request = TextGenerationRequest {
-            model: Some(model.to_owned()),
+            model: Some(model),
             max_tokens: decode::token_limit(&body, &["max_output_tokens"])?,
             system_prompt: instructions(&body)?,
             messages,
             tools: decode::tools(&body, tool)?,
             tool_choice: chat::tool_choice(&body)?,
-            purpose: Some(continuum_engine::inference::request_body::DRIVER_PURPOSE.into()),
+            purpose: Some(continuum_engine::inference::slots::DRIVER_PURPOSE.into()),
             ..Default::default()
         };
-        decode::sampling(&body, &mut request, chat::OPENAI_TEMPERATURE_MAX)?;
+        decode::sampling(&body, &mut request)?;
         (request.system_prompt, request.messages) = place_system(request.system_prompt.take(), std::mem::take(&mut request.messages));
         Ok(Call { request, stream: decode::streamed(&body)? })
     }

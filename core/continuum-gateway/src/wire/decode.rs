@@ -93,15 +93,22 @@ fn real(
     Ok(Some(number as f32))
 }
 
-/// The sampling fields every format names the same way: temperature (whose ceiling is the
-/// format's: 2 for OpenAI, 1 for Anthropic), top_p, and the stop sequences under `stop` or
-/// `stop_sequences`, one string or an array of strings.
+/// A request's required fields, decoded by their type: a body without them fails here with
+/// serde's own `missing field` error, never a hand-written presence check. `rest` is every
+/// other field, read by the optional decoders below.
+pub(crate) fn fields<T: serde::de::DeserializeOwned>(body: Value) -> Result<T, BadRequest> {
+    serde_json::from_value(body).map_err(|error| BadRequest(error.to_string()))
+}
+
+/// The sampling fields every format names the same way: temperature (any non-negative value the
+/// engine's sampler holds; the engine owns what it can sample, so no format's documented ceiling
+/// is re-imposed here), top_p, and the stop sequences under `stop` or `stop_sequences`, one string
+/// or an array of strings.
 pub(crate) fn sampling(
     body: &Value,
     request: &mut TextGenerationRequest,
-    temperature_max: f64,
 ) -> Result<(), BadRequest> {
-    request.temperature = real(body, "temperature", 0.0..=temperature_max)?;
+    request.temperature = real(body, "temperature", 0.0..=f64::from(f32::MAX))?;
     request.top_p = real(body, "top_p", 0.0..=1.0)?;
     let key = if present(body, "stop").is_some() {
         "stop"

@@ -7,8 +7,14 @@ use continuum_engine::ai::types::ImageInput;
 use continuum_engine::ai::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse, ToolChoice};
 use serde_json::{json, Value};
 
-/// OpenAI's documented ceiling for `temperature` (Chat Completions and Responses alike).
-pub(super) const OPENAI_TEMPERATURE_MAX: f64 = 2.0;
+/// A Chat Completions request's required fields; everything else stays in `rest`.
+#[derive(serde::Deserialize)]
+struct Required {
+    model: String,
+    messages: Vec<Value>,
+    #[serde(flatten)]
+    rest: serde_json::Map<String, Value>,
+}
 
 /// One streamed answer.
 pub(crate) struct Chat {
@@ -21,20 +27,20 @@ impl Wire for Chat {
     const NAME: &'static str = "openai_chat";
 
     fn decode(body: Value) -> Result<Call, BadRequest> {
-        let model = body.get("model").and_then(Value::as_str).ok_or_else(|| BadRequest("`model` is required".into()))?;
-        let messages = body.get("messages").and_then(Value::as_array).ok_or_else(|| BadRequest("`messages` is required".into()))?;
-        let (system_prompt, messages) = place_system(None, conversation(messages)?);
+        let Required { model, messages, rest } = decode::fields(body)?;
+        let body = Value::Object(rest);
+        let (system_prompt, messages) = place_system(None, conversation(&messages)?);
         let mut request = TextGenerationRequest {
-            model: Some(model.to_owned()),
+            model: Some(model),
             max_tokens: decode::token_limit(&body, &["max_completion_tokens", "max_tokens"])?,
             system_prompt,
             messages,
             tools: decode::tools(&body, tool)?,
             tool_choice: tool_choice(&body)?,
-            purpose: Some(continuum_engine::inference::request_body::DRIVER_PURPOSE.into()),
+            purpose: Some(continuum_engine::inference::slots::DRIVER_PURPOSE.into()),
             ..Default::default()
         };
-        decode::sampling(&body, &mut request, OPENAI_TEMPERATURE_MAX)?;
+        decode::sampling(&body, &mut request)?;
         Ok(Call { request, stream: decode::streamed(&body)? })
     }
 

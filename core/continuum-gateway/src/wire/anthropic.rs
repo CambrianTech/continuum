@@ -6,8 +6,15 @@ use continuum_engine::ai::types::ImageInput;
 use continuum_engine::ai::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse, ToolChoice};
 use serde_json::{json, Value};
 
-/// Anthropic's documented ceiling for `temperature`.
-const ANTHROPIC_TEMPERATURE_MAX: f64 = 1.0;
+/// A Messages request's required fields; everything else stays in `rest`.
+#[derive(serde::Deserialize)]
+struct Required {
+    model: String,
+    max_tokens: std::num::NonZeroU32,
+    messages: Vec<Value>,
+    #[serde(flatten)]
+    rest: serde_json::Map<String, Value>,
+}
 
 /// One streamed answer: the open content block with its index, and the next index.
 pub(crate) struct Anthropic {
@@ -27,21 +34,20 @@ impl Wire for Anthropic {
     const NAME: &'static str = "anthropic_messages";
 
     fn decode(body: Value) -> Result<Call, BadRequest> {
-        let model = body.get("model").and_then(Value::as_str).ok_or_else(|| BadRequest("`model` is required".into()))?;
-        let max_tokens = decode::token_limit(&body, &["max_tokens"])?.ok_or_else(|| BadRequest("`max_tokens` is required".into()))?;
-        let messages = body.get("messages").and_then(Value::as_array).ok_or_else(|| BadRequest("`messages` is required".into()))?;
+        let Required { model, max_tokens, messages, rest } = decode::fields(body)?;
+        let body = Value::Object(rest);
         let mut request = TextGenerationRequest {
-            model: Some(model.to_owned()),
-            max_tokens: Some(max_tokens),
+            model: Some(model),
+            max_tokens: Some(max_tokens.get()),
             top_k: decode::count(&body, "top_k", 0)?,
             system_prompt: body.get("system").map(text_of).filter(|s| !s.is_empty()),
             messages: messages.iter().map(message).collect::<Result<_, _>>()?,
             tools: decode::tools(&body, tool)?,
             tool_choice: tool_choice(&body)?,
-            purpose: Some(continuum_engine::inference::request_body::DRIVER_PURPOSE.into()),
+            purpose: Some(continuum_engine::inference::slots::DRIVER_PURPOSE.into()),
             ..Default::default()
         };
-        decode::sampling(&body, &mut request, ANTHROPIC_TEMPERATURE_MAX)?;
+        decode::sampling(&body, &mut request)?;
         (request.system_prompt, request.messages) = place_system(request.system_prompt.take(), std::mem::take(&mut request.messages));
         Ok(Call { request, stream: decode::streamed(&body)? })
     }
