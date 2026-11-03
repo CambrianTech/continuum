@@ -112,3 +112,24 @@ fn model_swap_on_a_ready_lane_needs_a_sustained_streak() {
         ModelChangeGate::NotAChange
     );
 }
+
+// what this catches (b4be7bc59 on the M5, 2026-11-03 18:18Z, rolled back): a launch pool sized
+// from the cold boot plan. Its window was the bootstrap 2,048 and the plan's live budget fit
+// nothing at five sequences, so the engine launched at 5 x 2,048, and one launch is never
+// relaunched to resize. On the boot plan the pool is never smaller than the fit at the host's
+// PHYSICAL budget, and never smaller than the plan's own window x lanes (Cormac on #5733).
+#[test]
+fn the_launch_pool_never_comes_from_the_boot_plan() {
+    let daemon = daemon_with(Arc::new(FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true)));
+    assert_eq!(daemon.plan_budget_bytes.load(Ordering::Relaxed), 0, "a cold boot: no plan budget yet");
+    let mut model = daemon.catalog.snapshot().values().next().expect("the catalog has a model").model.clone();
+    model.weights_bytes = Some(9 * GB);
+    let fp = crate::inference::planning::serving_plan::footprint_for(&model).expect("a footprint from the weights");
+    let (per_slot, sequences) = daemon.engine_pool(&model, 2_048, 1);
+    let pool = u64::from(per_slot) * u64::from(sequences);
+    let fit = u64::from(fp.window_within(daemon.physical_budget().usable_bytes, sequences).min(model.context_window))
+        * u64::from(sequences);
+    assert!(fit > 2_048, "the physical budget fits more than the bootstrap window: {fit}");
+    assert!(pool + u64::from(sequences) > fit, "the pool is the fit at the physical budget ({fit}), not the boot plan: {pool}");
+    assert!(pool >= 2_048, "never below the plan's own window x lanes");
+}

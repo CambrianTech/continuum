@@ -21,23 +21,20 @@ impl ServingDaemonModule {
     ///
     /// The launch decides only the pool's size; no mind's window comes from it. Each mind's
     /// window is her grant from her measured requirement (`grants.rs`), and under `--kv-unified`
-    /// any one sequence may grow into the whole pool. The pool is the most memory the plan's own
-    /// arithmetic proves fits: its window x its lanes, or its fit at the sequences (a window
-    /// within the budget for each), whichever is larger. The sequences are every seated mind,
-    /// the minds leased in at the last plan, and the scratch traffic, so seating never relaunches.
-    /// On the M5 (plan 2 x 128,768) that is 257,536 for 5; on the IntelMac (plan 2 x 32,768,
-    /// fit 9 x 32,768) 294,912 for 9, what it serves healthy today. Dividing the pool by the
-    /// sequences as each mind's window gave the M5 5 x 10,803 (b03d7c5bc) and would have given
-    /// the IntelMac 7,281 against 13-30k acts (Joel, 2026-11-03: "System accommodates it doesn't
-    /// do stupid division").
-    fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> (u32, u32) {
+    /// any one sequence may grow into the whole pool. The sequences are every seated mind, the
+    /// minds leased in at the last plan, and the scratch traffic, so seating never relaunches.
+    /// The size is [`launch_pool`] at the host's PHYSICAL budget, never the plan's live one.
+    pub(super) fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> (u32, u32) {
         let leased_in = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed);
         let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes).max(1);
-        let budget = self.plan_budget_bytes.load(Ordering::Relaxed);
-        let plan_pool = u64::from(served_ctx) * u64::from(lanes);
-        let fit_pool = footprint_for(model)
-            .map_or(0, |fp| u64::from(fp.window_within(budget, sequences).min(model.context_window)) * u64::from(sequences)); // map_or: no footprint proves no fit beyond the plan's own pool
-        let pool = plan_pool.max(fit_pool);
+        let pool = launch_pool(
+            footprint_for(model).as_ref(),
+            self.physical_budget().usable_bytes,
+            served_ctx,
+            lanes,
+            sequences,
+            model.context_window,
+        );
         // `-c` is the CLI's `slots x per-slot`: the pool carried in that shape, not anyone's window.
         let per_slot = u32::try_from(pool / u64::from(sequences)).unwrap_or(u32::MAX); // unwrap_or: a pool over u32 x sequences is no real engine; the CLI caps it
         (per_slot, sequences)
@@ -703,4 +700,30 @@ impl ServingDaemonModule {
             // The operation permit clears the gate on success, cancellation, or panic.
         }))
     }
+}
+
+/// The pool an engine launches with: the most memory the host's measured capacity proves fits.
+/// That is the fit at `sequences` (a window within `budget_bytes` for each, capped at the trained
+/// window) or the plan's own window x its lanes, whichever is larger.
+///
+/// `budget_bytes` is the PHYSICAL budget (`physical_budget`, the capacity `launch_window` bounds by
+/// too), never the plan's live one. The engine launches once and is never relaunched to resize, so
+/// a pool sized at a transient is kept for the engine's life: b4be7bc59 launched the M5 at
+/// 5 x 2,048 from the cold boot plan, whose window was the bootstrap 2,048 and whose live budget
+/// fit nothing at five sequences (2026-11-03 18:18Z, rolled back; Cormac on #5733). On the M5
+/// (plan 2 x 128,768) the result is 257,536 for 5; on the IntelMac (plan 2 x 32,768, fit
+/// 9 x 32,768) 294,912 for 9, its healthy geometry.
+pub(super) fn launch_pool(
+    footprint: Option<&crate::inference::planning::serving_plan::ModelFootprint>,
+    budget_bytes: u64,
+    plan_window: u32,
+    lanes: u32,
+    sequences: u32,
+    trained_window: u32,
+) -> u64 {
+    let plan_pool = u64::from(plan_window) * u64::from(lanes);
+    let fit_pool = footprint.map_or(0, |fp| {
+        u64::from(fp.window_within(budget_bytes, sequences).min(trained_window)) * u64::from(sequences)
+    }); // map_or: no footprint proves no fit beyond the plan's own pool
+    plan_pool.max(fit_pool)
 }
