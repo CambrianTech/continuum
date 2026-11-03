@@ -167,6 +167,13 @@ pub(crate) fn confirmed_in_flight() -> u64 {
     TURNS.lock().values().filter(|t| t.confirmed).count() as u64
 }
 
+/// How many of `persona`'s turns in flight are confirmed. Tests count their own mind's turns, since
+/// the global count moves under every other test thread (Fable on #5737).
+#[cfg(test)]
+pub(crate) fn confirmed_turns_of(persona: uuid::Uuid) -> usize {
+    TURNS.lock().values().filter(|t| t.persona == persona && t.confirmed).count()
+}
+
 /// Self-ticks in flight: a mind's own initiative (`Wake::Tick` / `Wake::Mind`), which consumes
 /// no external input. What it writes is in-memory and recomputed from the world each beat, and
 /// its notices are marked read only after its generation, so a stop that cuts one loses nothing
@@ -226,17 +233,16 @@ mod tests {
     #[test]
     fn two_turns_of_one_mind_are_two_turns() {
         let persona = uuid::Uuid::new_v4();
-        let before = confirmed_in_flight();
         let act = begin_turn(persona, 1_000);
         let fork = begin_turn(persona, 2_000);
         act.confirm();
-        assert_eq!(confirmed_in_flight(), before + 1, "only the confirmed one counts as confirmed");
+        assert_eq!(confirmed_turns_of(persona), 1, "only the confirmed one counts as confirmed");
         let hers = |turns: &[(uuid::Uuid, u64)]| turns.iter().find(|(p, _)| *p == persona).map(|(_, s)| *s);
         assert_eq!(hers(&in_flight_starts()), Some(1_000), "her start is the longest-running turn's");
 
         drop(act);
         assert!(turn_in_flight(persona), "ending the confirmed turn leaves the fork in flight");
-        assert_eq!(confirmed_in_flight(), before, "and its confirmation ends with it, not the fork's state");
+        assert_eq!(confirmed_turns_of(persona), 0, "and its confirmation ends with it, not the fork's state");
         assert_eq!(hers(&in_flight_starts()), Some(2_000));
 
         drop(fork);
