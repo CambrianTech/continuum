@@ -126,3 +126,21 @@ async fn a_refused_adopted_replacement_hands_the_endpoint_back_as_found() -> Res
     assert!(!endpoint.is_ready());
     Ok(())
 }
+
+// what this catches: the serving owner asking to replace an adopted engine before its pool can
+// be checkpointed (refused and handed back, and never asked again: the M5 2026-11-03 04:22Z
+// stayed on fixed slots), or treating a pool with no verified ledger as ready.
+#[test]
+fn an_adopted_replacement_is_ready_only_once_its_pool_and_ledger_are_known() -> Result<(), Box<dyn std::error::Error>> {
+    let root = format!("test://adopted-ready-{}", Uuid::new_v4());
+    assert!(!directory().adopted_replacement_ready(&root), "no pool known yet");
+    let pool = directory().ensure_pool(&root, 3);
+    assert!(!directory().adopted_replacement_ready(&root), "a pool without a verified ledger");
+    let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), 1)
+        .ok_or("fixture process identity unavailable")?;
+    let pages = tempfile::tempdir()?;
+    // A fresh adoption has no prior pages, and installs an empty ledger stamped with the engine.
+    let _ = adopt_engine_ledger(&pool, pages.path(), process.pid, process.started_s);
+    assert!(directory().adopted_replacement_ready(&root), "pool and ledger known: a checkpoint can run");
+    Ok(())
+}

@@ -113,6 +113,7 @@ impl ServingDaemonModule {
         on_disk: &[ModelFootprint], intent_revision: u64,
         leases: &[crate::resources::lease::ResourceLease],
     ) {
+        self.plan_budget_bytes.store(budget.usable_bytes, Ordering::Relaxed);
         // Hysteresis: pass the currently-served model as the incumbent so a
         // transient free-memory dip doesn't thrash the served model.
         //
