@@ -27,7 +27,7 @@ impl ServingDaemonModule {
     /// everything else on the node. Never the host's physical total (590df4bc3 sized the M5 at
     /// 5 x 262,144 from it: memory pressure 91%, 5.6 GB available, no resident hosted; rolled back)
     /// and never a cold boot's first-tick fallback plan, which planning no longer publishes.
-    fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> (u32, u32) {
+    pub(super) fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> (u32, u32) {
         let leased_in = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed);
         let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes).max(1);
         let pool = launch_pool(

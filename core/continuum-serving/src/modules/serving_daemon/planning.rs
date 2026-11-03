@@ -174,9 +174,7 @@ impl ServingDaemonModule {
         // boot over an inherited lane, #438) the ledger has nothing to add back, and the
         // plan's own credit is the one that keeps the successor from fleeing its
         // predecessor onto a smaller model. One credit, whichever layer holds the fact.
-        let ledger_credited = self.resource_daemon.board().attributions.iter().any(|a| {
-            a.consumer_id == SERVING_CONSUMER_ID && a.kind == serving_pool_kind() && a.bytes > 0
-        });
+        let ledger_credited = self.serving_footprint_reported();
         if !ledger_credited {
             // The boot planner adds incumbent bytes after this snapshot. That
             // enlarged budget no longer proves these leases were excluded.
