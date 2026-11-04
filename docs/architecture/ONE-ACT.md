@@ -77,10 +77,13 @@ Each stage: the ONE owner, its invariant, and what wins where docs or code disag
 
 - **Owner:** `working_set` (need = her FLOOR: head + required + newest interaction; want = floor +
   working set).
-- **Invariant:** demand is what her CURRENT view needs, never her history. A censored observation
-  (`Observed::AtLeast`, #5773) is an honest measurement of what an overflowing view would have held,
-  but it does NOT authorize residency: an overflow is answered by collapsing older items to handles
-  (stage 2), not by a bigger grant.
+- **Invariant:** demand is what her CURRENT view needs, never her history. An overflow is first
+  REDUCIBLE: eligible older items collapse to handles (stage 2). Only if the required material and
+  the newest complete interaction still exceed the grant is it IRREDUCIBLE working-set growth, and
+  then she requests admission-backed growth, placement elsewhere, or waits, with a typed reason
+  (Codex: "never a bigger grant" would be another hard-coded policy, as "automatically grow" was).
+  A censored observation (`Observed::AtLeast`, #5773) is the honest measurement either way; it does
+  not by itself authorize residency.
 - **Correction of 2026-11-04:** #5773 raised the WISH to a censored bound; that is reverted (the
   typed measurement stays). This is why one mind could take a whole pool.
 
@@ -161,28 +164,27 @@ against a 318 s cold re-prefill (~100x). It was defeated, not missing:
   to 654k for the same build);
 - 52 turns went cold with `inference.kv_page.cold_turn cause="page_on_disk_unconfirmed"`: a page on
   disk (31 GB in `~/.continuum/cache/kv-pages`) the ledger did not trust after a relaunch.
-**Invariants:** (1) an engine's geometry (pool, per-sequence window) is STABLE for its life and
-across restarts of the core (stage 5: one launch, sized once from the settled fit; no relaunch to
-resize); (2) a saved page is valid for any engine of the same model and geometry, verified by its
-header, never re-prefilled because the ledger forgot it; (3) a geometry change is the only thing
-that invalidates pages, and it is a measured, deliberate event; (4) prefix reuse and warm-ahead are
-measured per act (`delib.generate.cache` hit rate, `inference.kv_warm_ahead`) and a miss is a loud,
+**Invariants:** (1) an engine's geometry is STABLE for its life and across core restarts (one launch,
+sized once from the settled fit; no relaunch to resize); (2) a page is eligible for restore only on
+its full fingerprint and complete-save provenance: the persisted ledger
+(`slots/saved_ledger.rs`, LEDGER_FORMAT 2) already fingerprints model, adapter and draft revision, KV
+type, flash attention and engine build and excludes window/slot count; confirmation is preserved,
+and no file is trusted by its header alone; a larger destination is acceptable only if the fork's
+restore validates layout and token capacity, never by a size comparison; (3) every miss is a loud,
 classified defect (plan line 6), never a quiet five-minute prefill.
-
-**Prefill is avoided first, then shared, then shrunk, then tuned** (in that order of size):
-restore and prefix reuse (above); the identical head (tools + framing, ~10k tokens per mind) is
-prefilled ONCE per engine and copied into each mind's sequence (`seq_cp`, SERVING-ENGINE), never per
-mind per cold turn; prompts stay at the working set (stage 2), where this GPU prefills at hundreds of
-tokens per second instead of ~150; prefill overlaps the tool call (plan line 13); only then engine
-knobs (ubatch, chunking, KV type for attention speed), each measured on the dyno before and after.
+**Diagnosis still owed (Codex), before any fix:** `page_on_disk_unconfirmed` conflates an interrupted
+save with a ledger-load failure; it does not prove a relaunch forgot confirmation. For the same page
+and incarnation on the deployed revision we need: the ledger-unread reason, the format/fingerprint,
+the save receipt, and the restore 400's body.
 
 ### 5c. The operating point is measured, never a number
 
-No fixed count of residents, lanes, slots or sequences. How many minds act at once is the output
-of a controller over measured throughput: acts per hour per mind and in total, prefill seconds per
+No fixed count of residents, lanes, slots or sequences. RESIDENCY (which minds hold state on this
+engine) and RUNNABLE CONCURRENCY (which minds run now) are separate decisions. Both are outputs of a
+controller over measured throughput, including the cost of every transition (page out/in, prefill): acts per hour per mind and in total, prefill seconds per
 act, cache hit rate, wait between acts. Admission (stage 4) raises concurrency while total useful
 acts per hour rises and every mind's wait stays bounded, and lowers it when added minds only add
-prefill contention (prefill is serial: 68 tok/s at 1 and 2 streams). The population a node hosts
+prefill contention (on the IntelMac CPU, prefill measured 68.3 / 68.0 / 63.2 tok/s at 1 / 2 / 4 streams; that curve is this hardware and workload, not a universal law). Minds are never migrated to improve an instantaneous throughput sample. The population a node hosts
 follows the same measurement (personas create minds; placement is by capacity). The engine's
 `--parallel` is the CEILING the launch reserves residency for, chosen from the fit, not a lane
 count admission obeys. Every downward adaptation schedules its upward test.
@@ -227,7 +229,8 @@ It must first REPRODUCE each 2026-11-04 failure (red), then show the design remo
 
 Asserted every run: physical bytes conserved (weights + resident KV + staging <= pool); no hold
 without a releaser; eventual service for every mind; predicted acts/hour per resident from the
-measured prefill rate. A live change ships only when the dyno is green for it, then one change per
+measured prefill rate. The dyno proves state and accounting (conservation, custody, service, ordering) and compares
+PREDICTED performance; live hardware validates actual performance. A live change ships only when the dyno is green for it, then one change per
 deploy with the 15-minute read and immediate rollback if worse (rule 3).
 
 ## Order of execution
@@ -238,9 +241,9 @@ deploy with the 15-minute read and immediate rollback if worse (rule 3).
 | 1 | The dyno with the seven reproductions (red) | Fable + Codex | each 11-04 failure reproduced from recorded inputs |
 | 1b | The fast path audit: every cold turn classified 3C (refused restores, unconfirmed pages, scratch-slot churn) (page refused, page unconfirmed, prefix lost); geometry stable across restarts; pages valid by header | Codex + Fable | dyno 6 green; live: cold turns after a restart = 0 for a warm mind |
 | 2 | The view: reads by region, side budgets into the one allocation run once, history to handles; revert the wish raise of #5773 | Fable | dyno 7 green; prompt tokens per act at the working set |
-| 3 | Engine memory: launch-from-fit at Settled (#5770 first), conservation accounting; then delete growth (#5774) | Codex + Fable | dyno 1, 6 green |
-| 4 | Admission: one decision over residency, prefill, decode; fairness by completion identity; rotation through the page custodian | Codex | dyno 2, 3 green |
-| 5 | Custody and cancellation: #5772, fork prefill cancellation | Codex | dyno 4, 5 green |
+| 3 | Engine memory (after the 1b diagnosis): launch-from-fit at Settled (#5770 first), conservation accounting; then delete growth (#5774) | Codex + Fable | dyno 1, 6 green |
+| 4 | Custody and cancellation first: #5772, fork prefill cancellation; the page custodian's surrender/verify contract | Codex | dyno 4, 5 green |
+| 5 | Admission: one decision over residency, prefill, decode; fairness by completion identity; rotation THROUGH the proven custodian | Codex | dyno 2, 3 green |
 | 6 | Her state: command preconditions, results with next moves, Shown ids, one repeat owner | Fable + Cormac | precondition tests; live: no verb hunted (`commands/help` loops) |
 | 7 | Learning as a dream stage; persistence on change; deploy custody | Cormac | slowdown measured within its bound |
 
@@ -270,5 +273,5 @@ PHASE3B-WORKING-MEMORY-PLAN's RAG token budget.
 ## Agreed
 
 - Fable: (pending)
-- Codex: (pending)
+- Codex: direction agreed (2026-11-04); signature pending these corrections, now folded in
 - Cormac: stages 6 and 7 and the cancellation ruling agreed (2026-11-04), with his two receipt corrections applied; rest pending
