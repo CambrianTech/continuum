@@ -429,6 +429,43 @@ pub async fn apply_act(
     append_dispatched_observations(&mut acts, &dispatched_calls);
     let call_order: std::collections::HashMap<_, _> = calls.iter()
         .enumerate().map(|(ordinal, call)| (call.id.as_str(), ordinal)).collect();
+    // Loop-awareness filtering: if multiple calls share a fingerprint and produce
+    // identical result content, keep only RESPONSE_LOOP_THRESHOLD + 1 of them —
+    // beyond that the mind is looping on unchanged evidence.
+    const RESPONSE_LOOP_THRESHOLD: usize = 3;
+
+    let mut groups: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    for (i, act) in acts.iter().enumerate() {
+        let fp = format!(
+            "{}|{}",
+            act.call.name,
+            serde_json::to_string(&act.call.input).unwrap_or_default()
+        );
+        groups.entry(fp).or_default().push(i);
+    }
+
+    let mut keep: Vec<bool> = vec![true; acts.len()];
+    for (_fp, indices) in groups {
+        if indices.len() <= RESPONSE_LOOP_THRESHOLD + 1 {
+            continue;
+        }
+
+        // Check if all results are identical within this group
+        let result_content = acts[indices[0]].output.result.content.clone();
+        let all_identical = indices.iter().skip(1).all(|&idx| 
+            acts[idx].output.result.content == result_content
+        );
+
+        if all_identical {
+            // Keep only the first RESPONSE_LOOP_THRESHOLD + 1, drop the rest
+            for &idx in indices.iter().skip(RESPONSE_LOOP_THRESHOLD + 1) {
+                keep[idx] = false;
+            }
+        }
+    }
+
+    let mut keep_iter = keep.into_iter();
+    acts.retain(|_| keep_iter.next().unwrap());
     acts.sort_by_key(|observation| call_order.get(observation.call.id.as_str()).copied());
     // #243 RECEIPT RADIATION: every executed act reaches the room's transcript
     // as a collapsed receipt ("Ran 4 commands ›", the Claude-iOS pattern) —
