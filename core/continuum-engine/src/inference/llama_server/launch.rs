@@ -39,7 +39,9 @@ impl LlamaServerProcess {
         }
         // Pre-flight, then condemn, then drain (`drain_for_replacement`, card df1d0963). An adopted
         // engine's pre-flight may discover its pool (an await), so it runs before the drain; the
-        // drain's own pre-flight re-reads custody of the child and returns that verdict.
+        // drain's own pre-flight re-reads custody of the child and returns that verdict. No await
+        // may sit between this verdict and the drain: `preflight` is the drain's first statement,
+        // polled with no yield, so nothing can change custody between them (Cormac on #5766).
         let owns_child = || self.child.lock().unwrap().is_some(); // JUSTIFIED: poison means a prior panic mutating the owned child.
         let adopted = if self.is_live_lane && !restoring && !owns_child() {
             Some(self.adopted_retirement_preflight().await)
