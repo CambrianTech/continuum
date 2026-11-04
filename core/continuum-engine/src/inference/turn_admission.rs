@@ -31,9 +31,15 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::inference::slots::{KvSlotPool, MindTurn, PageKey, SlotPermit, SlotPin};
 
 mod page_liveness;
+mod page_quote;
 mod paging_lifetime;
+mod unresolved_page;
 
-use page_liveness::{bounded_page_receipt, retain_unresolved, wait_while_engine_progresses, PageLiveness, Receipt};
+use page_liveness::{bounded_page_receipt, wait_while_engine_progresses, PageLiveness, Receipt};
+#[cfg(test)]
+use page_quote::read_quote;
+use page_quote::{request_quote, QuoteMiss};
+pub(crate) use unresolved_page::UnresolvedPage;
 
 /// How this turn's KV reached its slot: the evidence the restore economy is judged by
 /// (`inference.restored_turn`). A restore the engine refused is a fast-path MISS, recorded
@@ -98,23 +104,36 @@ impl TurnAdmission {
         self.page_in
     }
 
+    /// Page `key` through `slot`. The admission is CONSUMED: a terminal receipt hands it back;
+    /// an uncertain switch drops it in flight (its drop quarantines); an unresolved switch moves
+    /// it, with the request, into the endpoint's custody until the engine answers (Codex on
+    /// #5772), so no later turn can take this slot while the engine still works on it.
     async fn page_action(
-        &mut self,
+        mut self,
         client: &reqwest::Client,
         root: &str,
         slot: u32,
         key: &PageKey,
         action: &str,
-    ) -> Result<bool, String> {
+    ) -> Result<(Self, bool), String> {
         self.paging_in_flight = true;
-        let outcome = kv_page_action(client, root, slot, key, action).await;
-        // Only an uncertain switch leaves paging in flight, so this admission's drop quarantines.
-        self.paging_in_flight = outcome.requires_replacement();
-        match outcome {
-            PageOutcome::Completed => Ok(true),
-            PageOutcome::Rejected => Ok(false),
-            PageOutcome::Unresolved => Err("KV page switch unresolved: the engine kept working without a receipt; \
-                the page is held not resident (a save not restorable) and the engine is not replaced on this alone".into()),
+        match kv_page_action(client, root, slot, key, action).await {
+            PageOutcome::Completed => {
+                self.paging_in_flight = false;
+                Ok((self, true))
+            }
+            PageOutcome::Rejected => {
+                self.paging_in_flight = false;
+                Ok((self, false))
+            }
+            PageOutcome::Unresolved(unresolved) => {
+                self.paging_in_flight = false;
+                // The mind is not the slot: her next act may proceed on another slot or cold.
+                drop(self._mind.take());
+                unresolved.hold(self);
+                Err("KV page switch unresolved: the engine kept working without a receipt; its slot is held \
+                    until the engine answers, the page is held not resident, the engine is not replaced on this alone".into())
+            }
             PageOutcome::Uncertain => Err("KV paging completion unverified; endpoint quarantined until verified engine replacement".into()),
         }
     }
@@ -445,18 +464,16 @@ async fn admit(
                             // A failed or cancelled save may have replaced an older file.
                             // Only a completed save can make this page restorable again.
                             pool.note_page_lost(&prev);
-                            if admission
-                                .page_action(&client, &paging_root, pg.slot, &prev, "save")
-                                .await?
-                            {
+                            let saved;
+                            (admission, saved) = admission.page_action(&client, &paging_root, pg.slot, &prev, "save").await?;
+                            if saved {
                                 pool.note_saved(prev);
                                 admission.saved_evictee = true;
                             }
                         }
                         if pg.restore && interested.load(std::sync::atomic::Ordering::Acquire) {
-                            let restored = admission
-                                .page_action(&client, &paging_root, pg.slot, &k, "restore")
-                                .await?;
+                            let restored;
+                            (admission, restored) = admission.page_action(&client, &paging_root, pg.slot, &k, "restore").await?;
                             admission.page_confirmed = restored;
                             admission.page_in = if restored {
                                 PageIn::Restored
@@ -551,7 +568,9 @@ impl TurnAdmission {
                 // Held until this save's ledger update: the stop waits for it.
                 let _page_io = page_io;
                 pool.note_page_lost(&previous);
-                if admission.page_action(&client, &paging_root, slot, &previous, "save").await? {
+                let saved;
+                (admission, saved) = admission.page_action(&client, &paging_root, slot, &previous, "save").await?;
+                if saved {
                     pool.note_saved(previous);
                     admission.saved_evictee = true;
                 }
@@ -672,7 +691,7 @@ pub fn kv_page_wedge_bound(measured_p90_ms: u64) -> std::time::Duration {
 }
 
 /// Only a complete server receipt establishes terminal paging state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum PageOutcome {
     Completed,
     Rejected,
@@ -681,17 +700,11 @@ pub(crate) enum PageOutcome {
     Uncertain,
     /// No receipt within the switch's bound while the engine's own process kept spending CPU
     /// (`page_liveness`). CPU is evidence against replacing the engine, not proof the switch
-    /// progresses, so the engine is NOT replaced on this alone: the endpoint keeps the request
-    /// until its receipt arrives, and the page is held as an uncertain switch leaves it (not
-    /// resident in the slot; a save's page not restorable).
-    Unresolved,
-}
-
-impl PageOutcome {
-    /// Whether this outcome leaves the endpoint's paging unverified, so the engine is replaced.
-    pub(crate) fn requires_replacement(self) -> bool {
-        self == Self::Uncertain
-    }
+    /// progresses, so the engine is NOT replaced on this alone. The request is still in flight,
+    /// and the only way to consume it is [`UnresolvedPage::hold`] with the slot's custody, kept
+    /// until the engine answers (`unresolved_page`). The page is held as an uncertain switch
+    /// leaves it (not resident in the slot; a save's page not restorable).
+    Unresolved(UnresolvedPage),
 }
 
 /// Execute one page action through the shared turn/warm-ahead boundary. The
@@ -727,64 +740,6 @@ pub(crate) async fn kv_page_action(
             volume.total_bytes, bytes,
         ).map_err(|error| error.to_string())
     }).await
-}
-
-/// Why a page save's size quote gave no size: each a different fault, so the refusal names which
-/// (card 8fa1c147; enrico 2026-10-25/26: 11 refusals and 13 cold turns read only "quote
-/// unavailable", and nothing said whether the engine refused, answered for another slot, or was
-/// still busy with a prefill when the bound passed).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum QuoteMiss {
-    /// The request did not reach the engine or its reply did not arrive.
-    Unsent(String),
-    /// The engine answered with a non-success status.
-    Status(u16),
-    /// The engine answered for another slot or another file.
-    Mismatch,
-    /// The answer named no positive size.
-    NoSize,
-    /// The engine stopped making progress (or stopped answering) before it quoted.
-    EngineStopped,
-}
-
-impl std::fmt::Display for QuoteMiss {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unsent(error) => write!(f, "request not delivered: {error}"),
-            Self::Status(status) => write!(f, "engine answered HTTP {status}"),
-            Self::Mismatch => f.write_str("engine answered for another slot or file"),
-            Self::NoSize => f.write_str("engine named no positive size"),
-            Self::EngineStopped => f.write_str("engine stopped progressing before it quoted"),
-        }
-    }
-}
-
-/// Ask the engine what a save of `slot` into `filename` would write. The quote names the same
-/// checkpoint subset as the write, or the admitted bytes lie. A non-success status returns before
-/// its body is read, so an engine that refuses and then stalls its error body is a `Status` miss
-/// at once, never a wait that a stall watchdog could report as `EngineStopped` (Codex on #5441).
-pub(crate) async fn request_quote(client: &reqwest::Client, root: &str, slot: u32, filename: &str) -> Result<u64, QuoteMiss> {
-    let response = client.post(format!("{}/slots/{slot}?action=save-size", root.trim_end_matches('/')))
-        .json(&page_body(filename)).send().await
-        .map_err(|error| QuoteMiss::Unsent(error.to_string()))?;
-    let status = response.status().as_u16();
-    if !response.status().is_success() {
-        return Err(QuoteMiss::Status(status));
-    }
-    let body = response.json::<serde_json::Value>().await.ok();
-    read_quote(status, body.as_ref(), slot, filename)
-}
-
-/// PURE: the size an engine's `save-size` reply quotes for exactly this slot and file.
-pub(crate) fn read_quote(status: u16, body: Option<&serde_json::Value>, slot: u32, filename: &str) -> Result<u64, QuoteMiss> {
-    if !(200..300).contains(&status) {
-        return Err(QuoteMiss::Status(status));
-    }
-    let body = body.ok_or(QuoteMiss::NoSize)?;
-    if body["id_slot"].as_u64() != Some(u64::from(slot)) || body["filename"].as_str() != Some(filename) {
-        return Err(QuoteMiss::Mismatch);
-    }
-    body["projected_bytes"].as_u64().filter(|bytes| *bytes > 0).ok_or(QuoteMiss::NoSize)
 }
 
 // The page-action boundary accepts capacity evidence from its existing owner;
@@ -880,14 +835,21 @@ async fn kv_page_action_with_capacity(
         },
     )
     .await;
-    let mut unresolved_cpu = None;
+    let mut unresolved = None;
     let (status, body) = match receipt {
         Receipt::Answered(Ok(reply)) => reply,
         // Status zero records transport/watchdog failure, never success.
         Receipt::Answered(Err(_)) | Receipt::Stopped => (0, None),
         Receipt::Unresolved { cpu_spent, pending } => {
-            unresolved_cpu = Some(cpu_spent);
-            retain_unresolved(root, action, slot, pending);
+            unresolved = Some(UnresolvedPage {
+                root: root.to_owned(),
+                action: action.to_owned(),
+                slot,
+                cpu_spent,
+                checkpoint: bounds.checkpoint,
+                pending,
+                liveness,
+            });
             (0, None)
         }
     };
@@ -919,10 +881,10 @@ async fn kv_page_action_with_capacity(
         {
             PageOutcome::Rejected
         }
-        _ if unresolved_cpu.is_some() => PageOutcome::Unresolved,
-        _ => PageOutcome::Uncertain,
+        _ => unresolved.map_or(PageOutcome::Uncertain, PageOutcome::Unresolved),
     };
-    if let Some(cpu_spent) = unresolved_cpu {
+    if let PageOutcome::Unresolved(unresolved) = &outcome {
+        let cpu_spent = unresolved.cpu_spent();
         continuum_base::probe!(
             class = "inference.kv_page.unresolved",
             action = %action,
@@ -931,12 +893,12 @@ async fn kv_page_action_with_capacity(
             unmoved_ms = bounds.unmoved.as_millis() as u64,
             engine_cpu_ms = cpu_spent.as_millis() as u64,
             "a page switch outlived its measured bound while the engine's process kept spending CPU: \
-             held unresolved, the endpoint keeps the request, the engine is not replaced on this alone"
+             held unresolved with its slot's custody until the engine answers; the engine is not replaced on this alone"
         );
     }
     // A switch without a receipt: what the engine was doing is taken now, while it is still the
     // engine that did not answer (card 3913621a), and before a replacement if one follows.
-    if matches!(outcome, PageOutcome::Uncertain | PageOutcome::Unresolved) {
+    if matches!(outcome, PageOutcome::Uncertain | PageOutcome::Unresolved(_)) {
         let evidence = crate::inference::engine_stall::capture(root).await;
         continuum_base::probe!(
             class = "inference.kv_page.stall_evidence",
@@ -945,11 +907,11 @@ async fn kv_page_action_with_capacity(
             status = status as u64,
             silent_ms = %evidence.silent_ms.map_or_else(|| "unknown".to_string(), |ms| ms.to_string()),
             sample = %evidence.sample.as_ref().map_or_else(|why| format!("none: {why}"), |path| path.display().to_string()),
-            unresolved = outcome == PageOutcome::Unresolved,
+            unresolved = matches!(outcome, PageOutcome::Unresolved(_)),
             "the engine did not complete a page switch: its stack and how long its log was silent"
         );
     }
-    let ok = outcome == PageOutcome::Completed;
+    let ok = matches!(outcome, PageOutcome::Completed);
     let ms = started.elapsed().as_millis() as u64;
     if ok {
         KV_PAGE_SWITCH_MS.note(ms);

@@ -55,6 +55,19 @@ where
 /// (an endpoint it did not launch), and the switch is judged by HTTP alone.
 pub(super) type CpuSource = Box<dyn FnMut() -> Option<CpuSample> + Send>;
 
+/// The fixture seam for a whole admission: the CPU source a fake engine at a root reads, in
+/// place of the live lane's process (the role `ProcessTable::of` plays for the table's owners).
+/// Keyed by root, so concurrent tests on their own ports never see each other's engine.
+#[cfg(any(test, feature = "test-fixtures"))]
+static WATCHED_FOR_TEST: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<String, fn() -> Option<CpuSample>>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Read `read` as the engine process's CPU for every switch on `root`.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub(super) fn watch_for_test(root: &str, read: fn() -> Option<CpuSample>) {
+    WATCHED_FOR_TEST.lock().insert(root.trim_end_matches('/').to_owned(), read);
+}
+
 /// What the engine's process said at the latest checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum CpuEvidence {
@@ -95,6 +108,10 @@ impl PageLiveness {
     /// The live lane's own process when `root` is that lane (its record's pid and start time,
     /// as adoption fences it); HTTP alone for any other endpoint.
     pub(super) fn for_root(root: &str) -> Self {
+        #[cfg(any(test, feature = "test-fixtures"))]
+        if let Some(read) = WATCHED_FOR_TEST.lock().get(root.trim_end_matches('/')).copied() {
+            return Self::new(Box::new(read));
+        }
         let lane = crate::inference::lane_registry::live_incarnation()
             // `LaneRecord::root_url`'s spelling: the one every in-process client addresses it by
             .filter(|lane| format!("http://127.0.0.1:{}", lane.port) == root.trim_end_matches('/'));
@@ -230,26 +247,4 @@ where
         Ok::<_, reqwest::Error>((status, body))
     });
     await_receipt(receipt, bounds, liveness, progress, on_busy).await
-}
-
-/// The endpoint owns an unresolved switch's request until its engine answers it: the IO was
-/// dispatched and the engine is still working, so it is never cancelled under it. The answer is
-/// recorded, and custody is NOT re-promoted from it: a later save of the same page may have
-/// started since, so a late "saved" could name a file that is being rewritten.
-pub(super) fn retain_unresolved(root: &str, action: &str, slot: u32, pending: Pending<PageReply>) {
-    let started = std::time::Instant::now();
-    let endpoint = root.to_owned();
-    let action = action.to_owned();
-    crate::inference::slots::directory().endpoint(root).retain_paging(async move {
-        let status = pending.await.map_or(0, |(status, _)| status); // map_or: status zero records a transport failure, never success
-        continuum_base::probe!(
-            class = "inference.kv_page.unresolved_receipt",
-            endpoint = %endpoint,
-            action = %action,
-            slot = slot as u64,
-            status = status as u64,
-            late_ms = started.elapsed().as_millis() as u64,
-            "an unresolved page switch got its receipt: recorded; the page stays held as the unresolved switch left it"
-        );
-    });
 }

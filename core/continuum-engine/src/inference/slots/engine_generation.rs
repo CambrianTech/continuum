@@ -39,7 +39,7 @@ impl EngineGeneration {
 }
 
 impl EndpointSlots {
-    pub(super) fn quarantine_paging(&self) {
+    pub(crate) fn quarantine_paging(&self) {
         let mut state = self.state.lock();
         state.paging_uncertain = true;
         state.ready.send_replace(false);
@@ -529,9 +529,12 @@ impl EndpointTransition {
                     save.pending = false;
                     return Err(CheckpointFailure::Save(format!("checkpoint save rejected for slot {slot}")));
                 }
-                PageOutcome::Unresolved => {
+                PageOutcome::Unresolved(unresolved) => {
                     // The engine kept working without a receipt: not a quarantine on that alone.
-                    // The page stays lost (noted above), so nothing restores a half-written file.
+                    // This checkpoint runs inside the lifecycle writer, which already holds the
+                    // whole endpoint and retires this engine next, so the request is held with no
+                    // further custody. The page stays lost (noted above): no half-written restore.
+                    unresolved.hold(());
                     save.pending = false;
                     return Err(CheckpointFailure::Save(format!(
                         "checkpoint save unresolved for slot {slot}: the engine kept working without a receipt; page not restorable"

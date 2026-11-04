@@ -113,7 +113,7 @@ async fn a_vanished_engine_process_ends_the_switch_at_once() {
 // what this catches (the IntelMac 2026-11-04 16:24Z replacement, Codex's bound): CPU that keeps
 // moving while the switch never completes (a spin, or another slot's work) is evidence against
 // replacing the engine, not progress. The wait ends at the measured unmoved window as UNRESOLVED,
-// hands the request back still in flight, and that outcome does not replace the engine.
+// hands the request back still in flight (its custody: tests/unresolved_page.rs).
 #[tokio::test(start_paused = true)]
 async fn busy_cpu_without_a_receipt_is_unresolved_within_its_measured_bound() {
     let bounds = intelmac_bounds();
@@ -128,6 +128,4 @@ async fn busy_cpu_without_a_receipt_is_unresolved_within_its_measured_bound() {
     assert!(waited >= bounds.unmoved && waited < bounds.unmoved + bounds.checkpoint * 2,
         "bounded by the measured window: waited {waited:?}, window {:?}", bounds.unmoved);
     assert!((&mut pending).now_or_never().is_none(), "the request is handed back in flight, not cancelled");
-    assert!(!PageOutcome::Unresolved.requires_replacement(), "unresolved alone never replaces the engine");
-    assert!(PageOutcome::Uncertain.requires_replacement());
 }
