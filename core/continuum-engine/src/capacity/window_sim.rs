@@ -86,6 +86,7 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
                 mind: event.mind,
                 need: event.need,
                 target: event.need,
+                wish: event.need,
                 in_flight: event.in_flight,
                 // the shared pool: one sequence may hold all of it
                 ceiling: scenario.pool_tokens,

@@ -106,6 +106,10 @@ pub struct LaneRequirement {
     pub persona: Uuid,
     /// What her turns have measured: her target and floor, or nothing yet.
     pub measure: Measure,
+    /// Her untrimmed assembly without headroom, when measured or declared: what a grant must cover
+    /// before she grows (`capacity::window_grant`), so headroom is room to grow into, not a regrant
+    /// on every act (Cormac on #5758).
+    pub wish: Option<Tokens>,
     /// Her parked training examples' reservation (card ea157b1a): the window that trains them
     /// whole and the training graph it costs. Carried BESIDE her conversational measure, never
     /// folded into it: the allocator grows toward it only from what is left
@@ -172,18 +176,18 @@ impl TrainingReserve {
 impl LaneRequirement {
     /// A mind with no view assembled yet: no number, nothing to size from.
     pub fn unmeasured(persona: Uuid) -> Self {
-        Self { persona, measure: Measure::Unmeasured, training: None }
+        Self { persona, measure: Measure::Unmeasured, wish: None, training: None }
     }
 
     /// Her measured wish (the untrimmed demand her view assembled) with headroom: her target.
     pub fn wished(persona: Uuid, wish: Tokens, headroom: f64) -> Self {
         // Headroom only adds: the target is the wish plus what headroom asks beyond it.
         let beyond = ((f64::from(wish.get()) * headroom) as u32).saturating_sub(wish.get());
-        Self { persona, measure: Measure::Wished { target: wish.saturating_add(beyond) }, training: None }
+        Self { persona, measure: Measure::Wished { target: wish.saturating_add(beyond) }, wish: Some(wish), training: None }
     }
 
     pub fn declared(persona: Uuid, window: Tokens) -> Self {
-        Self { persona, measure: Measure::Declared { target: window }, training: None }
+        Self { persona, measure: Measure::Declared { target: window }, wish: Some(window), training: None }
     }
 
     /// With the floor her held turns measured. A need above the target is clamped to it (a floor
@@ -196,6 +200,8 @@ impl LaneRequirement {
                 Measure::Held { need: need.min(target), target }
             }
         };
+        // A held turn with no measured wish: what it held is what she wished for.
+        self.wish = self.wish.or(Some(need));
         self
     }
 
