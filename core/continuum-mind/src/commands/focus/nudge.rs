@@ -72,6 +72,7 @@ pub struct FocusNudge;
 impl ActionCommand for FocusNudge {
     const NAME: &'static str = "focus/nudge";
     const NATIVE: bool = true; // self-determination — her own attention: a self-nudge, by her hand. NATIVE defaults to false, which is why the verb was registered, documented, and uncallable (Kimi, 2026-10-05).
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const DESCRIPTION: &'static str =
         "Lean your own focus tighter or looser. Positive delta = tighter (heads-down, \
          narrow onto your focused thread); negative = looser (broader, more associative). \

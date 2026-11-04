@@ -18,111 +18,17 @@ fn a_cut_act_records_that_it_did_not_land_and_what_it_was() {
 
 use super::*;
 use super::verdict::*;
-use crate::cognition::tool_surface::{core_hands, hands_surface, is_extended_hand};
-
-// what this catches: the hands surface chosen on WIRE names — `code/` prefixes
-// matched nothing after the dialect renamed them and every work turn went out
-// with zero tools (2026-09-04). The filter runs on the raw command names.
-#[test]
-fn hands_surface_is_chosen_on_command_names_and_keeps_the_discovery_pair() {
-    let raw: Vec<NativeToolSpec> = [
-        "code/read",
-        "work/state",
-        "chat/send",
-        "commands/list",
-        "room/join",
-        "code/git/status",
-        "code/git/apply",
-        "work/submission",
-        "work/review",
-        "work/submit",
-        "web/fetch",
-        "focus/continue",
-    ]
-    .iter()
-    .map(|n| NativeToolSpec {
-        name: (*n).to_string(),
-        description: String::new(),
-        input_schema: crate::ai::types::ToolInputSchema {
-            schema_type: "object".to_string(),
-            properties: serde_json::json!({}),
-            required: None,
-            definitions: None,
-        },
-    })
-    .collect();
-    let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
-    // A capable citizen (an unknown level counts as capable: more, not less) also gets
-    // the web, like Claude (Joel, 2026-09-28); her rooms and chat are hands, and so is all
-    // of work/**, the reviewer verbs included: offering those only while she held a review
-    // card made her card state an input to the surface (goal 10).
-    assert_eq!(
-        hands,
-        [
-            "code/read",
-            "work/state",
-            "chat/send",
-            "commands/list",
-            "room/join",
-            "code/git/status",
-            "work/submission",
-            "work/review",
-            "work/submit",
-            "web/fetch",
-            "focus/continue"
-        ],
-        "git/apply takes a peer's diff and stays one commands/help away; every other verb here is hers"
-    );
-    // what this also catches: a window too small for the extended verbs keeps her CORE
-    // hands (never nothing), with the web and the push/PR verbs one commands/list away.
-    // focus/continue is EXTENDED since #4758: the survival window keeps the newest line
-    // over her self-determination verbs, as it does over the web.
-    let core: Vec<String> = core_hands(&raw).into_iter().map(|s| s.name).collect();
-    assert_eq!(core, ["code/read", "work/state", "commands/list", "code/git/status", "work/submit"]);
-    // regression (Idris, 2026-09-29): a verb and the verb that finishes it travel
-    // together. code/shell tells her to poll a running execution with code/shell-poll,
-    // so a window that carries shell carries shell-poll.
-    assert!(!is_extended_hand("code/shell-poll"));
-    assert!(!is_extended_hand("code/shell"));
-}
 
 use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
 
 // what this catches: her INITIATIVE turn (holding nothing, offered by her own heartbeat)
 // going out as a message turn: the message surface and the PASS allowance, so she could
 // talk about work but never do it. It must take exactly a work turn's surface, reason and
-// ACT kind without being a deliverable turn, and those hands must keep the verbs that let
-// her choose work for herself: find it, take it, start it, write it, land it.
+// ACT kind without being a deliverable turn. That her core hands keep the verbs of choosing and
+// doing her own work is checked on the real registry's declarations (core's
+// `the_real_registry_declares_her_own_work_as_core_hands`).
 #[test]
 fn an_initiative_turn_takes_a_work_turns_hands_and_act_kind() {
-    let own_work = [
-        "work/list",
-        "work/claim",
-        "work/create",
-        "code/write",
-        "code/edit",
-        "code/git/commit",
-        "code/git/push",
-        "code/github/pr-create",
-        "room/join",
-        "chat/send",
-    ];
-    let raw: Vec<NativeToolSpec> = own_work
-        .iter()
-        .map(|n| NativeToolSpec {
-            name: (*n).to_string(),
-            description: String::new(),
-            input_schema: crate::ai::types::ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: serde_json::json!({}),
-                required: None,
-                definitions: None,
-            },
-        })
-        .collect();
-    let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
-    assert_eq!(hands, own_work, "every verb of choosing and doing her own work is in her hands");
-
     let window = 65_536;
     let faculty = LlmDeliberationFaculty::new(
         uuid::Uuid::new_v4(),

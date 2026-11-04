@@ -90,6 +90,7 @@ crate::action_command! {
     name: "vision/look",
     access: AiSafe,
     native: true,
+    disclosure: OnDemand,
     params: VisionLookParams,
     output: VisionLookResult,
     run(this, ctx, p) => {

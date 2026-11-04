@@ -67,6 +67,7 @@ impl ActionCommand for CommandsHelp {
     const NAME: &'static str = "commands/help";
     const ALIASES: &'static [&'static str] = &["help"];
     const NATIVE: bool = true; // discovery pair — the on-demand "how do I call this?" tool
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::Always;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Show how to CALL a command: its exact tool-call format + arguments. Pass `name` \

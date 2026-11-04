@@ -145,25 +145,17 @@ fn command_names() -> &'static HashSet<&'static str> {
     NAMES.get_or_init(|| command_registry_live().iter().map(|d| d.name).collect())
 }
 
-/// Registered verbs omitted from the default hands menu, still discoverable and
-/// callable under their command's preconditions. This is presentation policy, NOT
-/// authorization. Share purpose guidance with error feedback without erasing the
-/// real failure or declaring a discoverable command impossible to use.
+/// A verb's purpose and what to use instead, shared with error feedback without erasing the
+/// real failure or declaring a discoverable command impossible to use. Guidance, NOT
+/// authorization.
 pub struct WithheldVerb {
     pub why: &'static str,
     pub instead: &'static str,
 }
 
-/// The withheld verbs a REVIEW card's holder needs on her work turn: reading the
-/// submission under review and filing her verdict are the whole of that card. They are
-/// withheld from every other holder (`withheld_from_hands`), and a native-tool model
-/// can call only what it was offered, so without this the reviewer lost the one verb
-/// her card exists for (Kimi on review card deec4ac2, 2026-10-06: "work/review is not
-/// in this prompt").
-pub fn reviewer_hand(name: &str) -> bool {
-    matches!(name.replace('_', "/").as_str(), "work/review" | "work/submission")
-}
-
+/// What the executor tells a caller who reached a verb aimed at someone else's work (a peer's
+/// diff, a review verdict): its purpose and the verb for her own work. Guidance only; whether a
+/// verb is among her hands is the value its command declares (`CommandSpec::DISCLOSURE`).
 pub fn withheld_from_hands(name: &str) -> Option<WithheldVerb> {
     match name.replace('_', "/").as_str() {
         "work/review" => Some(WithheldVerb {

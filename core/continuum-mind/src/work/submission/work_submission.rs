@@ -4,6 +4,7 @@ use super::*;
 impl ActionCommand for WorkSubmission {
     const NAME: &'static str = "work/submission";
     const NATIVE: bool = true;
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str = "Read submission_id. Task: work/get. Publish: work/submit.";
     type Params = WorkSubmissionParams;

@@ -368,11 +368,26 @@ impl LlmDeliberationFaculty {
         let fixed_cost = claim(framing_tokens);
         let tools_floor = claim(tools.floor);
         let required_cost = claim(required_tokens);
+        // Her view's sources, each its own claim (`epoch.rs`): the blocks she works from at
+        // the grounding claim's weight, her conversation, thoughts and results at history's.
+        let view_claims: Vec<_> = self.view_claims(&all_messages.streams).into_iter().map(|mut source| {
+            source.floor_tokens = claim(source.floor_tokens as usize);
+            source.min_tokens = source.floor_tokens;
+            source.max_tokens = claim(source.max_tokens as usize).max(source.floor_tokens);
+            source
+        }).collect();
         let mut reply = reply;
-        // The reply never takes from required content: its floor is what the window leaves
-        // after framing, tools and the required input. Its UNCLIPPED floor is her need.
+        // The reply never takes from another claim's floor: its floor is what the window leaves
+        // after framing, tools, the required input, her last move (history's floor) and her
+        // view's floors. Its UNCLIPPED floor is her need. Leaving only the required input, the
+        // reply's floor filled an 8,192 window to the token and her last action, her presence
+        // block and the fit's own room went to nothing (the required input refused at 275 of 0).
         let reply_need = reply.floor_tokens;
-        reply.floor_tokens = reply_need.min(context_window.saturating_sub(fixed_cost.saturating_add(tools_floor).saturating_add(required_cost)));
+        let other_floors = [fixed_cost, tools_floor, required_cost, claim(history_floor)]
+            .into_iter()
+            .chain(view_claims.iter().map(|source| source.floor_tokens))
+            .fold(0u32, u32::saturating_add);
+        reply.floor_tokens = reply_need.min(context_window.saturating_sub(other_floors));
         reply.min_tokens = reply.floor_tokens;
         let fixed_claim = |id: &str, tokens: u32| crate::cognition::rag_budget::RagSourceBudget {
             source_id: id.to_owned(),
@@ -427,15 +442,17 @@ impl LlmDeliberationFaculty {
                 required: true,
             },
         ];
-        // Her view's sources, each its own claim (`epoch.rs`): the blocks she works from at
-        // the grounding claim's weight, her conversation, thoughts and results at history's.
-        claims.extend(self.view_claims(&all_messages.streams).into_iter().map(|mut source| {
-            source.floor_tokens = claim(source.floor_tokens as usize);
-            source.min_tokens = source.floor_tokens;
-            source.max_tokens = claim(source.max_tokens as usize).max(source.floor_tokens);
-            source
-        }));
+        claims.extend(view_claims);
         let plan = crate::cognition::rag_budget::flex_allocate(context_window, &claims);
+        // Her view's START is sized with the reply seated at its want at the reply's top priority,
+        // so a pass and the act after it start her view alike: sized by the reply's priority (4 on
+        // an ambient pass, 10 on an act after a cut), one 16,384 window started her conversation at
+        // 4,005 tokens on the pass and 2,402 on the act, and her prefix moved with it. Only the
+        // start: every grant this act sends stays the one allocation's (`plan`), so seating the
+        // whole want never pre-empts her grounding or history (`reply_claim`'s doc). The want
+        // itself still moves with her measured need and a pending cut's peak: what this removes is
+        // the swing by priority, not every change to the bound.
+        let start_plan = crate::cognition::rag_budget::flex_allocate(context_window, &super::super::reply_claim::seated_at_want(&claims));
         let allocation = Some(crate::ai::provenance::AllocationReceipt {
             window: context_window,
             revision: env!("CONTINUUM_BUILD_GIT_SHA").to_owned(),
@@ -504,7 +521,7 @@ impl LlmDeliberationFaculty {
         // it is ever collapsed.
         // A broken allocator contract refuses the turn (`budget_fault`), never a prompt sent anyway.
         let view_fault = self
-            .fit_view(&mut all_messages, view, &plan, view_room as usize, calibration)
+            .fit_view(&mut all_messages, view, &plan, &start_plan, view_room as usize, calibration)
             .err()
             .map(|mismatch| format!("her view could not be sized: {mismatch}"));
         self.view_sent();

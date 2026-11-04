@@ -136,6 +136,7 @@ impl crate::sdk_codegen::CommandSpec for InteractCommand {
     const NAME: &'static str = "perception/interact";
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
     const NATIVE: bool = true; // the DRIVE half of the loop, offered beside perception/observe
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const DESCRIPTION: &'static str =
         "Drive a live web page and see each result. Open with `target` URL; reuse the returned \
          `session` for later `actions`: click, type, press, hover, goto, hotPatchCss. \

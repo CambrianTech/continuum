@@ -72,6 +72,9 @@ pub use emit::write_typescript_sdk;
 /// What a command does to the world, declared on it (`ActionCommand::EFFECT`); re-exported so
 /// `action_command!`'s `effect:` clause resolves in any crate that expands it.
 pub use continuum_base::tool_effect::ToolEffect;
+/// Where a command's verb sits in a mind's hands, declared on it (`ActionCommand::DISCLOSURE`);
+/// re-exported so `action_command!`'s `disclosure:` clause resolves in any crate that expands it.
+pub use continuum_base::tool_disclosure::Disclosure;
 pub use events::{event_registry, EventDescriptor, EventSpec};
 #[cfg(feature = "ts-codegen")]
 pub use events::{generate_event_api, generate_event_map};
@@ -208,6 +211,7 @@ macro_rules! action_command {
         $(native: $native:expr,)?
         $(aliases: $aliases:expr,)?
         $(effect: $effect:ident,)?
+        $(disclosure: $disclosure:ident,)?
         params: $params:ty,
         output: $output:ty,
         run($this:ident, $ctx:ident, $p:ident) => $body:block
@@ -215,7 +219,7 @@ macro_rules! action_command {
         $(#[doc = $doc])*
         #[derive(::std::default::Default)]
         $vis struct $cmd;
-        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], $params, $output, $this, $ctx, $p, $body);
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], [$($disclosure)?], $params, $output, $this, $ctx, $p, $body);
         $crate::register_stateless_command!($cmd);
     };
 
@@ -229,13 +233,14 @@ macro_rules! action_command {
         $(native: $native:expr,)?
         $(aliases: $aliases:expr,)?
         $(effect: $effect:ident,)?
+        $(disclosure: $disclosure:ident,)?
         params: $params:ty,
         output: $output:ty,
         run($this:ident, $ctx:ident, $p:ident) => $body:block
     ) => {
         $(#[doc = $doc])*
         $vis struct $cmd { $($(#[$field_meta])* pub $field: $fty),+ }
-        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], $params, $output, $this, $ctx, $p, $body);
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], [$($disclosure)?], $params, $output, $this, $ctx, $p, $body);
         // Register the DESCRIPTOR (type-only — no instance needed) so the command
         // appears in `command_registry()`, the persona tool surface, the ACL, and
         // codegen. Its RUNTIME object is constructed with deps by the owning
@@ -244,7 +249,7 @@ macro_rules! action_command {
     };
 
     // ── Internal: the shared `ActionCommand` impl both forms expand to. ──
-    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], [$($native:expr)?], [$($aliases:expr)?], [$($effect:ident)?], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
+    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], [$($native:expr)?], [$($aliases:expr)?], [$($effect:ident)?], [$($disclosure:ident)?], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
         #[::async_trait::async_trait]
         impl $crate::sdk_codegen::ActionCommand for $cmd {
             const NAME: &'static str = $name;
@@ -264,6 +269,9 @@ macro_rules! action_command {
             // only a command that declares it `Observes` can have an unchanged result render as a
             // repeat). Absent ⇒ the trait default, `Undeclared`, which authorizes nothing.
             $(const EFFECT: $crate::sdk_codegen::ToolEffect = $crate::sdk_codegen::ToolEffect::$effect;)?
+            // Optional `disclosure: <Disclosure variant>,` clause ⟹ DISCLOSURE (where the verb sits
+            // in her hands: `Core`, `OnDemand` or `Withheld`). Absent ⇒ the trait default, `Core`.
+            $(const DISCLOSURE: $crate::sdk_codegen::Disclosure = $crate::sdk_codegen::Disclosure::$disclosure;)?
             type Params = $params;
             type Output = $output;
             async fn run(

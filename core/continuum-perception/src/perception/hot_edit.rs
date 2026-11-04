@@ -125,6 +125,7 @@ impl crate::sdk_codegen::CommandSpec for HotEditCommand {
     const NAME: &'static str = "perception/hot-edit";
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
     const NATIVE: bool = true; // the TWEAK half of the design loop — offered beside perception/observe
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const DESCRIPTION: &'static str =
         "Apply a CSS patch to a live page and re-observe it — hot css, no deployments. \
          Pass `target` (a URL) and `css` (a stylesheet); you get back the same image + \

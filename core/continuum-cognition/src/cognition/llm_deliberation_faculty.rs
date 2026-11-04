@@ -721,7 +721,7 @@ pub mod test_support {
     use crate::cognition::workspace::{BurstTurn, Workspace};
 
     /// The surface internals core's registry tests price against the live registry.
-    pub use crate::cognition::tool_surface::hands_surface;
+    pub use crate::cognition::tool_surface::{core_hands, hands_surface};
     pub use super::prompt::fit::{GroundingPiece, GroundingPlan};
     pub use super::reply_claim::reply_claim;
     pub use super::request::TurnKind;

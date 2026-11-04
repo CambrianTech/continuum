@@ -253,24 +253,6 @@ impl LlmDeliberationFaculty {
                 };
                 // Verbs she loaded into the tail ride beside the head, callable natively.
                 let tail = std::mem::take(&mut selected.tail);
-                if selected.reason == SurfaceReason::CoreHandsForWindow {
-                    // The one truncating arm: the served window cannot hold her extended
-                    // hands. Whoever later asks "why did she never call X" needs this row.
-                    // Fixed per lane, so it repeats each turn until the window changes.
-                    let served = binding.context_window;
-                    continuum_base::probe!(
-                        class = "delib.tool_surface.withheld",
-                        persona = %self.persona_name,
-                        offered = selected.specs.as_deref().map_or(0, <[_]>::len) as u64,
-                        hands = self.surface.hands().len() as u64,
-                        surface_tokens = selected.tokens as u64,
-                        withheld_tokens = selected.demand_tokens().saturating_sub(selected.tokens) as u64,
-                        budget_tokens = view.tools_grant as u64,
-                        context_window = served,
-                        "her one allocation granted her core hands, not her extended ones: \
-                         the discovery pair still reaches the rest"
-                    );
-                }
                 // Selection and budget accounting borrow the cached schemas. Only the
                 // owned inference request needs a copy of the selected surface.
                 let tools = selected.specs.map(std::borrow::Cow::into_owned);
