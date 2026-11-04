@@ -283,7 +283,16 @@ pub fn dormant_by_age(dormant: &[Uuid], now_ms: u64, boot_ms: u64, last_turn_ms:
 /// (`free_slots_live / lanes` — the seat's own admission truth, so a lane a leased-in
 /// generate is using counts less than an empty one).
 pub fn slack_seats(open: &[OpenSeats], idle_fraction_of: impl Fn(Uuid) -> f64) -> f64 {
-    open.iter().map(|o| o.count as f64 * idle_fraction_of(o.node).clamp(0.0, 1.0)).sum()
+    open.iter().map(|o| o.count as f64 * idle_fraction_of(o.node)).sum()
+}
+
+/// The share of a node's lanes free now, in [0, 1] by construction: a free count past the lanes (a
+/// report racing a relaunch) counts as every lane free, never more; no lanes is no idle seat.
+pub fn idle_fraction(free_slots: u64, lanes: u64) -> f64 {
+    match lanes {
+        0 => 0.0,
+        lanes => free_slots.min(lanes) as f64 / lanes as f64,
+    }
 }
 
 /// How often the slack can give each dormant mind a turn: the typical turn, times the
@@ -458,13 +467,13 @@ impl Inner {
         let dormant = dormant_by_age(&allocation.dormant, facts.now_ms, boot, crate::cognition::turn_ledger::last_turn_ms);
         let idle_of = |node: Uuid| -> f64 {
             if node == facts.this_node {
-                return if facts.local_lanes > 0 { facts.local_free_slots as f64 / facts.local_lanes as f64 } else { 0.0 };
+                return idle_fraction(facts.local_free_slots as u64, facts.local_lanes as u64);
             }
             facts
                 .peers
                 .iter()
                 .find(|p| p.node == node)
-                .map(|p| if p.lanes > 0 { p.free_slots_live as f64 / p.lanes as f64 } else { 0.0 })
+                .map(|p| idle_fraction(p.free_slots_live as u64, p.lanes as u64))
                 .unwrap_or(0.0) // unwrap_or: a node the facts do not name has no idle seat to lend
         };
         let slack = slack_seats(&allocation.open, idle_of);
@@ -483,7 +492,7 @@ impl Inner {
             .allocation
             .nodes
             .iter()
-            .map(|n| format!("{}:{}", &n.node.to_string()[..8], n.seats))
+            .map(|n| format!("{}:{}", airc_core::shown_id::shown_form(n.node), n.seats))
             .collect();
         continuum_base::probe!(
             class = "grid.allocation.published",
@@ -540,7 +549,7 @@ impl Inner {
                             Some(crate::inference::planning::window_allocator::Measure::Held { .. }) => "need",
                             _ => "wish",
                         };
-                        format!("{}:{gate}:{w}", m.to_string().chars().take(8).collect::<String>())
+                        format!("{}:{gate}:{w}", airc_core::shown_id::shown_form(*m))
                     })
                     .collect::<Vec<_>>()
                     .join(","),

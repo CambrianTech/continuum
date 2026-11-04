@@ -173,16 +173,25 @@ fn observe_to(path: &Path, geometry: &ServedGeometry, tokens: u32) {
     stored.set_at_ms = continuum_base::time::EpochMs::now().millis();
     write_record(path, &stored);
 }
+/// Place the record through the one durable primitive: staged in its directory, synced, renamed
+/// over the old one, so a crash leaves the previous record or the new one, never a torn file.
+fn place(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(std::io::Error::other(format!("{} names no file in a directory", path.display())));
+    };
+    std::fs::create_dir_all(dir)?;
+    let mut staged = continuum_host::durable::Staging::new_in(dir)?;
+    staged.write_all(bytes)?;
+    staged.replace(Path::new(name))
+}
+
 fn write_record(path: &Path, stored: &StoredServedWindow) {
     let model_id = stored.model_id.as_str();
     let per_slot_window = stored.per_slot_window;
     let lanes = stored.lanes;
     let typical_prompt_tokens = stored.typical_prompt_tokens;
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    match serde_json::to_vec_pretty(&stored).map(|b| std::fs::write(path, b)) {
-        Ok(Ok(())) => continuum_base::probe!(
+    match serde_json::to_vec_pretty(&stored).map_err(std::io::Error::other).and_then(|bytes| place(path, &bytes)) {
+        Ok(()) => continuum_base::probe!(
             class = "serving.window.stored",
             model = model_id,
             per_slot_window = per_slot_window as u64,
@@ -190,9 +199,10 @@ fn write_record(path: &Path, stored: &StoredServedWindow) {
             typical_prompt_tokens = typical_prompt_tokens as u64,
             "serving geometry recorded — observed cache preference, not a future capacity constraint"
         ),
-        _ => continuum_base::probe!(
+        Err(error) => continuum_base::probe!(
             class = "serving.window.store_failed",
             path = %path.display(),
+            error = %error,
             "could not write the served-window store — the next boot re-derives the window"
         ),
     }
