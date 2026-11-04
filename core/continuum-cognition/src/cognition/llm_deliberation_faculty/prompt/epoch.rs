@@ -98,6 +98,9 @@ impl LlmDeliberationFaculty {
     /// kept the scrolled-out turns, appended the new ones and turned over again, every act
     /// (Atlas in 11c1a7ac: starts of ~259k chars, 1,902 tokens of room, ~9.4k chars appended
     /// per act; 3-11% of consecutive prompts shared).
+    ///
+    /// Returns how far beyond what this act allowed her view she would have held, when it
+    /// OVERFLOWED ([`overflow_beyond`]): the evidence her need is censored by her grant.
     pub(in super::super) fn fit_view(
         &self,
         prompt: &mut PromptMessages,
@@ -106,9 +109,9 @@ impl LlmDeliberationFaculty {
         start_plan: &crate::cognition::rag_budget::FlexAllocation,
         room: usize,
         calibration: super::types::PromptCalibration,
-    ) -> Result<(), continuum_context::view::GrantMismatch> {
+    ) -> Result<Option<usize>, continuum_context::view::GrantMismatch> {
         if view.len == 0 {
-            return Ok(());
+            return Ok(None);
         }
         // In the allocation's unit: grants and room are charged tokens (`calibration.charge`),
         // so the view is charged too. Compared raw, a view near its grant passed here and the
@@ -148,8 +151,9 @@ impl LlmDeliberationFaculty {
             self.view_would_restore(&prompt.streams, |claims: &[Claim]| start_grants(claims, start_plan, start_room, appended_per_act))
         })?;
         if due == Turnover::Keep {
-            return Ok(());
+            return Ok(None);
         }
+        let beyond = overflow_beyond(due, view.started, view_tokens, granted + room, next_act_tokens);
         let fits = due == Turnover::Restore;
         // Admission before a turnover: redo this act's append within what the act granted her
         // view, an arrival too large for it reduced to its outline or pointer
@@ -170,7 +174,7 @@ impl LlmDeliberationFaculty {
                     );
                     prompt.grounding_at = admitted.len();
                     prompt.history.splice(0..view.len, admitted);
-                    return Ok(());
+                    return Ok(beyond);
                 }
             }
         }
@@ -206,7 +210,7 @@ impl LlmDeliberationFaculty {
             "her view outgrew what the window granted its sources and started a new epoch, \
              its growing sources leaving a reserve as large as their start"
         );
-        Ok(())
+        Ok(beyond)
     }
 
     /// Append this act's changes to her view and return its messages, and whether this act
@@ -477,6 +481,24 @@ pub(in super::super) fn turnover_due<E>(
         return Ok(Turnover::Keep);
     }
     Ok(if would_restore()? { Turnover::Restore } else { Turnover::Keep })
+}
+
+/// PURE: how many tokens beyond `allowed` her view would have held, on an act whose view
+/// OVERFLOWED what the window granted it: the view as it stands (this act's appends included) plus
+/// one act's measured appends (`next_act_tokens`), so the epoch could have kept appending, less
+/// what was allowed. The window censored her need by exactly this; it is a lower bound on what she
+/// needed, never a size (`working_set::NeedSample::AtLeast`). `None` on every other act: one that
+/// keeps or restores measured no shortfall (it fit), and one that STARTED the view renders every
+/// source whole, her whole history rather than her working set, so its size is no demand.
+pub(in super::super) fn overflow_beyond(
+    due: Turnover,
+    started: bool,
+    view_tokens: usize,
+    allowed: usize,
+    next_act_tokens: Option<usize>,
+) -> Option<usize> {
+    let held = next_act_tokens.map_or(view_tokens, |next| view_tokens.saturating_add(next)); // map_or: no act measured yet in the epoch it replaces: the view alone
+    (due == Turnover::Overflow && !started).then(|| held.saturating_sub(allowed))
 }
 
 #[cfg(test)]

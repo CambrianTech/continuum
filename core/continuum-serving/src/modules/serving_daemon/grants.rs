@@ -64,7 +64,8 @@ impl ServingDaemonModule {
             .filter_map(|r| {
                 Some(Demand {
                     mind: r.persona,
-                    need: r.measure.need()?.min(trained),
+                    // A bound is clamped to what one sequence holds (`Observed::within`); an exact need is not.
+                    need: r.measure.observed_need()?.map(|need| need.min(trained)).within(per_sequence_cap),
                     target: r.measure.target()?.min(trained),
                     wish: r.wish?.min(trained),
                     in_flight: crate::cognition::turn_ledger::turn_in_flight(r.persona),

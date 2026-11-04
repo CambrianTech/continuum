@@ -52,34 +52,42 @@ pub(super) fn p90(samples: &[u32]) -> u32 {
     sorted[idx.min(n - 1)]
 }
 
-/// The reasoning p90 over `landed` measurements and `cut` lower bounds, by the product-limit
-/// (Kaplan–Meier) estimate: `Some` only where it is higher than `landed_need`.
-/// A cut's mass moves to the turns that ran longer than it, never to shorter ones, so with no
-/// cuts this is the landed p90 exactly, and cuts can only raise it. When the cuts hold the top
-/// tenth (the survival never falls to 1/10), the p90 lies past every landed think, and the
-/// largest cut bound is what is known of it. Exact integer ratios, so two nodes agree.
+/// The reasoning p90 over `landed` measurements and `cut` lower bounds ([`product_limit`]):
+/// `Some` only where it is higher than `landed_need`, so with no cuts it is `None`.
 pub(super) fn reasoning_at_least(landed: &[u32], cut: &[u32], landed_need: u32) -> Option<u32> {
     if cut.is_empty() {
         return None;
     }
+    // The p90: the share of turns still running past it falls to a tenth.
+    product_limit(landed, cut, |survival_num, survival_den| survival_num * 10 <= survival_den)
+        .filter(|&need| need > landed_need)
+}
+
+/// A quantile over `landed` measurements and `cut` lower bounds, by the product-limit
+/// (Kaplan–Meier) estimate: the smallest landed size at which the estimated share of turns still
+/// running past it satisfies `reached(survival_num, survival_den)`. A cut's mass moves to the
+/// turns that ran longer than it, never to shorter ones, so with no cuts this is the plain
+/// quantile, and cuts can only raise it. When the cuts hold the whole tail (the survival never
+/// reaches the quantile), the quantile lies past every landed turn, and the largest cut bound is
+/// what is known of it. Exact integer ratios, so two nodes agree. `None` with no sample at all.
+/// Shared by the reply's reasoning need (p90) and the window's held need (median,
+/// `held_need::need_tokens`): one estimator for every censored observation of a mind.
+pub(super) fn product_limit(landed: &[u32], cut: &[u32], reached: impl Fn(u128, u128) -> bool) -> Option<u32> {
     // Ascending; at equal tokens a landed turn counts before a cut (it was at risk at that size).
     let mut turns: Vec<(u32, bool)> =
         landed.iter().map(|&t| (t, false)).chain(cut.iter().map(|&t| (t, true))).collect();
     turns.sort_unstable();
     let (mut survival_num, mut survival_den) = (1u128, 1u128);
     let mut at_risk = turns.len() as u128;
-    let mut estimate = None;
     for (tokens, censored) in turns {
         if !censored {
             survival_num *= at_risk - 1;
             survival_den *= at_risk;
-            if survival_num * 10 <= survival_den {
-                estimate = Some(tokens);
-                break;
+            if reached(survival_num, survival_den) {
+                return Some(tokens);
             }
         }
         at_risk -= 1;
     }
-    let p90 = estimate.or_else(|| cut.iter().copied().max())?;
-    Some(p90).filter(|&need| need > landed_need)
+    cut.iter().copied().max()
 }

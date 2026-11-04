@@ -182,7 +182,8 @@ pub fn minds_over_the_grid(
     // not exiled (card 70706a9e).
     requirements
         .iter()
-        .filter_map(|r| Some((r.persona, r.measure.need()?.get())))
+        // Read against the widest window (`Observed::within`): a bound past it is not unservable.
+        .filter_map(|r| Some((r.persona, r.measure.observed_need()?.within(widest_window).get())))
         .filter(|(_, w)| *w > widest_window)
         .collect()
 }
@@ -541,12 +542,14 @@ impl Inner {
                     // 8-hex prefixes, the shape a citizen reads on a board line. Spelled
                     // here rather than borrowing `modules::work::short8`, which is private
                     // to that module — a receipt is not a reason to widen someone else's
-                    // surface. `need:` when her measured need gated, `wish:` when no held
+                    // surface. `need_exact:`/`need_at_least:` by her need's type, `wish:` when no held
                     // turn is known and the target did (card 70706a9e) — the reader must
                     // never again mistake a pre-fit wish for a lane width.
                     .map(|(m, w)| {
+                        use crate::inference::planning::window_allocator::{observed::Observed, Measure};
                         let gate = match requirements.iter().find(|r| r.persona == *m).map(|r| r.measure) {
-                            Some(crate::inference::planning::window_allocator::Measure::Held { .. }) => "need",
+                            Some(Measure::Held { need: Observed::AtLeast { .. }, .. }) => "need_at_least",
+                            Some(Measure::Held { need: Observed::Exact(_), .. }) => "need_exact",
                             _ => "wish",
                         };
                         format!("{}:{gate}:{w}", airc_core::shown_id::shown_form(*m))
@@ -940,11 +943,13 @@ mod tests {
         let kimi = Uuid::new_v4();
         let wish = vec![LaneRequirement::wished(kimi, t(99_096), 1.25)];
         assert_eq!(minds_over_the_grid(&wish, 75_776), vec![(kimi, 123_870)], "no need known: the wish gates, as before");
-        let fits = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(t(74_000))];
+        let fits = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(crate::inference::planning::window_allocator::observed::Observed::Exact(t(74_000)))];
         assert!(minds_over_the_grid(&fits, 75_776).is_empty(), "her held turns fit this grid: served, trimmed, not exiled");
-        let over = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(t(80_000))];
+        let over = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(crate::inference::planning::window_allocator::observed::Observed::Exact(t(80_000)))];
         assert_eq!(minds_over_the_grid(&over, 75_776), vec![(kimi, 80_000)], "a need the grid cannot hold still names her, by the need");
-        let clamped = vec![LaneRequirement::wished(kimi, t(60_000), 1.0).held(t(90_000))];
+        let clamped = vec![LaneRequirement::wished(kimi, t(60_000), 1.0).held(crate::inference::planning::window_allocator::observed::Observed::Exact(t(90_000)))];
         assert!(minds_over_the_grid(&clamped, 60_000).is_empty(), "need clamps to the target");
+        let bound = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(crate::inference::planning::window_allocator::observed::Observed::AtLeast { at_least: t(99_096) })];
+        assert!(minds_over_the_grid(&bound, 75_776).is_empty(), "a bound past the widest window is not unservable (Cormac on #5773)");
     }
 }

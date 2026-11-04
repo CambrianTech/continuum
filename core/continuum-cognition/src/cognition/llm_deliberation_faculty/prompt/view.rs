@@ -521,10 +521,12 @@ impl LlmDeliberationFaculty {
         // Her view within what the allocation granted its sources (`epoch.rs`): the only place
         // it is ever collapsed.
         // A broken allocator contract refuses the turn (`budget_fault`), never a prompt sent anyway.
-        let view_fault = self
-            .fit_view(&mut all_messages, view, &plan, &start_plan, view_room as usize, calibration)
-            .err()
-            .map(|mismatch| format!("her view could not be sized: {mismatch}"));
+        // An overflow also says how far beyond its grant her view would have held: her need, censored.
+        let (view_beyond, view_fault) =
+            match self.fit_view(&mut all_messages, view, &plan, &start_plan, view_room as usize, calibration) {
+                Ok(beyond) => (beyond, None),
+                Err(mismatch) => (None, Some(format!("her view could not be sized: {mismatch}"))),
+            };
         self.view_sent();
         // The surface this act sends: the epoch's set, or this act's own when it turned the view over.
         let selected = self.retain_tools(tools_choice, tools_refusal.is_some());
@@ -658,7 +660,26 @@ impl LlmDeliberationFaculty {
             let sent_tokens = sent.min(u32::MAX as usize) as u32;
             let framing = framing_tokens.min(u32::MAX as usize) as u32;
             let fit_ok = capacity_error.is_none();
-            match crate::cognition::working_set::need_sample(sent_tokens, framing, fit_ok).map(|_| budget_floor) {
+            // HER VIEW OVERFLOWED ITS GRANT: this turn's need is censored by the window, so what she
+            // would have held (the window plus what her view lacked, `overflow_beyond`) is recorded
+            // as a lower bound in place of the size the fit held her at. Measured only from held
+            // sizes, her need could never exceed her grant (Aris on the M5, 2026-11-04: 55,672
+            // granted of a 654,336 pool, a turnover on most acts, the same files re-read).
+            use crate::cognition::working_set::NeedSample;
+            let censored = view_beyond.map(|beyond| {
+                let at_least = (context_window as usize).saturating_add(beyond).min(u32::MAX as usize) as u32;
+                continuum_base::probe!(
+                    class = "persona.need.censored",
+                    persona = %self.persona_name,
+                    context_window,
+                    beyond_grant = beyond,
+                    at_least,
+                    "her view overflowed its grant: her need is recorded as at least the window plus what her view lacked to hold this act and the next one's appends"
+                );
+                NeedSample::AtLeast { at_least }
+            });
+            let held = crate::cognition::working_set::need_sample(sent_tokens, framing, fit_ok).map(|_| NeedSample::Exact(budget_floor));
+            match censored.or(held) {
                 Some(need) => reg.record_need(
                     self.persona_id,
                     need,
