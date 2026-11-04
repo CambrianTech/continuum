@@ -13,10 +13,10 @@ impl ServingDaemonModule {
     /// to drive the spawner before the tick loop starts — single source of
     /// truth for "what model + how many lanes."
     pub fn compute_plan(&self) -> Option<ServingPlan> {
-        let (budget, leases) = self.host_budget_snapshot();
+        let budget = self.host_budget_snapshot();
         let mut demand = self.serving_demand();
-        account_training_leases(&mut demand, &leases);
-        plan_serving(&budget, &self.live_candidates(), &demand)
+        account_training_leases(&mut demand, &budget.leases);
+        plan_serving(&budget.host, &self.live_candidates(), &demand)
     }
 
     /// Recompute the plan from the live host snapshot + on-disk models, publish
@@ -39,9 +39,9 @@ impl ServingDaemonModule {
             self.note_reconcile_busy("recompute");
             return;
         }
-        let (budget, leases) = self.host_budget_snapshot();
+        let budget = self.host_budget_snapshot();
         let intent = self.intent.snapshot();
-        self.plan_until_decided(budget, intent.revision, &leases, || {
+        self.plan_until_decided(&budget, intent.revision, || {
             let catalog = self.catalog.snapshot();
             (
                 servable_candidates(&catalog, &intent.suppressed, &intent.pinned),
@@ -57,14 +57,13 @@ impl ServingDaemonModule {
     /// next tick produced (b4be7bc59, 2026-11-03; Cormac on #5739).
     pub(super) fn plan_until_decided(
         &self,
-        budget: HostBudget,
+        budget: &PlanBudget,
         intent_revision: u64,
-        leases: &[crate::resources::lease::ResourceLease],
         mut candidates: impl FnMut() -> (Vec<ModelFootprint>, Vec<ModelFootprint>),
     ) {
         until_decided(|| {
             let (now, on_disk) = candidates();
-            self.publish_plan_with_leases(budget, &now, &on_disk, intent_revision, leases)
+            self.publish_plan_with_leases(budget, &now, &on_disk, intent_revision)
         });
     }
 
@@ -118,6 +117,8 @@ impl ServingDaemonModule {
         }
     }
 
+    /// The test seam's budget: `budget` as the host figure, with the credit fact the live
+    /// snapshot would read beside it (serving's own attribution on this daemon's board).
     #[cfg(test)]
     pub(super) fn publish_plan_for_intent(
         &self,
@@ -126,15 +127,22 @@ impl ServingDaemonModule {
         on_disk: &[ModelFootprint],
         intent_revision: u64,
     ) -> PlanOutcome {
-        self.publish_plan_with_leases(budget, candidates, on_disk, intent_revision, &[])
+        let own_bytes = self
+            .resource_daemon
+            .replacement_budget_snapshot(SERVING_CONSUMER_ID, serving_pool_kind())
+            .own_bytes;
+        let budget = PlanBudget { host: budget, credit: OwnCredit::of_own_bytes(own_bytes), leases: Vec::new() };
+        self.publish_plan_with_leases(&budget, candidates, on_disk, intent_revision)
     }
 
     fn publish_plan_with_leases(
-        &self, budget: HostBudget, candidates: &[ModelFootprint],
+        &self, planned: &PlanBudget, candidates: &[ModelFootprint],
         on_disk: &[ModelFootprint], intent_revision: u64,
-        leases: &[crate::resources::lease::ResourceLease],
     ) -> PlanOutcome {
-        self.plan_budget_bytes.store(budget.usable_bytes, Ordering::Relaxed);
+        let budget = planned.host;
+        let credit = planned.credit;
+        let leases = planned.leases.as_slice();
+        *self.planned_budget.lock() = Some(PlannedBudget { usable_bytes: budget.usable_bytes, credit });
         // Hysteresis: pass the currently-served model as the incumbent so a
         // transient free-memory dip doesn't thrash the served model.
         //
@@ -173,9 +181,11 @@ impl ServingDaemonModule {
         // chasing it (5090, 2026-09-17). Before that report exists (the first ticks of a
         // boot over an inherited lane, #438) the ledger has nothing to add back, and the
         // plan's own credit is the one that keeps the successor from fleeing its
-        // predecessor onto a smaller model. One credit, whichever layer holds the fact.
-        let ledger_credited = self.serving_footprint_reported();
-        if !ledger_credited {
+        // predecessor onto a smaller model. One credit, whichever layer holds the fact,
+        // and the fact is `credit`, read with the budget (`own_credit`): a bool read off the
+        // board at another moment is how the arm and the budget drifted apart.
+        let ledger_credited = matches!(credit, OwnCredit::Included { .. });
+        if let OwnCredit::ToApply = credit {
             // The boot planner adds incumbent bytes after this snapshot. That
             // enlarged budget no longer proves these leases were excluded.
             account_training_leases(&mut demand, &[]);
@@ -193,24 +203,13 @@ impl ServingDaemonModule {
         // reading the guards that prevent them (#232's `apply_kv_quantization`, and the
         // credit-back-exactly-once ledger above). Nobody could say which arm had run, because
         // nothing said so. This says it.
-        let traced = if ledger_credited {
-            plan_serving_at_rest_traced(&budget, candidates, incumbent.as_deref(), &demand)
-        } else {
-            plan_serving_stable_traced(&budget, candidates, incumbent.as_deref(), &demand)
-        };
+        let traced = super::own_credit::plan_by_credit(credit, &budget, candidates, incumbent.as_deref(), &demand);
         // The chosen plan's training growth decision, reported by the change-gated
         // serving.plan probe below instead of by the planner on every call.
         let training_growth = traced.as_ref().and_then(|t| t.training_growth.clone());
         let stable = traced.map(|t| t.plan);
         {
-            let credited_bytes: u64 = self
-                .resource_daemon
-                .board()
-                .attributions
-                .iter()
-                .filter(|a| a.consumer_id == SERVING_CONSUMER_ID && a.kind == serving_pool_kind())
-                .map(|a| a.bytes)
-                .sum();
+            let credited_bytes = credit.own_bytes();
             let planned = stable.as_ref().map(|p| (p.lanes, p.served_context_window));
             // Once per CHANGE OF THE DECISION, never per 5-second tick — the same law the
             // prompt-cache divergence receipt in this file follows, and a law this probe
@@ -227,7 +226,7 @@ impl ServingDaemonModule {
             if say_on_change(&mut *LAST_BRANCH.lock(), now).is_some() {
                 continuum_base::probe!(
                     target: "continuum_core::modules::serving_daemon", class = "serving.plan.branch",
-                    branch = if ledger_credited { "at_rest" } else { "stable" },
+                    branch = credit.arm(),
                     ledger_credited = ledger_credited,
                     credited_bytes = credited_bytes,
                     usable_bytes = budget.usable_bytes,
