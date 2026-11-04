@@ -19,6 +19,15 @@ use crate::capacity::dyno::expected::{CapacityShortfall, MissingSeam, RestoreOut
 use crate::capacity::dyno::recorded::*;
 use std::sync::atomic::Ordering::SeqCst;
 
+fn day() -> Recorded {
+    Recorded::load().expect("test: the recorded 2026-11-04 data parses")
+}
+
+/// Dyno 4's recorded pool, page and residents.
+fn free_cells() -> FreeCellRefusal {
+    day().restore_free_cells.value
+}
+
 fn key(mind: u128) -> PageKey {
     PageKey::mind(Uuid::from_u128(mind)).expect("test: non-nil id")
 }
@@ -60,10 +69,11 @@ impl Rig {
 
     /// One admission of `mind`. A warm turn generates (her slot then holds `tokens`); a cold one is
     /// dropped ungenerated, as a cancelled turn would be. Deferred when admission refuses or is
-    /// still waiting after 5 s.
+    /// still waiting after the adapter's own page-switch bound on an unmeasured node
+    /// ([`kv_page_wedge_bound`]): a restore that has not resolved by then is not resolving.
     async fn attempt(&self, lanes: &Arc<Semaphore>, client: &reqwest::Client, mind: u128, tokens: u64) -> Attempt {
         let admitted = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            crate::inference::turn_admission::kv_page_wedge_bound(0),
             admit_turn(lanes, Some(key(mind)), Some(self.pool.clone()), client, &self.root, tokens, std::time::Duration::ZERO),
         )
         .await;
@@ -83,7 +93,7 @@ impl Rig {
 
     /// Stop the way the M5 went down between engines: the stop's checkpoint saves every resident.
     async fn checkpoint_and_stop(self, client: &reqwest::Client) {
-        let stopped = crate::inference::slots::page_io::checkpoint_endpoint(client, &self.root, &self.endpoint, std::time::Duration::from_secs(10))
+        let stopped = crate::inference::slots::page_io::checkpoint_endpoint(client, &self.root, &self.endpoint, crate::inference::turn_admission::kv_page_wedge_bound(0))
             .await
             .expect("test: an engine was launched here");
         stopped.expect("test: the stop saves every resident");
@@ -100,9 +110,10 @@ impl Rig {
 /// her page). Her return evicts the small resident and asks the engine to restore her page,
 /// which the engine refuses: "failed to find 59144 available cells".
 async fn refused_for_free_cells(dir: &std::path::Path, lanes: &Arc<Semaphore>, client: &reqwest::Client) -> Rig {
-    let rig = rig(dir, Some(UNIFIED_POOL_CELLS)).await;
-    rig.act(lanes, client, 1, REFUSED_PAGE_CELLS).await;
-    rig.act(lanes, client, 2, OTHERS_RESIDENT_CELLS).await;
+    let cells = free_cells();
+    let rig = rig(dir, Some(cells.pool_cells)).await;
+    rig.act(lanes, client, 1, cells.page_cells).await;
+    rig.act(lanes, client, 2, cells.others_resident_cells).await;
     // Shape: a small third resident whose act pages Aiko out (the cheapest tail goes first).
     rig.act(lanes, client, 3, 1_000).await;
     assert!(rig.pool.confirms(&key(1)), "test: her page was saved and confirmed");
@@ -122,12 +133,13 @@ fn reclaim(slots: &Slots, mind: u128) {
 #[tokio::test]
 #[ignore = "ONE-ACT slice 1b: a capacity refusal keeps confirmation across a restart; only an invalid page loses it"]
 async fn a_capacity_refusal_keeps_her_confirmation_across_a_restart() {
+    let cells = free_cells();
     let dir = tempfile::tempdir().expect("test: page dir");
     let (client, lanes) = (reqwest::Client::new(), Arc::new(Semaphore::new(2)));
     let core_a = refused_for_free_cells(dir.path(), &lanes, &client).await;
-    let outcome = core_a.attempt(&lanes, &client, 1, REFUSED_PAGE_CELLS).await;
+    let outcome = core_a.attempt(&lanes, &client, 1, cells.page_cells).await;
     let refused = core_a.refused();
-    let expected = RestoreOutcome::DeferredCapacity(CapacityShortfall::FreeCells { requested: REFUSED_PAGE_CELLS });
+    let expected = RestoreOutcome::DeferredCapacity(CapacityShortfall::FreeCells { requested: cells.page_cells });
     assert!(expected.keeps_confirmation());
     core_a.server.abort();
 
@@ -137,7 +149,7 @@ async fn a_capacity_refusal_keeps_her_confirmation_across_a_restart() {
         "{expected:?} keeps her confirmation across a restart; the persisted ledger lost it \
          (first core: {outcome:?}, {refused} engine refusal(s))"
     );
-    assert_eq!(core_b.attempt(&lanes, &client, 1, REFUSED_PAGE_CELLS).await, Attempt::Warm, "she restores, never cold");
+    assert_eq!(core_b.attempt(&lanes, &client, 1, cells.page_cells).await, Attempt::Warm, "she restores, never cold");
     core_b.server.abort();
 }
 
@@ -147,13 +159,14 @@ async fn a_capacity_refusal_keeps_her_confirmation_across_a_restart() {
 #[tokio::test]
 #[ignore = "ONE-ACT slice 1b: transient pressure defers her; after verified reclamation she restores without a cold prefill"]
 async fn verified_reclamation_restores_her_without_a_cold_prefill() {
+    let cells = free_cells();
     let dir = tempfile::tempdir().expect("test: page dir");
     let (client, lanes) = (reqwest::Client::new(), Arc::new(Semaphore::new(2)));
     let core = refused_for_free_cells(dir.path(), &lanes, &client).await;
-    let first = core.attempt(&lanes, &client, 1, REFUSED_PAGE_CELLS).await;
+    let first = core.attempt(&lanes, &client, 1, cells.page_cells).await;
     assert!(!matches!(first, Attempt::Cold(_)), "a capacity refusal handed her a cold turn: {first:?}");
     reclaim(&core.slots, 2);
-    assert_eq!(core.attempt(&lanes, &client, 1, REFUSED_PAGE_CELLS).await, Attempt::Warm, "after reclamation she restores");
+    assert_eq!(core.attempt(&lanes, &client, 1, cells.page_cells).await, Attempt::Warm, "after reclamation she restores");
     assert!(core.pool.confirms(&key(1)));
     core.server.abort();
 }
@@ -168,17 +181,18 @@ async fn verified_reclamation_restores_her_without_a_cold_prefill() {
 #[tokio::test]
 #[ignore = "ONE-ACT slice 1b: an oversize page stays confirmed and deferred; admission checks fit before asking"]
 async fn a_page_larger_than_the_whole_pool_stays_confirmed_and_is_never_asked_for() {
+    let oversize = day().oversize.value;
     let dir = tempfile::tempdir().expect("test: page dir");
     let (client, lanes) = (reqwest::Client::new(), Arc::new(Semaphore::new(2)));
-    let [first_page, second_page] = OVERSIZE_PAGES;
+    let [first_page, second_page] = oversize.pages;
     let larger = rig(dir.path(), None).await;
     larger.act(&lanes, &client, 1, first_page).await;
     larger.act(&lanes, &client, 2, second_page).await;
     larger.checkpoint_and_stop(&client).await;
 
-    let small = rig(dir.path(), Some(SMALL_POOL_CELLS)).await;
-    assert!(u64::from(SMALL_LAUNCH_CTX) < first_page && first_page > SMALL_POOL_CELLS, "test: the recorded page exceeds the pool");
-    let expected = RestoreOutcome::DeferredCapacity(CapacityShortfall::ExceedsPool { tokens: first_page, pool: SMALL_POOL_CELLS });
+    let small = rig(dir.path(), Some(oversize.pool_cells)).await;
+    assert!(u64::from(oversize.launch_ctx) < first_page && first_page > oversize.pool_cells, "test: the recorded page exceeds the pool");
+    let expected = RestoreOutcome::DeferredCapacity(CapacityShortfall::ExceedsPool { tokens: first_page, pool: oversize.pool_cells });
     let tries = [
         small.attempt(&lanes, &client, 1, first_page).await,
         small.attempt(&lanes, &client, 1, first_page).await,
@@ -250,17 +264,18 @@ async fn proven_corruption_invalidates_only_the_affected_page() {
 #[tokio::test]
 #[ignore = "ONE-ACT slice 5: concurrent admissions reserve capacity once; none asks for cells another took"]
 async fn concurrent_admissions_never_double_spend_free_cells() {
+    let cells = free_cells();
     let dir = tempfile::tempdir().expect("test: page dir");
     let (client, lanes) = (reqwest::Client::new(), Arc::new(Semaphore::new(2)));
     let larger = rig(dir.path(), None).await;
-    larger.act(&lanes, &client, 1, REFUSED_PAGE_CELLS).await;
-    larger.act(&lanes, &client, 2, OTHERS_RESIDENT_CELLS).await;
+    larger.act(&lanes, &client, 1, cells.page_cells).await;
+    larger.act(&lanes, &client, 2, cells.others_resident_cells).await;
     larger.checkpoint_and_stop(&client).await;
 
-    let core = rig(dir.path(), Some(UNIFIED_POOL_CELLS)).await;
+    let core = rig(dir.path(), Some(cells.pool_cells)).await;
     let (one, two) = tokio::join!(
-        core.attempt(&lanes, &client, 1, REFUSED_PAGE_CELLS),
-        core.attempt(&lanes, &client, 2, OTHERS_RESIDENT_CELLS),
+        core.attempt(&lanes, &client, 1, cells.page_cells),
+        core.attempt(&lanes, &client, 2, cells.others_resident_cells),
     );
     let attempts = [one, two];
     assert!(attempts.iter().all(|a| !matches!(a, Attempt::Cold(_))), "a mind went cold: {attempts:?}");

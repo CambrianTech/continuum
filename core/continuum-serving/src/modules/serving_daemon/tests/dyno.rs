@@ -7,9 +7,9 @@ use super::*;
 use crate::capacity::dyno::expected::MissingSeam;
 use crate::capacity::dyno::recorded::*;
 
-/// The engine's sequences that day: four residents and the scratch traffic (`engine_pool`:
-/// seated + 1).
-const M5_SEQUENCES: u32 = 5;
+fn day() -> Recorded {
+    Recorded::load().expect("test: the recorded 2026-11-04 data parses")
+}
 
 // what this catches (the M5, 2026-11-04 cold boot: board usable 22,785,477,836 B, credited 0,
 // with the previous engine's 20,419,565,568 B still wired; the engine launched -c 125,640, and
@@ -22,26 +22,28 @@ const M5_SEQUENCES: u32 = 5;
 #[ignore = "ONE-ACT slice 3: no launch sizes from a reading taken while the previous engine's attribution stands"]
 fn no_launch_sizes_from_a_reading_taken_while_the_old_engine_is_wired() {
     let launch_pool = super::super::launch::launch_pool;
-    let footprint = qwen36_on_m5().expect("test: the recorded weights are nonzero");
-    let reading = COLD_BOOT_OLD_ENGINE_WIRED;
+    let day = day();
+    let footprint = day.qwen36_on_m5().expect("test: the recorded weights are nonzero");
+    let (cold_boot, sequences) = (day.cold_boot.value, day.m5_sequences.value);
+    let reading = cold_boot.reading;
     let PreviousEngine::StillAttributed { wired_bytes } = reading.previous_engine else {
         panic!("test: the recorded cold boot read the old engine still wired");
     };
     // Precondition: the bytes the reading lacked are the predecessor's, and they matter to the fit.
     assert!(
-        footprint.window_within(reading.usable_bytes + wired_bytes, M5_SEQUENCES)
-            > footprint.window_within(reading.usable_bytes, M5_SEQUENCES),
+        footprint.window_within(reading.usable_bytes + wired_bytes, sequences)
+            > footprint.window_within(reading.usable_bytes, sequences),
         "test: the still-wired engine's bytes shrink the fit"
     );
     let pool = launch_pool(
         Some(&footprint),
         reading.usable_bytes,
-        COLD_BOOT_LAUNCHED_POOL,
+        cold_boot.launched_pool,
         1,
-        M5_SEQUENCES,
-        QWEN36_TRAINED_WINDOW,
+        sequences,
+        day.qwen36_trained_window.value,
     );
-    assert_eq!(pool, u64::from(COLD_BOOT_LAUNCHED_POOL), "test: today's launch, reproduced (-c 125,640)");
+    assert_eq!(pool, u64::from(cold_boot.launched_pool), "test: today's launch, reproduced (-c 125,640)");
     assert_eq!(
         pool, 0,
         "a launch of {pool} tokens was sized from a reading (usable {} B, credited {} B) taken while the \
@@ -57,9 +59,13 @@ fn no_launch_sizes_from_a_reading_taken_while_the_old_engine_is_wired() {
 #[test]
 #[ignore = "ONE-ACT slice 3: the launch never sizes below the residents' pages"]
 fn the_launch_never_sizes_below_the_residents_pages() {
-    let largest = OVERSIZE_PAGES.iter().copied().max().unwrap_or(0); // unwrap_or: the recorded pages are never empty
+    let oversize = day().oversize.value;
+    let [first, second] = oversize.pages;
     panic!(
-        "{} (launched -c {SMALL_LAUNCH_CTX}, pool {SMALL_POOL_CELLS} cells, largest resident page {largest} tokens)",
-        MissingSeam::LaunchKnowsResidentPages.describe()
+        "{} (launched -c {}, pool {} cells, largest resident page {} tokens)",
+        MissingSeam::LaunchKnowsResidentPages.describe(),
+        oversize.launch_ctx,
+        oversize.pool_cells,
+        first.max(second),
     );
 }

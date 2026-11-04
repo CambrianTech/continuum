@@ -115,15 +115,17 @@ mod tests {
     #[tokio::test]
     #[ignore = "ONE-ACT slice 3: no hold is taken whose release depends on an action the owner will refuse"]
     async fn a_hold_is_released_when_the_relaunch_it_waits_for_is_refused() {
-        use crate::capacity::dyno::recorded::UNRELEASED_HOLD_POOLS;
+        let hold = crate::capacity::dyno::recorded::Recorded::load()
+            .expect("test: the recorded 2026-11-04 data parses")
+            .unreleased_hold
+            .value;
         let pid = 4_000_000_006; // a pid no other test in this binary uses
         let held = crate::inference::resource_admission::quiesced_fixture()
             .await
             .expect("test: a fresh gate quiesces");
         request_pool_growth(pid, held);
         // The ensure: the planner's target is not larger than the running pool, so no relaunch.
-        let (running, target) = UNRELEASED_HOLD_POOLS;
-        let relaunch = growth_due(Some(pid), Some(running), target);
+        let relaunch = growth_due(Some(pid), Some(hold.running_pool), hold.target_pool);
         if relaunch {
             spend(pid);
         }
@@ -136,7 +138,9 @@ mod tests {
         assert!(!relaunch, "test: the recorded ensure refused the relaunch");
         assert!(
             !still_held && !still_requested,
-            "admission stays held (held {still_held}, requested {still_requested}) for a relaunch the planner refused"
+            "admission stays held (held {still_held}, requested {still_requested}) for a relaunch the planner refused \
+             (the M5 held it {} ms with zero generations)",
+            hold.held_ms
         );
     }
 }
