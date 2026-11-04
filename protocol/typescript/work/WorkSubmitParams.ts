@@ -11,11 +11,11 @@ room?: string,
  */
 card_id: string, 
 /**
- * Minted when omitted.
+ * Minted when omitted; shown id or UUID to retry.
  */
 submission_id?: string, 
 /**
- * Your claim; defaults to the board.
+ * Your claim (shown id or UUID); defaults to the board.
  */
 claim_id?: string, 
 /**

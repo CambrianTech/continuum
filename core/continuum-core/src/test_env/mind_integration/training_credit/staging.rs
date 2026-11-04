@@ -171,9 +171,10 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
         use airc_blobs::ContentAddressedStore;
         crate::media::artifact::store().expect("test: store").put(patch.as_bytes()).expect("test: retain the patch").to_hex()
     };
+    let submitted_as = Uuid::new_v4();
     let params: WorkSubmitParams = serde_json::from_value(serde_json::json!({
         "room": room.channel.as_uuid().to_string(),
-        "submission_id": Uuid::new_v4().to_string(),
+        "submission_id": submitted_as.to_string(),
         "card_id": short(card.as_uuid()),
         "claim_id": short(claim.as_uuid()),
         "instance": "generic-project-work",
@@ -195,8 +196,9 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
     let published = submit.run(&ctx, params.clone()).await.unwrap();
     assert_eq!(published.publisher, persona);
     assert_eq!(published.bound_staged_revision_id, Some(selected.id));
+    let overlap_id = Uuid::new_v4();
     let mut overlap = params.clone();
-    overlap.submission_id = Some(Uuid::new_v4());
+    overlap.submission_id = Some(shown(overlap_id).expect("a full id parses")); // expect: a full uuid's own rendering
     assert!(submit.run(&ctx, overlap.clone()).await.is_err());
     assert!(
         !airc
@@ -207,7 +209,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
             .unwrap()
             .submissions
             .iter()
-            .any(|s| Some(s.submission_id.as_uuid()) == overlap.submission_id),
+            .any(|s| s.submission_id.as_uuid() == overlap_id),
         "failed binding cannot publish its artifact"
     );
     let review_card = airc_work::submission_review_card_id(
@@ -235,12 +237,12 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
         &ctx,
         WorkReviewParams {
             room: params.room.clone(),
-            review_id: Some(Uuid::new_v4()),
-            card_id: Some(card.as_uuid().to_string()),
-            submission_id: Some(published.submission_id),
+            review_id: Some(shown(Uuid::new_v4()).expect("a full id parses")), // expect: a full uuid's own rendering
+            card_id: Some(shown(card.as_uuid()).expect("a full id parses")), // expect: a full uuid's own rendering
+            submission_id: Some(shown(published.submission_id).expect("a full id parses")), // expect: a full uuid's own rendering
             artifact: params.artifact.clone(),
             review_card_id: review_card.as_uuid().to_string(),
-            review_claim_id: Some(review_claim.as_uuid()),
+            review_claim_id: Some(shown(review_claim.as_uuid()).expect("a full id parses")), // expect: a full uuid's own rendering
             outcome: ReviewOutcome::Failed,
             evidence_text: None,
             evidence: params.artifact.clone(),
@@ -263,13 +265,9 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
         &ctx,
         WorkReviewParams {
             room: params.room.clone(),
-            review_id: Some(Uuid::new_v4()),
-            card_id: Some(card.as_uuid().to_string()),
-            submission_id: Some(
-                params
-                    .submission_id
-                    .expect("the fixture names its submission"),
-            ),
+            review_id: Some(shown(Uuid::new_v4()).expect("a full id parses")), // expect: a full uuid's own rendering
+            card_id: Some(shown(card.as_uuid()).expect("a full id parses")), // expect: a full uuid's own rendering
+            submission_id: Some(shown(submitted_as).expect("a full id parses")), // expect: a full uuid's own rendering
             artifact: Some(
                 params
                     .artifact
@@ -277,7 +275,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
                     .expect("the fixture names its artifact"),
             ),
             review_card_id: review_card.as_uuid().to_string(),
-            review_claim_id: Some(review_claim.as_uuid()),
+            review_claim_id: Some(shown(review_claim.as_uuid()).expect("a full id parses")), // expect: a full uuid's own rendering
             outcome: ReviewOutcome::Passed,
             evidence_text: None,
             evidence: Some(
@@ -334,9 +332,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
         serde_json::from_value(serde_json::json!({
             "room": params.room,
             "card_id": short(card.as_uuid()),
-            "submission_id": short(
-                params.submission_id.expect("the fixture names its submission"), // expect: set in the json above
-            ),
+            "submission_id": short(submitted_as),
             "include_staged_evidence": true,
             "evidence_rows": "all",
             "evidence_limit": 2,

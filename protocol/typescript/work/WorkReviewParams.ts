@@ -20,15 +20,15 @@ outcome: ReviewOutcome,
  */
 evidence_text?: string, 
 /**
- * Minted when omitted.
+ * Minted when omitted; shown id or UUID to retry.
  */
 review_id?: string, 
 /**
- * Parent card (handle or UUID); defaults to review parent.
+ * Parent card (shown id or UUID); defaults to review parent.
  */
 card_id?: string, 
 /**
- * Submission; defaults to latest.
+ * Submission (shown id or UUID); defaults to latest.
  */
 submission_id?: string, 
 /**
@@ -36,7 +36,7 @@ submission_id?: string,
  */
 artifact?: WorkArtifactReference, 
 /**
- * Review claim; defaults to board.
+ * Review claim (shown id or UUID); defaults to board.
  */
 review_claim_id?: string, 
 /**
