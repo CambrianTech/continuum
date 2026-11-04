@@ -296,12 +296,14 @@ impl ServingDaemonModule {
         // at once. The M5, 2026-10-18 15:27-15:28Z: the instantaneous budget read 22.9, 29.8,
         // 29.1 then 41.9 GB within 22 s (ledger flat at 41.68 GB) and the plan it fed
         // relaunched the engine at 15:06, 15:18 and 15:24, every resident cold each time.
-        // Within one credit view: an uncredited reading is not a minimum of a credited one.
-        let usable_bytes = self.budget_readings.lock().sustained_min(
+        // Within one credit view: an uncredited reading is not a minimum of a credited one. The
+        // same history says whether a launch may commit a pool from it (`BudgetReading`).
+        let observed = self.budget_readings.lock().observe(
             continuum_base::time::EpochMs::now().millis(),
             credit,
             instant,
         );
+        let usable_bytes = observed.sustained_min;
         if usable_bytes != instant {
             continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.budget.sustained",
@@ -320,6 +322,7 @@ impl ServingDaemonModule {
             },
             credit,
             leases: charged,
+            launch: observed.launch,
         }
     }
 

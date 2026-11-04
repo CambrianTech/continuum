@@ -121,7 +121,7 @@ fn model_swap_on_a_ready_lane_needs_a_sustained_streak() {
 // budget, so the M5 at its 23 GB live budget gets its plan's 257,536 and the IntelMac its fit.
 #[test]
 fn the_launch_pool_is_the_live_plans_never_the_physical_totals() {
-    let launch_pool = super::super::launch::launch_pool;
+    let launch_pool = super::super::launch_pool::launch_pool;
     let m5_trained = 262_144;
     let mut m5 = footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, m5_trained, true, None)
         .expect("a footprint from the weights");
@@ -136,4 +136,91 @@ fn the_launch_pool_is_the_live_plans_never_the_physical_totals() {
     intel.kv_per_token = 8_192;
     assert_eq!(launch_pool(Some(&intel), 30 * GB, 32_768, 2, 9, intel_trained), 294_912, "the IntelMac: its fit, 9 x 32,768");
     assert_eq!(launch_pool(None, 30 * GB, 32_768, 2, 9, intel_trained), 65_536, "no footprint: the plan's own window x lanes");
+}
+
+/// The M5's engine model on 2026-11-04 (`credit.rs` sizes it the same): Qwen3.6-35B-A3B, its
+/// 20,419,565,568 bytes of weights, the fixture's 8,317 B/token and the catalog's trained window.
+fn m5_qwen36() -> ModelFootprint {
+    ModelFootprint {
+        model_id: "ggml-org/Qwen3.6-35B-A3B-GGUF".into(),
+        weights_bytes: 20_419_565_568,
+        kv_per_token: 8_317,
+        context_window: 262_144,
+        capability_rank: 9,
+        fixed_per_lane_bytes: 0,
+    }
+}
+
+// what this catches (the M5, 2026-11-04 20:15:16-18Z, 87eccb3a7, no growth relaunch): the cold
+// boot's first reading, `serving.plan.branch credited_bytes=0 usable_bytes=22,785,477,836` on a
+// 128 GB machine, sized the one launch two seconds into the boot (`-c 125640 --parallel 5`); the
+// engine kept 125,696 for its life and three residents starved. A reading inside its view's first
+// window is transient: it sizes no launch however it moves, nothing launches on it, and only an
+// engine already serving the model keeps its own pool.
+#[test]
+fn a_cold_boot_transient_reading_never_sizes_the_launch_pool() {
+    use super::super::launch_pool::launch_pool;
+    use super::super::own_credit::CreditedReadings;
+    let window = crate::inference::llama_server::READY_TIMEOUT;
+    let window_ms = window.as_millis() as u64;
+    let m5 = m5_qwen36();
+    let first = 22_785_477_836u64;
+    // The plan's window x lanes was the launch's 125,640 (shown as 5 x 25,128); four residents + scratch.
+    let (plan_window, plan_lanes, sequences) = (25_128u32, 5u32, 5u32);
+    // The negative control, the defect to the token: that reading fits no window at five
+    // sequences (weights + five compute floors exceed it), so the launch took the plan's 125,640.
+    assert_eq!(m5.window_within(first, sequences), 0);
+    assert_eq!(launch_pool(Some(&m5), first, plan_window, plan_lanes, sequences, m5.context_window), 125_640);
+
+    let boot = 1_000_000u64;
+    let mut readings = CreditedReadings::new(window);
+    let observed = readings.observe(boot, OwnCredit::ToApply, first);
+    assert_eq!(observed.sustained_min, first, "the plan still plans from it");
+    assert_eq!(observed.launch, BudgetReading::Transient, "credited 0, two seconds into the boot");
+    // Rising through the first window (2026-10-18's 22.9 -> 41.9 GB in 22 s) changes nothing.
+    for (after_ms, bytes) in [(5_000, 29_800_000_000u64), (22_000, 41_900_000_000), (window_ms - 1, 41_900_000_000)] {
+        assert_eq!(readings.observe(boot + after_ms, OwnCredit::ToApply, bytes).launch, BudgetReading::Transient, "+{after_ms} ms");
+    }
+
+    let pool = LaunchPool::from_reading(observed.launch, Some(&m5), plan_window, plan_lanes, sequences, m5.context_window);
+    assert_eq!(pool, LaunchPool::AwaitSettled { sequences });
+    assert_eq!(pool.commit(None), None, "no engine of the model runs: nothing launches on a transient");
+    assert_eq!(pool.commit(Some(0)), None, "an unreadable running pool is no pool to keep");
+    assert_eq!(pool.commit(Some(523_520)), Some((104_704, sequences)), "a running engine keeps its own pool");
+}
+
+// what this catches (the same 20:15Z boot, the other side): once the view has outlived its first
+// window, the launch reading is the sustained minimum of only the readings after it, so the boot
+// trough cannot fix the pool, while the plan's own minimum is unchanged. Inputs: the 20:15Z first
+// reading (22,785,477,836), the M5's 2026-10-18 rise to a steady 41.9 GB (the ledger flat at
+// 41.68 GB; the 11-04 steady reading itself is not in the receipts), the M5 model above and five
+// sequences. The pool is at least the 523,520 the 18:49Z steady plan regrew to.
+#[test]
+fn a_settled_reading_sizes_the_launch_pool_from_the_fit() {
+    use super::super::own_credit::CreditedReadings;
+    let window = crate::inference::llama_server::READY_TIMEOUT;
+    let window_ms = window.as_millis() as u64;
+    let m5 = m5_qwen36();
+    let (first, steady) = (22_785_477_836u64, 41_900_000_000u64);
+    let boot = 1_000_000u64;
+    let mut readings = CreditedReadings::new(window);
+    readings.observe(boot, OwnCredit::ToApply, first);
+    for second in 1..(window_ms / 1_000) {
+        readings.observe(boot + second * 1_000, OwnCredit::ToApply, steady);
+    }
+    let at_window = readings.observe(boot + window_ms, OwnCredit::ToApply, steady);
+    assert_eq!(at_window.sustained_min, first, "the plan's minimum still holds the boot reading");
+    assert_eq!(at_window.launch, BudgetReading::Settled(steady), "the launch reading excludes the first window");
+
+    let fit = m5.window_within(steady, 5).min(m5.context_window);
+    let pool = LaunchPool::from_reading(at_window.launch, Some(&m5), 25_128, 5, 5, m5.context_window);
+    assert_eq!(pool, LaunchPool::Sized { per_sequence: fit, sequences: 5 }, "the fit, not the plan's 25,128");
+    assert!(u64::from(fit) * 5 >= 523_520, "{fit} x 5 below the 18:49Z 523,520");
+    assert_eq!(pool.commit(None), Some((fit, 5)), "a settled pool launches with no engine running");
+
+    // Within the settled view a fall still shows at once, and a new view starts transient again.
+    let fallen = readings.observe(boot + window_ms + 1_000, OwnCredit::ToApply, 30_000_000_000);
+    assert_eq!(fallen.launch, BudgetReading::Settled(30_000_000_000));
+    let engine_up = readings.observe(boot + window_ms + 2_000, OwnCredit::Included { own_bytes: 36 * GB }, steady);
+    assert_eq!(engine_up.launch, BudgetReading::Transient, "an engine appearing is a new view's first window");
 }

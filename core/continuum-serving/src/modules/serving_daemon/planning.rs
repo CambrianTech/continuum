@@ -118,7 +118,9 @@ impl ServingDaemonModule {
     }
 
     /// The test seam's budget: `budget` as the host figure, with the credit fact the live
-    /// snapshot would read beside it (serving's own attribution on this daemon's board).
+    /// snapshot would read beside it (serving's own attribution on this daemon's board). A
+    /// handed budget is a stated reading, so it is settled: the transient is the live owner's
+    /// question (`CreditedReadings`), pinned by its own tests.
     #[cfg(test)]
     pub(super) fn publish_plan_for_intent(
         &self,
@@ -131,7 +133,12 @@ impl ServingDaemonModule {
             .resource_daemon
             .replacement_budget_snapshot(SERVING_CONSUMER_ID, serving_pool_kind())
             .own_bytes;
-        let budget = PlanBudget { host: budget, credit: OwnCredit::of_own_bytes(own_bytes), leases: Vec::new() };
+        let budget = PlanBudget {
+            host: budget,
+            credit: OwnCredit::of_own_bytes(own_bytes),
+            leases: Vec::new(),
+            launch: BudgetReading::Settled(budget.usable_bytes),
+        };
         self.publish_plan_with_leases(&budget, candidates, on_disk, intent_revision)
     }
 
@@ -142,7 +149,7 @@ impl ServingDaemonModule {
         let budget = planned.host;
         let credit = planned.credit;
         let leases = planned.leases.as_slice();
-        *self.planned_budget.lock() = Some(PlannedBudget { usable_bytes: budget.usable_bytes, credit });
+        *self.planned_budget.lock() = Some(PlannedBudget { usable_bytes: budget.usable_bytes, credit, launch: planned.launch });
         // Hysteresis: pass the currently-served model as the incumbent so a
         // transient free-memory dip doesn't thrash the served model.
         //

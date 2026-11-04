@@ -32,7 +32,10 @@ impl ServingDaemonModule {
         }
         let Some(model) = (self.model_resolver)(desired) else { return false };
         let running = self.served_pool.load(Ordering::Relaxed);
-        let (per_slot, sequences) = self.engine_pool(&model, served_ctx, lanes);
+        // Growth commits a pool too: only from a settled reading.
+        let LaunchPool::Sized { per_sequence: per_slot, sequences } = self.engine_pool(&model, served_ctx, lanes) else {
+            return false;
+        };
         let wanted = u64::from(per_slot) * u64::from(sequences);
         // The last plan's budget and its credit fact, read together: "steady" is the budget
         // having held this engine's own bytes, never a board read at another moment.

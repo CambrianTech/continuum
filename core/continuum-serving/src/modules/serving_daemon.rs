@@ -679,11 +679,13 @@ use launch_window::adopted_prompt_cache_mib;
 #[cfg(test)]
 use launch_window::{sticky_served_window, wedge_heal_floor};
 mod launch;
+mod launch_pool;
+use launch_pool::LaunchPool;
 mod planning;
 mod grants;
 mod hold;
 mod own_credit;
-use own_credit::{OwnCredit, PlanBudget, PlannedBudget};
+use own_credit::{BudgetReading, OwnCredit, PlanBudget, PlannedBudget};
 mod pool_growth;
 mod reconcile;
 mod tick;
