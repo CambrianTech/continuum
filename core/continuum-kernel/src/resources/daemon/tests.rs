@@ -184,6 +184,7 @@
             // with a pre-release lease and omit the same reservation twice.
             let read = daemon.replacement_budget_snapshot("serving", ResourceKind::Vram);
             assert_eq!(read.bytes, 4_000);
+            assert_eq!(read.capacity_bytes, 10_000, "the pool's capacity, read with the budget");
             assert_eq!(read.own_bytes, 0, "serving reported no residency: nothing of its own was added back");
             assert_eq!(read.charged.len(), 1);
             assert_eq!(read.charged[0].consumer_id, "eval-lane");
