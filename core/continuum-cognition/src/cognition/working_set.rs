@@ -546,7 +546,7 @@ impl WorkingSetRegistry {
     /// counts), a lower bound for a turn whose view overflowed its grant ([`NeedSample`]).
     /// Persisted with the demand.
     pub fn record_need(&self, persona: Uuid, sample: NeedSample, now_ms: u64) {
-        if sample.tokens() == 0 {
+        if sample.value() == 0 {
             return;
         }
         let updated = self.record_need_in_memory(persona, sample, now_ms);
@@ -937,10 +937,11 @@ pub fn requirements_for(
             let need = demand.as_ref().and_then(need_tokens);
             // A censored need says her untrimmed assembly was at least that too: her wish (and so
             // her target) rises with it, or `held` clamps the bound back to the target it outgrew.
-            let bound = need.filter(|n| n.is_bound()).map_or(0, NeedSample::tokens); // map_or: an exact need raises no wish
+            let bound = need.filter(|n| n.is_bound()).map_or(0, NeedSample::value); // map_or: an exact need raises no wish
             // Measured or not, as a type: no turn yet is unmeasured, never a zero standing in for one.
             let wish = demand.as_ref().and_then(|d| Tokens::new(requirement_tokens(d).max(bound)));
-            let need = need.map(NeedSample::tokens).and_then(Tokens::new);
+            // Typed through to the grant, which clamps a bound to what one sequence holds and never an exact need.
+            let need = need.and_then(|need| need.map(Tokens::new).transpose());
             // Her parked training examples' reservation, carried beside her conversational target
             // and need (card ea157b1a): the allocator grows toward it only from spare budget.
             let training = crate::genome::fine_tuning::training_demand::TrainingDemand::for_persona(*p).reservation();

@@ -940,11 +940,11 @@ mod tests {
         let kimi = Uuid::new_v4();
         let wish = vec![LaneRequirement::wished(kimi, t(99_096), 1.25)];
         assert_eq!(minds_over_the_grid(&wish, 75_776), vec![(kimi, 123_870)], "no need known: the wish gates, as before");
-        let fits = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(t(74_000))];
+        let fits = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(crate::inference::planning::observed::Observed::Exact(t(74_000)))];
         assert!(minds_over_the_grid(&fits, 75_776).is_empty(), "her held turns fit this grid: served, trimmed, not exiled");
-        let over = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(t(80_000))];
+        let over = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(crate::inference::planning::observed::Observed::Exact(t(80_000)))];
         assert_eq!(minds_over_the_grid(&over, 75_776), vec![(kimi, 80_000)], "a need the grid cannot hold still names her, by the need");
-        let clamped = vec![LaneRequirement::wished(kimi, t(60_000), 1.0).held(t(90_000))];
+        let clamped = vec![LaneRequirement::wished(kimi, t(60_000), 1.0).held(crate::inference::planning::observed::Observed::Exact(t(90_000)))];
         assert!(minds_over_the_grid(&clamped, 60_000).is_empty(), "need clamps to the target");
     }
 }

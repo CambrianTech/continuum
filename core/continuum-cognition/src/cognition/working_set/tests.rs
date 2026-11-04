@@ -94,7 +94,7 @@
         }
         let d = reg.demand_of(kimi).expect("recorded");
         assert!(typical_tokens(&d).expect("wish ring") >= 99_000, "the wish is still the wish");
-        let need = need_tokens(&d).map(NeedSample::tokens).expect("need ring");
+        let need = need_tokens(&d).map(NeedSample::value).expect("need ring");
         assert!((70_000..70_008).contains(&need), "the need is what held: {need}");
         // A legacy record has no need ring: None, and the caller falls back to the wish.
         let ser: PersonaDemand = serde_json::from_str(r#"{"peak_tokens":1,"last_tokens":2,"last_seen_ms":3,"turns":4}"#).expect("legacy json");
@@ -119,7 +119,7 @@
         reg.record_floor_in_memory(aiko, 17_903, 9);
         assert_eq!(need_tokens(&reg.demand_of(aiko).expect("recorded")), Some(NeedSample::Exact(17_903)), "the refused turn's floor is her need");
         reg.record_floor_in_memory(aiko, 12_000, 10);
-        let need = need_tokens(&reg.demand_of(aiko).expect("recorded")).map(NeedSample::tokens).expect("need");
+        let need = need_tokens(&reg.demand_of(aiko).expect("recorded")).map(NeedSample::value).expect("need");
         assert!((17_000..17_008).contains(&need), "a smaller floor falls back to what held: {need}");
         let fresh = Uuid::new_v4();
         reg.record_floor_in_memory(fresh, 9_000, 1);
@@ -637,8 +637,9 @@ fn an_overflow_raises_her_need_and_target_to_what_she_would_have_held() {
     assert_eq!(need, NeedSample::AtLeast { at_least: would_have_held }, "the bound, typed as one");
     let requirement = &requirements_for(&[aris], &reg)[0];
     let Measure::Held { need, target } = requirement.measure else { panic!("a held need: {requirement:?}") };
-    assert!(need.get() >= would_have_held, "her need covers what she would have held: {need:?}");
-    assert!(target >= need, "the target rose with it, never clamped below the bound: {target:?}");
+    assert!(need.is_bound(), "the requirement carries the bound as one, to the grant: {need:?}");
+    assert!(need.value().get() >= would_have_held, "her need covers what she would have held: {need:?}");
+    assert!(target >= need.value(), "the target rose with it, never clamped below the bound: {target:?}");
 }
 
 // what this catches (the M5, 2026-11-04): a deliberate start or a turnover within the grant
@@ -657,7 +658,7 @@ fn held_turns_alone_stay_an_exact_need_and_raise_no_wish() {
     let requirement = &requirements_for(&[aris], &reg)[0];
     assert_eq!(requirement.wish.map(|w| w.get()), Some(48_000), "an exact need leaves her wish where her turns measured it");
     let Measure::Held { need, .. } = requirement.measure else { panic!("a held need: {requirement:?}") };
-    assert_eq!(need.get(), 30_004);
+    assert_eq!(Some(need), std::num::NonZeroU32::new(30_004).map(crate::inference::planning::observed::Observed::Exact), "an exact need, typed as one");
 }
 
 // what this catches (the M5, 2026-11-04): a censored sample read as a size. A bound recorded at a
@@ -684,7 +685,7 @@ fn a_censored_need_is_never_read_as_an_exact_size() {
             r.record_need_in_memory(aris, NeedSample::Exact(exact + 1), 2);
             r.record_need_in_memory(aris, last, 3);
         }
-        let read = |r: &WorkingSetRegistry| need_tokens(&r.demand_of(aris).expect("recorded")).map(NeedSample::tokens);
+        let read = |r: &WorkingSetRegistry| need_tokens(&r.demand_of(aris).expect("recorded")).map(NeedSample::value);
         assert!(read(&as_bound) >= read(&as_exact), "a bound of {bound} beside {exact}: {:?} < {:?}", read(&as_bound), read(&as_exact));
     }
     // Exact turns fill the ring: the old bounds age out and the need falls back to what held.

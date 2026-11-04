@@ -40,6 +40,7 @@
 //! The arithmetic (KV per token, the prefill compute reserve, the fixed per-lane
 //! bytes) is [`ModelFootprint`]'s own — reused, not re-derived.
 
+use super::observed::Observed;
 use super::serving_plan::{HostBudget, ModelFootprint, MAX_LANES};
 use uuid::Uuid;
 
@@ -74,8 +75,9 @@ pub enum Measure {
     /// `need <= target` (a floor never exceeds what it floors; the constructor enforces it). The
     /// allocator never serves below the need, and serves the target when the budget holds it (card
     /// 70706a9e: Kimi's wish 99k x 1.25 read as "over the grid" at a 75,776 seat her turns fitted
-    /// into every time; a requirement is a target, the need is the gate).
-    Held { need: Tokens, target: Tokens },
+    /// into every time; a requirement is a target, the need is the gate). Typed exact or a lower
+    /// bound ([`Observed`]): a need her grant censored is read as at least, never as a size.
+    Held { need: Observed<Tokens>, target: Tokens },
     /// Declared on the mind (her recipe or genome): the governed size, target and floor alike.
     Declared { target: Tokens },
 }
@@ -94,8 +96,18 @@ impl Measure {
     pub fn need(self) -> Option<Tokens> {
         match self {
             Self::Unmeasured => None,
-            Self::Held { need, .. } => Some(need),
+            Self::Held { need, .. } => Some(need.value()),
             Self::Wished { target } | Self::Declared { target } => Some(target),
+        }
+    }
+
+    /// Her floor as observed, when one is measured: the held need, exact or a bound, else the
+    /// target as an exact floor. What a reader comparing her need to a limit must read.
+    pub fn observed_need(self) -> Option<Observed<Tokens>> {
+        match self {
+            Self::Unmeasured => None,
+            Self::Held { need, .. } => Some(need),
+            Self::Wished { target } | Self::Declared { target } => Some(Observed::Exact(target)),
         }
     }
 }
@@ -193,15 +205,15 @@ impl LaneRequirement {
     /// With the floor her held turns measured. A need above the target is clamped to it (a floor
     /// cannot exceed what it floors); on an unmeasured mind a held need is both floor and target,
     /// since she was served at that size.
-    pub fn held(mut self, need: Tokens) -> Self {
+    pub fn held(mut self, need: Observed<Tokens>) -> Self {
         self.measure = match self.measure {
-            Measure::Unmeasured => Measure::Held { need, target: need },
+            Measure::Unmeasured => Measure::Held { need, target: need.value() },
             Measure::Wished { target } | Measure::Held { target, .. } | Measure::Declared { target } => {
-                Measure::Held { need: need.min(target), target }
+                Measure::Held { need: need.map(|need| need.min(target)), target }
             }
         };
         // A held turn with no measured wish: what it held is what she wished for.
-        self.wish = self.wish.or(Some(need));
+        self.wish = self.wish.or(Some(need.value()));
         self
     }
 
@@ -714,7 +726,7 @@ mod tests {
         let sorted: Vec<(u32, u32)> = wish_only.iter().filter_map(LaneRequirement::sized).collect();
         assert_eq!(pack(&fp, &sorted, budget.usable_bytes, 4), None, "no need: the target is the floor, the budget cannot hold 123,870, she is shed (pre-70706a9e behaviour)");
 
-        let with_need = [LaneRequirement::wished(kimi, t(99_096), 1.25).held(t(74_000))];
+        let with_need = [LaneRequirement::wished(kimi, t(99_096), 1.25).held(Observed::Exact(t(74_000)))];
         let sorted: Vec<(u32, u32)> = with_need.iter().filter_map(LaneRequirement::sized).collect();
         let (lanes, window) = pack(&fp, &sorted, budget.usable_bytes, 4).expect("served");
         assert_eq!(lanes, 1);
@@ -725,7 +737,7 @@ mod tests {
         let aiko = Uuid::new_v4();
         let two = [
             LaneRequirement::wished(aiko, t(24_226), 1.0),
-            LaneRequirement::wished(kimi, t(99_096), 1.25).held(t(74_000)),
+            LaneRequirement::wished(kimi, t(99_096), 1.25).held(Observed::Exact(t(74_000))),
         ];
         let mut sorted: Vec<(u32, u32)> = two.iter().filter_map(LaneRequirement::sized).collect();
         sorted.sort_unstable();
@@ -745,7 +757,7 @@ mod tests {
         let job = Uuid::from_u128(0x1e02);
         let price = TrainingPrice { bytes: 6_000_000_000, source: crate::inference::planning::training_plan::NeedSource::LowerBound, model: "kimi-base".into(), shape: "kimi-base|w64256|r8|attn_q,attn_v|exact|rc".into() };
         let measured = TrainingReserve::new(64_256, Some(price.clone()), Some(job));
-        for her in [LaneRequirement::wished(Uuid::new_v4(), t(40_000), 1.25).held(t(30_000)), LaneRequirement::wished(Uuid::new_v4(), t(40_000), 1.25)] {
+        for her in [LaneRequirement::wished(Uuid::new_v4(), t(40_000), 1.25).held(Observed::Exact(t(30_000))), LaneRequirement::wished(Uuid::new_v4(), t(40_000), 1.25)] {
             let learning = her.clone().with_training(Some(measured.clone()));
             assert_eq!(learning.measure, her.measure, "conversation untouched: her target and floor are her conversation's, never the training window");
             assert_eq!(learning.training.as_ref(), Some(&measured), "the reservation travels to the allocator, its source labeled");
