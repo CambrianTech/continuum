@@ -122,6 +122,34 @@ Each stage: the ONE owner, its invariant, and what wins where docs or code disag
   a stop must cancel in-flight prefill in the fork (`should_stop` checked inside prefill), and until
   it does, the custody model assumes the engine is still working.
 
+### 5b. The fast path is the design, not an optimization
+
+The fast path existed and was measured on 2026-11-04: a page SAVE 1.5-3 s, a RESTORE 0.3-3.7 s,
+against a 318 s cold re-prefill (~100x). It was defeated, not missing:
+- restores refused `status=400` after relaunches, because the new engine came up at a different
+  pool size and a page saved under the old window does not fit the new slot (pools that day: 33k
+  to 654k for the same build);
+- 52 turns went cold with `inference.kv_page.cold_turn cause="page_on_disk_unconfirmed"`: a page on
+  disk (31 GB in `~/.continuum/cache/kv-pages`) the ledger did not trust after a relaunch.
+**Invariants:** (1) an engine's geometry (pool, per-sequence window) is STABLE for its life and
+across restarts of the core (stage 5: one launch, sized once from the settled fit; no relaunch to
+resize); (2) a saved page is valid for any engine of the same model and geometry, verified by its
+header, never re-prefilled because the ledger forgot it; (3) a geometry change is the only thing
+that invalidates pages, and it is a measured, deliberate event; (4) prefix reuse and warm-ahead are
+measured per act (`delib.generate.cache` hit rate, `inference.kv_warm_ahead`) and a miss is a loud,
+classified defect (plan line 6), never a quiet five-minute prefill.
+
+### 5c. The operating point is measured, never a number
+
+No fixed count of residents, lanes, slots or sequences. How many minds act at once is the output
+of a controller over measured throughput: acts per hour per mind and in total, prefill seconds per
+act, cache hit rate, wait between acts. Admission (stage 4) raises concurrency while total useful
+acts per hour rises and every mind's wait stays bounded, and lowers it when added minds only add
+prefill contention (prefill is serial: 68 tok/s at 1 and 2 streams). The population a node hosts
+follows the same measurement (personas create minds; placement is by capacity). The engine's
+`--parallel` is the CEILING the launch reserves residency for, chosen from the fit, not a lane
+count admission obeys. Every downward adaptation schedules its upward test.
+
 ### 6. The tool call and its result
 
 - **Owner:** the command's handler (execution), its precondition (stage 1), and ONE renderer
@@ -171,6 +199,7 @@ deploy with the 15-minute read and immediate rollback if worse (rule 3).
 |---|---|---|---|
 | 0 | Freeze: M5 stays on its current build; this doc agreed; superseded docs marked; CLAUDE.md corrected | Fable | three signatures |
 | 1 | The dyno with the seven reproductions (red) | Fable + Codex | each 11-04 failure reproduced from recorded inputs |
+| 1b | The fast path audit: every cold turn classified (page refused, page unconfirmed, prefix lost); geometry stable across restarts; pages valid by header | Codex + Fable | dyno 6 green; live: cold turns after a restart = 0 for a warm mind |
 | 2 | The view: reads by region, side budgets into the one allocation run once, history to handles; revert the wish raise of #5773 | Fable | dyno 7 green; prompt tokens per act at the working set |
 | 3 | Engine memory: launch-from-fit at Settled (#5770 first), conservation accounting; then delete growth (#5774) | Codex + Fable | dyno 1, 6 green |
 | 4 | Admission: one decision over residency, prefill, decode; fairness by completion identity; rotation through the page custodian | Codex | dyno 2, 3 green |
