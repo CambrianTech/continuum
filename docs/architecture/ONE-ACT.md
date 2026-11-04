@@ -25,6 +25,7 @@ one resource that does not scale with concurrency (measured below).
 | Launch pools the same build got | 33,040 / 50,275 / 88,425 / 125,640 / 413,625 / 654,336 tokens | engine `-c`, by launch timing |
 | Prefill, IntelMac CPU, matched | 68.3 tok/s at 1 stream, 68.0 at 2, 63.2 at 4 (server ~1,070% CPU): does NOT scale | Cormac's bench, 21:4xZ; raw in `evidence/knee-20261104/` |
 | Decode, IntelMac CPU, matched | 19.9 / 32.8 / 43.6 / 51.1 tok/s aggregate at 1/2/4/9: scales | same |
+| Prefill by prompt size, M5 (one engine, flash-attn, KV q4_0, ubatch 2048) | 399-9,371 tokens: 415-1,023 tok/s; 13-24k: 135-348; 141,739 tokens: 148 tok/s (~16 min for one act) | llama-server prompt eval lines, 2026-11-04 |
 | Cold act, M5 | Atlas 76,114 prompt tokens, 0 cached: 318 s prefill | 21:37Z |
 | Warm acts, M5 | Aiko ~20k prompts: 28 acts in 20 min; Aris ~89k prompts: 9 acts in 30 min | 20:15-20:35Z, 18:49-19:22Z |
 | A whole-pool grant to one mind | pool 125,696 -> {Aiko 114,592}, three dark 20 min | 20:15-20:35Z |
@@ -138,6 +139,13 @@ header, never re-prefilled because the ledger forgot it; (3) a geometry change i
 that invalidates pages, and it is a measured, deliberate event; (4) prefix reuse and warm-ahead are
 measured per act (`delib.generate.cache` hit rate, `inference.kv_warm_ahead`) and a miss is a loud,
 classified defect (plan line 6), never a quiet five-minute prefill.
+
+**Prefill is avoided first, then shared, then shrunk, then tuned** (in that order of size):
+restore and prefix reuse (above); the identical head (tools + framing, ~10k tokens per mind) is
+prefilled ONCE per engine and copied into each mind's sequence (`seq_cp`, SERVING-ENGINE), never per
+mind per cold turn; prompts stay at the working set (stage 2), where this GPU prefills at hundreds of
+tokens per second instead of ~150; prefill overlaps the tool call (plan line 13); only then engine
+knobs (ubatch, chunking, KV type for attention speed), each measured on the dyno before and after.
 
 ### 5c. The operating point is measured, never a number
 
