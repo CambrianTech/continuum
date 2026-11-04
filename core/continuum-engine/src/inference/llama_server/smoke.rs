@@ -1,31 +1,43 @@
 //! Smoke responsibility of the llama-server process owner.
 use super::*;
-/// Minimum completion tokens a healthy lane must produce on the decode smoke-probe.
-/// The failure mode this guards is the intermittently-wedged fresh lane that answers
-/// EVERY request with ~2 tokens then stops (observed on ephemeral eval lanes: same
-/// base+gene generated 82 tok/task on one spawn, 2 tok/task on the next, silently
-/// scoring the whole benchmark 0). An HTTP-200-only probe with `max_tokens: 1` cannot
-/// tell that lane from a healthy one — so the probe now forces a prompt a healthy model
-/// MUST answer with many tokens and asserts it did. `5` sits comfortably above the
-/// ~2-token wedge and far below the ~20+ a healthy "count to 20" yields.
-// context-budget-exempt: how many tokens a post-spawn smoke decode must produce to prove the lane is alive — a liveness probe, not a budget
-pub(super) const MIN_SMOKE_DECODE_TOKENS: u64 = 5;
+/// The probe: count upward over this range. The prompt and the expected answer are both
+/// rendered from it, so what the probe asks and what it budgets for are one fact.
+const SMOKE_COUNT: std::ops::RangeInclusive<u64> = 1..=10;
 
+/// The question the probe asks. Digits only, so a compliant model spends its decode on the
+/// ANSWER, not a preamble.
+pub(super) fn smoke_prompt() -> String {
+    format!(
+        "Reply with only the numbers {} through {} separated by single spaces. No other words.",
+        SMOKE_COUNT.start(),
+        SMOKE_COUNT.end()
+    )
+}
 
-/// Smoke budget for the quick first attempt. Cheap on purpose: a non-thinking
-/// model answers "count to 10" well inside this, and the probe must stay a light
-/// passenger on a busy co-tenant lane.
-// context-budget-exempt: liveness-probe first-attempt budget — probe cost control, never a serving cap
-pub(super) const QUICK_SMOKE_BUDGET: u64 = 24;
+/// The answer a compliant model gives: what the quick attempt's cap is measured from.
+pub(super) fn smoke_answer() -> String {
+    SMOKE_COUNT
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
-
-/// Smoke budget for the THINK-STARVED retry: a THINKING model that spent the whole
-/// quick budget inside its reasoning channel gets one attempt with room to finish
-/// thinking AND put the ten digits in the ANSWER channel. Only a proven
-/// think-starved outcome (decode ran, visible empty, reasoning non-empty) pays this.
-// context-budget-exempt: liveness-probe retry budget for thinking models — room to traverse the reasoning phase, never a serving cap
-pub(super) const THINKING_SMOKE_BUDGET: u64 = 768;
-
+/// How far one smoke attempt may decode. Never a number someone picked: either the engine's
+/// own token count of the answer the probe asks for, or the bound the engine already applies.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(super) enum SmokeCap {
+    /// Exactly the answer: `max_tokens` = the served model's token count of [`smoke_answer`],
+    /// read from the engine's `/tokenize` (our fork is the contract). The request also asks
+    /// the engine for no reasoning phase, so a healthy lane's whole decode IS the answer. A
+    /// forced-thinking template whose close tag the engine must inject loses those few
+    /// tokens off the answer's tail; [`counts_upward`] needs three, not ten.
+    Answer(u64),
+    /// No `max_tokens`: the lane's own per-request bound (`--n-predict`, one slot window,
+    /// set at launch) and [`DECODE_SMOKE_TIMEOUT`] bound it. Only a lane whose template
+    /// thinks even when asked not to pays this: it decodes until its reasoning ends and it
+    /// answers (EOS), the shortest a healthy thinking model can prove itself in.
+    EngineBound,
+}
 
 /// Does `text` contain a run of three consecutive ascending integers (`… 4 5 6 …`)?
 ///
@@ -45,7 +57,6 @@ pub(super) fn counts_upward(text: &str) -> bool {
         .any(|w| w[1] == w[0] + 1 && w[2] == w[1] + 1)
 }
 
-
 /// Verdict of one smoke-decode attempt, judged from the response's TWO channels.
 ///
 /// THINK-STARVED (2026-08-15, root cause of a fully dead bench round): a THINKING
@@ -59,31 +70,44 @@ pub(super) fn counts_upward(text: &str) -> bool {
 /// the verdict is judged structurally, never by model name.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(super) enum SmokeVerdict {
-    /// Multi-token decode AND the visible answer followed the instruction.
+    /// The visible answer followed the instruction (three ascending integers cannot come
+    /// out of a ~2-token wedge, so the content proves the decode).
     Alive,
     /// Wedged, incoherent, or structurally not a chat model.
     Dead,
-    /// Decode PROVEN (token floor met) but the whole budget went to private
-    /// reasoning and the visible channel is empty — a thinking model mid-thought,
-    /// not a dead lane. Retry with a budget that lets it finish and ANSWER.
+    /// Decode PROVEN (it ran to the attempt's cap) but the whole cap went to private
+    /// reasoning and the visible channel is empty: a thinking model mid-thought, not a
+    /// dead lane. Retry at [`SmokeCap::EngineBound`] so it can finish and ANSWER.
     ThinkStarved,
 }
-
 
 /// Pure (numbers + strs in, verdict out) so the judgment is unit-testable without
 /// a server. The embedding-model-on-the-port incident (BigMama: "uiuiui…" garbage
 /// past a count-only gate) still reads `Dead` here: its garbage lands in the
 /// VISIBLE channel with no reasoning channel at all.
-pub(super) fn smoke_verdict(out_tokens: u64, visible: &str, reasoning_len: usize) -> SmokeVerdict {
-    if out_tokens >= MIN_SMOKE_DECODE_TOKENS && counts_upward(visible) {
+///
+/// No token floor: the healthy arm's content (a monotonic run) is the proof a ~2-token
+/// wedge cannot forge, and the think-starved arm's proof is structural, "the decode ran to
+/// THIS attempt's cap inside the reasoning channel". An attempt at the engine's own bound
+/// that still ends with no answer has nothing further to try, so it reads `Dead`.
+pub(super) fn smoke_verdict(
+    cap: SmokeCap,
+    out_tokens: u64,
+    visible: &str,
+    reasoning_len: usize,
+) -> SmokeVerdict {
+    if counts_upward(visible) {
         return SmokeVerdict::Alive;
     }
-    if out_tokens >= MIN_SMOKE_DECODE_TOKENS && visible.trim().is_empty() && reasoning_len > 0 {
+    let ran_to_cap = match cap {
+        SmokeCap::Answer(max_tokens) => out_tokens >= max_tokens,
+        SmokeCap::EngineBound => false,
+    };
+    if ran_to_cap && visible.trim().is_empty() && reasoning_len > 0 {
         return SmokeVerdict::ThinkStarved;
     }
     SmokeVerdict::Dead
 }
-
 
 /// Where a synthetic smoke decode may run without destroying a mind's KV.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -108,7 +132,9 @@ pub(super) fn smoke_seat(scratch: Option<u32>, slots: &serde_json::Value) -> Smo
     }
     let holds = |s: &serde_json::Value| {
         s.get("is_processing").and_then(|p| p.as_bool()) == Some(true)
-            || s.get("n_prompt_tokens").and_then(|n| n.as_u64()).is_some_and(|n| n > 0)
+            || s.get("n_prompt_tokens")
+                .and_then(|n| n.as_u64())
+                .is_some_and(|n| n > 0)
     };
     match slots.as_array() {
         Some(all) if !all.iter().any(holds) => SmokeSeat::Empty,
@@ -119,10 +145,70 @@ pub(super) fn smoke_seat(scratch: Option<u32>, slots: &serde_json::Value) -> Smo
 /// The scratch slot of the pool installed for `v1_url`'s server, if it has one.
 pub(super) fn scratch_slot_for(v1_url: &str) -> Option<u32> {
     let root = v1_url.strip_suffix("/v1")?;
-    crate::inference::slots::directory().get(root).flatten().and_then(|pool| pool.scratch_slot())
+    crate::inference::slots::directory()
+        .get(root)
+        .flatten()
+        .and_then(|pool| pool.scratch_slot())
 }
 
-/// One smoke-decode HTTP attempt: POST the count-to-ten prompt with `max_tokens`,
+/// The engine's own token count of [`smoke_answer`]: the quick attempt's cap. POSTs the
+/// served model's `/tokenize` (an HTTP-thread call: no slot, no decode, so the control-plane
+/// timeout). `None` when the transport, status or schema failed: a lane that cannot
+/// tokenize cannot be proven.
+pub(super) async fn smoke_answer_tokens(client: &reqwest::Client, root: &str) -> Option<u64> {
+    let resp = match client
+        .post(format!("{root}/tokenize"))
+        .timeout(PROBE_TIMEOUT)
+        .json(&serde_json::json!({ "content": smoke_answer() }))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => resp,
+        _ => return None,
+    };
+    let Ok(v) = resp.json::<serde_json::Value>().await else {
+        return None;
+    };
+    token_count_of(&v)
+}
+
+/// PURE: the token count in a `/tokenize` response (`{"tokens": [..]}`). An empty list is
+/// no answer at all, so it reads `None` rather than a zero cap.
+pub(super) fn token_count_of(v: &serde_json::Value) -> Option<u64> {
+    let n = v.get("tokens")?.as_array()?.len();
+    u64::try_from(n).ok().filter(|n| *n > 0)
+}
+
+/// PURE: the smoke request body at `cap`, pinned to `scratch` when the pool has one.
+/// Every attempt asks the engine for no reasoning phase (`enable_thinking: false` for a
+/// template that honours it, `reasoning_budget_tokens: 0` for one whose thinking the
+/// engine can close itself): a liveness probe needs an answer, not a thought.
+pub(super) fn smoke_body(cap: SmokeCap, scratch: Option<u32>) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "messages": [{ "role": "user", "content": smoke_prompt() }],
+        "chat_template_kwargs": { "enable_thinking": false },
+        "reasoning_budget_tokens": 0,
+        "stream": false,
+        "temperature": 0.0,
+    });
+    if let Some(obj) = body.as_object_mut() {
+        if let SmokeCap::Answer(max_tokens) = cap {
+            obj.insert("max_tokens".to_string(), serde_json::json!(max_tokens));
+        }
+        // Pin the probe to the SCRATCH slot (Probe class — B2). Unpinned, llama's
+        // LCP selection could seat this tiny prompt on a citizen's warm slot and
+        // evict her 30k tail to prove the lane decodes — the exact "contend for a
+        // slot with the work" the heartbeat's own doc warns about. Best-effort: an
+        // uninstalled pool (server not yet probed by any turn) leaves it unpinned.
+        if let Some(scratch) = scratch {
+            obj.insert("id_slot".to_string(), serde_json::json!(scratch));
+            obj.insert("cache_prompt".to_string(), serde_json::json!(true));
+        }
+    }
+    body
+}
+
+/// One smoke-decode HTTP attempt: POST the count-to-ten prompt at `cap`,
 /// return `(completion_tokens, visible_content, reasoning_len)` — or `None` when
 /// the transport/status/schema failed (each case logged where it is detected).
 /// Free fn (client + url in) so [`decode_smoke_ok`]'s policy stays a readable
@@ -130,29 +216,10 @@ pub(super) fn scratch_slot_for(v1_url: &str) -> Option<u32> {
 pub(super) async fn smoke_attempt(
     client: &reqwest::Client,
     v1_url: &str,
-    max_tokens: u64,
+    cap: SmokeCap,
 ) -> Option<(u64, String, usize)> {
     let url = format!("{v1_url}/chat/completions");
-    let mut body = serde_json::json!({
-        // Digits-only instruction so a compliant model spends its budget on the ANSWER,
-        // not a preamble — the content assertion needs the answer to actually fit.
-        "messages": [{ "role": "user", "content":
-            "Reply with only the numbers 1 through 10 separated by single spaces. No other words." }],
-        "max_tokens": max_tokens,
-        "stream": false,
-        "temperature": 0.0,
-    });
-    // Pin the probe to the SCRATCH slot (Probe class — B2). Unpinned, llama's
-    // LCP selection could seat this tiny prompt on a citizen's warm slot and
-    // evict her 30k tail to prove the lane decodes — the exact "contend for a
-    // slot with the work" the heartbeat's own doc warns about. Best-effort: an
-    // uninstalled pool (server not yet probed by any turn) leaves it unpinned.
-    if let Some(scratch) = scratch_slot_for(v1_url) {
-        if let Some(obj) = body.as_object_mut() {
-            obj.insert("id_slot".to_string(), serde_json::json!(scratch));
-            obj.insert("cache_prompt".to_string(), serde_json::json!(true));
-        }
-    }
+    let body = smoke_body(cap, scratch_slot_for(v1_url));
     let resp = match client
         .post(&url)
         .timeout(DECODE_SMOKE_TIMEOUT)
@@ -186,7 +253,7 @@ pub(super) async fn smoke_attempt(
     let visible = v
         .pointer("/choices/0/message/content")
         .and_then(|c| c.as_str())
-        .unwrap_or("")
+        .unwrap_or("") // absent content = an empty visible channel, judged by the verdict
         .to_string();
     // The PRIVATE reasoning channel (llama-server splits `<think>` out when the
     // template opens one). Its length is evidence of where the budget went.
@@ -194,6 +261,17 @@ pub(super) async fn smoke_attempt(
         .pointer("/choices/0/message/reasoning_content")
         .and_then(|c| c.as_str())
         .map(str::len)
-        .unwrap_or(0);
+        .unwrap_or(0); // absent reasoning channel = no reasoning spent
     Some((out_tokens, visible, reasoning_len))
+}
+
+/// One attempt at `cap`, judged: `None` when the attempt itself failed (transport, status,
+/// schema), else the verdict of what it decoded.
+pub(super) async fn smoke_attempt_verdict(
+    client: &reqwest::Client,
+    v1_url: &str,
+    cap: SmokeCap,
+) -> Option<SmokeVerdict> {
+    let (out_tokens, visible, reasoning_len) = smoke_attempt(client, v1_url, cap).await?;
+    Some(smoke_verdict(cap, out_tokens, &visible, reasoning_len))
 }

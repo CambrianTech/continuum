@@ -68,10 +68,11 @@ pub struct LlamaServerProcess {
     /// carries it (live and ephemeral): a CPU-fallback eval lane silently corrupts a
     /// benchmark's wall-clock exactly like a live one starves citizens.
     pub(super) offload: crate::inference::placement_watch::OffloadReport,
-    /// LEARNED, once per lane: the served model spends its quick smoke budget inside
-    /// the reasoning channel (a thinking model). Latched on the first `ThinkStarved`
-    /// verdict; every later readiness check then STARTS at the thinking budget instead
-    /// of re-proving the same property by burning a doomed 24-token generation first.
+    /// LEARNED, once per lane: the served model's template thinks even when the smoke
+    /// request asks for no reasoning, so the answer-sized attempt runs out inside the
+    /// reasoning channel. Latched on the first `ThinkStarved` verdict; every later
+    /// readiness check then STARTS at the engine's own bound instead of re-proving the
+    /// same property by burning a doomed answer-sized generation first.
     /// Measured before this latch: the identical `think_retry` fired ~30×/hour on a
     /// contended lane — two generations per readiness check, forever, on the same
     /// slots the citizens were starving for. Thinking-ness is a property of the MODEL;
