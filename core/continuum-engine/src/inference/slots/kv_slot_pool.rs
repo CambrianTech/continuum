@@ -439,13 +439,45 @@ pub(super) struct EndpointState {
     pub(super) ready: tokio::sync::watch::Sender<bool>,
     pub(super) paging_uncertain: bool,
     pub(super) generation: Option<EngineGeneration>,
-    pub(super) contract: Option<KvPageContract>,
-    pub(super) pool: Option<Option<Arc<KvSlotPool>>>,
-    // An installed ledger can outlive its child until replacement readiness.
-    pub(super) pool_generation: Option<Uuid>,
+    /// The owned engine verified ready (`EndpointTransition::ready`), whole: a verified
+    /// generation has its contract and pool by type, never three fields that must agree
+    /// (card df1d0963). It outlives its child until a replacement is ready.
+    pub(super) owned: Option<OwnedInstall>,
+    /// A pool with no owned engine behind it: `Some(Some(pool))` discovered for an adopted
+    /// engine, `Some(None)` latched unsupported, `None` never probed. Empty while `owned` is set.
+    pub(super) unowned_pool: Option<Option<Arc<KvSlotPool>>>,
     /// Negotiated for this pool incarnation. None is not yet negotiated;
     /// Ok(None) is explicitly legacy or remotely owned, not governed coverage.
     pub(super) page_admission: Option<Result<Option<std::path::PathBuf>, String>>,
+}
+
+/// An owned engine as `ready` installed it: its generation, the contract it launched with and
+/// the pool holding its residents' KV.
+pub(super) struct OwnedInstall {
+    pub(super) generation: Uuid,
+    pub(super) contract: KvPageContract,
+    pub(super) pool: Arc<KvSlotPool>,
+}
+
+impl EndpointState {
+    /// The pool entry serving this endpoint: the owned engine's, else the unowned one
+    /// (`Some(None)` latched unsupported, `None` never probed).
+    pub(super) fn pool_entry(&self) -> Option<Option<&Arc<KvSlotPool>>> {
+        match &self.owned {
+            Some(owned) => Some(Some(&owned.pool)),
+            None => self.unowned_pool.as_ref().map(Option::as_ref),
+        }
+    }
+
+    /// The pool serving this endpoint, if any.
+    pub(super) fn current_pool(&self) -> Option<&Arc<KvSlotPool>> {
+        self.pool_entry().flatten()
+    }
+
+    /// The owned install of exactly `generation`, if that is what is installed.
+    pub(super) fn owned_by(&self, generation: Uuid) -> Option<&OwnedInstall> {
+        self.owned.as_ref().filter(|owned| owned.generation == generation)
+    }
 }
 
 /// The directory's existing endpoint owner also arbitrates engine transitions.
@@ -505,13 +537,13 @@ impl EndpointSlots {
     /// The model this endpoint's engine was launched with, ready or not: a page switch in a
     /// relaunch's drain still waits on that engine's batches.
     pub(crate) fn launched_model(&self) -> Option<String> {
-        self.state.lock().contract.as_ref().map(|contract| contract.model_id.clone())
+        self.state.lock().owned.as_ref().map(|owned| owned.contract.model_id.clone())
     }
 
     pub fn served_geometry(&self) -> Option<crate::inference::served_window_store::ServedGeometry> {
         let state = self.state.lock();
         let generation = state.generation.as_ref()?;
-        let contract = state.contract.as_ref()?;
+        let contract = &state.owned.as_ref()?.contract;
         if generation.has_exited() || !*state.ready.borrow() || contract.context == 0 || contract.slots == 0 {
             return None;
         }
@@ -565,12 +597,9 @@ impl ResidentCheckpoint<'_> {
                 .generation
                 .as_ref()
                 .is_some_and(|g| g.same_engine(expected))
-            || state.pool_generation != Some(expected.id)
             || !state
-                .pool
-                .as_ref()
-                .and_then(Option::as_ref)
-                .is_some_and(|p| Arc::ptr_eq(p, &self.pool))
+                .owned_by(expected.id)
+                .is_some_and(|owned| Arc::ptr_eq(&owned.pool, &self.pool))
         {
             return Err("resident checkpoint generation is no longer current".into());
         }

@@ -154,7 +154,7 @@ impl EndpointSlots {
         Ok(EndpointAdmission {
             endpoint: self.clone(),
             _guard: guard,
-            pool: state.pool.as_ref().and_then(Clone::clone),
+            pool: state.current_pool().cloned(),
         })
     }
 
@@ -250,7 +250,7 @@ impl EndpointSlots {
             if state.generation.is_some() || state.paging_uncertain {
                 return Err("adopted checkpoint requires an unowned, certain pool".into());
             }
-            state.pool.as_ref().and_then(Clone::clone)
+            state.current_pool().cloned()
                 .ok_or("adopted checkpoint requires a known pool")?
         };
         let ledger = pool.ledger.get().ok_or("adopted checkpoint requires a verified ledger")?;
@@ -341,7 +341,7 @@ impl EndpointTransition {
             // exact pool; CheckpointSave quarantines cancellation/uncertainty.
             let state = self.endpoint.state.lock();
             if state.generation.is_none() && !state.paging_uncertain
-                && state.pool.as_ref().and_then(Option::as_ref)
+                && state.current_pool()
                     .is_some_and(|installed| Arc::ptr_eq(installed, &pool)) {
                 state.ready.send_replace(true);
             }
@@ -393,25 +393,21 @@ impl EndpointTransition {
         expected: &EngineGeneration,
     ) -> Result<EndpointSuspension, String> {
         let state = self.endpoint.state.lock();
-        if expected.has_exited()
-            || state.paging_uncertain
-            || state.pool_generation != Some(expected.id)
-            || !state
-                .generation
-                .as_ref()
-                .is_some_and(|g| g.same_engine(expected))
-        {
-            return Err("cannot suspend an unknown or uncertain live ledger".into());
-        }
+        let owned = match state.owned_by(expected.id) {
+            Some(owned)
+                if !expected.has_exited()
+                    && !state.paging_uncertain
+                    && state.generation.as_ref().is_some_and(|g| g.same_engine(expected)) =>
+            {
+                owned
+            }
+            _ => return Err("cannot suspend an unknown or uncertain live ledger".into()),
+        };
         Ok(EndpointSuspension {
             endpoint: self.endpoint.clone(),
             generation: expected.clone(),
-            pool: state
-                .pool
-                .as_ref()
-                .and_then(Clone::clone)
-                .ok_or("missing live ledger")?,
-            contract: state.contract.clone().ok_or("missing live page contract")?,
+            pool: Arc::clone(&owned.pool),
+            contract: owned.contract.clone(),
         })
     }
 
@@ -426,17 +422,13 @@ impl EndpointTransition {
         let state = self.endpoint.state.lock();
         if original.generation.has_exited()
             || state.paging_uncertain
-            || state.pool_generation != Some(original.generation.id)
-            || state.contract.as_ref() != Some(&original.contract)
             || !state
                 .generation
                 .as_ref()
                 .is_some_and(|g| g.same_engine(&original.generation))
-            || !state
-                .pool
-                .as_ref()
-                .and_then(Option::as_ref)
-                .is_some_and(|p| Arc::ptr_eq(p, &original.pool))
+            || !state.owned_by(original.generation.id).is_some_and(|owned| {
+                owned.contract == original.contract && Arc::ptr_eq(&owned.pool, &original.pool)
+            })
         {
             return Err("suspended live ledger changed or paging is uncertain".into());
         }
@@ -463,22 +455,14 @@ impl EndpointTransition {
                 .generation
                 .clone()
                 .ok_or("checkpoint requires an owned generation")?;
-            if generation.has_exited() || state.pool_generation != Some(generation.id) {
-                return Err("checkpoint requires this live generation's verified pool".into());
-            }
-            if state
-                .contract
-                .as_ref()
-                .and_then(|c| c.page_dir.as_ref())
-                .is_none()
-            {
+            let owned = match state.owned_by(generation.id) {
+                Some(owned) if !generation.has_exited() => owned,
+                _ => return Err("checkpoint requires this live generation's verified pool".into()),
+            };
+            if owned.contract.page_dir.is_none() {
                 return Err("checkpoint requires a verified page directory".into());
             }
-            let pool = state
-                .pool
-                .as_ref()
-                .and_then(Clone::clone)
-                .ok_or("checkpoint requires a known slot pool")?;
+            let pool = Arc::clone(&owned.pool);
             state.ready.send_replace(false);
             (generation, pool)
         };
@@ -583,7 +567,7 @@ impl EndpointTransition {
             );
         }
         if *state.ready.borrow() {
-            return if state.contract.as_ref() == Some(&contract) {
+            return if state.owned.as_ref().map(|owned| &owned.contract) == Some(&contract) {
                 Ok(())
             } else {
                 Err("ready engine cannot change its page contract without a transition".into())
@@ -596,12 +580,12 @@ impl EndpointTransition {
         // Same page format, not the same launch: a relaunch at another window or slot count
         // keeps every page it can restore (the engine refuses, loudly, one that no longer fits).
         let fingerprint = contract.fingerprint();
-        let previous = state.contract.as_ref();
+        let previous = state.owned.as_ref().map(|owned| &owned.contract);
         if fingerprint.is_some()
             && previous.and_then(KvPageContract::fingerprint) == fingerprint
             && previous.and_then(|c| c.page_dir.as_ref()) == contract.page_dir.as_ref()
         {
-            if let Some(Some(old)) = state.pool.as_ref() {
+            if let Some(old) = state.current_pool() {
                 *pool.saved.lock() = old.saved.lock().clone();
                 carried = true;
             }
@@ -621,10 +605,13 @@ impl EndpointTransition {
                 "confirmed-save ledger attached: pages saved under this exact contract are restorable, across a core restart too"
             );
         }
-        state.pool = Some(Some(pool));
+        state.owned = Some(OwnedInstall {
+            generation: generation.id,
+            contract,
+            pool,
+        });
+        state.unowned_pool = None;
         state.page_admission = None;
-        state.pool_generation = Some(generation.id);
-        state.contract = Some(contract);
         state.ready.send_replace(true);
         continuum_base::probe!(
             class = "inference.kv_engine.ready",
@@ -651,9 +638,8 @@ impl SlotDirectory {
                         ready,
                         paging_uncertain: false,
                         generation: None,
-                        contract: None,
-                        pool: None,
-                        pool_generation: None,
+                        owned: None,
+                        unowned_pool: None,
                         page_admission: None,
                     }),
                 })
@@ -665,14 +651,14 @@ impl SlotDirectory {
         let endpoint = self.endpoint(root);
         let mut state = endpoint.state.lock();
         if state.generation.is_none() {
-            state.pool = Some(None);
+            state.unowned_pool = Some(None);
         }
     }
 
     /// `Some(Some(pool))` = pool ready; `Some(None)` = latched unsupported;
     /// `None` = never probed (caller should probe /props).
     pub fn get(&self, root: &str) -> Option<Option<Arc<KvSlotPool>>> {
-        self.endpoint(root).state.lock().pool.clone()
+        self.endpoint(root).state.lock().pool_entry().map(|entry| entry.cloned())
     }
 
     pub(crate) fn page_admission_known(&self, root: &str) -> bool {
@@ -708,7 +694,7 @@ impl SlotDirectory {
         let endpoint = self.endpoint(root);
         let mut state = endpoint.state.lock();
         if state.generation.as_ref().map(|current| current.id) != generation
-            || !state.pool.as_ref().and_then(Option::as_ref).is_some_and(|current| Arc::ptr_eq(current, pool)) {
+            || !state.current_pool().is_some_and(|current| Arc::ptr_eq(current, pool)) {
             return false; // a response from an old incarnation cannot authorize its successor
         }
         if !matches!(state.page_admission, Some(Ok(_))) {
@@ -742,11 +728,11 @@ impl SlotDirectory {
     pub(crate) fn page_dir(&self, root: &str) -> Option<std::path::PathBuf> {
         let endpoint = self.endpoint(root);
         let state = endpoint.state.lock();
-        if let Some(path) = state.contract.as_ref().and_then(|contract| contract.page_dir.clone()) {
+        if let Some(path) = state.owned.as_ref().and_then(|owned| owned.contract.page_dir.clone()) {
             return Some(path);
         }
         // Adoption installs a ledger only after checking the live process incarnation.
-        state.pool.as_ref()?.as_ref()?.ledger.get()?.path.parent().map(std::path::Path::to_path_buf)
+        state.current_pool()?.ledger.get()?.path.parent().map(std::path::Path::to_path_buf)
     }
 
     /// Install (or return the already-installed) pool for a probed server.
@@ -754,8 +740,11 @@ impl SlotDirectory {
     pub fn ensure_pool(&self, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
         let endpoint = self.endpoint(root);
         let mut state = endpoint.state.lock();
+        if let Some(owned) = &state.owned {
+            return Arc::clone(&owned.pool);
+        }
         let entry = state
-            .pool
+            .unowned_pool
             .get_or_insert_with(|| Some(Arc::new(KvSlotPool::new(root, n_slots))));
         match entry {
             Some(pool) => Arc::clone(pool),

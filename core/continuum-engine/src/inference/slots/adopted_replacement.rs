@@ -17,9 +17,7 @@ impl SlotDirectory {
         state.generation.is_none()
             && !state.paging_uncertain
             && state
-                .pool
-                .as_ref()
-                .and_then(Option::as_ref)
+                .current_pool()
                 .is_some_and(|pool| pool.ledger.get().is_some())
     }
 }
