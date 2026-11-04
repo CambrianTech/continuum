@@ -14,12 +14,10 @@ impl SlotDirectory {
     pub fn adopted_replacement_ready(&self, root: &str) -> bool {
         let endpoint = self.endpoint(root);
         let state = endpoint.state.lock();
-        state.generation.is_none()
+        state.generation().is_none()
             && !state.paging_uncertain
             && state
-                .pool
-                .as_ref()
-                .and_then(Option::as_ref)
+                .current_pool()
                 .is_some_and(|pool| pool.ledger.get().is_some())
     }
 }

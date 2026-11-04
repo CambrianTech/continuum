@@ -16,6 +16,10 @@ impl LlamaServerProcess {
         }
         let restore_generation = restore_session.map(|session| session.expected.lock().clone());
         let restoring = restore_generation.is_some();
+        // The engine this launch decided to replace, captured before any await: only it is ever
+        // condemned for this launch (`drain_for_replacement`).
+        let endpoint = crate::inference::slots::directory().endpoint(&self.root);
+        let incumbent = endpoint.incumbent();
         if restoring {
             prepared.validate_restoration(&self.root, &prepared.engine_program).await?;
         }
@@ -33,21 +37,49 @@ impl LlamaServerProcess {
         if let Ok(inputs) = &prepared.local_inputs {
             inputs.validate().await.map_err(LlamaServerError::Spawn)?;
         }
-        let endpoint = crate::inference::slots::directory().endpoint(&self.root);
-        let mut transition = match restore_generation.as_ref() {
+        // Pre-flight, then condemn, then drain (`drain_for_replacement`, card df1d0963).
+        let preflight = || {
+            let owns_child = self.child.lock().unwrap().is_some(); // JUSTIFIED: poison means a prior panic mutating the owned child.
+            if self.is_live_lane && !owns_child && !restoring {
+                self.adopted_retirement_preflight()
+            } else {
+                Ok(())
+            }
+        };
+        let condemn_incumbent = || condemn("a replacement is decided: its drain must not wait on acts in flight");
+        let drained = match restore_generation.as_ref() {
             Some(expected) => {
                 endpoint
-                    .transition_for_generation_if(expected, &|| {
-                        // Check every physical precondition before the caller's admission
-                        // callback commits intent/artifact state or closes readiness.
-                        let empty = self.child.lock().unwrap().is_none(); // JUSTIFIED: poison means a prior panic mutating the owned child.
-                        expected.has_exited() && empty && current()
-                    })
+                    .drain_for_replacement(
+                        incumbent.as_ref(),
+                        Some(expected),
+                        preflight,
+                        condemn_incumbent,
+                        &|| {
+                            // Check every physical precondition before the caller's admission
+                            // callback commits intent/artifact state or closes readiness.
+                            let empty = self.child.lock().unwrap().is_none(); // JUSTIFIED: poison means a prior panic mutating the owned child.
+                            expected.has_exited() && empty && current()
+                        },
+                    )
                     .await
             }
-            None => endpoint.transition_if(current).await,
-        }
-        .map_err(|()| LlamaServerError::Superseded)?;
+            None => {
+                endpoint
+                    .drain_for_replacement(incumbent.as_ref(), None, preflight, condemn_incumbent, current)
+                    .await
+            }
+        };
+        let mut transition = match drained {
+            Ok(transition) => transition.map_err(|()| LlamaServerError::Superseded)?,
+            Err(refusal) => {
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.replace.refused_before_drain",
+                    why = %refusal,
+                    "a replacement was refused before its drain: nothing condemned, the incumbent serves on"
+                );
+                return Err(refusal);
+            }
+        };
         // A launch that stopped waiting while its engine still loaded is finished as the SAME
         // engine, not replaced (card ea6c9aff): replacing it would ask the replacement checkpoint
         // for a ledger that engine never had. Intent is this transition's own admission.

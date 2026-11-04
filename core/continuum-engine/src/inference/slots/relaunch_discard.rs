@@ -173,7 +173,7 @@ impl EndpointSlots {
     /// Capture the residents the installed pool would lose if its engine went now. Nothing is
     /// recorded until the caller commits, once the engine is actually gone.
     pub(crate) fn pending_discard(self: &Arc<Self>, reason: DiscardReason) -> PendingDiscard {
-        let pool = self.state.lock().pool.as_ref().and_then(Clone::clone);
+        let pool = self.state.lock().current_pool().cloned();
         let (keys, retain) = pool.map_or((Vec::new(), 0), |pool| (pool.unsaved_residents(), pool.n_slots() as usize));
         PendingDiscard { endpoint: Arc::clone(self), capture: Capture { keys, retain, reason } }
     }
