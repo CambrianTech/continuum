@@ -123,6 +123,33 @@ Each stage: the ONE owner, its invariant, and what wins where docs or code disag
   a stop must cancel in-flight prefill in the fork (`should_stop` checked inside prefill), and until
   it does, the custody model assumes the engine is still working.
 
+### 5a. The engine is a cache; prefill is the miss penalty (Joel, 2026-11-04: "It's more like a cache")
+
+**The model is hybrid (partly recurrent):** every resume logs `pos_min = slot tokens - 1`, so a
+sequence's state resumes only at its end or at a saved CHECKPOINT; middle edits (ring buffers, KV
+shift, `seq_rm` of a span) do not apply to this model. A mind's state is a SNAPSHOT.
+
+| Level | Holds | Hit cost (measured) |
+|---|---|---|
+| L1 | a mind's live sequence state on the GPU | 0 |
+| L2 | her state snapshot in RAM | sub-second (to measure) |
+| L3 | her page on disk | 0.3-3.7 s |
+| miss | re-prefill | minutes (318 s for 76k tokens) |
+
+- **Lines are checkpoints**, placed at stable boundaries (end of the shared head; end of each
+  appended act), so every prompt resumes from a recent line. Today it often cannot:
+  `resume: full re-prefill: no checkpoint passed the search (raw lcp = 5 ...)`, act after act: the
+  prompt DIVERGES AT TOKEN 5, so nothing is reusable. First target of slice 1b.
+- **Replacement** by activity temperature (goal 9): hot minds in L1, cooling write back to L2, L3.
+- **Write-back at turn boundaries**, while she is in a tool call, never in the GPU's way.
+- **Prefetch:** the next mind's line warms while another decodes; a tool's result prefills as it
+  streams in (plan line 13).
+- **Coherence:** a line is tagged model + geometry and is valid wherever the tag matches; the
+  refused restores and `page_on_disk_unconfirmed` turns are coherence bugs.
+- **The metric is hit rate**, every miss classified (3C: compulsory, capacity, conflict). On
+  2026-11-04 nearly every miss was a CONFLICT miss (prefix divergence, geometry change, ledger
+  forgetting), i.e. design defects, not too little memory.
+
 ### 5b. The fast path is the design, not an optimization
 
 The fast path existed and was measured on 2026-11-04: a page SAVE 1.5-3 s, a RESTORE 0.3-3.7 s,
@@ -207,7 +234,7 @@ deploy with the 15-minute read and immediate rollback if worse (rule 3).
 |---|---|---|---|
 | 0 | Freeze: M5 stays on its current build; this doc agreed; superseded docs marked; CLAUDE.md corrected | Fable | three signatures |
 | 1 | The dyno with the seven reproductions (red) | Fable + Codex | each 11-04 failure reproduced from recorded inputs |
-| 1b | The fast path audit: every cold turn classified (page refused, page unconfirmed, prefix lost); geometry stable across restarts; pages valid by header | Codex + Fable | dyno 6 green; live: cold turns after a restart = 0 for a warm mind |
+| 1b | The fast path audit: find what changes at token 5 of every prompt; every cold turn classified 3C (page refused, page unconfirmed, prefix lost); geometry stable across restarts; pages valid by header | Codex + Fable | dyno 6 green; live: cold turns after a restart = 0 for a warm mind |
 | 2 | The view: reads by region, side budgets into the one allocation run once, history to handles; revert the wish raise of #5773 | Fable | dyno 7 green; prompt tokens per act at the working set |
 | 3 | Engine memory: launch-from-fit at Settled (#5770 first), conservation accounting; then delete growth (#5774) | Codex + Fable | dyno 1, 6 green |
 | 4 | Admission: one decision over residency, prefill, decode; fairness by completion identity; rotation through the page custodian | Codex | dyno 2, 3 green |
