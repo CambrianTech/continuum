@@ -7,15 +7,16 @@
 //! more: what is left stays unallocated in the shared pool, where any sequence may grow into it and
 //! a mind whose need rises is granted it on the next tick. A slack share granted as a window would
 //! be pinned by a turn in flight while another mind's real need went unmet (Cormac on #5733). When
-//! the pool cannot hold every need, a turn in flight keeps at least what it holds (a grant never shrinks under a running
-//! turn) and the rest share what remains in proportion to what each still needs, so every prompt
-//! compresses to its grant instead of one mind being cut while another holds slack. The pool is
-//! the engine's; paging a cold mind out and making the next one wait for admission are how the
+//! the pool cannot hold every need, every mind is first seated at her measured floor (the window
+//! she cannot act below; a turn in flight keeps at least what it holds, a grant never shrinks under
+//! a running turn), and only what the floors leave grows needs above them, so no mind is starved
+//! (plan goal 9). The pool is the engine's; paging a cold mind out and making the next one wait for admission are how the
 //! node accommodates past it. [`super::window_sim`] validates the contract against today's equal
 //! split; ONE-BUDGET slice 3b's solver replaces this policy with `cambrian-flex` claims.
 
 use std::collections::BTreeMap;
 
+use crate::inference::planning::window_allocator::observed::Observed;
 use crate::inference::planning::window_allocator::Tokens;
 
 /// What the serving daemon grants the local minds on its engine's pool, each by her persona id.
@@ -63,9 +64,14 @@ pub fn current_grant(persona: uuid::Uuid) -> Option<u32> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Demand<K> {
     pub mind: K,
-    /// The least her turn holds: below it she cannot think (the median of her held turns, else her
-    /// wish). Never trimmed here; a need above what one sequence holds waits.
-    pub need: Tokens,
+    /// What her turns hold (the median of her held turns, else her wish), exact or a censored lower
+    /// bound. Read here only through [`Observed::within`]: an exact need is never trimmed (above what
+    /// one sequence holds she waits); a bound is clamped to what the reader can give.
+    pub need: Observed<Tokens>,
+    /// Her newest turn's IRREDUCIBLE window, measured (`working_set::PersonaDemand::floor_tokens`):
+    /// below it her turn cannot be sent at all. When not every need fits, every mind is seated at
+    /// this before any need above it is granted. `None` until a turn measured it.
+    pub floor: Option<Tokens>,
     /// What she would read whole (her wish with headroom), granted when the pool holds every target.
     pub target: Tokens,
     /// Her wish without headroom: a grant that covers it is kept; one that does not grows to her
@@ -91,10 +97,17 @@ pub trait WindowPolicy<K> {
 ///   costs her prompt cache: the M5 rebound all four every 2-3 minutes);
 /// - when the wants do not all fit, surplus is reclaimed first: a mind not in a turn gives back what
 ///   she holds above her need; a turn in flight keeps what it holds;
-/// - when the needs still do not all fit, minds are admitted in order (turns in flight, then minds
-///   already holding a grant, then the rest as given), each with her whole need or nothing. A mind
-///   left out keeps her current binding and is admitted when the pool has room (the engine's
-///   admission queues her turn); she is never granted a fraction of what she needs.
+/// - when the needs still do not all fit, every mind is first SEATED: granted her measured floor (the
+///   window she cannot act below), a turn in flight at least what it holds. Only what the seats leave
+///   grows needs above floors, in order (turns in flight, then minds already holding a grant, then the
+///   rest as given): an exact need is grown whole or not at all (never a fraction of it; her floor is
+///   not a fraction, it is what she needs to act), and a censored bound takes what is left, clamped by
+///   [`Observed::within`], never another mind's floor. On the M5, 2026-11-04 20:15-20:35Z (87eccb3a7),
+///   a 125,696 pool granted Aiko's bound 114,592 and nothing to Aris, Atlas and Benchy: 28 acts, all
+///   hers, three residents dark;
+/// - when even the seats do not fit (more minds than the pool can seat), or a mind's floor is not
+///   measured yet, admission is as before: holders keep their binding and minds are admitted whole in
+///   order; one left out keeps her binding and waits for room (the engine's admission queues her turn).
 pub struct DemandFollowing;
 
 impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
@@ -107,13 +120,15 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
         // Her need is never trimmed: a need above what one sequence can hold right now (a small pool)
         // waits for room. The model's own trained limit is applied by the caller before this.
         let holds = |d: &Demand<K>| held.get(&d.mind).copied().unwrap_or(0).min(d.ceiling); // unwrap_or: a mind with no grant yet holds nothing
+        // Her need against what one sequence holds: a bound is clamped to it, an exact need is not.
+        let within_ceiling = |d: &Demand<K>| d.need.within(d.ceiling).get();
         // Only a mind who holds nothing is dropped for a need above what one sequence holds now (she
         // waits). A holder whose need outgrew it keeps what she holds as her need: her binding stays
         // counted, so it can never be bound beside the pool uncounted (Cormac on #5745: A holding 40k,
         // need 70k, dropped while B was granted 60k bound 100k on a 65,536 pool).
-        let need = |d: &Demand<K>| match d.need.get() > d.ceiling {
+        let need = |d: &Demand<K>| match within_ceiling(d) > d.ceiling {
             true => holds(d),
-            false => d.need.get(),
+            false => within_ceiling(d),
         };
         let demands: Vec<&Demand<K>> = demands.iter().filter(|d| need(d) > 0).collect();
         let demands = demands.as_slice();
@@ -160,16 +175,32 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
             return demands.iter().map(|d| (d.mind, reclaimed(d))).collect();
         }
         // Not every need fits. What every holder is bound to is already spent: a holder's binding is
-        // her floor (down to her need when she is not in a turn and holds more; a turn in flight keeps
-        // what it holds), so a mind left out never adds to what the pool carries (Cormac on #5745: A
-        // grown first while B kept her 25k bound 75k on a 65,536 pool). Growth and newcomers are
-        // admitted whole, in order (turns in flight, holders, the rest), from what the floors leave.
-        let floor = |d: &Demand<K>| match (d.in_flight, held.contains_key(&d.mind)) {
+        // what she keeps (down to her need when she is not in a turn and holds more; a turn in flight
+        // keeps what it holds), so a mind left out never adds to what the pool carries (Cormac on
+        // #5745: A grown first while B kept her 25k bound 75k on a 65,536 pool).
+        let kept = |d: &Demand<K>| match (d.in_flight, held.contains_key(&d.mind)) {
             (true, _) => holds(d),
             (false, true) => holds(d).min(need(d)),
             (false, false) => 0,
         };
-        let mut left = pool.saturating_sub(total(&floor));
+        // Her seat: the measured window she cannot act below (never above her need), and for a turn in
+        // flight at least what it holds. Every mind is seated before any need above a seat is granted,
+        // so a mind whose floor is measured is never left with nothing. A mind not in a turn gives back
+        // what she holds above her floor here and regrows in order below. Unmeasured, her seat is what
+        // she keeps.
+        let seat = |d: &Demand<K>| match (d.in_flight, d.floor) {
+            (true, floor) => holds(d).max(floor.map_or(0, |f| f.get().min(need(d)))), // map_or: an unmeasured floor seats nothing beyond what she holds
+            (false, Some(floor)) => floor.get().min(need(d)),
+            (false, None) => kept(d),
+        };
+        // More minds than the pool can seat: no seat is taken from another, so admission is as before
+        // (holders keep their binding, the rest are admitted whole in order or wait).
+        let seated = total(&seat) <= pool;
+        let base = |d: &Demand<K>| match seated {
+            true => seat(d),
+            false => kept(d),
+        };
+        let mut left = pool.saturating_sub(total(&base));
         let rank = |d: &Demand<K>| match (d.in_flight, held.contains_key(&d.mind)) {
             (true, _) => 0,
             (false, true) => 1,
@@ -179,15 +210,22 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
         order.sort_by_key(|d| rank(d)); // stable: within a rank, the caller's order
         let mut grants = BTreeMap::new();
         for d in order {
-            let target = reclaimed(d).max(floor(d));
-            let growth = u64::from(target - floor(d));
-            let amount = match growth <= left {
-                true => {
-                    left -= growth;
-                    target
-                }
-                false => floor(d), // no room to grow: she keeps her floor (0 = a newcomer waits)
+            let target = reclaimed(d).max(base(d));
+            let growth = u64::from(target - base(d));
+            let amount = match (growth <= left, seated && d.need.is_bound()) {
+                (true, _) => target,
+                // A censored bound: she needs at least it, so she takes what the seats leave, read
+                // through the one rule (`within`), never another mind's seat. The room is below her
+                // target (`left < growth`), so it always fits a u32; `min(room)` keeps a zero room (an
+                // unseated mind with nothing left) at zero, where `within` holds nothing to clamp to.
+                (false, true) => match u32::try_from(u64::from(base(d)) + left) {
+                    Ok(room) => d.need.within(room).get().min(room).max(base(d)),
+                    Err(_) => base(d),
+                },
+                // An exact need grows whole or not at all: she keeps her seat (0 = she waits).
+                (false, false) => base(d),
             };
+            left -= u64::from(amount - base(d));
             if amount > 0 {
                 grants.insert(d.mind, amount);
             }
@@ -201,12 +239,11 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
 mod tests {
     use super::*;
 
-    use crate::inference::planning::window_allocator::observed::Observed;
     use crate::inference::planning::window_allocator::test_tokens as t;
 
     /// A mind whose need is her target (a wish with no held turn yet).
     fn demand(mind: u32, need: u32, in_flight: bool, ceiling: u32) -> Demand<u32> {
-        Demand { mind, need: t(need), target: t(need), wish: t(need), in_flight, ceiling }
+        Demand { mind, need: Observed::Exact(t(need)), floor: None, target: t(need), wish: t(need), in_flight, ceiling }
     }
 
     // what this catches: a window divided by a count (Joel, 2026-11-03: "What a mind needs not what
@@ -313,7 +350,7 @@ mod tests {
     #[test]
     fn needs_are_granted_before_any_target_and_targets_only_when_all_fit() {
         let pool = 524_288;
-        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, ceiling: 262_144 };
+        let mind = |m, need, target| Demand { mind: m, need: Observed::Exact(t(need)), floor: None, target: t(target), wish: t(target), in_flight: false, ceiling: 262_144 };
         let wishes = [mind(1, 70_000, 262_144), mind(2, 60_000, 104_015), mind(3, 50_000, 88_380), mind(4, 40_000, 90_000)];
         let grants = DemandFollowing.grant(&wishes, &BTreeMap::new(), pool);
         assert_eq!(grants, BTreeMap::from([(1, 70_000), (2, 60_000), (3, 50_000), (4, 40_000)]), "every need, no target: the targets sum past the pool");
@@ -331,7 +368,7 @@ mod tests {
     #[test]
     fn every_mind_grows_to_her_target_when_every_target_fits() {
         let pool = 323_840;
-        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, ceiling: 262_144 };
+        let mind = |m, need, target| Demand { mind: m, need: Observed::Exact(t(need)), floor: None, target: t(target), wish: t(target), in_flight: false, ceiling: 262_144 };
         let demands = [mind(1, 19_384, 78_000), mind(2, 14_499, 35_000), mind(3, 16_004, 51_000), mind(4, 14_477, 42_000)];
         let held = BTreeMap::from([(1, 262_144), (2, 14_445), (3, 18_213), (4, 14_242)]);
         let grants = DemandFollowing.grant(&demands, &held, pool);
@@ -348,7 +385,7 @@ mod tests {
     #[test]
     fn a_rising_wish_regrants_only_when_it_passes_the_grant() {
         let pool = 323_840;
-        let at = |wish: u32| Demand { mind: 1u32, need: t(10_000), target: t(wish + wish / 4), wish: t(wish), in_flight: false, ceiling: 262_144 };
+        let at = |wish: u32| Demand { mind: 1u32, need: Observed::Exact(t(10_000)), floor: None, target: t(wish + wish / 4), wish: t(wish), in_flight: false, ceiling: 262_144 };
         let mut held = BTreeMap::new();
         let mut regrants = 0;
         for call in 0..100u32 {
@@ -372,7 +409,7 @@ mod tests {
     #[test]
     fn a_regime_flip_never_rebinds_a_mind_whose_grant_still_fits() {
         let pool = 200_000;
-        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, ceiling: pool };
+        let mind = |m, need, target| Demand { mind: m, need: Observed::Exact(t(need)), floor: None, target: t(target), wish: t(target), in_flight: false, ceiling: pool };
         let first = [mind(1, 14_000, 47_000), mind(2, 20_000, 53_000), mind(3, 20_000, 51_000), mind(4, 14_000, 45_000)];
         let held = DemandFollowing.grant(&first, &BTreeMap::new(), pool);
         assert_eq!(held, BTreeMap::from([(1, 47_000), (2, 53_000), (3, 51_000), (4, 45_000)]), "every target fits");
@@ -397,16 +434,91 @@ mod tests {
     #[test]
     fn a_bound_above_the_ceiling_is_granted_the_ceiling_and_an_exact_need_waits() {
         let (pool, ceiling) = (654_336, 8_192);
-        let at = |need: Tokens| Demand { mind: 1u32, need, target: need, wish: need, in_flight: false, ceiling };
+        let at = |need: Observed<Tokens>| Demand { mind: 1u32, need, floor: None, target: need.value(), wish: need.value(), in_flight: false, ceiling };
         let bound = Observed::AtLeast { at_least: t(65_672) };
-        let grants = DemandFollowing.grant(&[at(bound.within(ceiling))], &BTreeMap::new(), pool);
+        let grants = DemandFollowing.grant(&[at(bound)], &BTreeMap::new(), pool);
         assert_eq!(grants, BTreeMap::from([(1, ceiling)]), "a bound past one sequence is granted one sequence, never dropped");
-        let exact = DemandFollowing.grant(&[at(Observed::Exact(t(65_672)).within(ceiling))], &BTreeMap::new(), pool);
+        let exact = DemandFollowing.grant(&[at(Observed::Exact(t(65_672)))], &BTreeMap::new(), pool);
         assert!(exact.is_empty(), "an exact need past the ceiling still waits for room: {exact:?}");
         // Negative control, the pre-fix read: the bound's value taken as her need drops her.
-        let unclamped = DemandFollowing.grant(&[at(bound.value())], &BTreeMap::new(), pool);
+        let unclamped = DemandFollowing.grant(&[at(Observed::Exact(bound.value()))], &BTreeMap::new(), pool);
         assert!(unclamped.is_empty(), "precondition: the unclamped bound is the drop this fixes: {unclamped:?}");
         assert_eq!(Observed::AtLeast { at_least: t(4_096) }.within(ceiling), t(4_096), "a bound within the ceiling is untouched");
     }
 
+
+    /// The M5 at 2026-11-04 20:15-20:35Z (87eccb3a7): a 125,696-token pool, Aiko's need a censored
+    /// bound of 114,592 and held, Aris, Atlas and Benchy each needing ~40k. Floors are this test's
+    /// inputs (each below her need), not a receipt. `floors: false` is the same minds unmeasured.
+    const RECEIPT_POOL: u32 = 125_696;
+    fn receipt_minds(floors: bool) -> ([Demand<u32>; 4], BTreeMap<u32, u32>) {
+        let mind = |m, need: Observed<Tokens>, floor| Demand {
+            mind: m,
+            need,
+            floor: Some(t(floor)).filter(|_| floors),
+            target: need.value(),
+            wish: need.value(),
+            in_flight: false,
+            ceiling: RECEIPT_POOL,
+        };
+        let minds = [
+            mind(1, Observed::AtLeast { at_least: t(114_592) }, 15_000),
+            mind(2, Observed::Exact(t(41_000)), 18_000),
+            mind(3, Observed::Exact(t(38_000)), 16_000),
+            mind(4, Observed::Exact(t(42_000)), 20_000),
+        ];
+        (minds, BTreeMap::from([(1, 114_592)]))
+    }
+
+    // what this catches (the M5, 2026-11-04 20:15-20:35Z, 87eccb3a7): starvation. `serving.grants`
+    // granted Aiko's censored bound 114,592 of a 125,696 pool and nothing to Aris, Atlas and Benchy;
+    // in 20 minutes only Aiko acted (28 acts), three residents dark. Every mind is seated at her floor
+    // first; the bound takes what the floors leave, never another's floor; an exact need above her
+    // floor is grown whole or not at all; nobody gets nothing.
+    #[test]
+    fn every_mind_holds_her_floor_and_a_bound_takes_only_what_the_floors_leave() {
+        let (minds, held) = receipt_minds(true);
+        let grants = DemandFollowing.grant(&minds, &held, RECEIPT_POOL);
+        for d in &minds {
+            let floor = d.floor.map_or(0, Tokens::get); // map_or: every receipt mind has a floor
+            let granted = grants.get(&d.mind).copied();
+            assert!(granted.is_some_and(|g| g >= floor), "mind {} starved below her floor {floor}: {grants:?}", d.mind);
+        }
+        for d in &minds[1..] {
+            let g = grants[&d.mind];
+            assert!(g == d.floor.map_or(0, Tokens::get) || g == d.need.value().get(), "an exact need is her floor or whole: {g}"); // map_or: as above
+        }
+        let others: u32 = minds[1..].iter().map(|d| grants[&d.mind]).sum();
+        assert_eq!(grants[&1], RECEIPT_POOL - others, "the bound takes exactly what the others leave: {grants:?}");
+        assert_eq!(grants, BTreeMap::from([(1, 71_696), (2, 18_000), (3, 16_000), (4, 20_000)]));
+        assert_eq!(DemandFollowing.grant(&minds, &grants, RECEIPT_POOL), grants, "a steady demand is a steady grant");
+        // Her next turn starts: a running turn keeps what it holds and the others keep their seats.
+        let mut running = minds;
+        running[0].in_flight = true;
+        assert_eq!(DemandFollowing.grant(&running, &grants, RECEIPT_POOL), grants, "a running turn shrinks no one");
+    }
+
+    // what this catches: the contrast for the test above, the policy's grant at 20:15-20:35Z. The same
+    // minds with no measured floor are admitted as before (whole need or nothing, holders first), which
+    // is exactly the receipt: Aiko alone, three minds granted nothing.
+    #[test]
+    fn without_measured_floors_admission_is_whole_need_or_nothing_as_the_receipt_showed() {
+        let (minds, held) = receipt_minds(false);
+        let grants = DemandFollowing.grant(&minds, &held, RECEIPT_POOL);
+        assert_eq!(grants, BTreeMap::from([(1, 114_592)]), "the 20:15Z grant: only Aiko");
+    }
+
+    // what this catches: seating floors leaking into the case where everything fits. On a 654,336 pool
+    // (the size the 8,192-ceiling test uses) every mind's target fits, so each is granted her target,
+    // exactly as without floors: the floor pass runs only when the needs do not all fit.
+    #[test]
+    fn when_everything_fits_measured_floors_change_no_grant() {
+        let pool = 654_336;
+        let (minds, _) = receipt_minds(true);
+        let fits = minds.map(|d| Demand { ceiling: 262_144, target: d.need.value().saturating_add(d.need.value().get() / 4), ..d });
+        let unmeasured = fits.map(|d| Demand { floor: None, ..d });
+        let grants = DemandFollowing.grant(&fits, &BTreeMap::new(), pool);
+        assert_eq!(grants, BTreeMap::from([(1, 143_240), (2, 51_250), (3, 47_500), (4, 52_500)]), "every target: {grants:?}");
+        assert_eq!(grants, DemandFollowing.grant(&unmeasured, &BTreeMap::new(), pool), "floors move nothing when all fits");
+    }
 }

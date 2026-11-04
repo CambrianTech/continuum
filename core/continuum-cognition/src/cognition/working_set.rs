@@ -953,6 +953,7 @@ pub fn requirements_for(
                 Some(need) => measured.held(need),
                 None => measured,
             }
+            .with_floor(demand.as_ref().and_then(|d| d.floor_tokens).and_then(Tokens::new))
             .with_training(training)
         })
         .collect()

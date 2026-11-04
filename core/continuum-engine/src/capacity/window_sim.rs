@@ -17,6 +17,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::inference::planning::window_allocator::observed::Observed;
 use crate::inference::planning::window_allocator::Tokens;
 
 /// A scenario's literal token count, checked nonzero when the scenario compiles: a zero literal is a
@@ -84,7 +85,9 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
             event.mind,
             Demand {
                 mind: event.mind,
-                need: event.need,
+                need: Observed::Exact(event.need),
+                // the sim measures no irreducible window: a mind's need is all she is seated at
+                floor: None,
                 target: event.need,
                 wish: event.need,
                 in_flight: event.in_flight,
@@ -107,7 +110,7 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
                 true => held.get(&d.mind).copied().unwrap_or(0), // unwrap_or: a turn that holds nothing yet is owed only her demand
                 false => 0,
             };
-            u64::from(d.need.get().max(floor))
+            u64::from(d.need.value().get().max(floor))
         };
         let demanded: u64 = current.iter().map(owed).sum();
         // Granted past what is owed: room an idle mind holds that a reading mind could have used.
@@ -127,7 +130,7 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
             {
                 out.in_flight_shrinks += 1;
             }
-            if granted < demand.need.get() {
+            if granted < demand.need.value().get() {
                 if demanded <= u64::from(scenario.pool_tokens) {
                     out.unmet_when_fits += 1;
                 }

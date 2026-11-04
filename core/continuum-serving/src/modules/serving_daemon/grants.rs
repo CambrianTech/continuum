@@ -64,8 +64,10 @@ impl ServingDaemonModule {
             .filter_map(|r| {
                 Some(Demand {
                     mind: r.persona,
-                    // A bound is clamped to what one sequence holds (`Observed::within`); an exact need is not.
-                    need: r.measure.observed_need()?.map(|need| need.min(trained)).within(per_sequence_cap),
+                    // Typed exact or a bound: the grant reads it against what one sequence holds and
+                    // what the pool has left (`Observed::within`); an exact need is never trimmed.
+                    need: r.measure.observed_need()?.map(|need| need.min(trained)),
+                    floor: r.floor.map(|floor| floor.min(trained)),
                     target: r.measure.target()?.min(trained),
                     wish: r.wish?.min(trained),
                     in_flight: crate::cognition::turn_ledger::turn_in_flight(r.persona),
