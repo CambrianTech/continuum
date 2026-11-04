@@ -151,13 +151,48 @@
             assert_eq!(pool.evict_at_least(u64::MAX), 0);
         }
         assert_eq!(READS.load(Relaxed), reads, "while it runs, passes ask that one process, not the table");
-        assert_eq!(pool.last_decline.load(Relaxed), DeclinedEviction::ProfileInUse { pid: 0, exe: String::new() }.discriminant());
+        assert_eq!(pool.last_decline.load(Relaxed), DeclinedEviction::AwaitingMeasurement.discriminant(),
+            "nothing else is reclaimable: the pool waits on the image and the scanner, reading nothing");
         RUNNING.store(false, Relaxed);
         let freed = past_spawn_windows(&pool, |f| *f, || pool.evict_at_least(u64::MAX));
         assert!(freed > 0, "its exit reopens the pool at once: decline={} settled_at={} observation={}",
             pool.last_decline.load(Relaxed), pool.settled_at.load(Relaxed), tracked.observation());
         assert!(!tmp.path().join("debug/lib.rlib").exists());
         assert_eq!(tracked.observation(), observation, "with no new measurement");
+    }
+
+    // what this catches (Fable and Codex on #5765): an image running under one profile standing
+    // the whole pool down, so a long-lived release image blocks reclaim of a regrown debug tree
+    // and tests for as long as it runs. Only its own profile waits; every other rung still cuts.
+    #[test]
+    fn a_running_release_image_holds_only_its_profile() {
+        use crate::system_resources::process_tree::{ProcessIdentity, ProcessRow, ProcessTable};
+        use std::sync::atomic::Ordering::Relaxed;
+        static IMAGE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tracked = seeded_target(tmp.path());
+        IMAGE.set(tmp.path().join("release/keep.bin").canonicalize().expect("image")).expect("set once");
+        let mut pool = fixture_pool(tracked.clone(), 1);
+        pool.process_table = || {
+            ProcessTable::of(vec![ProcessRow {
+                identity: ProcessIdentity { pid: 5151, start_time: 9 },
+                name: "daemon".into(),
+                exe: IMAGE.get().cloned(),
+            }])
+        };
+        pool.process_alive = |identity| identity == ProcessIdentity { pid: 5151, start_time: 9 };
+        assert!(past_spawn_windows(&pool, |f| *f, || pool.evict_at_least(u64::MAX)) > 0);
+        // Builds regrow the earlier rungs while the release image keeps running.
+        std::fs::create_dir_all(tmp.path().join("debug/incremental")).expect("mkdir");
+        std::fs::create_dir_all(tmp.path().join("tests")).expect("mkdir");
+        std::fs::write(tmp.path().join("debug/incremental/b.o"), vec![0u8; 5000]).expect("write");
+        std::fs::write(tmp.path().join("tests/u.bin"), vec![0u8; 2500]).expect("write");
+        tracked.set_bytes(dir_size_bytes(tmp.path()));
+        let freed = past_spawn_windows(&pool, |f| *f, || pool.evict_at_least(u64::MAX));
+        assert!(freed >= 7500, "the regrown debug tree and tests are reclaimed: freed={freed} decline={}",
+            pool.last_decline.load(Relaxed));
+        assert!(!tmp.path().join("debug/incremental/b.o").exists() && !tmp.path().join("tests/u.bin").exists());
+        assert!(tmp.path().join("release/keep.bin").exists(), "the running image's profile stands");
     }
 
     fn seeded_target(tmp: &Path) -> Arc<TrackedDir> {

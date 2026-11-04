@@ -296,9 +296,14 @@ pub struct CargoTargetPool {
     pub(super) process_table: fn() -> crate::system_resources::process_tree::ProcessTable,
     /// Whether one remembered process (pid and start time) still runs; a seam for tests.
     pub(super) process_alive: fn(crate::system_resources::process_tree::ProcessIdentity) -> bool,
-    /// The process whose exit reopens this pool (an image under a profile, or a compiler), with
-    /// the decline it caused. Waited on by identity, never by re-reading the table.
-    pub(super) standing: parking_lot::Mutex<
+    /// Images found executing under a profile, by that profile: while one runs its profile
+    /// alone stands down, asked by identity, never by re-reading the table.
+    pub(super) profile_images: parking_lot::Mutex<
+        Vec<(PathBuf, crate::system_resources::process_tree::ProcessRow, DeclinedEviction)>,
+    >,
+    /// A compiler that made the node not quiescent: citizen trees stay shut node-wide while it
+    /// runs, asked by identity.
+    pub(super) compiler_standing: parking_lot::Mutex<
         Option<(crate::system_resources::process_tree::ProcessRow, DeclinedEviction)>,
     >,
 }
@@ -372,8 +377,9 @@ impl CargoTargetPool {
             fast_gaps: std::sync::atomic::AtomicU32::new(0),
             settled_at: std::sync::atomic::AtomicU64::new(u64::MAX),
             process_table: crate::system_resources::process_tree::ProcessTable::read,
-            process_alive: crate::system_resources::process_tree::alive,
-            standing: parking_lot::Mutex::new(None),
+            process_alive: |who| !crate::system_resources::process_tree::still_present(&[who]).is_empty(),
+            profile_images: parking_lot::Mutex::new(Vec::new()),
+            compiler_standing: parking_lot::Mutex::new(None),
             tracked,
             budget_bytes: budget_bytes.max(1),
             volume_sample: super::super::DiskPressureMonitor::volume_for,
