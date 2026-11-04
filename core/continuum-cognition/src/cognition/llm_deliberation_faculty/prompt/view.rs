@@ -353,7 +353,7 @@ impl LlmDeliberationFaculty {
         // work." Every claimant on the served window bids in engine-calibrated tokens —
         // framing + the selected tools and the required input (required, never traded),
         // standing grounding, optional history, and the REPLY — and the one flexbox
-        // algorithm decides ([`crate::cognition::rag_budget::flex_allocate`]). The reply was
+        // algorithm decides ([`continuum_context::flex::flex_allocate`]). The reply was
         // carved off the top by its own rule and then yielded in two steps; on a writing
         // turn that cut Benchy's first write mid-call (2026-10-18 02:10Z). Now it trades
         // against history and grounding by priority and never takes from required input.
@@ -403,7 +403,7 @@ impl LlmDeliberationFaculty {
             .fold(0u32, u32::saturating_add);
         reply.floor_tokens = reply_need.min(context_window.saturating_sub(other_floors));
         reply.min_tokens = reply.floor_tokens;
-        let fixed_claim = |id: &str, tokens: u32| crate::cognition::rag_budget::RagSourceBudget {
+        let fixed_claim = |id: &str, tokens: u32| continuum_context::flex::FlexClaim {
             source_id: id.to_owned(),
             priority: 10,
             floor_tokens: tokens,
@@ -416,7 +416,7 @@ impl LlmDeliberationFaculty {
         let mut claims = vec![
             fixed_claim(FLEX_FRAMING, fixed_cost),
             fixed_claim(FLEX_REQUIRED, required_cost),
-            crate::cognition::rag_budget::RagSourceBudget {
+            continuum_context::flex::FlexClaim {
                 source_id: FLEX_GROUNDING.to_owned(),
                 priority: 6,
                 floor_tokens: grounding_floor,
@@ -432,7 +432,7 @@ impl LlmDeliberationFaculty {
                 ),
                 required: false,
             },
-            crate::cognition::rag_budget::RagSourceBudget {
+            continuum_context::flex::FlexClaim {
                 source_id: FLEX_HISTORY.to_owned(),
                 priority: 5,
                 floor_tokens: history_floor,
@@ -447,7 +447,7 @@ impl LlmDeliberationFaculty {
             // took two thirds of the window ahead of her whole conversation (22,167 of 29,440,
             // a_scaled_calibration_after_turnovers). A grant below it is a surface change the
             // epoch_level_lost probe reports.
-            crate::cognition::rag_budget::RagSourceBudget {
+            continuum_context::flex::FlexClaim {
                 source_id: FLEX_TOOLS.to_owned(),
                 priority: 7,
                 floor_tokens: tools_floor,
@@ -457,7 +457,7 @@ impl LlmDeliberationFaculty {
             },
         ];
         claims.extend(view_claims);
-        let plan = crate::cognition::rag_budget::flex_allocate(context_window, &claims);
+        let plan = continuum_context::flex::flex_allocate(context_window, &claims);
         // Her view's START is sized with the reply seated at its want at the reply's top priority,
         // so a pass and the act after it start her view alike: sized by the reply's priority (4 on
         // an ambient pass, 10 on an act after a cut), one 16,384 window started her conversation at
@@ -466,7 +466,7 @@ impl LlmDeliberationFaculty {
         // whole want never pre-empts her grounding or history (`reply_claim`'s doc). The want
         // itself still moves with her measured need and a pending cut's peak: what this removes is
         // the swing by priority, not every change to the bound.
-        let start_plan = crate::cognition::rag_budget::flex_allocate(context_window, &super::super::reply_claim::seated_at_want(&claims));
+        let start_plan = continuum_context::flex::flex_allocate(context_window, &super::super::reply_claim::seated_at_want(&claims));
         let allocation = Some(crate::ai::provenance::AllocationReceipt {
             window: context_window,
             revision: env!("CONTINUUM_BUILD_GIT_SHA").to_owned(),
@@ -483,7 +483,7 @@ impl LlmDeliberationFaculty {
         });
         let tools_grant = calibration.prompt_budget(plan.granted(FLEX_TOOLS) as usize);
         let (tools_choice, tools_refusal) = self.granted_tools(ws, tools, tools_grant);
-        let budget_floor = crate::cognition::rag_budget::turn_need(&claims).saturating_sub(claims.iter().find(|c| c.source_id == FLEX_REPLY).map_or(0, |c| c.floor_tokens)).saturating_add(reply_need);
+        let budget_floor = continuum_context::flex::turn_need(&claims).saturating_sub(claims.iter().find(|c| c.source_id == FLEX_REPLY).map_or(0, |c| c.floor_tokens)).saturating_add(reply_need);
         // Her reply's grant is her measured need from the one allocation, the reserve her view is
         // sized beside (a pass's `max_tokens`; an act's cap is its room, `request_allowance`).
         // What no claim took is her view's to grow into by appends (`fit_view`), never the

@@ -8,9 +8,11 @@
 //! - [`levels`]: each item's summary level, generated from its shape (mipmaps for context).
 //! - [`motion`]: how each source moves between epoch starts, which orders the next start.
 //! - [`view`]: one mind's epoch fed by its sources; turnover is the only rewrite.
+//! - [`flex`]: the one allocator: claims by floor, min, max and priority.
 
 pub mod cause;
 pub mod epoch;
+pub mod flex;
 pub mod level;
 pub mod levels;
 pub mod motion;

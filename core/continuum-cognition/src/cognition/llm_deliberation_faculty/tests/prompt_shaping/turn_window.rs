@@ -694,7 +694,7 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
     let floor = LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS;
     let prior = LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS;
     // (floor, wanted, priority)
-    let shape = |c: crate::cognition::rag_budget::RagSourceBudget| {
+    let shape = |c: continuum_context::flex::FlexClaim| {
         assert_eq!(c.min_tokens, c.floor_tokens, "above its floor the reply grows by priority");
         assert!(c.required, "the reply always gets its floor");
         (c.floor_tokens, c.max_tokens, c.priority)

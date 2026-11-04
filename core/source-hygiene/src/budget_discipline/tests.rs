@@ -76,7 +76,7 @@ fn each_self_sizing_shape_is_found_and_owners_are_not() {
         0,
         "the turn's allocation calls the allocator"
     );
-    assert_eq!(found(&SelfSized, "core/continuum-grounding/src/rag_budget/flex_allocate.rs", "const PRIORITY_MAX: u8 = 10;"), 0, "the allocator owns its algorithm");
+    assert_eq!(found(&SelfSized, "core/continuum-context/src/flex.rs", "const PRIORITY_MAX: u8 = 10;"), 0, "the allocator owns its algorithm");
     assert_eq!(found(&SelfSized, CONSUMER, "const POLL_INTERVAL_MS: u64 = 2_000;"), 0, "a duration is not a size");
     assert_eq!(found(&SelfSized, CONSUMER, "fn cap(&self) -> usize { self.grant.take(8) }"), 1, "a body on the signature's line is code (Codex on #5609)");
     assert_eq!(found(&SelfSized, CONSUMER, "pub fn recall_tokens(&self) -> usize {"), 0, "a signature alone is a definition, not a use");

@@ -8,7 +8,7 @@ use continuum_context::source::{Item, Source};
 use continuum_context::view::{claims, Claim, View};
 
 use crate::cognition::llm_deliberation_faculty::prompt::start_grants;
-use crate::cognition::rag_budget::{flex_allocate, FlexAllocation, RagSourceBudget};
+use continuum_context::flex::{flex_allocate, FlexAllocation, FlexClaim};
 
 /// One of her sources: keyed items, each collapsible to a short pointer.
 struct Stream {
@@ -52,9 +52,9 @@ fn turn_chars() -> usize {
 /// The window's one allocation over her view's claims, priced one token per char as
 /// `view_claims` prices them before calibration.
 fn window_plan(claims: &[Claim], window: u32) -> FlexAllocation {
-    let budgets: Vec<RagSourceBudget> = claims
+    let budgets: Vec<FlexClaim> = claims
         .iter()
-        .map(|claim| RagSourceBudget {
+        .map(|claim| FlexClaim {
             source_id: format!("view/{}", claim.source),
             priority: claim.priority,
             floor_tokens: claim.floor_chars as u32,

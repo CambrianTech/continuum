@@ -55,7 +55,7 @@ impl LlmDeliberationFaculty {
     /// included): floor = the source folded or collapsed, want = the source whole, at the source's
     /// priority. There is no separate history claim for the view, so the allocation that
     /// weighs her reply also decides, once, how much of her context she reads.
-    pub(in super::super) fn view_claims(&self, streams: &Streams) -> Vec<crate::cognition::rag_budget::RagSourceBudget> {
+    pub(in super::super) fn view_claims(&self, streams: &Streams) -> Vec<continuum_context::flex::FlexClaim> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         Self::view_sources(streams, memory_streams.as_ref())
@@ -74,7 +74,7 @@ impl LlmDeliberationFaculty {
                     cost(item.full()) + extra / continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN
                 };
                 let want: usize = items.iter().map(whole).sum();
-                crate::cognition::rag_budget::RagSourceBudget {
+                continuum_context::flex::FlexClaim {
                     source_id: format!("{VIEW_CLAIM}{}", source.name()),
                     priority: source.priority(),
                     floor_tokens: Self::clamp_u32(floor),
@@ -105,8 +105,8 @@ impl LlmDeliberationFaculty {
         &self,
         prompt: &mut PromptMessages,
         view: ViewPlacement,
-        plan: &crate::cognition::rag_budget::FlexAllocation,
-        start_plan: &crate::cognition::rag_budget::FlexAllocation,
+        plan: &continuum_context::flex::FlexAllocation,
+        start_plan: &continuum_context::flex::FlexAllocation,
         room: usize,
         calibration: super::types::PromptCalibration,
     ) -> Result<Option<usize>, continuum_context::view::GrantMismatch> {
@@ -190,7 +190,7 @@ impl LlmDeliberationFaculty {
             .allocations
             .iter()
             .filter(|a| a.allocated_tokens < a.requested_floor)
-            .filter(|a| a.state != crate::cognition::rag_budget::AllocationState::UnderProvisioned)
+            .filter(|a| a.state != continuum_context::flex::AllocationState::UnderProvisioned)
             .filter_map(|a| a.source_id.strip_prefix(VIEW_CLAIM))
             .collect();
         let started = self.turn_over_view_with(&prompt.streams, &shed, |claims: &[Claim]| {
@@ -535,11 +535,11 @@ thread_local! {
 /// and collapses its oldest first, at the start only ([`View::turn_over`]).
 pub(in super::super) fn start_grants(
     claims: &[Claim],
-    plan: &crate::cognition::rag_budget::FlexAllocation,
+    plan: &continuum_context::flex::FlexAllocation,
     available: usize,
     appended_per_act: Option<usize>,
 ) -> Vec<usize> {
-    let grants: Vec<Option<&crate::cognition::rag_budget::SourceAllocation>> = claims
+    let grants: Vec<Option<&continuum_context::flex::SourceAllocation>> = claims
         .iter()
         .map(|claim| plan.allocations.iter().find(|a| a.source_id == format!("{VIEW_CLAIM}{}", claim.source)))
         .collect();
@@ -585,12 +585,12 @@ pub(in super::super) fn start_grants(
         .sum();
     let growing = growing.max(newest.min(growable));
     let start = grounding + growing;
-    let budgets: Vec<crate::cognition::rag_budget::RagSourceBudget> = claims
+    let budgets: Vec<continuum_context::flex::FlexClaim> = claims
         .iter()
         .zip(&grants)
         .map(|(claim, grant)| {
             let (floor, max) = grant.map_or((0, 0), |a| (a.requested_floor, a.allocated_tokens)); // map_or: a source the window granted nothing starts collapsed
-            crate::cognition::rag_budget::RagSourceBudget {
+            continuum_context::flex::FlexClaim {
                 source_id: claim.source.clone(),
                 priority: claim.priority,
                 floor_tokens: floor.min(max),
@@ -600,7 +600,7 @@ pub(in super::super) fn start_grants(
             }
         })
         .collect();
-    let sized = crate::cognition::rag_budget::flex_allocate(LlmDeliberationFaculty::clamp_u32(start), &budgets);
+    let sized = continuum_context::flex::flex_allocate(LlmDeliberationFaculty::clamp_u32(start), &budgets);
     let grants: Vec<usize> = claims
         .iter()
         .zip(&grants)
