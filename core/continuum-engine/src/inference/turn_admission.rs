@@ -873,20 +873,20 @@ async fn kv_page_action_with_capacity(
                 unmoved_rate_source = bounds.unmoved_rate_source,
                 busy_checkpoints,
                 // the engine process's CPU over this checkpoint: the busy evidence when `/slots` is silent
-                engine_cpu_pct = %liveness.cpu_pct().map_or_else(|| "unread".to_string(), |pct| format!("{pct:.1}")),
+                engine_cpu_ms = %liveness.cpu_spent().map_or_else(|| "unread".to_string(), |spent| spent.as_millis().to_string()),
                 "a page switch outlived its bound while the engine kept working \
                  — waiting on it, not replacing the engine",
             );
         },
     )
     .await;
-    let mut unresolved_cpu_pct = None;
+    let mut unresolved_cpu = None;
     let (status, body) = match receipt {
         Receipt::Answered(Ok(reply)) => reply,
         // Status zero records transport/watchdog failure, never success.
         Receipt::Answered(Err(_)) | Receipt::Stopped => (0, None),
-        Receipt::Unresolved { busy_pct, pending } => {
-            unresolved_cpu_pct = Some(busy_pct);
+        Receipt::Unresolved { cpu_spent, pending } => {
+            unresolved_cpu = Some(cpu_spent);
             retain_unresolved(root, action, slot, pending);
             (0, None)
         }
@@ -919,17 +919,17 @@ async fn kv_page_action_with_capacity(
         {
             PageOutcome::Rejected
         }
-        _ if unresolved_cpu_pct.is_some() => PageOutcome::Unresolved,
+        _ if unresolved_cpu.is_some() => PageOutcome::Unresolved,
         _ => PageOutcome::Uncertain,
     };
-    if let Some(cpu_pct) = unresolved_cpu_pct {
+    if let Some(cpu_spent) = unresolved_cpu {
         continuum_base::probe!(
             class = "inference.kv_page.unresolved",
             action = %action,
             slot = slot as u64,
             waited_ms = started.elapsed().as_millis() as u64,
             unmoved_ms = bounds.unmoved.as_millis() as u64,
-            engine_cpu_pct = cpu_pct as f64,
+            engine_cpu_ms = cpu_spent.as_millis() as u64,
             "a page switch outlived its measured bound while the engine's process kept spending CPU: \
              held unresolved, the endpoint keeps the request, the engine is not replaced on this alone"
         );

@@ -60,8 +60,8 @@ pub(super) type CpuSource = Box<dyn FnMut() -> Option<CpuSample> + Send>;
 enum CpuEvidence {
     /// Nothing to read, or a first read with no interval behind it.
     Unread,
-    /// The same process spent this much CPU (sysinfo usage) since the previous read.
-    Spent(f32),
+    /// The same process accumulated this much CPU time since the previous read.
+    Spent(std::time::Duration),
     /// The same process spent none.
     Flat,
     /// Exited, or its pid names another process.
@@ -115,10 +115,10 @@ impl PageLiveness {
             (*read)()
         };
         let cpu = match sample {
-            None | Some(CpuSample::Alive { busy_pct: None }) => CpuEvidence::Unread,
+            None | Some(CpuSample::Alive { spent: None }) => CpuEvidence::Unread,
             Some(CpuSample::Gone) => CpuEvidence::Gone,
-            Some(CpuSample::Alive { busy_pct: Some(pct) }) if pct > 0.0 => CpuEvidence::Spent(pct),
-            Some(CpuSample::Alive { busy_pct: Some(_) }) => CpuEvidence::Flat,
+            Some(CpuSample::Alive { spent: Some(spent) }) if !spent.is_zero() => CpuEvidence::Spent(spent),
+            Some(CpuSample::Alive { spent: Some(_) }) => CpuEvidence::Flat,
         };
         let mut seen = self.seen.lock();
         if let EngineProbe::Progress(progress) = http {
@@ -141,20 +141,20 @@ impl PageLiveness {
 
     /// The CPU the engine's process spent over the latest checkpoint (0 when flat), for the probes;
     /// `None` when nothing was read.
-    pub(super) fn cpu_pct(&self) -> Option<f32> {
+    pub(super) fn cpu_spent(&self) -> Option<std::time::Duration> {
         match self.seen.lock().cpu {
-            CpuEvidence::Spent(pct) => Some(pct),
-            CpuEvidence::Flat => Some(0.0),
+            CpuEvidence::Spent(spent) => Some(spent),
+            CpuEvidence::Flat => Some(std::time::Duration::ZERO),
             CpuEvidence::Unread | CpuEvidence::Gone => None,
         }
     }
 
     /// A wait ended without a receipt: was it the switch's own bound while the process still spent
     /// CPU (`Some`, the CPU it spent), rather than the engine stopping, vanishing or being condemned?
-    fn unresolved(&self) -> Option<f32> {
+    fn unresolved(&self) -> Option<std::time::Duration> {
         let seen = self.seen.lock();
         match (seen.cpu, seen.verdict) {
-            (CpuEvidence::Spent(pct), Some(EngineProbe::Progress(_) | EngineProbe::Busy)) => Some(pct),
+            (CpuEvidence::Spent(spent), Some(EngineProbe::Progress(_) | EngineProbe::Busy)) => Some(spent),
             _ => None,
         }
     }
@@ -174,7 +174,7 @@ pub(super) enum Receipt<T> {
     Stopped,
     /// Its bound passed while the engine's process kept spending CPU: neither a receipt nor a dead
     /// engine. The request is handed back still in flight, never cancelled under the engine.
-    Unresolved { busy_pct: f32, pending: Pending<T> },
+    Unresolved { cpu_spent: std::time::Duration, pending: Pending<T> },
 }
 
 /// Await `work` while the engine progresses, by `/slots` when it answers and by its process's CPU
@@ -203,7 +203,7 @@ where
     match answered {
         Some(reply) => Receipt::Answered(reply),
         None => match liveness.unresolved() {
-            Some(busy_pct) => Receipt::Unresolved { busy_pct, pending: work },
+            Some(cpu_spent) => Receipt::Unresolved { cpu_spent, pending: work },
             None => Receipt::Stopped,
         },
     }

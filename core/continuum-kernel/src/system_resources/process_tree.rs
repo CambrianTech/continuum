@@ -161,64 +161,81 @@ pub fn descendants(pid: u32) -> Vec<ProcessIdentity> {
 /// The ones of `set` still running as the SAME process (same pid, same start time). A zombie
 /// has exited and only awaits its reaper, so it is gone.
 pub fn still_present(set: &[ProcessIdentity]) -> Vec<ProcessIdentity> {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
     if set.is_empty() {
         return Vec::new();
     }
     let pids: Vec<Pid> = set.iter().map(|who| Pid::from_u32(who.pid)).collect();
     let mut sys = System::new();
     sys.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), true, ProcessRefreshKind::nothing());
-    set.iter().copied().filter(|who| same_process(&sys, *who).is_some()).collect()
+    set.iter()
+        .copied()
+        .filter(|who| {
+            sys.process(Pid::from_u32(who.pid))
+                .is_some_and(|p| p.start_time() == who.start_time && p.status() != ProcessStatus::Zombie)
+        })
+        .collect()
 }
 
-/// `who` as `sys` last read it, only while the pid still names THAT process: same start time,
-/// not a zombie. A pid reused by another process is `None`, never the process we asked about.
-fn same_process(sys: &sysinfo::System, who: ProcessIdentity) -> Option<&sysinfo::Process> {
-    sys.process(sysinfo::Pid::from_u32(who.pid))
-        .filter(|p| p.start_time() == who.start_time && p.status() != sysinfo::ProcessStatus::Zombie)
-}
-
-/// What one read of a watched process's CPU said about the interval since the read before it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CpuSample {
-    /// The same process (pid AND start time) still runs. `busy_pct` is the CPU it used since the
-    /// previous read, as sysinfo measures usage (0 = its CPU time did not advance); `None` on the
-    /// first read, which has no interval behind it.
-    Alive { busy_pct: Option<f32> },
-    /// No process has this pid, it exited and awaits its reaper, or the pid now names a process
-    /// with another start time.
+/// What reading one process's accumulated CPU time found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuTime {
+    /// That process (pid AND start time) has used this much CPU, user + system, since it started.
+    Used(std::time::Duration),
+    /// That process still runs, but this OS gave no reading: unknown, never zero.
+    Unreadable,
+    /// It exited, is a zombie, or its pid now names another process.
     Gone,
 }
 
-/// One process's CPU, read again and again through the same table (sysinfo measures usage as the
-/// change between two refreshes of one `System`). The question it answers without asking the
-/// process anything: is it still spending CPU? An engine whose request queue is busy with one long
-/// batch cannot answer an HTTP probe, but its CPU time still moves (the IntelMac, 2026-11-04
-/// 16:24:20Z: a page restore was judged a dead engine while its main thread was in decode).
+/// The CPU time `who` has accumulated, fenced by pid AND start time. The counter is read FIRST
+/// and the identity checked AFTER: a process that still holds the pid with the same start time
+/// after the read held it continuously since it started, so the reading was its own. A reused
+/// pid is `Gone`, never another process's CPU read as "busy". The OS call is
+/// [`continuum_host::process_usage::cpu_time`]'s adapter.
+pub fn cpu_time(who: ProcessIdentity) -> CpuTime {
+    let used = continuum_host::process_usage::cpu_time(who.pid);
+    if still_present(&[who]).is_empty() {
+        return CpuTime::Gone;
+    }
+    used.map_or(CpuTime::Unreadable, CpuTime::Used)
+}
+
+/// What one read of a watched process said about the interval since the read before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuSample {
+    /// The same process (pid AND start time) still runs. `spent` is the CPU time it accumulated
+    /// since the previous read (zero = its counter did not advance); `None` when there is no
+    /// previous reading to compare (the first read, or this OS gave none).
+    Alive { spent: Option<std::time::Duration> },
+    /// It exited, is a zombie, or its pid now names another process.
+    Gone,
+}
+
+/// One process's accumulated CPU time, read checkpoint after checkpoint. The question it answers
+/// without asking the process anything: did it spend CPU since the last read? An engine whose
+/// request queue is busy with one long batch cannot answer an HTTP probe, but its CPU counter
+/// still advances (the IntelMac, 2026-11-04 16:24:20Z: a page restore was judged a dead engine
+/// while its main thread was in decode).
 pub struct CpuWatch {
     who: ProcessIdentity,
-    sys: sysinfo::System,
-    read_before: bool,
+    last: Option<std::time::Duration>,
 }
 
 impl CpuWatch {
     pub fn new(who: ProcessIdentity) -> Self {
-        Self { who, sys: sysinfo::System::new(), read_before: false }
+        Self { who, last: None }
     }
 
-    /// Read the process once more: gone, or alive with the CPU it used since the last read.
+    /// Read the process once more: gone, or alive with the CPU it spent since the last read.
     pub fn sample(&mut self) -> CpuSample {
-        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
-        self.sys.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[Pid::from_u32(self.who.pid)]),
-            true,
-            ProcessRefreshKind::nothing().with_cpu(),
-        );
-        let Some(process) = same_process(&self.sys, self.who) else {
-            return CpuSample::Gone;
+        let now = match cpu_time(self.who) {
+            CpuTime::Gone => return CpuSample::Gone,
+            CpuTime::Unreadable => None,
+            CpuTime::Used(used) => Some(used),
         };
-        let busy_pct = std::mem::replace(&mut self.read_before, true).then(|| process.cpu_usage());
-        CpuSample::Alive { busy_pct }
+        let before = std::mem::replace(&mut self.last, now);
+        CpuSample::Alive { spent: before.zip(now).map(|(before, now)| now.saturating_sub(before)) }
     }
 }
 
@@ -238,27 +255,30 @@ mod tests {
         ProcessIdentity { pid, start_time: start_time.expect("test: this process is in the table") }
     }
 
-    // what this catches (the IntelMac, 2026-11-04 16:24Z, an engine replaced while it worked):
-    // a CPU read is fenced by pid AND start time. A working process reads alive with its CPU
-    // moving; the same pid with another start time (a reused pid) and a process that exited and
-    // was reaped both read gone, never "busy".
+    // what this catches (the IntelMac, 2026-11-04 16:24Z, an engine replaced while it worked; and
+    // window 45 on the M5, where a usage percentage read 0 for a spinning process): a CPU read is
+    // the ACCUMULATED counter, fenced by pid AND start time. A working process's counter advances;
+    // the same pid with another start time (a reused pid) and an exited, reaped child read gone.
     #[test]
     fn a_cpu_read_is_fenced_by_pid_and_start_time() {
         let me = own_identity();
         let mut watch = CpuWatch::new(me);
-        assert_eq!(watch.sample(), CpuSample::Alive { busy_pct: None }, "a first read has no interval");
-        // Spend CPU past sysinfo's minimum update interval so the second read has one.
+        assert_eq!(watch.sample(), CpuSample::Alive { spent: None }, "a first read has nothing to compare");
+        // Spend CPU well past the coarsest counter's resolution (Linux clock ticks).
         let spin_until = std::time::Instant::now() + std::time::Duration::from_millis(400);
         let mut spun = 0u64;
         while std::time::Instant::now() < spin_until {
             spun = std::hint::black_box(spun.wrapping_add(1));
         }
+        let readable = continuum_host::process_usage::cpu_time(me.pid).is_some();
         match watch.sample() {
-            CpuSample::Alive { busy_pct: Some(pct) } => assert!(pct > 0.0, "a spinning process spent CPU: {pct}"),
-            other => panic!("test: expected a measured interval, got {other:?}"),
+            CpuSample::Alive { spent: Some(spent) } => assert!(spent > std::time::Duration::ZERO, "a spinning process's counter advanced"),
+            CpuSample::Alive { spent: None } => assert!(!readable, "this OS reads the counter, so a second read compares"),
+            CpuSample::Gone => panic!("test: this process is running"),
         }
         let reused = ProcessIdentity { pid: me.pid, start_time: me.start_time.wrapping_add(1) };
-        assert_eq!(CpuWatch::new(reused).sample(), CpuSample::Gone, "a pid naming another process is gone");
+        assert_eq!(cpu_time(reused), CpuTime::Gone, "a pid naming another process is gone");
+        assert_eq!(CpuWatch::new(reused).sample(), CpuSample::Gone);
         // This test binary, asked to run a test that does not exist: a child on every OS that exits at once.
         let mut child = std::process::Command::new(std::env::current_exe().expect("test: own executable"))
             .args(["--exact", "no_such_test"])
@@ -267,6 +287,6 @@ mod tests {
             .expect("test: spawn a child");
         let exited = ProcessIdentity { pid: child.id(), start_time: 0 };
         child.wait().expect("test: reap the child");
-        assert_eq!(CpuWatch::new(exited).sample(), CpuSample::Gone, "an exited, reaped process is gone");
+        assert_eq!(cpu_time(exited), CpuTime::Gone, "an exited, reaped process is gone");
     }
 }

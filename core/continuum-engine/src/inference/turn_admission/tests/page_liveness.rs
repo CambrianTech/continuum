@@ -30,8 +30,12 @@ fn scripted(samples: Vec<CpuSample>) -> PageLiveness {
     }))
 }
 
+/// What a busy engine's CPU counter moves over one checkpoint in these fixtures: a few cores'
+/// worth of a 10 s checkpoint. Any nonzero amount is "advanced"; the value is only evidence.
+const ENGINE_CPU_PER_CHECKPOINT: Duration = Duration::from_secs(38);
+
 fn busy_cpu() -> PageLiveness {
-    scripted(vec![CpuSample::Alive { busy_pct: None }, CpuSample::Alive { busy_pct: Some(380.0) }])
+    scripted(vec![CpuSample::Alive { spent: None }, CpuSample::Alive { spent: Some(ENGINE_CPU_PER_CHECKPOINT) }])
 }
 
 fn restore_landing_after(after: Duration) -> Pending<&'static str> {
@@ -55,7 +59,7 @@ async fn a_busy_engine_whose_slots_never_answer_finishes_its_switch() {
     let got = await_receipt(restore_landing_after(lands), bounds, &liveness, || async { EngineProbe::Busy }, |n| checkpoints = n).await;
     assert!(matches!(got, Receipt::Answered("restored")), "a working engine's switch lands");
     assert!(checkpoints > 8, "it outlived the quiet cap, {checkpoints} checkpoints");
-    assert_eq!(liveness.cpu_pct(), Some(380.0), "the busy probe carries the CPU it read");
+    assert_eq!(liveness.cpu_spent(), Some(ENGINE_CPU_PER_CHECKPOINT), "the busy probe carries the CPU time it read");
 
     let blind = PageLiveness::new(Box::new(|| None));
     let got = await_receipt(restore_landing_after(lands), bounds, &blind, || async { EngineProbe::Busy }, |_| {}).await;
@@ -68,7 +72,7 @@ async fn a_busy_engine_whose_slots_never_answer_finishes_its_switch() {
 #[tokio::test(start_paused = true)]
 async fn a_silent_engine_with_flat_cpu_is_stopped_at_its_checkpoint() {
     let bounds = intelmac_bounds();
-    let flat = scripted(vec![CpuSample::Alive { busy_pct: None }, CpuSample::Alive { busy_pct: Some(0.0) }]);
+    let flat = scripted(vec![CpuSample::Alive { spent: None }, CpuSample::Alive { spent: Some(Duration::ZERO) }]);
     let started = tokio::time::Instant::now();
     let got = await_receipt(Box::pin(std::future::pending::<&str>()), bounds, &flat, || async { EngineProbe::Busy }, |_| {}).await;
     assert!(matches!(got, Receipt::Stopped), "silent and idle is stopped");
@@ -87,7 +91,7 @@ async fn a_vanished_engine_process_ends_the_switch_at_once() {
     assert!(matches!(got, Receipt::Stopped));
     assert_eq!(started.elapsed(), Duration::ZERO, "gone at the first read ends before any checkpoint");
 
-    let exits_midway = scripted(vec![CpuSample::Alive { busy_pct: None }, CpuSample::Alive { busy_pct: Some(380.0) }, CpuSample::Gone]);
+    let exits_midway = scripted(vec![CpuSample::Alive { spent: None }, CpuSample::Alive { spent: Some(ENGINE_CPU_PER_CHECKPOINT) }, CpuSample::Gone]);
     let mut tick = 0u64;
     let started = tokio::time::Instant::now();
     let got = await_receipt(
@@ -117,10 +121,10 @@ async fn busy_cpu_without_a_receipt_is_unresolved_within_its_measured_bound() {
     let started = tokio::time::Instant::now();
     let got = await_receipt(Box::pin(std::future::pending::<&str>()), bounds, &liveness, || async { EngineProbe::Busy }, |_| {}).await;
     let waited = started.elapsed();
-    let Receipt::Unresolved { busy_pct, mut pending } = got else {
+    let Receipt::Unresolved { cpu_spent, mut pending } = got else {
         panic!("test: busy CPU with no receipt must be unresolved, never stopped or endless");
     };
-    assert_eq!(busy_pct, 380.0);
+    assert_eq!(cpu_spent, ENGINE_CPU_PER_CHECKPOINT);
     assert!(waited >= bounds.unmoved && waited < bounds.unmoved + bounds.checkpoint * 2,
         "bounded by the measured window: waited {waited:?}, window {:?}", bounds.unmoved);
     assert!((&mut pending).now_or_never().is_none(), "the request is handed back in flight, not cancelled");
