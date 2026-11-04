@@ -26,4 +26,6 @@ pub use lanes::*;
 pub use metrics::*;
 pub use progress::{LaneWait, LaneProgress};
 pub use quiesce::{AdmissionEntry, Quiesced};
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use quiesce::quiesced_fixture;
 pub use serving_lane_permit::ServingLanePermit;
