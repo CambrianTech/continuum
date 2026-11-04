@@ -47,6 +47,17 @@ pub enum PoolDiscoveryMiss {
     PageAdmissionRefused,
 }
 
+/// Why a probed engine has no slot pool: its `/props` surface was proven absent (404/501) and the
+/// endpoint latched unsupported for the process's life. The `Absent` reason of a [`PoolProbe`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropsAbsent;
+
+impl From<PropsAbsent> for PoolDiscoveryMiss {
+    fn from(_: PropsAbsent) -> Self {
+        Self::LatchedUnsupported
+    }
+}
+
 impl PoolDiscoveryMiss {
     /// Probe field value for the cause.
     pub(crate) fn as_str(&self) -> &'static str {
@@ -129,10 +140,10 @@ impl SlotDirectory {
         // Fast path: this server's state already known (process-global directory —
         // every caller talking to the same server shares ONE assignment).
         let existing_pool = match self.get(root) {
-            Some(Some(pool)) if self.page_admission_known(root) => return Ok(pool),
-            Some(Some(pool)) => Some(pool),
-            Some(None) => return Err(Miss::LatchedUnsupported),
-            None => None, // never probed — probe below
+            Probed::Known(pool) if self.page_admission_known(root) => return Ok(pool),
+            Probed::Known(pool) => Some(pool),
+            Probed::Absent(why) => return Err(why.into()),
+            Probed::NotAsked => None, // never probed — probe below
         };
         let discovery_generation = self.page_discovery_generation(root);
         // Probe /props once. Lock is NOT held across the await.
@@ -244,13 +255,21 @@ impl SlotDirectory {
         root: &str,
         incarnation: crate::inference::engine_residency::EngineIncarnation,
     ) -> Result<Arc<KvSlotPool>, AdoptedCheckpointRefusal> {
+        use AdoptedCheckpointRefusal::UnknownPool;
         let endpoint = self.endpoint(root);
-        match endpoint.adopted_checkpoint_pool(incarnation) {
-            Err(AdoptedCheckpointRefusal::Unprobed) => {
-                self.discover_pool(client, root).await.map_err(AdoptedCheckpointRefusal::UnknownPool)?;
-                endpoint.adopted_checkpoint_pool(incarnation)
+        match endpoint.adopted_checkpoint_pool(incarnation)? {
+            Probed::Known(pool) => Ok(pool),
+            Probed::Absent(why) => Err(UnknownPool(why.into())),
+            Probed::NotAsked => {
+                self.discover_pool(client, root).await.map_err(UnknownPool)?;
+                match endpoint.adopted_checkpoint_pool(incarnation)? {
+                    Probed::Known(pool) => Ok(pool),
+                    Probed::Absent(why) => Err(UnknownPool(why.into())),
+                    // Discovery installed a pool, yet the endpoint is unprobed again: the engine
+                    // was replaced between the two reads.
+                    Probed::NotAsked => Err(UnknownPool(PoolDiscoveryMiss::Superseded)),
+                }
             }
-            checked => checked,
         }
     }
 }

@@ -8,6 +8,7 @@ pub mod population;
 pub mod home;
 pub mod id_resolve;
 pub mod probe;
+pub mod probed;
 pub mod repo_id;
 pub mod secrets;
 pub mod shell_portable;

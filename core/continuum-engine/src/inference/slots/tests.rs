@@ -216,7 +216,7 @@ mod discover;
         pool.holders.lock().insert(1, mind(2));
         pool.holders.lock().insert(2, key(3, 4));
         pool.note_saved(mind(2));
-        endpoint.state.lock().set_pool_entry(Some(Some(pool)));
+        endpoint.state.lock().set_pool(Probed::Known(pool));
         endpoint.quarantine_paging();
         let client = reqwest::Client::new();
 
@@ -234,7 +234,7 @@ mod discover;
             .expect("an exited engine has nothing to save");
         drop(transition);
         // The next generation's pool replaces this one; the record is the endpoint's.
-        endpoint.state.lock().set_pool_entry(Some(Some(Arc::new(KvSlotPool::new("test://relaunch", 4)))));
+        endpoint.state.lock().set_pool(Probed::Known(Arc::new(KvSlotPool::new("test://relaunch", 4))));
         endpoint.state.lock().ready.send_replace(true); // the replacement verified ready
 
         let admission = endpoint.admit().await.expect("an open endpoint admits");
@@ -257,7 +257,7 @@ mod discover;
             for (slot, m) in minds.iter().enumerate() {
                 pool.holders.lock().insert(slot as u32, mind(*m));
             }
-            endpoint.state.lock().set_pool_entry(Some(Some(pool)));
+            endpoint.state.lock().set_pool(Probed::Known(pool));
             endpoint.pending_discard(DiscardReason::PagingUncertain).commit();
         };
         // One mind per relaunch, so "oldest" is defined: the first is evicted by the fourth.
@@ -690,12 +690,12 @@ mod discover;
         let dir = SlotDirectory {
             endpoints: dashmap::DashMap::new(),
         };
-        assert!(dir.get("s1").is_none(), "unprobed root is unknown");
+        assert!(matches!(dir.get("s1"), Probed::NotAsked), "unprobed root is unknown");
         dir.latch_unsupported("s1");
-        assert!(matches!(dir.get("s1"), Some(None)), "latched unsupported");
+        assert!(matches!(dir.get("s1"), Probed::Absent(PropsAbsent)), "latched unsupported");
         let p = dir.ensure_pool("s2", 4);
         assert_eq!(p.n_slots(), 4);
-        assert!(matches!(dir.get("s2"), Some(Some(_))));
+        assert!(matches!(dir.get("s2"), Probed::Known(_)));
         assert!(dir.negotiate_page_admission("s2", &p, None, None).await);
         assert_eq!(dir.page_admission_path("s2").unwrap(), None, "legacy remains unactivated");
         let capability = serde_json::json!(1);
@@ -708,7 +708,7 @@ mod discover;
         assert!(dir.negotiate_page_admission("local", &local, None, Some(&capability)).await);
         assert_eq!(dir.page_admission_path("local").unwrap(), Some(page_dir.path().canonicalize().unwrap()));
         let replacement = Arc::new(KvSlotPool::new("local", 1));
-        dir.endpoint("local").state.lock().set_pool_entry(Some(Some(replacement)));
+        dir.endpoint("local").state.lock().set_pool(Probed::Known(replacement));
         assert!(!dir.negotiate_page_admission("local", &local, None, Some(&capability)).await,
             "late props cannot authorize a replacement pool");
         let invalid = dir.ensure_pool("invalid", 1);

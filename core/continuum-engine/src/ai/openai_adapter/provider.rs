@@ -47,12 +47,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     /// existing physical residency is warm; failure leaves the turn backstop
     /// responsible for restoring or prefilling normally.
     fn warm_ahead(&self, key: crate::inference::slots::PageKey) {
+        use continuum_base::probed::Probed;
         let root = self.endpoints().root().to_string();
         // Discovery is the pin path's job — warm-ahead only acts on servers
         // whose slot pool is already installed (every server after its first
         // real turn), so it can never race the /props probe or mis-latch it.
-        let Some(Some(pool)) = crate::inference::slots::directory().get(&root) else {
-            return;
+        let pool = match crate::inference::slots::directory().get(&root) {
+            Probed::Known(pool) => pool,
+            Probed::NotAsked | Probed::Absent(_) => return,
         };
         if pool.scratch_slot().is_none() {
             // Without reserved scratch, already-admitted keyless traffic can
