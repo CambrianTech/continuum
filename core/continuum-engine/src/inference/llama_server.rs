@@ -123,7 +123,6 @@ mod slot_work;
 pub use progress::{condemn, condemnations, engine_condemned, note_serving_ready, until_condemned};
 #[cfg(test)]
 pub(crate) use progress::Condemnations;
-#[cfg(test)]
 pub(crate) use progress::until_condemned_on;
 pub use slot_work::{in_flight_slot, slot_advanced, slot_work, InFlightSlot, SlotWork};
 pub(crate) use slot_work::InFlightSlotGuard;
