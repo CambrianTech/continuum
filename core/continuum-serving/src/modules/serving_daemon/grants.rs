@@ -5,7 +5,7 @@
 //! 2026-11-03: "System accommodates it doesn't do stupid division"). Published on every tick
 //! that moves a grant; the re-home reconciler binds each mind to hers.
 use super::*;
-use crate::capacity::window_grant::{Demand, DemandFollowing, PoolGrants, WindowPolicy};
+use crate::capacity::window_grant::{Demand, PoolGrants, WindowPolicy};
 
 impl ServingDaemonModule {
     /// The minds' grants on the running engine, published when one moves.
@@ -76,7 +76,8 @@ impl ServingDaemonModule {
             })
             .collect();
         let held = self.grants_tx.borrow().as_ref().map(|g| g.by_mind.clone()).unwrap_or_default(); // unwrap_or_default: nothing granted yet holds nothing
-        let by_mind = DemandFollowing.grant(&demands, &held, pool_tokens);
+        // One policy across ticks: it keeps each mind's rotation tenure (`DemandFollowing`).
+        let by_mind = self.grant_policy.lock().grant(&demands, &held, pool_tokens);
         Some(PoolGrants { pool_tokens, per_sequence_cap, by_mind })
     }
 

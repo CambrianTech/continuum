@@ -214,7 +214,7 @@ mod tests {
     // in-flight shrink, or a mind cut while the pool holds every demand.
     #[test]
     fn demand_following_grants_every_mind_what_she_reads_within_the_pool() {
-        let run = run(&m5_uneven_reading(), &mut DemandFollowing);
+        let run = run(&m5_uneven_reading(), &mut DemandFollowing::<MindId>::default());
         assert!(run.kept(), "{run:?}");
     }
 
@@ -228,7 +228,7 @@ mod tests {
             pool_tokens: 100_000,
             events: vec![e(0, 1, tokens!(60_000), true), e(1, 1, tokens!(30_000), true), e(2, 2, tokens!(20_000), false)],
         };
-        let run = run(&scenario, &mut DemandFollowing);
+        let run = run(&scenario, &mut DemandFollowing::<MindId>::default());
         assert!(run.kept(), "{run:?}");
     }
 
@@ -243,7 +243,7 @@ mod tests {
             pool_tokens: 100_000,
             events: vec![e(0, 1, tokens!(60_000), true), e(1, 1, tokens!(30_000), true), e(2, 2, tokens!(50_000), false)],
         };
-        let run = run(&scenario, &mut DemandFollowing);
+        let run = run(&scenario, &mut DemandFollowing::<MindId>::default());
         assert!(run.kept(), "{run:?}");
     }
 
@@ -265,7 +265,7 @@ mod tests {
                 e(2, 3, tokens!(30_000), false),
             ],
         };
-        let run = run(&scenario, &mut DemandFollowing);
+        let run = run(&scenario, &mut DemandFollowing::<MindId>::default());
         assert_eq!(run.in_flight_shrinks, 0, "{run:?}");
         assert_eq!(run.over_pool, 0, "{run:?}");
     }
