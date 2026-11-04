@@ -6,7 +6,7 @@
 //! the view's measured per-act headroom, the median characters one act of this epoch appended
 //! (`View::appended_per_act`, the growth reserve `start_grants` already keeps for one act).
 //! Past it, the largest results enter at their outline first, until the rest fits. A result
-//! with no outline smaller than a quarter of it (`levels::LEVEL_RATIO`), or with no output handle
+//! with no outline smaller than it (`levels::is_a_level`), or with no output handle
 //! to page it from, enters whole: a level she cannot expand is a defect, not a level.
 //!
 //! Two modes, because the plan forbids clipping her newest end:

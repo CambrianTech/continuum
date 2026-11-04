@@ -87,8 +87,8 @@ impl LlmDeliberationFaculty {
 
     /// `group` (her newest result's messages) down its levels until it costs at most `room`.
     /// Largest slot first, each down its mipmap chain: whole, its summary (`operation_level`),
-    /// then each coarser level of that summary (`levels::summarize`, each at most a quarter of the
-    /// one above). Never a bare pointer (goal 7): her newest result is the step that ends the
+    /// then each coarser level of that summary (`levels::summarize`, each the next rung of the
+    /// ladder from the whole to its floor). Never a bare pointer (goal 7): her newest result is the step that ends the
     /// recursion, so what she sees of it always carries content. A slot whose chain ends still
     /// over the room keeps its coarsest level and the turn is refused for capacity, typed, never
     /// sent emptied. Each rewrite is in place: the native call/result pairing and its ids are

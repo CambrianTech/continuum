@@ -435,9 +435,8 @@ pub(crate) fn operation_level(text: &str, act: Option<&Observation>) -> Option<S
 /// operations summarizes each under its call's name, a part with no smaller level kept whole, so
 /// an error or a second file after a long read is never lost: one code outline over the whole
 /// batch dropped every unnumbered line after the first numbered one (Codex on #5422). `None` when
-/// the result is its own best summary (more than a quarter of it).
+/// the parts together are no smaller than the result (`levels::is_a_level`).
 fn result_summary(result: &str, acts: &[Observation]) -> Option<String> {
-    use continuum_context::levels::LEVEL_RATIO;
     let level = operation_level;
     match acts {
         [] => level(result, None),
@@ -446,7 +445,7 @@ fn result_summary(result: &str, acts: &[Observation]) -> Option<String> {
             // Each part is the act as the receipt shows it (its header over its humanized body),
             // at its own level: the same seam the single-act branch reads through `result`.
             let parts: String = many.iter().map(|act| act.render_summary_part(|body| level(body, Some(act)))).collect();
-            (parts.chars().count() * LEVEL_RATIO <= result.chars().count()).then_some(parts)
+            continuum_context::levels::is_a_level(&parts, result).then_some(parts)
         }
     }
 }
