@@ -379,17 +379,17 @@ pub struct WorkReviewParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub evidence_text: Option<String>,
-    /// Minted when omitted; shown id or UUID to retry.
+    /// Minted when omitted.
     #[serde(default)]
     #[ts(optional, type = "string")]
     #[schemars(with = "Option<String>")]
     pub review_id: Option<Shown<airc_work::WorkReviewId>>,
-    /// Parent card (shown id or UUID); defaults to review parent.
+    /// Parent card (handle or UUID); defaults to review parent.
     #[serde(default)]
     #[ts(optional, type = "string")]
     #[schemars(with = "Option<String>")]
     pub card_id: Option<Shown<WorkCardId>>,
-    /// Submission (shown id or UUID); defaults to latest.
+    /// Submission; defaults to latest.
     #[serde(default)]
     #[ts(optional, type = "string")]
     #[schemars(with = "Option<String>")]
@@ -398,7 +398,7 @@ pub struct WorkReviewParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifact: Option<WorkArtifactReference>,
-    /// Review claim (shown id or UUID); defaults to board.
+    /// Review claim; defaults to board.
     #[serde(default)]
     #[ts(optional, type = "string")]
     #[schemars(with = "Option<String>")]

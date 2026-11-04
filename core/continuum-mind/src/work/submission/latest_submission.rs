@@ -105,12 +105,12 @@ pub struct WorkSubmitParams {
     /// The card you hold — board handle or full UUID.
     #[ts(type = "string")]
     pub card_id: String,
-    /// Minted when omitted; shown id or UUID to retry.
+    /// Minted when omitted.
     #[serde(default)]
     #[ts(optional, type = "string")]
     #[schemars(with = "Option<String>")]
     pub submission_id: Option<Shown<airc_work::SubmissionId>>,
-    /// Your claim (shown id or UUID); defaults to the board.
+    /// Your claim; defaults to the board.
     #[serde(default)]
     #[ts(optional, type = "string")]
     #[schemars(with = "Option<String>")]
@@ -329,10 +329,6 @@ pub(super) fn same_submission(earlier: impl IntoIterator<Item = SubmissionKey>, 
 /// - **Not an authorization.** Resolving an id grants nothing; the holder and ownership
 ///   guards downstream are untouched and still run on the canonical id.
 pub(super) fn resolve_shown(raw: &str, candidates: &[uuid::Uuid], label: &str) -> Result<Uuid, CommandError> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Err(CommandError::Invalid(format!("a {label} id is required")));
-    }
     continuum_base::id_resolve::resolve_handle(raw, candidates, label).map_err(CommandError::Invalid)
 }
 
