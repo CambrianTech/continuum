@@ -137,9 +137,11 @@ shift, `seq_rm` of a span) do not apply to this model. A mind's state is a SNAPS
 | miss | re-prefill | minutes (318 s for 76k tokens) |
 
 - **Lines are checkpoints**, placed at stable boundaries (end of the shared head; end of each
-  appended act), so every prompt resumes from a recent line. Today it often cannot:
-  `resume: full re-prefill: no checkpoint passed the search (raw lcp = 5 ...)`, act after act: the
-  prompt DIVERGES AT TOKEN 5, so nothing is reusable. First target of slice 1b.
+  appended act), so every prompt resumes from a recent line. Residents' prompts do share their
+  prefix act to act (`delib.prompt.common_prefix` 37k-190k chars, 2026-11-04 ~22:00Z); the
+  `raw lcp = 5` full re-prefills in the engine log are the SCRATCH slot (id 4), where unrelated
+  non-turn requests overwrite each other: expected, small (~800 tokens), and a candidate for its own
+  line per purpose rather than one shared scratch.
 - **Replacement** by activity temperature (goal 9): hot minds in L1, cooling write back to L2, L3.
 - **Write-back at turn boundaries**, while she is in a tool call, never in the GPU's way.
 - **Prefetch:** the next mind's line warms while another decodes; a tool's result prefills as it
@@ -234,7 +236,7 @@ deploy with the 15-minute read and immediate rollback if worse (rule 3).
 |---|---|---|---|
 | 0 | Freeze: M5 stays on its current build; this doc agreed; superseded docs marked; CLAUDE.md corrected | Fable | three signatures |
 | 1 | The dyno with the seven reproductions (red) | Fable + Codex | each 11-04 failure reproduced from recorded inputs |
-| 1b | The fast path audit: find what changes at token 5 of every prompt; every cold turn classified 3C (page refused, page unconfirmed, prefix lost); geometry stable across restarts; pages valid by header | Codex + Fable | dyno 6 green; live: cold turns after a restart = 0 for a warm mind |
+| 1b | The fast path audit: every cold turn classified 3C (refused restores, unconfirmed pages, scratch-slot churn) (page refused, page unconfirmed, prefix lost); geometry stable across restarts; pages valid by header | Codex + Fable | dyno 6 green; live: cold turns after a restart = 0 for a warm mind |
 | 2 | The view: reads by region, side budgets into the one allocation run once, history to handles; revert the wish raise of #5773 | Fable | dyno 7 green; prompt tokens per act at the working set |
 | 3 | Engine memory: launch-from-fit at Settled (#5770 first), conservation accounting; then delete growth (#5774) | Codex + Fable | dyno 1, 6 green |
 | 4 | Admission: one decision over residency, prefill, decode; fairness by completion identity; rotation through the page custodian | Codex | dyno 2, 3 green |
