@@ -91,18 +91,10 @@ impl Measure {
         }
     }
 
-    /// Her floor, when one is measured: the held need, else the target (a wish or a declaration is
-    /// its own floor).
-    pub fn need(self) -> Option<Tokens> {
-        match self {
-            Self::Unmeasured => None,
-            Self::Held { need, .. } => Some(need.value()),
-            Self::Wished { target } | Self::Declared { target } => Some(target),
-        }
-    }
-
     /// Her floor as observed, when one is measured: the held need, exact or a bound, else the
-    /// target as an exact floor. What a reader comparing her need to a limit must read.
+    /// target as an exact floor (a wish or a declaration is its own floor). There is no raw read:
+    /// a reader compares it to a limit through [`Observed::within`], so a bound is never taken for
+    /// a size (Cormac on #5773).
     pub fn observed_need(self) -> Option<Observed<Tokens>> {
         match self {
             Self::Unmeasured => None,
@@ -226,10 +218,10 @@ impl LaneRequirement {
         self
     }
 
-    /// Her target and floor in tokens, when measured. An unmeasured mind has neither and is not
-    /// packed: she is measured by her first view, before she needs a lane.
-    fn sized(&self) -> Option<(u32, u32)> {
-        Some((self.measure.target()?.get(), self.measure.need()?.get()))
+    /// Her target in tokens and her floor as observed, when measured. An unmeasured mind has
+    /// neither and is not packed: she is measured by her first view, before she needs a lane.
+    fn sized(&self) -> Option<(u32, Observed<Tokens>)> {
+        Some((self.measure.target()?.get(), self.measure.observed_need()?))
     }
 }
 
@@ -280,24 +272,26 @@ fn device_bytes(fp: &ModelFootprint, window: u32, lanes: u32) -> u64 {
 /// requirements smallest-first, and keep adding a mind while the geometry
 /// (lanes = count, window = her requirement, the largest so far) still fits.
 /// Returns (served count, window) or None when not even one fits.
-/// `sorted` holds measured minds only, as (target, floor), ascending by target.
-fn pack(fp: &ModelFootprint, sorted: &[(u32, u32)], budget: u64, lane_cap: u32) -> Option<(u32, u32)> {
+/// `sorted` holds measured minds only, as (target, floor as observed), ascending by target.
+fn pack(fp: &ModelFootprint, sorted: &[(u32, Observed<Tokens>)], budget: u64, lane_cap: u32) -> Option<(u32, u32)> {
     let mut best: Option<(u32, u32)> = None;
-    // ONE window serves every mind packed so far, so it must clear the highest floor
-    // among them, not only the current mind's.
-    let mut floor_so_far = 0u32;
-    for (i, &(target, need)) in sorted.iter().enumerate() {
+    for (i, &(target, _)) in sorted.iter().enumerate() {
         let lanes = (i as u32) + 1;
         if lanes > lane_cap {
             break;
         }
-        floor_so_far = floor_so_far.max(need);
+        // The most one lane holds at this many lanes: the model's window within the budget.
+        let most = fp.context_window.min(fp.window_within(budget, lanes));
+        // ONE window serves every mind packed so far, so it must clear the highest floor among
+        // them, each read against what a lane holds here (`Observed::within`): a bound past it is
+        // planned at it, never unserved for it; an exact need past it is not served, as before.
+        let floor = sorted[..=i].iter().fold(0, |floor, &(_, need)| floor.max(need.within(most).get()));
         // Serve at the target when the model and the budget hold it; otherwise at the
         // most this model holds for these lanes within the budget — but NEVER below
         // a floor. Below her floor a mind starves; between floor and target the fit
         // trims optional history and the turn is whole.
-        let window = target.min(fp.context_window).min(fp.window_within(budget, lanes));
-        if window < floor_so_far {
+        let window = target.min(most);
+        if window < floor {
             // The model cannot hold this many lanes at every packed mind's need;
             // nobody after her can be served by it either (sorted ascending by target).
             break;
@@ -331,12 +325,12 @@ pub fn allocate(
     }
     // Only measured minds are packed: an unmeasured one has no number to size from, and her first
     // view measures her before she asks for a lane.
-    let mut sorted: Vec<(&LaneRequirement, (u32, u32))> = requirements.iter().filter_map(|r| Some((r, r.sized()?))).collect();
+    let mut sorted: Vec<(&LaneRequirement, (u32, Observed<Tokens>))> = requirements.iter().filter_map(|r| Some((r, r.sized()?))).collect();
     sorted.sort_by_key(|(r, (target, _))| (*target, r.persona));
     let Some(&(_, (smallest_target, _))) = sorted.first() else {
         return Err(Unallocatable::NoRequirements);
     };
-    let sizes: Vec<(u32, u32)> = sorted.iter().map(|(_, size)| *size).collect();
+    let sizes: Vec<(u32, Observed<Tokens>)> = sorted.iter().map(|(_, size)| *size).collect();
     // The lane cap and what set it, chosen together (ties to the earlier term), so a caller can
     // tell a cap from a budget refusal (Codex on #4971): with more minds than `lane_cap`, the
     // unserved were never offered a lane, whatever the budget.
@@ -663,7 +657,7 @@ mod tests {
     #[test]
     fn an_unmeasured_mind_is_never_sized_from_anything_but_her_own_measure() {
         let unknown = LaneRequirement::unmeasured(Uuid::new_v4());
-        assert_eq!((unknown.measure.target(), unknown.measure.need()), (None, None));
+        assert_eq!((unknown.measure.target(), unknown.measure.observed_need()), (None, None));
         let measured = LaneRequirement::wished(Uuid::new_v4(), t(56_057), 1.25);
         assert_eq!(measured.measure, Measure::Wished { target: t(70_071) });
         let a = allocate(&[measured.clone(), unknown.clone()], &[qwen27b()], &budget(30), u32::MAX).expect("fits");
@@ -723,11 +717,11 @@ mod tests {
         assert!(fp.window_within(budget.usable_bytes, 1) < 123_870 && fp.window_within(budget.usable_bytes, 1) >= 74_000, "fixture premise");
         let kimi = Uuid::new_v4();
         let wish_only = [LaneRequirement::wished(kimi, t(99_096), 1.25)];
-        let sorted: Vec<(u32, u32)> = wish_only.iter().filter_map(LaneRequirement::sized).collect();
+        let sorted: Vec<(u32, Observed<Tokens>)> = wish_only.iter().filter_map(LaneRequirement::sized).collect();
         assert_eq!(pack(&fp, &sorted, budget.usable_bytes, 4), None, "no need: the target is the floor, the budget cannot hold 123,870, she is shed (pre-70706a9e behaviour)");
 
         let with_need = [LaneRequirement::wished(kimi, t(99_096), 1.25).held(Observed::Exact(t(74_000)))];
-        let sorted: Vec<(u32, u32)> = with_need.iter().filter_map(LaneRequirement::sized).collect();
+        let sorted: Vec<(u32, Observed<Tokens>)> = with_need.iter().filter_map(LaneRequirement::sized).collect();
         let (lanes, window) = pack(&fp, &sorted, budget.usable_bytes, 4).expect("served");
         assert_eq!(lanes, 1);
         assert!((74_000..123_870).contains(&window), "served between need and target at what the budget holds: {window}");
@@ -739,13 +733,34 @@ mod tests {
             LaneRequirement::wished(aiko, t(24_226), 1.0),
             LaneRequirement::wished(kimi, t(99_096), 1.25).held(Observed::Exact(t(74_000))),
         ];
-        let mut sorted: Vec<(u32, u32)> = two.iter().filter_map(LaneRequirement::sized).collect();
-        sorted.sort_unstable();
+        let mut sorted: Vec<(u32, Observed<Tokens>)> = two.iter().filter_map(LaneRequirement::sized).collect();
+        sorted.sort_unstable_by_key(|&(target, _)| target);
         let (lanes, window) = pack(&fp, &sorted, budget.usable_bytes, 4).expect("at least aiko");
         assert!(window >= 24_226, "aiko's floor is her target and the shared window clears it: {window}");
         if lanes == 2 {
             assert!(window >= 74_000, "if kimi is packed too the shared window clears her need: {window}");
         }
+    }
+
+    // what this catches (Cormac on #5773): a censored need read raw as a lane floor. A bound past
+    // the most one lane holds made her unservable on a fixed-slot plan, so she never took a turn
+    // and the bound never aged out of her ring. A bound is planned at the most a lane holds; an
+    // exact need past it stays unserved, as before.
+    #[test]
+    fn a_bound_past_the_widest_lane_is_planned_at_it_and_an_exact_need_is_not() {
+        let fp = small7b();
+        let budget = HostBudget { usable_bytes: device_bytes(&fp, 80_000, 1), perf_cores: 8 };
+        let most = fp.context_window.min(fp.window_within(budget.usable_bytes, 1));
+        let past = most + 70_000;
+        let her = Uuid::new_v4();
+        let bounded = [LaneRequirement::wished(her, t(past), 1.25).held(Observed::AtLeast { at_least: t(past) })];
+        let sorted: Vec<(u32, Observed<Tokens>)> = bounded.iter().filter_map(LaneRequirement::sized).collect();
+        assert_eq!(pack(&fp, &sorted, budget.usable_bytes, 4), Some((1, most)), "a bound past one lane is planned at the most a lane holds");
+        let plan = allocate(&bounded, &[small7b()], &budget, u32::MAX).expect("planned");
+        assert_eq!((plan.served.clone(), plan.unserved.len()), (vec![her], 0), "served, never unservable for a bound");
+        let exact = [LaneRequirement::wished(her, t(past), 1.25).held(Observed::Exact(t(past)))];
+        let sorted: Vec<(u32, Observed<Tokens>)> = exact.iter().filter_map(LaneRequirement::sized).collect();
+        assert_eq!(pack(&fp, &sorted, budget.usable_bytes, 4), None, "an exact need past one lane is not served, as before");
     }
 
     // what this catches (card ea157b1a, gate 3; Codex on #5557): a training reservation folded

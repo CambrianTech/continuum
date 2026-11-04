@@ -16,7 +16,6 @@
 
 use std::collections::BTreeMap;
 
-use crate::inference::planning::observed::Observed;
 use crate::inference::planning::window_allocator::Tokens;
 
 /// What the serving daemon grants the local minds on its engine's pool, each by her persona id.
@@ -75,20 +74,6 @@ pub struct Demand<K> {
     pub in_flight: bool,
     /// The most she may be granted: what one sequence of the engine can hold.
     pub ceiling: u32,
-}
-
-/// Her [`Demand::need`] from her observed need and the most one sequence holds now (`ceiling`).
-/// An exact need is her need as measured: above the ceiling she waits for room, never trimmed. A
-/// bound above the ceiling says only that she needs more than one sequence can hold, so she is
-/// granted all one sequence holds now: left as the bound, a mind holding nothing was dropped, never
-/// took a turn, and the bound that dropped her never aged out of her ring (Cormac on #5773: a
-/// starvation that lasts forever on fixed slots or a small pool). A zero ceiling holds nothing to
-/// clamp to: the bound stands, as an exact need would.
-pub fn need_within(need: Observed<Tokens>, ceiling: u32) -> Tokens {
-    match need {
-        Observed::Exact(need) => need,
-        Observed::AtLeast { at_least } => Tokens::new(ceiling).map_or(at_least, |ceiling| at_least.min(ceiling)), // map_or: a zero ceiling holds nothing to clamp to
-    }
 }
 
 /// Grants every mind a window from the pool, given every mind's current demand and the grants
@@ -216,6 +201,7 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
 mod tests {
     use super::*;
 
+    use crate::inference::planning::observed::Observed;
     use crate::inference::planning::window_allocator::test_tokens as t;
 
     /// A mind whose need is her target (a wish with no held turn yet).
@@ -413,14 +399,14 @@ mod tests {
         let (pool, ceiling) = (654_336, 8_192);
         let at = |need: Tokens| Demand { mind: 1u32, need, target: need, wish: need, in_flight: false, ceiling };
         let bound = Observed::AtLeast { at_least: t(65_672) };
-        let grants = DemandFollowing.grant(&[at(need_within(bound, ceiling))], &BTreeMap::new(), pool);
+        let grants = DemandFollowing.grant(&[at(bound.within(ceiling))], &BTreeMap::new(), pool);
         assert_eq!(grants, BTreeMap::from([(1, ceiling)]), "a bound past one sequence is granted one sequence, never dropped");
-        let exact = DemandFollowing.grant(&[at(need_within(Observed::Exact(t(65_672)), ceiling))], &BTreeMap::new(), pool);
+        let exact = DemandFollowing.grant(&[at(Observed::Exact(t(65_672)).within(ceiling))], &BTreeMap::new(), pool);
         assert!(exact.is_empty(), "an exact need past the ceiling still waits for room: {exact:?}");
         // Negative control, the pre-fix read: the bound's value taken as her need drops her.
         let unclamped = DemandFollowing.grant(&[at(bound.value())], &BTreeMap::new(), pool);
         assert!(unclamped.is_empty(), "precondition: the unclamped bound is the drop this fixes: {unclamped:?}");
-        assert_eq!(need_within(Observed::AtLeast { at_least: t(4_096) }, ceiling), t(4_096), "a bound within the ceiling is untouched");
+        assert_eq!(Observed::AtLeast { at_least: t(4_096) }.within(ceiling), t(4_096), "a bound within the ceiling is untouched");
     }
 
 }
