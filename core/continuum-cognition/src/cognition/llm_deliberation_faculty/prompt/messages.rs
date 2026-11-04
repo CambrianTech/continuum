@@ -1,6 +1,37 @@
 use super::*;
 
 impl LlmDeliberationFaculty {
+    /// A standing block this cycle gathered replaces its last version in this room; one it did
+    /// not gather keeps its last version, so the front of her view never loses a block between
+    /// turnovers. Which faculties a cycle gathers varies, and a turnover rebuilt from a smaller set
+    /// shifted every block behind the missing one (Atlas on the M5, 2026-11-04 07:09:18Z:
+    /// `[room-wall]` absent, back 18 s later at message 2, 13,667 tokens re-prefilled). Only this
+    /// room's blocks are carried: another room's are never hers here. A faculty that ran and said
+    /// nothing (`ended`) has ended, and its held version leaves with it.
+    pub(in super::super) fn carry_held_blocks(
+        &self,
+        room: Uuid,
+        mut blocks: Vec<crate::cognition::context_streams::blocks::Grounding>,
+        ended: &[&str],
+    ) -> Vec<crate::cognition::context_streams::blocks::Grounding> {
+        let mut held = self.held_blocks.lock();
+        held.retain(|(held_room, faculty), _| !(*held_room == room && ended.contains(&faculty.as_str())));
+        for block in &blocks {
+            held.insert((room, block.faculty.clone()), block.clone());
+        }
+        let gathered: std::collections::HashSet<&str> = blocks.iter().map(|block| block.faculty.as_str()).collect();
+        let carried: Vec<_> = held
+            .iter()
+            .filter(|((held_room, faculty), _)| *held_room == room && !gathered.contains(faculty.as_str()))
+            .map(|(_, block)| block.clone())
+            .collect();
+        blocks.extend(carried);
+        blocks.sort_by(|a, b| deliberation_prompt::stable_prefix_order(a.faculty.as_str(), b.faculty.as_str()));
+        blocks
+    }
+}
+
+impl LlmDeliberationFaculty {
     pub(in super::super) fn messages_with_visual_feedback(
         &self,
         ws: &Workspace,
@@ -270,6 +301,14 @@ impl LlmDeliberationFaculty {
                 crate::cognition::context_streams::blocks::Grounding { persona: self.persona_id, faculty: c.faculty.as_str().to_owned(), text, minimum, units: std::sync::Arc::clone(&c.units) }
             })
             .collect();
+        // A faculty that ran this cycle and said nothing has ended: its held version goes.
+        let ended: Vec<&str> = ws
+            .broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && c.fault.is_none() && c.trailing && c.content.trim().is_empty())
+            .map(|c| c.faculty.as_str())
+            .collect();
+        let blocks = self.carry_held_blocks(ws.activity_room_id, blocks, &ended);
         let result_pointers = Vec::new();
         let grounding_at = 0;
 
