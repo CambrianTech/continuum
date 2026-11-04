@@ -5,8 +5,10 @@ use super::*;
 /// grounding and her view. Pure.
 ///
 /// A claim is what she is expected to write, measured; it is not a reservation for the worst
-/// case. Its grant is carried as the request's `max_tokens`, so her own evidence bounds her output
-/// and her latency. The cost accepted: a write larger than any she has measured is cut once (a
+/// case. Its grant is what her view is sized beside; a pass carries it as the request's
+/// `max_tokens`, so her own evidence bounds her output and her latency. An act's request carries
+/// the room its prompt leaves instead (`request_allowance`): her answer is payload, and a claim
+/// measured on reads cut every write (the M5, 2026-11-04). The cost accepted: a write larger than any she has measured is cut once (a
 /// turn lost; `delib.emission.cut_mid_answer` counts it), recorded at double, and the next claim
 /// grows. A cap here instead reserved 12,288 tokens for acts that measured 809-1,641 and starved
 /// her view of the reads she had just made, so every act re-read them (the M5, 2026-10-30,

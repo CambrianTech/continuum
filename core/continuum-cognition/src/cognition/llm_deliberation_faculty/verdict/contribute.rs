@@ -164,6 +164,10 @@ impl LlmDeliberationFaculty {
         let mut gen_await_ms = 0u64;
         // The allowance the request actually carried (set where it is built, read at the seam).
         let mut sent_allowance: Option<u32> = None;
+        let kind = self.turn_kind(ws);
+        // An act's cap follows its prompt's room, so a refusal its reserve would have passed is
+        // re-sent once at the engine's measured prompt, with the same view (never a refit of her view).
+        let mut room_resized = false;
         // Correct only frozen admitted input, consuming a finite optional unit on
         // every retry. Exact measured progress is required too. No accepted cognition
         // is replayed, and no working-memory or RAG source is re-read or refilled.
@@ -223,6 +227,14 @@ impl LlmDeliberationFaculty {
                 burst = %view.user_text(),
                 "deliberation prompt — what the model sees this turn"
             );
+            // This view's cap ([`request_allowance`]): a pass's grant, an act's window room after
+            // the prompt as the calibration prices it (the engine's own count after a refusal).
+            let allowance = request_allowance(
+                kind,
+                view.completion_reserve,
+                fit_window,
+                calibration.charge(view.estimated_prompt_tokens),
+            );
             // SINGLE SHOT: one accepted generation → one verdict. A strictly
             // shrinking corrective admission replay follows a typed refusal; no
             // provider text or tool action has been accepted at that point.
@@ -259,7 +271,7 @@ impl LlmDeliberationFaculty {
 
                 let request = self.build_request_within(
                     &binding,
-                    view.completion_reserve,
+                    allowance,
                     view.messages.clone(),
                     tools,
                     view.system.clone(),
@@ -272,7 +284,7 @@ impl LlmDeliberationFaculty {
                         (!stops.is_empty()).then_some(stops)
                     },
                     Some(ws.room_id),
-                    self.turn_kind(ws),
+                    kind,
                 );
 
                 let mut template = request;
@@ -288,7 +300,7 @@ impl LlmDeliberationFaculty {
             // The allowance belongs to THIS view, refreshed on every refit: the template
             // is built once, and a template's `max_tokens` from an earlier plan would
             // bound the reply to a window the prompt no longer leaves.
-            request.max_tokens = Some(view.completion_reserve.max(1));
+            request.max_tokens = Some(allowance);
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
             if rejected_prompt_tokens.is_some_and(|previous| estimated_prompt_tokens >= previous) {
                 return Some(Contribution::deliberation_fault(
@@ -341,6 +353,17 @@ impl LlmDeliberationFaculty {
                         corrective_replay_used = rejected_prompt_tokens.is_some(),
                         "provider capacity refusal: retained measured token density for prompt fitting"
                     );
+                    // The act's cap was the room past an estimated prompt; the engine counted more.
+                    // When her reserve still fits beside the measured prompt, the cap shrinks to
+                    // the measured room (the calibration above now prices this prompt at the
+                    // engine's count) and her view is sent unchanged.
+                    if kind == TurnKind::Act
+                        && !room_resized
+                        && requested.saturating_add(view.completion_reserve) < available
+                    {
+                        room_resized = true;
+                        continue;
+                    }
                     if newest_refit_sent {
                         let error = self.newest_refit_refused(requested, available, view.completion_reserve);
                         return Some(
@@ -365,9 +388,10 @@ impl LlmDeliberationFaculty {
                     }
                     rejected_prompt_tokens = Some(estimated_prompt_tokens);
                     rejected_measured_tokens = Some(requested);
-                    view = match self.refit_rejected_prompt(
-                        view, requested, available, sent_allowance.unwrap_or(0),
-                    ) {
+                    // Refit against the reply her view reserves: an act's cap is its room, which
+                    // follows the refit prompt, so charging the sent room would drop her view for it.
+                    let reserve = view.completion_reserve;
+                    view = match self.refit_rejected_prompt(view, requested, available, reserve) {
                         Ok(view) => view,
                         Err(error) => {
                             return Some(
@@ -428,7 +452,7 @@ impl LlmDeliberationFaculty {
         // (Cormac on #4409): the classifier records it at the allowance so the need ring
         // never learns the budget and contracts the next allowance geometrically.
         let allowance = sent_allowance.unwrap_or(view.completion_reserve); // unwrap_or: a request built with no max_tokens was bounded by the reserve alone
-        let reasoning_budget = match self.turn_kind(ws) {
+        let reasoning_budget = match kind {
             TurnKind::Pass => crate::inference::request_body::deliberation_reasoning_budget(
                 u64::from(allowance),
             )
@@ -699,6 +723,33 @@ impl LlmDeliberationFaculty {
                  read as chosen silence"
             );
             return Some(Contribution::deliberation_fault(why));
+        }
+        // A TOOL CALL CUT AT THE OUTPUT LIMIT is a cut of the ANSWER channel (the M5,
+        // 2026-11-04: write-shaped calls arrived as `__malformed_tool_arguments` with finish
+        // `length`, 22 since 11:00Z). Nothing in it was committed, so nothing runs: the
+        // measurement above already recorded it as `CutMidAnswer` (a call is an answer), so
+        // her next claim holds the cut's peak; here she is told what was cut, as the cut-act
+        // record below tells it, never that her thought was cut (it was not).
+        if matches!(resp.finish_reason, FinishReason::Length) && !self.tools.is_empty() {
+            if let Some(calls) = resp.tool_calls.as_deref().filter(|calls| !calls.is_empty()) {
+                let composing: String = calls.iter().map(|call| format!("{}({})", call.name, call.input)).collect();
+                continuum_base::probe!(
+                    class = "delib.emission.cut_tool_call",
+                    persona = %self.persona_name,
+                    calls = calls.len(),
+                    allowance,
+                    "a tool call reached the output limit before it was committed: nothing ran, the answer channel grows"
+                );
+                if let Some(wm) = &self.working_memory {
+                    wm.record_fact(&cut_act_fact(&composing));
+                }
+                let call = crate::ai::types::ToolCall {
+                    id: "tool-attempt-cut-at-limit".to_string(),
+                    name: crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL.to_string(),
+                    input: serde_json::json!({}),
+                };
+                return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
+            }
         }
         // TRUNCATED-WITH-TEXT is NOT an utterance (2026-08-24, Joel: "why is
         // this amazing LLM not finishing things or quitting — something in

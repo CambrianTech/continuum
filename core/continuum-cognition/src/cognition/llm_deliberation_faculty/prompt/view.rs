@@ -470,7 +470,8 @@ impl LlmDeliberationFaculty {
         let tools_grant = calibration.prompt_budget(plan.granted(FLEX_TOOLS) as usize);
         let (tools_choice, tools_refusal) = self.granted_tools(ws, tools, tools_grant);
         let budget_floor = crate::cognition::rag_budget::turn_need(&claims).saturating_sub(claims.iter().find(|c| c.source_id == FLEX_REPLY).map_or(0, |c| c.floor_tokens)).saturating_add(reply_need);
-        // Her reply's grant is her measured need from the one allocation, carried as `max_tokens`.
+        // Her reply's grant is her measured need from the one allocation, the reserve her view is
+        // sized beside (a pass's `max_tokens`; an act's cap is its room, `request_allowance`).
         // What no claim took is her view's to grow into by appends (`fit_view`), never the
         // reply's: a cap claimed above her context starved her reads (ONE-BUDGET slice 6).
         let reply_grant = plan.granted(FLEX_REPLY);

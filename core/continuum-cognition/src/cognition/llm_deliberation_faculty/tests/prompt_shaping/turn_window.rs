@@ -765,8 +765,9 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
         crate::cognition::working_set::EmissionStop::CutMidAnswer);
 }
 
-// what this catches: the request carries the view's grant verbatim, on an act and on a pass
-// alike, and an unmeasured reply's grant is the cold prior, never a runaway cap claimed above
+// what this catches: the request builder carries the allowance it is handed verbatim, on an act
+// and on a pass alike (contribute hands an act its window room, `request_allowance`), and an
+// unmeasured reply's grant is the cold prior, never a runaway cap claimed above
 // her context: a 12,288-token act cap starved her reads on the M5 (2026-10-30, ONE-BUDGET.md
 // slice 6). An idle window's slack is her view's room, not the reply's.
 #[tokio::test]
