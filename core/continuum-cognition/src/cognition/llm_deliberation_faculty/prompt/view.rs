@@ -57,9 +57,10 @@ impl LlmDeliberationFaculty {
     /// (the densest recent ratio) the NEXT prompt is fitted at, for any input. Both ways:
     /// refusal-only calibration never learned the case that cost Kimi one turn in four on
     /// 2026-10-06 (the bytes/3 estimate undercounted her prompt by 18-23%, engine 65,607 against
-    /// 55,603 estimated, so the prompt ate the reply's reserve), and a ratio below one, ignored
-    /// before, left 14% of every window unused on the M5 (2026-11-04, n=131: the guard read high
-    /// by 14% on average, up to 22%).
+    /// 55,603 estimated, so the prompt ate the reply's reserve), and a ratio below one was
+    /// ignored before (the M5, 2026-11-04, n=131: the guard read above the engine's count by 14% on
+    /// average, up to 22%; an estimate correction, not a measured gain). `served` is the model the
+    /// engine reported serving this reply: a ring never crosses a model change.
     pub(in super::super) fn learn_prompt_density(
         &self,
         binding: &Arc<ModelBinding>,
@@ -67,9 +68,10 @@ impl LlmDeliberationFaculty {
         engine_prompt_tokens: u32,
         engine_cached_tokens: u32,
         available: u32,
+        served: &str,
     ) {
         let Some((density, calibration, reading)) =
-            self.density_on(binding).observe(view.estimated_prompt_tokens, engine_prompt_tokens)
+            self.density_on(binding).observe(view.estimated_prompt_tokens, engine_prompt_tokens, served)
         else {
             return; // the lane reported no count: nothing measured, nothing retained
         };

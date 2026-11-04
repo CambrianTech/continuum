@@ -430,6 +430,7 @@ impl LlmDeliberationFaculty {
                         // No timing on the reply = nothing measured as reused = nothing rides free.
                         response.timing.as_ref().map_or(0, |t| t.cached_tokens),
                         fit_window,
+                        &response.model,
                     );
                     break (view, response);
                 }

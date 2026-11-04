@@ -563,6 +563,68 @@ async fn a_replys_engine_prompt_count_refits_the_next_prompt() {
     );
 }
 
+// what this catches (Codex on #5779): her measured density is an observed envelope, not a proof
+// about her next prompt. A sparse history (replies counted lighter than the estimate) lets the fit
+// admit more estimate; a much denser next prompt then counts, at the engine, so that it alone fits
+// the window but with her reply does not. The engine's exact count of the finalized request
+// (`PromptCount::Measured { prompt, reply }`, the safety authority) refuses it BEFORE generation,
+// and she is refit and resent once at the refusal's price with her reply's allowance intact:
+// nothing was generated into a prompt that left no room to answer.
+#[tokio::test]
+async fn a_prompt_denser_than_her_measured_density_is_refit_before_generation() {
+    let persona = Uuid::new_v4();
+    let window = 12_288u32;
+    let turns: Vec<_> = (0..160)
+        .map(|i| {
+            BurstTurn::attributed(
+                i % 2 == 0,
+                if i % 2 == 0 { "Ivar" } else { "Peer" },
+                format!("distinct_history_{i} ").repeat(100),
+                Some(i),
+            )
+        })
+        .collect();
+    let ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(crate::identity::ActivityRoom::mint(), turns));
+    let adapter = Arc::new(ScriptedAdapter::new(vec![]));
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone()).with_context_window(window);
+    // A sparse history: her reply counted 3/4 of the estimate.
+    let first = faculty.prompt_view(&ws);
+    let mut light = make_response(FinishReason::Stop, "PASS", None);
+    light.usage.input_tokens = (first.estimated_prompt_tokens as u32) * 3 / 4;
+    adapter.responses.lock().expect("fixture queue").push_back(light);
+    assert!(faculty.contribute(&ws).await.expect("verdict").fault.is_none());
+    let dense = faculty.prompt_view(&ws);
+    assert!(
+        dense.estimated_prompt_tokens > first.estimated_prompt_tokens,
+        "precondition: fitted at the lighter density her next prompt holds more estimate ({} then {})",
+        first.estimated_prompt_tokens,
+        dense.estimated_prompt_tokens
+    );
+    // The engine's exact count of that prompt: alone it fits the window; with her reply it does not.
+    let requested = window - (dense.completion_reserve.max(2) / 2);
+    adapter.rejections.lock().expect("fixture rejection queue").push_back(
+        crate::ai::inference_error::InferenceError::ContextExceeded { requested, available: window },
+    );
+    adapter.responses.lock().expect("fixture queue").push_back(make_response(FinishReason::Stop, "PASS", None));
+    let outcome = faculty.contribute(&ws).await.expect("verdict");
+    assert!(outcome.fault.is_none(), "{:?}", outcome.fault);
+    assert!(adapter.responses.lock().expect("fixture queue").is_empty(), "the refit generated");
+    let seen = adapter.seen.lock().expect("fixture request log");
+    assert_eq!(seen.len(), 3, "the first act, the refused request (counted, never generated), the refit");
+    let cost = |r: &TextGenerationRequest| {
+        LlmDeliberationFaculty::framing_cost(r.system_prompt.as_deref().unwrap_or_default())
+            + LlmDeliberationFaculty::messages_cost(&r.messages)
+            + r.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of)
+    };
+    let (refused, resent) = (&seen[1], &seen[2]);
+    assert!(cost(resent) < cost(refused), "the refit is smaller: {} then {}", cost(refused), cost(resent));
+    // At the refusal's price (its count over its estimate), the refit and its reply fit the window.
+    let charged = (cost(resent) as u64 * u64::from(requested)).div_ceil(cost(refused).max(1) as u64).max(cost(resent) as u64);
+    let allowance = resent.max_tokens.expect("test: the refit names its reply allowance"); // JUSTIFIED: test fixture
+    assert!(charged + u64::from(allowance) <= u64::from(window), "{charged} + {allowance} > {window}");
+    assert!(allowance >= LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS, "her reply's allowance survives: {allowance}");
+}
+
 // The fitted view observed 4k; the same adapter grows before refusal is
 // published. Recording readiness only at refusal would park on the new 8k.
 #[tokio::test]

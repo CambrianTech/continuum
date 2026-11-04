@@ -192,6 +192,17 @@ mod the_newest_result_over_her_window {
         let shown = &results[0].1;
         assert!(shown.contains("this is its summary") && shown.contains(&format!("tool/output {HANDLE}")), "{}", &shown[..shown.len().min(600)]);
         assert!(shown.contains("BUILD START") && shown.contains("error[E0308]"), "content from both ends, never a bare pointer");
+        // SEMANTIC: every line it shows (besides the note and the elision markers) is a line of
+        // her result, in its own words; and the handle it names is the one her act's whole is
+        // saved under, which reopens byte-identical (`spill::saved_whole`, round-trip pinned by
+        // `spill_then_resolve_round_trips`).
+        let original: std::collections::HashSet<&str> = whole.lines().collect();
+        for line in shown.lines().filter(|line| !line.is_empty() && !line.starts_with('[') && !line.starts_with('…')) {
+            assert!(original.contains(line), "a shown line that is not hers: {line:?}");
+        }
+        let memory = faculty.working_memory.as_ref().expect("test: her memory"); // JUSTIFIED: test fixture
+        let (seq, _) = memory.active_action_full().expect("test: her act"); // JUSTIFIED: test fixture
+        assert_eq!(memory.saved_handle(seq).ok().as_deref(), Some(HANDLE), "the handle shown is her act's saved whole");
         assert!(shown.chars().count() * 8 <= whole.chars().count(), "a level below the first summary: {} of {}", shown.chars().count(), whole.chars().count());
         assert!(view.capacity_error.is_none(), "{:?}", view.capacity_error);
     }
