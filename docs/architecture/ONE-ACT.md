@@ -319,6 +319,63 @@ model); CPU cores rendering, tokenizing and embedding in parallel with the GPU.
 **Gate:** GPU idle fraction while any mind waits on work the GPU could already be doing, measured
 before and after; and per-act wall time split into tool, wait, prefill and decode.
 
+### 5f. Extend the pipeline to the grid: place work near warm state
+
+Joel requested this direction be recorded on 2026-11-04. This is the extension of stages
+4, 5b.1, 5d and 5e, not a second scheduler or a claim of measured grid speedup.
+**Sequence:** prove local custody, typed restore outcomes and bounded mixed-load scheduling
+first; then carry the same command, reservation and completion contracts across nodes.
+
+**Owner:** Codex owns the dispatcher and placement contract; Fable owns the core encoders.
+The existing grid routes typed work to the selected engine. Each engine remains the one
+owner of its device; placement requests admission rather than bypassing that owner.
+
+**Placement compares complete paths, not idle GPUs.** For the same compatible work, compare:
+1. wait for an engine already holding the correct warm sequence, then append/decode;
+2. reserve a destination, transfer a compatible saved page, restore, then append/decode;
+3. send the required prompt to another compatible engine and prefill it there.
+Use measured queue delay, remaining prefill/decode work, page and staging bytes, network
+bandwidth/latency, restore cost and source disruption. Account for overlap only when the
+actual dependency graph permits it. A local warm wait may beat a remote cold engine.
+Unmeasured costs stay explicit; an idle device is not evidence that migration wins.
+Avoid placement oscillation by charging the whole transition and its uncertainty, never
+by chasing an instantaneous throughput sample. Preserve bounded service for every mind.
+
+**Compatibility is a prerequisite.** A page or shared prefix is eligible only under its
+model/adapter revisions, tokenizer/template identity where relevant, state format and KV
+representation, checkpoint/prefix identity, and the destination's supported restore contract.
+Different hardware does not imply portable KV; no transfer or conversion is assumed valid
+without a verified capability. Incompatibility preserves the source artifact. Recompute on
+an admitted destination remains an explicit alternative, not a mislabeled successful restore.
+
+**One handoff, verified custody.** Reserve destination residency, transfer staging and network
+work before starting. Identify the operation, immutable page/checkpoint revision and both
+engine incarnations. Transfer and verify the complete artifact; restore it and obtain the
+matching terminal receipt. Commit execution ownership once, fencing stale or duplicate
+commands, before releasing source residency. A send acknowledgement, timeout, disconnect or
+expired lease is not proof of destination completion or source release. Keep custody through
+uncertainty; reconciliation uses the operation identity and verified fencing. Release any
+reservation only after its work is terminal or fenced. Preserve durable saved-page provenance
+independently of whether either engine currently holds the sequence.
+
+**Overlap without waste.** Encoders may prefetch an eligible page and prefill a committed,
+append-only tool-result prefix while CPU/tool work continues. Those operations use the same
+bounded queues, reservations, dependency ordering, cancellation and aging as ordinary work.
+Speculative placement cannot crowd out useful admitted work. Shared immutable prefixes are
+reused only where the backend proves compatible sharing; a shadow view reserves its own
+state before the turnover fence. CPU, network, GPU-copy, GPU-compute and durable-I/O receipts
+remain distinct domains under the one scheduling contract.
+
+**Evidence and gate.** The within-node results in 5a.1 and the
+[5090 measurements](https://gist.github.com/joelteply/b2898e781c2231ca80f253e6d877812f)
+justify reducing avoidable prefill and protecting warm decode. They do not measure grid
+transfer or cold-disk performance. Validate grid placement with the same model and work:
+local warm wait versus remote page handoff versus remote cold prefill; record end-to-end
+first output, p95 decode gaps, useful completions per mind, bytes transferred, peak reserved
+memory and prediction error. Exercise duplicate delivery, cancellation, stale incarnation,
+network loss and restart: no double execution, no capacity double-spend, no premature source
+release and no loss of a valid page. A faster transfer alone is not a faster completed act.
+
 ### 5c. The operating point is measured, never a number
 
 No fixed count of residents, lanes, slots or sequences. RESIDENCY (which minds hold state on this
