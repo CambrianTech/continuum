@@ -73,6 +73,22 @@ pub fn fence(file: &File, path: &Path) -> io::Result<()> {
     os::sync_entries(parent(path)?)
 }
 
+/// Write `bytes` as the whole file at `path`, replacing what is there: staged beside it, synced,
+/// renamed into place, so a reader sees the old file or the new one and never a torn write.
+pub fn write_replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let (dir, name) = staging::split(path)?;
+    let mut staged = Staging::new_in(dir)?;
+    staged.write_all(bytes)?;
+    staged.replace(Path::new(name))
+}
+
+/// Completes the durability fence of the existing file at `path`: reopened writable (Windows
+/// flushes through the handle, and refuses a read-only handle's flush), then [`fence`].
+pub fn fence_path(path: &Path) -> io::Result<()> {
+    let file = OpenOptions::new().write(true).open(path)?;
+    fence(&file, path)
+}
+
 fn parent(path: &Path) -> io::Result<&Path> {
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{} has no parent directory", path.display())))
