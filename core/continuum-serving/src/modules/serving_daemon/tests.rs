@@ -228,6 +228,26 @@ pub(super) fn test_resource_daemon() -> Arc<ResourceDaemon> {
     )
 }
 
+/// A memory authority over one test-driven capacity source that ticks fast enough for a
+/// test to wait on its board (the shape the floor and placement tests already build inline).
+pub(super) fn ticking_resource_daemon(
+    source: Arc<crate::resources::MockCapacitySource>,
+) -> Arc<ResourceDaemon> {
+    use crate::resources::{DaemonConfig, GovernorConfig};
+    ResourceDaemon::start(
+        vec![source],
+        vec![],
+        DaemonConfig {
+            tick_interval: Duration::from_millis(20),
+            min_reclaim_budget: Duration::from_millis(100),
+            governor: GovernorConfig {
+                min_dwell_ms: 0,
+                graceful_grace_ms: 50,
+            },
+        },
+    )
+}
+
 // Upper-layer transaction owns invocation of the engine's shared real-child scenario.
 #[cfg(windows)]
 #[tokio::test]
@@ -411,12 +431,23 @@ pub(super) fn daemon_on_card(
     server: Arc<dyn LlamaServerControl>,
     vram_bytes: u64,
 ) -> ServingDaemonModule {
+    daemon_on_authority(server, vram_bytes, test_resource_daemon())
+}
+
+/// The harness daemon over a memory authority the test drives (its capacity source, its
+/// leases, its consumers): the owner-to-planner boundary (`host_budget_snapshot`) then reads a
+/// board the test controls.
+pub(super) fn daemon_on_authority(
+    server: Arc<dyn LlamaServerControl>,
+    vram_bytes: u64,
+    resource_daemon: Arc<ResourceDaemon>,
+) -> ServingDaemonModule {
     let gpu = Arc::new(GpuMemoryManager::simulated("test card", vram_bytes));
     let system = Arc::new(SystemResourceMonitor::new());
     let mut daemon = ServingDaemonModule::with_control(
         gpu,
         system,
-        test_resource_daemon(),
+        resource_daemon,
         server,
         test_catalog(),
         test_pin_store(),
@@ -544,6 +575,7 @@ mod engine_admission;
 
 mod budget;
 mod catalog;
+mod credit;
 mod demand;
 mod health;
 mod prompt_cache;

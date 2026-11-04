@@ -150,8 +150,9 @@ pub struct ServingDaemonModule {
     resource_daemon: Arc<ResourceDaemon>,
     /// The plan's memory budget, SUSTAINED: every instantaneous reading of the last
     /// `READY_TIMEOUT`, so the plan grows only into headroom that has outlived one relaunch
-    /// and shrinks the moment pressure arrives (`system_resources::sustained`).
-    budget_readings: parking_lot::Mutex<crate::system_resources::sustained::Sustained>,
+    /// and shrinks the moment pressure arrives (`system_resources::sustained`), within one
+    /// credit view (`own_credit::CreditedReadings`).
+    budget_readings: parking_lot::Mutex<own_credit::CreditedReadings>,
     /// The published decision. `None` until the first successful plan. Held as
     /// the module's only shared state; `send` takes `&self` so `tick()` can
     /// publish without interior-mutability gymnastics.
@@ -509,11 +510,9 @@ impl ServingDaemonModule {
             gpu,
             system,
             resource_daemon,
-            budget_readings: parking_lot::Mutex::new(
-                crate::system_resources::sustained::Sustained::new(
-                    crate::inference::llama_server::READY_TIMEOUT,
-                ),
-            ),
+            budget_readings: parking_lot::Mutex::new(own_credit::CreditedReadings::new(
+                crate::inference::llama_server::READY_TIMEOUT,
+            )),
             plan_tx,
             plan_view_tx,
             server,

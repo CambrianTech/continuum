@@ -217,7 +217,12 @@ impl ServingDaemonModule {
         let read = self.resource_daemon.replacement_budget_snapshot(SERVING_CONSUMER_ID, pool);
         // Whether this budget holds serving's own bytes, from the read that made it.
         let credit = OwnCredit::of_own_bytes(read.own_bytes);
-        let (live, charged) = if read.bytes > 0 {
+        // A pool with a scanned capacity has MEASURED its budget, and a measured zero is the
+        // answer: a fully leased pool. The substitute ladder is for a pool with no reading
+        // only. Before, a zero read fell to the ladder, whose first rung is the board's
+        // `budget_for_replacing` without the other holders' leases: it handed the plan
+        // serving's own bytes back after they were leased away, and dropped those leases.
+        let (live, charged) = if read.capacity_bytes > 0 {
             (read.bytes, read.charged)
         } else {
             // A substitute ceiling carries no authority to credit live holders.
@@ -291,11 +296,12 @@ impl ServingDaemonModule {
         // at once. The M5, 2026-10-18 15:27-15:28Z: the instantaneous budget read 22.9, 29.8,
         // 29.1 then 41.9 GB within 22 s (ledger flat at 41.68 GB) and the plan it fed
         // relaunched the engine at 15:06, 15:18 and 15:24, every resident cold each time.
-        let usable_bytes = self
-            .budget_readings
-            .lock()
-            .observe(continuum_base::time::EpochMs::now().millis(), instant)
-            .min;
+        // Within one credit view: an uncredited reading is not a minimum of a credited one.
+        let usable_bytes = self.budget_readings.lock().sustained_min(
+            continuum_base::time::EpochMs::now().millis(),
+            credit,
+            instant,
+        );
         if usable_bytes != instant {
             continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.budget.sustained",
