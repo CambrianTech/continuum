@@ -113,9 +113,16 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
         let want = |d: &Demand<K>| need(d).max(holds(d));
         let total = |f: &dyn Fn(&Demand<K>) -> u32| demands.iter().map(|d| u64::from(f(d))).sum::<u64>();
         let pool = u64::from(pool_tokens);
-        // Room for every target: each mind reads whole, never past one sequence, never below what she
-        // holds. Otherwise needs first, and what is left stays in the pool.
-        let aim = |d: &Demand<K>| d.target.get().min(d.ceiling).max(want(d));
+        // A mind holding at least her need keeps exactly what she holds: a grant moves only when her
+        // need outgrows it or the pool needs it back, never because the regime flipped between "every
+        // target fits" and "needs only" (each flip rebound all four residents and cost their prompt
+        // cache: 22 rebinds in 15 minutes on the M5, d47c5c2a6). A mind whose need is above what she
+        // holds (or a newcomer) is sized to her target when every amount fits, else to her need.
+        let settled = |d: &Demand<K>| holds(d) >= need(d);
+        let aim = |d: &Demand<K>| match settled(d) {
+            true => holds(d),
+            false => d.target.get().min(d.ceiling).max(want(d)),
+        };
         if total(&aim) <= pool {
             return demands.iter().map(|d| (d.mind, aim(d))).collect();
         }
@@ -290,6 +297,32 @@ mod tests {
         let modest = [mind(1, 70_000, 100_000), mind(2, 60_000, 104_015), mind(3, 50_000, 88_380), mind(4, 40_000, 90_000)];
         let grants = DemandFollowing.grant(&modest, &BTreeMap::new(), pool);
         assert_eq!(grants, BTreeMap::from([(1, 100_000), (2, 104_015), (3, 88_380), (4, 90_000)]), "every target fits: each reads whole");
+    }
+
+
+    // what this catches (the M5, 2026-11-03, d47c5c2a6: 22 rebinds in 15 minutes): a grant that moves
+    // when the regime flips. Every target fits, so each mind is granted her target; then one mind's
+    // need grows past what the targets leave. She is granted her need from the room, and every other
+    // mind, still holding at least her need, keeps exactly her grant: no rebind. What is bound stays
+    // within the pool.
+    #[test]
+    fn a_regime_flip_never_rebinds_a_mind_whose_grant_still_fits() {
+        let pool = 200_000;
+        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), in_flight: false, ceiling: pool };
+        let first = [mind(1, 14_000, 47_000), mind(2, 20_000, 53_000), mind(3, 20_000, 51_000), mind(4, 14_000, 45_000)];
+        let held = DemandFollowing.grant(&first, &BTreeMap::new(), pool);
+        assert_eq!(held, BTreeMap::from([(1, 47_000), (2, 53_000), (3, 51_000), (4, 45_000)]), "every target fits");
+        // Mind 4's need grows to 49,000: the targets no longer all fit (47+53+51+60 > 200), but her need
+        // fits in what the others hold above theirs (47+53+51+49 = 200).
+        let flipped = [mind(1, 14_000, 47_000), mind(2, 20_000, 53_000), mind(3, 20_000, 51_000), mind(4, 49_000, 60_000)];
+        let next = DemandFollowing.grant(&flipped, &held, pool);
+        for m in [1, 2, 3] {
+            assert_eq!(next.get(&m), held.get(&m), "mind {m} still holds at least her need: no rebind ({next:?})");
+        }
+        assert_eq!(next.get(&4), Some(&49_000), "the grower gets her need from what the others leave");
+        assert!(next.values().map(|&g| u64::from(g)).sum::<u64>() <= u64::from(pool), "bound within the pool: {next:?}");
+        // And the same grants again: nothing moves.
+        assert_eq!(DemandFollowing.grant(&flipped, &next, pool), next, "a steady demand is a steady grant");
     }
 
 }
