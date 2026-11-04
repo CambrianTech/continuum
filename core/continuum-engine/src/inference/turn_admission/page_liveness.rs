@@ -58,12 +58,12 @@ pub(super) type CpuSource = Box<dyn FnMut() -> Option<CpuSample> + Send>;
 /// The fixture seam for a whole admission: the CPU source a fake engine at a root reads, in
 /// place of the live lane's process (the role `ProcessTable::of` plays for the table's owners).
 /// Keyed by root, so concurrent tests on their own ports never see each other's engine.
-#[cfg(any(test, feature = "test-fixtures"))]
+#[cfg(test)]
 static WATCHED_FOR_TEST: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<String, fn() -> Option<CpuSample>>>> =
     std::sync::LazyLock::new(Default::default);
 
 /// Read `read` as the engine process's CPU for every switch on `root`.
-#[cfg(any(test, feature = "test-fixtures"))]
+#[cfg(test)]
 pub(super) fn watch_for_test(root: &str, read: fn() -> Option<CpuSample>) {
     WATCHED_FOR_TEST.lock().insert(root.trim_end_matches('/').to_owned(), read);
 }
@@ -76,7 +76,7 @@ pub(super) enum Condemnation {
     /// A fixture engine no daemon serves: never condemned. Without it a test's switch read
     /// whatever another test in the binary left condemned (a launch's drain condemns, and only
     /// the serving daemon's ready snapshot recovers it): CI on #5772 at d818d9981.
-    #[cfg(any(test, feature = "test-fixtures"))]
+    #[cfg(test)]
     Never,
 }
 
@@ -85,7 +85,7 @@ impl Condemnation {
     pub(super) fn now(self) -> bool {
         match self {
             Self::Daemon => crate::inference::llama_server::engine_condemned(),
-            #[cfg(any(test, feature = "test-fixtures"))]
+            #[cfg(test)]
             Self::Never => false,
         }
     }
@@ -96,7 +96,7 @@ impl Condemnation {
             Self::Daemon => Box::pin(crate::inference::llama_server::until_condemned_on(
                 crate::inference::llama_server::condemnations(),
             )),
-            #[cfg(any(test, feature = "test-fixtures"))]
+            #[cfg(test)]
             Self::Never => Box::pin(std::future::pending()),
         }
     }
@@ -149,7 +149,7 @@ impl PageLiveness {
     /// The live lane's own process when `root` is that lane (its record's pid and start time,
     /// as adoption fences it); HTTP alone for any other endpoint. Condemned by the daemon's watch.
     pub(super) fn for_root(root: &str) -> Self {
-        #[cfg(any(test, feature = "test-fixtures"))]
+        #[cfg(test)]
         if let Some(read) = WATCHED_FOR_TEST.lock().get(root.trim_end_matches('/')).copied() {
             return Self::new(Box::new(read), Condemnation::Never);
         }
