@@ -30,11 +30,41 @@ pub(super) fn on_shared_pool(mut invocation: LaneInvocation) -> LaneInvocation {
     invocation
 }
 
-/// Was this argv launched the way [`on_shared_pool`] launches? An engine on the pool that still
-/// clears idle slots is not: the reconcile moves it by its one relaunch, as it moves an engine on
-/// fixed slots.
-pub(super) fn launched_on_shared_pool(argv: &[String]) -> bool {
-    argv.iter().any(|a| a == SHARED_POOL || a == SHARED_POOL_SHORT) && argv.iter().any(|a| a == KEEP_IDLE_SLOTS)
+/// How a running engine was launched, read off its own argv. Two questions ask it, and each asks
+/// its own (Cormac on #5764): the grants and the served window ask whether the KV is ONE pool
+/// ([`PoolLaunch::kv_shared`]); the reconcile asks whether the launch is the one
+/// [`on_shared_pool`] makes now ([`PoolLaunch::current`]), and moves it by its one relaunch if not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoolLaunch {
+    /// Fixed slots: `-c` divided among `--parallel` (every node before 2026-11-03).
+    FixedSlots,
+    /// One shared pool whose engine still clears an idle slot when another launches.
+    SharedClearingIdle,
+    /// One shared pool whose idle slots keep their KV: the launch [`on_shared_pool`] makes.
+    Shared,
+}
+
+impl PoolLaunch {
+    /// Every sequence draws on one pool, so a grant is a share of it.
+    pub fn kv_shared(self) -> bool {
+        !matches!(self, PoolLaunch::FixedSlots)
+    }
+
+    /// The launch [`on_shared_pool`] makes now; anything else is moved by one relaunch.
+    pub fn current(self) -> bool {
+        self == PoolLaunch::Shared
+    }
+}
+
+/// How this argv was launched.
+pub(super) fn pool_launch(argv: &[String]) -> PoolLaunch {
+    let shared = argv.iter().any(|a| a == SHARED_POOL || a == SHARED_POOL_SHORT);
+    let keeps_idle = argv.iter().any(|a| a == KEEP_IDLE_SLOTS);
+    match (shared, keeps_idle) {
+        (false, _) => PoolLaunch::FixedSlots,
+        (true, false) => PoolLaunch::SharedClearingIdle,
+        (true, true) => PoolLaunch::Shared,
+    }
 }
 
 #[cfg(test)]
@@ -43,14 +73,20 @@ mod tests {
 
     // regression for the M5, 2026-11-04: an engine on the pool without --no-cache-idle-slots
     // cleared every idle resident's slot behind the core's page ledger.
-    // what this catches: the pool launch dropping the flag, or an engine on the pool that still
-    // clears idle slots read back as already moved (so it would never relaunch to get it).
+    // what this catches: the pool launch dropping the flag; an engine on the pool that still
+    // clears idle slots read as current (it would never relaunch to get the flag) or as fixed
+    // slots (its grants would be a slot's, not a share of the pool, until a relaunch landed).
     #[test]
-    fn the_shared_pool_launch_keeps_idle_slots_and_the_read_back_requires_it() {
+    fn the_pool_launch_keeps_idle_slots_and_each_reader_asks_its_own_question() {
         let argv = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
-        assert!(launched_on_shared_pool(&argv(&["-c", "449755", "--kv-unified", "--no-cache-idle-slots"])));
-        assert!(launched_on_shared_pool(&argv(&["-kvu", "--no-cache-idle-slots"])));
-        assert!(!launched_on_shared_pool(&argv(&["-c", "449755", "--kv-unified"])), "clears idle slots: moved once");
-        assert!(!launched_on_shared_pool(&argv(&["-c", "449755", "--no-cache-idle-slots"])), "fixed slots: moved once");
+        let current = pool_launch(&argv(&["-c", "449755", "--kv-unified", "--no-cache-idle-slots"]));
+        assert_eq!(current, PoolLaunch::Shared);
+        assert_eq!(pool_launch(&argv(&["-kvu", "--no-cache-idle-slots"])), PoolLaunch::Shared);
+        let clearing = pool_launch(&argv(&["-c", "449755", "--kv-unified"]));
+        assert_eq!(clearing, PoolLaunch::SharedClearingIdle);
+        assert!(clearing.kv_shared() && !clearing.current(), "its KV is shared; its launch is moved once");
+        let fixed = pool_launch(&argv(&["-c", "449755", "--no-cache-idle-slots"]));
+        assert!(!fixed.kv_shared() && !fixed.current());
+        assert!(current.kv_shared() && current.current());
     }
 }

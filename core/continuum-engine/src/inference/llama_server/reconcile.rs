@@ -180,8 +180,8 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // 2026-11-03) is moved to the shared pool by one relaunch; after that no window,
             // lane or cache change ever relaunches it. Unknown (no argv, a fake) is not a
             // mismatch.
-            let pool_ok = match ctrl.launched_on_shared_pool() {
-                Some(on_pool) => on_pool,
+            let pool_ok = match ctrl.pool_launch() {
+                Some(launch) => launch.current(),
                 None => {
                     // Unknown is not a mismatch (no spurious relaunch), but it is said, so a
                     // node left on fixed slots is findable (Cormac on #5720).

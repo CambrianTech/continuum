@@ -213,8 +213,8 @@ impl LlamaServerControl for FakeControl {
     fn launch_kv(&self) -> Option<crate::inference::lane_process::LaunchKv> {
         self.launched_kv.clone()
     }
-    fn launched_on_shared_pool(&self) -> Option<bool> {
-        self.partitioned.then_some(false)
+    fn pool_launch(&self) -> Option<super::PoolLaunch> {
+        self.partitioned.then_some(super::PoolLaunch::FixedSlots)
     }
     fn owns_child(&self) -> bool {
         self.owns

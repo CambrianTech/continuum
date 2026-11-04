@@ -85,7 +85,7 @@ impl ServingDaemonModule {
                 return Some(shared);
             }
         }
-        let shared = self.server.launched_on_shared_pool()?;
+        let shared = self.server.pool_launch()?.kv_shared();
         *self.shared_pool_of.lock() = Some((pid, shared));
         Some(shared)
     }
