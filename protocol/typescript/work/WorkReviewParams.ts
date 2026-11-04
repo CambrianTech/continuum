@@ -2,6 +2,10 @@
 import type { ReviewOutcome } from "./ReviewOutcome";
 import type { WorkArtifactReference } from "./WorkArtifactReference";
 
+/**
+ * What she sends; deserialized only, because the ids parse as [`Shown`] (what she was shown)
+ * and resolve against the board this verb reads, never re-rendered from here.
+ */
 export type WorkReviewParams = { 
 /**
  * Optional; the card's board decides.
