@@ -302,7 +302,7 @@ impl CitizenWorkspacePool {
     /// tree is judged under the same gates and reported as it WOULD be decided.
     pub fn reclaim_build_residue(root: &Path, home: &Path, now_ms: u64, apply: bool) -> Vec<ResidueOutcome> {
         let home = home.to_path_buf();
-        Self::reclaim_with_roster(root, &Self::roster(), now_ms, apply, &move || node_quiescence(&home))
+        Self::reclaim_with_roster(root, &Self::roster(), now_ms, apply, &move || node_quiescence(&home, &mut super::process_tree::PassTable::new(super::process_tree::ProcessTable::read)).map_err(|refusal| refusal.to_string()))
     }
 
     /// `quiescent` is the node-wide gate (Fable on #4528: "quiescent" must be enforced, not
@@ -383,26 +383,39 @@ impl CitizenWorkspacePool {
 /// - no deploy in flight (`deploy_claim::in_flight(..).excludes_deploy()`);
 /// - no citizen turn in flight (`turn_ingress::in_flight()`).
 /// `Err` names the first gate that refuses.
-pub(crate) fn node_quiescence(home: &Path) -> Result<(), String> {
+pub(crate) fn node_quiescence(
+    home: &Path,
+    table: &mut super::process_tree::PassTable,
+) -> Result<(), NotQuiescent> {
     let Some(turns) = crate::runtime::extensions::turns_in_flight() else {
-        return Err("citizen_turns_unknown: nothing installed the turn count".to_string());
+        return Err(NotQuiescent::TurnsUnknown);
     };
     if turns > 0 {
-        return Err(format!("citizen_turn_in_flight: {turns}"));
+        return Err(NotQuiescent::TurnInFlight(turns));
     }
     let now_ms = EpochMs::now().millis();
     if continuum_cli_lifecycle::deploy_claim::in_flight(home, now_ms).excludes_deploy() {
-        return Err("deploy_in_flight".to_string());
+        return Err(NotQuiescent::DeployInFlight);
     }
-    let mut sys = sysinfo::System::new();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-    if let Some((pid, name)) = sys.processes().iter().find_map(|(pid, p)| {
-        let name = p.name().to_string_lossy().into_owned();
-        continuum_cli_lifecycle::deploy_claim::is_compiler(&name).then(|| (pid.as_u32(), name))
-    }) {
-        return Err(format!("compiler_running: {name} (pid {pid})"));
+    match table.get().compiler_running() {
+        Some(compiler) => Err(NotQuiescent::CompilerRunning(compiler.clone())),
+        None => Ok(()),
     }
-    Ok(())
+}
+
+/// Why the node is not quiescent: a typed fact a caller branches on, its text only `Display`. A
+/// running compiler carries its identity, so a holder can wait on that exact process ending
+/// instead of reading the whole table again (card b958bed4).
+#[derive(Debug, Clone, thiserror::Error)]
+pub(crate) enum NotQuiescent {
+    #[error("citizen_turns_unknown: nothing installed the turn count")]
+    TurnsUnknown,
+    #[error("citizen_turn_in_flight: {0}")]
+    TurnInFlight(u64),
+    #[error("deploy_in_flight")]
+    DeployInFlight,
+    #[error("compiler_running: {} (pid {})", .0.name, .0.identity.pid)]
+    CompilerRunning(super::process_tree::ProcessRow),
 }
 
 /// What the explicit reclaim decided for one tree (or for the whole pass).
@@ -676,7 +689,7 @@ fn preserve_workspace(workspace: &Path, dropped_dir: &Path) -> Result<usize, Pre
             .filter_map(|p| p.strip_prefix(workspace).ok())
             .map(|p| p.to_string_lossy().to_string())
             .collect();
-        std::fs::write(&list, rels.join("\n"))
+        continuum_host::durable::write_replace(&list, rels.join("\n").as_bytes())
             .map_err(|e| PreserveFailed::Archive(format!("write loose list: {e}")))?;
         let tar = dropped_dir.join("loose.tar.gz");
         let out = continuum_base::shell_portable::tar_on(&tar, "-czf")
@@ -715,7 +728,7 @@ fn preserve_workspace(workspace: &Path, dropped_dir: &Path) -> Result<usize, Pre
         let name = if name.is_empty() { "workspace".to_string() } else { name };
         let tar = dropped_dir.join(format!("{name}.uncommitted.tar.gz"));
         let list = dropped_dir.join(format!("{name}.files"));
-        std::fs::write(&list, paths.join("\n"))
+        continuum_host::durable::write_replace(&list, paths.join("\n").as_bytes())
             .map_err(|e| PreserveFailed::Archive(format!("write file list: {e}")))?;
         let out = continuum_base::shell_portable::tar_on(&tar, "-czf")
             .map_err(PreserveFailed::Archive)?
@@ -755,7 +768,7 @@ fn preserve_workspace(workspace: &Path, dropped_dir: &Path) -> Result<usize, Pre
                 paths.len()
             )));
         }
-        std::fs::write(dropped_dir.join(format!("{name}.base")), base)
+        continuum_host::durable::write_replace(&dropped_dir.join(format!("{name}.base")), base.as_bytes())
             .map_err(|e| PreserveFailed::Archive(format!("write base sha: {e}")))?;
         archived += 1;
     }

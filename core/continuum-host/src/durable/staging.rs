@@ -97,6 +97,7 @@ pub fn fence_existing(dir: &Dir, name: &Path) -> io::Result<()> {
 
 /// An exclusive lock on a file, held until dropped. The lock file is created on first use and
 /// never deleted (deleting a lock file races the next locker).
+#[derive(Debug)]
 pub struct Lock {
     _file: std::fs::File,
 }
@@ -127,7 +128,7 @@ pub fn lock_path(path: &Path, wait: bool) -> io::Result<Lock> {
     lock(&Dir::open_ambient_dir(dir, cap_std::ambient_authority())?, Path::new(name), wait)
 }
 
-fn split(path: &Path) -> io::Result<(&Path, &std::ffi::OsStr)> {
+pub(super) fn split(path: &Path) -> io::Result<(&Path, &std::ffi::OsStr)> {
     match (path.parent(), path.file_name()) {
         (Some(dir), Some(name)) => Ok((if dir.as_os_str().is_empty() { Path::new(".") } else { dir }, name)),
         _ => Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{} names no file in a directory", path.display()))),

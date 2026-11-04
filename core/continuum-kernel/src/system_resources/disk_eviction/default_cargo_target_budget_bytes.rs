@@ -136,8 +136,8 @@ pub fn cache_pool_pressure(own: f64, volume: f64) -> f64 {
 /// thing that prevents it rather than a comment asking me not to.
 #[derive(Debug)]
 pub(super) enum LockAttempt {
-    /// Held by us until the file drops.
-    Acquired(std::fs::File),
+    /// Held by us until the lock drops.
+    Acquired(continuum_host::durable::Lock),
     /// Someone else holds it. On this path that someone is a live cargo build, and
     /// standing down is the guard WORKING.
     HeldByAnother,
@@ -147,71 +147,15 @@ pub(super) enum LockAttempt {
     Unavailable(String),
 }
 
-/// The first process whose executable lives under `dir`, if any: the test binary cargo
-/// is running, a build script, a tool it built. Read from the process table the other
-/// pools already consult; a table that cannot be read answers "nobody", which keeps the
-/// eviction honest in the direction it already errs (derived artifacts, next build
-/// recreates them). Canonicalized on both sides so a symlinked target dir still matches.
-pub(crate) fn process_executing_under(dir: &Path) -> Option<(u32, String)> {
-    let dir = dir.canonicalize().ok()?;
-    let mut sys = sysinfo::System::new();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-    sys.processes().iter().find_map(|(pid, p)| {
-        let exe = p.exe()?;
-        let exe = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf()); // unwrap_or_else: an exe that vanished mid-read compares by its recorded path
-        exe.starts_with(&dir).then(|| (pid.as_u32(), exe.display().to_string()))
-    })
-}
-
 pub(super) fn try_exclusive_flock_detailed(path: &Path) -> LockAttempt {
-    use fs2::FileExt;
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-    {
-        Ok(f) => f,
-        Err(e) => return LockAttempt::Unavailable(format!("open failed: {e}")),
-    };
-    match file.try_lock_exclusive() {
-        Ok(()) => LockAttempt::Acquired(file),
-        // CONTENTION IS NOT `WouldBlock` ON WINDOWS. @Astra caught this on the
-        // second review of #3910: `fs2` signals a held lock with the platform's own
-        // code — `EWOULDBLOCK` on Unix, but `ERROR_LOCK_VIOLATION` (33) on Windows,
-        // which `std` does not map to `ErrorKind::WouldBlock`. Matching on the kind
-        // therefore classified a GENUINELY HELD cargo lock as `Unavailable` on
-        // Windows — the same misclassification this tri-state was added to fix,
-        // inverted, and live on the only platform where I could have measured it.
-        //
-        // `fs2::lock_contended_error()` is the library's own answer to "what does
-        // contention look like here", so we ask it rather than guessing per
-        // platform. [[dir-opened-as-file-windows-only]] — Windows chooses
-        // differently and says nothing.
-        Err(e) if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
-            LockAttempt::HeldByAnother
-        }
-        Err(e) => LockAttempt::Unavailable(format!("lock query failed: {e}")),
+    // One lock primitive (`continuum_host::durable::lock_path`): std's `try_lock`, which
+    // reports contention as `WouldBlock` on every platform, Windows' ERROR_LOCK_VIOLATION
+    // included (the misclassification @Astra caught on #3910 when `fs2` signalled it raw).
+    match continuum_host::durable::lock_path(path, false) {
+        Ok(lock) => LockAttempt::Acquired(lock),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => LockAttempt::HeldByAnother,
+        Err(error) => LockAttempt::Unavailable(format!("lock failed: {error}")),
     }
-}
-
-#[allow(dead_code)] // retained for callers outside this pool; the detailed form is what the guard uses.
-pub(super) fn try_exclusive_flock(path: &Path) -> Option<std::fs::File> {
-    // Cross-platform advisory file lock via `fs2` (Unix: flock; Windows:
-    // LockFileEx) — ONE code path on every platform. The lock is held until the
-    // returned `File` is dropped, matching the previous flock-until-drop
-    // semantics. `try_lock_exclusive` returns Err when another process (a live
-    // cargo build) holds it → `None`.
-    use fs2::FileExt;
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .ok()?;
-    file.try_lock_exclusive().ok().map(|_| file)
 }
 
 /// WHY an eviction did nothing. #3906, at @Astra's request: "declined eviction
@@ -250,7 +194,7 @@ pub enum DeclinedEviction {
     ProfileInUse { pid: u32, exe: String },
     ActiveArtifact { path: PathBuf },
     ReleaseInputsRetained { bytes: u64 },
-    AwaitingReleaseMeasurement,
+    AwaitingMeasurement,
     /// The lock could not be opened or queried — permissions, a vanished path, a
     /// filesystem that cannot lock. @Astra, #3910 review: the first version folded
     /// this into the two above, so an IO failure was reported as "a live build holds
@@ -274,7 +218,7 @@ impl DeclinedEviction {
             Self::UnsafePath(_) => 6,
             Self::ActiveArtifact { .. } => 7,
             Self::ReleaseInputsRetained { .. } => 8,
-            Self::AwaitingReleaseMeasurement => 9,
+            Self::AwaitingMeasurement => 9,
             Self::CitizenBusy(_) => 10,
         }
     }
@@ -302,7 +246,7 @@ impl DeclinedEviction {
             }
             Self::ActiveArtifact { .. } => "serving retains an artifact under this output closure — refusing reclamation",
             Self::ReleaseInputsRetained { .. } => "release installation inputs or undeclared outputs remain; reclamation needs their producer custody, not Cargo's build lock alone",
-            Self::AwaitingReleaseMeasurement => "release custody was already checked for this measurement; await the existing scanner before repeating its content reads",
+            Self::AwaitingMeasurement => "this pool already did all it could with this measurement of the root; await the scanner's next observation before repeating locks, content reads and the process table",
             Self::LockUnavailable(_) => {
                 "the lock could not be opened or queried — NOT evidence a build was                  protected, and NOT evidence the guard ran; the cache was left alone                  because we could not establish it was safe to touch"
             }
@@ -328,7 +272,10 @@ pub struct CargoTargetPool {
     pub(super) active_artifacts: Arc<ActiveArtifactSet>,
     /// Read the owning volume's already-published sample; never probe here.
     pub(super) volume_sample: fn(&Path) -> Option<crate::system_resources::drives::DriveInfo>,
-    pub(super) citizen_quiescence: fn(&Path) -> Result<(), String>,
+    pub(super) citizen_quiescence: fn(
+        &Path,
+        &mut crate::system_resources::process_tree::PassTable,
+    ) -> Result<(), crate::system_resources::citizen_workspace_pool::NotQuiescent>,
     /// The last decline reason (as a discriminant) and how many times it has
     /// repeated unchanged — so a persistent condition is reported once and then
     /// rarely, instead of once per broker tick (@Astra, #3910 review).
@@ -339,13 +286,25 @@ pub struct CargoTargetPool {
     /// see [`CargoTargetPool::note_eviction`] for why the count was wrong.
     pub(super) last_eviction_ms: std::sync::atomic::AtomicU64,
     pub(super) fast_gaps: std::sync::atomic::AtomicU32,
-    /// Never a cached permission: only defers another release proof attempt
-    /// until the existing measurement owner observes the root again.
-    pub(super) release_observation: std::sync::atomic::AtomicU64,
+    /// The tracked root's observation at which this pool's last pass declined or ran its whole
+    /// ladder short of its want (`u64::MAX` before any). Never a cached permission: it only defers
+    /// the next full pass (locks, content reads, the process table) until the measurement owner
+    /// observes the root again (card b958bed4).
+    pub(super) settled_at: std::sync::atomic::AtomicU64,
+    /// The kernel's one process-table read, at most once per pass; a seam so a test can count
+    /// the reads repeated passes make.
+    pub(super) process_table: fn() -> crate::system_resources::process_tree::ProcessTable,
+    /// Whether one remembered process (pid and start time) still runs; a seam for tests.
+    pub(super) process_alive: fn(crate::system_resources::process_tree::ProcessIdentity) -> bool,
+    /// The process whose exit reopens this pool (an image under a profile, or a compiler), with
+    /// the decline it caused. Waited on by identity, never by re-reading the table.
+    pub(super) standing: parking_lot::Mutex<
+        Option<(crate::system_resources::process_tree::ProcessRow, DeclinedEviction)>,
+    >,
 }
 
 impl CargoTargetPool {
-    pub(crate) fn empty_root_custody(root: &Path) -> Result<Option<Vec<std::fs::File>>, String> {
+    pub(crate) fn empty_root_custody(root: &Path) -> Result<Option<Vec<continuum_host::durable::Lock>>, String> {
         Self::owned_metadata(root, root)?;
         let mut locks = Vec::new();
         for relative in [".cargo-lock", "debug/.cargo-lock", "release/.cargo-lock"] {
@@ -411,7 +370,10 @@ impl CargoTargetPool {
             decline_repeats: std::sync::atomic::AtomicU32::new(0),
             last_eviction_ms: std::sync::atomic::AtomicU64::new(0),
             fast_gaps: std::sync::atomic::AtomicU32::new(0),
-            release_observation: std::sync::atomic::AtomicU64::new(u64::MAX),
+            settled_at: std::sync::atomic::AtomicU64::new(u64::MAX),
+            process_table: crate::system_resources::process_tree::ProcessTable::read,
+            process_alive: crate::system_resources::process_tree::alive,
+            standing: parking_lot::Mutex::new(None),
             tracked,
             budget_bytes: budget_bytes.max(1),
             volume_sample: super::super::DiskPressureMonitor::volume_for,
