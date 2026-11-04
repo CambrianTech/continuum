@@ -188,23 +188,6 @@ impl LlmDeliberationFaculty {
         // musing or a long ambient turn. Directed calls take from the full pool. Scoped to a
         // block so every lane releases the instant generation returns — downstream
         // capture/parse/act hold nothing. [[conversational-latency-is-a-misdirection-budget]]
-        // WIRE CAPTURE (2026-08-24, the churn hunt's missing instrument): when
-        // `SERVING_WIRE_CAPTURE_DIR` is configured (config.env — same channel as
-        // SERVING_KV_CACHE_TYPE), append this request's EXACT message list to
-        // `<dir>/<persona>.wire.jsonl` before it ships. Byte-diffing consecutive
-        // rows names the precise prompt position where the KV prefix dies —
-        // today that diagnosis ran on the BID capture, which is not the wire,
-        // and misled twice. Off (unset) = zero cost, zero IO — the Noop default
-        // every capture sink owes the hot path.
-        if let Some(dir) = continuum_base::config_env::read("SERVING_WIRE_CAPTURE_DIR") {
-            append_wire_capture(
-                std::path::Path::new(&dir),
-                self.persona_id,
-                &self.persona_name,
-                ws.room_id,
-                &request,
-            );
-        }
         // Resolve a switch ONCE: admission and dispatch must use the same concrete
         // handle even if placement changes while this call waits. A later call that
         // falls home resolves again and acquires the local permits normally.

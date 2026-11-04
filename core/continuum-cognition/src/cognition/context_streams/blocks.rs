@@ -15,6 +15,7 @@ use crate::cognition::rag_budget::RagItem;
 
 use super::{priority, ContextMessage};
 
+#[derive(Clone)]
 pub(crate) struct Grounding {
     /// Whose block this is (its id, `super::standing`).
     pub persona: uuid::Uuid,

@@ -109,7 +109,7 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
         (
             "eval-captures",
             "#155: age-based sweep — every file is a re-creatable diagnostic (kv-diag \
-             snapshots, wire-request jsonl from SERVING_WIRE_CAPTURE_DIR); writers are \
+             snapshots); writers are \
              opt-in and quiet by default, so the class grows only while an operator is \
              actively hunting. Owner when built: a capped appender like the log pool",
         ),
