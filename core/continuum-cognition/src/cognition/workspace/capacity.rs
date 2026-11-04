@@ -171,10 +171,12 @@ impl CapacityReadiness {
             // With no grants watch there is no such change, and the arm never fires.
             let waiter = crate::capacity::mind_window::grants_waiter();
             let grants_change = async move {
-                match waiter {
-                    Ok(waiter) if waiter.changed().await.is_ok() => {}
-                    _ => std::future::pending::<()>().await,
+                if let Ok(waiter) = waiter {
+                    if waiter.changed().await.is_ok() {
+                        return;
+                    }
                 }
+                std::future::pending::<()>().await
             };
             if self.changed() {
                 return;
