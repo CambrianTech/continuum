@@ -1,57 +1,7 @@
 use super::*;
 use crate::cause::{Cause, Content, ElementId};
+use crate::fixtures::{item, Fake};
 use crate::source::Item;
-
-/// A fixture occurrence at `key`: its id from the key, its cause unrecorded (these tests are about
-/// levels and starts, not chains).
-fn item(key: impl Into<String>, full: String, summary: Option<String>, pointer: Option<String>) -> Item<String> {
-    let key = key.into();
-    let mut item = Item::whole(ElementId::of(&[key.as_bytes()]), Cause::Unrecorded, key, full);
-    item.summary = summary;
-    item.pointer = pointer;
-    item
-}
-
-/// A source shaped like the M5's: items keyed, each renderable in full or as a pointer.
-struct Fake {
-    name: &'static str,
-    priority: u8,
-    items: Vec<(String, String)>,
-    retired: Vec<(String, String)>,
-}
-
-impl Fake {
-    fn new(name: &'static str, priority: u8) -> Self {
-        Self { name, priority, items: Vec::new(), retired: Vec::new() }
-    }
-    fn push(&mut self, key: &str, text: &str) {
-        match self.items.iter_mut().find(|(k, _)| k == key) {
-            Some(item) => item.1 = text.to_owned(),
-            None => self.items.push((key.to_owned(), text.to_owned())),
-        }
-    }
-}
-
-impl Source<String> for Fake {
-    fn name(&self) -> &str {
-        self.name
-    }
-    fn priority(&self) -> u8 {
-        self.priority
-    }
-    fn items(&self) -> Vec<Item<String>> {
-        self.items
-            .iter()
-            .map(|(key, text)| item(key.clone(), text.clone(), None, Some(format!("[{key}: {} chars, reopen by key]", text.len()))))
-            .collect()
-    }
-    fn retired(&self) -> Vec<Item<String>> {
-        self.retired
-            .iter()
-            .map(|(key, text)| item(key.clone(), text.clone(), None, Some(text.clone())))
-            .collect()
-    }
-}
 
 fn all_full(claims: &[Claim]) -> Vec<usize> {
     claims.iter().map(|claim| claim.full_chars).collect()

@@ -143,19 +143,7 @@ pub fn model_binding(
 /// voice, not so much it drifts.
 const DEFAULT_TEMPERATURE: f32 = 0.7;
 
-/// The flex claim ids of the deliberation prompt plan. One window, five claimants.
-const FLEX_FRAMING: &str = "framing";
-
-const FLEX_REQUIRED: &str = "required_input";
-
-const FLEX_GROUNDING: &str = "grounding";
-
-const FLEX_HISTORY: &str = "history";
-
-const FLEX_REPLY: &str = "reply";
-
-/// Her hands (`prompt/tools_epoch.rs`): floor = the epoch's level or core hands, want = all.
-const FLEX_TOOLS: &str = "tools";
+// The claim ids of her prompt's one allocation live with it: `continuum_context::allocation::id`.
 
 /// The reasoner faculty. Persona-scoped; shared model backend.
 pub struct LlmDeliberationFaculty {
