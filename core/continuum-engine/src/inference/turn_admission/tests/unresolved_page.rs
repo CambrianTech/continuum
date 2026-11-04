@@ -17,11 +17,19 @@ fn always_busy() -> Option<CpuSample> {
 /// and whose `/slots` never answers, as a main loop deep in one batch cannot. With
 /// `drops_reply` set, a released switch's reply is cut mid-body: the engine closed the
 /// connection, which proves nothing about whether the switch ended.
+///
+/// `entered` and `cut` are the engine's own events, so a test under paused time waits on what
+/// the engine did rather than on virtual timeouts: those run ahead of real socket IO, and a
+/// virtual 120 s can pass before a request reaches this engine at all (window 49 on the M5).
 struct DelayedEngine {
     root: String,
     release: Arc<tokio::sync::Notify>,
     landed: Arc<AtomicUsize>,
     drops_reply: Arc<AtomicBool>,
+    /// A page switch reached the engine.
+    entered: Arc<tokio::sync::Notify>,
+    /// The engine cut a released switch's reply.
+    cut: Arc<tokio::sync::Notify>,
     server: tokio::task::JoinHandle<std::io::Result<()>>,
 }
 
@@ -36,18 +44,24 @@ async fn delayed_engine() -> DelayedEngine {
     let release = Arc::new(tokio::sync::Notify::new());
     let landed = Arc::new(AtomicUsize::new(0));
     let drops_reply = Arc::new(AtomicBool::new(false));
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let cut = Arc::new(tokio::sync::Notify::new());
     let app = Router::new()
         .route("/slots", get(|| std::future::pending::<Json<serde_json::Value>>()))
         .route("/slots/{slot}", post({
             let (release, landed, drops_reply) = (release.clone(), landed.clone(), drops_reply.clone());
+            let (entered, cut) = (entered.clone(), cut.clone());
             move |Path(slot): Path<u32>,
                   Query(query): Query<std::collections::HashMap<String, String>>,
                   Json(body): Json<serde_json::Value>| {
                 let (release, landed, drops_reply) = (release.clone(), landed.clone(), drops_reply.clone());
+                let (entered, cut) = (entered.clone(), cut.clone());
                 async move {
+                    entered.notify_one();
                     release.notified().await;
                     landed.fetch_add(1, Ordering::SeqCst);
                     if drops_reply.load(Ordering::SeqCst) {
+                        cut.notify_one();
                         let cut = futures::stream::iter([
                             Ok(Bytes::from_static(b"{\"id_slot\":")),
                             Err(std::io::Error::other("test: the engine closed the connection mid-reply")),
@@ -62,7 +76,21 @@ async fn delayed_engine() -> DelayedEngine {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
     let root = format!("http://{}", listener.local_addr().expect("test: address"));
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
-    DelayedEngine { root, release, landed, drops_reply, server }
+    DelayedEngine { root, release, landed, drops_reply, entered, cut, server }
+}
+
+/// Wait for one of the fake engine's own events, bounded in REAL time (the socket's clock): a
+/// virtual timeout under a paused clock can pass before the request's bytes arrive.
+async fn engine_event(event: &tokio::sync::Notify, never: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let happened = event.notified();
+    tokio::pin!(happened);
+    loop {
+        tokio::select! {
+            () = &mut happened => return,
+            () = tokio::time::sleep(Duration::from_millis(50)) => assert!(std::time::Instant::now() < deadline, "test: {never}"),
+        }
+    }
 }
 
 // what this catches (Codex's review on #5772): an unresolved switch that kept only its HTTP
@@ -140,15 +168,28 @@ async fn a_reply_cut_mid_body_quarantines_before_the_slot_is_let_go() {
     let client = reqwest::Client::new();
 
     let turn = admit_turn(&sem, Some(held), Some(pool.clone()), &client, &engine.root, 100, AdmissionPatience::for_turn()).await;
-    assert!(turn.is_err(), "the restore is unresolved");
+    assert!(turn.is_err(), "the restore admits no generation");
+    // The restore is IN the engine, held: wait on the engine's own event, never a virtual
+    // timeout, which can pass before the request's bytes arrive.
+    engine_event(&engine.entered, "the restore never reached the engine").await;
+    assert_eq!(sem.available_permits(), 1, "unresolved, not uncertain: the held custody keeps its lane");
+    assert!(!directory.endpoint(&engine.root).paging_recovery_required(), "unresolved alone never quarantines");
     let mut reuse = Box::pin(admit_turn(&sem, Some(next), Some(pool.clone()), &client, &engine.root, 100, AdmissionPatience::for_turn()));
     assert!(tokio::time::timeout(Duration::from_secs(120), &mut reuse).await.is_err(), "no turn takes a held slot");
 
     engine.drops_reply.store(true, Ordering::SeqCst);
     engine.release.notify_one();
+    engine_event(&engine.cut, "the engine never cut the released reply").await;
+    assert_eq!(engine.landed.load(Ordering::SeqCst), 1, "the engine was reached and cut its reply");
+    // The held custody judges the cut reply when its bytes arrive: bounded in real time, as the
+    // socket is.
+    let judged_by = std::time::Instant::now() + Duration::from_secs(30);
+    while !directory.endpoint(&engine.root).paging_recovery_required() {
+        assert!(std::time::Instant::now() < judged_by, "test: the cut reply was never judged");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let reused = tokio::time::timeout(Duration::from_secs(120), reuse).await;
     assert!(!matches!(reused, Ok(Ok(_))), "a cut reply never lets the slot be reused");
-    assert_eq!(engine.landed.load(Ordering::SeqCst), 1, "the engine was reached and cut its reply");
     assert!(directory.endpoint(&engine.root).paging_recovery_required(), "an unverified late reply quarantines the endpoint");
     engine.server.abort();
 }
