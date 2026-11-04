@@ -155,6 +155,32 @@ shift, `seq_rm` of a span) do not apply to this model. A mind's state is a SNAPS
   2026-11-04 nearly every miss was a CONFLICT miss (prefix divergence, geometry change, ledger
   forgetting), i.e. design defects, not too little memory.
 
+### 5a.1 The cache, measured on one node (M5, 2026-11-04 23:29-23:40Z)
+
+Codex's harness (`measure.py`, warm_first, page_pair; synthetic source, exact token slices, a
+different 128-token tail, 3 repeats each), Qwen3.6-35B-A3B Q4_K_M (sha 671e47e0ec53c665), engine
+binary sha 0a3cb69808cbcabe, live flags on 2 slots (`-c 65536 --parallel 2 --kv-unified`, fa on,
+KV q4_0, ubatch 2048, spec draft-mtp, ctx-checkpoints 32, cache-reuse 256; mmproj off). Raw:
+gist joelteply/0225fe9bb4fd328d07f9b50d35628abd and `~/.continuum/evidence/codex-harness-20261104/`.
+
+| Case | First token | Cached / computed |
+|---|---|---|
+| cold 4,096 | 4.56 s | 0 / 4,096 |
+| warm 4,096 + 128 tail | 0.354 s | 4,092 / 132 |
+| cold 12,288 | 15.25 s | 0 / 12,288 |
+| warm 12,288 + 128 tail | 0.395 s | 12,284 / 132 |
+| page save 12,288 (315,981,752 B) / restore / restore + first token | 0.16-0.21 s / 0.04 s / 0.44 s | 12,284 / 132 |
+| cold-first mixed, WITHOUT `--no-cache-idle-slots` | warm 11.65 s | 0 / 4,224 (idle slot cleared) |
+| cold-first mixed, WITH `--no-cache-idle-slots` (the live flag, #5764) | warm 7.11 s | 4,092 / 132 |
+| warm-first mixed (flag absent) | warm 0.35 s, but decode 32.7 vs 78-95 tok/s | 4,092 / 132 |
+
+Read: a hit is ~35-39x a miss on this node (L1 0.4 s, L3-warm 0.44 s, miss 15 s for 12k). The
+page restore is same-process and filesystem-warm, NOT a cold-disk or restart proof (owed). The
+idle-slot clear was a bench configuration gap; live engines already pass the flag (#5764 enforces
+it on launch and in the reconcile). With the cache intact, a cold prefill still costs a warm mind
+7.1 s of first-token delay when it arrives second, and ~60% of its decode rate when it arrives
+first: the 5d bound is the next lever. 5090 (Codex, Qwen3.8-27B) shows the same shape.
+
 ### 5b. The fast path is the design, not an optimization
 
 The fast path existed and was measured on 2026-11-04: a page SAVE 1.5-3 s, a RESTORE 0.3-3.7 s,
