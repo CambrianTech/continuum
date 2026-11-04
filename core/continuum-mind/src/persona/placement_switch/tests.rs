@@ -751,7 +751,13 @@ async fn capacity_park_resumes_when_local_1_5b_routes_to_larger_remote_seat() {
     let binding = Arc::new(ModelBindingState::new(ModelBinding {
         adapter: route.clone(), model: Some("local-1.5B".into()), context_window: 32768,
     }));
-    let refusal = CapacityReadiness::new(binding.clone(), binding.load_full());
+    // The window the one determiner decides for this binding (the fixture lanes are not the shared pool).
+    let crate::capacity::mind_window::MindWindow::Decided(decided) =
+        crate::capacity::mind_window::mind_window(uuid::Uuid::from_u128(1), binding.load_full().adapter.as_ref(), 32768)
+    else {
+        panic!("a fixture lane is never on the shared pool")
+    };
+    let refusal = CapacityReadiness::new(uuid::Uuid::from_u128(1), binding.clone(), binding.load_full(), decided.tokens());
     let local_target = route.generation_target().unwrap();
     assert_eq!(refusal.observed_window(), 32768);
     assert!(!refusal.changed());

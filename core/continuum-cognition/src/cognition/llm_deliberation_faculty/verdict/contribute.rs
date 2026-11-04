@@ -541,7 +541,7 @@ impl LlmDeliberationFaculty {
         // rent. Only when the lane measured timings (same honesty rule as
         // delib.generate.cache: a fabricated attribution is a lying receipt).
         if let Some(t) = resp.timing.as_ref() {
-            let cached = t.cached_tokens as u32;
+            let cached = t.cached_tokens;
             // Her last turn's shape — what the next work call's occupancy bound is read from.
             LAST_TURN_SHAPE.insert(
                 self.persona_id,

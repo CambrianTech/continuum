@@ -6,11 +6,12 @@ use super::*;
 ///
 /// Default: Gpu (enforced now — no silent CPU fallback).
 /// Auto (try GPU, explicit CPU fallback) is reserved for future opt-in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InferenceDevice {
     /// GPU-accelerated inference only. Metal (Mac) / CUDA (Nvidia) /
     /// ROCm (AMD) / Vulkan (everyone else). If no GPU adapter can serve
     /// the model → hard error, never silent CPU.
+    #[default]
     Gpu,
     /// CPU-only inference. Candle / future CPU adapter. Currently only
     /// reachable when caller EXPLICITLY requests it (training pipelines,
@@ -23,11 +24,6 @@ pub enum InferenceDevice {
     Auto,
 }
 
-impl Default for InferenceDevice {
-    fn default() -> Self {
-        InferenceDevice::Gpu
-    }
-}
 
 /// AI provider adapter configuration
 #[derive(Debug, Clone)]
