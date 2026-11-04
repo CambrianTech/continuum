@@ -345,9 +345,10 @@ pub struct ServingDaemonModule {
     /// asked for divides every mind's window for nothing (the 4-slots-for-2-
     /// personas starvation, 2026-07-10). Default 1 — window-first.
     lane_demand: Arc<std::sync::atomic::AtomicU32>,
-    /// The usable bytes the last plan sized against: the budget the one launch lays its pool
-    /// out on, so the engine holds the memory the planner just proved it may.
-    plan_budget_bytes: Arc<std::sync::atomic::AtomicU64>,
+    /// The budget the last plan sized against and whether it already held serving's own bytes:
+    /// the one launch lays its pool out on it, so the engine holds the memory the planner just
+    /// proved it may. `None` until a plan has been computed.
+    planned_budget: Arc<parking_lot::Mutex<Option<PlannedBudget>>>,
     /// The engine process this core last asked to move onto the shared pool: one try per
     /// engine, so a refused move is never retried every tick.
     shared_pool_move_tried: Arc<std::sync::atomic::AtomicU64>,
@@ -551,7 +552,7 @@ impl ServingDaemonModule {
             pin_store,
             intent,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
-            plan_budget_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            planned_budget: Arc::new(parking_lot::Mutex::new(None)),
             shared_pool_move_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pool_growth_models: Arc::new(parking_lot::Mutex::new(std::collections::BTreeSet::new())),
             grants_tx: watch::channel(None).0,
@@ -682,6 +683,8 @@ mod launch;
 mod planning;
 mod grants;
 mod hold;
+mod own_credit;
+use own_credit::{OwnCredit, PlanBudget, PlannedBudget};
 mod pool_growth;
 mod reconcile;
 mod tick;
