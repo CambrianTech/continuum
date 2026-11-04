@@ -66,6 +66,7 @@ impl ServingDaemonModule {
                     mind: r.persona,
                     need: r.measure.need()?.min(trained),
                     target: r.measure.target()?.min(trained),
+                    wish: r.wish?.min(trained),
                     in_flight: crate::cognition::turn_ledger::turn_in_flight(r.persona),
                     ceiling: per_sequence_cap,
                 })

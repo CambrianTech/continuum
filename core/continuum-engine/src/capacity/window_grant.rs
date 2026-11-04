@@ -68,6 +68,9 @@ pub struct Demand<K> {
     pub need: Tokens,
     /// What she would read whole (her wish with headroom), granted when the pool holds every target.
     pub target: Tokens,
+    /// Her wish without headroom: a grant that covers it is kept; one that does not grows to her
+    /// target, so headroom is room to grow into (about one regrant per headroom of growth).
+    pub wish: Tokens,
     pub in_flight: bool,
     /// The most she may be granted: what one sequence of the engine can hold.
     pub ceiling: u32,
@@ -119,18 +122,31 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
         let want = |d: &Demand<K>| need(d).max(holds(d));
         let total = |f: &dyn Fn(&Demand<K>) -> u32| demands.iter().map(|d| u64::from(f(d))).sum::<u64>();
         let pool = u64::from(pool_tokens);
-        // A mind holding at least her need keeps exactly what she holds: a grant moves only when her
-        // need outgrows it or the pool needs it back, never because the regime flipped between "every
-        // target fits" and "needs only" (each flip rebound all four residents and cost their prompt
-        // cache: 22 rebinds in 15 minutes on the M5, d47c5c2a6). A mind whose need is above what she
-        // holds (or a newcomer) is sized to her target when every amount fits, else to her need.
-        let settled = |d: &Demand<K>| holds(d) >= need(d);
-        let aim = |d: &Demand<K>| match settled(d) {
-            true => holds(d),
-            false => d.target.get().min(d.ceiling).max(want(d)),
+        // Every mind's target, never below what she needs. When every target fits, every mind is
+        // sized to it, settled or not: a mind settled at a small grant stayed there with the pool
+        // three-quarters free (the M5, 2026-11-04 07:40Z: 14,445 / 14,242 / 18,213 beside one
+        // 262,144, so three views kept 81-88 tokens of history and turned over on every act). A mind
+        // holding more keeps it while everything still fits with it (no rebind for drift), and gives
+        // back only what the others' targets need.
+        // A grant only grows while everything fits, so no regime flip ever rebinds her (each flip rebound
+        // all four residents: 22 rebinds in 15 minutes on the M5, d47c5c2a6); a turn in flight keeps
+        // what it holds even when the others' targets need it back.
+        let target = |d: &Demand<K>| match d.in_flight {
+            true => d.target.get().min(d.ceiling).max(need(d)).max(holds(d)),
+            false => d.target.get().min(d.ceiling).max(need(d)),
         };
-        if total(&aim) <= pool {
-            return demands.iter().map(|d| (d.mind, aim(d))).collect();
+        // A grant that still covers her wish is kept; only a wish that outgrew it grows her, to her
+        // target. Growing on every upward move of a target that is recomputed every act regranted
+        // most acts (Cormac on #5758).
+        let keep_or_grow = |d: &Demand<K>| match holds(d) >= d.wish.get().min(d.ceiling) {
+            true => holds(d).max(need(d)),
+            false => target(d).max(holds(d)),
+        };
+        if total(&keep_or_grow) <= pool {
+            return demands.iter().map(|d| (d.mind, keep_or_grow(d))).collect();
+        }
+        if total(&target) <= pool {
+            return demands.iter().map(|d| (d.mind, target(d))).collect();
         }
         if total(&want) <= pool {
             return demands.iter().map(|d| (d.mind, want(d))).collect();
@@ -189,7 +205,7 @@ mod tests {
 
     /// A mind whose need is her target (a wish with no held turn yet).
     fn demand(mind: u32, need: u32, in_flight: bool, ceiling: u32) -> Demand<u32> {
-        Demand { mind, need: t(need), target: t(need), in_flight, ceiling }
+        Demand { mind, need: t(need), target: t(need), wish: t(need), in_flight, ceiling }
     }
 
     // what this catches: a window divided by a count (Joel, 2026-11-03: "What a mind needs not what
@@ -296,7 +312,7 @@ mod tests {
     #[test]
     fn needs_are_granted_before_any_target_and_targets_only_when_all_fit() {
         let pool = 524_288;
-        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), in_flight: false, ceiling: 262_144 };
+        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, ceiling: 262_144 };
         let wishes = [mind(1, 70_000, 262_144), mind(2, 60_000, 104_015), mind(3, 50_000, 88_380), mind(4, 40_000, 90_000)];
         let grants = DemandFollowing.grant(&wishes, &BTreeMap::new(), pool);
         assert_eq!(grants, BTreeMap::from([(1, 70_000), (2, 60_000), (3, 50_000), (4, 40_000)]), "every need, no target: the targets sum past the pool");
@@ -306,6 +322,47 @@ mod tests {
     }
 
 
+    // what this catches (the M5, 2026-11-04 07:40Z): three minds settled at their needs beside one
+    // holding most of the pool, so their views kept 81-88 tokens of history and turned over on every
+    // act (55 turnovers in 66 acts, prefix reuse 0 on 46 of 69). Every target fits once the large
+    // holder gives back what she holds above hers: everyone is sized to her target. When everything
+    // fits as held, nobody shrinks.
+    #[test]
+    fn every_mind_grows_to_her_target_when_every_target_fits() {
+        let pool = 323_840;
+        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, ceiling: 262_144 };
+        let demands = [mind(1, 19_384, 78_000), mind(2, 14_499, 35_000), mind(3, 16_004, 51_000), mind(4, 14_477, 42_000)];
+        let held = BTreeMap::from([(1, 262_144), (2, 14_445), (3, 18_213), (4, 14_242)]);
+        let grants = DemandFollowing.grant(&demands, &held, pool);
+        assert_eq!(grants, BTreeMap::from([(1, 78_000), (2, 35_000), (3, 51_000), (4, 42_000)]), "every target: {grants:?}");
+        let roomy = DemandFollowing.grant(&demands, &BTreeMap::from([(1, 100_000)]), pool);
+        assert_eq!(roomy[&1], 100_000, "everything fits as held: she keeps her surplus, no rebind");
+        assert_eq!(DemandFollowing.grant(&demands, &grants, pool), grants, "a steady demand is a steady grant");
+    }
+
+    // what this catches (Cormac on #5758): growing on every upward move of a target recomputed every
+    // act, which regranted most acts as an append-only view grew. Her wish rises 300 tokens a call
+    // and her target is the wish x 1.25: the grant holds while it covers the wish and regrants only
+    // when the wish passes it, about once per 25% of growth.
+    #[test]
+    fn a_rising_wish_regrants_only_when_it_passes_the_grant() {
+        let pool = 323_840;
+        let at = |wish: u32| Demand { mind: 1u32, need: t(10_000), target: t(wish + wish / 4), wish: t(wish), in_flight: false, ceiling: 262_144 };
+        let mut held = BTreeMap::new();
+        let mut regrants = 0;
+        for call in 0..100u32 {
+            let wish = 20_000 + 300 * call;
+            let grants = DemandFollowing.grant(&[at(wish)], &held, pool);
+            if held.get(&1) != grants.get(&1) {
+                regrants += 1;
+            }
+            assert!(grants[&1] >= wish, "the grant always covers her wish: {} < {wish}", grants[&1]);
+            held = grants;
+        }
+        // 20,000 -> 49,700 is about 2.5x: a grant regrows by 25% each time, so ~5 regrants, not ~100.
+        assert!((3..=8).contains(&regrants), "{regrants} regrants over 100 calls of a rising wish");
+    }
+
     // what this catches (the M5, 2026-11-03, d47c5c2a6: 22 rebinds in 15 minutes): a grant that moves
     // when the regime flips. Every target fits, so each mind is granted her target; then one mind's
     // need grows past what the targets leave. She is granted her need from the room, and every other
@@ -314,7 +371,7 @@ mod tests {
     #[test]
     fn a_regime_flip_never_rebinds_a_mind_whose_grant_still_fits() {
         let pool = 200_000;
-        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), in_flight: false, ceiling: pool };
+        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, ceiling: pool };
         let first = [mind(1, 14_000, 47_000), mind(2, 20_000, 53_000), mind(3, 20_000, 51_000), mind(4, 14_000, 45_000)];
         let held = DemandFollowing.grant(&first, &BTreeMap::new(), pool);
         assert_eq!(held, BTreeMap::from([(1, 47_000), (2, 53_000), (3, 51_000), (4, 45_000)]), "every target fits");
