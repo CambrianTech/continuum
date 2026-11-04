@@ -47,10 +47,14 @@ impl ActionCommand for WorkSubmit {
         };
         // The claim is HERS on THIS card, read off the board — a typed id she would
         // otherwise have to remember from a claim receipt three turns ago.
-        let claim_id = match &p.claim_id {
+        let claim_id = match p.claim_id.as_deref() {
             // Scoped to THIS card's own claim — the narrowest set there is, so a handle
             // from a stale receipt is refused by name rather than silently accepted.
-            Some(c) => c.resolve(card.claim_id).map_err(shown_refused)?,
+            Some(c) => ClaimId::from_uuid(resolve_shown(
+                c,
+                &card.claim_id.map(|id| id.as_uuid()).into_iter().collect::<Vec<_>>(),
+                "claim",
+            )?),
             None => match (card.owner, card.claim_id) {
                 (Some(owner), Some(claim)) if owner == airc.peer_id() => claim,
                 (Some(owner), _) => {
@@ -354,8 +358,7 @@ impl From<ReviewOutcome> for airc_work::WorkReviewOutcome {
     }
 }
 
-/// What she sends; deserialized only, because the ids parse as [`Shown`] (what she was shown)
-/// and resolve against the board this verb reads, never re-rendered from here.
+// Deserialize only: the `Shown` ids are read from her call, never re-rendered.
 #[derive(Debug, Clone, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
@@ -385,10 +388,9 @@ pub struct WorkReviewParams {
     #[schemars(with = "Option<String>")]
     pub review_id: Option<Shown<airc_work::WorkReviewId>>,
     /// Parent card (handle or UUID); defaults to review parent.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
-    #[schemars(with = "Option<String>")]
-    pub card_id: Option<Shown<WorkCardId>>,
+    pub card_id: Option<String>,
     /// Submission; defaults to latest.
     #[serde(default)]
     #[ts(optional, type = "string")]
@@ -495,8 +497,8 @@ impl ActionCommand for WorkReview {
             let hint = card_elsewhere(airc, &p.review_card_id, room.channel.as_uuid()).await;
             return Err(with_hint(absent, hint));
         };
-        let card_id = match &p.card_id {
-            Some(c) => c.resolve(snapshot.cards.iter().map(|card| card.card_id)).map_err(shown_refused)?,
+        let card_id = match p.card_id.as_deref() {
+            Some(c) => WorkCardId::from_uuid(resolve_shown(c, &shown, "card")?),
             None => review_card.reviews.ok_or_else(|| {
                 CommandError::Invalid(
                     "the card you named is not a review card (it reviews nothing) — pass card_id if you are reviewing out of band"

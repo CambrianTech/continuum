@@ -223,11 +223,34 @@
         }))
         .expect("short handles parse");
         assert_eq!(p.review_card_id, "3f2a91c0");
-        assert!(
-            p.card_id.is_some_and(|c| c.full().is_none()),
-            "a short handle stays a handle until the board resolves it"
-        );
+        assert_eq!(p.card_id.as_deref(), Some("0c4317e1"));
         assert!(p.room.is_none(), "the card decides the room");
+    }
+
+    // what this catches (Cormac's review of #5775 at 79e9dec89; the 2026-07-13 measurement
+    // that 28% of live work/claim calls carried a full UUID with one character added or
+    // dropped, e.g. `d7cfe47e0-8e39-...`): work/submit's `claim_id` stays a String on the
+    // `id_resolve` path it had on canary, scoped to THIS card's one claim. Its full and
+    // shown forms resolve. The corrupted full id is pinned as REFUSED, because that path is
+    // `resolve_handle`, which never repaired (the repairing `id_resolve::resolve` is not
+    // what work/submit called): card 484b000b adds the 8-hex-group form to `Shown` and
+    // flips the last assertion when it migrates this field.
+    #[test]
+    fn a_submit_claim_id_keeps_its_canary_path_full_and_shown_resolve(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let claim = uuid::Uuid::parse_str("d7cfe47e-8e39-4c1a-9b2f-0a1b2c3d4e5f")?;
+        let p: super::WorkSubmitParams = serde_json::from_value(serde_json::json!({
+            "card_id": "0c4317e1", "claim_id": "d7cfe47e"
+        }))?;
+        assert_eq!(p.claim_id.as_deref(), Some("d7cfe47e"), "the claim handle decodes as she typed it");
+        let resolve = |raw: &str| resolve_shown(raw, &[claim], "claim");
+        assert!(matches!(resolve("d7cfe47e"), Ok(id) if id == claim), "the shown form");
+        assert!(matches!(resolve(&claim.to_string()), Ok(id) if id == claim), "the full form");
+        assert!(
+            resolve("d7cfe47e0-8e39-4c1a-9b2f-0a1b2c3d4e5f").is_err(),
+            "canary's strict path refuses a one-char-corrupted full id; 484b000b flips this"
+        );
+        Ok(())
     }
 
     /// A card holding `submissions`, the one candidate set `submission_named` reads.

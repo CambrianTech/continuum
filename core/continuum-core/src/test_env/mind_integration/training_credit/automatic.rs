@@ -133,7 +133,7 @@ impl Resident {
         Ok(WorkReviewParams {
             room: self.params.room.clone(),
             review_id: Some(shown(Uuid::new_v4())?),
-            card_id: Some(shown(self.card.as_uuid())?),
+            card_id: Some(self.card.as_uuid().to_string()),
             submission_id: Some(shown(submission)?),
             artifact: self.params.artifact.clone(),
             review_card_id: review_card.as_uuid().to_string(),

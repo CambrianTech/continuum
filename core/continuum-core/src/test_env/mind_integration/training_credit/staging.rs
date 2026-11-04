@@ -238,7 +238,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
         WorkReviewParams {
             room: params.room.clone(),
             review_id: Some(shown(Uuid::new_v4()).expect("a full id parses")), // expect: a full uuid's own rendering
-            card_id: Some(shown(card.as_uuid()).expect("a full id parses")), // expect: a full uuid's own rendering
+            card_id: Some(card.as_uuid().to_string()),
             submission_id: Some(shown(published.submission_id).expect("a full id parses")), // expect: a full uuid's own rendering
             artifact: params.artifact.clone(),
             review_card_id: review_card.as_uuid().to_string(),
@@ -266,7 +266,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
         WorkReviewParams {
             room: params.room.clone(),
             review_id: Some(shown(Uuid::new_v4()).expect("a full id parses")), // expect: a full uuid's own rendering
-            card_id: Some(shown(card.as_uuid()).expect("a full id parses")), // expect: a full uuid's own rendering
+            card_id: Some(card.as_uuid().to_string()),
             submission_id: Some(shown(submitted_as).expect("a full id parses")), // expect: a full uuid's own rendering
             artifact: Some(
                 params

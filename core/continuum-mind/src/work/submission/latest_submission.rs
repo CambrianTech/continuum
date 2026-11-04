@@ -86,8 +86,7 @@ pub struct WorkSubmit {
     pub benchmark: Arc<dyn BenchmarkSubmissionAdapter>,
 }
 
-/// What she sends; deserialized only, because the ids parse as [`Shown`] (what she was shown)
-/// and resolve against the card this verb reads, never re-rendered from here.
+// Deserialize only: the `Shown` ids are read from her call, never re-rendered.
 #[derive(Debug, Clone, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
@@ -111,10 +110,9 @@ pub struct WorkSubmitParams {
     #[schemars(with = "Option<String>")]
     pub submission_id: Option<Shown<airc_work::SubmissionId>>,
     /// Your claim; defaults to the board.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
-    #[schemars(with = "Option<String>")]
-    pub claim_id: Option<Shown<ClaimId>>,
+    pub claim_id: Option<String>,
     /// Instance; defaults to checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
