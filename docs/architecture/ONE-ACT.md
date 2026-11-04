@@ -172,6 +172,13 @@ type, flash attention and engine build and excludes window/slot count; confirmat
 and no file is trusted by its header alone; a larger destination is acceptable only if the fork's
 restore validates layout and token capacity, never by a size comparison; (3) every miss is a loud,
 classified defect (plan line 6), never a quiet five-minute prefill.
+**Restart adoption (Cormac, IntelMac 22:05Z, cf2e8089f):** the boot sweep logged
+`LeftLive { pid: 78294 }`, then `serving.genome.in_place_unsupported from=0 to=1`: adoption read a
+running engine's adapter set as empty while it served `--lora` Delia's adapter, so the core
+relaunched twice in a minute and dropped every mind's KV. Adoption must read the engine's actual
+adapter set (the fork's typed report), or every core restart on an adapter-bearing node is a cold
+restart.
+
 **Diagnosis still owed (Codex), before any fix:** `page_on_disk_unconfirmed` conflates an interrupted
 save with a ledger-load failure; it does not prove a relaunch forgot confirmation. For the same page
 and incarnation on the deployed revision we need: the ledger-unread reason, the format/fingerprint,
@@ -232,6 +239,21 @@ and late receipt retain custody; completed save and ledger replacement survive i
 Reproduce the reported loss before the fix, then verify the corrected transition through the
 real engine adapter and persisted ledger. Report the unexplained loss independently until it
 has its own reproduction. Follow with the live restore/cache-reuse receipt.
+
+### 5d. A cold prefill must never block a warm mind's next token (Cormac's matched run, IntelMac 22:05Z)
+
+Mixed load at 9 (4 cold 4,641-token prefills + 5 warm decodes), same binary/model/adapter as the
+lane, CPU, `--ubatch-size 2048 --kv-unified`: the prefills complete strictly serialized at 102 /
+173 / 243 / 319 s and ALL FIVE decoders finish at 335.6 s; once running they decode at 7.8 tok/s
+each. At n=2 a decoder finishes at 88 s behind an 81 s prefill. Raw:
+`~/.continuum/evidence/knee-20261104/` (IntelMac). Decode concurrency scales (19.9 -> 51.1 tok/s
+aggregate, 1 -> 9); prefill has a capacity of one on this node.
+**Invariant:** a warm mind's decode is never head-of-line blocked by another mind's cold prefill.
+The engine's step interleaves: prefill is split into chunks sized from the measured per-chunk time
+so waiting decoders get a step at their latency bound (chunked prefill, Sarathi-Serve), and cold
+prefills are admitted one at a time ahead of nothing. Both live in the engine's own scheduler
+(the fork), driven by the core's measured bound; no fixed chunk size. Validated by re-running this
+exact mixed trial: decoders' first token within their bound while the prefills proceed.
 
 ### 5c. The operating point is measured, never a number
 
@@ -299,6 +321,7 @@ deploy with the 15-minute read and immediate rollback if worse (rule 3).
 | 2 | The view: reads by region, side budgets into the one allocation run once, history to handles; revert the wish raise of #5773 | Fable | dyno 7 green; prompt tokens per act at the working set |
 | 3 | Engine memory (after the 1b diagnosis): launch-from-fit at Settled (#5770 first), conservation accounting; then delete growth (#5774) | Codex + Fable | dyno 1, 6 green |
 | 4 | Custody and cancellation first: #5772, fork prefill cancellation; the page custodian's surrender/verify contract | Codex | dyno 4, 5 green |
+| 4b | The engine never head-of-line blocks decode: chunked prefill sized from the measured chunk time, cold prefills one at a time | Codex (fork) | re-run Cormac's mixed trial: decoders' first token within bound |
 | 5 | Admission: one decision over residency, prefill, decode; fairness by completion identity; rotation THROUGH the proven custodian | Codex | dyno 2, 3 green |
 | 6 | Her state: command preconditions, results with next moves, Shown ids, one repeat owner | Fable + Cormac | precondition tests; live: no verb hunted (`commands/help` loops) |
 | 7 | Learning as a dream stage; persistence on change; deploy custody | Cormac | slowdown measured within its bound |
