@@ -169,6 +169,12 @@ pub(crate) async fn engine_probe(root: &str, client: &reqwest::Client) -> Engine
     if engine_condemned() {
         return EngineProbe::Condemned;
     }
+    slots_probe(root, client).await
+}
+
+/// [`engine_probe`] without reading the condemnation: for a caller that reads its engine's
+/// condemnation from its own source (a page switch's liveness, `turn_admission::page_liveness`).
+pub(crate) async fn slots_probe(root: &str, client: &reqwest::Client) -> EngineProbe {
     engine_probe_within(root, client, PROBE_TIMEOUT).await
 }
 
@@ -207,8 +213,9 @@ pub(super) fn restore_probe_response(status: reqwest::StatusCode, body: &serde_j
 }
 
 
+/// The observed restore's own progress. Its one caller, a page switch, reads its engine's
+/// condemnation from its liveness (`turn_admission::page_liveness`), so this reads none.
 pub(crate) async fn restore_probe(root: &str, client: &reqwest::Client, operation: uuid::Uuid, slot: u32) -> EngineProbe {
-    if engine_condemned() { return EngineProbe::Condemned; }
     let response = client.get(format!("{root}/slots"))
         .query(&[("operation_id", operation.to_string())])
         .timeout(PROBE_TIMEOUT).send().await;

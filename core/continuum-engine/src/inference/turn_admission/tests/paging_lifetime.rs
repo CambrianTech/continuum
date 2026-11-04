@@ -318,7 +318,7 @@ async fn paging_progress_watchdog_covers_the_complete_response_body() {
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
     let client = reqwest::Client::new();
     let mut probes = 0;
-    let unwatched = PageLiveness::new(Box::new(|| None));
+    let unwatched = PageLiveness::new(Box::new(|| None), super::super::page_liveness::Condemnation::Never);
     let receipt = bounded_page_receipt(
         client.post(format!("{root}/slots/0")),
         Duration::from_millis(20),

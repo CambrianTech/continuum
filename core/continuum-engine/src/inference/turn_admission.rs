@@ -788,9 +788,9 @@ async fn kv_page_action_with_capacity(
         let projected = wait_while_engine_progresses(
             request_quote(client, root, slot, &filename), bounds,
             || {
-                let probe = crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client);
+                let probe = crate::inference::llama_server::slots_probe(root.trim_end_matches('/'), client);
                 let liveness = &liveness;
-                async move { liveness.observe(probe.await) }
+                liveness.probe(probe)
             },
             |_| {},
         ).await.unwrap_or(Err(QuoteMiss::EngineStopped)); // unwrap_or: the wait gives up only when the engine stopped progressing or answering
@@ -816,7 +816,7 @@ async fn kv_page_action_with_capacity(
         || async {
             match operation {
                 Some(operation) => crate::inference::llama_server::restore_probe(root.trim_end_matches('/'), client, operation, slot).await,
-                None => crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client).await,
+                None => crate::inference::llama_server::slots_probe(root.trim_end_matches('/'), client).await,
             }
         },
         |busy_checkpoints| {

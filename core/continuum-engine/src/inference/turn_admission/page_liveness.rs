@@ -68,6 +68,40 @@ pub(super) fn watch_for_test(root: &str, read: fn() -> Option<CpuSample>) {
     WATCHED_FOR_TEST.lock().insert(root.trim_end_matches('/').to_owned(), read);
 }
 
+/// Where a switch learns that the serving daemon condemned its engine (decided to replace it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Condemnation {
+    /// The process-wide watch the serving daemon raises before it replaces the engine.
+    Daemon,
+    /// A fixture engine no daemon serves: never condemned. Without it a test's switch read
+    /// whatever another test in the binary left condemned (a launch's drain condemns, and only
+    /// the serving daemon's ready snapshot recovers it): CI on #5772 at d818d9981.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    Never,
+}
+
+impl Condemnation {
+    /// Condemned now.
+    pub(super) fn now(self) -> bool {
+        match self {
+            Self::Daemon => crate::inference::llama_server::engine_condemned(),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            Self::Never => false,
+        }
+    }
+
+    /// Resolves at the next condemnation after this call.
+    pub(super) fn next(self) -> Pending<()> {
+        match self {
+            Self::Daemon => Box::pin(crate::inference::llama_server::until_condemned_on(
+                crate::inference::llama_server::condemnations(),
+            )),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            Self::Never => Box::pin(std::future::pending()),
+        }
+    }
+}
+
 /// What the engine's process said at the latest checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum CpuEvidence {
@@ -94,23 +128,30 @@ struct Seen {
 /// by the quote wait and the receipt wait, so the CPU interval runs across both.
 pub(super) struct PageLiveness {
     cpu: parking_lot::Mutex<CpuSource>,
+    condemnation: Condemnation,
     seen: parking_lot::Mutex<Seen>,
 }
 
 impl PageLiveness {
-    pub(super) fn new(cpu: CpuSource) -> Self {
+    pub(super) fn new(cpu: CpuSource, condemnation: Condemnation) -> Self {
         Self {
             cpu: parking_lot::Mutex::new(cpu),
+            condemnation,
             seen: parking_lot::Mutex::new(Seen { cpu: CpuEvidence::Unread, verdict: None, anchor: None }),
         }
     }
 
+    /// Where this switch learns its engine was condemned.
+    pub(super) fn condemnation(&self) -> Condemnation {
+        self.condemnation
+    }
+
     /// The live lane's own process when `root` is that lane (its record's pid and start time,
-    /// as adoption fences it); HTTP alone for any other endpoint.
+    /// as adoption fences it); HTTP alone for any other endpoint. Condemned by the daemon's watch.
     pub(super) fn for_root(root: &str) -> Self {
         #[cfg(any(test, feature = "test-fixtures"))]
         if let Some(read) = WATCHED_FOR_TEST.lock().get(root.trim_end_matches('/')).copied() {
-            return Self::new(Box::new(read));
+            return Self::new(Box::new(read), Condemnation::Never);
         }
         let lane = crate::inference::lane_registry::live_incarnation()
             // `LaneRecord::root_url`'s spelling: the one every in-process client addresses it by
@@ -118,10 +159,20 @@ impl PageLiveness {
         match lane {
             Some(lane) => {
                 let mut watch = CpuWatch::new(ProcessIdentity { pid: lane.pid, start_time: lane.started_s });
-                Self::new(Box::new(move || Some(watch.sample())))
+                Self::new(Box::new(move || Some(watch.sample())), Condemnation::Daemon)
             }
-            None => Self::new(Box::new(|| None)),
+            None => Self::new(Box::new(|| None), Condemnation::Daemon),
         }
+    }
+
+    /// One checkpoint: the engine's condemnation first (the probes a switch sends read none:
+    /// `llama_server::slots_probe`, `restore_probe`), so a condemned engine is not asked at all;
+    /// otherwise `http`'s answer folded with the process's CPU ([`Self::observe`]).
+    pub(super) async fn probe(&self, http: impl Future<Output = EngineProbe>) -> EngineProbe {
+        if self.condemnation.now() {
+            return self.observe(EngineProbe::Condemned);
+        }
+        self.observe(http.await)
     }
 
     /// Fold one `/slots` probe with the engine process's CPU since the previous checkpoint.
@@ -212,7 +263,7 @@ where
         bounds,
         || {
             let probe = http();
-            async move { liveness.observe(probe.await) }
+            liveness.probe(probe)
         },
         on_busy,
     )

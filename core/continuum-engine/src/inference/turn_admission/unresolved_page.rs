@@ -90,16 +90,15 @@ impl UnresolvedPage {
     pub(crate) fn hold<C: Send + 'static>(self, custody: C) {
         let Self { root, action, slot, filename, cpu_spent: _, checkpoint, mut pending, liveness } = self;
         let endpoint = crate::inference::slots::directory().endpoint(&root);
-        let condemnations = crate::inference::llama_server::condemnations();
-        let condemned_already = crate::inference::llama_server::engine_condemned();
+        // Subscribed before the check, so a condemnation between them is never missed.
+        let mut condemned = liveness.condemnation().next();
+        let condemned_already = liveness.condemnation().now();
         let owner = std::sync::Arc::clone(&endpoint);
         owner.retain_paging(async move {
             let held = std::time::Instant::now();
             let released = if condemned_already {
                 Released::Condemned
             } else {
-                let condemned = crate::inference::llama_server::until_condemned_on(condemnations);
-                tokio::pin!(condemned);
                 let mut checkpoints = tokio::time::interval_at(tokio::time::Instant::now() + checkpoint, checkpoint);
                 checkpoints.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {

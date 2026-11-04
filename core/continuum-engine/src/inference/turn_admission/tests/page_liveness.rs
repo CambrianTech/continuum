@@ -5,7 +5,7 @@
 //! endpoint was quarantined and the engine replaced, and every resident cold-prefilled 24-32k
 //! tokens at 20-28 tok/s.
 
-use super::super::page_liveness::{await_receipt, Pending};
+use super::super::page_liveness::{await_receipt, Condemnation, Pending};
 use super::*;
 use crate::inference::llama_server::{window_at_rate, EngineProbe, EngineProgress, WaitBounds};
 use crate::system_resources::process_tree::CpuSample;
@@ -27,7 +27,7 @@ fn scripted(samples: Vec<CpuSample>) -> PageLiveness {
         let sample = samples.get(read).or(samples.last()).copied();
         read += 1;
         sample
-    }))
+    }), Condemnation::Never)
 }
 
 /// What a busy engine's CPU counter moves over one checkpoint in these fixtures: a few cores'
@@ -61,7 +61,7 @@ async fn a_busy_engine_whose_slots_never_answer_finishes_its_switch() {
     assert!(checkpoints > 8, "it outlived the quiet cap, {checkpoints} checkpoints");
     assert_eq!(liveness.cpu_spent(), Some(ENGINE_CPU_PER_CHECKPOINT), "the busy probe carries the CPU time it read");
 
-    let blind = PageLiveness::new(Box::new(|| None));
+    let blind = PageLiveness::new(Box::new(|| None), Condemnation::Never);
     let got = await_receipt(restore_landing_after(lands), bounds, &blind, || async { EngineProbe::Busy }, |_| {}).await;
     assert!(matches!(got, Receipt::Stopped), "HTTP alone reads the same engine dead: the bug this fixes");
 }
