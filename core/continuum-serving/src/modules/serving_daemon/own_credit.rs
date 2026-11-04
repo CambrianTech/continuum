@@ -100,6 +100,35 @@ pub(super) struct PlannedBudget {
     pub(super) credit: OwnCredit,
 }
 
+/// The plan budget's sustained minimum (one relaunch's duration, `budget.rs`), kept within one
+/// credit view. A reading taken before serving's attribution landed is free memory alone; one
+/// taken after holds the engine too. They are not the same quantity, so a minimum across them
+/// held the plan at the uncredited floor for a whole window after the credit arrived. A change
+/// of view starts the history over; within a view a fall still shows at once and a rise still
+/// waits out the window.
+#[derive(Debug)]
+pub(super) struct CreditedReadings {
+    window: std::time::Duration,
+    view: Option<std::mem::Discriminant<OwnCredit>>,
+    readings: crate::system_resources::sustained::Sustained,
+}
+
+impl CreditedReadings {
+    pub(super) fn new(window: std::time::Duration) -> Self {
+        Self { window, view: None, readings: crate::system_resources::sustained::Sustained::new(window) }
+    }
+
+    /// The sustained minimum of `value` at `now_ms` over the readings in `credit`'s view.
+    pub(super) fn sustained_min(&mut self, now_ms: u64, credit: OwnCredit, value: u64) -> u64 {
+        let view = std::mem::discriminant(&credit);
+        if self.view != Some(view) {
+            self.view = Some(view);
+            self.readings = crate::system_resources::sustained::Sustained::new(self.window);
+        }
+        self.readings.observe(now_ms, value).min
+    }
+}
+
 /// The planning arm, chosen by the credit fact: the incumbent's bytes are credited exactly once,
 /// by the ledger (`Included`) or here (`ToApply`), never both.
 pub(super) fn plan_by_credit(

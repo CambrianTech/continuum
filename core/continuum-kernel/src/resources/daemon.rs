@@ -133,6 +133,10 @@ pub struct ReplacementBudget {
     /// What the caller could have if it released what it holds, capped at the device and net
     /// of every other holder's grant.
     pub bytes: u64,
+    /// The pool's scanned capacity on the same board: 0 when its capacity source has not
+    /// reported (no reading), so a zero `bytes` on a positive capacity is a measurement (a
+    /// fully leased pool), never an absence to substitute for.
+    pub capacity_bytes: u64,
     /// The caller's own measured residency of the pool on the same board: 0 when it has
     /// reported none, so nothing of its own was added back.
     pub own_bytes: u64,
@@ -363,7 +367,12 @@ impl ResourceDaemon {
         let charged_bytes = charged.iter().fold(0u64, |sum, lease| sum.saturating_add(lease.bytes));
         // An oversized own-residency add-back cannot erase another holder's
         // grant. Every returned lease is excluded even before physical sampling.
-        ReplacementBudget { bytes: budget.min(capacity.saturating_sub(charged_bytes)), own_bytes, charged }
+        ReplacementBudget {
+            bytes: budget.min(capacity.saturating_sub(charged_bytes)),
+            capacity_bytes: capacity,
+            own_bytes,
+            charged,
+        }
     }
 
     /// Register a leaseholder after startup — no restart (the directive's
