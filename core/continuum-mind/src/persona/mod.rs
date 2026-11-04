@@ -29,7 +29,6 @@ pub mod command_inbound_pump;
 // Joel (2026-06-01): "You mix this fake shit in and it's going live
 // ALL THE TIME. The fake shit is a CHOSEN model adapter no other
 // form. Declaration." cfg gating IS the declaration.
-pub mod active_work_source;
 pub mod airc_runtime_registry;
 pub mod airc_source;
 pub mod allocator;
@@ -38,6 +37,7 @@ pub mod card_carry;
 pub mod card_hands;
 pub mod card_checkout;
 pub mod held_claims;
+pub mod held_work;
 pub mod card_ledger_fact;
 pub mod channel_queue;
 pub mod channel_registry;

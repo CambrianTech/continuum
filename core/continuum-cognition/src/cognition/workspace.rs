@@ -39,6 +39,8 @@ mod edit;
 pub use edit::*;
 mod cause;
 pub use cause::*;
+mod held_work;
+pub use held_work::*;
 mod arbiter;
 pub use arbiter::*;
 mod workspace_cycle;

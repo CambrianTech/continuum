@@ -78,7 +78,7 @@ pub trait AircCitizen:
     AircTranscriptReader
     + crate::persona::room_roster_source::AircRosterReader
     + crate::persona::room_doctrine_source::AircDoctrineReader
-    + crate::persona::active_work_source::AircWorkReader
+    + crate::persona::held_work::AircWorkReader
     + crate::persona::wall_source::WallReader
     + crate::persona::room_board_source::RoomBoardReader
 {
@@ -433,7 +433,7 @@ impl crate::persona::room_doctrine_source::AircDoctrineReader for StubAircCitize
 }
 
 #[async_trait]
-impl crate::persona::active_work_source::AircWorkReader for StubAircCitizen {
+impl crate::persona::held_work::AircWorkReader for StubAircCitizen {
     async fn active_claims(&self) -> Result<Vec<airc_lib::WorkCard>, AircError> {
         // Default: no daemon → no claimed work. A test may seed `with_claims` to
         // exercise the held-work path.

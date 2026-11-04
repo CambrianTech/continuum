@@ -256,7 +256,7 @@ impl LlmDeliberationFaculty {
                 // What her view's allocation bought; a server that refuses `tail_tools` gets the
                 // activity surface at the same grant, without her learned head.
                 let mut selected = if tail_refused {
-                    match self.surface.select_granted(&ws.room_affordances, view.tools_grant) {
+                    match self.surface.select_granted(&ws.room_affordances, &ws.held.move_commands(), view.tools_grant) {
                         Ok(activity) => activity.into_owned(),
                         Err(_) => view.tools.clone(), // unreachable in practice: the view ran this same activity selection at this grant and it succeeded
                     }

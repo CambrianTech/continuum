@@ -600,4 +600,26 @@
         );
     }
 
+    // what this catches: the board's transition table (`card_moves`) naming a verb the registry
+    // does not have, so a move her surface and her held-work item promise is a command that does
+    // not exist (STATE-DRIVEN-SURFACE.md). Each move's name is pinned to the command's own `NAME`.
+    #[test]
+    fn every_held_move_names_a_registered_work_command() {
+        use crate::cognition::card_moves::Move;
+        use super::submission::{WorkReview, WorkSubmission, WorkSubmit};
+        for mv in Move::ALL {
+            let registered = match mv {
+                Move::Code => continue, // a subtree (`code/**`), selected whole from her hands
+                Move::Heartbeat => <WorkHeartbeat as ActionCommand>::NAME,
+                Move::Note => <WorkNote as ActionCommand>::NAME,
+                Move::Release => <WorkRelease as ActionCommand>::NAME,
+                Move::Review => <WorkReview as ActionCommand>::NAME,
+                Move::State => <WorkState as ActionCommand>::NAME,
+                Move::Submission => <WorkSubmission as ActionCommand>::NAME,
+                Move::Submit => <WorkSubmit as ActionCommand>::NAME,
+            };
+            assert_eq!(mv.command(), registered, "{mv:?}");
+        }
+    }
+
 mod part_2;

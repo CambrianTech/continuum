@@ -274,7 +274,7 @@ impl crate::persona::wall_source::WallReader for PersonaAircRuntime {
 }
 
 #[async_trait::async_trait]
-impl crate::persona::active_work_source::AircWorkReader for PersonaAircRuntime {
+impl crate::persona::held_work::AircWorkReader for PersonaAircRuntime {
     /// This persona's claimed cards, read from airc's work roster and filtered to
     /// its own peer — grounding reflects what IT owns, board-wide (all rooms).
     /// Her live claims, BOARD-TRUE. The roster projection lists every claim whose

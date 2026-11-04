@@ -230,7 +230,7 @@ pub(crate) fn held_work_burst_gated(
     }
     s.push_str(
         "Your workspace holds the staged checkout (see [workspace-map] and \
-         [active-work]). Continue the work with your tools — read, run, edit, \
+         [my work]). Continue the work with your tools — read, run, edit, \
          test. When this card is finished, or you can go no further, conclude by \
          passing with a reason on ONE line: 'PASS: done' (the work is complete \
          and in the workspace), 'PASS: blocked — <one line why>', or \

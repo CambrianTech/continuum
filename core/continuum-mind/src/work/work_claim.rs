@@ -186,8 +186,8 @@ impl ActionCommand for WorkClaim {
                 // A rejection is WORK-STATE, not a transient tool result: the
                 // raw receipt scrolls out of the persona's short window and the
                 // intent narrative resurfaces as "I've claimed it" (glass-boxed
-                // 2026-08-02, card 44ebaa41). Record it so ActiveWorkSource can
-                // keep the fact in perception past the receipt's lifetime.
+                // 2026-08-02, card 44ebaa41). Record it so her held work
+                // (`persona::held_work`) keeps the fact in perception past the receipt's lifetime.
                 if let Some(caller) = ctx.caller.as_ref() {
                     crate::persona::claim_rejections::record(
                         caller.peer_id.as_uuid(),

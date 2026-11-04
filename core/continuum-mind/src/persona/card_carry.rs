@@ -33,7 +33,7 @@ pub async fn sweep() -> usize {
     let mut carried = 0;
     for persona in registry.live_personas() {
         let Some(runtime) = registry.get(persona) else { continue };
-        let Ok(held) = crate::persona::active_work_source::AircWorkReader::active_claims(runtime.as_ref()).await else {
+        let Ok(held) = crate::persona::held_work::AircWorkReader::active_claims(runtime.as_ref()).await else {
             continue;
         };
         let name = runtime.agent_name().to_string();

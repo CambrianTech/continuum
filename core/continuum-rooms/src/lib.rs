@@ -5,6 +5,8 @@
 
 pub mod card_holder;
 pub mod card_facts;
+/// What a card's holder can do in each state: the board's transition table (STATE-DRIVEN-SURFACE.md).
+pub mod card_moves;
 /// The handoff record: her state at the seam, written before a stop, read first on wake
 /// (card 49b5e806).
 pub mod handoff;

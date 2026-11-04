@@ -11,8 +11,8 @@
 //! transient tool result, so it must outlive the context squeeze.
 //!
 //! Mechanism: `work/claim` records each rejection here (identity =
-//! the persona's airc peer uuid, the same key `ActiveWorkSource` is
-//! bound to); the source renders the recent entries as `[work]` facts
+//! the persona's airc peer uuid, the same key her held work is
+//! read under, `persona::held_work`); her view renders the recent entries as `[work]` facts
 //! for [`REJECTION_FACT_TTL`] — long enough to outlive the receipt's
 //! window, short enough not to nag past relevance. Perception fact,
 //! never a gate ([[no-hardcoded-heuristics-to-steer-cognition]]).

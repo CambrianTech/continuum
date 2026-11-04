@@ -260,16 +260,6 @@ pub async fn materialize_adapters(
             .for_room(identity.default_room),
         );
 
-        // Active-work source: grounds the persona in ITS OWN live work across all
-        // rooms (claimed cards + states), read from airc's work roster. The dynamic
-        // fix for "misremembering my own card" — never hardcode the state; surface
-        // it. Reads the persona's own airc handle (acts as itself).
-        let active_work_source: Arc<dyn crate::cognition::rag_budget::RagSource> =
-            Arc::new(crate::persona::active_work_source::ActiveWorkSource::new(
-                identity.peer_id.as_uuid(),
-                runtime.clone(),
-            ));
-
         // The persona's HANDS, built once here — consumed by the brain config
         // below AND by the workspace-map cache wire (its command executor's bus
         // is where write-completion events land).
@@ -508,17 +498,11 @@ pub async fn materialize_adapters(
                 // which is wrong, not merely unenriched. The lone exception to
                 // "defer almost everything."
                 crate::cognition::persona_workspace::GroundingSource::framing(doctrine_source).into(),
-                // The persona's own live work across rooms — enriching framing so
-                // it knows what it's working on (cross-activity, dynamic, no
-                // hardcoded card state). Defer-tolerant.
                 // Where else she is needed while she works here: it changes every turn.
+                // (Her own held work is not a grounding source: the cycle reads it once per
+                // tick, `persona::held_work`, and her view renders it as keyed items.)
                 crate::cognition::persona_workspace::GroundingSource::framing(awareness_source)
                     .defer_tolerant()
-                    .volatile_content().into(),
-                crate::cognition::persona_workspace::GroundingSource::framing(active_work_source)
-                    .defer_tolerant()
-                    // Claim states flap per turn — floor stays, stable-tier
-                    // placement goes (debug/prompt-reuse conviction, 2026-08-22).
                     .volatile_content().into(),
                 // WHERE code lives — the real workspace layout as framing, so a
                 // reasoner can avoid blind globs like `src/**/*.rs` from the
@@ -584,7 +568,7 @@ pub async fn materialize_adapters(
             // a neural-embed + vector-search round-trip. Eval forks override
             // this to false (faithful synchronous measurement).
             defer_recall: true,
-            // LIVE mind: push the defer-tolerant grounding (roster, active_work,
+            // LIVE mind: push the defer-tolerant grounding (roster, awareness,
             // workspace_map) off the hot path too — the 90%-async win for the
             // enriching framing. Doctrine stays synchronous
             // regardless. Eval/harness override to false.

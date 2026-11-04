@@ -19,8 +19,10 @@
 //! # What decides it now
 //!
 //! The activity declares the desired verbs or subtrees (code/**), else her core hands: the verbs
-//! whose commands declare `Disclosure::Core`, the way they declare their access level. The rest of
-//! her hands are one `commands/help` away, and her learned head adds the ones she uses.
+//! whose commands declare `Disclosure::Core`, the way they declare their access level. The cards
+//! she holds add the moves their states give her (`card_moves`, STATE-DRIVEN-SURFACE.md): a
+//! reviewer holding a review card has `work/review` in hand whatever the room declares. The rest
+//! of her hands are one `commands/help` away, and her learned head adds the ones she uses.
 //! The shared prompt allocation grants a token budget; this owner selects a whole level.
 //! The faculty retains that selection (its verbs, not only its level) for the epoch, so every
 //! later act of the epoch sends the same schemas whatever its affordances became.
@@ -78,6 +80,30 @@ impl Offer {
     }
 }
 
+/// Her working set before her learned head ([`ToolSurface::activity`]): her core hands as built,
+/// or a set selected for this activity and the cards she holds.
+enum Activity<'a> {
+    Core(&'a Offer),
+    Owned(Offer, SurfaceReason),
+}
+
+impl Activity<'_> {
+    fn offer(&self) -> &Offer {
+        match self {
+            Activity::Core(offer) => offer,
+            Activity::Owned(offer, _) => offer,
+        }
+    }
+
+    fn tokens(&self) -> usize {
+        self.offer().tokens
+    }
+
+    fn specs(&self) -> &[NativeToolSpec] {
+        &self.offer().specs
+    }
+}
+
 /// Her native tool surfaces, built once per tool assignment, in canonical order.
 #[derive(Debug, Clone, Default)]
 pub struct ToolSurface {
@@ -96,6 +122,8 @@ pub struct ToolSurface {
     authorized: Offer,
     /// Her hands: every verb whose command declares `Core` or `OnDemand`.
     hands: Offer,
+    /// The canonical name of each entry in `hands`, same order.
+    hands_names: Vec<String>,
     /// The verbs that declare `Always`: in every surface, a room's declared one included.
     always: Vec<String>,
     /// Her core hands: the verbs whose commands declare `Core`, in her prompt every act.
@@ -104,10 +132,11 @@ pub struct ToolSurface {
 
 impl ToolSurface {
     /// Prices for the one allocation, independent of its eventual grant: a declared activity's
-    /// recipe, else her core hands, each indivisible (silently replacing either's verbs changes
+    /// recipe, else her core hands, with the moves her held cards give her (`held`, command names
+    /// and subtrees from `card_moves`), each indivisible (silently replacing their verbs changes
     /// what she can do). What her learned head adds is [`Self::claim_with_head`]'s want.
-    pub fn claim_tokens(&self, declared: &[String]) -> (usize, usize) {
-        let tokens = self.declared(declared).map_or(self.core.tokens, |offer| offer.tokens); // map_or: an activity that declares nothing claims her core hands
+    pub fn claim_tokens(&self, declared: &[String], held: &[String]) -> (usize, usize) {
+        let tokens = self.activity(declared, held).tokens();
         (tokens, tokens)
     }
 
@@ -117,33 +146,66 @@ impl ToolSurface {
     /// rest on demand"); claimed whole, her hands took 4,567 of Atlas's 33,451 window ahead of his
     /// view, which turned over on 11 of 12 acts (the M5, 2026-11-04 08:41Z). No grant is an input:
     /// focus cannot teach the serving planner its own cap.
-    pub fn claim_with_head(&self, declared: &[String], held: &[String]) -> (usize, usize) {
-        let (floor, _) = self.claim_tokens(declared);
-        let recipe = self.declared(declared);
-        let base = recipe.as_ref().map_or(&self.core.specs, |offer| &offer.specs);
+    pub fn claim_with_head(&self, declared: &[String], moves: &[String], head: &[String]) -> (usize, usize) {
+        let activity = self.activity(declared, moves);
+        let base = activity.specs();
         let wanted: Vec<_> = self.authorized_names.iter().zip(&self.authorized.specs)
-            .filter(|(name, spec)| held.contains(name) || base.iter().any(|b| b.name == spec.name))
+            .filter(|(name, spec)| head.contains(name) || base.iter().any(|b| b.name == spec.name))
             .map(|(_, spec)| spec.clone()).collect();
-        (floor, tool_surface_tokens_of(&wanted))
+        (activity.tokens(), tool_surface_tokens_of(&wanted))
     }
 
     /// Select a whole schema level from an allocation grant, never a window share.
     /// `Err(floor)` reports capacity instead of emitting schemas beyond the grant.
     /// The epoch owner retains this selection until the next epoch boundary.
-    pub fn select_granted(&self, declared: &[String], grant_tokens: usize) -> Result<SelectedSurface<'_>, usize> {
+    pub fn select_granted(&self, declared: &[String], held: &[String], grant_tokens: usize) -> Result<SelectedSurface<'_>, usize> {
         if self.registry.specs.is_empty() {
             return Ok(SelectedSurface::borrowed(&[], 0, SurfaceReason::NoTools, 0));
         }
-        if let Some(offer) = self.declared(declared) {
-            let tokens = offer.tokens;
-            if tokens > grant_tokens { return Err(tokens); }
-            return Ok(SelectedSurface {
-                specs: Some(Cow::Owned(offer.specs)), tokens,
-                reason: SurfaceReason::RoomAffordances, demand: tokens, tail: Vec::new(),
-            });
+        let activity = self.activity(declared, held);
+        let tokens = activity.tokens();
+        if tokens > grant_tokens { return Err(tokens); }
+        Ok(match activity {
+            Activity::Core(core) => SelectedSurface::borrowed(&core.specs, tokens, SurfaceReason::Hands, tokens),
+            Activity::Owned(offer, reason) => SelectedSurface {
+                specs: Some(Cow::Owned(offer.specs)), tokens, reason, demand: tokens, tail: Vec::new(),
+            },
+        })
+    }
+
+    /// Her working set before her learned head: the room's declared verbs (with every `Always`
+    /// verb), else her core hands, then the verbs her held cards' moves name that the base lacks,
+    /// in one canonical order. A held move is in hand whatever its command declares about her
+    /// prompt (`OnDemand`), because her card's state needs it now (Benchy on the M5, 2026-11-04:
+    /// a held review card, `work/review` one `commands/help` away, 4 help calls and 5 refused
+    /// submits); a `Withheld` verb never joins. Stable while her cards' moves are.
+    fn activity(&self, declared: &[String], held: &[String]) -> Activity<'_> {
+        let recipe = self.declared(declared);
+        let (base, reason) = match &recipe {
+            Some(offer) => (&offer.specs, SurfaceReason::RoomAffordances),
+            None => (&self.core.specs, SurfaceReason::Hands),
+        };
+        let extras: Vec<&String> = self
+            .hands_names
+            .iter()
+            .zip(&self.hands.specs)
+            .filter(|(name, spec)| held.iter().any(|pattern| declares(pattern, name)) && !base.iter().any(|b| b.name == spec.name))
+            .map(|(name, _)| name)
+            .collect();
+        if extras.is_empty() {
+            return match recipe {
+                Some(offer) => Activity::Owned(offer, reason),
+                None => Activity::Core(&self.core),
+            };
         }
-        if self.core.tokens > grant_tokens { return Err(self.core.tokens); }
-        Ok(SelectedSurface::borrowed(&self.core.specs, self.core.tokens, SurfaceReason::Hands, self.core.tokens))
+        let specs: Vec<NativeToolSpec> = self
+            .names
+            .iter()
+            .zip(&self.registry.specs)
+            .filter(|(name, spec)| extras.contains(name) || base.iter().any(|b| b.name == spec.name))
+            .map(|(_, spec)| spec.clone())
+            .collect();
+        Activity::Owned(Offer::of(specs), reason)
     }
 
     /// Build every surface from the native registry, sorted by command name so the bytes
@@ -167,6 +229,7 @@ impl ToolSurface {
             authorized: wire(authorized),
             names: raw.iter().map(|spec| spec.name.clone()).collect(),
             hands: wire(hands_surface(&offers)),
+            hands_names: offers.iter().filter(|offer| offer.disclosure.in_hands()).map(|offer| offer.spec.name.clone()).collect(),
             always: offers.iter().filter(|offer| offer.disclosure.in_every_surface()).map(|offer| offer.spec.name.clone()).collect(),
             core: wire(core_hands(&offers)),
             registry: wire(raw),
@@ -417,33 +480,33 @@ mod tests {
     #[test]
     fn a_grant_buys_her_core_hands_never_more_and_never_fewer() {
         let surface = built(REGISTRY.iter());
-        let (floor, want) = surface.claim_tokens(&[]);
+        let (floor, want) = surface.claim_tokens(&[], &[]);
         assert!(floor > 0 && floor == want && want < surface.hands_tokens(), "her core hands are her whole claim");
-        let focused = surface.select_granted(&[], surface.hands_tokens() * 4).expect("core hands fit");
-        let reduced = surface.select_granted(&[], floor).expect("core hands fit");
+        let focused = surface.select_granted(&[], &[], surface.hands_tokens() * 4).expect("core hands fit");
+        let reduced = surface.select_granted(&[], &[], floor).expect("core hands fit");
         assert_eq!((focused.reason, focused.tokens, focused.demand_tokens()), (SurfaceReason::Hands, floor, floor));
         assert_eq!(wire(&focused), wire(&reduced), "an ample grant sends her core hands, not her whole hands");
-        assert_eq!(surface.select_granted(&[], floor - 1).err(), Some(floor));
-        let again = surface.select_granted(&[], want).expect("same grant fits");
+        assert_eq!(surface.select_granted(&[], &[], floor - 1).err(), Some(floor));
+        let again = surface.select_granted(&[], &[], want).expect("same grant fits");
         assert_eq!(serde_json::to_string(&focused.specs).expect("schemas"),
             serde_json::to_string(&again.specs).expect("schemas"), "same epoch inputs keep prefix bytes");
         let declared = vec!["code/**".to_string()];
-        let (floor, want) = surface.claim_tokens(&declared);
+        let (floor, want) = surface.claim_tokens(&declared, &[]);
         assert_eq!(floor, want, "an explicit recipe is indivisible");
-        assert_eq!(surface.select_granted(&declared, floor - 1).err(), Some(floor));
-        assert_eq!(surface.select_granted(&declared, want).expect("recipe fits").demand_tokens(), want);
+        assert_eq!(surface.select_granted(&declared, &[], floor - 1).err(), Some(floor));
+        assert_eq!(surface.select_granted(&declared, &[], want).expect("recipe fits").demand_tokens(), want);
     }
 
     #[test]
     fn learned_want_is_a_union_not_the_granted_head_size() {
         let surface = built(REGISTRY.iter());
-        let (floor, want) = surface.claim_with_head(&[], &[]);
-        assert_eq!(surface.claim_with_head(&[], &["code/read".into()]), (floor, want));
+        let (floor, want) = surface.claim_with_head(&[], &[], &[]);
+        assert_eq!(surface.claim_with_head(&[], &[], &["code/read".into()]), (floor, want));
         let held = vec!["activity/archive".into()];
-        let (_, extended) = surface.claim_with_head(&[], &held);
+        let (_, extended) = surface.claim_with_head(&[], &[], &held);
         assert_eq!(extended, want + tool_surface_tokens_of(&[spec("activity/archive")]));
-        assert_eq!(surface.claim_with_head(&[], &[held[0].clone(), held[0].clone()]), (floor, extended));
-        let selected = surface.select_granted(&[], floor).expect("core fits").with_demand(extended);
+        assert_eq!(surface.claim_with_head(&[], &[], &[held[0].clone(), held[0].clone()]), (floor, extended));
+        let selected = surface.select_granted(&[], &[], floor).expect("core fits").with_demand(extended);
         assert_eq!((selected.tokens, selected.demand_tokens()), (floor, extended));
     }
 
@@ -508,9 +571,9 @@ mod tests {
         assert_eq!(core, ["code/read", "mail/send"]);
         assert_eq!(hands, ["code/rare", "code/read", "mail/send"]);
         assert!(surface.vocabulary().expect("vocabulary").id("code/peer").is_some(), "withheld stays callable by name");
-        let (floor, want) = surface.claim_with_head(&[], &[]);
+        let (floor, want) = surface.claim_with_head(&[], &[], &[]);
         assert_eq!((floor, want), (surface.core.tokens, surface.core.tokens), "an unlearned on-demand verb is not claimed");
-        let (_, learned) = surface.claim_with_head(&[], &["code/rare".to_string()]);
+        let (_, learned) = surface.claim_with_head(&[], &[], &["code/rare".to_string()]);
         assert_eq!(learned, tool_surface_tokens_of(&[spec("code/rare"), spec("code/read"), spec("mail/send")]));
     }
 
@@ -526,10 +589,10 @@ mod tests {
         let forward = built(REGISTRY.iter());
         let backward = built(REGISTRY.iter().rev());
         for declared in [Vec::new(), vec!["code/**".to_string()]] {
-            for window in [forward.claim_tokens(&declared).0, forward.claim_tokens(&declared).1] {
-                let (a, b) = (forward.select_granted(&declared, window).expect("grant fits"), backward.select_granted(&declared, window).expect("grant fits"));
+            for window in [forward.claim_tokens(&declared, &[]).0, forward.claim_tokens(&declared, &[]).1] {
+                let (a, b) = (forward.select_granted(&declared, &[], window).expect("grant fits"), backward.select_granted(&declared, &[], window).expect("grant fits"));
                 assert_eq!((a.reason, wire(&a)), (b.reason, wire(&b)), "declared {declared:?}, window {window}");
-                assert_eq!(wire(&a), wire(&forward.select_granted(&declared, window).expect("grant fits")), "a second act is identical");
+                assert_eq!(wire(&a), wire(&forward.select_granted(&declared, &[], window).expect("grant fits")), "a second act is identical");
             }
         }
         let names: Vec<&str> = forward.hands().iter().map(|s| s.name.as_str()).collect();
@@ -547,14 +610,14 @@ mod tests {
     #[test]
     fn a_declared_subtree_selects_that_subtree_with_every_always_verb() {
         let surface = built(REGISTRY.iter());
-        let selected = surface.select_granted(&["code/**".to_string()], 87_296).expect("recipe fits");
+        let selected = surface.select_granted(&["code/**".to_string()], &[], 87_296).expect("recipe fits");
         assert_eq!(selected.reason, SurfaceReason::RoomAffordances);
         let names: Vec<&str> = selected.specs.as_deref().into_iter().flatten().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
             ["code/edit", "code/git/apply", "code/read", "code/write", "commands/help", "commands/list"]
         );
-        let unmatched = surface.select_granted(&["mail/send".to_string()], 87_296).expect("hands fit");
+        let unmatched = surface.select_granted(&["mail/send".to_string()], &[], 87_296).expect("hands fit");
         assert_eq!(unmatched.reason, SurfaceReason::Hands, "a rule binding nothing offers her hands, never nothing");
     }
 
@@ -563,11 +626,11 @@ mod tests {
     #[test]
     fn her_core_hands_carry_the_discovery_pair_and_leave_the_rest_on_demand() {
         let surface = built(REGISTRY.iter());
-        let sent = surface.select_granted(&[], surface.hands_tokens()).expect("core fits");
+        let sent = surface.select_granted(&[], &[], surface.hands_tokens()).expect("core fits");
         let names: Vec<&str> = sent.specs.as_deref().into_iter().flatten().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"commands/list") && names.contains(&"commands/help"), "{names:?}");
         assert!(!names.contains(&"web/fetch") && !names.contains(&"focus/continue"), "{names:?}");
-        assert_eq!(surface.select_granted(&[], 0).err(), Some(surface.claim_tokens(&[]).0), "zero grant cannot buy core hands");
+        assert_eq!(surface.select_granted(&[], &[], 0).err(), Some(surface.claim_tokens(&[], &[]).0), "zero grant cannot buy core hands");
     }
 
     // what this catches: the learned head REPLACING her hands (the M5, 2026-10-30: Aris's head
@@ -578,7 +641,7 @@ mod tests {
     #[test]
     fn a_learned_head_adds_to_her_floor_loads_the_rest_in_the_tail_and_reserves_the_next() {
         let surface = built(REGISTRY.iter());
-        let floor = surface.select_granted(&[], surface.claim_tokens(&[]).0).expect("core fits");
+        let floor = surface.select_granted(&[], &[], surface.claim_tokens(&[], &[]).0).expect("core fits");
         let floor_specs = floor.specs.as_deref().expect("core hands");
         let core: Vec<&str> = floor_specs.iter().map(|s| s.name.as_str()).collect();
         assert!(core.contains(&"code/edit") && core.contains(&"code/write"), "precondition: core hands hold code/edit and code/write: {core:?}");
@@ -599,5 +662,61 @@ mod tests {
         assert_eq!(vocab.len(), REGISTRY.len());
         let edit = vocab.id("code/edit").expect("canonical names key the vocabulary");
         assert_eq!(vocab.tokens(edit) as usize, tool_surface_tokens_of(&[spec("code/edit")]));
+    }
+
+    fn moves(role: crate::cognition::card_moves::CardRole, state: airc_work::CardState) -> Vec<String> {
+        crate::cognition::card_moves::moves_in(role, state).commands().map(str::to_owned).collect()
+    }
+
+    fn sent_names<'a>(selected: &'a SelectedSurface<'_>) -> Vec<&'a str> {
+        selected.specs.as_deref().into_iter().flatten().map(|s| s.name.as_str()).collect()
+    }
+
+    // what this catches: Benchy on the M5, 2026-11-04, holding review card 32d53734 in Claimed
+    // with `work/review` one `commands/help` away (it declares `OnDemand` here): 4 help calls and
+    // 5 `work/submit` calls refused with "nothing to submit". The moves her held card gives her
+    // are in hand in every room, a room that declares its own recipe included, in canonical
+    // order and priced in her claim; a code card puts `work/submit` and her code hands in hand
+    // and never a `Withheld` verb.
+    #[test]
+    fn a_held_review_card_puts_the_verdict_verb_in_hand_whatever_it_declares() {
+        use crate::cognition::card_moves::CardRole;
+        use airc_work::{CardState, WorkCardId};
+        let surface = built(REGISTRY.iter());
+        let review = moves(CardRole::Review { parent: WorkCardId::from_u128(7) }, CardState::Claimed);
+        for declared in [Vec::new(), vec!["code/**".to_string()]] {
+            let plain = surface.select_granted(&declared, &[], usize::MAX).expect("fits");
+            assert!(!sent_names(&plain).contains(&"work/review"), "precondition: on demand without a held card");
+            let held = surface.select_granted(&declared, &review, usize::MAX).expect("fits");
+            let names = sent_names(&held);
+            assert!(names.contains(&"work/review"), "declared {declared:?}: {names:?}");
+            let mut sorted = names.clone();
+            sorted.sort_unstable();
+            assert_eq!(names, sorted, "canonical order");
+            assert_eq!(surface.claim_tokens(&declared, &review), (held.tokens, held.tokens), "her claim prices what she is sent");
+            assert_eq!(held.reason, plain.reason, "the room still decides why; her card adds to it");
+        }
+        let code = surface.select_granted(&[], &moves(CardRole::Code, CardState::InProgress), usize::MAX).expect("fits");
+        let names = sent_names(&code);
+        assert!(names.contains(&"work/submit") && names.contains(&"code/edit"), "{names:?}");
+        assert!(!names.contains(&"code/git/apply") && !names.contains(&"work/review"), "{names:?}");
+    }
+
+    // what this catches: a surface that churns while her card's state is stable (every act would
+    // re-prefill the prompt behind the tool schemas: Aiko's 7-21% reuse, 2026-10-24), or one that
+    // does not change when her card's transition changes her moves (Benchy's review card going
+    // to Review, the M5 2026-11-04). Same moves, same bytes; a transition that changes her moves
+    // changes the set once; one that does not (Claimed to InProgress) changes nothing.
+    #[test]
+    fn the_surface_changes_only_when_her_cards_moves_do() {
+        use crate::cognition::card_moves::CardRole;
+        use airc_work::{CardState, WorkCardId};
+        let surface = built(REGISTRY.iter());
+        let reviewer = CardRole::Review { parent: WorkCardId::from_u128(7) };
+        let at = |state| surface.select_granted(&[], &moves(reviewer, state), usize::MAX).expect("fits");
+        let claimed = wire(&at(CardState::Claimed));
+        assert_eq!(claimed, wire(&at(CardState::Claimed)), "an unchanged state is byte-identical across acts");
+        assert_eq!(claimed, wire(&at(CardState::InProgress)), "a transition that keeps her moves keeps her surface");
+        assert_ne!(claimed, wire(&at(CardState::Review)), "a transition that changes her moves changes her surface");
     }
 }

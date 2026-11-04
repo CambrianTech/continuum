@@ -103,6 +103,7 @@ fn order(rule: Order, source: &str) -> u8 {
         Order::SettledFirst => match source {
             "room-doctrine" | "room-roster" | "media-perception" | "mission" | "workspace-map" => 0,
             "roster" | "room-wall" | "active-work" => 1,
+            "held-work" => 2,
             "actions" => 3,
             "conversation" => 4,
             "working-memory" => 6,

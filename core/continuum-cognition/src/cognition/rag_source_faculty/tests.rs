@@ -204,7 +204,7 @@
         );
         assert!(
             c.trailing,
-            "board grounding renders AFTER the conversation, beside map/active-work/kanban"
+            "board grounding renders AFTER the conversation, beside map/wall/kanban"
         );
         assert!(
             c.standing_grounding,

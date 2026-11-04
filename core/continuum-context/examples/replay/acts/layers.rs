@@ -98,7 +98,8 @@ const TAGS: [(&str, Layer); 23] = [
     ("[room-wall]", Layer::Walls),
     ("[room-kanban]", Layer::Walls),
     ("[roster]", Layer::Walls),
-    ("[active-work]", Layer::Walls),
+    ("[active-work]", Layer::Walls), // captures before her held work became keyed items
+    ("[my work]", Layer::Walls),
     ("[workspace-map]", Layer::Walls),
     ("[actions]", Layer::ResultCollapsed),
     ("Recent results of your own actions", Layer::ResultCollapsed),
