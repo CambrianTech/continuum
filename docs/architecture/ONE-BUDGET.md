@@ -450,8 +450,37 @@ prompt and holds the memory it lands in, so the next prompt is mostly known befo
 - *what minds share*: identical runs of attention cells across sequences are held once (`seq_cp`), one claim with
   several owners. The recurrent state at the end of a shared run is per sequence: copied, not shared, and each owner's
   own claim.
-A value without its measurement is the population's for the activity, marked so (provenance), and an unmeasured
-claim is granted only its floor.
+A value without its measurement is no value: the claim is not made until it is measured, never the population's
+number or a default (Joel, 2026-11-03: "use nothing not constants. Undefined type values is how you do it").
+
+**Admission is by the engine's cells, per request; a mind holds no window in advance** (2026-11-03, late; Joel:
+"Can't we deterministically get these values or is it a chicken egg situation?"). The chicken-and-egg was ours: we
+granted each mind a window ahead of her turns, estimated from her history, so a mind with no history needed a
+stand-in (a 2,048 floor, a population median, a bootstrap constant, a provisional trained window), and every drift
+rebound her. On a unified KV pool (`--kv-unified`) the only hard constraint is that the cells in use stay within
+`n_ctx`; a sequence holds exactly the cells its tokens occupy. So:
+- **What a request needs is exact and the engine's:** its prompt's tokens by the model's own tokenizer, minus the
+  prefix its sequence already holds, plus its `max_tokens` reply reserve (released when it ends). The core's
+  calibrated estimate (`view.rs`, `calibration.charge`) sizes her view; it never admits.
+- **What is free is the engine's report, never core arithmetic:** cells in use per sequence, in flight or idle. A
+  sequence's cached prefix stays in its cells after its request ends (that is the reuse we want), so free is not the
+  pool minus what is in flight: idle warm prefixes are held but evictable.
+- **Admission:** a request runs when its cells are free; otherwise the coldest IDLE sequence is evicted (`seq_rm`, or
+  paged out per fork #90 at its value) before the request waits, and a waiting request wakes on the engine's
+  cells-freed edge (a `Notify`), never a poll or a timer. No per-mind window, no grant map, no rebind.
+- **Her view** still compresses to the model's trained window (a fact of the model), and to the pool when the pool is
+  smaller; never to a window someone granted her.
+- **The launch** sizes `n_ctx` from facts known before it (the OS's memory budget, the GGUF's weights and KV bytes per
+  token, the fork's reported buffers), so no launch reads a transient and no relaunch grows it.
+
+The fork verbs this needs (S1-S3 of SERVING-ENGINE): `cells_used` per sequence (`llama_memory_seq_pos_min/max`), and
+`cells_needed(prompt, seq)` (tokenize, then the sequence's longest common prefix). `/slots` reports
+`n_prompt_tokens` and `n_prompt_tokens_cache` today, the per-request halves of the second, after the fact.
+
+**Deletes:** `capacity::window_grant` (`DemandFollowing`, `PoolGrants`), the re-home rebind on a grant, the
+provisional window in `materialize_adapters`, the growth relaunch (`pool_growth`, the quiesce, card ea54a1ce), and
+`MIN_SERVE_CTX` with `BOOTSTRAP_WORKING_SET`. **Owners:** admission (the cells-freed edge, the wait, the eviction hook,
+the deletions above) Cormac; the fork's cell verbs and the launch from facts Fable.
 
 **What this deletes:** `window_within`, `lanes_that_fit`, `ModelFootprint::pool_within`,
 `window_allocator::allocate`, the process-footprint inference (`lane_footprint`, `fixed_per_lane_bytes`),
