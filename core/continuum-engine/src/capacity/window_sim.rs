@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 
 use crate::inference::planning::window_allocator::observed::Observed;
-use crate::inference::planning::window_allocator::Tokens;
+use crate::inference::planning::window_allocator::{Floor, Tokens};
 
 /// A scenario's literal token count, checked nonzero when the scenario compiles: a zero literal is a
 /// compile error, never a runtime fallback.
@@ -86,8 +86,8 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
             Demand {
                 mind: event.mind,
                 need: Observed::Exact(event.need),
-                // the sim measures no irreducible window: a mind's need is all she is seated at
-                floor: None,
+                // the sim measures no irreducible window: each exact need is admitted whole or waits
+                floor: Floor::Unmeasured,
                 target: event.need,
                 wish: event.need,
                 in_flight: event.in_flight,

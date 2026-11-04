@@ -105,6 +105,31 @@ impl Measure {
     }
 }
 
+/// Her newest turn's IRREDUCIBLE window (`working_set::PersonaDemand::floor_tokens`): below it her
+/// turn cannot be sent at all. Unknown is a type, never a number standing in for one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", content = "tokens", rename_all = "snake_case")]
+pub enum Floor {
+    /// No turn has measured it yet.
+    Unmeasured,
+    Measured(Tokens),
+}
+
+impl Floor {
+    /// A recorded floor, if any.
+    pub fn of(floor: Option<Tokens>) -> Self {
+        floor.map_or(Self::Unmeasured, Self::Measured) // map_or: no recorded floor is the Unmeasured variant
+    }
+
+    /// The same floor of `f(tokens)`: unmeasured stays unmeasured.
+    pub fn map(self, f: impl FnOnce(Tokens) -> Tokens) -> Self {
+        match self {
+            Self::Unmeasured => Self::Unmeasured,
+            Self::Measured(tokens) => Self::Measured(f(tokens)),
+        }
+    }
+}
+
 /// What one mind requires of a lane.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LaneRequirement {
@@ -115,10 +140,9 @@ pub struct LaneRequirement {
     /// before she grows (`capacity::window_grant`), so headroom is room to grow into, not a regrant
     /// on every act (Cormac on #5758).
     pub wish: Option<Tokens>,
-    /// Her newest turn's IRREDUCIBLE window, as measured (`working_set::PersonaDemand::floor_tokens`):
-    /// below it her turn cannot be sent at all. The pool grant seats every mind at this before any
-    /// need above it (`capacity::window_grant`), so no mind is starved. `None` until a turn measured it.
-    pub floor: Option<Tokens>,
+    /// Her newest turn's irreducible window ([`Floor`]). The pool grant seats every mind at a measured
+    /// one before any need above it (`capacity::window_grant`), so no mind is starved.
+    pub floor: Floor,
     /// Her parked training examples' reservation (card ea157b1a): the window that trains them
     /// whole and the training graph it costs. Carried BESIDE her conversational measure, never
     /// folded into it: the allocator grows toward it only from what is left
@@ -185,18 +209,18 @@ impl TrainingReserve {
 impl LaneRequirement {
     /// A mind with no view assembled yet: no number, nothing to size from.
     pub fn unmeasured(persona: Uuid) -> Self {
-        Self { persona, measure: Measure::Unmeasured, wish: None, floor: None, training: None }
+        Self { persona, measure: Measure::Unmeasured, wish: None, floor: Floor::Unmeasured, training: None }
     }
 
     /// Her measured wish (the untrimmed demand her view assembled) with headroom: her target.
     pub fn wished(persona: Uuid, wish: Tokens, headroom: f64) -> Self {
         // Headroom only adds: the target is the wish plus what headroom asks beyond it.
         let beyond = ((f64::from(wish.get()) * headroom) as u32).saturating_sub(wish.get());
-        Self { persona, measure: Measure::Wished { target: wish.saturating_add(beyond) }, wish: Some(wish), floor: None, training: None }
+        Self { persona, measure: Measure::Wished { target: wish.saturating_add(beyond) }, wish: Some(wish), floor: Floor::Unmeasured, training: None }
     }
 
     pub fn declared(persona: Uuid, window: Tokens) -> Self {
-        Self { persona, measure: Measure::Declared { target: window }, wish: Some(window), floor: None, training: None }
+        Self { persona, measure: Measure::Declared { target: window }, wish: Some(window), floor: Floor::Unmeasured, training: None }
     }
 
     /// With the floor her held turns measured. A need above the target is clamped to it (a floor
@@ -215,7 +239,7 @@ impl LaneRequirement {
     }
 
     /// With her newest turn's measured irreducible window ([`Self::floor`]).
-    pub fn with_floor(mut self, floor: Option<Tokens>) -> Self {
+    pub fn with_floor(mut self, floor: Floor) -> Self {
         self.floor = floor;
         self
     }
