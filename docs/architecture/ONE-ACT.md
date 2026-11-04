@@ -273,6 +273,16 @@ The engine is a render thread that never waits for a mind to ask; the core is th
   takes effect only after the engine's receipt for the frame that used it (the custody of 5 and
   5b.1 is the frame fence).
 - **One device owner:** one dispatcher per engine (stage 4).
+**Codex's conditions (agreed, 2026-11-04):** (1) submission is non-blocking only behind BOUNDED
+queue admission with typed backpressure: no unlimited command or staging growth; (2) only
+dependency-ready commands are sorted, per-sequence causal order is preserved, and aging/service
+bounds keep decode from starving the prefill or write-back that reclamation needs; (3) a frame
+fence covers actual device completion, plus the durable save receipt where a release depends on
+it, never mere dispatch or HTTP acceptance; (4) streaming tool prefill uses only the COMMITTED,
+append-only rendered and tokenized prefix, never mutable partial JSON or a view later compacted
+under the same sequence. "N+1" is an execution epoch, not an artificial wait for a frame. A
+shadow sequence reserves its destination and staging before it is allocated. The paging outcome
+slice (5b.1) remains first.
 What it buys, each already named: prefill of a tool result while the tool runs (plan line 13);
 page-in ahead of the turn (`inference.kv_warm_ahead`, which logged `skipped` on 2026-11-04 and
 needs its reason classified); write-back of cooling minds during decode; the next collapsed view
