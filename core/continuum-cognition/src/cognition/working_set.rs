@@ -918,20 +918,22 @@ pub fn requirements_for(
         .iter()
         .map(|p| {
             let demand = working_set.demand_of(*p);
-            let wish = demand
-                .as_ref()
-                .map(requirement_tokens)
-                .unwrap_or(0); // JUSTIFIED unwrap_or: a mind with no turn yet is Unknown to the allocator (0 = no measurement, never a number)
-            let need = demand
-                .as_ref()
-                .and_then(need_tokens)
-                .unwrap_or(0); // JUSTIFIED unwrap_or: no held turn measured = no floor beyond the target (0 = no measurement)
+            use crate::inference::planning::window_allocator::{LaneRequirement, Tokens};
+            // Measured or not, as a type: no turn yet is unmeasured, never a zero standing in for one.
+            let wish = demand.as_ref().and_then(|d| Tokens::new(requirement_tokens(d)));
+            let need = demand.as_ref().and_then(need_tokens).and_then(Tokens::new);
             // Her parked training examples' reservation, carried beside her conversational target
             // and need (card ea157b1a): the allocator grows toward it only from spare budget.
             let training = crate::genome::fine_tuning::training_demand::TrainingDemand::for_persona(*p).reservation();
-            crate::inference::planning::window_allocator::LaneRequirement::from_demand(*p, wish, crate::inference::planning::serving_plan::SENT_HEADROOM)
-                .with_need(need)
-                .with_training(training)
+            let measured = match wish {
+                None => LaneRequirement::unmeasured(*p),
+                Some(wish) => LaneRequirement::wished(*p, wish, crate::inference::planning::serving_plan::SENT_HEADROOM),
+            };
+            match need {
+                Some(need) => measured.held(need),
+                None => measured,
+            }
+            .with_training(training)
         })
         .collect()
 }

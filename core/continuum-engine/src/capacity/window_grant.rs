@@ -16,6 +16,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::inference::planning::window_allocator::Tokens;
+
 /// What the serving daemon grants the local minds on its engine's pool, each by her persona id.
 /// Published on every tick that moves a grant; a mind's binding follows hers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -26,9 +28,6 @@ pub struct PoolGrants {
     /// window), a slot's window on fixed slots. No grant exceeds it.
     pub per_sequence_cap: u32,
     pub by_mind: BTreeMap<uuid::Uuid, u32>,
-    /// The minds whose requirement is not their own measurement yet but the population's (the
-    /// median measured requirement on the seat), marked so no reader takes it for hers.
-    pub from_population: std::collections::BTreeSet<uuid::Uuid>,
 }
 
 impl PoolGrants {
@@ -52,12 +51,17 @@ pub fn current_grant(persona: uuid::Uuid) -> Option<u32> {
     GRANTS.get()?.borrow().as_ref()?.grant_for(persona)
 }
 
-/// One mind's current demand on the pool: what her next turn requires, and whether a turn of hers
-/// is in flight now.
+/// One measured mind's current demand on the pool: her floor and target, and whether a turn of hers
+/// is in flight now. A mind not measured yet has no `Demand`: there is no number to grant her
+/// (`Measure::Unmeasured`), and her first view measures her.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Demand<K> {
     pub mind: K,
-    pub required_tokens: u32,
+    /// The least her turn holds: below it she cannot think (the median of her held turns, else her
+    /// wish). Never trimmed here; a need above what one sequence holds waits.
+    pub need: Tokens,
+    /// What she would read whole (her wish with headroom), granted when the pool holds every target.
+    pub target: Tokens,
     pub in_flight: bool,
     /// The most she may be granted: what one sequence of the engine can hold.
     pub ceiling: u32,
@@ -98,9 +102,9 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
         // waits). A holder whose need outgrew it keeps what she holds as her need: her binding stays
         // counted, so it can never be bound beside the pool uncounted (Cormac on #5745: A holding 40k,
         // need 70k, dropped while B was granted 60k bound 100k on a 65,536 pool).
-        let need = |d: &Demand<K>| match d.required_tokens > d.ceiling {
+        let need = |d: &Demand<K>| match d.need.get() > d.ceiling {
             true => holds(d),
-            false => d.required_tokens,
+            false => d.need.get(),
         };
         let demands: Vec<&Demand<K>> = demands.iter().filter(|d| need(d) > 0).collect();
         let demands = demands.as_slice();
@@ -109,6 +113,12 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
         let want = |d: &Demand<K>| need(d).max(holds(d));
         let total = |f: &dyn Fn(&Demand<K>) -> u32| demands.iter().map(|d| u64::from(f(d))).sum::<u64>();
         let pool = u64::from(pool_tokens);
+        // Room for every target: each mind reads whole, never past one sequence, never below what she
+        // holds. Otherwise needs first, and what is left stays in the pool.
+        let aim = |d: &Demand<K>| d.target.get().min(d.ceiling).max(want(d));
+        if total(&aim) <= pool {
+            return demands.iter().map(|d| (d.mind, aim(d))).collect();
+        }
         if total(&want) <= pool {
             return demands.iter().map(|d| (d.mind, want(d))).collect();
         }
@@ -162,8 +172,11 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
 mod tests {
     use super::*;
 
-    fn demand(mind: u32, required_tokens: u32, in_flight: bool, ceiling: u32) -> Demand<u32> {
-        Demand { mind, required_tokens, in_flight, ceiling }
+    use crate::inference::planning::window_allocator::test_tokens as t;
+
+    /// A mind whose need is her target (a wish with no held turn yet).
+    fn demand(mind: u32, need: u32, in_flight: bool, ceiling: u32) -> Demand<u32> {
+        Demand { mind, need: t(need), target: t(need), in_flight, ceiling }
     }
 
     // what this catches: a window divided by a count (Joel, 2026-11-03: "What a mind needs not what
@@ -260,6 +273,23 @@ mod tests {
             .map(|d| u64::from(grants.get(&d.mind).copied().or_else(|| held.get(&d.mind).copied()).unwrap_or(0)))
             .sum();
         assert!(bound <= u64::from(pool), "bound {bound} on a {pool} pool: {grants:?}");
+    }
+
+
+    // what this catches (the M5, 2026-11-03, b7c815484): grants sized from her wish instead of her
+    // need. Benchy's wish took the model's whole 262,144 of a 524,288 pool, Aiko's 104,015 and
+    // Aris's 88,380, and Atlas got nothing. Needs are granted first; targets only when every target
+    // fits.
+    #[test]
+    fn needs_are_granted_before_any_target_and_targets_only_when_all_fit() {
+        let pool = 524_288;
+        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), in_flight: false, ceiling: 262_144 };
+        let wishes = [mind(1, 70_000, 262_144), mind(2, 60_000, 104_015), mind(3, 50_000, 88_380), mind(4, 40_000, 90_000)];
+        let grants = DemandFollowing.grant(&wishes, &BTreeMap::new(), pool);
+        assert_eq!(grants, BTreeMap::from([(1, 70_000), (2, 60_000), (3, 50_000), (4, 40_000)]), "every need, no target: the targets sum past the pool");
+        let modest = [mind(1, 70_000, 100_000), mind(2, 60_000, 104_015), mind(3, 50_000, 88_380), mind(4, 40_000, 90_000)];
+        let grants = DemandFollowing.grant(&modest, &BTreeMap::new(), pool);
+        assert_eq!(grants, BTreeMap::from([(1, 100_000), (2, 104_015), (3, 88_380), (4, 90_000)]), "every target fits: each reads whole");
     }
 
 }

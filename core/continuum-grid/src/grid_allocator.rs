@@ -182,7 +182,7 @@ pub fn minds_over_the_grid(
     // not exiled (card 70706a9e).
     requirements
         .iter()
-        .filter_map(|r| r.window.map(|w| (r.persona, r.need.map_or(w, |n| n.min(w)))))
+        .filter_map(|r| Some((r.persona, r.measure.need()?.get())))
         .filter(|(_, w)| *w > widest_window)
         .collect()
 }
@@ -283,7 +283,16 @@ pub fn dormant_by_age(dormant: &[Uuid], now_ms: u64, boot_ms: u64, last_turn_ms:
 /// (`free_slots_live / lanes` — the seat's own admission truth, so a lane a leased-in
 /// generate is using counts less than an empty one).
 pub fn slack_seats(open: &[OpenSeats], idle_fraction_of: impl Fn(Uuid) -> f64) -> f64 {
-    open.iter().map(|o| o.count as f64 * idle_fraction_of(o.node).clamp(0.0, 1.0)).sum()
+    open.iter().map(|o| o.count as f64 * idle_fraction_of(o.node)).sum()
+}
+
+/// The share of a node's lanes free now, in [0, 1] by construction: a free count past the lanes (a
+/// report racing a relaunch) counts as every lane free, never more; no lanes is no idle seat.
+pub fn idle_fraction(free_slots: u64, lanes: u64) -> f64 {
+    match lanes {
+        0 => 0.0,
+        lanes => free_slots.min(lanes) as f64 / lanes as f64,
+    }
 }
 
 /// How often the slack can give each dormant mind a turn: the typical turn, times the
@@ -458,13 +467,13 @@ impl Inner {
         let dormant = dormant_by_age(&allocation.dormant, facts.now_ms, boot, crate::cognition::turn_ledger::last_turn_ms);
         let idle_of = |node: Uuid| -> f64 {
             if node == facts.this_node {
-                return if facts.local_lanes > 0 { facts.local_free_slots as f64 / facts.local_lanes as f64 } else { 0.0 };
+                return idle_fraction(facts.local_free_slots as u64, facts.local_lanes as u64);
             }
             facts
                 .peers
                 .iter()
                 .find(|p| p.node == node)
-                .map(|p| if p.lanes > 0 { p.free_slots_live as f64 / p.lanes as f64 } else { 0.0 })
+                .map(|p| idle_fraction(p.free_slots_live as u64, p.lanes as u64))
                 .unwrap_or(0.0) // unwrap_or: a node the facts do not name has no idle seat to lend
         };
         let slack = slack_seats(&allocation.open, idle_of);
@@ -483,7 +492,7 @@ impl Inner {
             .allocation
             .nodes
             .iter()
-            .map(|n| format!("{}:{}", &n.node.to_string()[..8], n.seats))
+            .map(|n| format!("{}:{}", airc_core::shown_id::shown_form(n.node), n.seats))
             .collect();
         continuum_base::probe!(
             class = "grid.allocation.published",
@@ -536,11 +545,11 @@ impl Inner {
                     // turn is known and the target did (card 70706a9e) — the reader must
                     // never again mistake a pre-fit wish for a lane width.
                     .map(|(m, w)| {
-                        let gate = match requirements.iter().find(|r| r.persona == *m).and_then(|r| r.need) {
-                            Some(_) => "need",
-                            None => "wish",
+                        let gate = match requirements.iter().find(|r| r.persona == *m).map(|r| r.measure) {
+                            Some(crate::inference::planning::window_allocator::Measure::Held { .. }) => "need",
+                            _ => "wish",
                         };
-                        format!("{}:{gate}:{w}", m.to_string().chars().take(8).collect::<String>())
+                        format!("{}:{gate}:{w}", airc_core::shown_id::shown_form(*m))
                     })
                     .collect::<Vec<_>>()
                     .join(","),
@@ -893,15 +902,21 @@ mod tests {
     // sentence. Aiko at ~24k fits and must never be named.
     #[test]
     fn a_mind_whose_turn_exceeds_every_lane_is_named_and_the_ones_that_fit_are_not() {
-        use crate::inference::planning::window_allocator::LaneRequirement;
+        use crate::inference::planning::window_allocator::{LaneRequirement, Tokens};
+        const fn t(n: u32) -> Tokens {
+            match Tokens::new(n) {
+                Some(tokens) => tokens,
+                None => panic!("a test's token literal is never zero"),
+            }
+        }
         let benchy = Uuid::new_v4();
         let aiko = Uuid::new_v4();
         let unmeasured = Uuid::new_v4();
         let reqs = vec![
-            LaneRequirement::from_demand(benchy, 110_396, 1.0),
-            LaneRequirement::from_demand(aiko, 24_226, 1.0),
+            LaneRequirement::wished(benchy, t(110_396), 1.0),
+            LaneRequirement::wished(aiko, t(24_226), 1.0),
             // no turn yet: Unknown, and an absence is never a number
-            LaneRequirement::from_demand(unmeasured, 0, 1.0),
+            LaneRequirement::unmeasured(unmeasured),
         ];
 
         let named = minds_over_the_grid(&reqs, 78_592);
@@ -923,13 +938,13 @@ mod tests {
         // she is still named — the need gates in both directions. A need above the
         // target is clamped to the target (a floor cannot exceed what it floors).
         let kimi = Uuid::new_v4();
-        let wish = vec![LaneRequirement::from_demand(kimi, 99_096, 1.25)];
+        let wish = vec![LaneRequirement::wished(kimi, t(99_096), 1.25)];
         assert_eq!(minds_over_the_grid(&wish, 75_776), vec![(kimi, 123_870)], "no need known: the wish gates, as before");
-        let fits = vec![LaneRequirement::from_demand(kimi, 99_096, 1.25).with_need(74_000)];
+        let fits = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(t(74_000))];
         assert!(minds_over_the_grid(&fits, 75_776).is_empty(), "her held turns fit this grid: served, trimmed, not exiled");
-        let over = vec![LaneRequirement::from_demand(kimi, 99_096, 1.25).with_need(80_000)];
+        let over = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(t(80_000))];
         assert_eq!(minds_over_the_grid(&over, 75_776), vec![(kimi, 80_000)], "a need the grid cannot hold still names her, by the need");
-        let clamped = vec![LaneRequirement::from_demand(kimi, 60_000, 1.0).with_need(90_000)];
+        let clamped = vec![LaneRequirement::wished(kimi, t(60_000), 1.0).held(t(90_000))];
         assert!(minds_over_the_grid(&clamped, 60_000).is_empty(), "need clamps to the target");
     }
 }

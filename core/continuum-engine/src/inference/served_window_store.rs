@@ -173,16 +173,25 @@ fn observe_to(path: &Path, geometry: &ServedGeometry, tokens: u32) {
     stored.set_at_ms = continuum_base::time::EpochMs::now().millis();
     write_record(path, &stored);
 }
+/// Place the record through the one durable primitive: staged in its directory, synced, renamed
+/// over the old one, so a crash leaves the previous record or the new one, never a torn file.
+fn place(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(std::io::Error::other(format!("{} names no file in a directory", path.display())));
+    };
+    std::fs::create_dir_all(dir)?;
+    let mut staged = continuum_host::durable::Staging::new_in(dir)?;
+    staged.write_all(bytes)?;
+    staged.replace(Path::new(name))
+}
+
 fn write_record(path: &Path, stored: &StoredServedWindow) {
     let model_id = stored.model_id.as_str();
     let per_slot_window = stored.per_slot_window;
     let lanes = stored.lanes;
     let typical_prompt_tokens = stored.typical_prompt_tokens;
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    match serde_json::to_vec_pretty(&stored).map(|b| std::fs::write(path, b)) {
-        Ok(Ok(())) => continuum_base::probe!(
+    match serde_json::to_vec_pretty(&stored).map_err(std::io::Error::other).and_then(|bytes| place(path, &bytes)) {
+        Ok(()) => continuum_base::probe!(
             class = "serving.window.stored",
             model = model_id,
             per_slot_window = per_slot_window as u64,
@@ -190,9 +199,10 @@ fn write_record(path: &Path, stored: &StoredServedWindow) {
             typical_prompt_tokens = typical_prompt_tokens as u64,
             "serving geometry recorded — observed cache preference, not a future capacity constraint"
         ),
-        _ => continuum_base::probe!(
+        Err(error) => continuum_base::probe!(
             class = "serving.window.store_failed",
             path = %path.display(),
+            error = %error,
             "could not write the served-window store — the next boot re-derives the window"
         ),
     }
@@ -202,7 +212,7 @@ fn write_record(path: &Path, stored: &StoredServedWindow) {
 mod tests {
     use super::*;
     use crate::inference::planning::serving_plan::{plan_serving_at_rest, HostBudget, ModelFootprint, ServingDemand};
-    use crate::inference::planning::window_allocator::LaneRequirement;
+    use crate::inference::planning::window_allocator::{test_tokens, LaneRequirement};
 
     #[test]
     fn observed_collapse_survives_restart_as_history_not_an_allocation_limit() {
@@ -213,8 +223,8 @@ mod tests {
         let host = HostBudget { usable_bytes: 30 << 30, perf_cores: 8 };
         let initial = plan_serving_at_rest(&host, std::slice::from_ref(&model), None,
             &ServingDemand::new(2, Some(70_000)).with_requirements(vec![
-                LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000),
-                LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000)])).unwrap();
+                LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000)),
+                LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000))])).unwrap();
         let large = ServedGeometry { model_id: model.model_id.clone(), generation: uuid::Uuid::new_v4(),
             per_slot_window: initial.served_context_window, lanes: initial.lanes };
         record_reconciled_to(&path, large.clone(), false, Some(60_000));
@@ -247,8 +257,8 @@ mod tests {
         assert_eq!(restarted.observed_prompt_tokens, Some(2048));
         // Both real allocation branches use the same current demand and already
         // credited budget for cold boot and settled reconciliation.
-        for requirements in [vec![], vec![LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000),
-            LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000)]] {
+        for requirements in [vec![], vec![LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000)),
+            LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000))]] {
             // Legacy callers express their current per-lane requirement through
             // the measured prompt median (56k plus existing headroom = 70k).
             // Without it they may legitimately choose two narrower lanes.
@@ -261,7 +271,7 @@ mod tests {
             assert!(cold.served_context_window >= 70_000);
             assert_eq!((cold.lanes, cold.served_context_window), (settled.lanes, settled.served_context_window));
             assert!(model.peak_resident_bytes(cold.served_context_window, cold.lanes) <= host.usable_bytes);
-            let tight = HostBudget { usable_bytes: model.peak_resident_bytes(cold.served_context_window, 1), ..host.clone() };
+            let tight = HostBudget { usable_bytes: model.peak_resident_bytes(cold.served_context_window, 1), ..host };
             let edge = plan_serving_at_rest(&tight, std::slice::from_ref(&model), None, &demand).unwrap();
             assert_eq!(edge.lanes, 1);
             assert!(model.peak_resident_bytes(edge.served_context_window, edge.lanes) <= tight.usable_bytes);
