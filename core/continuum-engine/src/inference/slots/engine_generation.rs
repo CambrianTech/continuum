@@ -529,6 +529,14 @@ impl EndpointTransition {
                     save.pending = false;
                     return Err(CheckpointFailure::Save(format!("checkpoint save rejected for slot {slot}")));
                 }
+                PageOutcome::Unresolved => {
+                    // The engine kept working without a receipt: not a quarantine on that alone.
+                    // The page stays lost (noted above), so nothing restores a half-written file.
+                    save.pending = false;
+                    return Err(CheckpointFailure::Save(format!(
+                        "checkpoint save unresolved for slot {slot}: the engine kept working without a receipt; page not restorable"
+                    )));
+                }
                 PageOutcome::Uncertain => {
                     return Err(CheckpointFailure::Save(format!(
                         "checkpoint save completion uncertain for slot {slot}; endpoint quarantined"

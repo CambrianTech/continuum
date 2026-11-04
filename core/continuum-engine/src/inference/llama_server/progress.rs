@@ -59,6 +59,11 @@ pub(crate) enum EngineProbe {
     /// The exact observed paging operation failed or acknowledged cancellation.
     /// This ends observation; it is never a successful HTTP completion receipt.
     OperationEnded,
+    /// The engine's own PROCESS says it is not working: it exited, its pid now names another
+    /// process, or it spent no CPU across a checkpoint at which it did not answer. Read from the
+    /// process table, never through the engine's request queue
+    /// ([`crate::inference::turn_admission`]'s page liveness). Ends a wait at once.
+    Stopped,
 }
 
 
@@ -372,7 +377,9 @@ pub(crate) fn window_at_rate(floor: std::time::Duration, prefill_tps: Option<f64
 ///   engine (card 8c06f778: a 71,680-token restore's checkpoint probe timed out and was
 ///   read as death; 135 s closed, one engine replaced);
 /// - nothing that is a llama-server answers on this root ([`EngineProbe::Unreachable`]):
-///   `None`, the one silence that IS the engine gone.
+///   `None`, the one silence that IS the engine gone;
+/// - the engine's own process exited, names another process, or spent no CPU while silent
+///   ([`EngineProbe::Stopped`]): `None`, at once, even before the first checkpoint.
 ///
 /// Why both signals (M5, 2026-09-26 10:2xZ): a save ran 12.4 s against a 12.2 s bound on
 /// an engine with idle slots; the fingerprint alone could not see the save and called it a
@@ -403,7 +410,7 @@ where
     };
     let mut last = match initial {
         EngineProbe::Progress(p) => Some(p.fingerprint),
-        EngineProbe::OperationEnded => return None,
+        EngineProbe::OperationEnded | EngineProbe::Stopped => return None,
         EngineProbe::Busy | EngineProbe::Unreachable | EngineProbe::Condemned => None,
     };
     let mut busy_checkpoints: u64 = 0;
@@ -421,7 +428,7 @@ where
                     observed = progress() => observed,
                 };
                 match observed {
-                    EngineProbe::Unreachable | EngineProbe::OperationEnded => return None,
+                    EngineProbe::Unreachable | EngineProbe::OperationEnded | EngineProbe::Stopped => return None,
                     EngineProbe::Condemned => {
                         continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "inference.wait.engine_condemned",
                             busy_checkpoints,

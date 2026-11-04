@@ -161,18 +161,112 @@ pub fn descendants(pid: u32) -> Vec<ProcessIdentity> {
 /// The ones of `set` still running as the SAME process (same pid, same start time). A zombie
 /// has exited and only awaits its reaper, so it is gone.
 pub fn still_present(set: &[ProcessIdentity]) -> Vec<ProcessIdentity> {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
     if set.is_empty() {
         return Vec::new();
     }
     let pids: Vec<Pid> = set.iter().map(|who| Pid::from_u32(who.pid)).collect();
     let mut sys = System::new();
     sys.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), true, ProcessRefreshKind::nothing());
-    set.iter()
-        .copied()
-        .filter(|who| {
-            sys.process(Pid::from_u32(who.pid))
-                .is_some_and(|p| p.start_time() == who.start_time && p.status() != ProcessStatus::Zombie)
-        })
-        .collect()
+    set.iter().copied().filter(|who| same_process(&sys, *who).is_some()).collect()
+}
+
+/// `who` as `sys` last read it, only while the pid still names THAT process: same start time,
+/// not a zombie. A pid reused by another process is `None`, never the process we asked about.
+fn same_process(sys: &sysinfo::System, who: ProcessIdentity) -> Option<&sysinfo::Process> {
+    sys.process(sysinfo::Pid::from_u32(who.pid))
+        .filter(|p| p.start_time() == who.start_time && p.status() != sysinfo::ProcessStatus::Zombie)
+}
+
+/// What one read of a watched process's CPU said about the interval since the read before it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CpuSample {
+    /// The same process (pid AND start time) still runs. `busy_pct` is the CPU it used since the
+    /// previous read, as sysinfo measures usage (0 = its CPU time did not advance); `None` on the
+    /// first read, which has no interval behind it.
+    Alive { busy_pct: Option<f32> },
+    /// No process has this pid, it exited and awaits its reaper, or the pid now names a process
+    /// with another start time.
+    Gone,
+}
+
+/// One process's CPU, read again and again through the same table (sysinfo measures usage as the
+/// change between two refreshes of one `System`). The question it answers without asking the
+/// process anything: is it still spending CPU? An engine whose request queue is busy with one long
+/// batch cannot answer an HTTP probe, but its CPU time still moves (the IntelMac, 2026-11-04
+/// 16:24:20Z: a page restore was judged a dead engine while its main thread was in decode).
+pub struct CpuWatch {
+    who: ProcessIdentity,
+    sys: sysinfo::System,
+    read_before: bool,
+}
+
+impl CpuWatch {
+    pub fn new(who: ProcessIdentity) -> Self {
+        Self { who, sys: sysinfo::System::new(), read_before: false }
+    }
+
+    /// Read the process once more: gone, or alive with the CPU it used since the last read.
+    pub fn sample(&mut self) -> CpuSample {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
+        self.sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[Pid::from_u32(self.who.pid)]),
+            true,
+            ProcessRefreshKind::nothing().with_cpu(),
+        );
+        let Some(process) = same_process(&self.sys, self.who) else {
+            return CpuSample::Gone;
+        };
+        let busy_pct = std::mem::replace(&mut self.read_before, true).then(|| process.cpu_usage());
+        CpuSample::Alive { busy_pct }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn own_identity() -> ProcessIdentity {
+        let pid = std::process::id();
+        let mut sys = sysinfo::System::new();
+        sys.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(pid)]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing(),
+        );
+        let start_time = sys.process(sysinfo::Pid::from_u32(pid)).map(sysinfo::Process::start_time);
+        ProcessIdentity { pid, start_time: start_time.expect("test: this process is in the table") }
+    }
+
+    // what this catches (the IntelMac, 2026-11-04 16:24Z, an engine replaced while it worked):
+    // a CPU read is fenced by pid AND start time. A working process reads alive with its CPU
+    // moving; the same pid with another start time (a reused pid) and a process that exited and
+    // was reaped both read gone, never "busy".
+    #[test]
+    fn a_cpu_read_is_fenced_by_pid_and_start_time() {
+        let me = own_identity();
+        let mut watch = CpuWatch::new(me);
+        assert_eq!(watch.sample(), CpuSample::Alive { busy_pct: None }, "a first read has no interval");
+        // Spend CPU past sysinfo's minimum update interval so the second read has one.
+        let spin_until = std::time::Instant::now() + std::time::Duration::from_millis(400);
+        let mut spun = 0u64;
+        while std::time::Instant::now() < spin_until {
+            spun = std::hint::black_box(spun.wrapping_add(1));
+        }
+        match watch.sample() {
+            CpuSample::Alive { busy_pct: Some(pct) } => assert!(pct > 0.0, "a spinning process spent CPU: {pct}"),
+            other => panic!("test: expected a measured interval, got {other:?}"),
+        }
+        let reused = ProcessIdentity { pid: me.pid, start_time: me.start_time.wrapping_add(1) };
+        assert_eq!(CpuWatch::new(reused).sample(), CpuSample::Gone, "a pid naming another process is gone");
+        // This test binary, asked to run a test that does not exist: a child on every OS that exits at once.
+        let mut child = std::process::Command::new(std::env::current_exe().expect("test: own executable"))
+            .args(["--exact", "no_such_test"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("test: spawn a child");
+        let exited = ProcessIdentity { pid: child.id(), start_time: 0 };
+        child.wait().expect("test: reap the child");
+        assert_eq!(CpuWatch::new(exited).sample(), CpuSample::Gone, "an exited, reaped process is gone");
+    }
 }

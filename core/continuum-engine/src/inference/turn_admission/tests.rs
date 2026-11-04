@@ -17,6 +17,7 @@
 
     mod one_act_per_mind;
     mod lifecycle;
+    mod page_liveness;
 
     // what this catches (M5, 2026-09-25 and 2026-09-26): a slow switch on a moving engine
     // must wait; a save on a QUIET engine (no slot processing, so no counter moves) must
