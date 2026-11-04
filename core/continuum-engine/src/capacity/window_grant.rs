@@ -340,6 +340,29 @@ mod tests {
         assert_eq!(DemandFollowing.grant(&demands, &grants, pool), grants, "a steady demand is a steady grant");
     }
 
+    // what this catches (Cormac on #5758): growing on every upward move of a target recomputed every
+    // act, which regranted most acts as an append-only view grew. Her wish rises 300 tokens a call
+    // and her target is the wish x 1.25: the grant holds while it covers the wish and regrants only
+    // when the wish passes it, about once per 25% of growth.
+    #[test]
+    fn a_rising_wish_regrants_only_when_it_passes_the_grant() {
+        let pool = 323_840;
+        let at = |wish: u32| Demand { mind: 1u32, need: t(10_000), target: t(wish + wish / 4), wish: t(wish), in_flight: false, ceiling: 262_144 };
+        let mut held = BTreeMap::new();
+        let mut regrants = 0;
+        for call in 0..100u32 {
+            let wish = 20_000 + 300 * call;
+            let grants = DemandFollowing.grant(&[at(wish)], &held, pool);
+            if held.get(&1) != grants.get(&1) {
+                regrants += 1;
+            }
+            assert!(grants[&1] >= wish, "the grant always covers her wish: {} < {wish}", grants[&1]);
+            held = grants;
+        }
+        // 20,000 -> 49,700 is about 2.5x: a grant regrows by 25% each time, so ~5 regrants, not ~100.
+        assert!((3..=8).contains(&regrants), "{regrants} regrants over 100 calls of a rising wish");
+    }
+
     // what this catches (the M5, 2026-11-03, d47c5c2a6: 22 rebinds in 15 minutes): a grant that moves
     // when the regime flips. Every target fits, so each mind is granted her target; then one mind's
     // need grows past what the targets leave. She is granted her need from the room, and every other
