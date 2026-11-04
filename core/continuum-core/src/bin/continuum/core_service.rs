@@ -515,7 +515,7 @@ impl PreparedCoreService {
             // sha off the staged file, refuse the handoff on any mismatch.
             let _ = socket;
             let job = launchd::live::job()?
-                .ok_or("no launchd job for the core is registered; run `continuum install`")?;
+                .ok_or("no launchd job for the core is registered; run install-service.sh install --system")?;
             let staged = launchd::live::stage(&job, &built.path)?;
             let staged = staged
                 .canonicalize()
@@ -570,7 +570,7 @@ impl PreparedCoreService {
             // anywhere else would be validated here and never run (#194's shape).
             let _ = socket;
             let job = launchd::live::job()?
-                .ok_or("no launchd job for the core is registered; run `continuum install`")?;
+                .ok_or("no launchd job for the core is registered; run install-service.sh install --system")?;
             let slot = job.slot.canonicalize().map_err(|e| format!("slot {} cannot be resolved: {e}", job.slot.display()))?;
             let cand = candidate.path.canonicalize().map_err(|e| format!("candidate {} cannot be resolved: {e}", candidate.path.display()))?;
             if slot != cand {
