@@ -18,6 +18,8 @@
     mod one_act_per_mind;
     mod lifecycle;
     mod restore_refusal;
+    mod page_liveness;
+    mod unresolved_page;
 
     // what this catches (M5, 2026-09-25 and 2026-09-26): a slow switch on a moving engine
     // must wait; a save on a QUIET engine (no slot processing, so no counter moves) must
@@ -181,16 +183,16 @@
         let b = PageKey::mind(Uuid::from_u128(3)).expect("test: non-nil ids");
         // Exact pre-write admission uses the same HTTP boundary and policy, with
         // supplied volume evidence instead of mutating the process-wide monitor.
-        assert_eq!(kv_page_action_with_capacity(&client, &root, 0, &a, "save", true, |bytes| {
+        assert!(matches!(kv_page_action_with_capacity(&client, &root, 0, &a, "save", true, |bytes| {
             crate::paging::pool::ensure_projected_disk_capacity("fixture", 900, 1000, bytes)
                 .map_err(|error| error.to_string())
-        }).await, PageOutcome::Rejected);
+        }).await, PageOutcome::Rejected));
         assert!(saves.lock().unwrap().is_empty(), "capacity refusal must not issue a save");
-        assert_eq!(kv_page_action_with_capacity(&client, &root, 0, &a, "save", true, |bytes| {
+        assert!(matches!(kv_page_action_with_capacity(&client, &root, 0, &a, "save", true, |bytes| {
             assert_eq!(bytes, 100);
             crate::paging::pool::ensure_projected_disk_capacity("fixture", 800, 1000, bytes)
                 .map_err(|error| error.to_string())
-        }).await, PageOutcome::Completed);
+        }).await, PageOutcome::Completed));
         assert_eq!(saves.lock().unwrap().as_slice(), &[0]);
         saves.lock().unwrap().clear();
         let subsets = std::mem::take(&mut *subsets.lock().unwrap());

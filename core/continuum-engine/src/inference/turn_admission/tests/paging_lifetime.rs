@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use crate::inference::llama_server::EngineProbe;
 use std::time::Duration;
 
 // Sahar's measured generation estimate was 2s while healthy restores took >3s.
@@ -317,9 +318,11 @@ async fn paging_progress_watchdog_covers_the_complete_response_body() {
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
     let client = reqwest::Client::new();
     let mut probes = 0;
+    let unwatched = PageLiveness::new(Box::new(|| None), super::super::page_liveness::Condemnation::Never);
     let receipt = bounded_page_receipt(
         client.post(format!("{root}/slots/0")),
         Duration::from_millis(20),
+        &unwatched,
         || {
             probes += 1;
             let initial = probes == 1;
@@ -341,7 +344,7 @@ async fn paging_progress_watchdog_covers_the_complete_response_body() {
         .await
         .expect("test: watchdog ends incomplete body receipt");
     assert!(
-        outcome.is_none(),
+        matches!(outcome, Receipt::Stopped),
         "headers must not escape as a completed receipt"
     );
     assert_eq!(
