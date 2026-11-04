@@ -446,7 +446,6 @@ impl From<&airc_work::WorkSubmissionReview> for WorkReviewResult {
 impl ActionCommand for WorkReview {
     const NAME: &'static str = "work/review";
     const NATIVE: bool = true;
-    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str = "Verdict under a reviewer claim, not training completion. Own work: work/submit.";
     type Params = WorkReviewParams;
