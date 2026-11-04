@@ -156,6 +156,14 @@ const FLEX_REPLY: &str = "reply";
 
 /// Her hands (`prompt/tools_epoch.rs`): floor = the epoch's level or core hands, want = all.
 const FLEX_TOOLS: &str = "tools";
+/// What tools and the reply want above their floors, claimed below her view's sources: they grow
+/// past their floors only from what her view leaves. At their own priority the reply's headroom
+/// (4,705 for a measured need of 263) and the tools above their floor took ~9k of Atlas's 33,451
+/// window ahead of his view, which then turned over on 11 of 12 acts (the M5, 2026-11-04 08:41Z).
+const FLEX_TOOLS_SURPLUS: &str = "tools/surplus";
+const FLEX_REPLY_SURPLUS: &str = "reply/surplus";
+/// Below every view source (grounding's 6, history's 5).
+const SURPLUS_PRIORITY: u8 = 4;
 
 /// The reasoner faculty. Persona-scoped; shared model backend.
 pub struct LlmDeliberationFaculty {

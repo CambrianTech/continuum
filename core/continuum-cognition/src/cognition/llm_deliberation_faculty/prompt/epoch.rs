@@ -22,7 +22,7 @@ use crate::cognition::context_streams::{ContextMessage, MemoryStreams};
 use crate::cognition::working_memory::WorkingMemory;
 
 /// The prefix of a view source's claim id in the window's one allocation.
-const VIEW_CLAIM: &str = "view/";
+pub(super) const VIEW_CLAIM: &str = "view/";
 
 /// Where her view sits in this act's history: its leading `len` messages, and whether this
 /// act started it.

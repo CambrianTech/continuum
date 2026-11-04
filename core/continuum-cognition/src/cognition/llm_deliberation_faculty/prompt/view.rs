@@ -423,10 +423,13 @@ impl LlmDeliberationFaculty {
                 priority: 7,
                 floor_tokens: tools_floor,
                 min_tokens: tools_floor,
-                max_tokens: claim(tools.want).max(tools_floor),
+                max_tokens: tools_floor,
                 required: true,
             },
         ];
+        let tools_surplus = claim(tools.want).saturating_sub(tools_floor);
+        let reply_surplus = claims[4].max_tokens.saturating_sub(claims[4].floor_tokens.max(claims[4].min_tokens));
+        claims[4].max_tokens = claims[4].floor_tokens.max(claims[4].min_tokens);
         // Her view's sources, each its own claim (`epoch.rs`): the blocks she works from at
         // the grounding claim's weight, her conversation, thoughts and results at history's.
         claims.extend(self.view_claims(&all_messages.streams).into_iter().map(|mut source| {
@@ -435,7 +438,18 @@ impl LlmDeliberationFaculty {
             source.max_tokens = claim(source.max_tokens as usize).max(source.floor_tokens);
             source
         }));
+        let surplus = |id: &str, tokens: u32| crate::cognition::rag_budget::RagSourceBudget {
+            source_id: id.to_owned(),
+            priority: SURPLUS_PRIORITY,
+            floor_tokens: 0,
+            min_tokens: 0,
+            max_tokens: tokens,
+            required: false,
+        };
+        claims.push(surplus(FLEX_TOOLS_SURPLUS, tools_surplus));
+        claims.push(surplus(FLEX_REPLY_SURPLUS, reply_surplus));
         let plan = crate::cognition::rag_budget::flex_allocate(context_window, &claims);
+        let granted_with_surplus = |id: &str, surplus_id: &str| plan.granted(id).saturating_add(plan.granted(surplus_id));
         let allocation = Some(crate::ai::provenance::AllocationReceipt {
             window: context_window,
             revision: env!("CONTINUUM_BUILD_GIT_SHA").to_owned(),
@@ -450,13 +464,13 @@ impl LlmDeliberationFaculty {
                 })
                 .collect(),
         });
-        let tools_grant = calibration.prompt_budget(plan.granted(FLEX_TOOLS) as usize);
+        let tools_grant = calibration.prompt_budget(granted_with_surplus(FLEX_TOOLS, FLEX_TOOLS_SURPLUS) as usize);
         let (tools_choice, tools_refusal) = self.granted_tools(ws, tools, tools_grant);
         let budget_floor = crate::cognition::rag_budget::turn_need(&claims).saturating_sub(claims.iter().find(|c| c.source_id == FLEX_REPLY).map_or(0, |c| c.floor_tokens)).saturating_add(reply_need);
         // Her reply's grant is her measured need from the one allocation, carried as `max_tokens`.
         // What no claim took is her view's to grow into by appends (`fit_view`), never the
         // reply's: a cap claimed above her context starved her reads (ONE-BUDGET slice 6).
-        let reply_grant = plan.granted(FLEX_REPLY);
+        let reply_grant = granted_with_surplus(FLEX_REPLY, FLEX_REPLY_SURPLUS);
         let completion_reserve = reply_grant.max(1) as usize;
         continuum_base::probe!(
             class = "delib.window.flex",
@@ -466,11 +480,11 @@ impl LlmDeliberationFaculty {
             required_tokens = required_cost,
             grounding_granted = plan.granted(FLEX_GROUNDING),
             history_granted = plan.granted(FLEX_HISTORY),
-            tools_granted = plan.granted(FLEX_TOOLS),
+            tools_granted = granted_with_surplus(FLEX_TOOLS, FLEX_TOOLS_SURPLUS),
             tools_floor,
             reply_priority = claims[4].priority,
             reply_floor = claims[4].floor_tokens,
-            reply_wanted = claims[4].max_tokens,
+            reply_wanted = claims[4].max_tokens.saturating_add(reply_surplus),
             reply_granted = reply_grant,
             unallocated = plan.unallocated,
             reserve = completion_reserve,
@@ -491,7 +505,7 @@ impl LlmDeliberationFaculty {
         let view_granted: u32 = plan
             .allocations
             .iter()
-            .filter(|a| claims.iter().skip(6).any(|c| c.source_id == a.source_id))
+            .filter(|a| a.source_id.starts_with(super::epoch::VIEW_CLAIM))
             .map(|a| a.allocated_tokens)
             .sum();
         // What no claim took is room her view grows into by appends (`fit_view`), and the fit's
@@ -764,7 +778,7 @@ impl LlmDeliberationFaculty {
                 messages: &messages,
                 view_len: grounding_at,
                 grounding_len: refit.grounding_len,
-                framing_grant: fixed_cost.saturating_add(plan.granted(FLEX_TOOLS)),
+                framing_grant: fixed_cost.saturating_add(granted_with_surplus(FLEX_TOOLS, FLEX_TOOLS_SURPLUS)),
                 required_grant: required_cost,
                 history_grant: plan.granted(FLEX_HISTORY),
                 grounding_grant: plan.granted(FLEX_GROUNDING),
