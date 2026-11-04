@@ -71,7 +71,7 @@ async fn fake_engine(dir: std::path::PathBuf) -> (String, Slots, Arc<SaveHold>, 
 }
 
 /// One core: a ready generation on `root` whose page contract names `dir`.
-async fn boot(root: &str, dir: &std::path::Path) -> (Arc<crate::inference::slots::EndpointSlots>, Arc<KvSlotPool>) {
+pub(super) async fn boot(root: &str, dir: &std::path::Path) -> (Arc<crate::inference::slots::EndpointSlots>, Arc<KvSlotPool>) {
     let endpoint = crate::inference::slots::directory().endpoint(root);
     let contract = crate::inference::slots::KvPageContract {
         model_id: "fixture".into(),
