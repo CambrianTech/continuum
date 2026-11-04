@@ -470,8 +470,11 @@ rebound her. On a unified KV pool (`--kv-unified`) the only hard constraint is t
   cells-freed edge (a `Notify`), never a poll or a timer. No per-mind window, no grant map, no rebind.
 - **Her view** still compresses to the model's trained window (a fact of the model), and to the pool when the pool is
   smaller; never to a window someone granted her.
-- **The launch** sizes `n_ctx` from facts known before it (the OS's memory budget, the GGUF's weights and KV bytes per
-  token, the fork's reported buffers), so no launch reads a transient and no relaunch grows it.
+- **The launch** leaves `n_ctx` to the engine's own fit (`--fit on`, the fork's `common/fit.cpp`: a dry-run allocation
+  against the device's free memory at launch, a search against what the device can really allocate, never our formula).
+  The two inputs are measured: `--fit-target`, the memory the authority's other claims hold (never upstream's 1 GiB
+  default), and the fit's minimum context, the largest measured need on the seat, below which the launch is a typed
+  refusal, never a starved start (never upstream's 4,096). No launch reads a plan's transient and no relaunch grows it.
 
 The fork verbs this needs (S1-S3 of SERVING-ENGINE): `cells_used` per sequence (`llama_memory_seq_pos_min/max`), and
 `cells_needed(prompt, seq)` (tokenize, then the sequence's longest common prefix). `/slots` reports
