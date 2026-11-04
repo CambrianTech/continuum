@@ -46,7 +46,7 @@ pub fn install_grants(rx: tokio::sync::watch::Receiver<Option<PoolGrants>>) -> b
 }
 
 /// A receiver of the published grants, for a waiter that must wake when they change
-/// ([`super::mind_window::grants_changed`]). `None` before the serving daemon installs them.
+/// ([`super::mind_window::grants_waiter`]). `None` before the serving daemon installs them.
 pub fn grants_receiver() -> Option<tokio::sync::watch::Receiver<Option<PoolGrants>>> {
     GRANTS.get().cloned()
 }
