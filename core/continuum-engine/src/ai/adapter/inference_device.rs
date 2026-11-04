@@ -6,11 +6,12 @@ use super::*;
 ///
 /// Default: Gpu (enforced now — no silent CPU fallback).
 /// Auto (try GPU, explicit CPU fallback) is reserved for future opt-in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InferenceDevice {
     /// GPU-accelerated inference only. Metal (Mac) / CUDA (Nvidia) /
     /// ROCm (AMD) / Vulkan (everyone else). If no GPU adapter can serve
     /// the model → hard error, never silent CPU.
+    #[default]
     Gpu,
     /// CPU-only inference. Candle / future CPU adapter. Currently only
     /// reachable when caller EXPLICITLY requests it (training pipelines,
@@ -23,11 +24,6 @@ pub enum InferenceDevice {
     Auto,
 }
 
-impl Default for InferenceDevice {
-    fn default() -> Self {
-        InferenceDevice::Gpu
-    }
-}
 
 /// AI provider adapter configuration
 #[derive(Debug, Clone)]
@@ -465,6 +461,14 @@ pub trait AIProviderAdapter: Send + Sync {
     /// live lane to report.
     fn live_served_window(&self) -> Option<u32> {
         None
+    }
+
+    /// Whether this adapter's requests go to the node's own shared-pool engine. There a mind's
+    /// window is her grant, decided by [`crate::capacity::mind_window::mind_window`], and the
+    /// lane's per-sequence window is nobody's. Default `false`: a remote, dedicated, cloud or
+    /// in-process adapter.
+    fn serves_on_shared_pool(&self) -> bool {
+        false
     }
 
     /// Wait for a semantic capacity observation to change, without generating or

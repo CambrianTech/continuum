@@ -526,6 +526,10 @@ impl AIProviderAdapter for PlacementSwitch {
     fn live_served_window(&self) -> Option<u32> {
         self.current().live_served_window()
     }
+
+    fn serves_on_shared_pool(&self) -> bool {
+        self.current().serves_on_shared_pool()
+    }
     /// Asked of the adapter her request actually goes to, like every other capability here: a
     /// home lane on our fork's gateway may take her learned tool head, a remote seat may not.
     /// Left to the trait default, every resident read `false` behind this switch, so the head

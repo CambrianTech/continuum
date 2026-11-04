@@ -42,9 +42,32 @@ impl LlmDeliberationFaculty {
         // triple. [[fallbacks-are-illegal-fail-loud]] [[never-thrash-sticky-hysteresis-on-every-lane]]
         // Retain the capacity observation that precedes assembly. Sampling again
         // after an await could mistake newly grown capacity for the refused one.
+        // Her window, from the one determiner (card de7bb6e8). On the shared pool it is her grant. An
+        // ungranted mind is measured first (her view records her wish, never submitted), then parks on
+        // the grants watch, then decides again (Cormac on #5752).
+        let decided = match crate::capacity::mind_window::decide_window(
+            || crate::capacity::mind_window::mind_window(self.persona_id, loaded.adapter.as_ref(), loaded.context_window),
+            || {
+                continuum_base::probe!(
+                    class = "delib.window.ungranted",
+                    persona = %self.persona_name,
+                    "no grant on the shared pool yet: measuring her view, then waiting for one"
+                );
+                let _measured = self.prompt_view_with_visual_feedback(ws, loaded.context_window, PromptCalibration::default(), None);
+            },
+            crate::capacity::mind_window::grants_changed,
+        )
+        .await
+        {
+            Ok(decided) => decided,
+            Err(refused) => return Some(Contribution::deliberation_fault(refused.to_string())),
+        };
+        let decided_window = decided.tokens();
         let capacity_readiness = Arc::new(crate::cognition::workspace::CapacityReadiness::new(
+            self.persona_id,
             self.binding.clone(),
             loaded.clone(),
+            decided_window,
         ));
         let binding = {
             // ONE live source, no clamp. The window this turn budgets to is the live
@@ -62,7 +85,11 @@ impl LlmDeliberationFaculty {
             // reduction is authoritative immediately: reply reserve is requested
             // output, not spare capacity that can absorb a smaller served window.
             // The existing quantized history eviction still controls prefix churn.
-            let deadband = loaded.context_window / 8;
+            // A grant is exact (one owner decided it); only a lane's own report keeps a growth deadband.
+            let deadband = match decided {
+                crate::capacity::mind_window::Decided::Granted(_) => 0,
+                _ => loaded.context_window / 8,
+            };
             let adopt = effective < loaded.context_window
                 || effective.saturating_sub(loaded.context_window) > deadband;
             if !adopt {
@@ -104,9 +131,14 @@ impl LlmDeliberationFaculty {
                     model: loaded.model.clone(),
                     context_window: effective,
                 });
-                let _ = self
-                    .binding
-                    .compare_and_swap(&loaded, Arc::clone(&reconciled));
+                // ONE WRITER PER BINDING (Cormac on #5752): a mind on the shared pool is bound by the
+                // re-home reconciler from her grant, so the turn uses the decided window and writes
+                // nothing; a remote lane's report has no other writer, so the turn persists it.
+                if let crate::capacity::mind_window::Decided::Lane(_) = decided {
+                    let _ = self
+                        .binding
+                        .compare_and_swap(&loaded, Arc::clone(&reconciled));
+                }
                 reconciled
             }
         };
@@ -518,7 +550,7 @@ impl LlmDeliberationFaculty {
         // rent. Only when the lane measured timings (same honesty rule as
         // delib.generate.cache: a fabricated attribution is a lying receipt).
         if let Some(t) = resp.timing.as_ref() {
-            let cached = t.cached_tokens as u32;
+            let cached = t.cached_tokens;
             // Her last turn's shape — what the next work call's occupancy bound is read from.
             LAST_TURN_SHAPE.insert(
                 self.persona_id,

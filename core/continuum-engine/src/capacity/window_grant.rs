@@ -45,6 +45,12 @@ pub fn install_grants(rx: tokio::sync::watch::Receiver<Option<PoolGrants>>) -> b
     GRANTS.set(rx).is_ok()
 }
 
+/// A receiver of the published grants, for a waiter that must wake when they change
+/// ([`super::mind_window::grants_changed`]). `None` before the serving daemon installs them.
+pub fn grants_receiver() -> Option<tokio::sync::watch::Receiver<Option<PoolGrants>>> {
+    GRANTS.get().cloned()
+}
+
 /// Her current grant on this node's engine: `None` before the daemon installs its grants, before
 /// the engine serves, or while she has none yet. A `watch` borrow, no I/O.
 pub fn current_grant(persona: uuid::Uuid) -> Option<u32> {
