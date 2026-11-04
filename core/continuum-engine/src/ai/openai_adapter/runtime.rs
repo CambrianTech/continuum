@@ -1,4 +1,5 @@
-//! Construction, endpoint resolution, runtime model catalog and slot-pool wiring.
+//! Construction, endpoint resolution and runtime model catalog. Slot-pool discovery is the slots
+//! directory's (`SlotDirectory::discover_pool`).
 
 use super::*;
 
@@ -341,132 +342,7 @@ impl OpenAICompatibleAdapter {
             }
         }
     }
-
-    /// Probe the serving backend's `GET /lora-adapters` and record what it
-    /// says into `lora_support`. This is capability DISCOVERY, not a declared
-    /// table: a 200 with an array → `Supported` (with the name→id catalog); a
-    /// 404/501 → `Unsupported` (cached, so we don't re-probe a cloud/mlx
-    /// backend every turn). A connection/transport error is returned as `Err`
-    /// and NOT cached — a momentarily-dead server is not a server without LoRA
-    /// support. llama.cpp `llama-server` returns the array of adapters it
-    /// loaded at launch, each `{ "id": N, "path": "...", "scale": S }`.
-    /// Ensure this server's KV slot pool exists — probe `/props` once, install via
-    /// `ensure_pool` — and return it. DISCOVERY only: the lease + pin + KV paging live
-    /// in [`crate::inference::turn_admission::admit_turn`], which takes this pool. (Was
-    /// `slot_for_activity`, which also leased; split so the permit-first + pin ordering
-    /// lives in one place.)
-    pub(super) async fn ensure_slot_pool(
-        &self,
-        endpoints: &OpenAiBase,
-    ) -> Result<std::sync::Arc<crate::inference::slots::KvSlotPool>, crate::ai::slot_discovery::SlotDiscoveryMiss> {
-        use crate::ai::slot_discovery::SlotDiscoveryMiss as Miss;
-        let root = endpoints.root();
-        let dir = crate::inference::slots::directory();
-        // Fast path: this server's state already known (process-global directory —
-        // every adapter instance talking to the same server shares ONE assignment).
-        let existing_pool = match dir.get(root) {
-            Some(Some(pool)) if dir.page_admission_known(root) => return Ok(pool),
-            Some(Some(pool)) => Some(pool),
-            Some(None) => return Err(Miss::LatchedUnsupported),
-            None => None,              // never probed — probe below
-        };
-        let discovery_generation = dir.page_discovery_generation(root);
-        // Probe /props once. Lock is NOT held across the await.
-        let url = endpoints.props();
-        let resp = match self.client.get(&url).send().await {
-            Ok(r) => r,
-            Err(e) => return Err(Miss::Transport { error: e.to_string() }),
-        };
-        if !resp.status().is_success() {
-            let status = resp.status();
-            // ONLY "this endpoint does not exist" may latch Unsupported. Any other
-            // status — above all the 503 a llama-server answers while the model is
-            // still LOADING — is transient, and latching on it killed slot affinity
-            // on effectively EVERY boot: personas start deliberating before the lane
-            // is warm (`inference.lane_relaunch_retry` ×93, reason=503_loading, same
-            // ledger), so the first probe raced the load window, latched Unsupported
-            // for the process's life, and prefix-similarity slot theft quietly
-            // replaced pinning — measured as `cached: 0` mid-conversation on
-            // 2026-08-21. A verdict about what a server IS must never be reached
-            // while the server is mid-transition (#442's rule, one layer down).
-            if props_status_proves_endpoint_absent(status) {
-                dir.latch_unsupported(root);
-                return Err(Miss::EndpointAbsent { status: status.as_u16() });
-            }
-            return Err(Miss::NotReady { status: status.as_u16() });
-        }
-        let body: serde_json::Value = match resp.json().await {
-            Ok(v) => v,
-            // A malformed body from a live server is also not proof of absence —
-            // mid-load llama-server can answer partial/HTML bodies. Defer, don't latch.
-            Err(_) => return Err(Miss::BodyUnparsed),
-        };
-        // Capture the served PER-SLOT window while we hold the props body —
-        // the ONE authoritative source for what a request can actually carry
-        // (#139). Recorded even for single-slot servers (the window truth is
-        // independent of whether affinity is useful).
-        if let Some(n_ctx) = body
-            .pointer("/default_generation_settings/n_ctx")
-            .and_then(|v| v.as_u64())
-        {
-            served_ctx_by_root().insert(root.to_owned(), n_ctx as u32);
-        }
-        let n_slots = body
-            .get("total_slots")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
-        if n_slots == 0 {
-            // Missing geometry is not proof that activity paging is unsupported.
-            return Err(Miss::NoGeometry);
-        }
-        if dir.page_discovery_generation(root) != discovery_generation {
-            return Err(Miss::Superseded); // props belongs to the superseded process, not its replacement
-        }
-        // The directory arbitrates the probe race: only the first writer installs
-        // the pool, once per SERVER, not once per adapter.
-        let pool = existing_pool.clone().unwrap_or_else(|| dir.ensure_pool(root, n_slots));
-        if pool.n_slots() != n_slots {
-            return Err(Miss::GeometryMismatch { installed: pool.n_slots(), props: n_slots }); // they must agree
-        }
-        // A running engine this core ADOPTED (a deploy kept it) has no launch contract here,
-        // so its confirmed saves come from the ledger it left, when that ledger names this
-        // very process. A spawned engine already attached its own at readiness;
-        // its first capability probe must not pretend it adopted another ledger.
-        let adoption = if existing_pool.is_some() { Err("pool_already_installed") } else { match crate::inference::lane_registry::live_lane() {
-            None => Err("no_live_lane_record"),
-            Some(lane) if lane.root_url() != root.trim_end_matches('/') => Err("live_lane_is_another_root"),
-            Some(lane) if crate::inference::engine_residency::process_start_s(lane.pid) != Some(lane.started_s) => {
-                Err("live_lane_is_another_process")
-            }
-            Some(lane) => match lane.page_dir.as_deref() {
-                None => Err("live_lane_has_no_page_dir"),
-                Some(page_dir) => {
-                    // the adopted engine's page dir is this core's to trim and measure too
-                    // (a spawn records it at launch; an adoption never did)
-                    crate::inference::slots::note_page_dir(page_dir);
-                    crate::inference::slots::adopt_engine_ledger(&pool, page_dir, lane.pid, lane.started_s)
-                        .map_err(crate::inference::slots::AdoptRefusal::as_str)
-                }
-            },
-        }};
-        continuum_base::probe!(
-            class = "inference.kv_page.ledger_adopted",
-            adopted = adoption.is_ok(),
-            loaded = adoption.unwrap_or(0) as u64, // probe field: 0 when nothing was adopted, `why` names the reason
-            why = adoption.err().unwrap_or("adopted"), // probe field: the refusal, or "adopted" when the ledger was the engine's
-            "an adopted engine's confirmed-save ledger: its saved pages are restorable only when the ledger names this same process"
-        );
-        if !dir.negotiate_page_admission(root, &pool, discovery_generation, body.get("slot_save_size_version")).await {
-            return Err(Miss::PageAdmissionRefused);
-        }
-        tracing::info!(
-            n_slots,
-            "slot affinity enabled — activities lease llama-server slots (props-discovered)"
-        );
-        Ok(pool)
-    }
 }
-
 
 /// Where one request goes and whether it may carry `tail_tools`, decided together from one
 /// snapshot ([`OpenAICompatibleAdapter::route_now`]).

@@ -10,8 +10,14 @@ pub enum AdoptedCheckpointRefusal {
     /// This core owns a generation on the endpoint, or its paging is uncertain.
     #[error("adopted checkpoint requires an unowned, certain pool")]
     OwnedOrUncertain,
-    #[error("adopted checkpoint requires a known pool")]
-    UnknownPool,
+    /// The endpoint was never probed: its pool is discovered before the checkpoint
+    /// (`SlotDirectory::adopted_checkpoint_pool`), never refused for it alone.
+    #[error("adopted checkpoint pool is not yet discovered")]
+    Unprobed,
+    /// Discovery came back without a pool (engine not answering props, no geometry, mismatch),
+    /// or an earlier probe latched the endpoint unsupported.
+    #[error("adopted checkpoint requires a known pool: {0}")]
+    UnknownPool(#[source] crate::inference::slots::PoolDiscoveryMiss),
     #[error("adopted checkpoint requires a verified ledger")]
     UnverifiedLedger,
     /// The ledger names another process than the recorded lane's.

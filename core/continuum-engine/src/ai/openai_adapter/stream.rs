@@ -200,7 +200,7 @@ impl OpenAICompatibleAdapter {
             // Discovery: install this server's slot pool on first use (probes /props).
             // Non-Turn traffic also needs the pool on a single-slot server: it
             // must save the activity resident before borrowing the only slot.
-            let pool = self.ensure_slot_pool(&endpoints).await.map_err(|miss| {
+            let pool = crate::inference::slots::directory().discover_pool(&self.client, root).await.map_err(|miss| {
                 miss.probe(root);
                 crate::ai::inference_error::InferenceError::Unavailable(format!(
                     "slot discovery refused generation at {root}: {} ({miss:?})",
@@ -286,7 +286,7 @@ impl OpenAICompatibleAdapter {
                 // into a diagnosis. Chars/4 is a deliberately conservative
                 // token estimate — an alarm that only fires when the overshoot
                 // is unambiguous.
-                if let Some(served) = served_ctx_by_root().get(endpoints.root()) {
+                if let Some(served) = crate::inference::slots::served_ctx_by_root().get(endpoints.root()) {
                     let approx_tokens = prompt_tokens;
                     if approx_tokens > *served as usize {
                         // #3847: the total was measured but never ATTRIBUTED, so

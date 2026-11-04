@@ -56,7 +56,7 @@ async fn a_props_transport_failure_is_a_named_miss_and_never_latches() {
     // test could rebind); the path keeps this root's directory entry its own.
     let mut adapter = test_adapter();
     adapter.config.base_url = "http://127.0.0.1:0/slot-discovery-transport-miss".into();
-    let Err(miss) = adapter.ensure_slot_pool(&adapter.endpoints()).await else { panic!("test: nothing listens, yet a pool came back") };
+    let Err(miss) = crate::inference::slots::directory().discover_pool(&adapter.client, adapter.endpoints().root()).await else { panic!("test: nothing listens, yet a pool came back") };
     assert_eq!(miss.as_str(), "transport", "{miss:?}");
     assert!(crate::inference::slots::directory().get(adapter.endpoints().root()).is_none(), "a transport error never latches");
 }
@@ -479,12 +479,12 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         revisions: None,
     }).expect("fixture owned engine readiness");
     drop(transition);
-    assert!(matches!(adapter.ensure_slot_pool(&adapter.endpoints()).await,
-        Err(crate::ai::slot_discovery::SlotDiscoveryMiss::GeometryMismatch { .. })),
+    assert!(matches!(crate::inference::slots::directory().discover_pool(&adapter.client, adapter.endpoints().root()).await,
+        Err(crate::inference::slots::PoolDiscoveryMiss::GeometryMismatch { .. })),
         "props cannot authorize an already installed pool with different geometry");
     assert!(!crate::inference::slots::directory().page_admission_known(&root));
     props_slots.store(1, Ordering::SeqCst);
-    assert!(adapter.ensure_slot_pool(&adapter.endpoints()).await.is_ok());
+    assert!(crate::inference::slots::directory().discover_pool(&adapter.client, adapter.endpoints().root()).await.is_ok());
     assert!(crate::inference::slots::directory().page_admission_known(&root));
     let owned_geometry = endpoint.served_geometry().expect("fixture owned geometry");
     let observed_service = || crate::inference::resource_admission::leased_in_sent_samples()
