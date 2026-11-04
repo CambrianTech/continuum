@@ -242,18 +242,17 @@ impl EndpointSlots {
     pub(crate) fn adopted_checkpoint_pool(
         &self,
         incarnation: crate::inference::engine_residency::EngineIncarnation,
-    ) -> Result<Arc<KvSlotPool>, String> {
+    ) -> Result<Arc<KvSlotPool>, AdoptedCheckpointRefusal> {
         let pool = {
             let state = self.state.lock();
             if state.generation().is_some() || state.paging_uncertain {
-                return Err("adopted checkpoint requires an unowned, certain pool".into());
+                return Err(AdoptedCheckpointRefusal::OwnedOrUncertain);
             }
-            state.current_pool().cloned()
-                .ok_or("adopted checkpoint requires a known pool")?
+            state.current_pool().cloned().ok_or(AdoptedCheckpointRefusal::UnknownPool)?
         };
-        let ledger = pool.ledger.get().ok_or("adopted checkpoint requires a verified ledger")?;
+        let ledger = pool.ledger.get().ok_or(AdoptedCheckpointRefusal::UnverifiedLedger)?;
         if ledger.incarnation.get().copied() != Some((incarnation.pid, incarnation.started_s)) {
-            return Err("adopted checkpoint ledger names a different process".into());
+            return Err(AdoptedCheckpointRefusal::OtherProcess);
         }
         Ok(pool)
     }
@@ -317,24 +316,31 @@ impl EndpointTransition {
         root: &str,
         incarnation: crate::inference::engine_residency::EngineIncarnation,
         current: &(dyn Fn() -> bool + Send + Sync),
-    ) -> Result<(), String> {
+    ) -> Result<(), AdoptedCheckpointRefusal> {
         use crate::inference::engine_residency::Liveness;
 
         if !Arc::ptr_eq(&directory().endpoint(root), &self.endpoint) {
-            return Err("adopted checkpoint URL does not identify the held endpoint".into());
+            return Err(AdoptedCheckpointRefusal::EndpointMismatch);
         }
         let pool = self.endpoint.adopted_checkpoint_pool(incarnation)?;
-        let verify_engine = || match incarnation.liveness() {
+        let verify = || match incarnation.liveness() {
             Liveness::Alive => Ok(()),
-            Liveness::Dead => Err("adopted checkpoint engine exited or PID was reused".into()),
-            Liveness::Unknown => Err("adopted checkpoint engine identity is unverified".into()),
+            Liveness::Dead => Err(AdoptedCheckpointRefusal::EngineGone),
+            Liveness::Unknown => Err(AdoptedCheckpointRefusal::IdentityUnverified),
         };
-        verify_engine()?;
+        verify()?;
         if !current() {
-            return Err("adopted checkpoint intent changed".into());
+            return Err(AdoptedCheckpointRefusal::IntentChanged);
         }
-        let result = self.checkpoint_pool(client, root, &pool, &verify_engine).await;
-        if result.is_err() && current() && verify_engine().is_ok() {
+        // The save checks the engine between pages through the same typed verdict.
+        let result = self
+            .checkpoint_pool(client, root, &pool, &verify)
+            .await
+            .map_err(|failure| match failure {
+                CheckpointFailure::Engine(refusal) => refusal,
+                CheckpointFailure::Save(detail) => AdoptedCheckpointRefusal::Save(detail),
+            });
+        if result.is_err() && current() && verify().is_ok() {
             // A terminal refusal did not mutate the engine. Only reopen this
             // exact pool; CheckpointSave quarantines cancellation/uncertainty.
             let state = self.endpoint.state.lock();
@@ -346,7 +352,7 @@ impl EndpointTransition {
         }
         result?;
         if !current() {
-            return Err("adopted replacement intent changed after checkpoint".into());
+            return Err(AdoptedCheckpointRefusal::IntentChangedAfterCheckpoint);
         }
         Ok(())
     }
@@ -464,11 +470,11 @@ impl EndpointTransition {
         };
         self.checkpoint_pool(client, root, &pool, &|| {
             if generation.has_exited() {
-                Err("checkpoint engine exited".into())
+                Err("checkpoint engine exited")
             } else {
                 Ok(())
             }
-        }).await?;
+        }).await.map_err(|failure| failure.to_string())?;
         Ok(ResidentCheckpoint {
             transition: self,
             generation,
@@ -479,17 +485,21 @@ impl EndpointTransition {
     /// One save path for a drained pool. The caller supplies its existing engine
     /// authority: an owned generation or a verified adopted process incarnation.
     /// Losing that authority cannot publish a successful save for its successor.
-    async fn checkpoint_pool(
+    async fn checkpoint_pool<E>(
         &mut self,
         client: &reqwest::Client,
         root: &str,
         pool: &Arc<KvSlotPool>,
-        verify_engine: &(dyn Fn() -> Result<(), String> + Send + Sync),
-    ) -> Result<(), String> {
+        verify_engine: &(dyn Fn() -> Result<(), E> + Send + Sync),
+    ) -> Result<(), CheckpointFailure<E>> {
         use super::super::turn_admission::{kv_page_action, PageOutcome};
 
+        let verify_engine = || verify_engine().map_err(CheckpointFailure::Engine);
         verify_engine()?;
-        directory().discover_page_admission(client, root).await?;
+        directory()
+            .discover_page_admission(client, root)
+            .await
+            .map_err(CheckpointFailure::Save)?;
         let mut residents: Vec<_> = pool
             .holders
             .lock()
@@ -512,10 +522,12 @@ impl EndpointTransition {
                 }
                 PageOutcome::Rejected => {
                     save.pending = false;
-                    return Err(format!("checkpoint save rejected for slot {slot}"));
+                    return Err(CheckpointFailure::Save(format!("checkpoint save rejected for slot {slot}")));
                 }
                 PageOutcome::Uncertain => {
-                    return Err(format!("checkpoint save completion uncertain for slot {slot}; endpoint quarantined"));
+                    return Err(CheckpointFailure::Save(format!(
+                        "checkpoint save completion uncertain for slot {slot}; endpoint quarantined"
+                    )));
                 }
             }
         }
@@ -833,4 +845,20 @@ pub fn directory() -> &'static SlotDirectory {
     DIR.get_or_init(|| SlotDirectory {
         endpoints: dashmap::DashMap::new(),
     })
+}
+
+/// Why one drained pool's save stopped: its caller's own engine check refused (kept as the
+/// caller's type, so an adopted engine's `EngineGone` stays that variant), or the save failed.
+enum CheckpointFailure<E> {
+    Engine(E),
+    Save(String),
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for CheckpointFailure<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Engine(refusal) => refusal.fmt(f),
+            Self::Save(detail) => f.write_str(detail),
+        }
+    }
 }

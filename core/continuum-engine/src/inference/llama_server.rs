@@ -130,6 +130,8 @@ pub(crate) use slot_work::InFlightSlotGuard;
 pub(crate) use slot_work::slot_work_of;
 
 mod control;
+mod retirement_refusal;
+pub use retirement_refusal::RetirementRefusal;
 pub use control::{
     EngineRetirementError, EngineRetirementReceipt, EngineRetirementStatus, EnsureOutcome,
     LlamaServerControl, LlamaServerError, OwnedEngineIdentity, OwnedRestoreSession,

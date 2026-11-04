@@ -25,12 +25,12 @@ impl LlamaServerProcess {
             return Ok(AdoptedPlan::NoLane);
         };
         if lane.root_url() != self.root {
-            return Err(LlamaServerError::RetirementRefused("recorded live lane belongs to another endpoint".into()));
+            return Err(LlamaServerError::RetirementRefused(RetirementRefusal::OtherEndpoint));
         }
         let incarnation = lane.incarnation();
         match incarnation.liveness() {
             Liveness::Dead => Ok(AdoptedPlan::Dead),
-            Liveness::Unknown => Err(LlamaServerError::RetirementRefused("adopted engine identity is unverified".into())),
+            Liveness::Unknown => Err(LlamaServerError::RetirementRefused(RetirementRefusal::IdentityUnverified)),
             Liveness::Alive => Ok(AdoptedPlan::Alive(incarnation)),
         }
     }
@@ -48,7 +48,7 @@ impl LlamaServerProcess {
                 endpoint
                     .adopted_checkpoint_pool(incarnation)
                     .map(drop)
-                    .map_err(LlamaServerError::RetirementRefused)
+                    .map_err(|refusal| LlamaServerError::RetirementRefused(refusal.into()))
             }
             AdoptedPlan::Resume(_) | AdoptedPlan::NoLane | AdoptedPlan::Dead => Ok(()),
         }
@@ -83,7 +83,7 @@ impl LlamaServerProcess {
         } else {
             transition.checkpoint_adopted_before_replacement(
                 &self.client, &self.root, incarnation, current,
-            ).await.map_err(LlamaServerError::RetirementRefused)?;
+            ).await.map_err(|refusal| LlamaServerError::RetirementRefused(refusal.into()))?;
             None
         };
         if !current() {
@@ -97,7 +97,7 @@ impl LlamaServerProcess {
                 }
                 return Ok(());
             }
-            Liveness::Unknown => return Err(LlamaServerError::RetirementRefused("adopted engine identity became unverified after checkpoint".into())),
+            Liveness::Unknown => return Err(LlamaServerError::RetirementRefused(RetirementRefusal::IdentityUnverifiedAfterCheckpoint)),
             Liveness::Alive => {}
         }
         continuum_process::signal_if_same(
@@ -105,7 +105,7 @@ impl LlamaServerProcess {
                 pid: incarnation.pid,
                 start_time: incarnation.started_s,
             },
-        ).map_err(LlamaServerError::RetirementRefused)?;
+        ).map_err(|detail| LlamaServerError::RetirementRefused(RetirementRefusal::Signal(detail)))?;
         // No await between signalling and retaining custody. Cancellation of the
         // wait cannot turn this predecessor back into a serving candidate. A signal is
         // not a death: the residents' loss is recorded when the exit is observed.
@@ -209,7 +209,9 @@ mod tests {
         let untouched = crate::inference::slots::directory().endpoint(&format!("{root}-untouched"));
         let transition = untouched.transition_if(&|| true).await.map_err(|()| "transition refused")?;
         super::super::launch::handle_retirement_failure(&transition,
-            &LlamaServerError::RetirementRefused("checkpoint refused before signal".into()));
+            &LlamaServerError::RetirementRefused(RetirementRefusal::Checkpoint(
+                crate::inference::slots::AdoptedCheckpointRefusal::UnknownPool,
+            )));
         drop(transition);
         assert!(untouched.admit().await.is_ok(), "pre-signal refusal still hands admission back");
         assert!(!super::super::engine_install::roll_back_engine_after_failed_launch(&error),

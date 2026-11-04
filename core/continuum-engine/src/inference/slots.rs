@@ -56,6 +56,8 @@ use saved_ledger::{LedgerSnapshot, LoadedLedger};
 use saved_ledger::{SavedLedgerFile, LEDGER_FORMAT, SAVED_LEDGER_FILE};
 mod engine_generation;
 mod adopted_replacement;
+mod adopted_checkpoint_refusal;
+pub use adopted_checkpoint_refusal::AdoptedCheckpointRefusal;
 mod relaunch_discard;
 pub(crate) use relaunch_discard::{DiscardReason, PendingDiscard};
 use relaunch_discard::DiscardLog;

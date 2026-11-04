@@ -30,7 +30,7 @@ pub enum LlamaServerError {
     /// (card 931cfd22). Never a spawn failure: it neither condemns the incumbent nor rolls the
     /// engine binary back.
     #[error("retiring the incumbent engine was refused, nothing was signalled: {0}")]
-    RetirementRefused(String),
+    RetirementRefused(super::RetirementRefusal),
     /// Retirement has been signalled but exact-process exit is not yet proven.
     /// Keep admission suspended and resume observation; never blame the candidate binary.
     #[error("incumbent retirement remains unverified; endpoint suspended: {0}")]

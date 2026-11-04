@@ -177,7 +177,7 @@ impl LlamaServerControl for FakeControl {
     async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
         self.serves.fetch_add(1, Ordering::SeqCst);
         if self.retirement_refused {
-            return Err(LlamaServerError::RetirementRefused("adopted checkpoint requires a known pool".into()));
+            return Err(LlamaServerError::RetirementRefused(super::RetirementRefusal::Checkpoint(crate::inference::slots::AdoptedCheckpointRefusal::UnknownPool)));
         }
         if self.serve_ok {
             Ok(())
