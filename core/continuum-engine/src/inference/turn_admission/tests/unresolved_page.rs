@@ -5,7 +5,7 @@
 use super::super::page_liveness::watch_for_test;
 use super::*;
 use crate::system_resources::process_tree::CpuSample;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// The engine's process keeps working: its CPU counter advanced at every read.
@@ -14,35 +14,55 @@ fn always_busy() -> Option<CpuSample> {
 }
 
 /// A fake engine whose page switches land only when the test releases them, one per release,
-/// and which never answers `/slots` (no route), as a main loop deep in one batch cannot.
+/// and whose `/slots` never answers, as a main loop deep in one batch cannot. With
+/// `drops_reply` set, a released switch's reply is cut mid-body: the engine closed the
+/// connection, which proves nothing about whether the switch ended.
 struct DelayedEngine {
     root: String,
     release: Arc<tokio::sync::Notify>,
     landed: Arc<AtomicUsize>,
+    drops_reply: Arc<AtomicBool>,
     server: tokio::task::JoinHandle<std::io::Result<()>>,
 }
 
 async fn delayed_engine() -> DelayedEngine {
-    use axum::{extract::Path, routing::post, Json, Router};
+    use axum::{
+        body::{Body, Bytes},
+        extract::{Path, Query},
+        response::{IntoResponse, Response},
+        routing::{get, post},
+        Json, Router,
+    };
     let release = Arc::new(tokio::sync::Notify::new());
     let landed = Arc::new(AtomicUsize::new(0));
-    let app = Router::new().route("/slots/{slot}", post({
-        let release = release.clone();
-        let landed = landed.clone();
-        move |Path(slot): Path<u32>, Json(body): Json<serde_json::Value>| {
-            let release = release.clone();
-            let landed = landed.clone();
-            async move {
-                release.notified().await;
-                landed.fetch_add(1, Ordering::SeqCst);
-                Json(json!({"id_slot": slot, "filename": body["filename"], "n_restored": 42}))
+    let drops_reply = Arc::new(AtomicBool::new(false));
+    let app = Router::new()
+        .route("/slots", get(|| std::future::pending::<Json<serde_json::Value>>()))
+        .route("/slots/{slot}", post({
+            let (release, landed, drops_reply) = (release.clone(), landed.clone(), drops_reply.clone());
+            move |Path(slot): Path<u32>,
+                  Query(query): Query<std::collections::HashMap<String, String>>,
+                  Json(body): Json<serde_json::Value>| {
+                let (release, landed, drops_reply) = (release.clone(), landed.clone(), drops_reply.clone());
+                async move {
+                    release.notified().await;
+                    landed.fetch_add(1, Ordering::SeqCst);
+                    if drops_reply.load(Ordering::SeqCst) {
+                        let cut = futures::stream::iter([
+                            Ok(Bytes::from_static(b"{\"id_slot\":")),
+                            Err(std::io::Error::other("test: the engine closed the connection mid-reply")),
+                        ]);
+                        return Response::new(Body::from_stream(cut));
+                    }
+                    let count = if query.get("action").is_some_and(|action| action == "save") { "n_saved" } else { "n_restored" };
+                    Json(json!({"id_slot": slot, "filename": body["filename"], (count): 42})).into_response()
+                }
             }
-        }
-    }));
+        }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
     let root = format!("http://{}", listener.local_addr().expect("test: address"));
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
-    DelayedEngine { root, release, landed, server }
+    DelayedEngine { root, release, landed, drops_reply, server }
 }
 
 // what this catches (Codex's review on #5772): an unresolved switch that kept only its HTTP
@@ -98,5 +118,65 @@ async fn an_unresolved_switch_holds_its_slot_until_the_engine_answers() {
     assert_eq!(engine.landed.load(Ordering::SeqCst), 2, "the late restore landed before the replacement held the endpoint");
     assert_eq!(sem.available_permits(), 2, "every lane is free once the receipt is in");
     drop(transition);
+    engine.server.abort();
+}
+
+// what this catches (Codex's follow-up on #5772): the held custody read a late reply that the
+// engine cut mid-body (or a socket closed under the request) as a receipt and let the slot go
+// unquarantined, though nothing proved the restore ended inside the engine. The late reply is
+// judged by the same terminal-receipt check as the bounded wait: an unverified one quarantines
+// the endpoint before the slot is let go, so no same-slot turn gets in until a verified
+// replacement.
+#[tokio::test(start_paused = true)]
+async fn a_reply_cut_mid_body_quarantines_before_the_slot_is_let_go() {
+    let engine = delayed_engine().await;
+    watch_for_test(&engine.root, always_busy);
+    let directory = crate::inference::slots::directory();
+    let pool = directory.ensure_pool(&engine.root, 1);
+    let held = PageKey::mind(Uuid::new_v4()).expect("test: held activity");
+    let next = PageKey::mind(Uuid::new_v4()).expect("test: next activity");
+    pool.note_saved(held);
+    let sem = Arc::new(Semaphore::new(2));
+    let client = reqwest::Client::new();
+
+    let turn = admit_turn(&sem, Some(held), Some(pool.clone()), &client, &engine.root, 100, AdmissionPatience::for_turn()).await;
+    assert!(turn.is_err(), "the restore is unresolved");
+    let mut reuse = Box::pin(admit_turn(&sem, Some(next), Some(pool.clone()), &client, &engine.root, 100, AdmissionPatience::for_turn()));
+    assert!(tokio::time::timeout(Duration::from_secs(120), &mut reuse).await.is_err(), "no turn takes a held slot");
+
+    engine.drops_reply.store(true, Ordering::SeqCst);
+    engine.release.notify_one();
+    let reused = tokio::time::timeout(Duration::from_secs(120), reuse).await;
+    assert!(!matches!(reused, Ok(Ok(_))), "a cut reply never lets the slot be reused");
+    assert_eq!(engine.landed.load(Ordering::SeqCst), 1, "the engine was reached and cut its reply");
+    assert!(directory.endpoint(&engine.root).paging_recovery_required(), "an unverified late reply quarantines the endpoint");
+    engine.server.abort();
+}
+
+// what this catches (Codex's follow-up on #5772): a lifecycle checkpoint whose save went
+// unresolved returned its error with the request held by nothing and the endpoint not
+// quarantined, though an error alone does not prove the engine was retired. The checkpoint's
+// pending save quarantines the endpoint as the writer lets go.
+#[tokio::test(start_paused = true)]
+async fn a_checkpoint_left_unresolved_quarantines_the_endpoint() {
+    let dir = tempfile::tempdir().expect("test: page dir");
+    let engine = delayed_engine().await;
+    watch_for_test(&engine.root, always_busy);
+    let (endpoint, pool) = super::lifecycle::boot(&engine.root, dir.path()).await;
+    let client = reqwest::Client::new();
+    let sem = Arc::new(Semaphore::new(2));
+    let resident = PageKey::mind(Uuid::new_v4()).expect("test: resident activity");
+    let mut turn = admit_turn(&sem, Some(resident), Some(pool), &client, &engine.root, 100, Duration::ZERO)
+        .await
+        .expect("test: a cold resident");
+    turn.generation_completed();
+    drop(turn);
+
+    let mut writer = endpoint.transition().await;
+    assert!(writer.checkpoint_residents(&client, &engine.root).await.is_err(), "the save never answered");
+    drop(writer);
+    assert!(endpoint.paging_recovery_required(), "an unresolved checkpoint quarantines: its error alone retires nothing");
+    assert!(!endpoint.is_ready(), "no turn is admitted until a verified replacement");
+    engine.release.notify_one();
     engine.server.abort();
 }

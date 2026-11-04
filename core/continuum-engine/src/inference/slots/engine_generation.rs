@@ -530,14 +530,15 @@ impl EndpointTransition {
                     return Err(CheckpointFailure::Save(format!("checkpoint save rejected for slot {slot}")));
                 }
                 PageOutcome::Unresolved(unresolved) => {
-                    // The engine kept working without a receipt: not a quarantine on that alone.
-                    // This checkpoint runs inside the lifecycle writer, which already holds the
-                    // whole endpoint and retires this engine next, so the request is held with no
-                    // further custody. The page stays lost (noted above): no half-written restore.
+                    // The engine kept working without a receipt. This checkpoint's error does not
+                    // prove the engine is retired (Codex's follow-up on #5772), and the writer
+                    // cannot be handed to the request, so the save stays PENDING: its drop below
+                    // quarantines the endpoint, and no turn is admitted until a verified
+                    // replacement. The request itself stays owned by the endpoint until its
+                    // receipt. The page stays lost (noted above): no half-written restore.
                     unresolved.hold(());
-                    save.pending = false;
                     return Err(CheckpointFailure::Save(format!(
-                        "checkpoint save unresolved for slot {slot}: the engine kept working without a receipt; page not restorable"
+                        "checkpoint save unresolved for slot {slot}: the engine kept working without a receipt; endpoint quarantined"
                     )));
                 }
                 PageOutcome::Uncertain => {

@@ -10,18 +10,24 @@
 //! endpoint's paging task beside the request. The compiler then forbids reusing the slot while
 //! it lives, and a transition's writer waits on its reader as it waits on any act in flight.
 //!
-//! The custody is released only by:
-//! - the receipt: the engine answered the request (or its socket closed under it);
-//! - the engine's own process, fenced by pid and start time: gone, or no CPU spent while the
-//!   request is unanswered. Paging is then unverified, so the endpoint is quarantined first;
-//! - a condemnation: the serving daemon decided to replace this engine, and its relaunch kills
-//!   the process that holds the request before any successor serves (the replacement's fence),
-//!   while its drain waits for every reader, this one included, to let go.
+//! The custody is released only as a [`Released`], and each kind carries its proof:
+//! - `Verified`: the late reply is a TERMINAL receipt, judged by the same
+//!   [`super::page_receipt::terminal_receipt`] the bounded wait uses (Codex's follow-up on
+//!   #5772: a socket closed under the request, or a truncated body, is not proof the engine
+//!   ended the switch);
+//! - `Fenced`: the endpoint was quarantined, so no turn is admitted until a verified
+//!   replacement. Reached by an unverified reply, or by the engine's own process (fenced by pid
+//!   and start time) gone or spending no CPU with the request unanswered;
+//! - `Condemned`: the serving daemon decided to replace this engine; its relaunch kills the
+//!   process that holds the request before any successor serves, while its drain waits for
+//!   every reader, this one included, to let go.
 
 use std::time::Duration;
 
 use super::page_liveness::{PageLiveness, PageReply, Pending};
+use super::page_receipt::{terminal_receipt, Terminal};
 use crate::inference::llama_server::EngineProbe;
+use crate::inference::slots::EndpointSlots;
 
 /// The request of a page switch that outlived its measured bound while the engine's process
 /// kept spending CPU, with what it needs to judge the engine until the receipt arrives.
@@ -30,6 +36,8 @@ pub(crate) struct UnresolvedPage {
     pub(super) root: String,
     pub(super) action: String,
     pub(super) slot: u32,
+    /// The page file the switch reads or writes: what a terminal receipt must name.
+    pub(super) filename: String,
     /// The CPU the engine's process spent over the checkpoint that ended the bounded wait.
     pub(super) cpu_spent: Duration,
     /// The switch's checkpoint (from this node's measured switch cost): how often the held
@@ -50,12 +58,21 @@ impl std::fmt::Debug for UnresolvedPage {
     }
 }
 
-/// What released a held custody.
+/// Proof that the endpoint's paging was quarantined: made only by [`quarantined`], so a release
+/// without a verified receipt cannot be written without quarantining first.
+struct Quarantined(());
+
+fn quarantined(endpoint: &EndpointSlots) -> Quarantined {
+    endpoint.quarantine_paging();
+    Quarantined(())
+}
+
+/// What released a held custody, with its proof.
 enum Released {
-    /// The engine answered: the HTTP status, 0 for a transport failure.
-    Receipt(u16),
-    /// The engine's process is gone or stopped working with the request unanswered.
-    Stopped,
+    /// The engine's terminal receipt, as the bounded wait would have judged it.
+    Verified(Terminal),
+    /// No verified receipt: the endpoint is quarantined until a verified replacement.
+    Fenced(Quarantined),
     /// The serving daemon is replacing the engine.
     Condemned,
 }
@@ -67,11 +84,11 @@ impl UnresolvedPage {
     }
 
     /// Move `custody` into the endpoint's paging task beside the request; both are released
-    /// together by the receipt, a stopped engine or a condemnation (module docs). `custody` is
-    /// whatever holds the slot: a turn's admission, or `()` where the caller already holds the
-    /// whole endpoint (a checkpoint inside a lifecycle writer that retires this engine next).
+    /// together, only as a [`Released`] (module docs). `custody` is whatever holds the slot: a
+    /// turn's admission, or `()` where the caller holds the whole endpoint and quarantines it
+    /// itself (a checkpoint inside a lifecycle writer).
     pub(crate) fn hold<C: Send + 'static>(self, custody: C) {
-        let Self { root, action, slot, cpu_spent: _, checkpoint, mut pending, liveness } = self;
+        let Self { root, action, slot, filename, cpu_spent: _, checkpoint, mut pending, liveness } = self;
         let endpoint = crate::inference::slots::directory().endpoint(&root);
         let condemnations = crate::inference::llama_server::condemnations();
         let condemned_already = crate::inference::llama_server::engine_condemned();
@@ -88,23 +105,27 @@ impl UnresolvedPage {
                 loop {
                     tokio::select! {
                         biased;
-                        reply = &mut pending => break Released::Receipt(reply.map_or(0, |(status, _)| status)), // map_or: status zero records a transport failure, never success
+                        reply = &mut pending => {
+                            let (status, body) = match reply {
+                                Ok(reply) => reply,
+                                Err(_) => (0, None), // a transport failure: status zero, never a receipt
+                            };
+                            break match terminal_receipt(&action, slot, &filename, status, body.as_ref()) {
+                                Some(terminal) => Released::Verified(terminal),
+                                None => Released::Fenced(quarantined(&endpoint)),
+                            };
+                        }
                         () = &mut condemned => break Released::Condemned,
                         _ = checkpoints.tick() => {
                             // `/slots` adds nothing here: the request itself is the engine's
                             // answer. Its process says whether it still works.
                             if liveness.observe(EngineProbe::Busy) == EngineProbe::Stopped {
-                                break Released::Stopped;
+                                break Released::Fenced(quarantined(&endpoint));
                             }
                         }
                     }
                 }
             };
-            if matches!(released, Released::Stopped) {
-                // The request may still land on whatever process holds the slot next, or never:
-                // paging is unverified until a verified replacement, as for an uncertain switch.
-                endpoint.quarantine_paging();
-            }
             continuum_base::probe!(
                 class = "inference.kv_page.unresolved_released",
                 endpoint = %root,
@@ -112,11 +133,11 @@ impl UnresolvedPage {
                 slot = slot as u64,
                 held_ms = held.elapsed().as_millis() as u64,
                 released_by = match released {
-                    Released::Receipt(_) => "receipt",
-                    Released::Stopped => "engine_stopped",
+                    Released::Verified(Terminal::Completed) => "receipt_completed",
+                    Released::Verified(Terminal::Rejected) => "receipt_rejected",
+                    Released::Fenced(Quarantined(())) => "quarantined",
                     Released::Condemned => "condemned",
                 },
-                status = match released { Released::Receipt(status) => u64::from(status), _ => 0 },
                 "an unresolved page switch let its slot go: the page stays held as the unresolved switch left it"
             );
             drop(custody);

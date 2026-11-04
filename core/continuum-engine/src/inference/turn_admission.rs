@@ -32,9 +32,11 @@ use crate::inference::slots::{KvSlotPool, MindTurn, PageKey, SlotPermit, SlotPin
 
 mod page_liveness;
 mod page_quote;
+mod page_receipt;
 mod paging_lifetime;
 mod unresolved_page;
 
+use page_receipt::{terminal_receipt, Terminal};
 use page_liveness::{bounded_page_receipt, wait_while_engine_progresses, PageLiveness, Receipt};
 #[cfg(test)]
 use page_quote::read_quote;
@@ -845,6 +847,7 @@ async fn kv_page_action_with_capacity(
                 root: root.to_owned(),
                 action: action.to_owned(),
                 slot,
+                filename: filename.clone(),
                 cpu_spent,
                 checkpoint: bounds.checkpoint,
                 pending,
@@ -864,24 +867,10 @@ async fn kv_page_action_with_capacity(
         b["timings"][if action == "save" { "save_ms" } else { "restore_ms" }].as_f64().map(|ms| ms as u64)
     });
     let engine_bytes = body.as_ref().and_then(|b| b[if action == "save" { "n_written" } else { "n_read" }].as_u64());
-    let outcome = match body {
-        Some(body)
-            if (200..300).contains(&status)
-                && body["id_slot"].as_u64() == Some(slot as u64)
-                && body["filename"].as_str() == Some(filename.as_str())
-                && body[if action == "save" { "n_saved" } else { "n_restored" }].as_u64().is_some() =>
-        {
-            PageOutcome::Completed
-        }
-        Some(body)
-            if status == 400
-                && body["error"]["code"].as_u64() == Some(400)
-                && body["error"]["type"].as_str() == Some("invalid_request_error")
-                && body["error"]["message"].as_str().is_some() =>
-        {
-            PageOutcome::Rejected
-        }
-        _ => unresolved.map_or(PageOutcome::Uncertain, PageOutcome::Unresolved),
+    let outcome = match terminal_receipt(action, slot, &filename, status, body.as_ref()) {
+        Some(Terminal::Completed) => PageOutcome::Completed,
+        Some(Terminal::Rejected) => PageOutcome::Rejected,
+        None => unresolved.map_or(PageOutcome::Uncertain, PageOutcome::Unresolved),
     };
     if let PageOutcome::Unresolved(unresolved) = &outcome {
         let cpu_spent = unresolved.cpu_spent();
