@@ -26,8 +26,7 @@ impl ServingDaemonModule {
                 minds = grants.by_mind.len() as u64,
                 granted = grants.by_mind.values().map(|g| u64::from(*g)).sum::<u64>(),
                 grants = ?grants.by_mind,
-                from_population = ?grants.from_population,
-                "each local mind's window on the engine's pool: her measured requirement, granted by demand-following"
+                "each measured local mind's window on the engine's pool: her need, her target when every target fits"
             );
         }
     }
@@ -50,41 +49,31 @@ impl ServingDaemonModule {
             .active_model
             .as_deref()
             .and_then(|id| (self.model_resolver)(id))
-            .map(|model| model.context_window)?;
+            .and_then(|model| crate::inference::planning::window_allocator::Tokens::new(model.context_window))?;
         let per_sequence_cap = match self.on_shared_pool()? {
-            true => pool_tokens.min(trained),
+            true => pool_tokens.min(trained.get()),
             false => live.served_context_window,
         };
-        let requirements = self.serving_demand().requirements;
-        // A mind not measured yet claims the population's measured requirement on this seat,
-        // marked as such (ONE-BUDGET: an unmeasured claim never asks for the most). With no one
-        // measured she is granted nothing yet and keeps her binding until her first turn is.
-        let population = population_requirement(requirements.iter().map(|r| r.window));
-        let mut from_population = std::collections::BTreeSet::new();
-        let demands: Vec<Demand<uuid::Uuid>> = requirements
+        // Only a measured mind has a demand: an unmeasured one has no number to grant (her first view
+        // measures her), never the population's or anyone else's. The model's trained window is the one
+        // hard limit on both her floor and her target (her context compresses to it).
+        let demands: Vec<Demand<uuid::Uuid>> = self
+            .serving_demand()
+            .requirements
             .iter()
             .filter_map(|r| {
-                let required = match r.window {
-                    Some(own) => own,
-                    None => {
-                        from_population.insert(r.persona);
-                        population?
-                    }
-                };
                 Some(Demand {
                     mind: r.persona,
-                    // The model's trained window is the one hard limit (her context compresses to it);
-                    // a need above what the pool holds now is not trimmed here, it waits.
-                    required_tokens: required.min(trained),
+                    need: r.measure.need()?.min(trained),
+                    target: r.measure.target()?.min(trained),
                     in_flight: crate::cognition::turn_ledger::turn_in_flight(r.persona),
                     ceiling: per_sequence_cap,
                 })
             })
             .collect();
-        from_population.retain(|mind| demands.iter().any(|d| d.mind == *mind));
         let held = self.grants_tx.borrow().as_ref().map(|g| g.by_mind.clone()).unwrap_or_default(); // unwrap_or_default: nothing granted yet holds nothing
         let by_mind = DemandFollowing.grant(&demands, &held, pool_tokens);
-        Some(PoolGrants { pool_tokens, per_sequence_cap, by_mind, from_population })
+        Some(PoolGrants { pool_tokens, per_sequence_cap, by_mind })
     }
 
     /// Whether the running engine is on the shared pool, read off its argv once per process.
@@ -98,27 +87,5 @@ impl ServingDaemonModule {
         let shared = self.server.launched_on_shared_pool()?;
         *self.shared_pool_of.lock() = Some((pid, shared));
         Some(shared)
-    }
-}
-
-/// The population's measured requirement on this seat: the median of the minds measured so far.
-/// `None` when no one is.
-fn population_requirement(windows: impl Iterator<Item = Option<u32>>) -> Option<u32> {
-    let mut measured: Vec<u32> = windows.flatten().collect();
-    measured.sort_unstable();
-    measured.get(measured.len() / 2).copied()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::population_requirement;
-
-    // what this catches: the least-known mind claiming the biggest share (Cormac on #5733: an
-    // unmeasured mind asked for the largest requirement on the seat, or the whole cap). She claims
-    // the population's median, and nothing when no one is measured.
-    #[test]
-    fn an_unmeasured_mind_claims_the_median_never_the_most() {
-        assert_eq!(population_requirement([Some(70_000), None, Some(10_000), Some(20_000)].into_iter()), Some(20_000));
-        assert_eq!(population_requirement([None, None].into_iter()), None);
     }
 }

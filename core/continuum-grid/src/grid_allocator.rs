@@ -182,7 +182,7 @@ pub fn minds_over_the_grid(
     // not exiled (card 70706a9e).
     requirements
         .iter()
-        .filter_map(|r| r.window.map(|w| (r.persona, r.need.map_or(w, |n| n.min(w)))))
+        .filter_map(|r| Some((r.persona, r.measure.need()?.get())))
         .filter(|(_, w)| *w > widest_window)
         .collect()
 }
@@ -536,9 +536,9 @@ impl Inner {
                     // turn is known and the target did (card 70706a9e) — the reader must
                     // never again mistake a pre-fit wish for a lane width.
                     .map(|(m, w)| {
-                        let gate = match requirements.iter().find(|r| r.persona == *m).and_then(|r| r.need) {
-                            Some(_) => "need",
-                            None => "wish",
+                        let gate = match requirements.iter().find(|r| r.persona == *m).map(|r| r.measure) {
+                            Some(crate::inference::planning::window_allocator::Measure::Held { .. }) => "need",
+                            _ => "wish",
                         };
                         format!("{}:{gate}:{w}", m.to_string().chars().take(8).collect::<String>())
                     })
@@ -893,15 +893,21 @@ mod tests {
     // sentence. Aiko at ~24k fits and must never be named.
     #[test]
     fn a_mind_whose_turn_exceeds_every_lane_is_named_and_the_ones_that_fit_are_not() {
-        use crate::inference::planning::window_allocator::LaneRequirement;
+        use crate::inference::planning::window_allocator::{LaneRequirement, Tokens};
+        const fn t(n: u32) -> Tokens {
+            match Tokens::new(n) {
+                Some(tokens) => tokens,
+                None => panic!("a test's token literal is never zero"),
+            }
+        }
         let benchy = Uuid::new_v4();
         let aiko = Uuid::new_v4();
         let unmeasured = Uuid::new_v4();
         let reqs = vec![
-            LaneRequirement::from_demand(benchy, 110_396, 1.0),
-            LaneRequirement::from_demand(aiko, 24_226, 1.0),
+            LaneRequirement::wished(benchy, t(110_396), 1.0),
+            LaneRequirement::wished(aiko, t(24_226), 1.0),
             // no turn yet: Unknown, and an absence is never a number
-            LaneRequirement::from_demand(unmeasured, 0, 1.0),
+            LaneRequirement::unmeasured(unmeasured),
         ];
 
         let named = minds_over_the_grid(&reqs, 78_592);
@@ -923,13 +929,13 @@ mod tests {
         // she is still named — the need gates in both directions. A need above the
         // target is clamped to the target (a floor cannot exceed what it floors).
         let kimi = Uuid::new_v4();
-        let wish = vec![LaneRequirement::from_demand(kimi, 99_096, 1.25)];
+        let wish = vec![LaneRequirement::wished(kimi, t(99_096), 1.25)];
         assert_eq!(minds_over_the_grid(&wish, 75_776), vec![(kimi, 123_870)], "no need known: the wish gates, as before");
-        let fits = vec![LaneRequirement::from_demand(kimi, 99_096, 1.25).with_need(74_000)];
+        let fits = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(t(74_000))];
         assert!(minds_over_the_grid(&fits, 75_776).is_empty(), "her held turns fit this grid: served, trimmed, not exiled");
-        let over = vec![LaneRequirement::from_demand(kimi, 99_096, 1.25).with_need(80_000)];
+        let over = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(t(80_000))];
         assert_eq!(minds_over_the_grid(&over, 75_776), vec![(kimi, 80_000)], "a need the grid cannot hold still names her, by the need");
-        let clamped = vec![LaneRequirement::from_demand(kimi, 60_000, 1.0).with_need(90_000)];
+        let clamped = vec![LaneRequirement::wished(kimi, t(60_000), 1.0).held(t(90_000))];
         assert!(minds_over_the_grid(&clamped, 60_000).is_empty(), "need clamps to the target");
     }
 }

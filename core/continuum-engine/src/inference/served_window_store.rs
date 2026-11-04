@@ -202,7 +202,7 @@ fn write_record(path: &Path, stored: &StoredServedWindow) {
 mod tests {
     use super::*;
     use crate::inference::planning::serving_plan::{plan_serving_at_rest, HostBudget, ModelFootprint, ServingDemand};
-    use crate::inference::planning::window_allocator::LaneRequirement;
+    use crate::inference::planning::window_allocator::{test_tokens, LaneRequirement};
 
     #[test]
     fn observed_collapse_survives_restart_as_history_not_an_allocation_limit() {
@@ -213,8 +213,8 @@ mod tests {
         let host = HostBudget { usable_bytes: 30 << 30, perf_cores: 8 };
         let initial = plan_serving_at_rest(&host, std::slice::from_ref(&model), None,
             &ServingDemand::new(2, Some(70_000)).with_requirements(vec![
-                LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000),
-                LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000)])).unwrap();
+                LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000)),
+                LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000))])).unwrap();
         let large = ServedGeometry { model_id: model.model_id.clone(), generation: uuid::Uuid::new_v4(),
             per_slot_window: initial.served_context_window, lanes: initial.lanes };
         record_reconciled_to(&path, large.clone(), false, Some(60_000));
@@ -247,8 +247,8 @@ mod tests {
         assert_eq!(restarted.observed_prompt_tokens, Some(2048));
         // Both real allocation branches use the same current demand and already
         // credited budget for cold boot and settled reconciliation.
-        for requirements in [vec![], vec![LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000),
-            LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000)]] {
+        for requirements in [vec![], vec![LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000)),
+            LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000))]] {
             // Legacy callers express their current per-lane requirement through
             // the measured prompt median (56k plus existing headroom = 70k).
             // Without it they may legitimately choose two narrower lanes.
@@ -261,7 +261,7 @@ mod tests {
             assert!(cold.served_context_window >= 70_000);
             assert_eq!((cold.lanes, cold.served_context_window), (settled.lanes, settled.served_context_window));
             assert!(model.peak_resident_bytes(cold.served_context_window, cold.lanes) <= host.usable_bytes);
-            let tight = HostBudget { usable_bytes: model.peak_resident_bytes(cold.served_context_window, 1), ..host.clone() };
+            let tight = HostBudget { usable_bytes: model.peak_resident_bytes(cold.served_context_window, 1), ..host };
             let edge = plan_serving_at_rest(&tight, std::slice::from_ref(&model), None, &demand).unwrap();
             assert_eq!(edge.lanes, 1);
             assert!(model.peak_resident_bytes(edge.served_context_window, edge.lanes) <= tight.usable_bytes);

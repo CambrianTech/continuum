@@ -17,6 +17,21 @@
 
 use std::collections::BTreeMap;
 
+use crate::inference::planning::window_allocator::Tokens;
+
+/// A scenario's literal token count, checked nonzero when the scenario compiles: a zero literal is a
+/// compile error, never a runtime fallback.
+macro_rules! tokens {
+    ($n:expr) => {
+        const {
+            match Tokens::new($n) {
+                Some(tokens) => tokens,
+                None => panic!("a scenario's token literal is never zero"),
+            }
+        }
+    };
+}
+
 /// A mind on the pool (a resident, or the scratch traffic beside them).
 pub type MindId = u32;
 
@@ -26,7 +41,8 @@ pub type MindId = u32;
 pub struct DemandEvent {
     pub at_ms: u64,
     pub mind: MindId,
-    pub required_tokens: u32,
+    /// Her need, which is her target in the sim (a wish with no held turn).
+    pub need: Tokens,
     pub in_flight: bool,
 }
 
@@ -68,7 +84,8 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
             event.mind,
             Demand {
                 mind: event.mind,
-                required_tokens: event.required_tokens,
+                need: event.need,
+                target: event.need,
                 in_flight: event.in_flight,
                 // the shared pool: one sequence may hold all of it
                 ceiling: scenario.pool_tokens,
@@ -89,7 +106,7 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
                 true => held.get(&d.mind).copied().unwrap_or(0), // unwrap_or: a turn that holds nothing yet is owed only her demand
                 false => 0,
             };
-            u64::from(d.required_tokens.max(floor))
+            u64::from(d.need.get().max(floor))
         };
         let demanded: u64 = current.iter().map(owed).sum();
         // Granted past what is owed: room an idle mind holds that a reading mind could have used.
@@ -109,7 +126,7 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
             {
                 out.in_flight_shrinks += 1;
             }
-            if granted < demand.required_tokens {
+            if granted < demand.need.get() {
                 if demanded <= u64::from(scenario.pool_tokens) {
                     out.unmet_when_fits += 1;
                 }
@@ -150,24 +167,24 @@ pub fn m5_uneven_reading() -> WindowScenario {
     const ATLAS: MindId = 3;
     const BENCHY: MindId = 4;
     const SCRATCH: MindId = 5;
-    let e = |at_ms, mind, required_tokens, in_flight| DemandEvent {
+    let e = |at_ms, mind, need, in_flight| DemandEvent {
         at_ms,
         mind,
-        required_tokens,
+        need,
         in_flight,
     };
     WindowScenario {
         name: "m5-uneven-reading",
         pool_tokens: 290_560,
         events: vec![
-            e(0, ATLAS, 12_000, false),
-            e(1, ARIS, 40_000, true),
-            e(2, BENCHY, 52_000, true),
-            e(3, SCRATCH, 1_000, true),
-            e(4, AIKO, 70_000, true),
-            e(5, AIKO, 76_000, true),
-            e(6, ATLAS, 9_000, false),
-            e(7, BENCHY, 58_000, true),
+            e(0, ATLAS, tokens!(12_000), false),
+            e(1, ARIS, tokens!(40_000), true),
+            e(2, BENCHY, tokens!(52_000), true),
+            e(3, SCRATCH, tokens!(1_000), true),
+            e(4, AIKO, tokens!(70_000), true),
+            e(5, AIKO, tokens!(76_000), true),
+            e(6, ATLAS, tokens!(9_000), false),
+            e(7, BENCHY, tokens!(58_000), true),
         ],
     }
 }
@@ -201,11 +218,11 @@ mod tests {
     // because her demand fell mid-turn; the grant she is using holds until the turn ends.
     #[test]
     fn a_turn_in_flight_keeps_its_grant_when_her_demand_falls_and_everything_fits() {
-        let e = |at_ms, mind, required_tokens, in_flight| DemandEvent { at_ms, mind, required_tokens, in_flight };
+        let e = |at_ms, mind, need, in_flight| DemandEvent { at_ms, mind, need, in_flight };
         let scenario = WindowScenario {
             name: "falling-demand-in-flight",
             pool_tokens: 100_000,
-            events: vec![e(0, 1, 60_000, true), e(1, 1, 30_000, true), e(2, 2, 20_000, false)],
+            events: vec![e(0, 1, tokens!(60_000), true), e(1, 1, tokens!(30_000), true), e(2, 2, tokens!(20_000), false)],
         };
         let run = run(&scenario, &mut DemandFollowing);
         assert!(run.kept(), "{run:?}");
@@ -216,11 +233,11 @@ mod tests {
     // fits 100k, the floors do not, so the neighbour's 40k is the pool's limit, not a breach.
     #[test]
     fn fits_and_slack_count_a_turn_in_flight_at_what_it_holds() {
-        let e = |at_ms, mind, required_tokens, in_flight| DemandEvent { at_ms, mind, required_tokens, in_flight };
+        let e = |at_ms, mind, need, in_flight| DemandEvent { at_ms, mind, need, in_flight };
         let scenario = WindowScenario {
             name: "held-floor-beside-a-big-neighbour",
             pool_tokens: 100_000,
-            events: vec![e(0, 1, 60_000, true), e(1, 1, 30_000, true), e(2, 2, 50_000, false)],
+            events: vec![e(0, 1, tokens!(60_000), true), e(1, 1, tokens!(30_000), true), e(2, 2, tokens!(50_000), false)],
         };
         let run = run(&scenario, &mut DemandFollowing);
         assert!(run.kept(), "{run:?}");
@@ -229,19 +246,19 @@ mod tests {
     // what this catches: an overloaded pool shrinking a turn in flight to seat another.
     #[test]
     fn an_overloaded_pool_never_shrinks_a_turn_in_flight() {
-        let e = |at_ms, mind, required_tokens, in_flight| DemandEvent {
+        let e = |at_ms, mind, need, in_flight| DemandEvent {
             at_ms,
             mind,
-            required_tokens,
+            need,
             in_flight,
         };
         let scenario = WindowScenario {
             name: "overloaded",
             pool_tokens: 100_000,
             events: vec![
-                e(0, 1, 60_000, true),
-                e(1, 2, 60_000, false),
-                e(2, 3, 30_000, false),
+                e(0, 1, tokens!(60_000), true),
+                e(1, 2, tokens!(60_000), false),
+                e(2, 3, tokens!(30_000), false),
             ],
         };
         let run = run(&scenario, &mut DemandFollowing);

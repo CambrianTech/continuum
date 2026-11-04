@@ -709,7 +709,7 @@ fn plan_decisions(
 #[cfg(test)]
 mod training_lease_tests {
     use super::*;
-    use crate::inference::planning::window_allocator::{allocate, LaneRequirement, TrainingGrowth, TrainingPrice, TrainingReserve};
+    use crate::inference::planning::window_allocator::{allocate, test_tokens, LaneRequirement, TrainingGrowth, TrainingPrice, TrainingReserve};
     use crate::resources::lease::{ReclaimPolicy, ResourceLease};
 
     // What this catches: unrelated or different-job leases cannot cancel a
@@ -722,7 +722,7 @@ mod training_lease_tests {
             source: crate::inference::planning::training_plan::NeedSource::LowerBound,
             model: "fixture".into(), shape: "fixture".into(),
         };
-        let requirement = LaneRequirement::declared(uuid::Uuid::from_u128(1), 40_000)
+        let requirement = LaneRequirement::declared(uuid::Uuid::from_u128(1), test_tokens(40_000))
             .with_training(Some(TrainingReserve::new(64_256, Some(price), Some(job))));
         let mut demand = ServingDemand::new(1, Some(40_000)).with_requirements(vec![requirement]);
         let lease = |id: &str, consumer: String, bytes| ResourceLease {
