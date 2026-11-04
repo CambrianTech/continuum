@@ -173,22 +173,25 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             .as_ref()
             .unwrap()
             .contains("Held activity context"));
-        assert_eq!(
-            request.max_tokens,
-            Some(view.completion_reserve),
-            "the wire carries the plan's grant verbatim"
-        );
         let schema_tokens =
             crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap());
         assert_eq!(
             schema_tokens,
             faculty.prompt_view(&ws).tools.tokens
         );
-        let wire_tokens =
+        let prompt_tokens =
             LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
                 + LlmDeliberationFaculty::messages_cost(&request.messages)
-                + schema_tokens
-                + request.max_tokens.unwrap() as usize;
+                + schema_tokens;
+        // An act's cap is the room its prompt leaves (`request_allowance`), never below the
+        // reserve the plan sized her view beside.
+        assert_eq!(
+            request.max_tokens,
+            Some(request_allowance(TurnKind::Act, view.completion_reserve, window, prompt_tokens)),
+            "the act's cap is the window's room after its prompt"
+        );
+        assert!(request.max_tokens.unwrap() >= view.completion_reserve);
+        let wire_tokens = prompt_tokens + request.max_tokens.unwrap() as usize;
         assert!(
             wire_tokens <= window as usize,
             "wire {wire_tokens} > window {window}"
@@ -592,4 +595,147 @@ async fn an_allocator_answering_for_the_wrong_sources_refuses_the_turn_before_di
     let fault = outcome.expect("a contribution").fault.expect("the turn is refused");
     assert!(format!("{fault:?}").contains("could not be sized"), "{fault:?}");
     assert_eq!(adapter.call_count(), 0, "nothing was sent to inference");
+}
+
+// ─── An act's two output channels (the M5, 2026-11-04) ───────────────────────
+
+// what this catches: an act's cap set to her measured reply grant. On the M5 (prompt captures,
+// 2026-11-04) windows were 31-43k while acts carried max_tokens 518-809, sized from read-sized
+// acts, so every write-shaped call arrived cut (`__malformed_tool_arguments`, finish `length`,
+// 22 since 11:00Z). An act's cap is the room its prompt leaves under strict admission, never
+// below the reserve her view was sized beside; a pass keeps its grant.
+#[test]
+fn an_acts_cap_is_its_windows_room_and_a_pass_keeps_its_grant() {
+    let (window, prompt, reserve) = (40_960u32, 25_000usize, 700u32);
+    assert_eq!(request_allowance(TurnKind::Act, reserve, window, prompt), window - prompt as u32 - 1);
+    assert_eq!(request_allowance(TurnKind::Pass, reserve, window, prompt), reserve, "a pass carries its grant");
+    assert_eq!(
+        request_allowance(TurnKind::Act, reserve, window, window as usize),
+        reserve,
+        "a prompt that leaves less than the reserve keeps the reserve"
+    );
+}
+
+// what this catches: the same M5 receipt (2026-11-04) end to end. On a 40,960 window a mind whose
+// measured need is read-sized (700 tokens; Aiko's acts carried 676-701) sends an act whose
+// max_tokens is the room past her prompt, while the reserve her view is sized beside stays her
+// measured need; a pass on the same window and need still sends its grant verbatim.
+#[tokio::test]
+async fn an_act_on_a_large_window_with_a_small_need_sends_the_room() {
+    use crate::cognition::working_set::{EmissionStop, WorkingSetRegistry};
+    let home = tempfile::tempdir().expect("isolated fixture emission storage");
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let window = 40_960u32;
+    let persona = Uuid::new_v4();
+    let reg = WorkingSetRegistry::new();
+    for tick in 1..=3 {
+        reg.record_emission_in_memory(persona, 700, 400, EmissionStop::Landed, tick);
+    }
+    for deliverable in [true, false] {
+        let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
+        let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", adapter.clone())
+            .with_context_window(window)
+            .with_tools(vec![read_tool()])
+            .with_working_set(reg.clone());
+        let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 40, deliverable);
+        assert_eq!(faculty.turn_kind(&ws) == TurnKind::Act, deliverable, "precondition: the turn's kind");
+        let view = faculty.prompt_view(&ws);
+        assert!(view.completion_reserve <= 700, "precondition: a read-sized grant: {}", view.completion_reserve);
+        let contribution = faculty.contribute(&ws).await.expect("a verdict or named fault");
+        assert!(contribution.fault.is_none(), "{:?}", contribution.fault);
+        let seen = adapter.seen.lock().unwrap();
+        let request = &seen[0];
+        let prompt = LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
+            + LlmDeliberationFaculty::messages_cost(&request.messages)
+            + crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap());
+        let cap = request.max_tokens.expect("the reply is bounded");
+        if deliverable {
+            assert!(cap as usize >= window as usize - prompt - 1, "an act's cap is the window's room: {cap}");
+            assert!(cap > view.completion_reserve, "and larger than her read-sized grant");
+            assert!(prompt + (cap as usize) < window as usize, "inside the window, under strict admission");
+        } else {
+            assert_eq!(cap, view.completion_reserve, "a pass is unchanged: its grant, verbatim");
+        }
+    }
+}
+
+// what this catches: an act whose cap was the room past an ESTIMATED prompt refused because the
+// engine counted more. When her reserve still fits beside the measured prompt, the cap shrinks to
+// the measured room and the same view is sent again, never refit (refitting against the sent room
+// would drop her view to make space for a cap that only follows it).
+#[tokio::test]
+async fn an_acts_room_refusal_shrinks_the_cap_and_keeps_her_view() {
+    use crate::ai::inference_error::InferenceError;
+    let window = 40_960u32;
+    let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
+    let mut excess = Some(500u32);
+    *adapter.on_request.lock().unwrap() = Some(Box::new(move |request| {
+        let excess = excess.take()?;
+        let prompt = LlmDeliberationFaculty::framing_cost(request.system_prompt.as_deref().unwrap_or_default()) // unwrap_or_default: test fixture, no system prompt costs none
+            + LlmDeliberationFaculty::messages_cost(&request.messages)
+            + request.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of); // map_or: no tools, no schemas
+        Some(InferenceError::ContextExceeded { requested: prompt as u32 + excess, available: window })
+    }));
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", adapter.clone())
+        .with_context_window(window)
+        .with_tools(vec![read_tool()]);
+    let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 40, true);
+    let contribution = faculty.contribute(&ws).await.expect("a verdict or named fault");
+    assert!(contribution.fault.is_none() && contribution.capacity_refusal.is_none(), "{:?}", contribution.fault);
+    let seen = adapter.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2, "the refused act and one resend at the measured room");
+    assert_eq!(
+        serde_json::to_value(&seen[0].messages).unwrap(),
+        serde_json::to_value(&seen[1].messages).unwrap(),
+        "her view is sent unchanged"
+    );
+    let (first, second) = (seen[0].max_tokens.unwrap(), seen[1].max_tokens.unwrap());
+    assert_eq!(first - second, 500, "the cap gives up exactly what the engine counted beyond the estimate");
+}
+
+// what this catches: a write cut at the output limit (the M5, 2026-11-04: write-shaped calls as
+// `__malformed_tool_arguments` with finish `length`) read as a cut THOUGHT or run as a call. It is
+// a cut of the ANSWER channel: nothing runs, she gets the cut-act record and its sentinel, the cut
+// records her answer at double, and that peak is held for her retry so the next claim has room.
+#[tokio::test]
+async fn a_tool_call_cut_at_the_limit_is_an_answer_cut_held_for_the_retry() {
+    use crate::cognition::working_memory::WorkingMemory;
+    use crate::cognition::working_set::WorkingSetRegistry;
+    let home = tempfile::tempdir().expect("isolated fixture emission storage");
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let persona = Uuid::new_v4();
+    let write = ToolCall {
+        id: "call-write".into(),
+        name: "code/write".into(),
+        input: json!({ "__malformed_tool_arguments": {
+            "error": "EOF while parsing a string",
+            "raw": "{\"path\":\"src/accounts.rs\",\"content\":\"pub fn create_accounts(",
+        } }),
+    };
+    let mut cut = make_response(FinishReason::Length, "", Some(vec![write]));
+    cut.usage.output_tokens = 900;
+    let adapter = Arc::new(ScriptedAdapter::new(vec![cut]));
+    let wm = Arc::new(WorkingMemory::new(8));
+    let reg = WorkingSetRegistry::new();
+    let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", adapter.clone())
+        .with_context_window(40_960)
+        .with_tools(vec![read_tool()])
+        .with_working_set(reg.clone())
+        .with_working_memory(wm.clone());
+    let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 0, true);
+    let contribution = faculty.contribute(&ws).await.expect("a verdict or named fault");
+    match contribution.decision {
+        Some(Decision::Act { calls, .. }) => {
+            assert_eq!(calls.len(), 1);
+            assert_eq!(
+                calls[0].name,
+                crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL,
+                "a cut call is reported as a cut act, never run and never a cut thought"
+            );
+        }
+        other => panic!("expected the cut-act sentinel, got {other:?}"),
+    }
+    let peak = reg.emission_of(persona).expect("the cut was measured").peak_tokens;
+    assert_eq!(peak, 1_800, "the answer channel recorded at double");
+    assert_eq!(wm.pending_emission_peak(ws.activity_room_id), peak, "held for the retry");
 }
