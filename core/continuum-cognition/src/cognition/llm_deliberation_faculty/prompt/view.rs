@@ -428,8 +428,7 @@ impl LlmDeliberationFaculty {
             },
         ];
         let tools_surplus = claim(tools.want).saturating_sub(tools_floor);
-        let reply_surplus = claims[4].max_tokens.saturating_sub(claims[4].floor_tokens.max(claims[4].min_tokens));
-        claims[4].max_tokens = claims[4].floor_tokens.max(claims[4].min_tokens);
+
         // Her view's sources, each its own claim (`epoch.rs`): the blocks she works from at
         // the grounding claim's weight, her conversation, thoughts and results at history's.
         claims.extend(self.view_claims(&all_messages.streams).into_iter().map(|mut source| {
@@ -447,7 +446,6 @@ impl LlmDeliberationFaculty {
             required: false,
         };
         claims.push(surplus(FLEX_TOOLS_SURPLUS, tools_surplus));
-        claims.push(surplus(FLEX_REPLY_SURPLUS, reply_surplus));
         let plan = crate::cognition::rag_budget::flex_allocate(context_window, &claims);
         let granted_with_surplus = |id: &str, surplus_id: &str| plan.granted(id).saturating_add(plan.granted(surplus_id));
         let allocation = Some(crate::ai::provenance::AllocationReceipt {
@@ -470,7 +468,7 @@ impl LlmDeliberationFaculty {
         // Her reply's grant is her measured need from the one allocation, carried as `max_tokens`.
         // What no claim took is her view's to grow into by appends (`fit_view`), never the
         // reply's: a cap claimed above her context starved her reads (ONE-BUDGET slice 6).
-        let reply_grant = granted_with_surplus(FLEX_REPLY, FLEX_REPLY_SURPLUS);
+        let reply_grant = plan.granted(FLEX_REPLY);
         let completion_reserve = reply_grant.max(1) as usize;
         continuum_base::probe!(
             class = "delib.window.flex",
@@ -484,7 +482,7 @@ impl LlmDeliberationFaculty {
             tools_floor,
             reply_priority = claims[4].priority,
             reply_floor = claims[4].floor_tokens,
-            reply_wanted = claims[4].max_tokens.saturating_add(reply_surplus),
+            reply_wanted = claims[4].max_tokens,
             reply_granted = reply_grant,
             unallocated = plan.unallocated,
             reserve = completion_reserve,
