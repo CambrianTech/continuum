@@ -123,5 +123,5 @@ fn the_engine_launches_on_one_shared_pool() {
     ));
     assert_eq!(invocation.value_of("-c"), Some("290560"));
     assert_eq!(invocation.value_of("--parallel"), Some("5"));
-    assert!(super::super::shared_pool::launched_on_shared_pool(&invocation.args), "the launch and the read-back agree");
+    assert_eq!(super::super::shared_pool::pool_launch(&invocation.args), super::super::PoolLaunch::Shared, "the launch and the read-back agree");
 }

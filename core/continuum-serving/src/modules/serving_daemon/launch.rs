@@ -338,7 +338,7 @@ impl ServingDaemonModule {
             // again halved the IntelMac's share (2026-11-03). An unreadable pool publishes the gap
             // and retries next tick. An engine not known to be on the pool publishes its slot.
             let (served_window, served_lanes) =
-                match (served_window > 0, server.launched_on_shared_pool()) {
+                match (served_window > 0, server.pool_launch().map(|launch| launch.kv_shared())) {
                     (true, Some(true)) => match server.served_pool_tokens().await {
                         Ok(pool) => {
                             served_pool.store(pool, Ordering::Relaxed);

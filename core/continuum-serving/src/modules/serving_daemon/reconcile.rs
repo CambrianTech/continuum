@@ -105,12 +105,13 @@ impl ServingDaemonModule {
         if self.shared_pool_move_tried.swap(pid, Ordering::Relaxed) == pid {
             return false;
         }
-        let due = self.server.launched_on_shared_pool() == Some(false);
+        let due = self.server.pool_launch().is_some_and(|launch| !launch.current());
         if due {
             continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.pool.move",
                 pid,
-                "an adopted engine on fixed slots can now be checkpointed: moving it onto the shared pool, once"
+                launch = ?self.server.pool_launch(),
+                "an adopted engine not launched as the pool launch is now (fixed slots, or a pool that clears idle slots) can be checkpointed: moving it, once"
             );
         }
         due
