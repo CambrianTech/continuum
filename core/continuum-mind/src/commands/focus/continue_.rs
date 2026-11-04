@@ -85,6 +85,7 @@ pub struct FocusContinue;
 impl ActionCommand for FocusContinue {
     const NAME: &'static str = "focus/continue";
     const NATIVE: bool = true; // self-determination — her own continuation: where she is and what she expects next, written by her hand. NATIVE defaults to false, which is why the verb was registered, documented, and uncallable (Kimi, 2026-10-05).
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand; // one `commands/help` away, in her prompt once her learned head holds it
     const DESCRIPTION: &'static str =
         "Note where you leave unfinished work and what you expect next, to pick it up \
          at your deadline, after a restart, or when the answer arrives. The room \

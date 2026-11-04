@@ -120,6 +120,7 @@ impl ActionCommand for ActivitySpawn {
     const NAME: &'static str = "activity/spawn";
     const ALIASES: &'static [&'static str] = &["create_room", "spawn_activity"];
     const NATIVE: bool = true;
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand; // one `commands/help` away, in her prompt once her learned head holds it
     /// AiSafe: making a room is the ordinary creative act of a citizen with an
     /// idea. It takes nothing from anyone — a new room is additive, and every
     /// destructive verb in this module is gated separately.
@@ -211,6 +212,7 @@ impl ActionCommand for ActivityInvite {
     const NAME: &'static str = "activity/invite";
     const ALIASES: &'static [&'static str] = &["invite_to_room"];
     const NATIVE: bool = true;
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand; // one `commands/help` away, in her prompt once her learned head holds it
     /// AiSafe: subscribing a citizen to a room is additive — she hears it and
     /// can speak in it, and `room/leave` remains hers ([[self-determination]]).
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
@@ -288,6 +290,7 @@ impl ActionCommand for ActivityRecipes {
     const NAME: &'static str = "activity/recipes";
     const ALIASES: &'static [&'static str] = &["list_recipes"];
     const NATIVE: bool = true;
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand; // one `commands/help` away, in her prompt once her learned head holds it
     /// AiSafe: reading the catalogue is how anyone — citizen or operator —
     /// finds out what they can start.
     const ACCESS: AccessLevel = AccessLevel::AiSafe;

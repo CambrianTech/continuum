@@ -9,6 +9,7 @@ crate::action_command! {
     name: "web/search",
     access: AiSafe,
     native: true, // her hands must be able to REACH the web (a native-call model can only emit calls in its offered specs); I forage constantly, so must she — direct SWE/task score lever
+    disclosure: OnDemand, // one `commands/help` away, in her prompt once her learned head holds it
     params: WebSearchParams,
     output: WebSearchResult,
     run(_this, _ctx, p) => { web_search(p).await }

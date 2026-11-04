@@ -90,6 +90,7 @@ crate::action_command! {
     name: "vision/look",
     access: AiSafe,
     native: true,
+    disclosure: OnDemand, // one `commands/help` away, in her prompt once her learned head holds it
     params: VisionLookParams,
     output: VisionLookResult,
     run(this, ctx, p) => {

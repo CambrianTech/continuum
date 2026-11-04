@@ -10,6 +10,7 @@ crate::action_command! {
     name: "web/fetch",
     access: AiSafe,
     native: true, // her hands must be able to REACH the web (a native-call model can only emit calls in its offered specs); I forage constantly, so must she — direct SWE/task score lever
+    disclosure: OnDemand, // one `commands/help` away, in her prompt once her learned head holds it
     params: WebFetchParams,
     output: WebFetchResult,
     run(_this, _ctx, p) => { web_fetch(p).await }

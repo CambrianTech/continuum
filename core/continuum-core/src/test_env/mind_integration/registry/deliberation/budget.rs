@@ -6,15 +6,20 @@
 
 use super::*;
 
-/// The first aligned window whose shared allocation admits whole hands, and its predecessor.
+/// What her core hands cost on the wire: the whole of what an ordinary room claims for tools.
+fn core_tokens(faculty: &LlmDeliberationFaculty) -> usize {
+    faculty.tool_surface().claim_tokens(&[]).0
+}
+
+/// The first aligned window whose shared allocation admits her core hands, and its predecessor.
 fn calibrated_windows() -> (u32, u32) {
-    let hands = faculty_with_the_real_registry(1024).tool_surface().hands_tokens();
+    let core = core_tokens(&faculty_with_the_real_registry(1024));
     let admits = (1..=512)
         .map(|k| k * 1024)
         .find(|w| {
-            faculty_with_the_real_registry(*w).prompt_view(&work_turn()).tools.tokens >= hands
+            faculty_with_the_real_registry(*w).prompt_view(&work_turn()).tools.tokens >= core
         })
-        .expect("some served window admits her hands");
+        .expect("some served window admits her core hands");
     (admits, admits - 1024)
 }
 
@@ -35,47 +40,43 @@ fn work_turn() -> Workspace {
     ws
 }
 
-// what this catches: the original defect (card dec1a7ff). A turn sends her HANDS, so the
-// budget must subtract the hands' cost; subtracting the whole registry silently cost her
-// (registry - hands) tokens of conversation on a window that had room for it.
+// what this catches: the original defect (card dec1a7ff). A turn sends her CORE HANDS, so the
+// budget must subtract their cost; subtracting her whole hands or the registry silently cost her
+// that difference in conversation on a window that had room for it (Atlas on the M5, 2026-11-04:
+// whole hands took 4,567 of 33,451 ahead of his view, which turned over on 11 of 12 acts).
 // MUTATION-PROVED: point `SelectedSurface.tokens` at the registry's cost and this fails on
 // the strict inequality.
 #[test]
 fn a_turn_is_budgeted_for_her_hands_not_for_the_registry() {
     let (fits, _narrow) = calibrated_windows();
     let faculty = faculty_with_the_real_registry(fits);
-    for ws in [work_turn(), Workspace::new("anything open?")] {
+    let roomy = faculty_with_the_real_registry(fits * 4);
+    for (faculty, ws) in [(&faculty, work_turn()), (&faculty, Workspace::new("anything open?")), (&roomy, work_turn())] {
         let selected = faculty.prompt_view(&ws).tools;
         assert_eq!(selected.reason, SurfaceReason::Hands);
-        assert_eq!(selected.tokens, faculty.tool_surface().hands_tokens(), "charged for what goes on the wire");
+        assert_eq!(selected.tokens, core_tokens(faculty), "charged for what goes on the wire, however roomy the window");
         assert!(
-            selected.tokens < faculty.describe_tool_tokens(),
-            "the saving must be REAL: hands ({}) must cost less than the registry ({})",
+            selected.tokens < faculty.tool_surface().hands_tokens() && selected.tokens < faculty.describe_tool_tokens(),
+            "the saving must be REAL: core hands ({}) must cost less than her hands ({}) and the registry ({})",
             selected.tokens,
+            faculty.tool_surface().hands_tokens(),
             faculty.describe_tool_tokens()
         );
     }
 }
 
-// what this catches: silently re-deriving a cap from a send. The demand probe's contract is
-// that every term is UNTRUNCATED, so when the WINDOW withheld her extended hands, demand
-// must still price her whole hands; report the core here and the pressure the probe exists
-// to measure disappears exactly when it starts mattering.
-// MUTATION-PROVED: make `demand_tokens` return `self.tokens` unconditionally and this fails.
-// The window is calibrated on a work turn, so the test asks with one: under the one allocation a
-// smaller turn leaves room and her hands fit, which is the allocation working, not a withheld surface.
+// what this catches: silently re-deriving a cap from a send. Her core hands are indivisible: a
+// window whose allocation cannot hold them refuses the turn loudly, naming at least their whole
+// cost, and never sends a smaller surface priced as if it were what she wanted.
+// The window is calibrated on a work turn, so the test asks with one.
 #[test]
-fn a_window_withheld_surface_still_reports_her_whole_hands_as_demand() {
+fn a_window_that_cannot_hold_her_core_hands_refuses_and_never_sends_fewer() {
     let (_fits, narrow) = calibrated_windows();
     let faculty = faculty_with_the_real_registry(narrow);
-    let selected = faculty.prompt_view(&work_turn()).tools;
-    assert_eq!(selected.reason, SurfaceReason::CoreHandsForWindow, "this window's share cannot hold her hands");
-    assert!(selected.tokens < faculty.tool_surface().hands_tokens(), "she is SENT her core hands");
-    assert_eq!(
-        selected.demand_tokens(),
-        faculty.tool_surface().hands_tokens(),
-        "she WANTED her hands and the window refused them: demand is the untruncated number"
-    );
+    let view = faculty.prompt_view(&work_turn());
+    assert_eq!((view.tools.tokens, view.tools.specs.is_none()), (0, true), "no partial surface: {:?}", view.tools.reason);
+    let refusal = view.capacity_error.expect("the window that cannot hold her core hands refuses loudly");
+    assert!(refusal.required_tokens >= core_tokens(&faculty), "{refusal:?}");
 }
 
 // what this catches: the mirror error, inflating `over_window` on a turn that sent what it
@@ -94,7 +95,8 @@ fn an_untruncated_surface_does_not_inflate_demand() {
 #[test]
 fn the_cost_reported_is_always_the_cost_of_the_surface_reported() {
     let (fits, narrow) = calibrated_windows();
-    for (label, window) in [("hands", fits), ("core/window", narrow)] {
+    let _ = narrow; // the narrow window refuses (a_window_that_cannot_hold_her_core_hands_refuses_and_never_sends_fewer)
+    for (label, window) in [("core hands", fits), ("roomy", fits * 4)] {
         let faculty = faculty_with_the_real_registry(window);
         let selected = faculty.prompt_view(&work_turn()).tools;
         let specs = selected.specs.as_deref().expect("a tool surface was offered");

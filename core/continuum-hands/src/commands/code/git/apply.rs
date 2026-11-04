@@ -52,6 +52,7 @@ crate::action_command! {
     access: AiSafe,
     native: true,
     aliases: &["git_apply"],
+    disclosure: Withheld, // it takes a PEER's diff: offered among her hands, four citizens called it with an empty patch inside twenty minutes (2026-09-04)
     params: GitApplyParams,
     output: GitApplyResult,
     run(this, ctx, p) => {

@@ -16,7 +16,7 @@ impl LlmDeliberationFaculty {
         }
         let style =
             crate::ai::tool_dialect::offer_style_for(Some(self.binding.load().requested_model()));
-        self.surface = ToolSurface::build(persona_tools::native_tool_specs(), self.tools.clone(), |spec| {
+        self.surface = ToolSurface::build(persona_tools::native_offers(), self.tools.clone(), |spec| {
             crate::ai::tool_dialect::to_wire_spec_with(spec, style)
         });
         self.share_vocabulary();

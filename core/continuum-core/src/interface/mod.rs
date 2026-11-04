@@ -139,6 +139,7 @@ impl crate::sdk_codegen::CommandSpec for ScreenshotCommand {
     const ALIASES: &'static [&'static str] = &["screenshot"];
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
     const NATIVE: bool = true; // observation parity — seeing the screen is a first-class work verb
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand; // one `commands/help` away, in her prompt once her learned head holds it
     const DESCRIPTION: &'static str =
         "Capture a screenshot of the UI — your way to SEE the screen (or a specific \
          element via a CSS selector). Use it to visually verify what a human or a UI is \

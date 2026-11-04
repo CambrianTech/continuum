@@ -121,6 +121,12 @@ pub trait CommandSpec {
     /// `Undeclared`, which authorizes nothing: such a call is never a repeat and never taken as
     /// observing, and the replay validator counts it.
     const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Undeclared;
+    /// Where this verb sits in a mind's hands: in her prompt every act (`Core`), one
+    /// `commands/help` away (`OnDemand`), or never among her hands (`Withheld`). Declared HERE, by
+    /// the command in its own file, like its access level, never a name list the surface keeps
+    /// (Joel, 2026-11-04: "values associated with the tool just like perms"). Defaults to `Core`;
+    /// read only for a `NATIVE` command.
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::Core;
     /// The handler's ACTUAL wire convention — decides whether the generated
     /// surface is enveloped or bare. MUST match what the handler really does
     /// (a mismatch is a type that lies about the wire).
@@ -260,6 +266,8 @@ pub struct CommandDescriptor {
     /// What its calls do to the world (from [`CommandSpec::EFFECT`]): the effect an executed
     /// call carries into her act, read from the command that actually ran.
     pub effect: continuum_base::tool_effect::ToolEffect,
+    /// Where its verb sits in a mind's hands (from [`CommandSpec::DISCLOSURE`]).
+    pub disclosure: continuum_base::tool_disclosure::Disclosure,
     pub params: TypeRef,
     /// The params' JSON Schema (from [`CommandSpec::params_schema`]) — the
     /// canonical input contract every SDK/interface adapts from. `Null` when the
@@ -307,6 +315,7 @@ impl CommandDescriptor {
             native: C::NATIVE,
             aliases: C::ALIASES,
             effect: C::EFFECT,
+            disclosure: C::DISCLOSURE,
             params,
             params_schema: C::params_schema(),
             result,

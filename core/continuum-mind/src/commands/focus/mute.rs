@@ -85,6 +85,7 @@ pub struct FocusMute;
 impl ActionCommand for FocusMute {
     const NAME: &'static str = "focus/mute";
     const NATIVE: bool = true; // self-determination — her own attention: a self-mute, by her hand. NATIVE defaults to false, which is why the verb was registered, documented, and uncallable (Kimi, 2026-10-05).
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand; // one `commands/help` away, in her prompt once her learned head holds it
     const DESCRIPTION: &'static str =
         "Hush a noisy thread or channel for yourself. Soft (default) silences ambient \
          chatter but a direct address still reaches you; set hard=true to silence \

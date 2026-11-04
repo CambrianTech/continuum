@@ -20,7 +20,7 @@ fn rendered(req: &TextGenerationRequest) -> Vec<String> {
     let mut out = Vec::with_capacity(req.messages.len() + 2);
     out.push(format!("<system>{}", req.system_prompt.as_deref().unwrap_or("")));
     // The tool surface: Qwen/ChatML templates append it to the END of the system turn,
-    // ahead of every message, and it varies per turn (delib.tool_surface.withheld). Left out,
+    // ahead of every message, and it changes when her head or her activity does. Left out,
     // a tool-set change broke the engine's prefix at the system turn while this comparison
     // still read the prompt as kept (Fable on #4487).
     out.push(format!(

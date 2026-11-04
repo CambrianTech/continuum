@@ -45,13 +45,13 @@ async fn consecutive_acts_in_one_activity_send_byte_identical_tool_schemas() {
             assert_eq!(act, first, "a {who:?} {kind} act changed the tool schemas");
         }
     }
-    for must in ["edit_file", "bash", "list_commands", "help", "work_review"] {
+    for must in ["edit_file", "bash", "list_commands", "help"] {
         assert!(first.1.contains(&format!("\"{must}\"")), "{must} rides natively: {}", first.1);
     }
-    assert!(
-        !first.1.contains("conclude_activity"),
-        "the long tail stays one commands/help away, never a schema that comes and goes"
-    );
+    // The reviewer verbs declare `OnDemand`: one commands/help away, not a schema every act.
+    for absent in ["conclude_activity", "work_review"] {
+        assert!(!first.1.contains(&format!("\"{absent}\"")), "{absent} stays one commands/help away: {}", first.1);
+    }
 }
 
 // what this catches: S1's whole point. A room whose recipe declares affordances
@@ -93,8 +93,9 @@ fn a_room_that_declares_affordances_selects_exactly_those_plus_the_discovery_pai
 }
 
 // what this catches: the regression S1 must not cause. A room whose recipe declares NO
-// affordances (every chat, profile, theme and settings page today) offers her hands, the
-// same on a message turn as on a work turn.
+// affordances (every chat, profile, theme and settings page today) offers her core hands, the
+// same on a message turn as on a work turn, and never her whole hands (the rest are one
+// commands/help away; Joel, 2026-11-04: "Core hands in prompt, rest on demand").
 #[test]
 fn a_room_that_declares_nothing_offers_her_hands_on_every_turn() {
     let faculty = faculty_on(65_536);
@@ -104,33 +105,38 @@ fn a_room_that_declares_nothing_offers_her_hands_on_every_turn() {
         assert!(ws.room_affordances.is_empty(), "the ordinary room declares none");
         let selected = faculty.prompt_view(&ws).tools;
         assert_eq!(selected.reason, SurfaceReason::Hands);
-        assert_eq!(selected.specs.as_deref(), Some(faculty.tool_surface().hands()));
+        let core = core_hands(&persona_tools::native_offers());
+        let sent: Vec<&str> = selected.specs.as_deref().into_iter().flatten().map(|s| s.name.as_str()).collect();
+        assert_eq!(sent.len(), core.len(), "her core hands, no more: {sent:?}");
+        assert!(sent.len() < faculty.tool_surface().hands().len(), "her on-demand verbs stay out: {sent:?}");
     }
 }
 
-// what this catches: the live registry's command names drifting away from the
-// hands prefixes (a rename to `files/*` would mute every work turn again) — a
-// self-running check that the REAL registry yields a hands surface that is
-// non-empty and smaller than the whole surface.
+// what this catches: a command's declared disclosure drifting from what her work needs: the
+// verbs of choosing, doing and landing her own work (find it, take it, write it, commit, push,
+// open the PR; Joel, 2026-11-04: "git is perfect for all project work") must be core hands; the
+// discovery pair must be core, or the rest of her hands are unreachable; `code/shell` and
+// `code/shell-poll` travel together (Idris, 2026-09-29: shell's own description says to poll with
+// it); a peer's diff (`code/git/apply`) is never among her hands; and some verbs are on demand,
+// or "rest on demand" would be a promise nothing declares.
 #[test]
-fn the_real_registry_yields_a_non_empty_hands_surface() {
-    let raw = persona_tools::native_tool_specs();
-    if raw.is_empty() {
-        return; // no registry in this test build — nothing to assert against
+fn the_real_registry_declares_her_own_work_as_core_hands() {
+    use continuum_base::tool_disclosure::Disclosure;
+    let offers = persona_tools::native_offers();
+    if offers.is_empty() {
+        return; // no registry in this test build: nothing to assert against
     }
-    let hands = hands_surface(&raw);
-    assert!(
-        !hands.is_empty(),
-        "hands surface is empty against the live registry"
-    );
-    assert!(
-        hands.len() < raw.len(),
-        "hands surface should be a strict subset"
-    );
-    assert!(
-        hands.iter().any(|s| s.name == "commands/list"),
-        "the discovery pair must survive"
-    );
+    let declared = |name: &str| offers.iter().find(|o| o.spec.name == name).map(|o| o.disclosure);
+    for verb in [
+        "commands/list", "commands/help", "work/list", "work/claim", "work/create", "work/submit",
+        "code/read", "code/write", "code/edit", "code/shell", "code/shell-poll", "code/git/commit",
+        "code/git/add", "code/git/push", "code/github/pr-create", "code/github/pr-comment",
+    ] {
+        assert_eq!(declared(verb), Some(Disclosure::Core), "{verb} is one of her core hands");
+    }
+    assert_eq!(declared("code/git/apply"), Some(Disclosure::Withheld));
+    let hands = hands_surface(&offers);
+    assert!(hands.len() > core_hands(&offers).len(), "some of her hands are on demand");
 }
 
 // what this catches: a rule that binds nothing must never bind to NOTHING. A
@@ -143,18 +149,20 @@ fn a_room_whose_affordances_match_no_native_verb_falls_back_never_to_nothing() {
     let mut ws = Workspace::new("chase the recruiter");
     ws.room_affordances = vec!["mail/send".to_string()];
     let selected = faculty.prompt_view(&ws).tools;
-    assert_eq!(selected.reason, SurfaceReason::Hands, "fell through to her hands");
-    assert_eq!(selected.specs.as_deref(), Some(faculty.tool_surface().hands()));
+    assert_eq!(selected.reason, SurfaceReason::Hands, "fell through to her core hands");
+    let core = faculty_on(65_536).prompt_view(&Workspace::new("anything open?")).tools;
+    assert_eq!(selected.specs, core.specs, "the same core hands an ordinary room sends");
+    assert!(selected.specs.as_deref().is_some_and(|specs| !specs.is_empty()), "never nothing");
 }
 
 // what this catches: the shipped benchmark recipe is now the RULE for every
-// benchmark room, so it must authorize at least her hands — every verb the
-// pre-S1 work turn offered — or S1 would take tools away from the citizens
-// solving cards right now. If a new native hand is added without being
+// benchmark room, so it must authorize at least her core hands — every verb an
+// ordinary work turn offers — or S1 would take tools away from the citizens
+// solving cards right now. If a new core hand is declared without being
 // authored here, this names it.
 #[test]
 fn the_shipped_benchmark_recipe_authorizes_every_hand_a_work_turn_offers() {
-    let raw = persona_tools::native_tool_specs();
+    let raw = persona_tools::native_offers();
     for (file, json) in [
         (
             "benchmark.json",
@@ -172,7 +180,7 @@ fn the_shipped_benchmark_recipe_authorizes_every_hand_a_work_turn_offers() {
             .iter()
             .map(|a| a.command.as_str())
             .collect();
-        let missing: Vec<String> = hands_surface(&raw)
+        let missing: Vec<String> = core_hands(&raw)
             .iter()
             .map(|s| s.name.clone())
             .filter(|n| !authorized.contains(n.as_str()))

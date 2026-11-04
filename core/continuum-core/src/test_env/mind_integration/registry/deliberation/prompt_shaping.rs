@@ -765,8 +765,8 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // surface did NOT shrink and the framing did NOT shrink. The ceiling
     // assertion above still passes and `needed > window` still holds, both
     // measuring the same surface as before. What changed is that the budget
-    // stopped RESERVING for a surface it does not send. This turn narrows to her
-    // hands, and the message budget used to subtract the whole registry anyway —
+    // stopped RESERVING for a surface it does not send. This turn sends her core
+    // hands (Joel, 2026-11-04: "Core hands in prompt, rest on demand"), and the message budget used to subtract the whole registry anyway —
     // so the conversation was trimmed to fit room that was never occupied, and
     // the newest line fell off the end of a window that had space for it.
     //

@@ -361,13 +361,12 @@ fn a_binding_without_a_model_name_carries_the_adapters_served_model() {
 }
 
 // what this catches: her hands re-sized every act (a surface that moves mid-epoch rewrites the
-// whole prompt after the system text), or sized outside the one allocation. Her first view
-// buys her whole hands from an ample grant; the next act's claim keeps that level as its
-// target with her core hands as the only floor, and the request carries exactly the
-// selection the allocation bought.
+// whole prompt after the system text), or sized outside the one allocation, or an ample grant
+// buying more than her core hands (the rest are one commands/help away; Joel, 2026-11-04: "Core
+// hands in prompt, rest on demand"). The next act's claim keeps the level her first view chose as
+// its target, and the request carries exactly the selection the allocation bought.
 /// Asha with tools assigned. Her surface is built from the live native registry
-/// (`rebuild_tool_surface`), not these specs, whose role is only to give her a tool set; her
-/// core hands are smaller than her whole hands there.
+/// (`rebuild_tool_surface`), not these specs, whose role is only to give her a tool set.
 fn asha_with_hands() -> LlmDeliberationFaculty {
     let raw: Vec<NativeToolSpec> = ["code/read", "work/state", "chat/send", "commands/list", "room/join", "code/git/status", "work/submit", "web/fetch"]
         .iter()
@@ -420,8 +419,9 @@ fn an_epoch_keeps_the_tool_level_its_allocation_bought() {
     let first = faculty.prompt_view_within(&ws, 200_000);
     assert!(first.capacity_error.is_none(), "{:?}", first.capacity_error);
     let claim = faculty.tools_claim(&ws);
-    assert!(claim.floor < claim.want, "core hands are smaller than her whole hands: {claim:?}");
-    assert_eq!(first.tools.tokens, claim.want, "an ample grant buys her whole surface");
+    assert!(claim.floor > 0 && claim.floor == claim.want, "her core hands are her whole claim: {claim:?}");
+    assert_eq!(first.tools.tokens, claim.want, "an ample grant buys her core hands, never more");
+    assert!(first.tools.tokens <= faculty.tool_surface().hands_tokens(), "her on-demand verbs stay out");
     assert_eq!(claim.level, first.tools.tokens, "the epoch keeps the level it chose as its target");
     assert!(first.tools_grant >= first.tools.tokens, "the selection stays within its grant");
     let second = faculty.prompt_view_within(&ws, 200_000);
@@ -486,28 +486,26 @@ fn a_view_turnover_keeps_her_tool_set() {
 }
 
 // what this catches: a held set sent past a window that can no longer hold it (an over-budget
-// prompt the server refuses), the loss taken quietly, or a fallback that never recovers (every
-// downward move needs its upward one). A grant below her level drops the set on the probed path
-// (`delib.tools.epoch_level_lost`), sends what the grant buys and holds it; a window that holds
-// her whole hands again restores them once (`delib.tools.head_restored`).
+// prompt the server refuses), a smaller surface sent in its place (her core hands are
+// indivisible), the loss taken quietly, or a refusal that never recovers (every downward move
+// needs its upward one). A grant below her held set refuses on the probed path
+// (`delib.tools.epoch_level_lost`) naming her core hands' whole cost and sends nothing; a window
+// that holds them again sends the same set.
 #[test]
 fn a_window_that_cannot_hold_the_epochs_set_reselects_loudly() {
-    use crate::cognition::tool_surface::SurfaceReason;
     let faculty = asha_with_hands();
     let ws = Workspace::new("what changed on the board?");
     let first = faculty.prompt_view_within(&ws, 200_000);
     let claim = faculty.tools_claim(&ws);
-    assert_eq!(claim.level, first.tools.tokens, "precondition: the epoch holds her whole hands");
-    assert!(claim.floor < claim.level, "precondition: core hands are smaller");
-    let (choice, refused) = faculty.granted_tools(&ws, claim, claim.floor);
-    assert!(refused.is_none(), "core hands fit their own floor");
-    assert_eq!((choice.sent.reason, choice.sent.tokens), (SurfaceReason::CoreHandsForWindow, claim.floor));
-    let sent = faculty.retain_tools(choice, false);
-    assert_ne!(wire(&sent), wire(&first.tools), "the lost set is not sent");
-    assert_eq!(faculty.tools_claim(&ws).level, claim.floor, "she holds the set the window could hold");
-    // Up, once: a window that holds her whole hands again restores them, and they then hold.
+    assert_eq!(claim.level, first.tools.tokens, "precondition: the epoch holds her core hands");
+    assert!(claim.floor > 0, "precondition: she has core hands");
+    let (choice, refused) = faculty.granted_tools(&ws, claim, claim.floor - 1);
+    let refused = refused.expect("a grant below her core hands refuses loudly");
+    assert_eq!(refused.required_tokens, claim.floor, "the refusal names her core hands' whole cost");
+    let sent = faculty.retain_tools(choice, true);
+    assert!(sent.specs.is_none(), "no partial surface is sent");
     let restored = faculty.prompt_view_within(&ws, 200_000);
-    assert_eq!(wire(&restored.tools), wire(&first.tools), "the core-hands fallback gives way to her whole hands");
+    assert_eq!(wire(&restored.tools), wire(&first.tools), "a window that holds her core hands sends them again");
     let after = faculty.prompt_view_within(&ws, 200_000);
-    assert_eq!(wire(&after.tools), wire(&first.tools), "and the restored set holds");
+    assert_eq!(wire(&after.tools), wire(&first.tools), "and the set holds");
 }

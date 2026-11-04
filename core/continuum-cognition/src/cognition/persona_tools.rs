@@ -311,6 +311,14 @@ pub fn group_categories(tools: &[NativeToolSpec]) -> Vec<(&str, Vec<&str>)> {
 /// her. Only includes a spec that actually resolves in the registry (fail-closed:
 /// a missing command is omitted, never fabricated — [[fallbacks-are-illegal-fail-loud]]).
 pub fn native_tool_specs() -> Vec<NativeToolSpec> {
+    native_offers().into_iter().map(|offer| offer.spec).collect()
+}
+
+/// The natively offered verbs, each with where its command DECLARES it sits in her hands
+/// (`CommandSpec::DISCLOSURE`), so the tool surface reads the value the tool carries, like its
+/// permissions, never a name list (Joel, 2026-11-04). The verdict verbs have no command and are
+/// her core hands.
+pub fn native_offers() -> Vec<super::tool_surface::OfferedTool> {
     // DERIVED, not a hand-kept list: the native surface is every command that DECLARES
     // itself native (`CommandSpec::NATIVE = true`, in its OWN file) — so adding a command
     // and marking it native offers it here AUTOMATICALLY, no central array to edit. This
@@ -327,8 +335,8 @@ pub fn native_tool_specs() -> Vec<NativeToolSpec> {
     command_registry_live()
         .iter()
         .filter(|d| d.native)
-        .map(descriptor_to_tool_spec)
-        .chain(verdict_tool_specs())
+        .map(|d| super::tool_surface::OfferedTool { spec: descriptor_to_tool_spec(d), disclosure: d.disclosure })
+        .chain(verdict_tool_specs().into_iter().map(super::tool_surface::OfferedTool::core))
         .collect()
 }
 
