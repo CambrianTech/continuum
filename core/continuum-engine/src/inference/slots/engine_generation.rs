@@ -193,6 +193,73 @@ impl EndpointSlots {
         })
     }
 
+    /// The engine installed on this endpoint now: what a launch decides to replace. `None` is no
+    /// owned engine (none yet, or an adopted one).
+    pub(crate) fn incumbent(&self) -> Option<EngineGeneration> {
+        self.state.lock().generation.clone()
+    }
+
+    /// Drain this endpoint for an engine replacement its caller has decided. In order:
+    /// 1. `preflight`: every refusal the replacement can make from state. A refused replacement
+    ///    condemns nothing, so a refusal that repeats every tick never ends the incumbent's acts
+    ///    (Fable on df1d0963; the M5 2026-11-04 07:38:34Z, "adopted checkpoint requires a known
+    ///    pool").
+    /// 2. `condemn`, only while `incumbent` (captured when the launch was decided) is still the
+    ///    installed engine: a stale launch never condemns the engine that replaced its target
+    ///    (Codex on df1d0963).
+    /// 3. The writer, admitted by the caller's `current` under the guard as before.
+    ///
+    /// The acts holding admissions let go on a condemnation (`llama_server::until_condemned`).
+    /// Condemned only once the writer held the gate, as the caller's admission inside it did,
+    /// the drain waited on acts that only a finished drain would end: 67 min on the IntelMac
+    /// (2026-11-04 06:27-07:34Z, card df1d0963), 23 min on enrico (2026-10-26, card 4d2a64a2).
+    /// `expected` names the exited engine a restore replaces; `None` is any replacement.
+    pub(crate) async fn drain_for_replacement<E>(
+        self: &Arc<Self>,
+        incumbent: Option<&EngineGeneration>,
+        expected: Option<&EngineGeneration>,
+        preflight: impl FnOnce() -> Result<(), E>,
+        condemn: impl FnOnce(),
+        current: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<Result<EndpointTransition, ()>, E> {
+        preflight()?;
+        let still_incumbent = match (incumbent, self.state.lock().generation.as_ref()) {
+            (Some(captured), Some(installed)) => captured.same_engine(installed),
+            (None, None) => true,
+            _ => false,
+        };
+        if still_incumbent {
+            condemn();
+        }
+        Ok(match expected {
+            Some(expected) => self.transition_for_generation_if(expected, current).await,
+            None => self.transition_if(current).await,
+        })
+    }
+
+    /// What an adopted engine's checkpoint needs of this endpoint, read from its state alone: an
+    /// unowned, certain pool that is known, with a verified ledger naming `incarnation`. One
+    /// owner for the replacement's pre-flight (before anything is condemned or drained) and for
+    /// the checkpoint itself, under the guard.
+    pub(crate) fn adopted_checkpoint_pool(
+        &self,
+        incarnation: crate::inference::engine_residency::EngineIncarnation,
+    ) -> Result<Arc<KvSlotPool>, String> {
+        let pool = {
+            let state = self.state.lock();
+            if state.generation.is_some() || state.paging_uncertain {
+                return Err("adopted checkpoint requires an unowned, certain pool".into());
+            }
+            state.pool.as_ref().and_then(Clone::clone)
+                .ok_or("adopted checkpoint requires a known pool")?
+        };
+        let ledger = pool.ledger.get().ok_or("adopted checkpoint requires a verified ledger")?;
+        if ledger.incarnation.get().copied() != Some((incarnation.pid, incarnation.started_s)) {
+            return Err("adopted checkpoint ledger names a different process".into());
+        }
+        Ok(pool)
+    }
+
     /// Drain first, then admit a conditional lifecycle operation. A superseded
     /// request (or cancellation while queued) must not suspend the current engine.
     pub(crate) async fn transition_if(
@@ -258,18 +325,7 @@ impl EndpointTransition {
         if !Arc::ptr_eq(&directory().endpoint(root), &self.endpoint) {
             return Err("adopted checkpoint URL does not identify the held endpoint".into());
         }
-        let pool = {
-            let state = self.endpoint.state.lock();
-            if state.generation.is_some() || state.paging_uncertain {
-                return Err("adopted checkpoint requires an unowned, certain pool".into());
-            }
-            state.pool.as_ref().and_then(Clone::clone)
-                .ok_or("adopted checkpoint requires a known pool")?
-        };
-        let ledger = pool.ledger.get().ok_or("adopted checkpoint requires a verified ledger")?;
-        if ledger.incarnation.get().copied() != Some((incarnation.pid, incarnation.started_s)) {
-            return Err("adopted checkpoint ledger names a different process".into());
-        }
+        let pool = self.endpoint.adopted_checkpoint_pool(incarnation)?;
         let verify_engine = || match incarnation.liveness() {
             Liveness::Alive => Ok(()),
             Liveness::Dead => Err("adopted checkpoint engine exited or PID was reused".into()),

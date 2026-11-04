@@ -2,38 +2,79 @@
 use super::*;
 use crate::inference::engine_residency::Liveness;
 
+/// What retiring the recorded adopted engine means now ([`LlamaServerProcess::adopted_plan`]).
+enum AdoptedPlan {
+    Resume(crate::inference::engine_residency::EngineIncarnation),
+    NoLane,
+    Dead(crate::inference::engine_residency::EngineIncarnation),
+    Alive(crate::inference::engine_residency::EngineIncarnation),
+}
+
 impl LlamaServerProcess {
-    pub(super) async fn retire_adopted(
-        &self,
-        transition: &mut crate::inference::slots::EndpointTransition,
-        current: &ServingLifecycleCheck<'_>,
-    ) -> Result<(), LlamaServerError> {
-        let pending = *self.retiring_adopted.lock();
-        if let Some(incarnation) = pending {
-            // Resume observation, never checkpoint or reopen a process already
-            // signalled by an earlier cancelled/timed-out launch.
-            return self.await_adopted_exit(incarnation, Duration::from_secs(10)).await;
+    /// What retiring the recorded adopted engine means now, from state alone: resume a
+    /// retirement already signalled, nothing to retire, an engine already dead, or a live one.
+    /// The refusals here are the replacement's own, so its pre-flight and its retirement make
+    /// them from one place.
+    fn adopted_plan(&self) -> Result<AdoptedPlan, LlamaServerError> {
+        if let Some(incarnation) = *self.retiring_adopted.lock() {
+            return Ok(AdoptedPlan::Resume(incarnation));
         }
         let Some(lane) = crate::inference::lane_registry::live_lane() else {
             // Absence grants no permission to kill a listener. Launch's port gate
             // will refuse any unrecorded occupant, including another llama-server.
-            return Ok(());
+            return Ok(AdoptedPlan::NoLane);
         };
         if lane.root_url() != self.root {
             return Err(LlamaServerError::RetirementRefused("recorded live lane belongs to another endpoint".into()));
         }
         let incarnation = lane.incarnation();
+        match incarnation.liveness() {
+            Liveness::Dead => Ok(AdoptedPlan::Dead(incarnation)),
+            Liveness::Unknown => Err(LlamaServerError::RetirementRefused("adopted engine identity is unverified".into())),
+            Liveness::Alive => Ok(AdoptedPlan::Alive(incarnation)),
+        }
+    }
+
+    /// Every refusal retiring the adopted engine can make before its drain (the replacement's
+    /// pre-flight, `EndpointSlots::drain_for_replacement`). The checkpoint repeats its own checks
+    /// under the guard.
+    pub(super) fn adopted_retirement_preflight(&self) -> Result<(), LlamaServerError> {
+        match self.adopted_plan()? {
+            AdoptedPlan::Alive(incarnation) => {
+                let endpoint = crate::inference::slots::directory().endpoint(&self.root);
+                if endpoint.paging_recovery_required() {
+                    return Ok(());
+                }
+                endpoint
+                    .adopted_checkpoint_pool(incarnation)
+                    .map(drop)
+                    .map_err(LlamaServerError::RetirementRefused)
+            }
+            AdoptedPlan::Resume(_) | AdoptedPlan::NoLane | AdoptedPlan::Dead(_) => Ok(()),
+        }
+    }
+
+    pub(super) async fn retire_adopted(
+        &self,
+        transition: &mut crate::inference::slots::EndpointTransition,
+        current: &ServingLifecycleCheck<'_>,
+    ) -> Result<(), LlamaServerError> {
         use crate::inference::slots::DiscardReason;
         let endpoint = crate::inference::slots::directory().endpoint(&self.root);
-        match incarnation.liveness() {
-            Liveness::Dead => {
+        let incarnation = match self.adopted_plan()? {
+            // Resume observation, never checkpoint or reopen a process already
+            // signalled by an earlier cancelled/timed-out launch.
+            AdoptedPlan::Resume(incarnation) => {
+                return self.await_adopted_exit(incarnation, Duration::from_secs(10)).await
+            }
+            AdoptedPlan::NoLane => return Ok(()),
+            AdoptedPlan::Dead(_) => {
                 // Its residents' KV died with it; their next turns name this (card 6b28a445).
                 endpoint.pending_discard(DiscardReason::AdoptedEngineDead).commit();
                 return Ok(());
             }
-            Liveness::Unknown => return Err(LlamaServerError::RetirementRefused("adopted engine identity is unverified".into())),
-            Liveness::Alive => {}
-        }
+            AdoptedPlan::Alive(incarnation) => incarnation,
+        };
         // Quarantined paging cannot save: its residents are captured now and recorded only
         // when the engine is seen dead, so a superseded, refused or still-waiting retirement
         // never reports a loss (card 6b28a445).

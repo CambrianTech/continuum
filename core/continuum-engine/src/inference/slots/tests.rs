@@ -337,6 +337,103 @@ mod adopted_checkpoint;
         );
     }
 
+    /// An endpoint serving a verified engine, and that engine's generation.
+    async fn served_endpoint(dir: &SlotDirectory, root: &str) -> (Arc<EndpointSlots>, EngineGeneration) {
+        let endpoint = dir.endpoint(root);
+        let contract = KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: Vec::new(),
+            page_dir: Some("fixture-pages".into()),
+            context: 32768,
+            slots: 8,
+            cache_type: Some("q8_0".into()),
+            flash_attn: Some(true),
+            revisions: None,
+        };
+        let launch = endpoint.transition().await;
+        let generation = launch.start_generation().expect("test: engine generation");
+        launch
+            .ready(root, &generation, contract)
+            .expect("test: verified engine");
+        drop(launch);
+        (endpoint, generation)
+    }
+
+    // what this catches (card df1d0963; the IntelMac 2026-11-04 06:27-07:34Z, enrico 2026-10-26
+    // 21:10-21:33Z): a replacement's drain waiting on turns that let go only on a condemnation,
+    // while the condemnation came from the admission inside the drain's own writer. Condemned
+    // first, the eight admitted turns let go and the drain completes; with the condemnation
+    // moved back behind the writer this times out.
+    #[tokio::test]
+    async fn a_decided_replacement_condemns_before_its_drain_so_held_turns_let_go() {
+        let dir = SlotDirectory {
+            endpoints: dashmap::DashMap::new(),
+        };
+        let (endpoint, incumbent) = served_endpoint(&dir, "test://draining").await;
+        let condemnations = Arc::new(crate::inference::llama_server::Condemnations::new());
+        let mut turns = Vec::new();
+        for _ in 0..8 {
+            let admission = endpoint.admit().await.expect("test: admitted on the ready endpoint");
+            let condemned = condemnations.subscribe();
+            turns.push(tokio::spawn(async move {
+                crate::inference::llama_server::until_condemned_on(condemned).await;
+                drop(admission);
+            }));
+        }
+        let drained = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            endpoint.drain_for_replacement(
+                Some(&incumbent),
+                None,
+                || Ok::<(), ()>(()),
+                || {
+                    condemnations.condemn();
+                },
+                &|| true,
+            ),
+        )
+        .await
+        .expect("the drain completes once its turns are condemned");
+        assert!(matches!(drained, Ok(Ok(_))), "a current replacement is admitted");
+        for turn in turns {
+            turn.await.expect("test: turn task");
+        }
+    }
+
+    // what this catches (Fable and Codex on df1d0963; the M5 2026-11-04 07:38:34Z refused a
+    // replacement for "adopted checkpoint requires a known pool"): a refused replacement, or a
+    // stale one whose incumbent was already replaced, ending every act in flight. A pre-flight
+    // refusal condemns nothing and leaves the endpoint serving; a stale incumbent is never
+    // condemned, and currentness under the writer still decides admission.
+    #[tokio::test]
+    async fn a_refused_or_stale_replacement_condemns_nothing() {
+        let dir = SlotDirectory {
+            endpoints: dashmap::DashMap::new(),
+        };
+        let (endpoint, first) = served_endpoint(&dir, "test://refused").await;
+        let condemned = std::sync::atomic::AtomicUsize::new(0);
+        let count = || {
+            condemned.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        };
+
+        let refused = endpoint
+            .drain_for_replacement(Some(&first), None, || Err("custody refused"), count, &|| true)
+            .await;
+        assert!(matches!(refused, Err("custody refused")));
+        assert_eq!(condemned.load(std::sync::atomic::Ordering::SeqCst), 0, "a refusal condemns nothing");
+        assert!(endpoint.admit().await.is_ok(), "and the incumbent serves on");
+
+        // Another launch replaced the engine this one decided on: stale.
+        let (_, second) = served_endpoint(&dir, "test://refused").await;
+        assert!(!first.same_engine(&second));
+        let stale = endpoint
+            .drain_for_replacement(Some(&first), None, || Ok::<(), ()>(()), count, &|| false)
+            .await;
+        assert!(matches!(stale, Ok(Err(()))), "currentness under the writer refuses it");
+        assert_eq!(condemned.load(std::sync::atomic::Ordering::SeqCst), 0, "the replacement is never condemned");
+    }
+
     // regression for Cormac's blocker on #4411 (the M5 grow chain): transitions back to
     // back. The first cut waited for ONE reopen and then called `admit()` once; a second
     // transition that closed the endpoint behind the first one's reopen made that call
