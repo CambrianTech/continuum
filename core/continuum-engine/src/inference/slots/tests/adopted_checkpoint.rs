@@ -189,7 +189,7 @@ async fn an_unprobed_adopted_endpoint_discovers_its_pool_before_the_checkpoint()
     let client = reqwest::Client::new();
     let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), address.port())
         .ok_or("fixture process identity unavailable")?;
-    assert!(directory().get(&root).is_none(), "adopted and never probed");
+    assert!(matches!(directory().get(&root), Probed::NotAsked), "adopted and never probed");
 
     // A loading engine is a real unknown: the refusal names it, and nothing latches.
     let loading = directory().adopted_checkpoint_pool(&client, &root, process).await;
@@ -197,14 +197,14 @@ async fn an_unprobed_adopted_endpoint_discovers_its_pool_before_the_checkpoint()
         matches!(loading, Err(AdoptedCheckpointRefusal::UnknownPool(PoolDiscoveryMiss::NotReady { status: 503 }))),
         "{:?}", loading.as_ref().err()
     );
-    assert!(directory().get(&root).is_none(), "a transient props status never latches");
+    assert!(matches!(directory().get(&root), Probed::NotAsked), "a transient props status never latches");
 
     // Answering props, the pre-flight discovers the pool instead of refusing UnknownPool. The live
     // lane record is not this fixture, so no ledger is adopted: the next refusal is the ledger's.
     props_ready.store(true, Ordering::SeqCst);
     let discovered = directory().adopted_checkpoint_pool(&client, &root, process).await;
     assert!(matches!(discovered, Err(AdoptedCheckpointRefusal::UnverifiedLedger)), "{:?}", discovered.as_ref().err());
-    let pool = directory().get(&root).flatten().ok_or("discovery installed no pool")?;
+    let Probed::Known(pool) = directory().get(&root) else { return Err("discovery installed no pool".into()) };
     assert_eq!(pool.n_slots(), 3, "the pool props reports");
     assert_eq!(props_calls.load(Ordering::SeqCst), 2);
 

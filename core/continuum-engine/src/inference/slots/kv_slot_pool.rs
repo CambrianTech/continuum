@@ -451,6 +451,9 @@ pub(super) struct EndpointState {
     pub(super) page_admission: Option<Result<Option<std::path::PathBuf>, String>>,
 }
 
+/// A slot pool as far as its engine was probed (see [`Probed`]).
+pub type PoolProbe = Probed<Arc<KvSlotPool>, PropsAbsent>;
+
 /// Which engine an endpoint has, and the pool serving it.
 pub(super) enum Engine {
     /// Never probed: no pool known.
@@ -468,10 +471,9 @@ pub(super) enum Engine {
 pub(super) enum Serving {
     /// The last verified ready's install.
     Install(OwnedInstall),
-    /// No launch of this core has verified ready yet: the pool entry the endpoint had before
-    /// (`Some(None)` latched unsupported, `None` never probed), whose residents a relaunch
-    /// still saves or records as discarded.
-    Before(Option<Option<Arc<KvSlotPool>>>),
+    /// No launch of this core has verified ready yet: the pool the endpoint had before, as far as
+    /// it was probed, whose residents a relaunch still saves or records as discarded.
+    Before(PoolProbe),
 }
 
 /// An owned engine as `ready` installed it: its generation, the contract it launched with and
@@ -483,14 +485,14 @@ pub(super) struct OwnedInstall {
 }
 
 impl Engine {
-    /// The pool entry this engine leaves to its successor's launch, as `Serving::Before` holds it.
-    fn into_entry(self) -> Option<Option<Arc<KvSlotPool>>> {
+    /// The pool this engine leaves to its successor's launch, as `Serving::Before` holds it.
+    fn into_pool(self) -> PoolProbe {
         match self {
-            Engine::Unprobed => None,
-            Engine::Unsupported => Some(None),
-            Engine::Adopted(pool) => Some(Some(pool)),
-            Engine::Owned { serving: Serving::Install(install), .. } => Some(Some(install.pool)),
-            Engine::Owned { serving: Serving::Before(entry), .. } => entry,
+            Engine::Unprobed => Probed::NotAsked,
+            Engine::Unsupported => Probed::Absent(PropsAbsent),
+            Engine::Adopted(pool) => Probed::Known(pool),
+            Engine::Owned { serving: Serving::Install(install), .. } => Probed::Known(install.pool),
+            Engine::Owned { serving: Serving::Before(before), .. } => before,
         }
     }
 }
@@ -517,42 +519,47 @@ impl EndpointState {
         self.owned().filter(|install| install.generation == generation)
     }
 
-    /// The pool entry serving this endpoint (`Some(None)` latched unsupported, `None` never
-    /// probed).
-    pub(super) fn pool_entry(&self) -> Option<Option<&Arc<KvSlotPool>>> {
+    /// The pool serving this endpoint, as far as it was probed: never probed asks, latched
+    /// unsupported refuses, known proceeds. One answer per state, so no caller can read "not asked
+    /// yet" as "there is none" (the M5 2026-11-04 14:56Z pool-growth refusal).
+    pub(super) fn pool(&self) -> Probed<&Arc<KvSlotPool>, &PropsAbsent> {
         match &self.engine {
-            Engine::Unprobed => None,
-            Engine::Unsupported => Some(None),
-            Engine::Adopted(pool) => Some(Some(pool)),
-            Engine::Owned { serving: Serving::Install(install), .. } => Some(Some(&install.pool)),
-            Engine::Owned { serving: Serving::Before(entry), .. } => entry.as_ref().map(Option::as_ref),
+            Engine::Unprobed => Probed::NotAsked,
+            Engine::Unsupported => Probed::Absent(&PropsAbsent),
+            Engine::Adopted(pool) => Probed::Known(pool),
+            Engine::Owned { serving: Serving::Install(install), .. } => Probed::Known(&install.pool),
+            Engine::Owned { serving: Serving::Before(before), .. } => before.as_ref(),
         }
     }
 
-    /// The pool serving this endpoint, if any.
-    pub(super) fn current_pool(&self) -> Option<&Arc<KvSlotPool>> {
-        self.pool_entry().flatten()
+    /// Whether `pool` is exactly the pool serving this endpoint now. Not asked and absent are both
+    /// "not this pool": a caller holding a pool asks only whether it is still the installed one.
+    pub(super) fn serves(&self, pool: &Arc<KvSlotPool>) -> bool {
+        match self.pool() {
+            Probed::Known(installed) => Arc::ptr_eq(installed, pool),
+            Probed::NotAsked | Probed::Absent(_) => false,
+        }
     }
 
     /// Start `generation`: what served before keeps serving until it is verified ready.
     pub(super) fn start(&mut self, generation: EngineGeneration) {
         let serving = match std::mem::replace(&mut self.engine, Engine::Unprobed) {
             Engine::Owned { serving, .. } => serving,
-            previous => Serving::Before(previous.into_entry()),
+            previous => Serving::Before(previous.into_pool()),
         };
         self.engine = Engine::Owned { generation, serving };
     }
 
-    /// Replace the serving pool entry, keeping any started generation: a test's stand-in for a
+    /// Replace the serving pool, keeping any started generation: a test's stand-in for a
     /// discovered or carried pool.
     #[cfg(test)]
-    pub(super) fn set_pool_entry(&mut self, entry: Option<Option<Arc<KvSlotPool>>>) {
+    pub(super) fn set_pool(&mut self, pool: PoolProbe) {
         self.engine = match std::mem::replace(&mut self.engine, Engine::Unprobed) {
-            Engine::Owned { generation, .. } => Engine::Owned { generation, serving: Serving::Before(entry) },
-            _ => match entry {
-                None => Engine::Unprobed,
-                Some(None) => Engine::Unsupported,
-                Some(Some(pool)) => Engine::Adopted(pool),
+            Engine::Owned { generation, .. } => Engine::Owned { generation, serving: Serving::Before(pool) },
+            _ => match pool {
+                Probed::NotAsked => Engine::Unprobed,
+                Probed::Absent(PropsAbsent) => Engine::Unsupported,
+                Probed::Known(pool) => Engine::Adopted(pool),
             },
         };
     }

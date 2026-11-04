@@ -58,7 +58,7 @@ async fn a_props_transport_failure_is_a_named_miss_and_never_latches() {
     adapter.config.base_url = "http://127.0.0.1:0/slot-discovery-transport-miss".into();
     let Err(miss) = crate::inference::slots::directory().discover_pool(&adapter.client, adapter.endpoints().root()).await else { panic!("test: nothing listens, yet a pool came back") };
     assert_eq!(miss.as_str(), "transport", "{miss:?}");
-    assert!(crate::inference::slots::directory().get(adapter.endpoints().root()).is_none(), "a transport error never latches");
+    assert!(matches!(crate::inference::slots::directory().get(adapter.endpoints().root()), continuum_base::probed::Probed::NotAsked), "a transport error never latches");
 }
 
 // Exercise the generation boundary, not just discovery: no miss may turn into

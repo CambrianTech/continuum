@@ -36,6 +36,8 @@ use uuid::Uuid;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use continuum_base::probed::Probed;
+
 use crate::paging::pool::{PagedResourcePool, PinHandle, PoolConfig};
 
 mod state_sampler;
@@ -57,7 +59,7 @@ use saved_ledger::{SavedLedgerFile, LEDGER_FORMAT, SAVED_LEDGER_FILE};
 mod engine_generation;
 mod adopted_replacement;
 mod discover;
-pub use discover::PoolDiscoveryMiss;
+pub use discover::{PoolDiscoveryMiss, PropsAbsent};
 pub(crate) use discover::served_ctx_by_root;
 mod adopted_checkpoint_refusal;
 pub use adopted_checkpoint_refusal::AdoptedCheckpointRefusal;
