@@ -119,8 +119,8 @@ impl ServingDaemonModule {
 
     /// The test seam's budget: `budget` as the host figure, with the credit fact the live
     /// snapshot would read beside it (serving's own attribution on this daemon's board). A
-    /// handed budget is a stated reading, so it is settled: the transient is the live owner's
-    /// question (`CreditedReadings`), pinned by its own tests.
+    /// handed budget is a stated reading, so it is settled: whether an old engine still holds
+    /// memory is the live owner's question (`engine_release`), pinned by its own tests.
     #[cfg(test)]
     pub(super) fn publish_plan_for_intent(
         &self,

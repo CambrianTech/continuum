@@ -217,6 +217,9 @@ impl ServingDaemonModule {
         let read = self.resource_daemon.replacement_budget_snapshot(SERVING_CONSUMER_ID, pool);
         // Whether this budget holds serving's own bytes, from the read that made it.
         let credit = OwnCredit::of_own_bytes(read.own_bytes);
+        // The authority's physical scan this read reflects, and whether it scanned at all: only a
+        // scanned pool can show an old engine's bytes released (`engine_release`).
+        let scanned = (read.capacity_bytes > 0).then_some(read.scan);
         // A pool with a scanned capacity has MEASURED its budget, and a measured zero is the
         // answer: a fully leased pool. The substitute ladder is for a pool with no reading
         // only. Before, a zero read fell to the ladder, whose first rung is the board's
@@ -296,14 +299,19 @@ impl ServingDaemonModule {
         // at once. The M5, 2026-10-18 15:27-15:28Z: the instantaneous budget read 22.9, 29.8,
         // 29.1 then 41.9 GB within 22 s (ledger flat at 41.68 GB) and the plan it fed
         // relaunched the engine at 15:06, 15:18 and 15:24, every resident cold each time.
-        // Within one credit view: an uncredited reading is not a minimum of a credited one. The
-        // same history says whether a launch may commit a pool from it (`BudgetReading`).
-        let observed = self.budget_readings.lock().observe(
+        // Within one credit view: an uncredited reading is not a minimum of a credited one.
+        let usable_bytes = self.budget_readings.lock().sustained_min(
             continuum_base::time::EpochMs::now().millis(),
             credit,
             instant,
         );
-        let usable_bytes = observed.sustained_min;
+        // Whether a launch may commit a pool from this reading: only once every engine of ours is
+        // observed gone or verified ours (`engine_release`), never by time or stable memory. Its
+        // bytes are this reading's, taken after that observation.
+        let launch = match scanned {
+            Some(scan) => self.engine_release.lock().read(credit, self.engine_facts(), scan, instant),
+            None => BudgetReading::Transient,
+        };
         if usable_bytes != instant {
             continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.budget.sustained",
@@ -322,7 +330,7 @@ impl ServingDaemonModule {
             },
             credit,
             leases: charged,
-            launch: observed.launch,
+            launch,
         }
     }
 
@@ -455,8 +463,9 @@ impl ServingDaemonModule {
         )
     }
 
-    /// Tests: the plan budget's readings over `window` instead of one relaunch's duration, so a
-    /// view's first window (a cold boot's transient) passes in a test's time.
+    /// Tests: the plan's sustained minimum over `window` instead of one relaunch's duration, so a
+    /// reading taken while an old engine held memory ages out of the PLAN in a test's time. (The
+    /// launch's settledness is not time: `engine_release`.)
     #[cfg(test)]
     pub(super) fn set_budget_window(&mut self, window: std::time::Duration) {
         self.budget_readings = parking_lot::Mutex::new(super::own_credit::CreditedReadings::new(window));

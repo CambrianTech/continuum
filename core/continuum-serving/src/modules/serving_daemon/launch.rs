@@ -24,8 +24,7 @@ impl ServingDaemonModule {
     /// any one sequence may grow into the whole pool. The sequences are every seated mind, the
     /// minds leased in at the last plan, and the scratch traffic, so seating never relaunches.
     /// The size is [`launch_pool::launch_pool`] at the last plan's SETTLED reading (`BudgetReading`):
-    /// what memory holds once a boot, load or teardown has passed, beside everything else on the
-    /// node. Never the host's physical total (590df4bc3 sized the M5 at 5 x 262,144 from it: memory
+    /// the shared physical pool once every engine of ours is observed gone or verified ours. Never the host's physical total (590df4bc3 sized the M5 at 5 x 262,144 from it: memory
     /// pressure 91%, 5.6 GB available, no resident hosted; rolled back), and never a transient (the
     /// M5, 20:15Z on 2026-11-04: `-c 125640` from a 22.8 GB first reading, kept for its life). No
     /// plan yet is no reading, so transient too.
@@ -33,7 +32,11 @@ impl ServingDaemonModule {
         let leased_in = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed);
         let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes).max(1);
         let reading = self.planned_budget.lock().map_or(BudgetReading::Transient, |b| b.launch); // map_or: no plan computed yet is no reading at all
-        LaunchPool::from_reading(reading, footprint_for(model).as_ref(), served_ctx, lanes, sequences, model.context_window)
+        // The footprint the published plan sized this model with (weights, KV per token, the
+        // per-sequence compute/staging buffer): one owner of the model's cost, looked up, never
+        // re-derived beside it. No plan for this model is no footprint, so no fit beyond the plan.
+        let planned = self.plan_tx.borrow().plan.as_ref().map(|p| p.base_model.clone()).filter(|fp| fp.model_id == model.id);
+        LaunchPool::from_reading(reading, planned.as_ref(), served_ctx, lanes, sequences, model.context_window)
     }
 
     pub(super) fn launch_reconciled_plan(&self, launch: ReconcileLaunch) -> Option<JoinHandle<()>> {
@@ -194,10 +197,11 @@ impl ServingDaemonModule {
             if !current() {
                 return;
             }
-            // THE POOL IS COMMITTED FROM A SETTLED READING ONLY. A transient one (a cold boot's
-            // first window) keeps the pool of an engine already serving this model, or launches
-            // nothing this tick: the M5's 20:15Z boot launched `-c 125640` two seconds in, from
-            // a 22.8 GB first reading on a 128 GB machine, and kept it for the engine's life.
+            // THE POOL IS COMMITTED FROM A SETTLED READING ONLY. A transient one (an old engine of
+            // ours not yet observed gone nor verified ours) keeps the pool of an engine already
+            // serving this model, or launches nothing this tick: the M5's 20:15Z boot launched
+            // `-c 125640` two seconds in, from a 22.8 GB reading on the 64 GB M5 Pro taken before
+            // the old engine's bytes were credited or released, and kept it for the engine's life.
             let running = match pool {
                 LaunchPool::Sized { .. } => None,
                 LaunchPool::AwaitSettled { .. } => super::launch_pool::running_pool_of(server.as_ref(), &model.id).await,
@@ -208,9 +212,8 @@ impl ServingDaemonModule {
                     continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.launch.awaiting_settled",
                         model = desired.as_str(),
-                        window_ms = crate::inference::llama_server::READY_TIMEOUT.as_millis() as u64,
-                        "the budget reading is transient (a view's first window) and no engine of this model runs: \
-                         the one launch waits for a settled reading instead of fixing its pool from this one"
+                        "the budget reading is transient (an old engine of ours is not yet observed gone or verified ours) \
+                         and no engine of this model runs: the one launch waits for a settled reading instead of fixing its pool from this one"
                     );
                 }
                 return;

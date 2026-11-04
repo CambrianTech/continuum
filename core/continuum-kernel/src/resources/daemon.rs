@@ -142,6 +142,11 @@ pub struct ReplacementBudget {
     pub own_bytes: u64,
     /// The other holders' leases of the pool this budget was charged.
     pub charged: Vec<super::lease::ResourceLease>,
+    /// Which physical scan this read reflects: the count of the authority's ingests of its
+    /// sources' capacity and usage, taken under the same lock. A consumer that observed an event
+    /// (an old engine's exit) at scan `n` knows a read at a scan above `n` was sampled after it,
+    /// so its bytes' release is in the reading, never assumed.
+    pub scan: u64,
 }
 
 /// The single per-machine resource authority's runtime shell.
@@ -192,6 +197,9 @@ pub struct ResourceDaemon {
     /// what it decides. Grows after startup (no restart), like `consumers`; each observer is
     /// panic-isolated so one broken consumer can't abort the reconcile tick.
     tick_observers: RwLock<Vec<Arc<dyn Fn(&LeaseBoard) + Send + Sync>>>,
+    /// Physical scans ingested ([`ReplacementBudget::scan`]): advanced and read only under the
+    /// governor lock, so a read's scan number and its numbers are one moment.
+    scans: std::sync::atomic::AtomicU64,
 }
 
 static GLOBAL_RESOURCE_DAEMON: std::sync::OnceLock<std::sync::Arc<ResourceDaemon>> =
@@ -245,6 +253,7 @@ impl ResourceDaemon {
             config,
             last_drift_bytes: Mutex::new([0; 3]),
             tick_observers: RwLock::new(Vec::new()),
+            scans: std::sync::atomic::AtomicU64::new(0),
         });
 
         // The canonical runner owns the loop: interval + Skip + PER-TICK
@@ -372,6 +381,7 @@ impl ResourceDaemon {
             capacity_bytes: capacity,
             own_bytes,
             charged,
+            scan: self.scans.load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 
@@ -530,6 +540,8 @@ impl ResourceDaemon {
                 // netted against the fixed ceiling to yield `available`.
                 g.set_physical_used(*kind, *used);
             }
+            // One more physical scan ingested, under the lock its reads take.
+            self.scans.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             // Feed the self-declared attribution axis: each consumer's freshly-polled
             // residency. Surfaces per-consumer on the board (the WHO); the physical
             // total above is what drives `available`.

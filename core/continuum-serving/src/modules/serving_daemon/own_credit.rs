@@ -103,82 +103,32 @@ pub(super) struct PlannedBudget {
     pub(super) launch: BudgetReading,
 }
 
-/// Whether a budget reading may size the engine's one KV pool. The pool is fixed at launch
-/// (`--kv-unified`, `-c`) and kept for the engine's life, so it is committed only from a reading
-/// that would not change, never from the transient of a view change.
-///
-/// The M5, 2026-11-04 20:15:16-18Z (87eccb3a7, no growth relaunch left to repair it): the cold
-/// boot's first plans read `candidate_cannot_speak` x3, then `serving.plan.branch credited_bytes=0
-/// usable_bytes=22,785,477,836` on a 128 GB machine, and the engine launched `-c 125640
-/// --parallel 5` from it two seconds into the boot. It held 125,696 for its life and starved
-/// three residents; at 18:49 the steady plan of the same machine had proved 523,520. The same
-/// rising shape on 2026-10-18 15:27:47-15:28:09Z: 22.9, 29.8, 29.1, then 41.9 GB within 22 s.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum BudgetReading {
-    /// The sustained minimum of the readings taken after the view's first window: what memory
-    /// holds once the boot, load or teardown that changed the view has had one relaunch's
-    /// duration to finish.
-    Settled(u64),
-    /// Inside a view's first window (a cold boot, an engine appearing or leaving): no pool is
-    /// committed from it. A running engine of the same model keeps its own; nothing launches.
-    Transient,
-}
-
 /// The plan budget's sustained minimum (one relaunch's duration, `budget.rs`), kept within one
 /// credit view. A reading taken before serving's attribution landed is free memory alone; one
 /// taken after holds the engine too. They are not the same quantity, so a minimum across them
 /// held the plan at the uncredited floor for a whole window after the credit arrived. A change
 /// of view starts the history over; within a view a fall still shows at once and a rise still
 /// waits out the window.
-///
-/// The same history decides whether a reading is [`BudgetReading::Settled`]: a view's first
-/// window is its transient (a boot, an engine loading or leaving; the window is the time an
-/// engine is given to load), so the launch reading is the sustained minimum of only the readings
-/// after it. The plan's own minimum still holds every reading: the plan is runtime and moves, the
-/// launch pool does not.
 #[derive(Debug)]
 pub(super) struct CreditedReadings {
     window: std::time::Duration,
     view: Option<std::mem::Discriminant<OwnCredit>>,
-    /// When the current view's first reading was taken.
-    view_since_ms: u64,
     readings: crate::system_resources::sustained::Sustained,
-    /// The current view's readings taken after its first window.
-    settled: crate::system_resources::sustained::Sustained,
-}
-
-/// One observation of the plan budget: the plan's sustained minimum and the launch reading.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Observed {
-    pub(super) sustained_min: u64,
-    pub(super) launch: BudgetReading,
 }
 
 impl CreditedReadings {
     pub(super) fn new(window: std::time::Duration) -> Self {
-        use crate::system_resources::sustained::Sustained;
-        Self { window, view: None, view_since_ms: 0, readings: Sustained::new(window), settled: Sustained::new(window) }
+        Self { window, view: None, readings: crate::system_resources::sustained::Sustained::new(window) }
     }
 
-    /// Observe `value` at `now_ms` in `credit`'s view: the sustained minimum over the view's
-    /// readings, and the launch reading (settled once the view has outlived its first window).
-    pub(super) fn observe(&mut self, now_ms: u64, credit: OwnCredit, value: u64) -> Observed {
-        use crate::system_resources::sustained::Sustained;
+    /// The sustained minimum of `value` at `now_ms` over the readings in `credit`'s view.
+    pub(super) fn sustained_min(&mut self, now_ms: u64, credit: OwnCredit, value: u64) -> u64 {
         let view = std::mem::discriminant(&credit);
         if self.view != Some(view) {
             self.view = Some(view);
-            self.view_since_ms = now_ms;
-            self.readings = Sustained::new(self.window);
-            self.settled = Sustained::new(self.window);
+            self.readings = crate::system_resources::sustained::Sustained::new(self.window);
         }
-        let sustained_min = self.readings.observe(now_ms, value).min;
-        let view_age = std::time::Duration::from_millis(now_ms.saturating_sub(self.view_since_ms));
-        let launch = if view_age >= self.window {
-            BudgetReading::Settled(self.settled.observe(now_ms, value).min)
-        } else {
-            BudgetReading::Transient
-        };
-        Observed { sustained_min, launch }
+        self.readings.observe(now_ms, value).min
     }
 }
 

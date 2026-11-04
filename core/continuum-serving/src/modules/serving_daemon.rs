@@ -161,6 +161,9 @@ pub struct ServingDaemonModule {
     /// and shrinks the moment pressure arrives (`system_resources::sustained`), within one
     /// credit view (`own_credit::CreditedReadings`).
     budget_readings: parking_lot::Mutex<own_credit::CreditedReadings>,
+    /// What the authority has seen of an engine of ours this daemon does not serve: whether a
+    /// reading may commit the launch pool (`engine_release`).
+    engine_release: parking_lot::Mutex<engine_release::EngineRelease>,
     /// The published decision. `None` until the first successful plan. Held as
     /// the module's only shared state; `send` takes `&self` so `tick()` can
     /// publish without interior-mutability gymnastics.
@@ -525,6 +528,7 @@ impl ServingDaemonModule {
             budget_readings: parking_lot::Mutex::new(own_credit::CreditedReadings::new(
                 crate::inference::llama_server::READY_TIMEOUT,
             )),
+            engine_release: parking_lot::Mutex::new(engine_release::EngineRelease::default()),
             plan_tx,
             plan_view_tx,
             server,
@@ -703,7 +707,9 @@ mod planning;
 mod grants;
 mod hold;
 mod own_credit;
-use own_credit::{BudgetReading, OwnCredit, PlanBudget, PlannedBudget};
+use own_credit::{OwnCredit, PlanBudget, PlannedBudget};
+mod engine_release;
+use engine_release::BudgetReading;
 mod pool_growth;
 mod reconcile;
 mod tick;

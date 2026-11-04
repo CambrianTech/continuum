@@ -1,9 +1,10 @@
 //! The engine's one KV pool: sized once, at launch, from a settled budget reading only.
 //!
 //! `--kv-unified` allocates the whole pool up front and one launch keeps it for the engine's life
-//! (no growth relaunch), so the reading it is sized from must be one that would not change. The
-//! budget owner says which readings those are ([`BudgetReading`], `own_credit`); this module turns
-//! one into the `-c` / `--parallel` a launch commits, and refuses a transient one.
+//! (no growth relaunch), so the reading it is sized from must be one taken once every engine of
+//! ours is observed gone or verified ours. The budget owner says which readings those are
+//! ([`BudgetReading`], `engine_release`); this module turns one into the `-c` / `--parallel` a
+//! launch commits, and refuses a transient one.
 
 use super::*;
 use crate::inference::planning::serving_plan::ModelFootprint;
@@ -65,15 +66,17 @@ pub(super) async fn running_pool_of<C: LlamaServerControl + ?Sized>(server: &C, 
 }
 
 /// The pool an engine launches with: the most memory the host's measured capacity proves fits.
-/// That is the fit at `sequences` (a window within `budget_bytes` for each, capped at the trained
-/// window) or the plan's own window x its lanes, whichever is larger.
+/// That is the fit at `sequences` (`window_within`: the budget less the weights, less each
+/// sequence's compute/staging buffer, at the KV + prefill-compute cost per token, capped at the
+/// trained window) or the plan's own window x its lanes, whichever is larger.
 ///
-/// `budget_bytes` is a SETTLED reading ([`BudgetReading::Settled`]): what memory holds once the
-/// view's transient has passed, beside everything else on the node. Never the host's physical
-/// total (590df4bc3: 5 x 262,144 on the M5, memory pressure 91%, rolled back), and never a cold
-/// boot's transient (b4be7bc59: 5 x 2,048; 87eccb3a7 at 20:15Z: 125,640 from a 22.8 GB first
-/// reading on a 128 GB machine). On the M5 (plan 2 x 128,768) the result is 257,536 for 5 at a
-/// 23 GB budget; on the IntelMac (plan 2 x 32,768, fit 9 x 32,768) 294,912 for 9.
+/// `budget_bytes` is a SETTLED reading ([`BudgetReading::Settled`]): the shared physical pool's
+/// replace-myself bytes once every engine of ours is observed gone or verified ours. Never the
+/// host's physical total (590df4bc3: 5 x 262,144 on the M5, memory pressure 91%, rolled back), and
+/// never a reading taken while an old engine still held memory (b4be7bc59: 5 x 2,048; 87eccb3a7 at
+/// 20:15Z: 125,640 from a 22.8 GB reading on the 64 GB M5 Pro). On the M5 (plan 2 x 128,768) the
+/// result is 257,536 for 5 at a 23 GB budget; on the IntelMac (plan 2 x 32,768, fit 9 x 32,768)
+/// 294,912 for 9.
 pub(super) fn launch_pool(
     footprint: Option<&ModelFootprint>,
     budget_bytes: u64,
