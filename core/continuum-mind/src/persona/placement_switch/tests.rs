@@ -753,7 +753,7 @@ async fn capacity_park_resumes_when_local_1_5b_routes_to_larger_remote_seat() {
     }));
     // The window the one determiner decides for this binding (the fixture lanes are not the shared pool).
     let crate::capacity::mind_window::MindWindow::Decided(decided) =
-        crate::capacity::mind_window::mind_window(uuid::Uuid::from_u128(1), binding.load_full().adapter.as_ref(), 32768)
+        crate::capacity::mind_window::mind_window(uuid::Uuid::from_u128(1), binding.load_full().adapter.as_ref(), 32768, Default::default())
     else {
         panic!("a fixture lane is never on the shared pool")
     };

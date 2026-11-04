@@ -163,7 +163,7 @@ pub async fn materialize_adapters(
             // on the M5; Cormac on #5733). No grant yet (the engine not serving, or no one on the
             // seat measured) keeps her provisional window; the re-home reconciler binds her to her
             // grant once she has one.
-            if let Some(grant) = crate::capacity::window_grant::current_grant(profile.persona_id) {
+            if let Some(grant) = crate::capacity::window_grant::current_grant(profile.persona_id, crate::cognition::turn_ledger::turns_ended(profile.persona_id)) {
                 if grant != profile.context_length {
                     continuum_base::probe!(
                         class = "persona.upstart.window",

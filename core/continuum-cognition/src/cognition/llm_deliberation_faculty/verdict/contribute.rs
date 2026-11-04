@@ -46,7 +46,7 @@ impl LlmDeliberationFaculty {
         // ungranted mind is measured first (her view records her wish, never submitted), then parks on
         // the grants watch, then decides again (Cormac on #5752).
         let decided = match crate::capacity::mind_window::decide_window(
-            || crate::capacity::mind_window::mind_window(self.persona_id, loaded.adapter.as_ref(), loaded.context_window),
+            || crate::capacity::mind_window::mind_window(self.persona_id, loaded.adapter.as_ref(), loaded.context_window, crate::cognition::turn_ledger::turns_ended(self.persona_id)),
             || {
                 continuum_base::probe!(
                     class = "delib.window.ungranted",

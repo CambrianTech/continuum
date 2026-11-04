@@ -91,6 +91,8 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
                 target: event.need,
                 wish: event.need,
                 in_flight: event.in_flight,
+                // the sim ends no turns: its minds' grants never lapse
+                turns_ended: super::window_grant::TurnsEnded::default(),
                 // the shared pool: one sequence may hold all of it
                 ceiling: scenario.pool_tokens,
             },
