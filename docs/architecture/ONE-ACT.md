@@ -258,6 +258,29 @@ universally one; cancellation takes effect at chunk boundaries; recurrent (hybri
 intact across chunks and cancellation. Validated by re-running the mixed trial: decoders'
 first-token and inter-token latency within their bound, and every prefill completing.
 
+### 5e. A continuous pipeline, shaped like bgfx (Joel: "just like a graphics pipeline. How I did bgfx")
+
+The engine is a render thread that never waits for a mind to ask; the core is the encoders.
+- **Encoders record, the device executes.** Every mind's work (her appended tail, a tool result as
+  it streams in, a page-in, a write-back, a view rebuild) is recorded as commands the moment it
+  happens, by whoever produces it, without waiting.
+- **Double-buffered frames.** An engine step is the frame: commands recorded during step N execute
+  in N+1. Submission never blocks on execution.
+- **Sort keys.** Work in a frame is ordered by a key: latency class (a warm decode first), then
+  activity temperature (goal 9), then bounded cold-prefill chunks (5d), then prefetch and
+  write-back. The key's fields are measured, never fixed weights.
+- **Handles and deferred destruction.** Sequences, pages and snapshots are handles; a release
+  takes effect only after the engine's receipt for the frame that used it (the custody of 5 and
+  5b.1 is the frame fence).
+- **One device owner:** one dispatcher per engine (stage 4).
+What it buys, each already named: prefill of a tool result while the tool runs (plan line 13);
+page-in ahead of the turn (`inference.kv_warm_ahead`, which logged `skipped` on 2026-11-04 and
+needs its reason classified); write-back of cooling minds during decode; the next collapsed view
+built in a shadow sequence and swapped in at a turnover (a fresh sequence, valid for a hybrid
+model); CPU cores rendering, tokenizing and embedding in parallel with the GPU.
+**Gate:** GPU idle fraction while any mind waits on work the GPU could already be doing, measured
+before and after; and per-act wall time split into tool, wait, prefill and decode.
+
 ### 5c. The operating point is measured, never a number
 
 No fixed count of residents, lanes, slots or sequences. RESIDENCY (which minds hold state on this
@@ -325,6 +348,7 @@ deploy with the 15-minute read and immediate rollback if worse (rule 3).
 | 3 | Engine memory (after the 1b diagnosis): launch-from-fit at Settled (#5770 first), conservation accounting; then delete growth (#5774) | Codex + Fable | dyno 1, 6 green |
 | 4 | Custody and cancellation first: #5772, fork prefill cancellation; the page custodian's surrender/verify contract | Codex | dyno 4, 5 green |
 | 4b | Bounded decode latency under mixed load: chunked prefill from measured chunk time, measured cold-prefill admission limit, cancellation at chunk boundaries, recurrent state intact (after the paging outcome slice) | Codex (fork) | re-run Cormac's mixed trial: decoder first/inter-token latency bounded AND every prefill completes |
+| 4c | The pipeline (5e): encoders record, the dispatcher executes double-buffered frames by sort key; tool results prefill as they stream; page-in ahead; write-back behind | Fable (core encoders) + Codex (dispatcher) | GPU idle fraction while minds wait, before/after; per-act split tool/wait/prefill/decode |
 | 5 | Admission: one decision over residency, prefill, decode; fairness by completion identity; rotation THROUGH the proven custodian | Codex | dyno 2, 3 green |
 | 6 | Her state: command preconditions, results with next moves, Shown ids, one repeat owner | Fable + Cormac | precondition tests; live: no verb hunted (`commands/help` loops) |
 | 7 | Learning as a dream stage; persistence on change; deploy custody | Cormac | slowdown measured within its bound |
