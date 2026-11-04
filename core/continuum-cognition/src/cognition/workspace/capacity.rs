@@ -161,8 +161,15 @@ impl CapacityReadiness {
             let current = self.handle.load_full();
             let window = current.adapter.live_served_window();
             let adapter_change = current.adapter.capacity_changed(window);
-            // A mind on the shared pool's window is her grant: a new grant is a capacity change.
-            let grants_change = crate::capacity::mind_window::grants_changed();
+            // A mind on the shared pool's window is her grant: a new grant is a capacity change. With no
+            // grants watch in this process there is no such change to wait for, so that arm never
+            // fires (a refused watch resolving at once would spin this loop; the turn's own
+            // decide_window is where a missing watch is refused).
+            let grants_change = async {
+                if crate::capacity::mind_window::grants_changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            };
             if self.changed() {
                 return;
             }
@@ -249,6 +256,32 @@ mod tests {
         })
         .await
         .expect("both subscribers observe growth, including pre-poll publication");
+    }
+    // what this catches (#5752's first window: 199% CPU for 37 minutes): a readiness wait that
+    // wakes without a change and spins inside one poll. An unchanged wait parks: its first poll
+    // returns Pending. Run on its own thread so a spin fails this test in seconds, never hangs CI.
+    #[test]
+    fn an_unchanged_capacity_wait_parks_and_never_spins() {
+        let (sent, received) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("test runtime"); // a test runtime always builds
+            runtime.block_on(async {
+                let adapter = Arc::new(crate::ai::HeuristicInferenceAdapter::new());
+                let handle = Arc::new(ModelBindingState::new(ModelBinding {
+                    adapter, model: Some("bound".into()), context_window: 32768,
+                }));
+                let unchanged = readiness(&handle);
+                let mut wait = Box::pin(unchanged.wait());
+                let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                let parked = std::future::Future::poll(wait.as_mut(), &mut cx).is_pending();
+                let _ = sent.send(parked); // the receiver may have timed out already; nothing to report then
+            });
+        });
+        assert_eq!(
+            received.recv_timeout(std::time::Duration::from_secs(5)),
+            Ok(true),
+            "an unchanged wait parks on its first poll; no answer in 5 s means it spins"
+        );
     }
     #[tokio::test(start_paused = true)]
     async fn refit_waits_for_changed_capacity_above_provider_bound() {

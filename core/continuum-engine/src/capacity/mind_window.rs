@@ -51,16 +51,78 @@ pub fn mind_window(persona: uuid::Uuid, adapter: &dyn AIProviderAdapter, bound: 
     }
 }
 
-/// Resolves when the serving daemon publishes new grants: what an ungranted mind waits on, and
-/// what a mind on the shared pool watches for a changed window. Pending forever when no grants
-/// are installed in this process (nothing will ever grant).
-pub async fn grants_changed() {
-    match super::window_grant::grants_receiver() {
-        Some(mut rx) => {
-            if rx.changed().await.is_err() {
-                std::future::pending::<()>().await;
+/// No grants watch is installed in this process, so a mind on the shared pool can never be granted
+/// a window here: a typed refusal, never a wait on a watch that cannot fire (Cormac on #5752).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GrantsUnavailable;
+
+impl std::fmt::Display for GrantsUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("no grants are published in this process: a mind on the shared pool has no window")
+    }
+}
+
+/// Resolves when the serving daemon publishes new grants: what an ungranted mind waits on, and what a
+/// mind on the shared pool watches for a changed window.
+pub async fn grants_changed() -> Result<(), GrantsUnavailable> {
+    let mut rx = super::window_grant::grants_receiver().ok_or(GrantsUnavailable)?;
+    rx.changed().await.map_err(|_| GrantsUnavailable)
+}
+
+/// Decide her window. An ungranted mind is MEASURED first (`measure` builds her view, which records
+/// her wish, so the next grants tick can grant her), then waits for new grants and decides again:
+/// measure, park, wake, decide (Cormac on #5752: a wait before the measurement waits forever).
+pub async fn decide_window<D, M, W, F>(decide: D, mut measure: M, wait: W) -> Result<Decided, GrantsUnavailable>
+where
+    D: Fn() -> MindWindow,
+    M: FnMut(),
+    W: Fn() -> F,
+    F: std::future::Future<Output = Result<(), GrantsUnavailable>>,
+{
+    loop {
+        match decide() {
+            MindWindow::Decided(decided) => return Ok(decided),
+            MindWindow::Ungranted => {
+                measure();
+                wait().await?;
             }
         }
-        None => std::future::pending::<()>().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::inference::planning::window_allocator::test_tokens as t;
+    use std::cell::Cell;
+
+    // what this catches (Cormac on #5752): a new mind that waits for a grant before anything measures
+    // her, so she is never granted. She is measured, then parks, then is granted and runs.
+    #[tokio::test]
+    async fn an_ungranted_mind_is_measured_before_she_parks_then_runs_at_her_grant() {
+        let measured = Cell::new(0);
+        let woke = Cell::new(0);
+        let decided = decide_window(
+            || match measured.get() {
+                0 => MindWindow::Ungranted,
+                _ => MindWindow::Decided(Decided::Granted(t(20_817))),
+            },
+            || measured.set(measured.get() + 1),
+            || {
+                assert_eq!(measured.get(), 1, "measured before she parks");
+                woke.set(woke.get() + 1);
+                async { Ok(()) }
+            },
+        )
+        .await;
+        assert_eq!(decided, Ok(Decided::Granted(t(20_817))));
+        assert_eq!((measured.get(), woke.get()), (1, 1), "one measurement, one wait, then her grant");
+    }
+
+    // what this catches: a turn hanging silently on a watch that can never fire.
+    #[tokio::test]
+    async fn no_grants_watch_is_a_typed_refusal_never_a_hang() {
+        let decided = decide_window(|| MindWindow::Ungranted, || {}, || async { Err(GrantsUnavailable) }).await;
+        assert_eq!(decided, Err(GrantsUnavailable));
     }
 }
