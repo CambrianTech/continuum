@@ -201,7 +201,7 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
 mod tests {
     use super::*;
 
-    use crate::inference::planning::observed::Observed;
+    use crate::inference::planning::window_allocator::observed::Observed;
     use crate::inference::planning::window_allocator::test_tokens as t;
 
     /// A mind whose need is her target (a wish with no held turn yet).

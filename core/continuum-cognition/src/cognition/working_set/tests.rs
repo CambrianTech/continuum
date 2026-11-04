@@ -658,7 +658,7 @@ fn held_turns_alone_stay_an_exact_need_and_raise_no_wish() {
     let requirement = &requirements_for(&[aris], &reg)[0];
     assert_eq!(requirement.wish.map(|w| w.get()), Some(48_000), "an exact need leaves her wish where her turns measured it");
     let Measure::Held { need, .. } = requirement.measure else { panic!("a held need: {requirement:?}") };
-    assert_eq!(Some(need), std::num::NonZeroU32::new(30_004).map(crate::inference::planning::observed::Observed::Exact), "an exact need, typed as one");
+    assert_eq!(Some(need), std::num::NonZeroU32::new(30_004).map(crate::inference::planning::window_allocator::observed::Observed::Exact), "an exact need, typed as one");
 }
 
 // what this catches (the M5, 2026-11-04): a censored sample read as a size. A bound recorded at a

@@ -14,12 +14,12 @@ use super::need::product_limit;
 use super::{PersonaDemand, RECENT_TURNS};
 
 /// One turn's observation of her need, in window tokens, on the one censoring type below every
-/// reader ([`crate::inference::planning::observed::Observed`]): `Exact` when the fit held the turn
+/// reader ([`crate::inference::planning::window_allocator::observed::Observed`]): `Exact` when the fit held the turn
 /// at this size (`0` is an empty slot of the ring, as in every ring of [`PersonaDemand`]),
 /// `AtLeast` when her view overflowed its grant (the window she was served plus what her view
 /// lacked to hold this act and the next one's measured appends). Persisted untagged, so a slot
 /// written before the bound existed reads exact.
-pub type NeedSample = crate::inference::planning::observed::Observed<u32>;
+pub type NeedSample = crate::inference::planning::window_allocator::observed::Observed<u32>;
 
 /// Push one turn's need observation into her need ring (newest overwrites oldest).
 pub(super) fn push_need(d: &mut PersonaDemand, sample: NeedSample) {

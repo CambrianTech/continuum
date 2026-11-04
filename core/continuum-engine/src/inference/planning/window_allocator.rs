@@ -40,7 +40,8 @@
 //! The arithmetic (KV per token, the prefill compute reserve, the fixed per-lane
 //! bytes) is [`ModelFootprint`]'s own — reused, not re-derived.
 
-use super::observed::Observed;
+pub mod observed;
+use observed::Observed;
 use super::serving_plan::{HostBudget, ModelFootprint, MAX_LANES};
 use uuid::Uuid;
 

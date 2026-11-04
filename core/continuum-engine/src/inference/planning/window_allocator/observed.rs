@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::window_allocator::Tokens;
+use super::Tokens;
 
 /// A size as observed. Persisted untagged: an exact value is the bare value, so a record written
 /// before bounds existed reads unchanged; a bound is `{"at_least": v}`.

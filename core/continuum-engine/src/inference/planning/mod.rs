@@ -6,7 +6,6 @@
 
 pub mod adaptive_throughput;
 pub mod contention;
-pub mod observed;
 pub mod service_rate;
 pub mod serving_plan;
 pub mod training_plan;
