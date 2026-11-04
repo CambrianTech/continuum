@@ -93,8 +93,29 @@ fn mark_dropped(out: &mut String, dropped: &mut Option<(u32, u32)>) {
     }
 }
 
-/// An output's head and tail within `budget`, the lines between counted.
+/// An output's head and tail within `budget`: by whole lines, the lines between counted, else (an
+/// output with no line short enough to keep, such as one compact JSON line) by characters.
 fn ends(full: &str, budget: usize) -> Option<String> {
+    line_ends(full, budget).or_else(|| char_ends(full, budget))
+}
+
+/// An output's head and tail characters within `budget`, the characters between counted: the
+/// level of an output whose lines are no unit to keep.
+fn char_ends(full: &str, budget: usize) -> Option<String> {
+    let chars: Vec<char> = full.chars().collect();
+    let marker = |between: usize| format!("\n… {between} chars between (expand to read them)\n");
+    let half = budget.saturating_sub(marker(chars.len()).chars().count()) / 2;
+    let between = chars.len().saturating_sub(2 * half);
+    if half == 0 || between == 0 {
+        return None;
+    }
+    let head: String = chars[..half].iter().collect();
+    let tail: String = chars[chars.len() - half..].iter().collect();
+    Some(format!("{head}{}{tail}", marker(between)))
+}
+
+/// An output's head and tail lines within `budget`, the lines between counted.
+fn line_ends(full: &str, budget: usize) -> Option<String> {
     let lines: Vec<&str> = full.lines().collect();
     // The marker between the ends is part of the summary's cost: reserve it before the ends.
     let marker = |between: usize| format!("\n… {between} lines between (expand to read them)\n");
@@ -165,6 +186,17 @@ mod tests {
         let Some(summary) = summarize(&log, Shape::Output) else { panic!("a long log has ends") };
         assert!(summary.starts_with("Compiling a") && summary.ends_with("error[E0308]: mismatched types"));
         assert!(summary.contains("lines between"));
+    }
+
+    // what this catches: an output with no line short enough to keep (one compact JSON line) having
+    // no level at all, so her newest result could only stay whole over her window or fall to a bare
+    // pointer (goal 7). Its ends by characters are its level, within the quarter bound.
+    #[test]
+    fn a_single_line_output_keeps_its_ends_by_characters() {
+        let line = format!("{{\"start\":1,{}\"end\":2}}", "\"k\":\"v\",".repeat(2_000));
+        let Some(summary) = summarize(&line, Shape::Output) else { panic!("a long line has ends") };
+        assert!(summary.starts_with("{\"start\":1,") && summary.ends_with("\"end\":2}"), "{summary}");
+        assert!(summary.contains("chars between") && summary.chars().count() * LEVEL_RATIO <= line.chars().count());
     }
 
     // what this catches: tab-indented code read as deeper than it is, so a method's signature was

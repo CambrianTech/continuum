@@ -12,8 +12,9 @@
 //! leaves after its reserves (`after_reserves`) less every OTHER irreducible part
 //! (`RequiredParts`). A result within that is untouched, exactly as before. One over it takes
 //! the next level of detail (`continuum_context::levels`, through `operation_level`, the one
-//! owner of a result's summary), then, if even that cannot fit, its pointer, each with a line
-//! saying it was too large to show whole and how to read the rest. Only a SAVED result is ever
+//! owner of a result's summary), then, if even that cannot fit, each coarser level of that
+//! summary, never a bare pointer, with a line saying it was too large to show whole and how to
+//! read the rest (ONE-ACT stage 2: whole, or its summary plus handle). Only a SAVED result is ever
 //! shown as less than whole: one whose save failed has no other copy, so it stays whole and the
 //! turn's capacity fault names it.
 
@@ -45,7 +46,6 @@ fn slots(group: &mut [ChatMessage]) -> Vec<(Option<String>, &mut String)> {
 enum Level {
     Whole,
     Summary,
-    Pointer,
 }
 
 impl Level {
@@ -53,7 +53,6 @@ impl Level {
         match self {
             Self::Whole => "whole",
             Self::Summary => "summary",
-            Self::Pointer => "pointer",
         }
     }
 }
@@ -96,29 +95,32 @@ impl LlmDeliberationFaculty {
         let act_of = |id: &Option<String>| -> Option<&Observation> {
             id.as_ref().and_then(|id| observations.iter().find(|o| &o.output.result.tool_use_id == id))
         };
-        // Level by level, largest slot first, until the group fits: whole -> summary -> pointer.
-        // Each rewrite is in place: the native call/result pairing and its ids are untouched.
+        // Largest slot first, each down its mipmap chain until the group fits: whole, its summary
+        // (`operation_level`), then each coarser level of that summary (`levels::summarize`, each
+        // at most a quarter of the one above). Never a bare pointer (goal 7): her newest result is
+        // the step that ends the recursion, so what she sees of it always carries content. A slot
+        // whose chain ends still over the room keeps its coarsest level and the turn is refused
+        // for capacity, typed, never sent emptied. Each rewrite is in place: the native
+        // call/result pairing and its ids are untouched.
         let mut cost = Self::messages_cost(&prompt.latest_result);
         let mut group = slots(&mut prompt.latest_result);
         group.sort_by_key(|(_, text)| std::cmp::Reverse(text.chars().count()));
         let wholes: Vec<(usize, usize)> = group.iter().map(|(_, text)| (text.chars().count(), estimate_guard_tokens(text))).collect();
         let mut shown_as = Level::Whole;
-        'levels: for level in [Level::Summary, Level::Pointer] {
-            for ((id, text), &(chars, tokens)) in group.iter_mut().zip(&wholes) {
-                if cost <= room {
-                    break 'levels;
-                }
-                let note = too_large_note(&label, &handle, chars, tokens, room, level.name());
-                let body = match level {
-                    Level::Summary => match crate::cognition::working_memory::operation_level(text, act_of(id)) {
-                        Some(summary) => format!("{note}\n{summary}"),
-                        None => continue,
-                    },
-                    Level::Pointer | Level::Whole => note,
-                };
+        let mut depth = 0u32;
+        for ((id, text), &(chars, tokens)) in group.iter_mut().zip(&wholes) {
+            let mut level = crate::cognition::working_memory::operation_level(text, act_of(id));
+            while cost > room {
+                let Some(summary) = level.take() else { break };
+                let body = format!("{}\n{summary}", too_large_note(&label, &handle, chars, tokens, room, "summary"));
                 cost = cost.saturating_sub(estimate_guard_tokens(text)).saturating_add(estimate_guard_tokens(&body));
+                level = continuum_context::levels::summarize(&summary, continuum_context::levels::Shape::Output);
                 **text = body;
-                shown_as = level;
+                shown_as = Level::Summary;
+                depth += 1;
+            }
+            if cost <= room {
+                break;
             }
         }
         continuum_base::probe!(
@@ -127,6 +129,8 @@ impl LlmDeliberationFaculty {
             seq,
             handle = %handle,
             level = shown_as.name(),
+            // How many mipmap levels below whole she was shown it at.
+            depth,
             whole_tokens = parts.latest_result,
             shown_tokens = Self::messages_cost(&prompt.latest_result),
             room,

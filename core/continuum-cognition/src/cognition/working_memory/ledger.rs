@@ -451,8 +451,7 @@ fn result_summary(result: &str, acts: &[Observation]) -> Option<String> {
     }
 }
 
-/// An act's invariant-4 identity, from her calls as she made them (never the dispatched copy that
-/// carries a page budget): each call resolved through the dispatch seam to the command that runs,
+/// An act's invariant-4 identity, from her calls as she made them: each call resolved through the dispatch seam to the command that runs,
 /// fingerprinted with its canonical arguments, and given that command's declared effect. `None`
 /// for an act with no typed call.
 fn act_identity(acts: &[crate::cognition::act_observe::Observation]) -> Option<continuum_context::cause::Act> {
