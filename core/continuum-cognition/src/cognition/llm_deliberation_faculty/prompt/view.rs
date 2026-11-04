@@ -53,14 +53,13 @@ impl LlmDeliberationFaculty {
     }
 
     /// Every reply carries the engine's own count of the prompt it was sent: retain that
-    /// count over this turn's estimate as the density the NEXT prompt is fitted with, on
-    /// this binding, for any input. Refusal-only calibration never learned the case that
-    /// cost Kimi one turn in four on 2026-10-06: the bytes/3 estimate undercounted her
-    /// prompt by 18-23% (engine 65,607 against 55,603 estimated), the prompt still FIT
-    /// the slot, so nothing was refused, and the reply's reserve was eaten by the prompt
-    /// itself: generation hit the slot after ~950 tokens and the turn ended mid-thought.
-    /// A ratio below one changes nothing (`charge` never underprices), and each reply
-    /// replaces the last, so one unusually dense turn shapes only the turn after it.
+    /// count over this turn's estimate in her measured [`Density`] on this binding, whose bound
+    /// (the densest recent ratio) the NEXT prompt is fitted at, for any input. Both ways:
+    /// refusal-only calibration never learned the case that cost Kimi one turn in four on
+    /// 2026-10-06 (the bytes/3 estimate undercounted her prompt by 18-23%, engine 65,607 against
+    /// 55,603 estimated, so the prompt ate the reply's reserve), and a ratio below one, ignored
+    /// before, left 14% of every window unused on the M5 (2026-11-04, n=131: the guard read high
+    /// by 14% on average, up to 22%).
     pub(in super::super) fn learn_prompt_density(
         &self,
         binding: &Arc<ModelBinding>,
@@ -69,8 +68,8 @@ impl LlmDeliberationFaculty {
         engine_cached_tokens: u32,
         available: u32,
     ) {
-        let Some(calibration) =
-            PromptCalibration::observed(view.estimated_prompt_tokens, engine_prompt_tokens, None)
+        let Some((density, calibration, reading)) =
+            self.density_on(binding).observe(view.estimated_prompt_tokens, engine_prompt_tokens)
         else {
             return; // the lane reported no count: nothing measured, nothing retained
         };
@@ -78,6 +77,7 @@ impl LlmDeliberationFaculty {
             binding: Arc::clone(binding),
             calibration,
             available,
+            density,
         })));
         continuum_base::probe!(
             class = "delib.prompt.density",
@@ -86,8 +86,22 @@ impl LlmDeliberationFaculty {
             engine_prompt_tokens,
             // What the engine reused of it: her view's measure of success.
             engine_cached_tokens,
-            "the engine's count of this prompt, retained as the next prompt's density"
+            // Engine tokens per estimated token, thousandths: the ring's mean, and the bound the
+            // next prompt is priced at.
+            density_mean_milli = reading.mean_milli,
+            density_bound_milli = reading.bound_milli,
+            "the engine's count of this prompt, retained in her density; the next prompt is fitted at its bound"
         );
+    }
+
+    /// Her measured density on `binding`: the ring her last feedback carried when it applies to
+    /// this binding, else none (a new model, adapter or window measures afresh).
+    pub(in super::super) fn density_on(&self, binding: &ModelBinding) -> Density {
+        let feedback = self.prompt_feedback.load();
+        match feedback.as_ref() {
+            Some(feedback) if feedback.applies_to(binding) => feedback.density.clone(),
+            _ => Density::default(),
+        }
     }
 
     /// Apply observed token density to the same standing-grounding plan.
