@@ -103,6 +103,7 @@ impl LlmDeliberationFaculty {
         prompt: &mut PromptMessages,
         view: ViewPlacement,
         plan: &crate::cognition::rag_budget::FlexAllocation,
+        start_plan: &crate::cognition::rag_budget::FlexAllocation,
         room: usize,
         calibration: super::types::PromptCalibration,
     ) -> Result<(), continuum_context::view::GrantMismatch> {
@@ -133,13 +134,18 @@ impl LlmDeliberationFaculty {
         let next_act_tokens = appended_per_act.map(|chars| (chars as u64 * view_tokens as u64).div_ceil(view_chars.max(1) as u64) as usize);
         // An allocator that answered for the wrong number of sources refuses the turn: the held
         // view stays as state, but a prompt built on a broken contract is never sent (Codex on #5564).
-        // A start sizes against the reply's runaway bound, the same on every turn: what the
-        // allocation left unclaimed with the reply seated at its bound. The slack a lower-priority
-        // reply leaves (`room` beyond it) is the epoch's to append into, never a bigger start, or a
-        // pass would start her view larger than the act after it and her prefix would move.
-        let start_room = granted + plan.unallocated as usize;
+        // A start sizes against `start_plan` (the reply seated at its want, `seated_at_want`), so a
+        // pass and the act after it start her view alike; whether this act keeps, restores or
+        // turns over is still judged against what this act was granted (`granted + room`).
+        let start_granted: usize = start_plan
+            .allocations
+            .iter()
+            .filter(|a| a.source_id.starts_with(VIEW_CLAIM))
+            .map(|a| a.allocated_tokens as usize)
+            .sum();
+        let start_room = start_granted + start_plan.unallocated as usize;
         let due = turnover_due(view_tokens, granted + room, next_act_tokens, || {
-            self.view_would_restore(&prompt.streams, |claims: &[Claim]| start_grants(claims, plan, start_room, appended_per_act))
+            self.view_would_restore(&prompt.streams, |claims: &[Claim]| start_grants(claims, start_plan, start_room, appended_per_act))
         })?;
         if due == Turnover::Keep {
             return Ok(());
@@ -176,7 +182,7 @@ impl LlmDeliberationFaculty {
         // and kept anyway, so the view runs over its grant and the turn is refused
         // (`budget_fault` / `capacity_error`, view.rs), never sent without it.
         // (`escalation_needed` is only probed; it refuses nothing.)
-        let shed: Vec<&str> = plan
+        let shed: Vec<&str> = start_plan
             .allocations
             .iter()
             .filter(|a| a.allocated_tokens < a.requested_floor)
@@ -184,7 +190,7 @@ impl LlmDeliberationFaculty {
             .filter_map(|a| a.source_id.strip_prefix(VIEW_CLAIM))
             .collect();
         let started = self.turn_over_view_with(&prompt.streams, &shed, |claims: &[Claim]| {
-            start_grants(claims, plan, start_room, appended_per_act)
+            start_grants(claims, start_plan, start_room, appended_per_act)
         })?;
         prompt.grounding_at = started.len();
         prompt.history.splice(0..view.len, started);

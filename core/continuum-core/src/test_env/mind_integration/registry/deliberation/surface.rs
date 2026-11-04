@@ -123,7 +123,7 @@ fn a_room_that_declares_nothing_offers_her_hands_on_every_turn() {
 // verbs of choosing, doing and landing her own work (find it, take it, write it, commit, push,
 // open the PR; Joel, 2026-11-04: "git is perfect for all project work") must be core hands; the
 // discovery pair and her verdict verbs ride every surface (`Always`), or the rest of her hands are
-// unreachable and she cannot pass without prose; `code/shell` and
+// unreachable and she cannot pass without prose; her core hands are an exact, declared set; `code/shell` and
 // `code/shell-poll` travel together (Idris, 2026-09-29: shell's own description says to poll with
 // it); a peer's diff (`code/git/apply`) is never among her hands; and some verbs are on demand,
 // or "rest on demand" would be a promise nothing declares.
@@ -138,13 +138,26 @@ fn the_real_registry_declares_her_own_work_as_core_hands() {
     for verb in ["commands/list", "commands/help", persona_tools::VERDICT_YIELD_TURN] {
         assert_eq!(declared(verb), Some(Disclosure::Always), "{verb} rides every surface");
     }
-    for verb in [
-        "work/list", "work/claim", "work/create", "work/submit",
-        "code/read", "code/write", "code/edit", "code/shell", "code/shell-poll", "code/git/commit",
-        "code/git/add", "code/git/push", "code/github/pr-create", "code/github/pr-comment",
-    ] {
-        assert_eq!(declared(verb), Some(Disclosure::Core), "{verb} is one of her core hands");
-    }
+    // The EXACT set, not a lower bound: a native command declares nothing and is `Core`, so a new
+    // one would grow her core hands, and with them the smallest window that admits her, with no
+    // test failing (Cormac on #5763). Declaring a core hand is this one-line diff.
+    let mut core: Vec<&str> = offers
+        .iter()
+        .filter(|o| o.disclosure == Disclosure::Core)
+        .map(|o| o.spec.name.as_str())
+        .collect();
+    core.sort_unstable();
+    assert_eq!(
+        core,
+        [
+            "code/edit", "code/git/add", "code/git/commit", "code/git/diff", "code/git/push",
+            "code/git/status", "code/github/pr-comment", "code/github/pr-create", "code/list",
+            "code/read", "code/run", "code/search", "code/shell", "code/shell-poll", "code/tree",
+            "code/write", "work/claim", "work/create", "work/get", "work/heartbeat", "work/list",
+            "work/note", "work/release", "work/state", "work/submit",
+        ],
+        "her core hands are exactly these; a new native command declares where it sits"
+    );
     assert_eq!(declared("code/git/apply"), Some(Disclosure::Withheld));
     let hands = hands_surface(&offers);
     assert!(hands.len() > core_hands(&offers).len(), "some of her hands are on demand");

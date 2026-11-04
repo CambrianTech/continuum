@@ -29,6 +29,27 @@ use super::*;
 /// claim before any claim grows, so a min of the whole want would pre-empt history and
 /// grounding regardless of priority (on a 2,048 window an ambient pass's prior took the
 /// entire window and the presence framing dropped out, `directed_turn_withholds_the_silence_escape`).
+/// The reply's top priority: an act on live held work or after a pending cut.
+pub const REPLY_TOP_PRIORITY: u8 = 10;
+
+/// `claims` with the reply seated at its want at [`REPLY_TOP_PRIORITY`]: the allocation her view's
+/// START is sized against, so the reply's priority (a pass or an act) never re-sizes her prefix.
+/// Only the start: seating the whole want in the grants she is SENT would pre-empt history and
+/// grounding, the case the doc above names.
+pub fn seated_at_want(claims: &[crate::cognition::rag_budget::RagSourceBudget]) -> Vec<crate::cognition::rag_budget::RagSourceBudget> {
+    claims
+        .iter()
+        .cloned()
+        .map(|mut claim| {
+            if claim.source_id == FLEX_REPLY {
+                claim.priority = REPLY_TOP_PRIORITY;
+                claim.min_tokens = claim.max_tokens;
+            }
+            claim
+        })
+        .collect()
+}
+
 pub fn reply_claim(
     kind: TurnKind,
     need: Option<super::super::working_set::OutputNeed>,
@@ -55,7 +76,7 @@ pub fn reply_claim(
         .max(pending_peak)
         .max(floor);
     let priority = match kind {
-        TurnKind::Act if live_work || pending_peak > 0 => 10,
+        TurnKind::Act if live_work || pending_peak > 0 => REPLY_TOP_PRIORITY,
         TurnKind::Act => 8,
         TurnKind::Pass if directed => 6,
         TurnKind::Pass => 4,

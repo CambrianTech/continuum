@@ -443,28 +443,16 @@ impl LlmDeliberationFaculty {
             },
         ];
         claims.extend(view_claims);
-        // The reply's runaway bound (its want, the most it may emit) is carved out the same on
-        // every turn, so the reply's priority never re-sizes her view's prefix: every grant but
-        // the reply's comes from `plan`, which seats the reply at its bound ahead of growth, and
-        // priority decides only how much of the bound the reply takes (`reply_grant`); what it
-        // leaves is her view's room to append into. Sized by the reply's priority instead, one
-        // 16,384 window gave her conversation 4,005 tokens on a pass and 2,402 on the act after
-        // it, and her prefix moved with it.
-        let bounded: Vec<_> = claims
-            .iter()
-            .cloned()
-            .map(|mut c| {
-                if c.source_id == FLEX_REPLY {
-                    c.priority = 10;
-                    c.min_tokens = c.max_tokens;
-                }
-                c
-            })
-            .collect();
-        let plan = crate::cognition::rag_budget::flex_allocate(context_window, &bounded);
-        let reply_grant = crate::cognition::rag_budget::flex_allocate(context_window, &claims)
-            .granted(FLEX_REPLY)
-            .min(plan.granted(FLEX_REPLY));
+        let plan = crate::cognition::rag_budget::flex_allocate(context_window, &claims);
+        // Her view's START is sized with the reply seated at its want at the reply's top priority,
+        // so a pass and the act after it start her view alike: sized by the reply's priority (4 on
+        // an ambient pass, 10 on an act after a cut), one 16,384 window started her conversation at
+        // 4,005 tokens on the pass and 2,402 on the act, and her prefix moved with it. Only the
+        // start: every grant this act sends stays the one allocation's (`plan`), so seating the
+        // whole want never pre-empts her grounding or history (`reply_claim`'s doc). The want
+        // itself still moves with her measured need and a pending cut's peak: what this removes is
+        // the swing by priority, not every change to the bound.
+        let start_plan = crate::cognition::rag_budget::flex_allocate(context_window, &super::super::reply_claim::seated_at_want(&claims));
         let allocation = Some(crate::ai::provenance::AllocationReceipt {
             window: context_window,
             revision: env!("CONTINUUM_BUILD_GIT_SHA").to_owned(),
@@ -475,10 +463,7 @@ impl LlmDeliberationFaculty {
                     priority: claim.priority,
                     floor: claim.floor_tokens,
                     want: claim.max_tokens,
-                    grant: match claim.source_id == FLEX_REPLY {
-                        true => reply_grant,
-                        false => plan.granted(&claim.source_id),
-                    },
+                    grant: plan.granted(&claim.source_id),
                 })
                 .collect(),
         });
@@ -488,6 +473,7 @@ impl LlmDeliberationFaculty {
         // Her reply's grant is her measured need from the one allocation, carried as `max_tokens`.
         // What no claim took is her view's to grow into by appends (`fit_view`), never the
         // reply's: a cap claimed above her context starved her reads (ONE-BUDGET slice 6).
+        let reply_grant = plan.granted(FLEX_REPLY);
         let completion_reserve = reply_grant.max(1) as usize;
         continuum_base::probe!(
             class = "delib.window.flex",
@@ -527,7 +513,7 @@ impl LlmDeliberationFaculty {
             .sum();
         // What no claim took is room her view grows into by appends (`fit_view`), and the fit's
         // budget holds that same room, or it would drop what the epoch was allowed to keep.
-        let view_room = plan.unallocated.saturating_add(plan.granted(FLEX_REPLY).saturating_sub(reply_grant));
+        let view_room = plan.unallocated;
         let msg_budget = window_msg_budget.min(required_tokens.saturating_add(calibration.prompt_budget(
             plan.granted(FLEX_HISTORY).saturating_add(view_granted).saturating_add(view_room) as usize,
         )));
@@ -535,7 +521,7 @@ impl LlmDeliberationFaculty {
         // it is ever collapsed.
         // A broken allocator contract refuses the turn (`budget_fault`), never a prompt sent anyway.
         let view_fault = self
-            .fit_view(&mut all_messages, view, &plan, view_room as usize, calibration)
+            .fit_view(&mut all_messages, view, &plan, &start_plan, view_room as usize, calibration)
             .err()
             .map(|mismatch| format!("her view could not be sized: {mismatch}"));
         self.view_sent();
