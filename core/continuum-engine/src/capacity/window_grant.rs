@@ -119,18 +119,25 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
         let want = |d: &Demand<K>| need(d).max(holds(d));
         let total = |f: &dyn Fn(&Demand<K>) -> u32| demands.iter().map(|d| u64::from(f(d))).sum::<u64>();
         let pool = u64::from(pool_tokens);
-        // A mind holding at least her need keeps exactly what she holds: a grant moves only when her
-        // need outgrows it or the pool needs it back, never because the regime flipped between "every
-        // target fits" and "needs only" (each flip rebound all four residents and cost their prompt
-        // cache: 22 rebinds in 15 minutes on the M5, d47c5c2a6). A mind whose need is above what she
-        // holds (or a newcomer) is sized to her target when every amount fits, else to her need.
-        let settled = |d: &Demand<K>| holds(d) >= need(d);
-        let aim = |d: &Demand<K>| match settled(d) {
-            true => holds(d),
-            false => d.target.get().min(d.ceiling).max(want(d)),
+        // Every mind's target, never below what she needs. When every target fits, every mind is
+        // sized to it, settled or not: a mind settled at a small grant stayed there with the pool
+        // three-quarters free (the M5, 2026-11-04 07:40Z: 14,445 / 14,242 / 18,213 beside one
+        // 262,144, so three views kept 81-88 tokens of history and turned over on every act). A mind
+        // holding more keeps it while everything still fits with it (no rebind for drift), and gives
+        // back only what the others' targets need.
+        // A grant only grows while everything fits, so no regime flip ever rebinds her (each flip rebound
+        // all four residents: 22 rebinds in 15 minutes on the M5, d47c5c2a6); a turn in flight keeps
+        // what it holds even when the others' targets need it back.
+        let target = |d: &Demand<K>| match d.in_flight {
+            true => d.target.get().min(d.ceiling).max(need(d)).max(holds(d)),
+            false => d.target.get().min(d.ceiling).max(need(d)),
         };
-        if total(&aim) <= pool {
-            return demands.iter().map(|d| (d.mind, aim(d))).collect();
+        let keep_or_grow = |d: &Demand<K>| holds(d).max(target(d));
+        if total(&keep_or_grow) <= pool {
+            return demands.iter().map(|d| (d.mind, keep_or_grow(d))).collect();
+        }
+        if total(&target) <= pool {
+            return demands.iter().map(|d| (d.mind, target(d))).collect();
         }
         if total(&want) <= pool {
             return demands.iter().map(|d| (d.mind, want(d))).collect();
@@ -305,6 +312,24 @@ mod tests {
         assert_eq!(grants, BTreeMap::from([(1, 100_000), (2, 104_015), (3, 88_380), (4, 90_000)]), "every target fits: each reads whole");
     }
 
+
+    // what this catches (the M5, 2026-11-04 07:40Z): three minds settled at their needs beside one
+    // holding most of the pool, so their views kept 81-88 tokens of history and turned over on every
+    // act (55 turnovers in 66 acts, prefix reuse 0 on 46 of 69). Every target fits once the large
+    // holder gives back what she holds above hers: everyone is sized to her target. When everything
+    // fits as held, nobody shrinks.
+    #[test]
+    fn every_mind_grows_to_her_target_when_every_target_fits() {
+        let pool = 323_840;
+        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), in_flight: false, ceiling: 262_144 };
+        let demands = [mind(1, 19_384, 78_000), mind(2, 14_499, 35_000), mind(3, 16_004, 51_000), mind(4, 14_477, 42_000)];
+        let held = BTreeMap::from([(1, 262_144), (2, 14_445), (3, 18_213), (4, 14_242)]);
+        let grants = DemandFollowing.grant(&demands, &held, pool);
+        assert_eq!(grants, BTreeMap::from([(1, 78_000), (2, 35_000), (3, 51_000), (4, 42_000)]), "every target: {grants:?}");
+        let roomy = DemandFollowing.grant(&demands, &BTreeMap::from([(1, 100_000)]), pool);
+        assert_eq!(roomy[&1], 100_000, "everything fits as held: she keeps her surplus, no rebind");
+        assert_eq!(DemandFollowing.grant(&demands, &grants, pool), grants, "a steady demand is a steady grant");
+    }
 
     // what this catches (the M5, 2026-11-03, d47c5c2a6: 22 rebinds in 15 minutes): a grant that moves
     // when the regime flips. Every target fits, so each mind is granted her target; then one mind's
