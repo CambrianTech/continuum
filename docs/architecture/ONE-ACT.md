@@ -23,7 +23,7 @@ one resource that does not scale with concurrency (measured below).
 | Model weights (Qwen3.6-35B-A3B) | 20.4 GB, wired | lane footprint |
 | Reclaimable at launch | 21-24 GB with the old engine still wired; 45.6 GB after its release | vm_stat 20:56Z, 21:00Z |
 | Launch pools the same build got | 33,040 / 50,275 / 88,425 / 125,640 / 413,625 / 654,336 tokens | engine `-c`, by launch timing |
-| Prefill, IntelMac CPU, matched | 68.3 tok/s at 1 stream, 68.0 at 2: does NOT scale | Cormac's bench, 21:4xZ |
+| Prefill, IntelMac CPU, matched | 68.3 tok/s at 1 stream, 68.0 at 2, 63.2 at 4 (server ~1,070% CPU): does NOT scale | Cormac's bench, 21:4xZ; raw in `evidence/knee-20261104/` |
 | Decode, IntelMac CPU, matched | 19.9 / 32.8 / 43.6 / 51.1 tok/s aggregate at 1/2/4/9: scales | same |
 | Cold act, M5 | Atlas 76,114 prompt tokens, 0 cached: 318 s prefill | 21:37Z |
 | Warm acts, M5 | Aiko ~20k prompts: 28 acts in 20 min; Aris ~89k prompts: 9 acts in 30 min | 20:15-20:35Z, 18:49-19:22Z |
@@ -165,8 +165,8 @@ count admission obeys. Every downward adaptation schedules its upward test.
 
 - **Learning** is a low-duty dream stage between decode steps under the governor, with its slowdown
   measured and enforced (ONE-RESIDENT-MODEL). A batch genome job that holds the engine for hours is
-  forbidden on a serving node (IntelMac 2026-11-04: prefill 3x slower for 2 h, 0% progress).
-- **Persistence** on change, never per tick (volatile checkpoint ~33/min, card 9cf6b487).
+  forbidden on a serving node (IntelMac 2026-11-04, job 2f1bbe9d: resident prefill 8-13.6 -> 3.2-5.2 tok/s, about 2.5x slower, for 2 h with 0.0% progress).
+- **Persistence** on change, never per tick: both the volatile checkpoint (JSON, written every tick) and the per-resident airc store writes (`airc/events.sqlite` sqlx pools, which with rayon spin carry the IntelMac core's 134% CPU; card 9cf6b487).
 - **Deploy custody:** a deferral is not a failure (card 90ce8f6a).
 
 ## Proof: the dyno, before anything goes live
@@ -234,4 +234,4 @@ PHASE3B-WORKING-MEMORY-PLAN's RAG token budget.
 
 - Fable: (pending)
 - Codex: (pending)
-- Cormac: (pending)
+- Cormac: stages 6 and 7 and the cancellation ruling agreed (2026-11-04), with his two receipt corrections applied; rest pending
