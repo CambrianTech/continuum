@@ -95,6 +95,29 @@ fn an_act_appends_only_the_items_that_changed() {
     assert_eq!(view.advance(&[&views]), Advance::default(), "nothing changed, nothing appended");
 }
 
+// what this catches (card ef0b04e4): a whole history re-appended on one advance (2,195 items, 57.9M
+// chars after a restart) with no way to say which source did it. The breakdown names each source
+// that appended, with its items and characters, and nothing for a source that appended nothing.
+#[test]
+fn an_advance_names_each_source_that_appended() -> Result<(), GrantMismatch> {
+    let mut views = Fake::new("open-views", 4);
+    let mut actions = Fake::new("actions", 1);
+    views.push("a.rs", "aaa");
+    actions.push("#1", "first");
+    let (mut view, _) = View::start(vec![], &[&views, &actions], all_full)?;
+    actions.push("#2", "second");
+    actions.push("#3", "third");
+    view.advance(&[&views, &actions]);
+    assert_eq!(
+        view.last_advance_by_source(),
+        &[SourceAdvance { source: "actions".into(), items: 2, chars: "second".len() + "third".len() }],
+        "only the source that appended, with its own counts"
+    );
+    view.advance(&[&views, &actions]);
+    assert!(view.last_advance_by_source().is_empty(), "nothing appended, nothing named");
+    Ok(())
+}
+
 // what this catches: a collapsed item that comes back in full on the next act (rendered
 // differently, so "changed"), the collapse-then-uncollapse churn the sticky ring collapse
 // was patched for; and her next act's result being born collapsed because its source was.
