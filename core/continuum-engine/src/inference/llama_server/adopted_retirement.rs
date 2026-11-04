@@ -6,7 +6,7 @@ use crate::inference::engine_residency::Liveness;
 enum AdoptedPlan {
     Resume(crate::inference::engine_residency::EngineIncarnation),
     NoLane,
-    Dead(crate::inference::engine_residency::EngineIncarnation),
+    Dead,
     Alive(crate::inference::engine_residency::EngineIncarnation),
 }
 
@@ -29,7 +29,7 @@ impl LlamaServerProcess {
         }
         let incarnation = lane.incarnation();
         match incarnation.liveness() {
-            Liveness::Dead => Ok(AdoptedPlan::Dead(incarnation)),
+            Liveness::Dead => Ok(AdoptedPlan::Dead),
             Liveness::Unknown => Err(LlamaServerError::RetirementRefused("adopted engine identity is unverified".into())),
             Liveness::Alive => Ok(AdoptedPlan::Alive(incarnation)),
         }
@@ -50,7 +50,7 @@ impl LlamaServerProcess {
                     .map(drop)
                     .map_err(LlamaServerError::RetirementRefused)
             }
-            AdoptedPlan::Resume(_) | AdoptedPlan::NoLane | AdoptedPlan::Dead(_) => Ok(()),
+            AdoptedPlan::Resume(_) | AdoptedPlan::NoLane | AdoptedPlan::Dead => Ok(()),
         }
     }
 
@@ -68,7 +68,7 @@ impl LlamaServerProcess {
                 return self.await_adopted_exit(incarnation, Duration::from_secs(10)).await
             }
             AdoptedPlan::NoLane => return Ok(()),
-            AdoptedPlan::Dead(_) => {
+            AdoptedPlan::Dead => {
                 // Its residents' KV died with it; their next turns name this (card 6b28a445).
                 endpoint.pending_discard(DiscardReason::AdoptedEngineDead).commit();
                 return Ok(());
