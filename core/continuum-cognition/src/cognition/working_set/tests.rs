@@ -58,7 +58,7 @@
         assert_eq!(d.peak_tokens, 176_154);
         assert_eq!(typical_tokens(&d), Some(45_000), "the median of recent turns");
         assert_eq!(requirement_tokens(&d), 45_000);
-        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [0; RECENT_TURNS], need_next: 0, sent_recent: [0; RECENT_TURNS], sent_next: 0 };
+        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [0; RECENT_TURNS], need_next: 0, sent_recent: [0; RECENT_TURNS], sent_next: 0, floor_tokens: None };
         assert_eq!(requirement_tokens(&legacy), 29_911, "no ring: the last turn, never the peak");
         let ser: PersonaDemand = serde_json::from_str(r#"{"peak_tokens":1,"last_tokens":2,"last_seen_ms":3,"turns":4}"#).expect("legacy json");
         assert_eq!(typical_tokens(&ser), None);
@@ -102,6 +102,29 @@
         // Round-trips with the ring.
         let back: PersonaDemand = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
         assert_eq!(need_tokens(&back), Some(need));
+    }
+
+    // what this catches (Aiko on the M5, 2026-11-04): a turn refused for want of 123 tokens is
+    // never held, so the held ring never learned it, her need stayed at 17,780 and her grant
+    // never grew; 26 refusals in 7 minutes. Her irreducible window raises the need; a later
+    // smaller floor lowers it back toward what held, never below.
+    #[test]
+    fn a_refused_turns_irreducible_window_raises_her_need() {
+        let reg = WorkingSetRegistry::new();
+        let aiko = Uuid::new_v4();
+        for i in 0..8u32 {
+            reg.record_need_in_memory(aiko, 17_000 + i, i as u64);
+        }
+        reg.record_floor_in_memory(aiko, 17_903, 9);
+        assert_eq!(need_tokens(&reg.demand_of(aiko).expect("recorded")), Some(17_903), "the refused turn's floor is her need");
+        reg.record_floor_in_memory(aiko, 12_000, 10);
+        let need = need_tokens(&reg.demand_of(aiko).expect("recorded")).expect("need");
+        assert!((17_000..17_008).contains(&need), "a smaller floor falls back to what held: {need}");
+        let fresh = Uuid::new_v4();
+        reg.record_floor_in_memory(fresh, 9_000, 1);
+        assert_eq!(need_tokens(&reg.demand_of(fresh).expect("recorded")), Some(9_000), "no held turn yet: the floor alone");
+        let back: PersonaDemand = serde_json::from_str(&serde_json::to_string(&reg.demand_of(fresh).expect("recorded")).expect("ser")).expect("de");
+        assert_eq!(back.floor_tokens, Some(9_000), "persisted across a restart");
     }
 
     #[test]

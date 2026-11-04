@@ -145,6 +145,14 @@ pub struct PersonaDemand {
     /// Next slot to overwrite in `sent_recent`.
     #[serde(default)]
     pub sent_next: u8,
+    /// Her newest turn's IRREDUCIBLE window: framing, tools, her view's required floor and the
+    /// turn's required payload, below which the turn cannot be sent at all. Recorded on every
+    /// turn, held or refused, the newest replacing the last. The need ring learns only from held
+    /// turns, so without this a turn refused for want of 123 tokens never raised her need and her
+    /// grant never grew to fit it (Aiko on the M5, 2026-11-04: 26 refusals in 7 minutes at 17,780).
+    /// `None` until a turn measured it.
+    #[serde(default)]
+    pub floor_tokens: Option<u32>,
 }
 
 /// How many recent turns define "typical". Sixteen: a working session, not a
@@ -201,10 +209,14 @@ pub fn typical_tokens(d: &PersonaDemand) -> Option<u32> {
     median_of(&d.recent)
 }
 
-/// The median post-fit size of her recent HELD turns — what a lane provably held for
-/// her. `None` until a held turn is recorded; the allocator then gates on the wish.
+/// What a lane must hold for her: the median post-fit size of her recent HELD turns, raised to
+/// her newest turn's irreducible window when that is larger (a turn that cannot be sent below it
+/// is a need, not a wish). `None` until either is measured; the allocator then gates on the wish.
 pub fn need_tokens(d: &PersonaDemand) -> Option<u32> {
-    median_of(&d.need_recent)
+    match (median_of(&d.need_recent), d.floor_tokens) {
+        (Some(held), Some(floor)) => Some(held.max(floor)),
+        (held, floor) => held.or(floor),
+    }
 }
 
 /// The size a HELD turn contributes to her need ring — `None` when the turn was not
@@ -572,6 +584,27 @@ impl WorkingSetRegistry {
             })
     }
 
+    /// Record her newest turn's irreducible window (see [`PersonaDemand::floor_tokens`]).
+    /// Persisted with the demand when it changed: the floor repeats turn after turn.
+    pub fn record_floor(&self, persona: Uuid, floor_tokens: u32, now_ms: u64) {
+        if floor_tokens == 0 {
+            return;
+        }
+        let before = self.observed.get(&persona).and_then(|d| d.floor_tokens);
+        let updated = self.record_floor_in_memory(persona, floor_tokens, now_ms);
+        if before != Some(floor_tokens) {
+            self.save(persona, &updated);
+        }
+    }
+
+    pub(crate) fn record_floor_in_memory(&self, persona: Uuid, floor_tokens: u32, now_ms: u64) -> PersonaDemand {
+        *self
+            .observed
+            .entry(persona)
+            .and_modify(|d| d.floor_tokens = Some(floor_tokens))
+            .or_insert_with(|| PersonaDemand { last_seen_ms: now_ms, floor_tokens: Some(floor_tokens), ..PersonaDemand::default() })
+    }
+
     /// The largest untrimmed demand among `personas` (the residents), not the whole
     /// registry — 490 persisted entries include every test fixture and departed mind.
     pub fn ceiling_of(&self, personas: &[Uuid]) -> Option<u32> {
@@ -792,7 +825,8 @@ impl WorkingSetRegistry {
             return;
         };
         match serde_json::from_slice::<PersonaDemand>(&bytes) {
-            Ok(d) if d.peak_tokens > 0 => {
+            // A floor alone is a measurement too: a mind refused on every turn has no peak yet.
+            Ok(d) if d.peak_tokens > 0 || d.floor_tokens.is_some() => {
                 self.observed.insert(persona, d);
                 tracing::info!(
                     probe_class = "working_set.rehydrated",
