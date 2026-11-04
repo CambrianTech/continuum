@@ -15,7 +15,9 @@ impl LlmDeliberationFaculty {
         ended: &[&str],
     ) -> Vec<crate::cognition::context_streams::blocks::Grounding> {
         let mut held = self.held_blocks.lock();
-        held.retain(|(held_room, faculty), _| !(*held_room == room && ended.contains(&faculty.as_str())));
+        // Only the room being carried is held: a block is never carried across rooms, so another
+        // room's would only grow with every room she visits, at full text (Cormac on #5756).
+        held.retain(|(held_room, faculty), _| *held_room == room && !ended.contains(&faculty.as_str()));
         for block in &blocks {
             held.insert((room, block.faculty.clone()), block.clone());
         }

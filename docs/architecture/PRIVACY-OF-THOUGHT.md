@@ -28,14 +28,14 @@ line (`cognition/act_observe/apply.rs`): her intent PLUS the act ledger, every v
 ✓/✗ (Kimi, from her own feed: `work/create ✗×6 · work/claim ✗×2 …`), durable and readable by
 everyone in the room.
 
-**Her thinking lands in ten places:**
+**Her thinking lands in nine places (numbered as before, sink 4 removed):**
 
 | # | Sink | Where | What it holds |
 |---|---|---|---|
 | 1 | Turn recorder | `persona/recorder.rs` → `fixtures/persona-respond/*.json` | full request, response, cognition trace; on by default |
 | 2 | Prompt captures | `cognition/prompt_capture.rs` → `fixtures/prompt-captures/<id>.jsonl` | every deliberation request + response |
 | 3 | SFT datasets | `commands/dataset/from_captures.rs` | built from (2) |
-| 4 | Wire capture | `llm_deliberation_faculty.rs` → `<dir>/<persona>.wire.jsonl` | every message, when enabled |
+| 4 | (removed 2026-11-04, #5756) | was the wire capture; the prompt captures (2) hold the same request | nothing |
 | 5 | RAG capture | `persona/rag_capture.rs` | delivered context, when a sink is opened |
 | 6 | Thought lines | `act_observe/apply.rs` → room transcript | since 2026-10-22 (card ba1eeda1): only what she SAID with the act (her action statement) and the act ledger; her reasoning goes to the human's act receipt (`ActReceiptView::thought`, withheld in her mind room), never the room |
 | 7 | Token streams | `service_loop.rs` → `text.token` | live typing, not durable |
@@ -112,7 +112,7 @@ the `airc-blobs` follow-up rather than adding a second crypto stack in continuum
   | 1 | Turn recorder | `persona/recorder.rs::record_turn` (via `respond`); `record_turn_frame_replay` | not written |
   | 2 | Prompt capture | `CaptureLease::start` in `generate_for_workspace` | the lease is never started, so its `Drop` writes nothing either |
   | 3 | SFT datasets | read only from (2) | nothing to read |
-  | 4 | Wire capture | `generate_for_workspace` | not written |
+  | 4 | (removed, #5756) | none | nothing to write |
   | 5 | RAG capture | `RecordingRagSource::deliver` and `compose_for_turn`'s turn events (`RagContext` carries the room) | not written |
   | 6 | Thought line | `apply_act` (has `room_id`) | not published |
   | 7 | Token stream | `spawn_token_forwarder` (spawned with `room_id`) | not spawned; no `set_token_sink` |
