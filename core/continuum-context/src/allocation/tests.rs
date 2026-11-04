@@ -34,23 +34,30 @@ fn claims(window_newest: Newest, view: Vec<FlexClaim>, reply_priority: u8) -> Ac
 // what this catches: the side budget her newest result was sized against, beside the
 // allocation (Kimi on the windows 5090, 2026-10-28, refusal 1eef970d: her result priced against
 // the window less framing and tools, her view's floor then taking its room). It is a claim: whole
-// whenever the window holds it beside every floor, else its coarsest level, and the plan says so.
+// whenever the window holds it beside every floor, else the largest of its levels that does, and
+// what that level leaves goes to her view, never to a level she is not shown (capacity_and_wire's
+// wire test: as a span her result took every token left and a room update in her view vanished).
 #[test]
-fn the_newest_result_is_whole_when_the_window_holds_it_and_at_its_coarsest_floor_when_not() {
-    let newest = Newest { coarsest: 900, whole: 9_000 };
-    let roomy = allocate(40_000, claims(newest, vec![view_source("conversation", 4, 600, 20_000)], 8));
-    assert_eq!(roomy.granted(id::NEWEST), 9_000, "whole");
-    let tight = allocate(9_500, claims(newest, vec![view_source("conversation", 4, 600, 20_000)], 8));
-    let grant = tight.granted(id::NEWEST);
-    assert!((900..9_000).contains(&grant), "at least its coarsest, less than whole: {grant}");
+fn the_newest_result_is_the_largest_of_its_levels_that_fits_and_the_rest_reaches_her_view() {
+    let newest = || Newest { levels: vec![9_000, 2_000, 900] };
+    let view = || vec![view_source("conversation", 4, 600, 20_000)];
+    let roomy = allocate(40_000, claims(newest(), view(), 8));
+    assert_eq!((roomy.newest_level(), roomy.granted(id::NEWEST)), (0, 9_000), "whole");
+    // Other floors: framing 4,000 + required 500 + tools 1,000 + history 200 + view 600 + reply
+    // 800 = 7,100; 12,000 leaves 4,900: the 2,000 level fits, the whole does not.
+    let tight = allocate(12_000, claims(newest(), view(), 8));
+    assert_eq!((tight.newest_level(), tight.granted(id::NEWEST)), (1, 2_000), "the largest level that fits");
+    assert!(tight.view_granted() > 600, "what the level leaves reaches her view past its floor: {}", tight.view_granted());
     assert!(tight.irreducible_shortfall().is_none(), "reducible: no growth asked");
+    let floor_only = allocate(7_500, claims(newest(), view(), 8));
+    assert_eq!(floor_only.newest_level(), 2, "nothing larger fits: its coarsest");
 }
 
 // what this catches: required floors past the window answered by collapsing history (or by a
 // bigger grant on a reducible overflow). Irreducible growth is typed apart.
 #[test]
 fn required_floors_past_the_window_are_an_irreducible_shortfall() {
-    let plan = allocate(5_000, claims(Newest { coarsest: 900, whole: 9_000 }, Vec::new(), 8));
+    let plan = allocate(5_000, claims(Newest { levels: vec![9_000, 900] }, Vec::new(), 8));
     let short = plan.irreducible_shortfall().expect("test: the floors exceed 5,000"); // JUSTIFIED: test fixture
     assert_eq!(short.window, 5_000);
     assert!(short.needed > 5_000, "{short:?}");
@@ -61,10 +68,10 @@ fn required_floors_past_the_window_are_an_irreducible_shortfall() {
 // second allocation with the reply seated at its want used to prevent. One plan, the same start.
 #[test]
 fn a_pass_and_the_act_after_it_start_her_view_alike() {
-    let newest = Newest { coarsest: 0, whole: 0 };
+    let newest = Newest::default;
     let view = || vec![view_source("conversation", 4, 600, 30_000)];
-    let pass = allocate(16_384, claims(newest, view(), 4));
-    let act = allocate(16_384, claims(newest, view(), 10));
+    let pass = allocate(16_384, claims(newest(), view(), 4));
+    let act = allocate(16_384, claims(newest(), view(), 10));
     let (pass_start, act_start) = (pass.start_room(), act.start_room());
     assert!(pass_start.abs_diff(act_start) <= 1, "pass {pass_start}, act {act_start}");
 }
@@ -150,7 +157,7 @@ fn act_through_the_view(day: &Recorded, view: &mut View<String>, sources: &[&dyn
     let act_claims = ActClaims {
         framing: tokens(day.head_chars.value) as u32,
         required: 0,
-        newest: Newest { coarsest: 0, whole: 0 },
+        newest: Newest::default(),
         tools: Span::default(),
         grounding: Span::default(),
         history: Span::default(),

@@ -219,7 +219,7 @@ impl LlmDeliberationFaculty {
         // "Flexbox is the right way. It's like the governor: if you don't use it for literally
         // everything it doesn't work." Every part of her prompt is a claim in it, in the
         // allocation's unit (engine-calibrated tokens), and it runs ONCE: framing, the required
-        // input, her newest result (floor: its coarsest level with its handle; min: whole), her
+        // input, her newest result (the largest of its levels that fits beside every other floor), her
         // hands, the standing grounding, the fresh history, the reply and each source of her view.
         // Nothing is sized beside it: the room her newest result gets, the grounding's budget and
         // her view's start are all its grants or arithmetic on them. (Before: three side budgets
@@ -233,7 +233,7 @@ impl LlmDeliberationFaculty {
         // than the standing grounding (enrichment, its own optional claim): the stimulus and her
         // action statement.
         let required_tokens = required.stimulus.saturating_add(required.action_statement);
-        let newest_floor = self.newest_result_floor(&all_messages);
+        let newest_levels = self.newest_result_levels(&all_messages);
         // GROUNDING MAY NEVER MUTE A CITIZEN (Kimi, 2026-09-09: 613 tokens of roster and map on a
         // 28k window refused every turn). It is an optional claim with no floor: its min is the
         // standing sources' truthful minimums, its want everything offered, and its grant is the
@@ -282,7 +282,7 @@ impl LlmDeliberationFaculty {
             continuum_context::allocation::ActClaims {
                 framing: claim(framing_tokens),
                 required: claim(required_tokens),
-                newest: continuum_context::allocation::Newest { coarsest: claim(newest_floor), whole: claim(newest_result_tokens) },
+                newest: continuum_context::allocation::Newest { levels: newest_levels.iter().map(|&cost| claim(cost)).collect() },
                 tools: continuum_context::allocation::Span { floor: claim(tools.floor), min: claim(tools.floor), want: claim(tools.want) },
                 grounding: continuum_context::allocation::Span { floor: 0, min: claim(grounding_min), want: claim(grounding_want.max(grounding_min)) },
                 history: continuum_context::allocation::Span { floor: claim(history_floor), min: claim(history_floor), want: claim(optional_history) },
@@ -307,10 +307,12 @@ impl LlmDeliberationFaculty {
                 .collect(),
         });
 
-        // Her newest result at the level its grant holds: whole when it does, else its summary
-        // chain with its handle, never a bare pointer (goal 7, `newest_result.rs`).
-        let newest_result_reduced =
-            self.fit_newest_result(&mut all_messages, calibration.prompt_budget(act.granted(claim_id::NEWEST) as usize));
+        // Her newest result at the level the allocation chose: whole when the window holds it,
+        // else the largest of its levels that fits, never a bare pointer (goal 7, `newest_result.rs`).
+        let newest_result_reduced = match newest_levels.get(act.newest_level()) {
+            Some(&level_cost) => self.fit_newest_result(&mut all_messages, level_cost),
+            None => false, // no result this act
+        };
         // The standing grounding within its grant: shedding, never refusing the turn.
         let grounding_grant = calibration.prompt_budget(act.granted(claim_id::GROUNDING) as usize);
         let mut grounding = match GroundingPlan::within_budget(ws, grounding_grant) {
@@ -331,7 +333,7 @@ impl LlmDeliberationFaculty {
         let ctx_floor = if grounding.pieces.is_empty() { grounding_min.min(grounding_grant) } else { grounding.context_reserve() };
 
         // The smallest window this turn can be sent in: the reply's floor plus what cannot be shed
-        // (the required claims' floors, her newest result at its coarsest). Recorded held or
+        // (the required claims' floors, her newest result at its chosen level). Recorded held or
         // refused, so a turn short by 123 tokens raises her need by them.
         if let Some(reg) = &self.working_set {
             let irreducible_window = Self::COMPLETION_FLOOR_TOKENS.saturating_add(act.irreducible());
@@ -355,7 +357,7 @@ impl LlmDeliberationFaculty {
                 stimulus_tokens = required.stimulus,
                 action_statement_tokens = required.action_statement,
                 latest_result_tokens = required.latest_result,
-                latest_result_floor_tokens = newest_floor,
+                latest_result_levels = newest_levels.len(),
                 latest_results = required.latest_result_count,
                 "the turn's IRREDUCIBLE floors do not fit the served window: growth no collapse can make, by this much"
             );

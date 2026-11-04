@@ -564,8 +564,8 @@ async fn a_replys_engine_prompt_count_refits_the_next_prompt() {
 }
 
 // what this catches (Codex on #5779): her measured density is an observed envelope, not a proof
-// about her next prompt. A sparse history (replies counted lighter than the estimate) lets the fit
-// admit more estimate; a much denser next prompt then counts, at the engine, so that it alone fits
+// about her next prompt. A sparse history (replies counted lighter than the estimate) prices her
+// next prompt below its estimate; a much denser next prompt then counts, at the engine, so that it alone fits
 // the window but with her reply does not. The engine's exact count of the finalized request
 // (`PromptCount::Measured { prompt, reply }`, the safety authority) refuses it BEFORE generation,
 // and she is refit and resent once at the refusal's price with her reply's allowance intact:
@@ -593,13 +593,13 @@ async fn a_prompt_denser_than_her_measured_density_is_refit_before_generation() 
     light.usage.input_tokens = (first.estimated_prompt_tokens as u32) * 3 / 4;
     adapter.responses.lock().expect("fixture queue").push_back(light);
     assert!(faculty.contribute(&ws).await.expect("verdict").fault.is_none());
+    // Her density was learned: the next fit prices an estimate BELOW itself. (Her view is an epoch
+    // that only appends, so a lighter price does not regrow a view that already fits: the prompt's
+    // estimate can stay where it was. What the act learned is the price, and that is what a denser
+    // prompt then outruns.)
+    let (_, learned) = faculty.prompt_fit(&faculty.binding.load());
+    assert!(learned.charge(first.estimated_prompt_tokens) < first.estimated_prompt_tokens, "precondition: her lighter density was learned");
     let dense = faculty.prompt_view(&ws);
-    assert!(
-        dense.estimated_prompt_tokens > first.estimated_prompt_tokens,
-        "precondition: fitted at the lighter density her next prompt holds more estimate ({} then {})",
-        first.estimated_prompt_tokens,
-        dense.estimated_prompt_tokens
-    );
     // The engine's exact count of that prompt: alone it fits the window; with her reply it does not.
     let requested = window - (dense.completion_reserve.max(2) / 2);
     adapter.rejections.lock().expect("fixture rejection queue").push_back(

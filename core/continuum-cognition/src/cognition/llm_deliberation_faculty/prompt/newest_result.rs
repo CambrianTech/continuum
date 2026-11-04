@@ -59,30 +59,36 @@ impl Level {
 }
 
 /// What she reads in place of a result too large for her window: why, and how to read the rest.
-fn too_large_note(label: &str, handle: &str, chars: usize, tokens: usize, room: usize, level: &str) -> String {
+/// Its text does not depend on the room it is fitted to, so each level's cost is the same whether
+/// the allocation is pricing the levels or the view is showing one.
+fn too_large_note(label: &str, handle: &str, chars: usize, tokens: usize, level: &str) -> String {
     format!(
-        "[{label}: too large to show whole ({chars} chars, about {tokens} tokens; your window leaves \
-         {room} for it), so this is its {level}. Nothing is lost: read the whole by line range or \
+        "[{label}: too large to show whole beside the rest of your window ({chars} chars, about \
+         {tokens} tokens), so this is its {level}. Nothing is lost: read the whole by line range or \
          grep with tool/output {handle}, or ask the tool a narrower question (a page or a filter)]"
     )
 }
 
 impl LlmDeliberationFaculty {
-    /// Her newest result's FLOOR in the act's one allocation: what it costs at its coarsest level
-    /// (its summary chain to the end, with its note and handle). An unsaved result has no smaller
-    /// level, so its floor is its whole. Its claim's min is its whole, so it is shown whole whenever
-    /// the window holds it (`continuum_context::allocation`).
-    pub(in super::super) fn newest_result_floor(&self, prompt: &PromptMessages) -> usize {
+    /// Her newest result's LEVELS for the act's one allocation: what it costs whole, then at each
+    /// step down its summary chain (each with its note and handle), whole first. The allocation
+    /// chooses the largest that fits beside every other floor (`continuum_context::allocation`).
+    /// An unsaved result has no smaller level: its whole alone. Empty with no result.
+    pub(in super::super) fn newest_result_levels(&self, prompt: &PromptMessages) -> Vec<usize> {
+        if prompt.latest_result.is_empty() {
+            return Vec::new();
+        }
         let mut group = prompt.latest_result.clone();
-        self.level_newest(&mut group, 0, false);
-        Self::messages_cost(&group)
+        let mut costs = Vec::new();
+        self.level_newest(&mut group, 0, false, Some(&mut costs));
+        costs
     }
 
-    /// Show her newest result within `room`, the grant the act's one allocation gave it: whole when
-    /// it fits, else down its levels. Answers whether it was shown smaller than whole
-    /// (`DeliberationPromptView::newest_result_reduced`).
+    /// Show her newest result at the level the act's one allocation chose, `room` being that
+    /// level's cost: whole when it fits, else down its levels to the first that costs no more.
+    /// Answers whether it was shown smaller than whole (`DeliberationPromptView::newest_result_reduced`).
     pub(in super::super) fn fit_newest_result(&self, prompt: &mut PromptMessages, room: usize) -> bool {
-        self.level_newest(&mut prompt.latest_result, room, true)
+        self.level_newest(&mut prompt.latest_result, room, true, None)
     }
 
     /// `group` (her newest result's messages) down its levels until it costs at most `room`.
@@ -92,9 +98,13 @@ impl LlmDeliberationFaculty {
     /// recursion, so what she sees of it always carries content. A slot whose chain ends still
     /// over the room keeps its coarsest level and the turn is refused for capacity, typed, never
     /// sent emptied. Each rewrite is in place: the native call/result pairing and its ids are
-    /// untouched. Only a SAVED result is shown as less than whole. `report` probes what it did.
-    fn level_newest(&self, group: &mut Vec<ChatMessage>, room: usize, report: bool) -> bool {
+    /// untouched. Only a SAVED result is shown as less than whole. `report` probes what it did;
+    /// `costs`, when given, records the cost whole and after every step (the levels).
+    fn level_newest(&self, group: &mut Vec<ChatMessage>, room: usize, report: bool, mut costs: Option<&mut Vec<usize>>) -> bool {
         let whole_tokens = Self::messages_cost(group);
+        if let Some(costs) = costs.as_mut() {
+            costs.push(whole_tokens);
+        }
         if whole_tokens <= room {
             return false;
         }
@@ -128,12 +138,15 @@ impl LlmDeliberationFaculty {
             let mut level = crate::cognition::working_memory::operation_level(text, act_of(id));
             while cost > room {
                 let Some(summary) = level.take() else { break };
-                let body = format!("{}\n{summary}", too_large_note(&label, &handle, chars, tokens, room, "summary"));
+                let body = format!("{}\n{summary}", too_large_note(&label, &handle, chars, tokens, "summary"));
                 cost = cost.saturating_sub(estimate_guard_tokens(text)).saturating_add(estimate_guard_tokens(&body));
                 level = continuum_context::levels::summarize(&summary, continuum_context::levels::Shape::Output);
                 **text = body;
                 shown_as = Level::Summary;
                 depth += 1;
+                if let Some(costs) = costs.as_mut() {
+                    costs.push(cost);
+                }
             }
             if cost <= room {
                 break;

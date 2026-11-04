@@ -159,9 +159,12 @@ fn ends(full: &str, budget: usize) -> Option<String> {
 fn char_ends(full: &str, budget: usize) -> Option<String> {
     let chars: Vec<char> = full.chars().collect();
     let marker = |between: usize| format!("\n… {between} chars between (expand to read them)\n");
-    let half = budget.saturating_sub(marker(chars.len()).chars().count()) / 2;
+    let marker_chars = marker(chars.len()).chars().count();
+    let half = budget.saturating_sub(marker_chars) / 2;
     let between = chars.len().saturating_sub(2 * half);
-    if half == 0 || between == 0 {
+    // A level carries content: each end it keeps is at least as long as its own marker, or it is
+    // mostly the marker and the item is its own smallest level (an error line kept whole).
+    if half < marker_chars || between == 0 {
         return None;
     }
     let head: String = chars[..half].iter().collect();
@@ -185,7 +188,8 @@ fn line_ends(full: &str, budget: usize) -> Option<String> {
         tail += 1;
     }
     let between = lines.len() - head - tail;
-    if between == 0 || head + tail == 0 {
+    // A level carries content: what it keeps is at least as long as its own marker.
+    if between == 0 || head + tail == 0 || head_chars + tail_chars < line_marker(between).chars().count() {
         return None;
     }
     let mut out = lines[..head].join("\n");
@@ -204,7 +208,9 @@ fn head(full: &str, budget: usize) -> Option<String> {
         kept += 1;
     }
     let more = lines.len() - kept;
-    (kept > 0 && more > 0).then(|| format!("{}{}", lines[..kept].join("\n"), more_marker(more)))
+    // A level carries content: the entries it keeps are at least as long as its own marker.
+    (kept > 0 && more > 0 && chars >= more_marker(more).chars().count())
+        .then(|| format!("{}{}", lines[..kept].join("\n"), more_marker(more)))
 }
 
 #[cfg(test)]
@@ -300,6 +306,17 @@ mod tests {
         let marker = line_marker(log.lines().count()).chars().count().max(super::more_marker(0).chars().count());
         assert!(floor <= 4 * marker, "the last rung is about its marker: {floor} chars, marker {marker}");
         assert!(rungs[1].contains("BUILD START") && rungs[1].contains("error[E0308]"), "the first rung keeps both ends");
+    }
+
+    // what this catches (working_memory a_batch_receipts_summary_keeps_every_operation, CI on
+    // 5b5d25e4a): a rung with no lower limit turned a batch's short error into three characters at
+    // each end of its marker, and the operation's outcome was lost. A level carries content: each
+    // end it keeps is at least as long as its marker, else the item is its own smallest level.
+    #[test]
+    fn an_operations_short_outcome_has_no_level_below_itself() {
+        let error = "success: false\nerror: no such file: b.rs (did you mean src/b.rs?)";
+        assert_eq!(summarize(error, Shape::Output), None, "kept whole");
+        assert_eq!(summarize("{\"success\":false,\"error\":\"no such file: b.rs\"}", Shape::Output), None, "one line too");
     }
 
     // what this catches: a level offered where it saves nothing (it would cost the view a version).

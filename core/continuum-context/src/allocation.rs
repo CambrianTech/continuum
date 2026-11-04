@@ -8,9 +8,9 @@
 //! view's sources. Each was a second owner of a fact the allocation already decided.
 //!
 //! Now:
-//! - every part is a claim ([`ActClaims`]): framing, the required input, her NEWEST result (floor:
-//!   its coarsest level with its handle; min: whole, so it is whole whenever the window holds it,
-//!   goal 7), her hands, the standing grounding, the fresh history, the reply, her view's sources;
+//! - every part is a claim ([`ActClaims`]): framing, the required input, her NEWEST result (the
+//!   largest of its own levels that fits beside every other floor: whole whenever the window holds
+//!   it, goal 7), her hands, the standing grounding, the fresh history, the reply, her view's sources;
 //! - her view's START is arithmetic on the one plan ([`ActPlan::start_room`],
 //!   [`start_shares`]), never a second allocation;
 //! - irreducible growth is typed apart from reducible history: required floors past the window
@@ -53,12 +53,12 @@ pub struct Span {
     pub want: u32,
 }
 
-/// Her newest result: its coarsest level (its summary chain to the end, with its handle) and its
-/// whole. Charged tokens. An unsaved result has no smaller level: its coarsest is its whole.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Her newest result as the levels it can be shown at, charged tokens, whole first and each
+/// smaller (its summary chain to the end, each with its handle). An unsaved result has no smaller
+/// level: its only level is its whole. Empty: this act carries no result.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Newest {
-    pub coarsest: u32,
-    pub whole: u32,
+    pub levels: Vec<u32>,
 }
 
 /// Every claim on one act's window, in the allocation's unit (charged tokens).
@@ -99,6 +99,8 @@ pub struct ActPlan {
     claims: Vec<FlexClaim>,
     /// The reply's floor before the cap: her measured need.
     reply_need: u32,
+    /// Which of her newest result's levels the allocation chose (an index into `Newest::levels`).
+    newest_level: usize,
 }
 
 /// The fixed, required claim of one part.
@@ -128,25 +130,31 @@ fn span(id: &str, priority: u8, span: Span, required: bool) -> FlexClaim {
 
 /// THE allocation of one act: `window` tokens shared across `claims`, once.
 pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
-    let newest = FlexClaim {
-        source_id: id::NEWEST.to_owned(),
-        priority: FIXED_PRIORITY,
-        floor_tokens: claims.newest.coarsest.min(claims.newest.whole),
-        // Whole whenever the window holds it: the min pass serves it, in priority order, before
-        // anything grows (goal 7: the newest end is never cut).
-        min_tokens: claims.newest.whole,
-        max_tokens: claims.newest.whole,
-        required: true,
-    };
     let mut all = vec![
         fixed(id::FRAMING, claims.framing),
         fixed(id::REQUIRED, claims.required),
-        newest,
         span(id::TOOLS, TOOLS_PRIORITY, claims.tools, true),
         span(id::GROUNDING, GROUNDING_PRIORITY, claims.grounding, false),
         span(id::HISTORY, HISTORY_PRIORITY, claims.history, false),
     ];
     all.extend(claims.view);
+    // Her newest result is a discrete choice among its own levels, never a span: whole whenever the
+    // window holds it beside every other floor (the reply's measured need included), else the
+    // largest level that does, else its coarsest (goal 7: the newest end is never cut, and a level
+    // she cannot see whole still carries content and its handle). As a span (floor coarsest, min
+    // whole) it took every token left in the min pass at its priority, showed the largest level
+    // under that and wasted the rest, so her view's sources fell to their floors and a room update
+    // that fit beside her result vanished (capacity_and_wire, the wire test).
+    let others = turn_need(&all).saturating_add(claims.reply.floor_tokens);
+    let left = window.saturating_sub(others);
+    let newest_level = match claims.newest.levels.iter().position(|&cost| cost <= left) {
+        Some(level) => level,
+        None => claims.newest.levels.len().saturating_sub(1),
+    };
+    // An act with no result makes no newest claim.
+    if let Some(&cost) = claims.newest.levels.get(newest_level) {
+        all.insert(2, fixed(id::NEWEST, cost));
+    }
     // The reply never takes from another claim's floor: its floor is what the window leaves
     // after every other floor. Leaving only the required input, the reply's floor filled an 8,192
     // window to the token and her last action went to nothing (the required input refused at 275
@@ -158,7 +166,7 @@ pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
     reply.source_id = id::REPLY.to_owned();
     all.push(reply);
     let plan = flex_allocate(window, &all);
-    ActPlan { window, plan, claims: all, reply_need }
+    ActPlan { window, plan, claims: all, reply_need, newest_level }
 }
 
 impl ActPlan {
@@ -170,6 +178,12 @@ impl ActPlan {
     /// Every claim as the allocation saw it (the receipt).
     pub fn claims(&self) -> &[FlexClaim] {
         &self.claims
+    }
+
+    /// Which of her newest result's levels this act shows (an index into `Newest::levels`: 0 is
+    /// whole).
+    pub fn newest_level(&self) -> usize {
+        self.newest_level
     }
 
     /// The reply's claim as allocated (its floor capped).
@@ -222,7 +236,7 @@ impl ActPlan {
         turn_need(&self.claims).saturating_sub(capped).saturating_add(self.reply_need)
     }
 
-    /// The required claims' floors (framing, required input, her newest result at its coarsest,
+    /// The required claims' floors (framing, required input, her newest result at its chosen level,
     /// her core hands, her view's required sources), charged: what cannot be shed.
     pub fn irreducible(&self) -> u32 {
         self.claims
