@@ -134,6 +134,19 @@ pub struct View<T: Block> {
     /// receipted. Never saved: a restored view has nothing in flight.
     #[serde(skip)]
     submitted: Option<Receipt>,
+    /// What the last append added, per source, in order: which source appended how many items and
+    /// characters, so a re-append of a whole history names its source (card ef0b04e4: 2,195 items,
+    /// 57.9M chars on one advance after a restart). Never saved: it describes one act.
+    #[serde(skip)]
+    last_by_source: Vec<SourceAdvance>,
+}
+
+/// One source's share of an append.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SourceAdvance {
+    pub source: String,
+    pub items: usize,
+    pub chars: usize,
 }
 
 fn key(source: &str, item: &str) -> SourceId {
@@ -253,6 +266,7 @@ impl<T: Block> View<T> {
             motion: Motion::default(),
             act: None,
             submitted: None,
+            last_by_source: Vec::new(),
         };
         for ((source, items), grant) in sources.iter().zip(offered).zip(grants) {
             let allot::Allotment { levels, mut fold } = allot(&**source, &items, grant);
@@ -364,8 +378,10 @@ impl<T: Block> View<T> {
 
     fn append(&mut self, sources: &[&dyn Source<T>], limit: Option<(usize, usize)>) -> Advance {
         let mut advance = Advance::default();
+        self.last_by_source.clear();
         for source in sources {
             let name = source.name();
+            let before = (advance.items, advance.chars);
             let (items, repeats) = repeat::resolve(
                 &**source,
                 source.items(),
@@ -428,6 +444,13 @@ impl<T: Block> View<T> {
                     advance.chars += chars;
                 }
             }
+            if advance.items > before.0 {
+                self.last_by_source.push(SourceAdvance {
+                    source: name.to_owned(),
+                    items: advance.items - before.0,
+                    chars: advance.chars - before.1,
+                });
+            }
         }
         self.appended.push(advance.chars);
         advance
@@ -471,6 +494,11 @@ impl<T: Block> View<T> {
     }
 
     /// Characters the whole view costs, superseded versions included.
+    /// What the last append added, per source (sources that appended nothing are absent).
+    pub fn last_advance_by_source(&self) -> &[SourceAdvance] {
+        &self.last_by_source
+    }
+
     pub fn chars(&self) -> usize {
         self.epoch.chars()
     }

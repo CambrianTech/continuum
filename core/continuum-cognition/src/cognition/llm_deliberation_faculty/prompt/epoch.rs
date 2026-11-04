@@ -222,6 +222,12 @@ impl LlmDeliberationFaculty {
                 appended_chars = advance.chars,
                 view_chars = view.chars(),
                 superseded_chars = view.superseded_chars(),
+                by_source = %view
+                    .last_advance_by_source()
+                    .iter()
+                    .map(|s| format!("{}:{}/{}", s.source, s.items, s.chars))
+                    .collect::<Vec<_>>()
+                    .join(","),
                 "her view appended this act's changes; the prompt before them is unchanged"
             );
         } else {
