@@ -855,10 +855,9 @@ mod discover;
             .expect("replacement ready");
         assert!(!dir.page_admission_known("test://generation"), "replacement renegotiates instead of inheriting capability");
         // Refreshing readiness for this generation must preserve its current ledger.
-        let new_pool = dir
-            .get("test://generation")
-            .flatten()
-            .expect("replacement pool");
+        let continuum_base::probed::Probed::Known(new_pool) = dir.get("test://generation") else {
+            panic!("replacement pool");
+        };
         let pg = new_pool
             .lease_paged(activity)
             .await
