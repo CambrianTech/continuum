@@ -60,7 +60,7 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() -> 
             &client, &root, wrong_process, &|| true,
         ).await.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 0, "wrong ledger identity sends no save");
-        let result = if behavior == 3 {
+        let saved = if behavior == 3 {
             {
                 let save = transition.checkpoint_adopted_before_replacement(
                     &client, &root, process, &|| true,
@@ -73,11 +73,11 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() -> 
                 }
                 // Drop the pending HTTP save while its physical completion is unknown.
             }
-            Err(String::from("cancelled by fixture"))
+            false
         } else { transition.checkpoint_adopted_before_replacement(
             &client, &root, process, &|| true,
-        ).await };
-        assert_eq!(result.is_ok(), behavior == 0);
+        ).await.is_ok() };
+        assert_eq!(saved, behavior == 0);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(endpoint.is_ready(), behavior == 1, "only terminal refusal resumes");
         assert_eq!(endpoint.paging_recovery_required(), behavior >= 2);
@@ -108,7 +108,10 @@ async fn a_refused_adopted_replacement_hands_the_endpoint_back_as_found() -> Res
     let refused = transition
         .checkpoint_adopted_before_replacement(&reqwest::Client::new(), &root, process, &|| true)
         .await;
-    assert_eq!(refused.err().as_deref(), Some("adopted checkpoint requires a known pool"));
+    assert!(
+        matches!(refused, Err(crate::inference::slots::AdoptedCheckpointRefusal::UnknownPool)),
+        "an adopted endpoint with no known pool refuses as UnknownPool"
+    );
     assert!(transition.hand_back_unchanged(), "nothing changed: handed back open");
     drop(transition);
     assert!(endpoint.is_ready());

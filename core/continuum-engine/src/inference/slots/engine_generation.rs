@@ -242,18 +242,17 @@ impl EndpointSlots {
     pub(crate) fn adopted_checkpoint_pool(
         &self,
         incarnation: crate::inference::engine_residency::EngineIncarnation,
-    ) -> Result<Arc<KvSlotPool>, String> {
+    ) -> Result<Arc<KvSlotPool>, AdoptedCheckpointRefusal> {
         let pool = {
             let state = self.state.lock();
             if state.generation().is_some() || state.paging_uncertain {
-                return Err("adopted checkpoint requires an unowned, certain pool".into());
+                return Err(AdoptedCheckpointRefusal::OwnedOrUncertain);
             }
-            state.current_pool().cloned()
-                .ok_or("adopted checkpoint requires a known pool")?
+            state.current_pool().cloned().ok_or(AdoptedCheckpointRefusal::UnknownPool)?
         };
-        let ledger = pool.ledger.get().ok_or("adopted checkpoint requires a verified ledger")?;
+        let ledger = pool.ledger.get().ok_or(AdoptedCheckpointRefusal::UnverifiedLedger)?;
         if ledger.incarnation.get().copied() != Some((incarnation.pid, incarnation.started_s)) {
-            return Err("adopted checkpoint ledger names a different process".into());
+            return Err(AdoptedCheckpointRefusal::OtherProcess);
         }
         Ok(pool)
     }
@@ -317,24 +316,29 @@ impl EndpointTransition {
         root: &str,
         incarnation: crate::inference::engine_residency::EngineIncarnation,
         current: &(dyn Fn() -> bool + Send + Sync),
-    ) -> Result<(), String> {
+    ) -> Result<(), AdoptedCheckpointRefusal> {
         use crate::inference::engine_residency::Liveness;
 
         if !Arc::ptr_eq(&directory().endpoint(root), &self.endpoint) {
-            return Err("adopted checkpoint URL does not identify the held endpoint".into());
+            return Err(AdoptedCheckpointRefusal::EndpointMismatch);
         }
         let pool = self.endpoint.adopted_checkpoint_pool(incarnation)?;
-        let verify_engine = || match incarnation.liveness() {
+        let verify = || match incarnation.liveness() {
             Liveness::Alive => Ok(()),
-            Liveness::Dead => Err("adopted checkpoint engine exited or PID was reused".into()),
-            Liveness::Unknown => Err("adopted checkpoint engine identity is unverified".into()),
+            Liveness::Dead => Err(AdoptedCheckpointRefusal::EngineGone),
+            Liveness::Unknown => Err(AdoptedCheckpointRefusal::IdentityUnverified),
         };
-        verify_engine()?;
+        verify()?;
         if !current() {
-            return Err("adopted checkpoint intent changed".into());
+            return Err(AdoptedCheckpointRefusal::IntentChanged);
         }
-        let result = self.checkpoint_pool(client, root, &pool, &verify_engine).await;
-        if result.is_err() && current() && verify_engine().is_ok() {
+        // The save checks the engine between pages through the same verdict, as display text.
+        let verify_engine = || verify().map_err(|refusal| refusal.to_string());
+        let result = self
+            .checkpoint_pool(client, root, &pool, &verify_engine)
+            .await
+            .map_err(AdoptedCheckpointRefusal::Save);
+        if result.is_err() && current() && verify().is_ok() {
             // A terminal refusal did not mutate the engine. Only reopen this
             // exact pool; CheckpointSave quarantines cancellation/uncertainty.
             let state = self.endpoint.state.lock();
@@ -346,7 +350,7 @@ impl EndpointTransition {
         }
         result?;
         if !current() {
-            return Err("adopted replacement intent changed after checkpoint".into());
+            return Err(AdoptedCheckpointRefusal::IntentChangedAfterCheckpoint);
         }
         Ok(())
     }

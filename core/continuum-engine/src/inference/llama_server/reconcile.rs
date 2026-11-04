@@ -402,7 +402,7 @@ async fn observe_launched_engine<C: LlamaServerControl + ?Sized>(ctrl: &C) {
 
 /// The refusal last reported by [`keep_incumbent`], so an unchanged one is said once, not on
 /// every reconcile tick while the replacement keeps being wanted.
-static REPLACEMENT_REFUSED: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+static REPLACEMENT_REFUSED: parking_lot::Mutex<Option<RetirementRefusal>> = parking_lot::Mutex::new(None);
 
 /// A replacement was refused before anything was signalled (card 931cfd22; enrico 2026-10-25:
 /// "adopted checkpoint requires a known pool" left a decoding engine unserved for 5 hours).
@@ -417,20 +417,20 @@ async fn keep_incumbent<C: LlamaServerControl + ?Sized>(
     ctrl: &C,
     target: &ServingTarget,
     serves_target: bool,
-    why: &str,
+    why: &RetirementRefusal,
 ) -> EnsureOutcome {
     let genome_is_target = matches!(ctrl.active_adapters().await, Ok(active) if active == target.adapter_paths());
     let decodes = serves_target && genome_is_target && ctrl.decode_smoke_ok().await;
     if decodes {
-        if REPLACEMENT_REFUSED.lock().as_deref() != Some(why) {
+        if REPLACEMENT_REFUSED.lock().as_ref() != Some(why) {
             continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.replace.refused_kept_incumbent",
                 model = target.model_id(),
-                why,
+                why = %why,
                 "the incumbent engine could not be retired safely and was not signalled: it \
                  keeps serving (the target model, the target genes, and it decodes); the \
                  replacement waits until its custody can be satisfied"
             );
-            *REPLACEMENT_REFUSED.lock() = Some(why.to_string());
+            *REPLACEMENT_REFUSED.lock() = Some(why.clone());
         }
         return EnsureOutcome::AlreadyServing;
     }

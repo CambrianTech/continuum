@@ -429,7 +429,7 @@ pub(super) fn handle_retirement_failure(
         let reopened = transition.hand_back_unchanged();
         continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.replace.refused_handed_back",
             reopened,
-            why = why.as_str(),
+            why = %why,
             "a replacement was refused before its incumbent was signalled; the endpoint is handed back as the transition found it"
         );
     }
