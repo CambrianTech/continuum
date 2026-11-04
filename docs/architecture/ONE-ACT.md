@@ -177,6 +177,62 @@ save with a ledger-load failure; it does not prove a relaunch forgot confirmatio
 and incarnation on the deployed revision we need: the ledger-unread reason, the format/fingerprint,
 the save receipt, and the restore 400's body.
 
+### 5b.1 Accepted restore-refusal contract and first execution slice
+
+Codex accepts this contract (2026-11-04), based on the audit supplied by Joel and Fable.
+This is agreement on this slice, not blanket approval of the draft or an implementation receipt.
+
+**Diagnosis:** the audited restore 400s report insufficient unified-cache cells (59,144
+requested in a partly occupied 125,696-cell pool) or a page exceeding total capacity
+(35,838 tokens versus 33,280 cells). They do not report model/format mismatch. The core
+reduces the response to HTTP status and calls `note_page_lost`, removing persisted save
+confirmation. Later admissions see `page_on_disk_unconfirmed` and prefill again. The reported
+ledger-load counts fall from four minds at 19:38 to zero at 21:04. Aris's confirmed 19:45
+save missing at 19:58 without a refusal remains a separate unexplained loss; this fix must
+not claim to explain it.
+
+**One typed outcome at the engine/core seam:**
+- Restored: verified successful receipt, identifying the page and destination incarnation.
+- DeferredCapacity: distinguish insufficient currently allocatable cells from a page that
+  exceeds the whole compatible pool. Preserve the durable confirmed page in both cases.
+  Retry transient pressure after verified reclamation; no geometry change is required.
+  Oversize requires a feasible capacity/placement change, not repeated restore attempts.
+- Incompatible: retain the saved artifact and its provenance; it is ineligible for this
+  destination, not necessarily invalid for every compatible destination.
+- InvalidPage: only positive evidence of a missing, corrupt or incomplete artifact invalidates
+  that artifact's confirmation. Do not infer this from HTTP 400 alone.
+- Unresolved: transport failure, unknown reason or timeout retains provenance and operation
+  custody until a terminal receipt or fencing proves the outcome. Never fabricate free cells.
+
+Preserve engine reason codes and available numeric evidence through the core; unknown fields
+stay unknown. Capacity refusal must not route through `note_page_lost`. Do not delete the
+artifact as a side effect of deferral or destination incompatibility.
+
+**Fit and ownership:** persist page token count with its complete-save receipt and identity.
+Admission compares that requirement with total compatible capacity and currently allocatable
+cells, reserves through the existing authority, and makes room through verified custody
+transfer before restoring. A free-cell snapshot alone races other admissions: the engine's
+restore result remains authoritative. A save receipt alone is not evidence that resident KV
+was erased; release must be verified separately when the operation does not release it.
+Launch must reserve enough capacity for the admitted page working set within the physical fit;
+it does not promise to fit every disk page simultaneously or exceed physical memory. An
+unplaceable page gets an explicit deferred/placement outcome with its saved state preserved.
+
+**Execution owners** (assignments sent over AIRC; peer acceptance tracked separately):
+- Codex: engine typed restore outcome, core propagation, page custody and ledger token metadata;
+  first execution slice after the failure reproductions exist.
+- Fable: recorded audit fixtures, launch-fit and admission integration; shared design updates.
+- Cormac: independent durability/restart review, including the unexplained Aris ledger loss.
+
+**Required proof using the existing fixtures:** capacity refusal preserves confirmation across
+restart; verified reclamation permits a later restore without cold prefill; oversize stays
+confirmed and deferred; incompatibility preserves the artifact; proven corruption invalidates
+only the affected artifact; concurrent admissions cannot double-spend free capacity; timeout
+and late receipt retain custody; completed save and ledger replacement survive interruption.
+Reproduce the reported loss before the fix, then verify the corrected transition through the
+real engine adapter and persisted ledger. Report the unexplained loss independently until it
+has its own reproduction. Follow with the live restore/cache-reuse receipt.
+
 ### 5c. The operating point is measured, never a number
 
 No fixed count of residents, lanes, slots or sequences. RESIDENCY (which minds hold state on this
@@ -239,7 +295,7 @@ deploy with the 15-minute read and immediate rollback if worse (rule 3).
 |---|---|---|---|
 | 0 | Freeze: M5 stays on its current build; this doc agreed; superseded docs marked; CLAUDE.md corrected | Fable | three signatures |
 | 1 | The dyno with the seven reproductions (red) | Fable + Codex | each 11-04 failure reproduced from recorded inputs |
-| 1b | The fast path audit: every cold turn classified 3C (refused restores, unconfirmed pages, scratch-slot churn) (page refused, page unconfirmed, prefix lost); geometry stable across restarts; pages valid by header | Codex + Fable | dyno 6 green; live: cold turns after a restart = 0 for a warm mind |
+| 1b | The fast path audit: every cold turn classified 3C (refused restores, unconfirmed pages, scratch-slot churn) (page refused, page unconfirmed, prefix lost); geometry stable across restarts; pages eligible by full compatibility and complete-save provenance | Codex + Fable | dyno 6 green; live: cold turns after a restart = 0 for a warm mind |
 | 2 | The view: reads by region, side budgets into the one allocation run once, history to handles; revert the wish raise of #5773 | Fable | dyno 7 green; prompt tokens per act at the working set |
 | 3 | Engine memory (after the 1b diagnosis): launch-from-fit at Settled (#5770 first), conservation accounting; then delete growth (#5774) | Codex + Fable | dyno 1, 6 green |
 | 4 | Custody and cancellation first: #5772, fork prefill cancellation; the page custodian's surrender/verify contract | Codex | dyno 4, 5 green |
