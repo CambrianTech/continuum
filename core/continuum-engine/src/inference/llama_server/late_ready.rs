@@ -316,6 +316,10 @@ mod tests {
             .route("/v1/models", axum::routing::get(|| async {
                 axum::Json(serde_json::json!({ "data": [{ "id": "late-model" }] }))
             }))
+            // The fork's tokenizer, as the smoke sizes its probe by the answer's own tokens.
+            .route("/tokenize", axum::routing::post(|| async {
+                axum::Json(serde_json::json!({ "tokens": (0..19).collect::<Vec<u32>>() }))
+            }))
             .route("/v1/chat/completions", axum::routing::post(|| async {
                 axum::Json(serde_json::json!({
                     "usage": { "completion_tokens": 24 },
