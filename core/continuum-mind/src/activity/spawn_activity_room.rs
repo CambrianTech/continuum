@@ -389,7 +389,7 @@ impl ActionCommand for ActivityArchive {
     const NAME: &'static str = "activity/archive";
     const ALIASES: &'static [&'static str] = &["conclude_activity"];
     const NATIVE: bool = true;
-    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand; // one `commands/help` away, in her prompt once her learned head holds it
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Mark this room's activity concluded (or reopen it with archived=false). The \
@@ -447,7 +447,7 @@ impl ActionCommand for ActivityProtect {
     const NAME: &'static str = "activity/protect";
     const ALIASES: &'static [&'static str] = &[];
     const NATIVE: bool = true;
-    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand; // one `commands/help` away, in her prompt once her learned head holds it
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Protect this room from deletion (or release it with protected=false). Use it \

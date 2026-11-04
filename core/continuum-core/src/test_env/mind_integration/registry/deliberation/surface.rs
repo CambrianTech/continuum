@@ -55,8 +55,10 @@ async fn consecutive_acts_in_one_activity_send_byte_identical_tool_schemas() {
 }
 
 // what this catches: S1's whole point. A room whose recipe declares affordances
-// gets EXACTLY those native verbs plus the discovery pair — the recipe is the
-// rule and the rule reaches her hands. Before this, `affordances` rode into the
+// gets EXACTLY those native verbs plus every verb that declares `Always` (the
+// discovery pair) — the recipe is the rule of the room's prompt, never of her
+// mind: a verb that declares `OnDemand` (`focus/continue`) stays among her hands,
+// one `commands/help` away. Before this, `affordances` rode into the
 // manifest and every room offered the same prefix-filtered global list.
 #[test]
 fn a_room_that_declares_affordances_selects_exactly_those_plus_the_discovery_pair() {
@@ -75,7 +77,12 @@ fn a_room_that_declares_affordances_selects_exactly_those_plus_the_discovery_pai
         .filter(|(_, spec)| offered.iter().any(|o| o.name == spec.name))
         .map(|(raw, _)| raw.as_str())
         .collect();
-    for must in ["web/fetch", "web/search", "commands/list", "commands/help", "focus/continue"] {
+    assert!(!names.contains(&"focus/continue"), "an on-demand verb rides no prompt unlearned: {names:?}");
+    assert!(
+        persona_tools::native_offers().iter().any(|o| o.spec.name == "focus/continue" && o.disclosure.in_hands()),
+        "and stays among her hands, one commands/help away"
+    );
+    for must in ["web/fetch", "web/search", "commands/list", "commands/help"] {
         assert!(
             names.contains(&must),
             "room-selected surface must carry {must}: {names:?}"
@@ -115,7 +122,8 @@ fn a_room_that_declares_nothing_offers_her_hands_on_every_turn() {
 // what this catches: a command's declared disclosure drifting from what her work needs: the
 // verbs of choosing, doing and landing her own work (find it, take it, write it, commit, push,
 // open the PR; Joel, 2026-11-04: "git is perfect for all project work") must be core hands; the
-// discovery pair must be core, or the rest of her hands are unreachable; `code/shell` and
+// discovery pair and her verdict verbs ride every surface (`Always`), or the rest of her hands are
+// unreachable and she cannot pass without prose; `code/shell` and
 // `code/shell-poll` travel together (Idris, 2026-09-29: shell's own description says to poll with
 // it); a peer's diff (`code/git/apply`) is never among her hands; and some verbs are on demand,
 // or "rest on demand" would be a promise nothing declares.
@@ -127,8 +135,11 @@ fn the_real_registry_declares_her_own_work_as_core_hands() {
         return; // no registry in this test build: nothing to assert against
     }
     let declared = |name: &str| offers.iter().find(|o| o.spec.name == name).map(|o| o.disclosure);
+    for verb in ["commands/list", "commands/help", persona_tools::VERDICT_YIELD_TURN] {
+        assert_eq!(declared(verb), Some(Disclosure::Always), "{verb} rides every surface");
+    }
     for verb in [
-        "commands/list", "commands/help", "work/list", "work/claim", "work/create", "work/submit",
+        "work/list", "work/claim", "work/create", "work/submit",
         "code/read", "code/write", "code/edit", "code/shell", "code/shell-poll", "code/git/commit",
         "code/git/add", "code/git/push", "code/github/pr-create", "code/github/pr-comment",
     ] {
@@ -159,7 +170,9 @@ fn a_room_whose_affordances_match_no_native_verb_falls_back_never_to_nothing() {
 // benchmark room, so it must authorize at least her core hands — every verb an
 // ordinary work turn offers — or S1 would take tools away from the citizens
 // solving cards right now. If a new core hand is declared without being
-// authored here, this names it.
+// authored here, this names it. A verb that declares `Always` (the discovery
+// pair, her verdict verbs) rides every surface, a recipe's included, so no
+// recipe has to author it.
 #[test]
 fn the_shipped_benchmark_recipe_authorizes_every_hand_a_work_turn_offers() {
     let raw = persona_tools::native_offers();
@@ -180,9 +193,10 @@ fn the_shipped_benchmark_recipe_authorizes_every_hand_a_work_turn_offers() {
             .iter()
             .map(|a| a.command.as_str())
             .collect();
-        let missing: Vec<String> = core_hands(&raw)
+        let missing: Vec<String> = raw
             .iter()
-            .map(|s| s.name.clone())
+            .filter(|offer| offer.disclosure.in_core() && !offer.disclosure.in_every_surface())
+            .map(|offer| offer.spec.name.clone())
             .filter(|n| !authorized.contains(n.as_str()))
             .collect();
         assert!(

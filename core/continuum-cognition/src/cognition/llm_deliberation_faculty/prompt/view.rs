@@ -368,11 +368,26 @@ impl LlmDeliberationFaculty {
         let fixed_cost = claim(framing_tokens);
         let tools_floor = claim(tools.floor);
         let required_cost = claim(required_tokens);
+        // Her view's sources, each its own claim (`epoch.rs`): the blocks she works from at
+        // the grounding claim's weight, her conversation, thoughts and results at history's.
+        let view_claims: Vec<_> = self.view_claims(&all_messages.streams).into_iter().map(|mut source| {
+            source.floor_tokens = claim(source.floor_tokens as usize);
+            source.min_tokens = source.floor_tokens;
+            source.max_tokens = claim(source.max_tokens as usize).max(source.floor_tokens);
+            source
+        }).collect();
         let mut reply = reply;
-        // The reply never takes from required content: its floor is what the window leaves
-        // after framing, tools and the required input. Its UNCLIPPED floor is her need.
+        // The reply never takes from another claim's floor: its floor is what the window leaves
+        // after framing, tools, the required input, her last move (history's floor) and her
+        // view's floors. Its UNCLIPPED floor is her need. Leaving only the required input, the
+        // reply's floor filled an 8,192 window to the token and her last action, her presence
+        // block and the fit's own room went to nothing (the required input refused at 275 of 0).
         let reply_need = reply.floor_tokens;
-        reply.floor_tokens = reply_need.min(context_window.saturating_sub(fixed_cost.saturating_add(tools_floor).saturating_add(required_cost)));
+        let other_floors = [fixed_cost, tools_floor, required_cost, claim(history_floor)]
+            .into_iter()
+            .chain(view_claims.iter().map(|source| source.floor_tokens))
+            .fold(0u32, u32::saturating_add);
+        reply.floor_tokens = reply_need.min(context_window.saturating_sub(other_floors));
         reply.min_tokens = reply.floor_tokens;
         let fixed_claim = |id: &str, tokens: u32| crate::cognition::rag_budget::RagSourceBudget {
             source_id: id.to_owned(),
@@ -427,15 +442,29 @@ impl LlmDeliberationFaculty {
                 required: true,
             },
         ];
-        // Her view's sources, each its own claim (`epoch.rs`): the blocks she works from at
-        // the grounding claim's weight, her conversation, thoughts and results at history's.
-        claims.extend(self.view_claims(&all_messages.streams).into_iter().map(|mut source| {
-            source.floor_tokens = claim(source.floor_tokens as usize);
-            source.min_tokens = source.floor_tokens;
-            source.max_tokens = claim(source.max_tokens as usize).max(source.floor_tokens);
-            source
-        }));
-        let plan = crate::cognition::rag_budget::flex_allocate(context_window, &claims);
+        claims.extend(view_claims);
+        // The reply's runaway bound (its want, the most it may emit) is carved out the same on
+        // every turn, so the reply's priority never re-sizes her view's prefix: every grant but
+        // the reply's comes from `plan`, which seats the reply at its bound ahead of growth, and
+        // priority decides only how much of the bound the reply takes (`reply_grant`); what it
+        // leaves is her view's room to append into. Sized by the reply's priority instead, one
+        // 16,384 window gave her conversation 4,005 tokens on a pass and 2,402 on the act after
+        // it, and her prefix moved with it.
+        let bounded: Vec<_> = claims
+            .iter()
+            .cloned()
+            .map(|mut c| {
+                if c.source_id == FLEX_REPLY {
+                    c.priority = 10;
+                    c.min_tokens = c.max_tokens;
+                }
+                c
+            })
+            .collect();
+        let plan = crate::cognition::rag_budget::flex_allocate(context_window, &bounded);
+        let reply_grant = crate::cognition::rag_budget::flex_allocate(context_window, &claims)
+            .granted(FLEX_REPLY)
+            .min(plan.granted(FLEX_REPLY));
         let allocation = Some(crate::ai::provenance::AllocationReceipt {
             window: context_window,
             revision: env!("CONTINUUM_BUILD_GIT_SHA").to_owned(),
@@ -446,7 +475,10 @@ impl LlmDeliberationFaculty {
                     priority: claim.priority,
                     floor: claim.floor_tokens,
                     want: claim.max_tokens,
-                    grant: plan.granted(&claim.source_id),
+                    grant: match claim.source_id == FLEX_REPLY {
+                        true => reply_grant,
+                        false => plan.granted(&claim.source_id),
+                    },
                 })
                 .collect(),
         });
@@ -456,7 +488,6 @@ impl LlmDeliberationFaculty {
         // Her reply's grant is her measured need from the one allocation, carried as `max_tokens`.
         // What no claim took is her view's to grow into by appends (`fit_view`), never the
         // reply's: a cap claimed above her context starved her reads (ONE-BUDGET slice 6).
-        let reply_grant = plan.granted(FLEX_REPLY);
         let completion_reserve = reply_grant.max(1) as usize;
         continuum_base::probe!(
             class = "delib.window.flex",
@@ -496,7 +527,7 @@ impl LlmDeliberationFaculty {
             .sum();
         // What no claim took is room her view grows into by appends (`fit_view`), and the fit's
         // budget holds that same room, or it would drop what the epoch was allowed to keep.
-        let view_room = plan.unallocated;
+        let view_room = plan.unallocated.saturating_add(plan.granted(FLEX_REPLY).saturating_sub(reply_grant));
         let msg_budget = window_msg_budget.min(required_tokens.saturating_add(calibration.prompt_budget(
             plan.granted(FLEX_HISTORY).saturating_add(view_granted).saturating_add(view_room) as usize,
         )));

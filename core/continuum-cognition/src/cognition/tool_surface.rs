@@ -54,8 +54,7 @@ pub enum SurfaceReason {
     /// prompt, rest on demand").
     Hands,
     /// The activity's recipe declares affordances and they selected the surface (S1), with
-    /// the discovery pair and her focus verbs beside them. Not a truncation: the recipe is
-    /// the rule.
+    /// every verb that declares `Always` beside them. Not a truncation: the recipe is the rule.
     RoomAffordances,
     /// Her learned head for this epoch ([`crate::cognition::tool_head`]), on a server that takes
     /// `tail_tools`: the activity surface her grant bought (her core hands, or the room's recipe) with the verbs her head holds beyond it appended. Learning only ADDS: a head that replaced her hands left a
@@ -97,6 +96,8 @@ pub struct ToolSurface {
     authorized: Offer,
     /// Her hands: every verb whose command declares `Core` or `OnDemand`.
     hands: Offer,
+    /// The verbs that declare `Always`: in every surface, a room's declared one included.
+    always: Vec<String>,
     /// Her core hands: the verbs whose commands declare `Core`, in her prompt every act.
     core: Offer,
 }
@@ -166,6 +167,7 @@ impl ToolSurface {
             authorized: wire(authorized),
             names: raw.iter().map(|spec| spec.name.clone()).collect(),
             hands: wire(hands_surface(&offers)),
+            always: offers.iter().filter(|offer| offer.disclosure.in_every_surface()).map(|offer| offer.spec.name.clone()).collect(),
             core: wire(core_hands(&offers)),
             registry: wire(raw),
         }
@@ -270,10 +272,11 @@ impl ToolSurface {
         }
     }
 
-    /// The verbs an activity declares (a command name, or a subtree `code/**`), with the
-    /// discovery pair and her own mind's verbs beside them: a room's recipe is the rule of
-    /// that room, never of her mind (Kimi, 2026-10-05: "help works; nothing to invoke
-    /// against"). `None` when it declares nothing, or nothing that is a native verb here.
+    /// The verbs an activity declares (a command name, or a subtree `code/**`), with every verb
+    /// that declares `Always` beside them (the discovery pair, her verdict verbs). A room's
+    /// recipe is the rule of that room's prompt, never of her mind: the rest of her hands stay
+    /// one `commands/help` away in it. `None` when it declares nothing, or nothing that is a
+    /// native verb here.
     fn declared(&self, declared: &[String]) -> Option<Offer> {
         if declared.is_empty() {
             return None;
@@ -286,7 +289,7 @@ impl ToolSurface {
             .filter(|(name, _)| {
                 let named = declared.iter().any(|pattern| declares(pattern, name));
                 granted |= named;
-                named || name.starts_with("commands/") || name.starts_with("focus/")
+                named || self.always.contains(name)
             })
             .map(|(_, spec)| spec.clone())
             .collect();
@@ -374,9 +377,10 @@ pub struct OfferedTool {
 }
 
 impl OfferedTool {
-    /// A verb with no command behind it (the verdict verbs): one of her core hands.
-    pub fn core(spec: NativeToolSpec) -> Self {
-        Self { spec, disclosure: Disclosure::Core }
+    /// A verb with no command behind it (the verdict verbs): the turn's own protocol, in every
+    /// surface she is offered.
+    pub fn always(spec: NativeToolSpec) -> Self {
+        Self { spec, disclosure: Disclosure::Always }
     }
 }
 
@@ -475,9 +479,9 @@ mod tests {
     // Each fixture verb carries the disclosure its command declares, as the registry does.
     const REGISTRY: &[(&str, Disclosure)] = &[
         ("web/fetch", Disclosure::OnDemand), ("code/read", Disclosure::Core), ("activity/archive", Disclosure::Withheld),
-        ("work/review", Disclosure::OnDemand), ("commands/help", Disclosure::Core), ("code/git/apply", Disclosure::Withheld),
+        ("work/review", Disclosure::OnDemand), ("commands/help", Disclosure::Always), ("code/git/apply", Disclosure::Withheld),
         ("focus/continue", Disclosure::OnDemand), ("code/edit", Disclosure::Core), ("codex/run", Disclosure::Withheld),
-        ("work/submit", Disclosure::Core), ("commands/list", Disclosure::Core), ("code/write", Disclosure::Core),
+        ("work/submit", Disclosure::Core), ("commands/list", Disclosure::Always), ("code/write", Disclosure::Core),
     ];
 
     fn offer(&(name, disclosure): &(&str, Disclosure)) -> OfferedTool {
@@ -537,16 +541,18 @@ mod tests {
     }
 
     // what this catches: a subtree declaration (`code/**`) granting a sibling that only shares
-    // the prefix (`codex/run`), or a room rule stripping her discovery pair or focus verbs.
+    // the prefix (`codex/run`), a room rule stripping a verb that declares `Always` (her discovery
+    // pair), or a verb riding a declared room by its name (`focus/continue` declares `OnDemand`, so
+    // it stays one `commands/help` away there, as in every room).
     #[test]
-    fn a_declared_subtree_selects_that_subtree_with_her_discovery_and_focus_verbs() {
+    fn a_declared_subtree_selects_that_subtree_with_every_always_verb() {
         let surface = built(REGISTRY.iter());
         let selected = surface.select_granted(&["code/**".to_string()], 87_296).expect("recipe fits");
         assert_eq!(selected.reason, SurfaceReason::RoomAffordances);
         let names: Vec<&str> = selected.specs.as_deref().into_iter().flatten().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
-            ["code/edit", "code/git/apply", "code/read", "code/write", "commands/help", "commands/list", "focus/continue"]
+            ["code/edit", "code/git/apply", "code/read", "code/write", "commands/help", "commands/list"]
         );
         let unmatched = surface.select_granted(&["mail/send".to_string()], 87_296).expect("hands fit");
         assert_eq!(unmatched.reason, SurfaceReason::Hands, "a rule binding nothing offers her hands, never nothing");

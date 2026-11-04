@@ -336,7 +336,7 @@ pub fn native_offers() -> Vec<super::tool_surface::OfferedTool> {
         .iter()
         .filter(|d| d.native)
         .map(|d| super::tool_surface::OfferedTool { spec: descriptor_to_tool_spec(d), disclosure: d.disclosure })
-        .chain(verdict_tool_specs().into_iter().map(super::tool_surface::OfferedTool::core))
+        .chain(verdict_tool_specs().into_iter().map(super::tool_surface::OfferedTool::always))
         .collect()
 }
 

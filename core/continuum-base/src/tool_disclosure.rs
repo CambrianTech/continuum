@@ -8,6 +8,10 @@
 /// Where a verb is offered to her. A command that declares nothing is `Core`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Disclosure {
+    /// In every surface she is offered, a room whose recipe narrows her hands included: the
+    /// turn's own protocol (her verdict verbs) and the discovery pair that reaches everything
+    /// else (Kimi, 2026-10-05: "help works; nothing to invoke against").
+    Always,
     /// In her prompt every act: one of her core hands.
     #[default]
     Core,
@@ -23,11 +27,16 @@ pub enum Disclosure {
 impl Disclosure {
     /// Whether the verb is one of her hands at all (in her prompt or one `commands/help` away).
     pub fn in_hands(self) -> bool {
-        matches!(self, Disclosure::Core | Disclosure::OnDemand)
+        matches!(self, Disclosure::Always | Disclosure::Core | Disclosure::OnDemand)
     }
 
     /// Whether the verb rides her prompt every act.
     pub fn in_core(self) -> bool {
-        self == Disclosure::Core
+        matches!(self, Disclosure::Always | Disclosure::Core)
+    }
+
+    /// Whether the verb rides every surface, a room's declared one included.
+    pub fn in_every_surface(self) -> bool {
+        self == Disclosure::Always
     }
 }

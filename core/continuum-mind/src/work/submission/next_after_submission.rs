@@ -121,7 +121,7 @@ impl ActionCommand for WorkSubmit {
             class = "work.submit.shaped",
             card = %card_uuid,
             instance = %instance,
-            base = %&base_sha_text[..base_sha_text.len().min(9)],
+            base = %base_sha_text,
             size_bytes = artifact_ref.size_bytes,
             derived = !typed_in_full,
             "the submission as it goes to the board"
@@ -446,7 +446,7 @@ impl From<&airc_work::WorkSubmissionReview> for WorkReviewResult {
 impl ActionCommand for WorkReview {
     const NAME: &'static str = "work/review";
     const NATIVE: bool = true;
-    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand; // one `commands/help` away, in her prompt once her learned head holds it
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str = "Verdict under a reviewer claim, not training completion. Own work: work/submit.";
     type Params = WorkReviewParams;

@@ -248,7 +248,7 @@ impl crate::sdk_codegen::CommandSpec for ObserveCommand {
     const NAME: &'static str = "perception/observe";
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
     const NATIVE: bool = true; // SEE + REASON — offered natively beside interface/screenshot
-    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand; // one `commands/help` away, in her prompt once her learned head holds it
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const DESCRIPTION: &'static str =
         "Observe pixels AND structure: a web URL returns page elements and layout; \
          file:///absolute/document.pdf#page=1 returns one PDF page's text and image, \

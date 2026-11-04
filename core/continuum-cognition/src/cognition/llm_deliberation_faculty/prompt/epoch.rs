@@ -133,8 +133,13 @@ impl LlmDeliberationFaculty {
         let next_act_tokens = appended_per_act.map(|chars| (chars as u64 * view_tokens as u64).div_ceil(view_chars.max(1) as u64) as usize);
         // An allocator that answered for the wrong number of sources refuses the turn: the held
         // view stays as state, but a prompt built on a broken contract is never sent (Codex on #5564).
+        // A start sizes against the reply's runaway bound, the same on every turn: what the
+        // allocation left unclaimed with the reply seated at its bound. The slack a lower-priority
+        // reply leaves (`room` beyond it) is the epoch's to append into, never a bigger start, or a
+        // pass would start her view larger than the act after it and her prefix would move.
+        let start_room = granted + plan.unallocated as usize;
         let due = turnover_due(view_tokens, granted + room, next_act_tokens, || {
-            self.view_would_restore(&prompt.streams, |claims: &[Claim]| start_grants(claims, plan, granted + room, appended_per_act))
+            self.view_would_restore(&prompt.streams, |claims: &[Claim]| start_grants(claims, plan, start_room, appended_per_act))
         })?;
         if due == Turnover::Keep {
             return Ok(());
@@ -179,7 +184,7 @@ impl LlmDeliberationFaculty {
             .filter_map(|a| a.source_id.strip_prefix(VIEW_CLAIM))
             .collect();
         let started = self.turn_over_view_with(&prompt.streams, &shed, |claims: &[Claim]| {
-            start_grants(claims, plan, granted + room, appended_per_act)
+            start_grants(claims, plan, start_room, appended_per_act)
         })?;
         prompt.grounding_at = started.len();
         prompt.history.splice(0..view.len, started);

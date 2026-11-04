@@ -104,7 +104,7 @@ impl ActionCommand for RoomMembers {
         "list_members",
     ];
     const NATIVE: bool = true; // the social sense — as core as reading the board
-    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand; // one `commands/help` away, in her prompt once her learned head holds it
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "See who is in the room with you right now — the people and personas present, \
@@ -248,7 +248,7 @@ impl ActionCommand for RoomList {
     const NAME: &'static str = "room/list";
     const ALIASES: &'static [&'static str] = &["rooms", "where_am_i"];
     const NATIVE: bool = true;
-    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand; // one `commands/help` away, in her prompt once her learned head holds it
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "The rooms you belong to — you can be in several. For who is PRESENT in one, \
@@ -336,7 +336,7 @@ impl ActionCommand for RoomJoin {
     const NAME: &'static str = "room/join";
     const ALIASES: &'static [&'static str] = &["join_room", "enter_room"];
     const NATIVE: bool = true;
-    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand; // one `commands/help` away, in her prompt once her learned head holds it
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Join a room by NAME so you hear it and can speak in it. Joining does not \
@@ -420,7 +420,7 @@ impl ActionCommand for RoomLeave {
     const NAME: &'static str = "room/leave";
     const ALIASES: &'static [&'static str] = &["leave_room", "part_room"];
     const NATIVE: bool = true;
-    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand; // one `commands/help` away, in her prompt once her learned head holds it
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Leave a room by name, or your default room if you name none. Your other \
