@@ -195,7 +195,7 @@ async fn an_unprobed_adopted_endpoint_discovers_its_pool_before_the_checkpoint()
     let loading = directory().adopted_checkpoint_pool(&client, &root, process).await;
     assert!(
         matches!(loading, Err(AdoptedCheckpointRefusal::UnknownPool(PoolDiscoveryMiss::NotReady { status: 503 }))),
-        "{loading:?}"
+        "{:?}", loading.as_ref().err()
     );
     assert!(directory().get(&root).is_none(), "a transient props status never latches");
 
@@ -203,7 +203,7 @@ async fn an_unprobed_adopted_endpoint_discovers_its_pool_before_the_checkpoint()
     // lane record is not this fixture, so no ledger is adopted: the next refusal is the ledger's.
     props_ready.store(true, Ordering::SeqCst);
     let discovered = directory().adopted_checkpoint_pool(&client, &root, process).await;
-    assert!(matches!(discovered, Err(AdoptedCheckpointRefusal::UnverifiedLedger)), "{discovered:?}");
+    assert!(matches!(discovered, Err(AdoptedCheckpointRefusal::UnverifiedLedger)), "{:?}", discovered.as_ref().err());
     let pool = directory().get(&root).flatten().ok_or("discovery installed no pool")?;
     assert_eq!(pool.n_slots(), 3, "the pool props reports");
     assert_eq!(props_calls.load(Ordering::SeqCst), 2);
