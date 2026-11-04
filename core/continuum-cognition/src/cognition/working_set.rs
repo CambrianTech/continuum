@@ -585,13 +585,16 @@ impl WorkingSetRegistry {
     }
 
     /// Record her newest turn's irreducible window (see [`PersonaDemand::floor_tokens`]).
-    /// Persisted with the demand.
+    /// Persisted with the demand when it changed: the floor repeats turn after turn.
     pub fn record_floor(&self, persona: Uuid, floor_tokens: u32, now_ms: u64) {
         if floor_tokens == 0 {
             return;
         }
+        let before = self.observed.get(&persona).and_then(|d| d.floor_tokens);
         let updated = self.record_floor_in_memory(persona, floor_tokens, now_ms);
-        self.save(persona, &updated);
+        if before != Some(floor_tokens) {
+            self.save(persona, &updated);
+        }
     }
 
     pub(crate) fn record_floor_in_memory(&self, persona: Uuid, floor_tokens: u32, now_ms: u64) -> PersonaDemand {
@@ -822,7 +825,8 @@ impl WorkingSetRegistry {
             return;
         };
         match serde_json::from_slice::<PersonaDemand>(&bytes) {
-            Ok(d) if d.peak_tokens > 0 => {
+            // A floor alone is a measurement too: a mind refused on every turn has no peak yet.
+            Ok(d) if d.peak_tokens > 0 || d.floor_tokens.is_some() => {
                 self.observed.insert(persona, d);
                 tracing::info!(
                     probe_class = "working_set.rehydrated",

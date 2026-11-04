@@ -233,13 +233,19 @@ impl LlmDeliberationFaculty {
         let required_payload = required.total();
         let grounding_budget = irreducible_room.saturating_sub(required_payload);
         let payload_overflow = required_payload.saturating_sub(irreducible_room);
-        // The smallest window this turn can be sent in: everything above `irreducible_room`
-        // (reserves, framing, tools, her view's floor) plus the required payload. Recorded held or
-        // refused, so a turn short by 123 tokens raises her need by them (`working_set::need_tokens`).
+        // The smallest window this turn can be sent in: the reply's floor plus the charge of what
+        // cannot be shed (framing, tools, her view's floor, the required payload). Built from its
+        // parts, never from the window it was measured in: `prompt_budget` scales by the
+        // calibration, so `window - room + payload` carried (1 - r) of the window as phantom need
+        // (Cormac on #5755: ~15k a turn at r = 0.85 on a 100k grant). Recorded held or refused, so
+        // a turn short by 123 tokens raises her need by them (`working_set::need_tokens`).
         if let Some(reg) = &self.working_set {
-            let irreducible_window = (context_window as usize)
-                .saturating_sub(irreducible_room)
-                .saturating_add(required_payload);
+            let irreducible_window = (Self::COMPLETION_FLOOR_TOKENS as usize).saturating_add(calibration.charge(
+                framing_tokens
+                    .saturating_add(tools.floor)
+                    .saturating_add(view_floor)
+                    .saturating_add(required_payload),
+            ));
             reg.record_floor(
                 self.persona_id,
                 irreducible_window.min(u32::MAX as usize) as u32,
