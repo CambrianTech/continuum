@@ -99,12 +99,12 @@ fn an_act_appends_only_the_items_that_changed() {
 // chars after a restart) with no way to say which source did it. The breakdown names each source
 // that appended, with its items and characters, and nothing for a source that appended nothing.
 #[test]
-fn an_advance_names_each_source_that_appended() {
+fn an_advance_names_each_source_that_appended() -> Result<(), GrantMismatch> {
     let mut views = Fake::new("open-views", 4);
     let mut actions = Fake::new("actions", 1);
     views.push("a.rs", "aaa");
     actions.push("#1", "first");
-    let (mut view, _) = View::start(vec![], &[&views, &actions], all_full).unwrap();
+    let (mut view, _) = View::start(vec![], &[&views, &actions], all_full)?;
     actions.push("#2", "second");
     actions.push("#3", "third");
     view.advance(&[&views, &actions]);
@@ -115,6 +115,7 @@ fn an_advance_names_each_source_that_appended() {
     );
     view.advance(&[&views, &actions]);
     assert!(view.last_advance_by_source().is_empty(), "nothing appended, nothing named");
+    Ok(())
 }
 
 // what this catches: a collapsed item that comes back in full on the next act (rendered
