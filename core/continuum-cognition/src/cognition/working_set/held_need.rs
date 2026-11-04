@@ -8,7 +8,10 @@
 //! 16:55-17:16Z: granted 55,672 of a 654,336-token pool with 474k free, her view 26-37k tokens
 //! appending 5-12k an act, so `delib.view.turnover` fired on most acts, each start collapsed what
 //! she had read and she re-read the same files). Read as a size, a censored sample freezes the
-//! grant that censored it; read as a bound, it lifts her need until her epoch fits.
+//! grant that censored it. Read as a bound, it is the honest measurement, and only that: an
+//! overflow is first reducible (her view collapses older items to handles), so residency is
+//! sized from what held ([`resident_need`]), never from a bound (ONE-ACT stage 3; the M5,
+//! 2026-11-04 20:15Z: a bound handed one mind the pool, {Aiko: 114,592} of 125,696).
 
 use super::need::product_limit;
 use super::{PersonaDemand, RECENT_TURNS};
@@ -37,9 +40,9 @@ pub fn need_sample(sent_tokens: u32, framing_tokens: u32, fit_ok: bool) -> Optio
     (fit_ok && sent_tokens > framing_tokens).then_some(sent_tokens)
 }
 
-/// What a lane must hold for her: the larger of two reads of her ring, raised to her newest turn's
-/// irreducible window when that is larger (a turn that cannot be sent below it is a need, not a
-/// wish).
+/// What her view held or would have held, as measured: the larger of two reads of her ring, raised
+/// to her newest turn's irreducible window when that is larger (a turn that cannot be sent below
+/// it is a need, not a wish).
 /// - Her typical turn: the median, the product-limit estimate over the exact samples with the
 ///   bounds as censored ones ([`product_limit`]), so a bound can raise it and never lower it.
 /// - Her largest live bound: a bound is a PROOF that her working set exceeded that size within
@@ -50,18 +53,16 @@ pub fn need_sample(sent_tokens: u32, framing_tokens: u32, fit_ok: bool) -> Optio
 ///   over on 3 of 4 acts).
 ///
 /// A bound ages out of the 16-slot ring, so the need can fall again once her epochs stop
-/// overflowing (the upward move has its downward test). `AtLeast` when a bound decided it, so a
-/// reader sizes her target from it and clamps it to any limit as a bound
-/// (`Observed::within`). `None` until anything is measured; the allocator then gates on the wish.
+/// overflowing. `AtLeast` when a bound decided it. `None` until anything is measured.
+///
+/// This is the MEASUREMENT. It never authorizes residency: a reader that sizes a grant reads
+/// [`resident_need`] (ONE-ACT stage 3). Its consumer is admission's typed growth decision (ONE-ACT
+/// stage 4, Codex): only irreducible growth may request residency, never an overflow the view can
+/// collapse.
 pub fn need_tokens(d: &PersonaDemand) -> Option<NeedSample> {
-    let observed = || d.need_recent.iter().copied().filter(|s| s.value() > 0);
-    let exact: Vec<u32> = observed().filter(|s| !s.is_bound()).map(NeedSample::value).collect();
-    let bounds: Vec<u32> = observed().filter(|s| s.is_bound()).map(NeedSample::value).collect();
-    // The upper median, as `median_of` reads a ring: the share of turns past it falls below half.
-    let median =
-        |bounds: &[u32]| product_limit(&exact, bounds, |survival_num, survival_den| survival_num * 2 < survival_den);
-    let bounded = median(&bounds).max(bounds.iter().copied().max());
-    let held = match (median(&[]), bounded) {
+    let (exact, bounds) = split_ring(d);
+    let bounded = held_median(&exact, &bounds).max(bounds.iter().copied().max());
+    let held = match (held_median(&exact, &[]), bounded) {
         (Some(measured), Some(estimate)) if measured >= estimate => Some(NeedSample::Exact(measured)),
         (_, estimate) => estimate.map(|at_least| NeedSample::AtLeast { at_least }),
     };
@@ -70,4 +71,31 @@ pub fn need_tokens(d: &PersonaDemand) -> Option<NeedSample> {
         (Some(held), _) => Some(held),
         (None, floor) => floor.map(NeedSample::Exact),
     }
+}
+
+/// What her residency is sized from: the median of the turns the fit HELD, raised to her newest
+/// turn's irreducible window. A censored bound is excluded (ONE-ACT stage 3): an overflow is first
+/// REDUCIBLE, because her view collapses older items to handles, so a bound proves only that her
+/// HISTORY outgrew the grant, never that her current view needs more. Read as residency, the
+/// bound let one mind take the pool (the M5, 2026-11-04 20:15-20:35Z: pool 125,696 -> {Aiko
+/// 114,592}, three residents dark 20 min). Irreducible growth is the floor, which stays exact.
+/// `None` until a held turn or a floor is measured; the allocator then gates on the wish.
+pub fn resident_need(d: &PersonaDemand) -> Option<u32> {
+    let (exact, _) = split_ring(d);
+    match (held_median(&exact, &[]), d.floor_tokens) {
+        (Some(held), Some(floor)) => Some(held.max(floor)),
+        (held, floor) => held.or(floor),
+    }
+}
+
+/// Her need ring's observed slots, split into exact sizes and censored bounds.
+fn split_ring(d: &PersonaDemand) -> (Vec<u32>, Vec<u32>) {
+    let observed = d.need_recent.iter().copied().filter(|s| s.value() > 0);
+    let (bounds, exact): (Vec<NeedSample>, Vec<NeedSample>) = observed.partition(NeedSample::is_bound);
+    (exact.into_iter().map(NeedSample::value).collect(), bounds.into_iter().map(NeedSample::value).collect())
+}
+
+/// The upper median, as `median_of` reads a ring: the share of turns past it falls below half.
+fn held_median(exact: &[u32], bounds: &[u32]) -> Option<u32> {
+    product_limit(exact, bounds, |survival_num, survival_den| survival_num * 2 < survival_den)
 }

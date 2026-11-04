@@ -206,7 +206,7 @@ pub fn typical_tokens(d: &PersonaDemand) -> Option<u32> {
 
 mod held_need;
 use held_need::push_need;
-pub use held_need::{need_sample, need_tokens, NeedSample};
+pub use held_need::{need_sample, need_tokens, resident_need, NeedSample};
 
 /// What a lane must hold for her: the typical turn, else the last one — one honest
 /// sample, never the peak.
@@ -933,15 +933,12 @@ pub fn requirements_for(
         .iter()
         .map(|p| {
             let demand = working_set.demand_of(*p);
-            use crate::inference::planning::window_allocator::{LaneRequirement, Tokens};
-            let need = demand.as_ref().and_then(need_tokens);
-            // A censored need says her untrimmed assembly was at least that too: her wish (and so
-            // her target) rises with it, or `held` clamps the bound back to the target it outgrew.
-            let bound = need.filter(|n| n.is_bound()).map_or(0, NeedSample::value); // map_or: an exact need raises no wish
+            use crate::inference::planning::window_allocator::{observed::Observed, LaneRequirement, Tokens};
             // Measured or not, as a type: no turn yet is unmeasured, never a zero standing in for one.
-            let wish = demand.as_ref().and_then(|d| Tokens::new(requirement_tokens(d).max(bound)));
-            // Typed through to the grant, which clamps a bound to what one sequence holds and never an exact need.
-            let need = need.and_then(|need| need.map(Tokens::new).transpose());
+            let wish = demand.as_ref().and_then(|d| Tokens::new(requirement_tokens(d)));
+            // Residency is sized from what held, never from a censored bound: an overflow is
+            // reducible by her view's collapse (ONE-ACT stage 3, `resident_need`).
+            let need = demand.as_ref().and_then(resident_need).and_then(Tokens::new).map(Observed::Exact);
             // Her parked training examples' reservation, carried beside her conversational target
             // and need (card ea157b1a): the allocator grows toward it only from spare budget.
             let training = crate::genome::fine_tuning::training_demand::TrainingDemand::for_persona(*p).reservation();
