@@ -58,6 +58,11 @@ pub(super) struct FakeServer {
     /// `/slots` reads served ([`LlamaServerControl::slots_body`]): the prefill knee's.
     slots_reads: Arc<AtomicUsize>,
     slots_reply: Option<Arc<dyn Fn() -> serde_json::Value + Send + Sync>>,
+    /// Each launch's `(per-sequence, sequences)`: `-c` is their product, `--parallel` the second.
+    launched: Arc<parking_lot::Mutex<Vec<(u32, u32)>>>,
+    /// Launched on the shared pool (`--kv-unified`): `pool_launch` says so and `served_pool_tokens`
+    /// reports the last launch's pool. Off, the fake reports neither, as before.
+    shared_pool: bool,
 }
 
 impl FakeServer {
@@ -78,6 +83,8 @@ impl FakeServer {
             probe_started: None,
             slots_reads: Arc::new(AtomicUsize::new(0)),
             slots_reply: None,
+            launched: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            shared_pool: false,
         }
     }
 }
@@ -118,8 +125,9 @@ impl LlamaServerControl for FakeServer {
         self.idles.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-    async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
+    async fn serve(&self, target: &ServingTarget) -> Result<(), LlamaServerError> {
         self.serves.fetch_add(1, Ordering::SeqCst);
+        self.launched.lock().push((target.context_window, target.lanes));
         if let Some(started) = &self.serve_started {
             started.notify_one();
             std::future::pending::<()>().await;
@@ -137,8 +145,16 @@ impl LlamaServerControl for FakeServer {
         Ok(11008)
     }
     async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError> {
-        // One sequence's worth of the fixed window above: the share these tests publish.
-        Ok(11008)
+        // On the shared pool: the pool the last launch asked for. Otherwise one sequence's worth
+        // of the fixed window above: the share these tests publish.
+        let launched = self.launched.lock().last().copied();
+        match (self.shared_pool, launched) {
+            (true, Some((per_sequence, sequences))) => Ok(per_sequence.saturating_mul(sequences)),
+            _ => Ok(11008),
+        }
+    }
+    fn pool_launch(&self) -> Option<crate::inference::llama_server::PoolLaunch> {
+        self.shared_pool.then_some(crate::inference::llama_server::PoolLaunch::Shared)
     }
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
         // 0 = "this fake's /props names no slot count", i.e. nothing to compare
@@ -472,6 +488,10 @@ pub(super) fn daemon_on_authority(
     // Same class of leak as the decode-age global above; caught by measurement in
     // `serving_consumer` before it could ever be caught by a red.
     daemon.set_inherited_lane(Arc::new(|| None));
+    // NO residents and NO engine pid of the operator's: the runtime registry and the lane
+    // pidfile are process globals and the operator's file, the same leak as the two above.
+    daemon.set_live_residents(Arc::new(Vec::new));
+    daemon.set_engine_pid(Arc::new(|| None));
     daemon
 }
 
@@ -561,6 +581,7 @@ pub(super) fn production_source() -> &'static str {
                 include_str!("planning.rs"),
                 include_str!("reconcile.rs"),
                 include_str!("launch.rs"),
+                include_str!("launch_pool.rs"),
             ]
             .join("\n")
         })

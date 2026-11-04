@@ -224,3 +224,170 @@ fn a_settled_reading_sizes_the_launch_pool_from_the_fit() {
     let engine_up = readings.observe(boot + window_ms + 2_000, OwnCredit::Included { own_bytes: 36 * GB }, steady);
     assert_eq!(engine_up.launch, BudgetReading::Transient, "an engine appearing is a new view's first window");
 }
+
+// what this catches (the M5, 2026-11-04 20:15-20:35Z, 87eccb3a7): a cold boot launched its one pool
+// from the first, transient budget reading (`credited_bytes=0 usable_bytes=22,785,477,836` on a
+// 128 GB machine) as `-c 125640 --parallel 5`, and for twenty minutes three of the four residents
+// were dark: no grant, no request reaching the engine. The Directed gate fixture cannot see that
+// (it never launches a pool and never grants). This runs the cold boot end to end on the real
+// owners: the budget owner's reading over a memory authority the test drives, the planner, the
+// reconcile's launch, the grant tick over four minds' requirements built from their working set
+// the way their turns record them, and each mind's request admitted at the engine's endpoint and
+// completed by the fake engine's completion route.
+#[tokio::test]
+async fn a_cold_boot_launches_from_the_settled_reading_and_every_resident_works() {
+    use super::super::launch_pool::LaunchPool;
+    use super::credit::until_the_board;
+    use crate::inference::planning::window_allocator::observed::Observed;
+    use axum::{routing::post, Router};
+
+    // The M5: 128 GB of unified memory. The 20:15Z first reading is the everyday (Comfort, 0.80)
+    // fill of 28,481,847,295 free bytes: 22,785,477,836. Settled: the boot's leftovers gone, 10 GB
+    // of others staying resident.
+    let capacity = 128 * GB;
+    let transient_free = 28_481_847_295u64;
+    let settled_free = capacity - 10 * GB;
+    let source = Arc::new(crate::resources::MockCapacitySource::new(serving_pool_kind(), capacity));
+    source.set_used(capacity - transient_free);
+    let authority = ticking_resource_daemon(source.clone());
+    let mut server = FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true);
+    server.shared_pool = true;
+    let launched = server.launched.clone();
+    let serves = server.serves.clone();
+    let mut daemon = daemon_on_authority(Arc::new(server), capacity, authority.clone());
+    // One relaunch's duration in a test's time: the view's first window is the boot's transient.
+    let window = Duration::from_millis(300);
+    daemon.set_budget_window(window);
+    // The M5's model: its weights, its trained window (`fake_model`'s 262,144), and for the plan its
+    // header KV rate (8,317 B/token). The launch's fit reads `footprint_for` of the resolved row.
+    let model_id = "cold-boot-fixture/Qwen3.6-35B-A3B-GGUF";
+    let resolve = |id: &str| {
+        let mut model = fake_model(id);
+        model.weights_bytes = Some(20_419_565_568);
+        model
+    };
+    daemon.set_model_resolver(Arc::new(move |id: &str| Some(resolve(id))));
+    daemon.set_engine_pid(Arc::new(|| Some(4_242)));
+    let candidate = ModelFootprint { model_id: model_id.into(), ..m5_qwen36() };
+
+    // Four residents, measured the way their turns record them: Aiko's view overflowed her grant,
+    // so her need is a censored lower bound; three exact needs near 40k (the shape of the M5's
+    // three; their exact values are not in the 20:15Z receipts).
+    let aiko = uuid::Uuid::new_v4();
+    let others = [(uuid::Uuid::new_v4(), 40_960u32), (uuid::Uuid::new_v4(), 39_424), (uuid::Uuid::new_v4(), 41_216)];
+    let minds: Vec<(uuid::Uuid, u32)> = std::iter::once((aiko, 114_592)).chain(others).collect();
+    let roster: Vec<uuid::Uuid> = minds.iter().map(|(mind, _)| *mind).collect();
+    daemon.set_live_residents(Arc::new(move || roster.clone()));
+    daemon.working_set.record_need_in_memory(aiko, Observed::AtLeast { at_least: 114_592 }, 1);
+    for (mind, need) in others {
+        daemon.working_set.record_in_memory(mind, need, 1);
+        daemon.working_set.record_need_in_memory(mind, Observed::Exact(need), 1);
+    }
+    let needs: u64 = minds.iter().map(|(_, need)| u64::from(*need)).sum();
+    let plan = |daemon: &ServingDaemonModule| {
+        let budget = daemon.host_budget_snapshot();
+        let revision = daemon.intent.snapshot().revision;
+        daemon.plan_until_decided(&budget, revision, || (vec![candidate.clone()], vec![candidate.clone()]));
+        budget
+    };
+
+    // (1) The boot's first reading is transient: whatever the plan makes of it, no pool is
+    // committed from it and, with no engine running, nothing launches.
+    until_the_board(&authority, |r| r.bytes == transient_free).await;
+    let first = plan(&daemon);
+    assert_eq!(first.credit, OwnCredit::ToApply, "a cold boot: no engine, nothing credited");
+    assert_eq!(first.launch, BudgetReading::Transient, "the boot's first reading");
+    assert!(
+        matches!(daemon.engine_pool(&resolve(model_id), 25_128, 5), LaunchPool::AwaitSettled { .. }),
+        "the 20:15Z launch's plan (5 x 25,128) sizes no pool from it"
+    );
+    if let Some(reconcile) = daemon.reconcile_to_plan() {
+        reconcile.await.expect("the reconcile task completes"); // expect: the fixture's own task
+    }
+    assert_eq!(serves.load(Ordering::SeqCst), 0, "nothing launched on the transient");
+    assert!(launched.lock().is_empty());
+
+    // (2) The memory comes back and the view outlives its first window: the reading settles, and
+    // the launch commits its pool from it.
+    source.set_used(capacity - settled_free);
+    until_the_board(&authority, |r| r.bytes == settled_free).await;
+    tokio::time::sleep(window * 2).await;
+    let settled = plan(&daemon);
+    let BudgetReading::Settled(settled_bytes) = settled.launch else {
+        panic!("past the first window the reading settles: {:?}", settled.launch); // panic: the assertion under test
+    };
+    assert_eq!(settled.host.usable_bytes, settled_bytes, "the boot reading has aged out of the plan's minimum too");
+    daemon
+        .reconcile_to_plan()
+        .expect("the settled plan reconciles") // expect: the assertion under test
+        .await
+        .expect("the reconcile task completes"); // expect: the fixture's own task
+    assert_eq!(serves.load(Ordering::SeqCst), 1, "one launch");
+    let (per_sequence, sequences) = launched.lock().first().copied().expect("the launch's -c and --parallel"); // expect: asserted one launch above
+    let pool = u64::from(per_sequence) * u64::from(sequences);
+    assert!(sequences >= 5, "four residents and the scratch sequence: --parallel {sequences}");
+    let fit = footprint_for(&resolve(model_id)).expect("the M5 row has a footprint"); // expect: weights are set above
+    let fit_pool = u64::from(fit.window_within(settled_bytes, sequences).min(fit.context_window)) * u64::from(sequences);
+    assert!(pool >= fit_pool, "-c {pool} below the settled reading's fit {fit_pool}");
+    assert!(pool >= needs, "-c {pool} cannot hold the four needs ({needs})");
+
+    // (3) The grant tick grants every mind at least her need from the launched pool.
+    assert!(daemon.serving_tx.borrow().ready, "the launched engine serves");
+    daemon.publish_grants();
+    let grants = daemon.subscribe_grants().borrow().clone().expect("grants from the launched pool"); // expect: the assertion under test
+    assert_eq!(u64::from(grants.pool_tokens), pool, "the grants' pool is the engine's own");
+    for (mind, need) in &minds {
+        assert!(
+            grants.by_mind.get(mind).is_some_and(|granted| granted >= need),
+            "{mind} (need {need}) not granted it: {:?}",
+            grants.by_mind
+        );
+    }
+
+    // (4) Each mind's request is admitted at the engine's endpoint and its generation completes.
+    let completed = Arc::new(parking_lot::Mutex::new(Vec::<Option<String>>::new()));
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post({
+            let completed = completed.clone();
+            move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let completed = completed.clone();
+                async move {
+                    completed.lock().push(body["user"].as_str().map(str::to_owned));
+                    axum::Json(serde_json::json!({
+                        "choices": [{"index": 0, "message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 8, "completion_tokens": 1, "total_tokens": 9}
+                    }))
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a loopback port"); // expect: fixture setup
+    let root = format!("http://{}", listener.local_addr().expect("its address")); // expect: fixture setup
+    let engine = tokio::spawn(async move { axum::serve(listener, app).await });
+    let endpoint = crate::inference::slots::directory().endpoint(&root);
+    let client = reqwest::Client::new();
+    for (mind, _) in &minds {
+        let admitted = endpoint.admit().await.expect("her request is admitted"); // expect: the assertion under test
+        let reply: serde_json::Value = client
+            .post(format!("{root}/v1/chat/completions"))
+            .json(&serde_json::json!({
+                "model": model_id,
+                "user": mind.to_string(),
+                "messages": [{"role": "user", "content": "work"}],
+                "max_tokens": 1,
+                "n_ctx": grants.by_mind.get(mind),
+            }))
+            .send()
+            .await
+            .expect("the engine answers") // expect: the assertion under test
+            .json()
+            .await
+            .expect("a completion body"); // expect: the assertion under test
+        assert_eq!(reply["choices"][0]["finish_reason"], "stop", "{mind}'s generation completes");
+        drop(admitted);
+    }
+    let expected: Vec<Option<String>> = minds.iter().map(|(mind, _)| Some(mind.to_string())).collect();
+    assert_eq!(*completed.lock(), expected, "every resident's work reached the engine and completed");
+    engine.abort();
+}

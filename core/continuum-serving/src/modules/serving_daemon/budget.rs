@@ -454,4 +454,11 @@ impl ServingDaemonModule {
             },
         )
     }
+
+    /// Tests: the plan budget's readings over `window` instead of one relaunch's duration, so a
+    /// view's first window (a cold boot's transient) passes in a test's time.
+    #[cfg(test)]
+    pub(super) fn set_budget_window(&mut self, window: std::time::Duration) {
+        self.budget_readings = parking_lot::Mutex::new(super::own_credit::CreditedReadings::new(window));
+    }
 }

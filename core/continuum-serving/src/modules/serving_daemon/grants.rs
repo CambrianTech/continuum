@@ -80,7 +80,7 @@ impl ServingDaemonModule {
 
     /// Whether the running engine is on the shared pool, read off its argv once per process.
     fn on_shared_pool(&self) -> Option<bool> {
-        let pid = crate::inference::lane_pidfile::read()?;
+        let pid = (self.engine_pid)()?;
         if let Some((known, shared)) = *self.shared_pool_of.lock() {
             if known == pid {
                 return Some(shared);

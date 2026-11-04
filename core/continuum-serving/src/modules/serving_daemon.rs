@@ -124,6 +124,14 @@ type InheritedLaneSource = Arc<dyn Fn() -> Option<LaneRecord> + Send + Sync>;
 type DecodeAgeSource = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
 type LeasedInSentSource =
     Arc<dyn Fn() -> Vec<crate::inference::resource_admission::PromptSample> + Send + Sync>;
+/// The local residents: the runtime registry's live personas in production. A process global
+/// read inside the plan and the grants made every harness daemon's demand whatever registry the
+/// binary held; tests own it (`set_live_residents`).
+type LiveResidentsSource = Arc<dyn Fn() -> Vec<uuid::Uuid> + Send + Sync>;
+/// The serving engine's pid: the operator's lane pidfile in production, which a harness daemon
+/// must never read (the grants asked the real M5's engine whether it was on the shared pool);
+/// tests own it (`set_engine_pid`).
+type EnginePidSource = Arc<dyn Fn() -> Option<u32> + Send + Sync>;
 
 /// Where the heartbeat reads "consecutive REAL generations that failed on the live lane
 /// since the last success" (#363). Defaults to the llama-server process-global stamped by
@@ -227,6 +235,10 @@ pub struct ServingDaemonModule {
     /// tests own it ([`Self::set_leased_in_sent_source`]): a ring shared by every test in
     /// the binary made one test's 56k samples another test's requirement (CI, 2026-09-20).
     leased_in_sent: LeasedInSentSource,
+    /// The local residents ([`LiveResidentsSource`]).
+    live_residents: LiveResidentsSource,
+    /// The serving engine's pid ([`EnginePidSource`]).
+    engine_pid: EnginePidSource,
     /// The `/slots` activity fingerprint observed at the LAST missed smoke probe (L11).
     /// A changed fingerprint at the next miss proves the serve loop advanced between the
     /// two looks — work the adapter stamps can't see (ghost turns from a dead core's
@@ -537,6 +549,12 @@ impl ServingDaemonModule {
             }),
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_work),
             leased_in_sent: Arc::new(crate::inference::resource_admission::leased_in_sent_samples),
+            live_residents: Arc::new(|| {
+                crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                    .map(|r| r.live_personas())
+                    .unwrap_or_default() // unwrap_or_default: no registry yet (boot) = no residents
+            }),
+            engine_pid: Arc::new(crate::inference::lane_pidfile::read),
             last_miss_slots_fp: Arc::new(std::sync::Mutex::new(None)),
             frozen_slots: Arc::new(parking_lot::Mutex::new(None)),
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),

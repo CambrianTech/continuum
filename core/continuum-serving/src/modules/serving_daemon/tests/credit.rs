@@ -140,7 +140,7 @@ fn serving_measured_by(
 }
 
 /// Wait until the authority's replace-myself read satisfies `settled` (its tick is 20 ms).
-async fn until_the_board(
+pub(super) async fn until_the_board(
     authority: &ResourceDaemon,
     settled: impl Fn(&crate::resources::ReplacementBudget) -> bool,
 ) {
