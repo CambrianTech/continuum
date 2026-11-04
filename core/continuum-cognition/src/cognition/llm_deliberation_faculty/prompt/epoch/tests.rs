@@ -142,3 +142,23 @@ fn a_view_granted_nothing_is_kept_never_started_empty() {
     let due = turnover_due::<()>(33_165, 29_000, Some(10_000), || Ok(true)).expect("pure");
     assert_eq!(due, Turnover::Overflow, "a real grant it outgrew still turns over");
 }
+
+// what this catches (Aris on the M5, 2026-11-04 16:55-17:16Z): a view of 26-37k tokens appending
+// 5-12k an act against a ~44k allowance turned over on most acts, and her need, measured only from
+// sizes her grant bounded, never rose past the grant. An overflow measures what she would have
+// held: the view plus the next act's appends, beyond what was allowed. A deliberate start (her
+// whole history rendered at once) and an act that kept or restored within its grant measure none.
+#[test]
+fn an_overflow_measures_what_her_view_would_have_held() {
+    let (allowed, view, next) = (44_000, 46_000, 9_000);
+    let due = turnover_due::<()>(view, allowed, Some(next), || Ok(false)).expect("pure");
+    assert_eq!(due, Turnover::Overflow, "precondition: over its grant");
+    let beyond = overflow_beyond(due, false, view, allowed, Some(next)).expect("an overflow measures a shortfall");
+    assert!(allowed + beyond >= view + next, "need >= view + one act's appends: {beyond}");
+    assert_eq!(overflow_beyond(due, false, view, allowed, None), Some(view - allowed), "no append measured yet: the view alone");
+    assert_eq!(overflow_beyond(due, true, view, allowed, Some(next)), None, "a start renders her whole history: no demand");
+    let restore = turnover_due::<()>(40_000, allowed, Some(next), || Ok(true)).expect("pure");
+    assert_eq!(restore, Turnover::Restore, "precondition: a restore within the grant");
+    assert_eq!(overflow_beyond(restore, false, 40_000, allowed, Some(next)), None, "a restore fit: no shortfall");
+    assert_eq!(overflow_beyond(Turnover::Keep, false, 40_000, allowed, Some(next)), None, "a kept view fit: no shortfall");
+}

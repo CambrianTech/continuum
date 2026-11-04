@@ -128,9 +128,11 @@ pub struct PersonaDemand {
     /// allocator GATES on the median of this ring (no headroom — she was served at
     /// that size) and TARGETS the wish (card 70706a9e: Kimi's wish 99k × 1.25 read as
     /// "over the grid" at a 75,776 seat her turns were fitting into every time).
-    /// Legacy files read empty → no need known → the wish stands in, as before.
+    /// Legacy files read empty → no need known → the wish stands in, as before. Each slot is
+    /// typed exact or censored ([`NeedSample`]): a turn whose view overflowed its grant records
+    /// what she would have held as a lower bound, never as a size.
     #[serde(default)]
-    pub need_recent: [u32; RECENT_TURNS],
+    pub need_recent: [NeedSample; RECENT_TURNS],
     /// Next slot to overwrite in `need_recent`.
     #[serde(default)]
     pub need_next: u8,
@@ -164,13 +166,6 @@ fn push_recent(d: &mut PersonaDemand, demand_tokens: u32) {
     let i = (d.recent_next as usize) % RECENT_TURNS;
     d.recent[i] = demand_tokens;
     d.recent_next = ((i + 1) % RECENT_TURNS) as u8;
-}
-
-/// Push one HELD turn's post-fit size into her need ring (newest overwrites oldest).
-fn push_need(d: &mut PersonaDemand, need_tokens: u32) {
-    let i = (d.need_next as usize) % RECENT_TURNS;
-    d.need_recent[i] = need_tokens;
-    d.need_next = ((i + 1) % RECENT_TURNS) as u8;
 }
 
 /// Push one growth sample into her sent ring (newest overwrites oldest).
@@ -209,24 +204,9 @@ pub fn typical_tokens(d: &PersonaDemand) -> Option<u32> {
     median_of(&d.recent)
 }
 
-/// What a lane must hold for her: the median post-fit size of her recent HELD turns, raised to
-/// her newest turn's irreducible window when that is larger (a turn that cannot be sent below it
-/// is a need, not a wish). `None` until either is measured; the allocator then gates on the wish.
-pub fn need_tokens(d: &PersonaDemand) -> Option<u32> {
-    match (median_of(&d.need_recent), d.floor_tokens) {
-        (Some(held), Some(floor)) => Some(held.max(floor)),
-        (held, floor) => held.or(floor),
-    }
-}
-
-/// The size a HELD turn contributes to her need ring — `None` when the turn was not
-/// held, so the ring never learns a starved window's echo (the 5090's self-sealed
-/// 2048, 2026-09-20). A turn is held when the fit kept the source's truthful minimum
-/// (`fit_ok`) AND something survived it (`sent > framing`): a fit that dropped every
-/// message and "succeeded" is the window measuring itself, not the turn. Pure.
-pub fn need_sample(sent_tokens: u32, framing_tokens: u32, fit_ok: bool) -> Option<u32> {
-    (fit_ok && sent_tokens > framing_tokens).then_some(sent_tokens)
-}
+mod held_need;
+use held_need::push_need;
+pub use held_need::{need_sample, need_tokens, NeedSample};
 
 /// What a lane must hold for her: the typical turn, else the last one — one honest
 /// sample, never the peak.
@@ -562,24 +542,25 @@ impl WorkingSetRegistry {
             })
     }
 
-    /// Record the post-fit size of a turn the fit HELD — her need (see
-    /// [`need_sample`] for what counts). Persisted with the demand.
-    pub fn record_need(&self, persona: Uuid, need_tokens: u32, now_ms: u64) {
-        if need_tokens == 0 {
+    /// Record one turn's need — exact for a turn the fit HELD (see [`need_sample`] for what
+    /// counts), a lower bound for a turn whose view overflowed its grant ([`NeedSample`]).
+    /// Persisted with the demand.
+    pub fn record_need(&self, persona: Uuid, sample: NeedSample, now_ms: u64) {
+        if sample.tokens() == 0 {
             return;
         }
-        let updated = self.record_need_in_memory(persona, need_tokens, now_ms);
+        let updated = self.record_need_in_memory(persona, sample, now_ms);
         self.save(persona, &updated);
     }
 
-    pub(crate) fn record_need_in_memory(&self, persona: Uuid, need_tokens: u32, now_ms: u64) -> PersonaDemand {
+    pub(crate) fn record_need_in_memory(&self, persona: Uuid, sample: NeedSample, now_ms: u64) -> PersonaDemand {
         *self
             .observed
             .entry(persona)
-            .and_modify(|d| push_need(d, need_tokens))
+            .and_modify(|d| push_need(d, sample))
             .or_insert_with(|| {
                 let mut d = PersonaDemand { last_seen_ms: now_ms, ..PersonaDemand::default() };
-                push_need(&mut d, need_tokens);
+                push_need(&mut d, sample);
                 d
             })
     }
@@ -953,9 +934,13 @@ pub fn requirements_for(
         .map(|p| {
             let demand = working_set.demand_of(*p);
             use crate::inference::planning::window_allocator::{LaneRequirement, Tokens};
+            let need = demand.as_ref().and_then(need_tokens);
+            // A censored need says her untrimmed assembly was at least that too: her wish (and so
+            // her target) rises with it, or `held` clamps the bound back to the target it outgrew.
+            let bound = need.filter(|n| n.is_bound()).map_or(0, NeedSample::tokens); // map_or: an exact need raises no wish
             // Measured or not, as a type: no turn yet is unmeasured, never a zero standing in for one.
-            let wish = demand.as_ref().and_then(|d| Tokens::new(requirement_tokens(d)));
-            let need = demand.as_ref().and_then(need_tokens).and_then(Tokens::new);
+            let wish = demand.as_ref().and_then(|d| Tokens::new(requirement_tokens(d).max(bound)));
+            let need = need.map(NeedSample::tokens).and_then(Tokens::new);
             // Her parked training examples' reservation, carried beside her conversational target
             // and need (card ea157b1a): the allocator grows toward it only from spare budget.
             let training = crate::genome::fine_tuning::training_demand::TrainingDemand::for_persona(*p).reservation();
