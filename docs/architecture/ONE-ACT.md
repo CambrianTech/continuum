@@ -281,7 +281,9 @@ fence covers actual device completion, plus the durable save receipt where a rel
 it, never mere dispatch or HTTP acceptance; (4) streaming tool prefill uses only the COMMITTED,
 append-only rendered and tokenized prefix, never mutable partial JSON or a view later compacted
 under the same sequence. "N+1" is an execution epoch, not an artificial wait for a frame. A
-shadow sequence reserves its destination and staging before it is allocated. The paging outcome
+shadow sequence reserves its destination and staging before it is allocated. Completion has distinct receipt DOMAINS under one scheduling authority (CPU, GPU copy, GPU
+compute, durable I/O): a disk save completes in its own domain and is never forced synchronously
+onto the device thread; a release that needs it waits on that domain's receipt. The paging outcome
 slice (5b.1) remains first.
 What it buys, each already named: prefill of a tool result while the tool runs (plan line 13);
 page-in ahead of the turn (`inference.kv_warm_ahead`, which logged `skipped` on 2026-11-04 and
