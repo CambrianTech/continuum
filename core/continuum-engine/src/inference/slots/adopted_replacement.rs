@@ -14,7 +14,7 @@ impl SlotDirectory {
     pub fn adopted_replacement_ready(&self, root: &str) -> bool {
         let endpoint = self.endpoint(root);
         let state = endpoint.state.lock();
-        state.generation.is_none()
+        state.generation().is_none()
             && !state.paging_uncertain
             && state
                 .current_pool()

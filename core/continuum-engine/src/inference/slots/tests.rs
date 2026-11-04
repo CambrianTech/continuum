@@ -215,7 +215,7 @@ mod adopted_checkpoint;
         pool.holders.lock().insert(1, mind(2));
         pool.holders.lock().insert(2, key(3, 4));
         pool.note_saved(mind(2));
-        endpoint.state.lock().unowned_pool = Some(Some(pool));
+        endpoint.state.lock().set_pool_entry(Some(Some(pool)));
         endpoint.quarantine_paging();
         let client = reqwest::Client::new();
 
@@ -233,7 +233,7 @@ mod adopted_checkpoint;
             .expect("an exited engine has nothing to save");
         drop(transition);
         // The next generation's pool replaces this one; the record is the endpoint's.
-        endpoint.state.lock().unowned_pool = Some(Some(Arc::new(KvSlotPool::new("test://relaunch", 4))));
+        endpoint.state.lock().set_pool_entry(Some(Some(Arc::new(KvSlotPool::new("test://relaunch", 4)))));
         endpoint.state.lock().ready.send_replace(true); // the replacement verified ready
 
         let admission = endpoint.admit().await.expect("an open endpoint admits");
@@ -256,7 +256,7 @@ mod adopted_checkpoint;
             for (slot, m) in minds.iter().enumerate() {
                 pool.holders.lock().insert(slot as u32, mind(*m));
             }
-            endpoint.state.lock().unowned_pool = Some(Some(pool));
+            endpoint.state.lock().set_pool_entry(Some(Some(pool)));
             endpoint.pending_discard(DiscardReason::PagingUncertain).commit();
         };
         // One mind per relaunch, so "oldest" is defined: the first is evicted by the fourth.
@@ -707,7 +707,7 @@ mod adopted_checkpoint;
         assert!(dir.negotiate_page_admission("local", &local, None, Some(&capability)).await);
         assert_eq!(dir.page_admission_path("local").unwrap(), Some(page_dir.path().canonicalize().unwrap()));
         let replacement = Arc::new(KvSlotPool::new("local", 1));
-        dir.endpoint("local").state.lock().unowned_pool = Some(Some(replacement));
+        dir.endpoint("local").state.lock().set_pool_entry(Some(Some(replacement)));
         assert!(!dir.negotiate_page_admission("local", &local, None, Some(&capability)).await,
             "late props cannot authorize a replacement pool");
         let invalid = dir.ensure_pool("invalid", 1);

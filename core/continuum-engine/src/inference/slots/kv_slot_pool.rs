@@ -32,7 +32,12 @@ impl KvSlotPool {
                 let now_ms = continuum_base::time::EpochMs::read().map_or(view.last_access_at, continuum_base::time::EpochMs::millis); // engine has no view of a just-inserted key: fall back to its own stamp
                 let stale_hours =
                     now_ms.saturating_sub(view.last_access_at) / (3600 * 1000);
-                let cost = (tokens >> stale_hours.min(20)) as i64;
+                // Halved per idle hour until nothing is left: the shift's only bound is the width of
+                // the count, past which a page is fully discounted.
+                let cost = match stale_hours < u64::from(u64::BITS) {
+                    true => (tokens >> stale_hours) as i64,
+                    false => 0,
+                };
                 // EQUAL costs tie-break by RECENCY, never by map-iteration order —
                 // without this the tie fell to hash ordering, a platform coin flip
                 // (Linux CI evicted a just-refreshed slot; macOS happened not to).
@@ -438,17 +443,35 @@ pub(super) struct EndpointState {
     /// so the field and the signal cannot disagree.
     pub(super) ready: tokio::sync::watch::Sender<bool>,
     pub(super) paging_uncertain: bool,
-    pub(super) generation: Option<EngineGeneration>,
-    /// The owned engine verified ready (`EndpointTransition::ready`), whole: a verified
-    /// generation has its contract and pool by type, never three fields that must agree
-    /// (card df1d0963). It outlives its child until a replacement is ready.
-    pub(super) owned: Option<OwnedInstall>,
-    /// A pool with no owned engine behind it: `Some(Some(pool))` discovered for an adopted
-    /// engine, `Some(None)` latched unsupported, `None` never probed. Empty while `owned` is set.
-    pub(super) unowned_pool: Option<Option<Arc<KvSlotPool>>>,
+    /// Which engine this endpoint has and the pool serving it: one value, so an owned
+    /// generation, its verified install and an unowned pool can never disagree (card df1d0963).
+    pub(super) engine: Engine,
     /// Negotiated for this pool incarnation. None is not yet negotiated;
     /// Ok(None) is explicitly legacy or remotely owned, not governed coverage.
     pub(super) page_admission: Option<Result<Option<std::path::PathBuf>, String>>,
+}
+
+/// Which engine an endpoint has, and the pool serving it.
+pub(super) enum Engine {
+    /// Never probed: no pool known.
+    Unprobed,
+    /// Probed and latched: the engine has no paging.
+    Unsupported,
+    /// A running engine this core did not launch, with the pool its probe discovered.
+    Adopted(Arc<KvSlotPool>),
+    /// An engine this core launched. `generation` is the latest started (loading, serving or
+    /// exited); `serving` is what serves until the next verified ready replaces it.
+    Owned { generation: EngineGeneration, serving: Serving },
+}
+
+/// What serves an owned endpoint.
+pub(super) enum Serving {
+    /// The last verified ready's install.
+    Install(OwnedInstall),
+    /// No launch of this core has verified ready yet: the pool entry the endpoint had before
+    /// (`Some(None)` latched unsupported, `None` never probed), whose residents a relaunch
+    /// still saves or records as discarded.
+    Before(Option<Option<Arc<KvSlotPool>>>),
 }
 
 /// An owned engine as `ready` installed it: its generation, the contract it launched with and
@@ -459,13 +482,50 @@ pub(super) struct OwnedInstall {
     pub(super) pool: Arc<KvSlotPool>,
 }
 
+impl Engine {
+    /// The pool entry this engine leaves to its successor's launch, as `Serving::Before` holds it.
+    fn into_entry(self) -> Option<Option<Arc<KvSlotPool>>> {
+        match self {
+            Engine::Unprobed => None,
+            Engine::Unsupported => Some(None),
+            Engine::Adopted(pool) => Some(Some(pool)),
+            Engine::Owned { serving: Serving::Install(install), .. } => Some(Some(install.pool)),
+            Engine::Owned { serving: Serving::Before(entry), .. } => entry,
+        }
+    }
+}
+
 impl EndpointState {
-    /// The pool entry serving this endpoint: the owned engine's, else the unowned one
-    /// (`Some(None)` latched unsupported, `None` never probed).
+    /// The latest engine generation this core started, if it launched one.
+    pub(super) fn generation(&self) -> Option<&EngineGeneration> {
+        match &self.engine {
+            Engine::Owned { generation, .. } => Some(generation),
+            _ => None,
+        }
+    }
+
+    /// The last verified owned install.
+    pub(super) fn owned(&self) -> Option<&OwnedInstall> {
+        match &self.engine {
+            Engine::Owned { serving: Serving::Install(install), .. } => Some(install),
+            _ => None,
+        }
+    }
+
+    /// The owned install of exactly `generation`, if that is what is installed.
+    pub(super) fn owned_by(&self, generation: Uuid) -> Option<&OwnedInstall> {
+        self.owned().filter(|install| install.generation == generation)
+    }
+
+    /// The pool entry serving this endpoint (`Some(None)` latched unsupported, `None` never
+    /// probed).
     pub(super) fn pool_entry(&self) -> Option<Option<&Arc<KvSlotPool>>> {
-        match &self.owned {
-            Some(owned) => Some(Some(&owned.pool)),
-            None => self.unowned_pool.as_ref().map(Option::as_ref),
+        match &self.engine {
+            Engine::Unprobed => None,
+            Engine::Unsupported => Some(None),
+            Engine::Adopted(pool) => Some(Some(pool)),
+            Engine::Owned { serving: Serving::Install(install), .. } => Some(Some(&install.pool)),
+            Engine::Owned { serving: Serving::Before(entry), .. } => entry.as_ref().map(Option::as_ref),
         }
     }
 
@@ -474,9 +534,27 @@ impl EndpointState {
         self.pool_entry().flatten()
     }
 
-    /// The owned install of exactly `generation`, if that is what is installed.
-    pub(super) fn owned_by(&self, generation: Uuid) -> Option<&OwnedInstall> {
-        self.owned.as_ref().filter(|owned| owned.generation == generation)
+    /// Start `generation`: what served before keeps serving until it is verified ready.
+    pub(super) fn start(&mut self, generation: EngineGeneration) {
+        let serving = match std::mem::replace(&mut self.engine, Engine::Unprobed) {
+            Engine::Owned { serving, .. } => serving,
+            previous => Serving::Before(previous.into_entry()),
+        };
+        self.engine = Engine::Owned { generation, serving };
+    }
+
+    /// Replace the serving pool entry, keeping any started generation: a test's stand-in for a
+    /// discovered or carried pool.
+    #[cfg(test)]
+    pub(super) fn set_pool_entry(&mut self, entry: Option<Option<Arc<KvSlotPool>>>) {
+        self.engine = match std::mem::replace(&mut self.engine, Engine::Unprobed) {
+            Engine::Owned { generation, .. } => Engine::Owned { generation, serving: Serving::Before(entry) },
+            _ => match entry {
+                None => Engine::Unprobed,
+                Some(None) => Engine::Unsupported,
+                Some(Some(pool)) => Engine::Adopted(pool),
+            },
+        };
     }
 }
 
@@ -537,13 +615,13 @@ impl EndpointSlots {
     /// The model this endpoint's engine was launched with, ready or not: a page switch in a
     /// relaunch's drain still waits on that engine's batches.
     pub(crate) fn launched_model(&self) -> Option<String> {
-        self.state.lock().owned.as_ref().map(|owned| owned.contract.model_id.clone())
+        self.state.lock().owned().map(|owned| owned.contract.model_id.clone())
     }
 
     pub fn served_geometry(&self) -> Option<crate::inference::served_window_store::ServedGeometry> {
         let state = self.state.lock();
-        let generation = state.generation.as_ref()?;
-        let contract = &state.owned.as_ref()?.contract;
+        let generation = state.generation()?;
+        let contract = &state.owned()?.contract;
         if generation.has_exited() || !*state.ready.borrow() || contract.context == 0 || contract.slots == 0 {
             return None;
         }
@@ -593,9 +671,7 @@ impl ResidentCheckpoint<'_> {
         }
         let state = self.transition.endpoint.state.lock();
         if state.paging_uncertain
-            || !state
-                .generation
-                .as_ref()
+            || !state.generation()
                 .is_some_and(|g| g.same_engine(expected))
             || !state
                 .owned_by(expected.id)
