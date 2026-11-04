@@ -165,9 +165,15 @@ impl CapacityReadiness {
             // grants watch in this process there is no such change to wait for, so that arm never
             // fires (a refused watch resolving at once would spin this loop; the turn's own
             // decide_window is where a missing watch is refused).
-            let grants_change = async {
-                if crate::capacity::mind_window::grants_changed().await.is_err() {
-                    std::future::pending::<()>().await;
+            // A mind on the shared pool's window is her grant: a NEWER grant is a capacity change.
+            // The waiter is taken before the check below and marks the current grants seen, so it
+            // parks on unchanged grants (a clone that did not spun this loop: 339% CPU on the M5).
+            // With no grants watch there is no such change, and the arm never fires.
+            let waiter = crate::capacity::mind_window::grants_waiter();
+            let grants_change = async move {
+                match waiter {
+                    Ok(waiter) if waiter.changed().await.is_ok() => {}
+                    _ => std::future::pending::<()>().await,
                 }
             };
             if self.changed() {

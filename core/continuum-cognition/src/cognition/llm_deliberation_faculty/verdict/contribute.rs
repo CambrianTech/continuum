@@ -55,7 +55,7 @@ impl LlmDeliberationFaculty {
                 );
                 let _measured = self.prompt_view_with_visual_feedback(ws, loaded.context_window, PromptCalibration::default(), None);
             },
-            crate::capacity::mind_window::grants_changed,
+            crate::capacity::mind_window::grants_waiter,
         )
         .await
         {
