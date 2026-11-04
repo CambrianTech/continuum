@@ -39,7 +39,7 @@ impl EngineGeneration {
 }
 
 impl EndpointSlots {
-    pub(super) fn quarantine_paging(&self) {
+    pub(crate) fn quarantine_paging(&self) {
         let mut state = self.state.lock();
         state.paging_uncertain = true;
         state.ready.send_replace(false);
@@ -528,6 +528,18 @@ impl EndpointTransition {
                 PageOutcome::Rejected => {
                     save.pending = false;
                     return Err(CheckpointFailure::Save(format!("checkpoint save rejected for slot {slot}")));
+                }
+                PageOutcome::Unresolved(unresolved) => {
+                    // The engine kept working without a receipt. This checkpoint's error does not
+                    // prove the engine is retired (Codex's follow-up on #5772), and the writer
+                    // cannot be handed to the request, so the save stays PENDING: its drop below
+                    // quarantines the endpoint, and no turn is admitted until a verified
+                    // replacement. The request itself stays owned by the endpoint until its
+                    // receipt. The page stays lost (noted above): no half-written restore.
+                    unresolved.hold(());
+                    return Err(CheckpointFailure::Save(format!(
+                        "checkpoint save unresolved for slot {slot}: the engine kept working without a receipt; endpoint quarantined"
+                    )));
                 }
                 PageOutcome::Uncertain => {
                     return Err(CheckpointFailure::Save(format!(
