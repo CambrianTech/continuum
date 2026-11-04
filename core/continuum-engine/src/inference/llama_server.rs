@@ -63,8 +63,8 @@ pub use reconcile::{ensure_model_serving, ensure_model_serving_if_current};
 
 mod smoke;
 use smoke::{
-    scratch_slot_for, smoke_attempt, smoke_seat, smoke_verdict, SmokeSeat, SmokeVerdict,
-    QUICK_SMOKE_BUDGET, THINKING_SMOKE_BUDGET,
+    scratch_slot_for, smoke_answer_tokens, smoke_attempt, smoke_attempt_verdict, smoke_seat,
+    smoke_verdict, SmokeCap, SmokeSeat, SmokeVerdict,
 };
 mod target;
 pub use target::{
