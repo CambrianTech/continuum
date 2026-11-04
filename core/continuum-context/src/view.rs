@@ -493,12 +493,12 @@ impl<T: Block> View<T> {
         self.epoch.id()
     }
 
-    /// Characters the whole view costs, superseded versions included.
     /// What the last append added, per source (sources that appended nothing are absent).
     pub fn last_advance_by_source(&self) -> &[SourceAdvance] {
         &self.last_by_source
     }
 
+    /// Characters the whole view costs, superseded versions included.
     pub fn chars(&self) -> usize {
         self.epoch.chars()
     }
