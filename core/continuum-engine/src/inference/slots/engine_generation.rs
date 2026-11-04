@@ -332,12 +332,14 @@ impl EndpointTransition {
         if !current() {
             return Err(AdoptedCheckpointRefusal::IntentChanged);
         }
-        // The save checks the engine between pages through the same verdict, as display text.
-        let verify_engine = || verify().map_err(|refusal| refusal.to_string());
+        // The save checks the engine between pages through the same typed verdict.
         let result = self
-            .checkpoint_pool(client, root, &pool, &verify_engine)
+            .checkpoint_pool(client, root, &pool, &verify)
             .await
-            .map_err(AdoptedCheckpointRefusal::Save);
+            .map_err(|failure| match failure {
+                CheckpointFailure::Engine(refusal) => refusal,
+                CheckpointFailure::Save(detail) => AdoptedCheckpointRefusal::Save(detail),
+            });
         if result.is_err() && current() && verify().is_ok() {
             // A terminal refusal did not mutate the engine. Only reopen this
             // exact pool; CheckpointSave quarantines cancellation/uncertainty.
@@ -468,11 +470,11 @@ impl EndpointTransition {
         };
         self.checkpoint_pool(client, root, &pool, &|| {
             if generation.has_exited() {
-                Err("checkpoint engine exited".into())
+                Err("checkpoint engine exited")
             } else {
                 Ok(())
             }
-        }).await?;
+        }).await.map_err(|failure| failure.to_string())?;
         Ok(ResidentCheckpoint {
             transition: self,
             generation,
@@ -483,17 +485,21 @@ impl EndpointTransition {
     /// One save path for a drained pool. The caller supplies its existing engine
     /// authority: an owned generation or a verified adopted process incarnation.
     /// Losing that authority cannot publish a successful save for its successor.
-    async fn checkpoint_pool(
+    async fn checkpoint_pool<E>(
         &mut self,
         client: &reqwest::Client,
         root: &str,
         pool: &Arc<KvSlotPool>,
-        verify_engine: &(dyn Fn() -> Result<(), String> + Send + Sync),
-    ) -> Result<(), String> {
+        verify_engine: &(dyn Fn() -> Result<(), E> + Send + Sync),
+    ) -> Result<(), CheckpointFailure<E>> {
         use super::super::turn_admission::{kv_page_action, PageOutcome};
 
+        let verify_engine = || verify_engine().map_err(CheckpointFailure::Engine);
         verify_engine()?;
-        directory().discover_page_admission(client, root).await?;
+        directory()
+            .discover_page_admission(client, root)
+            .await
+            .map_err(CheckpointFailure::Save)?;
         let mut residents: Vec<_> = pool
             .holders
             .lock()
@@ -516,10 +522,12 @@ impl EndpointTransition {
                 }
                 PageOutcome::Rejected => {
                     save.pending = false;
-                    return Err(format!("checkpoint save rejected for slot {slot}"));
+                    return Err(CheckpointFailure::Save(format!("checkpoint save rejected for slot {slot}")));
                 }
                 PageOutcome::Uncertain => {
-                    return Err(format!("checkpoint save completion uncertain for slot {slot}; endpoint quarantined"));
+                    return Err(CheckpointFailure::Save(format!(
+                        "checkpoint save completion uncertain for slot {slot}; endpoint quarantined"
+                    )));
                 }
             }
         }
@@ -837,4 +845,20 @@ pub fn directory() -> &'static SlotDirectory {
     DIR.get_or_init(|| SlotDirectory {
         endpoints: dashmap::DashMap::new(),
     })
+}
+
+/// Why one drained pool's save stopped: its caller's own engine check refused (kept as the
+/// caller's type, so an adopted engine's `EngineGone` stays that variant), or the save failed.
+enum CheckpointFailure<E> {
+    Engine(E),
+    Save(String),
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for CheckpointFailure<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Engine(refusal) => refusal.fmt(f),
+            Self::Save(detail) => f.write_str(detail),
+        }
+    }
 }
