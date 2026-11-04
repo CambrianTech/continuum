@@ -31,12 +31,15 @@ fn trailing_ident(code: &str) -> &str {
     &code[start..]
 }
 
-/// Whether `code` decides on an error's text.
+/// Whether `code` decides on an error's text: a text predicate on an error-like value, directly or
+/// on its rendering (`err.to_string().contains(..)`). An id or a path rendered to text is data,
+/// so `.to_string()` alone is not the signal (Cormac on #5760: `id_resolve.rs:147`'s uuid prefix).
 pub fn matches_error_text(code: &str) -> bool {
     PREDICATES.iter().any(|predicate| {
         code.match_indices(predicate).any(|(at, _)| {
             let before = &code[..at];
-            before.ends_with(".to_string()") || ERROR_LIKE.contains(&trailing_ident(before))
+            let receiver = before.strip_suffix(".to_string()").unwrap_or(before); // unwrap_or: no rendering, the receiver is the value itself
+            ERROR_LIKE.contains(&trailing_ident(receiver))
         })
     })
 }
@@ -89,5 +92,10 @@ mod tests {
         assert!(matches_error_text(r#"stderr.starts_with("fatal")"#));
         assert!(!matches_error_text(r#"if names.contains(&name) {"#), "a collection is data");
         assert!(!matches_error_text(r#"if path.starts_with(root) {"#), "a path is data");
+        assert!(
+            !matches_error_text(r#".filter(|id| id.simple().to_string().starts_with(needle))"#),
+            "an id rendered to text is data (id_resolve.rs:147)"
+        );
+        assert!(matches_error_text(r#"error.to_string().ends_with("timed out")"#));
     }
 }
