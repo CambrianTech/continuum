@@ -1,10 +1,13 @@
-//! Her held work as keyed items (STATE-DRIVEN-SURFACE.md): one item per card she holds, its
-//! occurrence named by the card AND its state, so the item changes only on a transition and an
-//! unchanged board appends nothing. Each says what the card is, her role on it, its state, the
-//! one fact about its submission she needs, and the moves its state gives her (the same table
-//! her tool surface reads, `card_moves`). A claim that ended and a rejected claim are their own
-//! items. Replaces the `active-work` grounding block, which re-rendered every card as one
-//! blob whenever any of them changed.
+//! Her held work as keyed items (STATE-DRIVEN-SURFACE.md): one item per card she holds, keyed by
+//! the card. Its OCCURRENCE is the producer's revision of what she is shown, the same contract
+//! every source here keeps (an act's `seq`, an open view's `touched_seq`, a task's terminal state):
+//! the state entry it belongs to (`Held::entered_ms`, so Review, InProgress, Review again is three
+//! occurrences, never a reused old one) and the content of the rendered projection (title, her
+//! stance among several claims, her submission or its refusal, what she has in hand), never a
+//! heartbeat, which changes none of it. So an unchanged card appends nothing act after act, and any
+//! change she should see appends once. A claim that ended and a rejected claim are their own
+//! items. Replaces the `active-work` grounding block, which re-rendered every card as one blob
+//! whenever any of them changed.
 
 use airc_core::shown_id::shown_form;
 use continuum_context::cause::{Cause, ElementId, Origin};
@@ -12,14 +15,14 @@ use continuum_context::source::{Item, Source};
 
 use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::card_facts::state_str;
-use crate::cognition::card_moves::{CardRole, Held, Moves, NoMove};
+use crate::cognition::work_preconditions::{CardRole, Held};
 use crate::cognition::workspace::{EndedClaim, HeldWork};
 
-/// The one mapping from a held card's state to the occurrence her view renders: a transition is
-/// a new occurrence, an unchanged state the same one.
-pub(crate) fn held_card_element(persona: uuid::Uuid, held: &Held) -> ElementId {
+/// The occurrence of a held card's rendering: its card, the state entry it belongs to, and the
+/// rendered projection itself (`whole`).
+pub(crate) fn held_card_element(persona: uuid::Uuid, held: &Held, whole: &str) -> ElementId {
     let card = held.card.card_id.as_uuid();
-    element(persona, Producer::Work, &[card.as_bytes().as_slice(), state_str(&held.card.state).as_bytes()].concat())
+    element(persona, Producer::Work, &[card.as_bytes().as_slice(), &held.entered_ms.to_be_bytes(), whole.as_bytes()].concat())
 }
 
 #[derive(Default)]
@@ -45,19 +48,15 @@ impl HeldWorkStream {
             " (held)"
         };
         let state = state_str(&card.state);
-        // Some moves, or the typed reason there are none (`card_moves::Moves`).
-        let can = match &held.moves {
-            Moves::Some(_) => held.moves.commands().collect::<Vec<_>>().join(", "),
-            Moves::None(NoMove::Held { by }) => format!("nothing: peer {} holds it", shown_form(by.as_uuid())),
-            Moves::None(NoMove::Ended(ended)) => format!("nothing: it is {}", state_str(ended)),
-        };
+        // The verbs whose preconditions hold on this card, with what they grant (`in_hand`).
+        let can = held.in_hand.join(", ");
         let head = format!("[my work] card {id} \"{}\": {role}, {state}{stance}", card.title);
         let mut lines = vec![head];
         lines.extend(submission_fact(held));
         lines.push(format!("you can: {can}"));
         let whole = lines.join("\n");
         let pointer = format!("[my work] card {id} \"{}\" {state}: you can {can}", card.title);
-        Item::whole(held_card_element(self.persona, held), Cause::Root(Origin::ActivityStart), card.card_id.as_uuid().to_string(), ContextMessage::user(whole))
+        Item::whole(held_card_element(self.persona, held, &whole), Cause::Root(Origin::ActivityStart), card.card_id.as_uuid().to_string(), ContextMessage::user(whole))
             .with_pointer(ContextMessage::user(pointer))
     }
 
@@ -117,43 +116,91 @@ impl Source<ContextMessage> for HeldWorkStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use airc_work::{CardState, WorkCard, WorkCardId};
+    use airc_work::{CardState, WorkCardId};
     use continuum_context::epoch::Block;
+    use continuum_context::view::{Advance, Claim, GrantMismatch, View};
+    use crate::cognition::work_preconditions::{fixture_card, FIXTURE_NOW_MS};
 
     fn her() -> airc_core::PeerId {
         airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(1))
     }
 
-    fn card(state: CardState, reviews: Option<WorkCardId>) -> WorkCard {
-        crate::cognition::card_moves::fixture_card(state, Some(her()), reviews, "review the parent")
+    /// Her card `id` in `state`, entered at `entered`, reviewing `reviews` when it is a review card.
+    fn held(id: u128, state: CardState, reviews: Option<WorkCardId>, entered: u64) -> Held {
+        let mut card = fixture_card(state, Some(her()), reviews, "fix the thing");
+        card.card_id = WorkCardId::from_u128(id);
+        Held::of(card, her(), FIXTURE_NOW_MS, entered).expect("she owns the fixture") // expect: the fixture names her owner
     }
 
-    fn stream(cards: Vec<WorkCard>) -> HeldWorkStream {
-        let holds = cards.into_iter().filter_map(|card| Held::of(card, her())).collect();
-        HeldWorkStream { persona: uuid::Uuid::from_u128(7), work: std::sync::Arc::new(HeldWork { holds, ..Default::default() }) }
+    fn stream(holds: Vec<Held>, selected: Option<u128>) -> HeldWorkStream {
+        let work = HeldWork { holds, selected: selected.map(WorkCardId::from_u128), ..Default::default() };
+        HeldWorkStream { persona: uuid::Uuid::from_u128(7), work: std::sync::Arc::new(work) }
+    }
+
+    fn whole(claims: &[Claim]) -> Vec<usize> {
+        claims.iter().map(|claim| claim.full_chars).collect()
+    }
+
+    /// The occurrence her view shows last.
+    fn newest(view: &View<ContextMessage>) -> Option<ElementId> {
+        view.receipt().items.last().and_then(|shown| shown.element)
     }
 
     // what this catches: Benchy and Atlas on the M5, 2026-11-04, learning where they stood by
-    // trial (work/list 6 times, work/submit 5 times on a review card). Her held card says her role,
-    // its state and what she can do, the reviewer's verdict verb included; an unchanged state is
-    // the same occurrence act after act (nothing appended, the prefix kept), and a transition is a
-    // new one (one append). Collapsed to its pointer, the card still names her moves.
+    // trial. Her held review card says her role, its state and what she has in hand (the verdict
+    // verb, the parent's submission, the code hands to test it, never submit), and collapsed to
+    // its pointer it still says what she can do.
     #[test]
-    fn a_held_card_says_her_moves_and_changes_only_on_a_transition() {
-        let parent = WorkCardId::from_u128(0xabcd);
-        let claimed = stream(vec![card(CardState::Claimed, Some(parent))]).items();
-        assert_eq!(claimed.len(), 1);
-        let text = claimed[0].full().text();
-        assert!(text.contains("you review card") && text.contains("work/review") && text.contains("work/submission"), "{text}");
+    fn a_held_card_says_what_she_has_in_hand() {
+        let items = stream(vec![held(1, CardState::Claimed, Some(WorkCardId::from_u128(0xabcd)), 10)], None).items();
+        let text = items[0].full().text();
+        for wanted in ["you review card", "work/review", "work/submission", "code/**"] {
+            assert!(text.contains(wanted), "{wanted}: {text}");
+        }
         assert!(!text.contains("work/submit,") && !text.ends_with("work/submit"), "a reviewer never submits: {text}");
-        assert!(claimed[0].pointer().is_some_and(|p| p.text().contains("work/review")), "collapsed, her card still says what she can do");
-        let again = stream(vec![card(CardState::Claimed, Some(parent))]).items();
-        assert_eq!((claimed[0].id(), claimed[0].full()), (again[0].id(), again[0].full()), "an unchanged state is byte-identical");
-        let reviewed = stream(vec![card(CardState::Review, Some(parent))]).items();
-        assert_eq!(claimed[0].key(), reviewed[0].key(), "the same card is the same subject");
-        assert_ne!(claimed[0].id(), reviewed[0].id(), "a transition is a new occurrence");
-        assert!(!reviewed[0].full().text().contains("work/review"), "{}", reviewed[0].full().text());
-        let code = stream(vec![card(CardState::InProgress, None)]).items();
-        assert!(code[0].full().text().contains("code/**") && code[0].full().text().contains("work/submit"), "{}", code[0].full().text());
+        assert!(items[0].pointer().is_some_and(|p| p.text().contains("work/review")), "collapsed, she still sees her moves");
+    }
+
+    // what this catches (Codex on the occurrence contract): an occurrence keyed by card and state
+    // alone, so a change she should see within one state (a refused submission, the selected
+    // claim switching) either never reaches her or reuses an old occurrence, and Review,
+    // InProgress, Review again resolves to the first Review's occurrence. Through the real view:
+    // an unchanged card or a heartbeat appends nothing; each change appends once; a re-entry is a
+    // fresh occurrence.
+    #[test]
+    fn through_her_view_a_card_appends_once_per_change_and_a_reentry_is_a_new_occurrence() -> Result<(), GrantMismatch> {
+        let first = stream(vec![held(1, CardState::InProgress, None, 10)], None);
+        let (mut view, _) = View::start(Vec::new(), &[&first], whole)?;
+        let shown = newest(&view);
+        assert_eq!(view.advance(&[&first]), Advance::default(), "unchanged: nothing appended");
+        let mut beat = held(1, CardState::InProgress, None, 10);
+        beat.card.last_heartbeat_at_ms = Some(FIXTURE_NOW_MS);
+        beat.card.updated_at_ms = FIXTURE_NOW_MS;
+        assert_eq!(view.advance(&[&stream(vec![beat], None)]), Advance::default(), "a heartbeat changes nothing she reads");
+        let mut refused = held(1, CardState::InProgress, None, 10);
+        refused.card.last_submission_rejection = Some(airc_work::RejectedSubmission {
+            submission_id: airc_work::SubmissionId::from_u128(3),
+            card_id: WorkCardId::from_u128(1),
+            publisher: her(),
+            submitted_at_ms: 5,
+            reason: airc_work::SubmissionRejectionReason::WrongClaim,
+        });
+        let refused = stream(vec![refused], None);
+        assert_eq!(view.advance(&[&refused]).items, 1, "a refusal in the same state appends once");
+        assert_ne!(newest(&view), shown, "as a new occurrence");
+        assert_eq!(view.advance(&[&refused]), Advance::default(), "and once only");
+
+        let two = |selected| stream(vec![held(1, CardState::InProgress, None, 10), held(2, CardState::Claimed, None, 11)], Some(selected));
+        let (mut view, _) = View::start(Vec::new(), &[&two(1)], whole)?;
+        assert_eq!(view.advance(&[&two(2)]).items, 2, "a selection switch re-renders both cards' stance, once each");
+        assert_eq!(view.advance(&[&two(2)]), Advance::default());
+
+        let at = |state, entered| stream(vec![held(1, state, None, entered)], None);
+        let (mut view, _) = View::start(Vec::new(), &[&at(CardState::Review, 20)], whole)?;
+        let review = newest(&view);
+        view.advance(&[&at(CardState::InProgress, 30)]);
+        view.advance(&[&at(CardState::Review, 40)]);
+        assert_ne!(newest(&view), review, "Review entered again is a fresh occurrence, never the old one");
+        Ok(())
     }
 }

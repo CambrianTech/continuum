@@ -43,6 +43,27 @@ use crate::persona::work_board::advance::*;
 use crate::persona::work_board::events::*;
 use crate::cognition::card_facts::*;
 use crate::persona::work_board::horizon::*;
+use crate::cognition::work_preconditions;
+
+/// A verb's precondition refused at the mutation boundary (`work_preconditions::decide`), as the
+/// command's error: the card held by another is a denial, every other unmet precondition an invalid
+/// request; the words carry the typed reason, the card now and her moves now.
+pub(crate) fn refused(refusal: work_preconditions::Refusal) -> CommandError {
+    use work_preconditions::Unmet;
+    match refusal.unmet {
+        Unmet::HeldBy(_) => CommandError::Denied(refusal.to_string()),
+        Unmet::NotHeld
+        | Unmet::Settled(_)
+        | Unmet::Ended(_)
+        | Unmet::ReviewCard { .. }
+        | Unmet::NotAReviewCard
+        | Unmet::ReviewsAnother { .. }
+        | Unmet::NoSubmission
+        | Unmet::OpenByHolder
+        | Unmet::StaleClaim { .. }
+        | Unmet::StaleRevision { .. } => CommandError::Invalid(refusal.to_string()),
+    }
+}
 
 mod work_card_state_changed;
 pub use work_card_state_changed::*;

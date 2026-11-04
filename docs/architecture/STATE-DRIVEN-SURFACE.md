@@ -1,8 +1,9 @@
 # The surface follows her activity's state
 
-Status: slice 1 written (Fable, 2026-11-04, branch `fable/state-driven-surface`); compile and
-live receipts pending. It serves plan goal 10 (tools are working sets) keyed by state, and
-order-of-work line 2 (her context is an epoch of keyed items).
+Status: slice 1 written (Fable, 2026-11-04, branch `fable/state-driven-surface`), reworked after
+reviews by Cormac and Codex. Compile and live receipts are pending. It serves plan goal 10 (tools
+are working sets) keyed by state, and order-of-work line 2 (her context is an epoch of keyed
+items).
 
 ## The failure class
 
@@ -17,138 +18,140 @@ trial, one act per guess, at 2-5 minutes an act on the M5. Receipts from 2026-11
   line inside an `[active-work]` grounding blob that re-rendered whenever any card changed.
 
 Under both sits one gap. airc-work has states (`CardState`) and no transition table:
-`apply_card_state_changed` (airc-work `projection/apply.rs:437`) accepts any state from any
-state. Each verb checks its own preconditions, so the only way to learn which verb applies was to
-call it and read the refusal.
+`apply_card_state_changed` (airc-work `projection/apply.rs:437`) accepts any state from any state.
+Each verb checked its own preconditions inline in its handler, so the only way to learn which verb
+applied was to call it and read the refusal.
 
-## The five pieces and their owners
+## The rule: each verb's precondition is the one owner
 
-| # | Piece | Owner | Where |
-|---|---|---|---|
-| 1 | One owner of "what moves a holder has in each state" (the transition table) | Fable | `continuum-rooms/src/card_moves.rs` |
-| 2 | The surface: the room's declared set UNION the held moves of every card she holds | Fable | `continuum-cognition/src/cognition/tool_surface.rs` (`ToolSurface::activity`) |
-| 3 | Her state as keyed items: one item per held card, its occurrence named by (card, state) | Fable | `continuum-cognition/src/cognition/context_streams/held_work.rs` |
-| 4 | A refusal names her next moves as typed data (card 9bba067f); repetition as perception on `persona.settle.repetition_observed` (card e03c2aa0); Shown ids everywhere plus their ratchet (card 484b000b) | Cormac | command executor refusal rendering, settle, id parsing |
-| 5 | Engine speed, so a wrong guess costs seconds rather than minutes | Codex | serving |
+Each work verb declares its PRECONDITION as a typed, pure predicate over the card and the actor
+(`continuum-rooms/src/work_preconditions.rs`). The verb's handler calls it before it executes, and
+everything that tells her what she can do calls the same function. There is no separate table of
+moves, so what she is shown cannot drift from what executes.
 
-Pieces 1-3 land in this slice. Piece 4 is Cormac's and stays out of this slice: no edit here
-touches the executor's refusal rendering or id parsing. Retrieval by state (paging a card's
-ledger and submission into her view when its state asks for them) is Fable's next slice.
+| Verb | Precondition | Unmet (typed) |
+|---|---|---|
+| `work/claim` | not Review/Merged/Closed; nobody else's claim stands (a live lease, or a claim on record, which airc keeps its holder's while she is away, `apply.rs:285-300`); her own claim resumes; an unowned card in any working column is claimable | `Settled(state)`, `HeldBy(peer)` |
+| `work/submit` | not Merged/Closed; not a review card; she holds it; a claim she names is the card's claim now; a stated revision is the card's revision now. **Review is allowed**: a revised candidate publishes there | `Ended`, `ReviewCard { parent }`, `HeldBy`, `NotHeld`, `StaleClaim { current }`, `StaleRevision { current }` |
+| `work/review` | the card reviews something (the parent she names, if she names one); she holds it, unless she states the review claim (out of band) | `NotAReviewCard`, `ReviewsAnother { reviews }`, `HeldBy`, `NotHeld` |
+| `work/state` | a holder never opens her own card; claimed/in_progress go through the claim path; her own live review returns to in_progress for a revision. Returns the route (`Direct`, `ThroughClaim`, `ResumeReview`) | `OpenByHolder`, the claim's |
+| `work/heartbeat`, `work/release` | she holds it | `HeldBy`, `NotHeld` |
+| `work/submission` | the card carries a submission | `NoSubmission` |
+| `work/note` | none: any card on a board she stands in takes a ledger note | |
 
-## 1. The transition table
+Holding a precondition can grant more than the verb itself (`WorkVerb::grants`). Submit grants
+`code/**`, because an author edits her checkout. Review grants `code/**` and `work/submission`: a
+reviewer reads the parent's submission and runs its tests in the checkout under review, whatever
+the room's recipe declares.
 
-The table is data: `card_moves::moves_in(CardRole, CardState, Stance) -> Moves`, pure, matching
-all three enums with no wildcard, so a new state, role or stance is a compile error.
-`moves_for(card, actor)` reads the role from the card's typed link (`reviews: Some(parent)` is
-`CardRole::Review { parent }`) and the stance from its owner (`Holder`, `Unheld`,
-`HeldBy(peer)`). The result is `Moves::Some(MoveSet) | Moves::None(NoMove)`. `MoveSet` is
-non-empty by construction, so a bare empty list is unrepresentable, and a refusal always carries
-moves or a typed reason (`NoMove::Held { by }`, `NoMove::Ended(state)`): the shape Cormac's refusal
-ratchet reads. Her surface reads the same function through `Held` (her own cards). There is one
-table and no holder-only copy. `Move::command()` is the only place these command names are
-spelled. A test in `continuum-mind/src/work/tests` pins each name to the command's own
-`ActionCommand::NAME`, and pins `code/**` to a registered `code/` command (`code/run`).
+**One function, two forms.** Discoverability calls a precondition with `Request::any(at_ms)` (her
+own claim, no stated revision). Execution calls it with the arguments she passed: the claim she
+names, the revision she saw, the state she asks for.
 
-| Stance, role, state | Moves |
-|---|---|
-| holder, code, Claimed / InProgress | `code/**`, `work/submit`, `work/note`, `work/state`, `work/release`, `work/heartbeat` |
-| holder, code, Blocked | `work/note`, `work/state`, `work/release` |
-| holder, code, Review | `work/submission`, `work/note`, `work/state` |
-| holder, review, Claimed / InProgress | `work/submission`, `work/review`, `work/note`, `work/release`, `work/heartbeat` |
-| holder, review, Blocked | `work/note`, `work/state`, `work/release` |
-| holder, review, Review | `work/submission`, `work/note` |
-| anyone, Open | `work/claim` (an owner left on an Open card is stale) |
-| anyone, Merged / Closed | none: `Ended(state)` |
-| another holds it, Claimed / InProgress / Blocked | none: `Held { by }` |
-| nobody holds it, Claimed / InProgress / Blocked | `work/claim` |
-| not hers, Review | none: `Ended(Review)` until its verdict |
+**Revalidated at the mutation boundary.** A handler decides against the card as the board holds it
+at execution, never the snapshot she acted from. `work_preconditions::decide` turns an unmet
+precondition into a `Refusal`. The refusal carries the typed reason, the card now (state, owner,
+claim, revision) and her moves on it now. Cormac's typed refusal (card 9bba067f) reads this.
 
-Where the verbs differ from a first guess (each row was read off its verb in
-`continuum-mind/src/work/`):
+**Deterministic.** A precondition reads the time it is given (`at_ms`, the time the mutation's
+event will record), never the wall clock. Lease expiry compares against that time, so replaying
+recorded inputs replays the decision.
 
-- **A code card in Review has `work/state`.** `work/state in_progress` resumes the owner's own
-  review for a revision (`resumes_held_review`), which brings her hands and `work/submit` back.
-  Without it she has no way out of Review.
-- **`work/submit` is not offered in Review, although the verb accepts it.** airc-work's
-  `validate_for_card` refuses only Merged and Closed, so a corrected candidate can be published
-  in Review. Without a change, though, the submit is refused as the same patch, which is the loop
-  Benchy ran. Revising goes through `work/state` instead.
-- **`work/heartbeat` is not offered in Blocked.** The runtime's heartbeat pump renews her live
-  claims on the presence cadence, so a blocked card keeps its lease without the verb.
-- **`work/submission` reads the parent's submission for a reviewer.** The submission lives on the
-  parent card, so the reviewer's item names the parent's shown id.
+**Placement.** The predicates live in continuum-rooms, beside `card_facts` and `card_holder`, so
+cognition (the surface) and mind (the handlers) both read them. Cormac moves them into airc-work
+with the board's transition rules after this merges.
 
-**Follow-up (Fable, after this slice merges):** move the table down into airc-work as the board's
-own transition table. Then `apply_card_state_changed` refuses a transition no row allows, and
-every board client reads one owner.
+**Handler checks moved here** (before this slice):
 
-## 2. The surface
+- **submit:** the holder and not-claimed checks (`next_after_submission.rs:50-72`) and
+  `holder_guard` (`latest_submission.rs:438-461`, deleted) now go through `submit`.
+- **review:** "it reviews nothing", "held by another" and "not the named parent"
+  (`next_after_submission.rs:493-516`) now go through `review`.
+- **state:** the open-by-holder refusal and the review resume (`work_create.rs:203-235`;
+  `resumes_held_review` moved from `work_list.rs:46`) now go through `state`.
+- **claim:** the holder rule `live_holder` (`work_list.rs:31`, deleted) is now `holder_on_record`,
+  and `work/claim` checks `claim` before publishing.
 
-The cycle reads her held work once per tick through the `held_work` extension slot, which mind
-fills from `persona::held_work::read`, her own `active_claims`. It carries the result on the
-workspace as `Workspace::held` (`HeldWork`). `ToolSurface::activity(declared, held)` computes:
+## Identical submissions are answered at submission identity
 
-- the room's declared verbs with every `Always` verb, else her core hands;
-- plus every verb in her hands that a held move names (`code/**` selects the subtree), whatever
-  the verb declares about her prompt. An `OnDemand` verb is in hand while her card's state needs
-  it; a `Withheld` verb never joins;
-- in one canonical order, priced once in her claim (`claim_tokens`, `claim_with_head`), and
-  selected by `select_granted`.
+The same submission (same publisher, the same patch content hash, on the same base, for the same
+instance) is answered as success, `outcome: AlreadySubmitted`, naming the existing submission and
+what became of it. A changed patch, or the same patch on a new base, is a new submission and
+publishes, in Review too. The loop Benchy ran ends with information instead of a refusal.
 
-`ToolsEpoch` holds the selected set across her view's turnovers. It now also records the moves it
-was selected for, and drops the held set when they change (`delib.tools.epoch_moves_changed`).
-A card's transition is one new epoch of her hands, one cached prefix. A transition that keeps her
-moves (Claimed to InProgress) changes nothing, and an unchanged board sends the same bytes every
-act.
+## The surface
 
-## 3. Her state as keyed items
+The cycle reads her held work once per tick through the `held_work` extension slot, filled by
+mind's `persona::held_work::read` from her own `active_claims`. It stores the result on
+`Workspace::held`. For each held card, `Held::in_hand` holds the verbs whose precondition holds,
+with what they grant. `ToolSurface::activity` (`tool_surface.rs`) is the room's declared verbs (or
+her core hands) UNION every in-hands verb those commands and subtrees name, in canonical order. A
+verb declared `OnDemand` joins while her card needs it; a `Withheld` verb never does.
 
-`HeldWorkStream` is a native `continuum_context::Source`, named `held-work`, at grounding
-priority, ordered after the settled blocks (where `active-work` used to sort). It produces:
+`ToolsEpoch` records the commands its set was selected for and re-selects only when they change
+(`delib.tools.epoch_moves_changed`). A change in what she has in hand is one new cached prefix.
+Unchanged cards send the same bytes every act.
 
-- one item per held card. Its key is the card; its occurrence is (card, state), so the item
-  changes only on a transition. Whole: `[my work] card <shown> "<title>": <your work | you
-  review card <shown parent>>, <state>`, then the one submission fact she needs (the parent's
-  submission for a reviewer, her latest submission, or why the board refused her last one),
-  then `you can: <moves>`. Pointer: the card, its state and its moves, so a collapsed card
-  still says what she can do;
-- an ended claim (lease lapsed or released), keyed `ended:<card>`, delivered on the one read
-  that sees it end. A degraded read never reports one;
-- a rejected claim, from the `claim_rejections` ring.
+## Her state as keyed items
 
-Ids render through `airc_core::shown_id::shown_form`. The faculty's working-presence and
-lane-gate predicates now read the typed `HeldWork` (`holds_in_progress`,
-`holds_a_working_card`) instead of grepping `[InProgress]` out of rendered text.
+`HeldWorkStream` (`context_streams/held_work.rs`) is a native `continuum_context::Source` named
+`held-work`. It renders one item per held card, keyed by the card.
 
-**Deleted:** `ActiveWorkSource` (the RagSource), its grounding registration, the
-`faculty_ids::ACTIVE_WORK` id with its two text-grepping predicates, and the `active-work`
-special cases in the legacy enrichment walk (`prompt/view.rs`, `prompt/system.rs`).
-`AircWorkReader` moved to `persona::held_work`. Prompt text that pointed at `[active-work]`
-now points at `[my work]`.
+Its OCCURRENCE follows the producer-revision contract the other sources keep (an act's `seq`, an
+open view's `touched_seq`). It is made of the card, the state entry, and the rendered projection's
+content:
 
-**Left dead, with an owner (Fable, next slice):** `burst_fingerprint` and
-`build_workspace_turns` still read an `active-work` delivery that `compose_for_turn` never
-carried in production (it binds only airc and roster). The next slice folds her held cards'
-states into the fingerprint from `persona::held_work` and deletes both branches with their tests.
+- **State entry:** `Held::entered_ms` is the board's revision at the first read that saw the card
+  in its current state. It holds through heartbeats and is new on each re-entry, so Review,
+  InProgress, Review again is three occurrences.
+- **Content:** the title, her stance among several claims, her submission or its refusal, and what
+  she has in hand. A change to any of these appends once. A heartbeat changes none of them, so it
+  appends nothing.
 
-## Ratchets each piece adds
+Ended and rejected claims are their own items. The pointer keeps "you can: ...", so a collapsed
+card still says what she can do.
 
-- **Table:** exhaustive matches (compile time). A test walks every role and state for a
-  defined, canonically ordered row. Another pins every move's name to a registered command.
-- **Surface:** a held review card's verdict verb is in hand in every room, with the claim priced
-  as sent. The bytes are unchanged while her moves are, and change once when they do.
-- **Item:** an unchanged state is the same occurrence with the same bytes; a transition is a new
-  occurrence under the same key; the pointer keeps her moves.
-- **Existing ratchets kept:** `prompt_messages_outside_the_view`, `collapse_outside_the_view`
-  and `hand_churn_labels` (the item is a Source; nothing is pushed by hand), plus
-  `unwrap_justification` and `file_size` (no touched file passes 1,000 lines).
+**Deleted:**
+- `ActiveWorkSource` and its grounding registration;
+- the `[InProgress]` text predicates (now typed reads of `HeldWork`);
+- the `active-work` special cases in the legacy enrichment walk;
+- the separate move table from the first draft (`card_moves`).
+
+**Left dead, with an owner (Fable, next slice):** `burst_fingerprint` and `build_workspace_turns`
+read an `active-work` delivery that `compose_for_turn` never carries in production. Next: fold her
+held cards' states in from `persona::held_work`, and delete both branches.
+
+**Finding for Cormac:** `card_holder::claimable_now` still advertises a lapsed claim by another as
+takeable (#321). Since `TAKEOVER_ON_RECORD_SINCE_MS` the projection ignores that claim, so the board
+over-advertises it. The claim precondition is the truth. `claimable_now` should call it when the
+rules move into airc-work.
+
+## Owners
+
+Fable owns the surface, the state item and retrieval by state. Cormac owns the typed refusal with
+next moves (card 9bba067f), repetition as perception on `persona.settle.repetition_observed` (card
+e03c2aa0), and Shown ids plus their ratchet (card 484b000b). Codex owns engine speed.
+
+## Ratchets
+
+- Every verb, state and actor has a defined answer in canonical order. Every precondition rule has
+  a case. Every verb's name, and every subtree a verb grants, is pinned to a registered command.
+- The unowned-InProgress claim is proven through the real airc projection.
+- A stale claim or revision is refused with the refreshed card and her moves now. A changed patch
+  in Review submits; an identical one returns `AlreadySubmitted`.
+- Through the real view: an unchanged card or a heartbeat appends nothing; a same-state refusal or
+  a selection switch appends once; a re-entry is a new occurrence.
+- Kept: `prompt_messages_outside_the_view`, `collapse_outside_the_view`, `hand_churn_labels`,
+  `unwrap_justification`, `file_size`.
 
 ## Receipts owed
 
 - `cargo check` and the touched tests on a non-serving executor. This slice was written with
-  serving up and has not been compiled.
-- The live read after deploy (owner Fable, within the 15-minute window of the deploy that
-  carries it), on the M5: for each resident, `commands/help`, `work/list` and refused `work/*`
-  calls per hour, against the 2026-11-04 baseline above; `delib.tools.epoch_moves_changed`
-  counted against card transitions (one per transition that changes moves, none otherwise); and
-  prefix reuse unchanged or better.
+  serving up and has not been compiled. The ts-rs bindings for `SubmitOutcome` and
+  `WorkSubmitResult` were hand-edited and must be regenerated.
+- Command-boundary tests through the real handlers on an airc fixture. The decisions are tested at
+  the boundary function (`decide`), not yet through `WorkSubmit::run`.
+- The live read after deploy (Fable, within the deploy's 15-minute window), on the M5, per
+  resident: `commands/help`, `work/list` and refused `work/*` calls per hour, against the
+  2026-11-04 baseline; `delib.tools.epoch_moves_changed` per card transition; prefix reuse
+  unchanged or better.

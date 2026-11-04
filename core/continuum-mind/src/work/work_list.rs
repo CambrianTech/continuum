@@ -12,53 +12,9 @@ use super::*;
 // write-only surface eventually proves it needs its read half.
 /// The board's displayed 8-char short form of an id — what every surface
 /// shows and what the lifecycle verbs accept back.
-/// The peer genuinely ON this card right now, or `None`.
-///
-/// The one question `work/claim`'s error path is allowed to ask before it tells
-/// a citizen someone else has her card. It is NOT `card.owner`: expiry never
-/// clears owner/claim_id (airc-work's projection clears them only on release or
-/// on a new claim), so a card claimed once carries an owner forever. Keying off
-/// the bare field relabelled EVERY refusal — settled work, wrong-room, transport
-/// faults — as "held by peer X", and `claim_rejections::record` then burned that
-/// fabrication into perception for ten minutes.
-///
-/// Named and separated from the call site so the rule can be tested without a
-/// board, an airc daemon, or a running persona — the call site is where this
-/// went wrong, and an inline `match` is not something a test can reach.
-///
-/// Uses the shared claimability-state and lease predicates. A settled card's
-/// retained lease must not override its original claim refusal.
-pub(super) fn live_holder(card: &airc_work::WorkCard, now_ms: u64) -> Option<airc_core::PeerId> {
-    // A retained lease on settled work is not claim contention. Otherwise a
-    // refused re-claim becomes AlreadyYours and select_work_claim replaces the
-    // useful settled-state refusal with WorkClaimNotCurrent (Kimi, 2026-09-30).
-    if crate::cognition::card_holder::refused_by_claim(card.state) {
-        return None;
-    }
-    match crate::cognition::card_holder::hold_of(card, now_ms) {
-        crate::cognition::card_holder::Hold::Held => card.owner,
-        // Lapsed or unclaimed: whatever refused the claim, it was not a person.
-        crate::cognition::card_holder::Hold::Lapsed
-        | crate::cognition::card_holder::Hold::Unclaimed => None,
-    }
-}
-
-pub(super) fn resumes_held_review(
-    card: &airc_work::WorkCard,
-    requested: CardState,
-    caller: airc_core::PeerId,
-    now_ms: u64,
-) -> bool {
-    requested == CardState::InProgress
-        && card.state == CardState::Review
-        && card.owner == Some(caller)
-        && crate::cognition::card_holder::hold_of(card, now_ms)
-            == crate::cognition::card_holder::Hold::Held
-}
-
 /// What a refused claim MEANS for the citizen who made it.
 ///
-/// `live_holder` answers "is a person on this card". It does NOT answer "is that
+/// `work_preconditions::holder_on_record` answers "whose claim stands on this card". It does NOT answer "is that
 /// person YOU" — and without that second question the refusal path told a citizen
 /// a stranger held her own work. Glass-boxed live 2026-08-14: Anon (a20b3ada) held
 /// 13 cards and was told `card 17531483 ... is held by peer a20b3ada` — her own
@@ -73,7 +29,7 @@ pub(super) fn resumes_held_review(
 /// shape — `work/list` renders holders through `card_holder`, and the claim path
 /// needed the same self-vs-other distinction as a NAMED rule rather than prose.
 ///
-/// Separated from the call site for the reason `live_holder` was: the call site is
+/// Separated from the call site for the reason the holder rule is: the call site is
 /// where this went wrong, and an inline `if` is not something a test can reach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClaimRefusal {

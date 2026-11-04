@@ -1,4 +1,5 @@
-//! Her held work this tick, typed: the cards she holds with the moves each one's state gives her,
+//! Her held work this tick, typed: the cards she holds with what each one's preconditions put in
+//! her hands (`work_preconditions`),
 //! the claims that ended since her last good read, and her live rejected-claim facts. Read once
 //! per tick by the cycle (`extensions::held_work`) and carried on the [`Workspace`](super::Workspace),
 //! so her tool surface and her held-work item read the same snapshot
@@ -6,7 +7,7 @@
 
 use airc_work::{CardState, WorkCardId};
 
-use crate::cognition::card_moves::{Held, Move};
+use crate::cognition::work_preconditions::Held;
 
 /// What her board says she holds now.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -32,12 +33,12 @@ pub struct EndedClaim {
 }
 
 impl HeldWork {
-    /// The command names (and subtrees) of every move her held cards put in her hands, each once,
-    /// in canonical order: what her tool surface adds to the room's declared set. Stable while her
-    /// cards' states are.
+    /// The command names (and subtrees) her held cards put in her hands (each card's verbs whose
+    /// precondition holds, with what they grant), each once, in canonical order: what her tool
+    /// surface adds to the room's declared set. Stable while her cards' facts are.
     pub fn move_commands(&self) -> Vec<String> {
-        let moves: std::collections::BTreeSet<Move> = self.holds.iter().flat_map(|held| held.moves.iter()).collect();
-        moves.into_iter().map(|mv| mv.command().to_owned()).collect()
+        let commands: std::collections::BTreeSet<&'static str> = self.holds.iter().flat_map(|held| held.in_hand.iter().copied()).collect();
+        commands.into_iter().map(str::to_owned).collect()
     }
 
     /// She holds a card she is working on now (InProgress): the working-presence contract's key.

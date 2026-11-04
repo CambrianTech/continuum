@@ -54,6 +54,15 @@ impl ActionCommand for WorkClaim {
                         reason.trim_end_matches('.')
                     )));
                 }
+                // THE PRECONDITION, at the mutation boundary, against the card as the board holds
+                // it now (`work_preconditions::claim`, the one owner the surface reads too): not a
+                // settled state, and nobody else's claim stands. Refused, she gets the card now and
+                // her moves on it, and the rejection stays in her perception past the receipt.
+                let now_ms = EpochMs::now().millis();
+                if let Err(refusal) = work_preconditions::decide(work_preconditions::claim(card, airc.peer_id(), now_ms), card, airc.peer_id(), now_ms) {
+                    crate::persona::claim_rejections::record(airc.peer_id().as_uuid(), &p.card_id, &refusal.to_string());
+                    return Err(super::refused(refusal));
+                }
             }
         }
         let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS);
@@ -128,16 +137,16 @@ impl ActionCommand for WorkClaim {
                         // string back — "expired leases or the cards being held by others"
                         // is THIS format string, both halves of it.
                         //
-                        // `hold_of` is the same predicate `work/list` renders through
-                        // (card_holder::holder, below) — one rule for "is someone on this",
-                        // not two in one file.
                         let now_ms = EpochMs::now().millis();
-                        // ASK WHO, NOT JUST WHETHER. `live_holder` says a person is on
+                        // ASK WHO, NOT JUST WHETHER. `holder_on_record` says whose claim is on
                         // the card; `classify_refusal` says whether that person is YOU.
                         // Without the second question this arm told Anon her own card was
                         // a stranger's (2026-08-14) — see `ClaimRefusal`.
                         let caller_uuid = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid());
-                        let holder = live_holder(card, now_ms).map(|o| o.as_uuid());
+                        // Whose claim stands, by the claim precondition's own rule
+                        // (`work_preconditions`, airc projection/apply.rs:285-300): a live lease, or a
+                        // claim still on record, which the projection keeps its holder's while she is away.
+                        let holder = crate::cognition::work_preconditions::holder_on_record(card, now_ms).map(|o| o.as_uuid());
                         match classify_refusal(holder, caller_uuid) {
                             ClaimRefusal::AlreadyYours => already_yours = card.claim_id,
                             ClaimRefusal::HeldByPeer(owner) => {

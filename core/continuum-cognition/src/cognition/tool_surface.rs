@@ -20,7 +20,8 @@
 //!
 //! The activity declares the desired verbs or subtrees (code/**), else her core hands: the verbs
 //! whose commands declare `Disclosure::Core`, the way they declare their access level. The cards
-//! she holds add the moves their states give her (`card_moves`, STATE-DRIVEN-SURFACE.md): a
+//! she holds add the verbs whose preconditions hold on them (`work_preconditions`,
+//! STATE-DRIVEN-SURFACE.md): a
 //! reviewer holding a review card has `work/review` in hand whatever the room declares. The rest
 //! of her hands are one `commands/help` away, and her learned head adds the ones she uses.
 //! The shared prompt allocation grants a token budget; this owner selects a whole level.
@@ -133,7 +134,7 @@ pub struct ToolSurface {
 impl ToolSurface {
     /// Prices for the one allocation, independent of its eventual grant: a declared activity's
     /// recipe, else her core hands, with the moves her held cards give her (`held`, command names
-    /// and subtrees from `card_moves`), each indivisible (silently replacing their verbs changes
+    /// and subtrees from `work_preconditions::in_hand`), each indivisible (silently replacing their verbs changes
     /// what she can do). What her learned head adds is [`Self::claim_with_head`]'s want.
     pub fn claim_tokens(&self, declared: &[String], held: &[String]) -> (usize, usize) {
         let tokens = self.activity(declared, held).tokens();
@@ -664,8 +665,11 @@ mod tests {
         assert_eq!(vocab.tokens(edit) as usize, tool_surface_tokens_of(&[spec("code/edit")]));
     }
 
-    fn moves(role: crate::cognition::card_moves::CardRole, state: airc_work::CardState) -> Vec<String> {
-        crate::cognition::card_moves::moves_in(role, state, crate::cognition::card_moves::Stance::Holder).commands().map(str::to_owned).collect()
+    /// What she has in hand on her own card in `state` (a review card when `reviews` is set).
+    fn moves(reviews: Option<airc_work::WorkCardId>, state: airc_work::CardState) -> Vec<String> {
+        use crate::cognition::work_preconditions::{fixture_card, in_hand, FIXTURE_NOW_MS};
+        let her = airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(1));
+        in_hand(&fixture_card(state, Some(her), reviews, "card"), her, FIXTURE_NOW_MS).into_iter().map(str::to_owned).collect()
     }
 
     fn sent_names<'a>(selected: &'a SelectedSurface<'_>) -> Vec<&'a str> {
@@ -680,10 +684,9 @@ mod tests {
     // and never a `Withheld` verb.
     #[test]
     fn a_held_review_card_puts_the_verdict_verb_in_hand_whatever_it_declares() {
-        use crate::cognition::card_moves::CardRole;
         use airc_work::{CardState, WorkCardId};
         let surface = built(REGISTRY.iter());
-        let review = moves(CardRole::Review { parent: WorkCardId::from_u128(7) }, CardState::Claimed);
+        let review = moves(Some(WorkCardId::from_u128(7)), CardState::Claimed);
         for declared in [Vec::new(), vec!["code/**".to_string()]] {
             let plain = surface.select_granted(&declared, &[], usize::MAX).expect("fits");
             assert!(!sent_names(&plain).contains(&"work/review"), "precondition: on demand without a held card");
@@ -696,7 +699,7 @@ mod tests {
             assert_eq!(surface.claim_tokens(&declared, &review), (held.tokens, held.tokens), "her claim prices what she is sent");
             assert_eq!(held.reason, plain.reason, "the room still decides why; her card adds to it");
         }
-        let code = surface.select_granted(&[], &moves(CardRole::Code, CardState::InProgress), usize::MAX).expect("fits");
+        let code = surface.select_granted(&[], &moves(None, CardState::InProgress), usize::MAX).expect("fits");
         let names = sent_names(&code);
         assert!(names.contains(&"work/submit") && names.contains(&"code/edit"), "{names:?}");
         assert!(!names.contains(&"code/git/apply") && !names.contains(&"work/review"), "{names:?}");
@@ -704,19 +707,19 @@ mod tests {
 
     // what this catches: a surface that churns while her card's state is stable (every act would
     // re-prefill the prompt behind the tool schemas: Aiko's 7-21% reuse, 2026-10-24), or one that
-    // does not change when her card's transition changes her moves (Benchy's review card going
-    // to Review, the M5 2026-11-04). Same moves, same bytes; a transition that changes her moves
-    // changes the set once; one that does not (Claimed to InProgress) changes nothing.
+    // does not change when what her cards' preconditions put in hand changes (the M5, 2026-11-04).
+    // Same verbs in hand, same bytes; a transition that keeps them (Claimed to InProgress) changes
+    // nothing; holding a different kind of card changes the set.
     #[test]
     fn the_surface_changes_only_when_her_cards_moves_do() {
-        use crate::cognition::card_moves::CardRole;
         use airc_work::{CardState, WorkCardId};
         let surface = built(REGISTRY.iter());
-        let reviewer = CardRole::Review { parent: WorkCardId::from_u128(7) };
+        let reviewer = Some(WorkCardId::from_u128(7));
         let at = |state| surface.select_granted(&[], &moves(reviewer, state), usize::MAX).expect("fits");
         let claimed = wire(&at(CardState::Claimed));
         assert_eq!(claimed, wire(&at(CardState::Claimed)), "an unchanged state is byte-identical across acts");
         assert_eq!(claimed, wire(&at(CardState::InProgress)), "a transition that keeps her moves keeps her surface");
-        assert_ne!(claimed, wire(&at(CardState::Review)), "a transition that changes her moves changes her surface");
+        let code = surface.select_granted(&[], &moves(None, CardState::InProgress), usize::MAX).expect("fits");
+        assert_ne!(claimed, wire(&code), "a card whose preconditions put other verbs in hand changes her surface");
     }
 }

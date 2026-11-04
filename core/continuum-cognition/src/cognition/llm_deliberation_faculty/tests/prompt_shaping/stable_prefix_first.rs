@@ -52,9 +52,10 @@ fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() 
             ),
         ];
         let her = airc_core::PeerId::from_uuid(Uuid::from_u128(1));
-        let card = crate::cognition::card_moves::fixture_card(airc_work::CardState::InProgress, Some(her), None, "fix the thing");
+        use crate::cognition::work_preconditions::{fixture_card, Held, FIXTURE_NOW_MS};
+        let card = fixture_card(airc_work::CardState::InProgress, Some(her), None, "fix the thing");
         let held = crate::cognition::workspace::HeldWork {
-            holds: crate::cognition::card_moves::Held::of(card, her).into_iter().collect(),
+            holds: Held::of(card, her, FIXTURE_NOW_MS, 1).into_iter().collect(),
             ..Default::default()
         };
         let mut ws = Workspace::new(Burst::from_turns(room, turns)).held_work(held);
