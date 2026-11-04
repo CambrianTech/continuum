@@ -351,9 +351,6 @@ pub struct ServingDaemonModule {
     /// The engine process this core last asked to move onto the shared pool: one try per
     /// engine, so a refused move is never retried every tick.
     shared_pool_move_tried: Arc<std::sync::atomic::AtomicU64>,
-    /// The models whose one upward pool relaunch this core run has asked for (`pool_growth`): once
-    /// per model, never once per engine process, since the relaunch itself makes a new one (S2 debt).
-    pool_growth_models: Arc<parking_lot::Mutex<std::collections::BTreeSet<String>>>,
     /// Each local mind's grant on the engine's pool (`grants.rs`): what her binding follows.
     /// `None` until a ready engine has been granted from.
     grants_tx: watch::Sender<Option<crate::capacity::window_grant::PoolGrants>>,
@@ -553,7 +550,6 @@ impl ServingDaemonModule {
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             plan_budget_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             shared_pool_move_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            pool_growth_models: Arc::new(parking_lot::Mutex::new(std::collections::BTreeSet::new())),
             grants_tx: watch::channel(None).0,
             shared_pool_of: Arc::new(parking_lot::Mutex::new(None)),
             served_pool: Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -682,7 +678,6 @@ mod launch;
 mod planning;
 mod grants;
 mod hold;
-mod pool_growth;
 mod reconcile;
 mod tick;
 

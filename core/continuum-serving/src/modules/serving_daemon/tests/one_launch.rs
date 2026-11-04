@@ -52,6 +52,51 @@ async fn a_ready_lane_is_never_relaunched_for_its_window_or_lanes() {
     assert_eq!(serves.load(Ordering::SeqCst), 0, "never relaunched");
 }
 
+// what this catches (the M5, 2026-11-04 18:00:46Z-18:16Z): an admission hold whose release
+// depended on a relaunch the launch planner refused. The pool-growth bridge compared the running
+// pool (523,520-654,336 tokens, grants ~180-193k) to the plan's full lanes x window, called growth
+// "due", quiesced admission (`serving.pool.grow_quiesced drained_ms=289855`) and waited for an
+// ensure that only re-logged `serving.launch.plan` every 5 s: four residents, zero acts for 16
+// minutes, until an operator stopped serving (also 14:56Z). A plan that wants more pool than the
+// engine holds leaves the engine and admission alone: no relaunch, no drain, no hold. Per-mind
+// windows are runtime grants on the pool the launch sized.
+#[tokio::test]
+async fn a_plan_wanting_more_pool_than_the_engine_holds_never_holds_admission_or_relaunches() {
+    let serves = Arc::new(AtomicUsize::new(0));
+    let mut server = FakeServer::healthy(serves.clone(), true);
+    server.active = Some("coder-14b".into());
+    let idles = server.idles.clone();
+    let daemon = daemon_with(Arc::new(server));
+    let budget = HostBudget {
+        usable_bytes: 45 * GB,
+        perf_cores: 6,
+    };
+    let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
+    daemon.publish_plan(budget, &candidates, &candidates);
+    let (plan_window, plan_lanes) = {
+        let published = daemon.plan_tx.borrow();
+        let plan = published.plan.as_ref().expect("plan published");
+        (plan.served_context_window, plan.lanes)
+    };
+    // The engine holds a quarter of what the plan's window x lanes asks for.
+    let held_pool = (plan_window.saturating_mul(plan_lanes) / 4).max(1);
+    daemon.served_pool.store(held_pool, Ordering::Relaxed);
+    let mut ready = ready_snapshot();
+    ready.lanes = plan_lanes;
+    ready.served_context_window = held_pool / plan_lanes.max(1);
+    let _ = daemon.serving_tx.send_replace(ready);
+    for tick in 0..10 {
+        assert!(
+            daemon.reconcile_to_plan().is_none(),
+            "tick {tick}: a plan wanting a larger pool is not a relaunch"
+        );
+        assert!(daemon.serving_tx.borrow().held_for.is_none(), "tick {tick}: admission stays open");
+    }
+    assert_eq!(serves.load(Ordering::SeqCst), 0, "never relaunched into a larger pool");
+    assert_eq!(idles.load(Ordering::SeqCst), 0, "never drained for one");
+    assert_eq!(daemon.served_pool.load(Ordering::Relaxed), held_pool, "the pool stays what the launch sized");
+}
+
 // what this catches (2026-08-15 14:13, round-killer L10 / #438 live): a plan tick
 // whose usable_bytes sample was transiently bogus named the SMALLEST candidate
 // (qwen2.5-0.5B) via the nothing-fits arm, and the reconcile swapped the READY

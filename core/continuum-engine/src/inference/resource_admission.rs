@@ -16,7 +16,6 @@ mod gate;
 mod lanes;
 mod metrics;
 mod progress;
-mod quiesce;
 mod serving_lane_permit;
 #[cfg(test)]
 mod tests;
@@ -25,5 +24,4 @@ pub use gate::*;
 pub use lanes::*;
 pub use metrics::*;
 pub use progress::{LaneWait, LaneProgress};
-pub use quiesce::{AdmissionEntry, Quiesced};
 pub use serving_lane_permit::ServingLanePermit;
