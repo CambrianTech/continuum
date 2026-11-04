@@ -56,6 +56,7 @@ pub mod score;
 pub mod serving_pager;
 pub mod settlement;
 pub mod sim;
+pub mod mind_window;
 pub mod window_grant;
 pub mod window_sim;
 pub mod system_profile;

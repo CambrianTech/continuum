@@ -42,9 +42,28 @@ impl LlmDeliberationFaculty {
         // triple. [[fallbacks-are-illegal-fail-loud]] [[never-thrash-sticky-hysteresis-on-every-lane]]
         // Retain the capacity observation that precedes assembly. Sampling again
         // after an await could mistake newly grown capacity for the refused one.
+        // Her window, from the one determiner (card de7bb6e8). On the shared pool it is her grant;
+        // with no grant yet her turn waits for one on the grants watch, never at a provisional size.
+        let decided = loop {
+            use crate::capacity::mind_window::{grants_changed, mind_window, MindWindow};
+            match mind_window(self.persona_id, loaded.adapter.as_ref(), loaded.context_window) {
+                MindWindow::Ungranted => {
+                    continuum_base::probe!(
+                        class = "delib.window.ungranted",
+                        persona = %self.persona_name,
+                        "no grant on the shared pool yet: this turn waits for one"
+                    );
+                    grants_changed().await;
+                }
+                MindWindow::Decided(decided) => break decided,
+            }
+        };
+        let decided_window = decided.tokens();
         let capacity_readiness = Arc::new(crate::cognition::workspace::CapacityReadiness::new(
+            self.persona_id,
             self.binding.clone(),
             loaded.clone(),
+            decided_window,
         ));
         let binding = {
             // ONE live source, no clamp. The window this turn budgets to is the live
@@ -62,7 +81,11 @@ impl LlmDeliberationFaculty {
             // reduction is authoritative immediately: reply reserve is requested
             // output, not spare capacity that can absorb a smaller served window.
             // The existing quantized history eviction still controls prefix churn.
-            let deadband = loaded.context_window / 8;
+            // A grant is exact (one owner decided it); only a lane's own report keeps a growth deadband.
+            let deadband = match decided {
+                crate::capacity::mind_window::Decided::Granted(_) => 0,
+                _ => loaded.context_window / 8,
+            };
             let adopt = effective < loaded.context_window
                 || effective.saturating_sub(loaded.context_window) > deadband;
             if !adopt {

@@ -467,6 +467,14 @@ pub trait AIProviderAdapter: Send + Sync {
         None
     }
 
+    /// Whether this adapter's requests go to the node's own shared-pool engine. There a mind's
+    /// window is her grant, decided by [`crate::capacity::mind_window::mind_window`], and the
+    /// lane's per-sequence window is nobody's. Default `false`: a remote, dedicated, cloud or
+    /// in-process adapter.
+    fn serves_on_shared_pool(&self) -> bool {
+        false
+    }
+
     /// Wait for a semantic capacity observation to change, without generating or
     /// polling. Live adapters subscribe before rechecking; fixed bindings have
     /// no capacity events and are woken by their binding owner instead.

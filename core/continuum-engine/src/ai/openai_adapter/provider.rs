@@ -137,6 +137,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     /// without a clamp. A not-ready / zero snapshot → `None` (the binding window
     /// stands until the next ready tick). Mirrors the `!self.dedicated_lane`
     /// readiness-guard exemption above — same lane, same authority.
+    fn serves_on_shared_pool(&self) -> bool {
+        !self.dedicated_lane && self.config.single_resident_model
+    }
+
     fn live_served_window(&self) -> Option<u32> {
         if self.dedicated_lane || !self.config.single_resident_model {
             return None;
