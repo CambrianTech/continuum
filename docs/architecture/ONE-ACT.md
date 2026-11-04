@@ -240,7 +240,7 @@ Reproduce the reported loss before the fix, then verify the corrected transition
 real engine adapter and persisted ledger. Report the unexplained loss independently until it
 has its own reproduction. Follow with the live restore/cache-reuse receipt.
 
-### 5d. A cold prefill must never block a warm mind's next token (Cormac's matched run, IntelMac 22:05Z)
+### 5d. A cold prefill adds only bounded latency to a warm mind's next token (Cormac's matched run, IntelMac 22:05Z)
 
 Mixed load at 9 (4 cold 4,641-token prefills + 5 warm decodes), same binary/model/adapter as the
 lane, CPU, `--ubatch-size 2048 --kv-unified`: the prefills complete strictly serialized at 102 /
@@ -248,12 +248,15 @@ lane, CPU, `--ubatch-size 2048 --kv-unified`: the prefills complete strictly ser
 each. At n=2 a decoder finishes at 88 s behind an 81 s prefill. Raw:
 `~/.continuum/evidence/knee-20261104/` (IntelMac). Decode concurrency scales (19.9 -> 51.1 tok/s
 aggregate, 1 -> 9); prefill has a capacity of one on this node.
-**Invariant:** a warm mind's decode is never head-of-line blocked by another mind's cold prefill.
-The engine's step interleaves: prefill is split into chunks sized from the measured per-chunk time
-so waiting decoders get a step at their latency bound (chunked prefill, Sarathi-Serve), and cold
-prefills are admitted one at a time ahead of nothing. Both live in the engine's own scheduler
-(the fork), driven by the core's measured bound; no fixed chunk size. Validated by re-running this
-exact mixed trial: decoders' first token within their bound while the prefills proceed.
+**Invariant (Codex's wording):** under mixed load a warm mind's decode suffers only BOUNDED
+additional latency from other minds' cold prefills (a non-preemptible kernel or chunk still takes
+its time), AND every cold prefill eventually completes, so strict decode priority cannot starve a
+cold mind. Mechanism in the fork's own scheduler, reusing its measured service curves: prefill
+proceeds in bounded chunks sized from the measured chunk time when decoders wait; the number of
+concurrent cold prefills is a MEASURED admission limit for this backend and configuration, never
+universally one; cancellation takes effect at chunk boundaries; recurrent (hybrid) state stays
+intact across chunks and cancellation. Validated by re-running the mixed trial: decoders'
+first-token and inter-token latency within their bound, and every prefill completing.
 
 ### 5c. The operating point is measured, never a number
 
@@ -321,7 +324,7 @@ deploy with the 15-minute read and immediate rollback if worse (rule 3).
 | 2 | The view: reads by region, side budgets into the one allocation run once, history to handles; revert the wish raise of #5773 | Fable | dyno 7 green; prompt tokens per act at the working set |
 | 3 | Engine memory (after the 1b diagnosis): launch-from-fit at Settled (#5770 first), conservation accounting; then delete growth (#5774) | Codex + Fable | dyno 1, 6 green |
 | 4 | Custody and cancellation first: #5772, fork prefill cancellation; the page custodian's surrender/verify contract | Codex | dyno 4, 5 green |
-| 4b | The engine never head-of-line blocks decode: chunked prefill sized from the measured chunk time, cold prefills one at a time | Codex (fork) | re-run Cormac's mixed trial: decoders' first token within bound |
+| 4b | Bounded decode latency under mixed load: chunked prefill from measured chunk time, measured cold-prefill admission limit, cancellation at chunk boundaries, recurrent state intact (after the paging outcome slice) | Codex (fork) | re-run Cormac's mixed trial: decoder first/inter-token latency bounded AND every prefill completes |
 | 5 | Admission: one decision over residency, prefill, decode; fairness by completion identity; rotation THROUGH the proven custodian | Codex | dyno 2, 3 green |
 | 6 | Her state: command preconditions, results with next moves, Shown ids, one repeat owner | Fable + Cormac | precondition tests; live: no verb hunted (`commands/help` loops) |
 | 7 | Learning as a dream stage; persistence on change; deploy custody | Cormac | slowdown measured within its bound |
