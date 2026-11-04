@@ -67,8 +67,8 @@ impl std::fmt::Display for GrantsUnavailable {
 ///
 /// Take it BEFORE deciding (`grants_waiter`), so a grant published between the decision and the wait
 /// still wakes her.
-pub fn grants_waiter() -> Result<GrantsWaiter, GrantsUnavailable> {
-    super::window_grant::grants_receiver().map(GrantsWaiter::new).ok_or(GrantsUnavailable)
+pub fn grants_waiter() -> Result<impl std::future::Future<Output = Result<(), GrantsUnavailable>>, GrantsUnavailable> {
+    super::window_grant::grants_receiver().map(|rx| GrantsWaiter::new(rx).changed()).ok_or(GrantsUnavailable)
 }
 
 /// A wait for grants NEWER than those current when it was made. The receiver is a clone of the
@@ -76,16 +76,16 @@ pub fn grants_waiter() -> Result<GrantsWaiter, GrantsUnavailable> {
 /// without that, `changed()` resolves at once on every call, and an ungranted mind looped measure,
 /// wake, ungranted with nothing changed (the M5 core at 339% CPU on d39469463, Atlas 751 times in a
 /// minute).
-pub struct GrantsWaiter(tokio::sync::watch::Receiver<Option<super::window_grant::PoolGrants>>);
+struct GrantsWaiter(tokio::sync::watch::Receiver<Option<super::window_grant::PoolGrants>>);
 
 impl GrantsWaiter {
-    pub fn new(mut rx: tokio::sync::watch::Receiver<Option<super::window_grant::PoolGrants>>) -> Self {
+    fn new(mut rx: tokio::sync::watch::Receiver<Option<super::window_grant::PoolGrants>>) -> Self {
         rx.borrow_and_update();
         Self(rx)
     }
 
     /// Resolves when newer grants are published; `GrantsUnavailable` when the sender is gone.
-    pub async fn changed(mut self) -> Result<(), GrantsUnavailable> {
+    async fn changed(mut self) -> Result<(), GrantsUnavailable> {
         self.0.changed().await.map_err(|_| GrantsUnavailable)
     }
 }
@@ -94,11 +94,12 @@ impl GrantsWaiter {
 /// her wish, so the next grants tick can grant her), then waits for NEWER grants and decides again
 /// (Cormac on #5752). The waiter is taken before each decision, so no publish between the two is lost.
 /// No grants watch is a refusal only when she is ungranted: a decided window needs none.
-pub async fn decide_window<D, M, S>(decide: D, mut measure: M, subscribe: S) -> Result<Decided, GrantsUnavailable>
+pub async fn decide_window<D, M, S, W>(decide: D, mut measure: M, subscribe: S) -> Result<Decided, GrantsUnavailable>
 where
     D: Fn() -> MindWindow,
     M: FnMut(),
-    S: Fn() -> Result<GrantsWaiter, GrantsUnavailable>,
+    S: Fn() -> Result<W, GrantsUnavailable>,
+    W: std::future::Future<Output = Result<(), GrantsUnavailable>>,
 {
     loop {
         let waiter = subscribe();
@@ -106,7 +107,7 @@ where
             MindWindow::Decided(decided) => return Ok(decided),
             MindWindow::Ungranted => {
                 measure();
-                waiter?.changed().await?;
+                waiter?.await?;
             }
         }
     }
@@ -160,7 +161,7 @@ mod tests {
                 granted.store(true, std::sync::atomic::Ordering::SeqCst);
                 let _ = sender.send(grants(&[(her, 14_860)])); // the receiver is held by the waiter
             },
-            || Ok(GrantsWaiter::new(installed.clone())),
+            || Ok(GrantsWaiter::new(installed.clone()).changed()),
         )
         .await;
         assert_eq!(decided, Ok(Decided::Granted(t(14_860))));
@@ -171,9 +172,9 @@ mod tests {
     // only because no watch exists.
     #[tokio::test]
     async fn no_grants_watch_refuses_only_an_ungranted_mind() {
-        let refused = decide_window(|| MindWindow::Ungranted, || {}, || Err(GrantsUnavailable)).await;
+        let refused = decide_window(|| MindWindow::Ungranted, || {}, || Err::<std::future::Ready<Result<(), GrantsUnavailable>>, _>(GrantsUnavailable)).await;
         assert_eq!(refused, Err(GrantsUnavailable));
-        let bound = decide_window(|| MindWindow::Decided(Decided::Bound(8_192)), || {}, || Err(GrantsUnavailable)).await;
+        let bound = decide_window(|| MindWindow::Decided(Decided::Bound(8_192)), || {}, || Err::<std::future::Ready<Result<(), GrantsUnavailable>>, _>(GrantsUnavailable)).await;
         assert_eq!(bound, Ok(Decided::Bound(8_192)), "a bound window needs no grants watch");
     }
 }

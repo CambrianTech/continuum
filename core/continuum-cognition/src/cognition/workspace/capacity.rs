@@ -172,7 +172,7 @@ impl CapacityReadiness {
             let waiter = crate::capacity::mind_window::grants_waiter();
             let grants_change = async move {
                 if let Ok(waiter) = waiter {
-                    if waiter.changed().await.is_ok() {
+                    if waiter.await.is_ok() {
                         return;
                     }
                 }
