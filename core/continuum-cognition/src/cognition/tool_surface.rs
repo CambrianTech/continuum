@@ -665,7 +665,7 @@ mod tests {
     }
 
     fn moves(role: crate::cognition::card_moves::CardRole, state: airc_work::CardState) -> Vec<String> {
-        crate::cognition::card_moves::moves_in(role, state).commands().map(str::to_owned).collect()
+        crate::cognition::card_moves::moves_in(role, state, crate::cognition::card_moves::Stance::Holder).commands().map(str::to_owned).collect()
     }
 
     fn sent_names<'a>(selected: &'a SelectedSurface<'_>) -> Vec<&'a str> {

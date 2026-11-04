@@ -12,7 +12,7 @@ use continuum_context::source::{Item, Source};
 
 use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::card_facts::state_str;
-use crate::cognition::card_moves::{CardRole, Held};
+use crate::cognition::card_moves::{CardRole, Held, Moves, NoMove};
 use crate::cognition::workspace::{EndedClaim, HeldWork};
 
 /// The one mapping from a held card's state to the occurrence her view renders: a transition is
@@ -45,8 +45,12 @@ impl HeldWorkStream {
             " (held)"
         };
         let state = state_str(&card.state);
-        let moves: Vec<&str> = held.moves.commands().collect();
-        let can = if moves.is_empty() { "nothing in hand in this state".to_owned() } else { moves.join(", ") };
+        // Some moves, or the typed reason there are none (`card_moves::Moves`).
+        let can = match &held.moves {
+            Moves::Some(_) => held.moves.commands().collect::<Vec<_>>().join(", "),
+            Moves::None(NoMove::Held { by }) => format!("nothing: peer {} holds it", shown_form(by.as_uuid())),
+            Moves::None(NoMove::Ended(ended)) => format!("nothing: it is {}", state_str(ended)),
+        };
         let head = format!("[my work] card {id} \"{}\": {role}, {state}{stance}", card.title);
         let mut lines = vec![head];
         lines.extend(submission_fact(held));

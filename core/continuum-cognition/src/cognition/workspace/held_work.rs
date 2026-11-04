@@ -6,7 +6,7 @@
 
 use airc_work::{CardState, WorkCardId};
 
-use crate::cognition::card_moves::{Held, Moves};
+use crate::cognition::card_moves::{Held, Move};
 
 /// What her board says she holds now.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -32,15 +32,12 @@ pub struct EndedClaim {
 }
 
 impl HeldWork {
-    /// Every move her held cards put in her hands, each once, in canonical order: what her tool
-    /// surface adds to the room's declared set. Stable while her cards' states are.
-    pub fn moves(&self) -> Moves {
-        self.holds.iter().flat_map(|held| held.moves.iter()).collect()
-    }
-
-    /// The command names (and subtrees) of [`Self::moves`], as a tool surface selects them.
+    /// The command names (and subtrees) of every move her held cards put in her hands, each once,
+    /// in canonical order: what her tool surface adds to the room's declared set. Stable while her
+    /// cards' states are.
     pub fn move_commands(&self) -> Vec<String> {
-        self.moves().commands().map(str::to_owned).collect()
+        let moves: std::collections::BTreeSet<Move> = self.holds.iter().flat_map(|held| held.moves.iter()).collect();
+        moves.into_iter().map(|mv| mv.command().to_owned()).collect()
     }
 
     /// She holds a card she is working on now (InProgress): the working-presence contract's key.

@@ -37,22 +37,31 @@ ledger and submission into her view when its state asks for them) is Fable's nex
 
 ## 1. The transition table
 
-`card_moves::moves_in(CardRole, CardState) -> Moves` is pure and matches both enums with no
-wildcard arm, so a new state or role is a compile error. The role comes from the card's typed
-link: `reviews: Some(parent)` makes it `CardRole::Review { parent }`. `held_moves(card, holder)`
-returns nothing unless she owns the card. `Move::command()` is the only place these command
-names are spelled for the board's moves. A test in `continuum-mind/src/work/tests` pins each
-name to the command's own `ActionCommand::NAME`.
+The table is data: `card_moves::moves_in(CardRole, CardState, Stance) -> Moves`, pure, matching
+all three enums with no wildcard, so a new state, role or stance is a compile error.
+`moves_for(card, actor)` reads the role from the card's typed link (`reviews: Some(parent)` is
+`CardRole::Review { parent }`) and the stance from its owner (`Holder`, `Unheld`,
+`HeldBy(peer)`). The result is `Moves::Some(MoveSet) | Moves::None(NoMove)`. `MoveSet` is
+non-empty by construction, so a bare empty list is unrepresentable, and a refusal always carries
+moves or a typed reason (`NoMove::Held { by }`, `NoMove::Ended(state)`): the shape Cormac's refusal
+ratchet reads. Her surface reads the same function through `Held` (her own cards). There is one
+table and no holder-only copy. `Move::command()` is the only place these command names are
+spelled. A test in `continuum-mind/src/work/tests` pins each name to the command's own
+`ActionCommand::NAME`, and pins `code/**` to a registered `code/` command (`code/run`).
 
-| Role, state | Moves |
+| Stance, role, state | Moves |
 |---|---|
-| code, Claimed / InProgress | `code/**`, `work/submit`, `work/note`, `work/state`, `work/release`, `work/heartbeat` |
-| code, Blocked | `work/note`, `work/state`, `work/release` |
-| code, Review | `work/submission`, `work/note`, `work/state` |
-| review, Claimed / InProgress | `work/submission`, `work/review`, `work/note`, `work/release`, `work/heartbeat` |
-| review, Blocked | `work/note`, `work/state`, `work/release` |
-| review, Review | `work/submission`, `work/note` |
-| any, Open / Merged / Closed | none |
+| holder, code, Claimed / InProgress | `code/**`, `work/submit`, `work/note`, `work/state`, `work/release`, `work/heartbeat` |
+| holder, code, Blocked | `work/note`, `work/state`, `work/release` |
+| holder, code, Review | `work/submission`, `work/note`, `work/state` |
+| holder, review, Claimed / InProgress | `work/submission`, `work/review`, `work/note`, `work/release`, `work/heartbeat` |
+| holder, review, Blocked | `work/note`, `work/state`, `work/release` |
+| holder, review, Review | `work/submission`, `work/note` |
+| anyone, Open | `work/claim` (an owner left on an Open card is stale) |
+| anyone, Merged / Closed | none: `Ended(state)` |
+| another holds it, Claimed / InProgress / Blocked | none: `Held { by }` |
+| nobody holds it, Claimed / InProgress / Blocked | `work/claim` |
+| not hers, Review | none: `Ended(Review)` until its verdict |
 
 Where the verbs differ from a first guess (each row was read off its verb in
 `continuum-mind/src/work/`):
