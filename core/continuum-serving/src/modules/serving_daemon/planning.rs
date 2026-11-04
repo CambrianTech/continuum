@@ -3,6 +3,17 @@
 use super::*;
 
 impl ServingDaemonModule {
+    /// Whether serving has reported its own footprint to the board: the plan's budget is then the
+    /// ledger's replace-myself budget, sampled with this engine up and credited back exactly once.
+    /// The ONE reading of "steady" (the `at_rest` arm below).
+    pub(super) fn serving_footprint_reported(&self) -> bool {
+        self.resource_daemon
+            .board()
+            .attributions
+            .iter()
+            .any(|a| a.consumer_id == SERVING_CONSUMER_ID && a.kind == serving_pool_kind() && a.bytes > 0)
+    }
+
     /// The daemon-owned mutation capability; raw watch writers never escape.
     pub fn intent(&self) -> ServingIntent {
         self.intent.clone()

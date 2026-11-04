@@ -52,6 +52,117 @@ async fn a_ready_lane_is_never_relaunched_for_its_window_or_lanes() {
     assert_eq!(serves.load(Ordering::SeqCst), 0, "never relaunched");
 }
 
+/// Serving's own footprint on the board, as `ServingConsumer` reports it once the engine is up:
+/// the plan's budget is then "steady" (`serving_footprint_reported`), the state the pool-growth
+/// bridge required before it quiesced admission.
+struct SteadyServing(u64);
+
+#[async_trait::async_trait]
+impl crate::resources::ResourceConsumer for SteadyServing {
+    fn consumer_id(&self) -> &str {
+        SERVING_CONSUMER_ID
+    }
+    fn footprint(&self) -> Vec<crate::resources::ConsumerFootprint> {
+        vec![crate::resources::ConsumerFootprint {
+            kind: serving_pool_kind(),
+            bytes: self.0,
+            detail: "test: the running engine".into(),
+        }]
+    }
+    async fn reclaim(&self, _request: crate::resources::ReclaimRequest) -> crate::resources::ReclaimOutcome {
+        crate::resources::ReclaimOutcome::refused("test: serving holds its engine")
+    }
+}
+
+// what this catches (the M5, 2026-11-04 18:00:46Z-18:16Z): an admission hold whose release
+// depended on a relaunch the launch planner refused. With serving's footprint on the board (a
+// steady plan) and the running pool (523,520-654,336 tokens) below the plan's full lanes x window,
+// the pool-growth bridge quiesced admission (`serving.pool.grow_quiesced drained_ms=289855`) and
+// waited on an ensure the planner answered only with `serving.launch.plan` every 5 s: four
+// residents, `turn_ingress in_flight=4`, zero acts for 16 minutes until an operator stopped
+// serving (also 14:56Z). The same steady plan against the same-model engine (a known incarnation,
+// a quarter of the pool it wants) now never relaunches, never drains, and a resident's next
+// request through the real lane gate is admitted at once.
+//
+// Isolation: the process-wide lane gate (`resource_admission::LANES`) is the one the bridge held,
+// so it is the one asserted. Nothing else in this crate's test binary takes a serving lane (only
+// planning sets the count, floored at 1), so one directed request cannot be starved by a
+// parallel test; the bound is the old failure's shape, not a race window.
+#[tokio::test]
+async fn a_steady_plan_wanting_more_pool_than_the_engine_holds_leaves_admission_open() {
+    let serves = Arc::new(AtomicUsize::new(0));
+    let mut server = FakeServer::healthy(serves.clone(), true);
+    server.active = Some("coder-14b".into());
+    server.incarnation = Some(crate::inference::engine_residency::EngineIncarnation {
+        pid: 4_000_000_002,
+        started_s: 1,
+        port: 1,
+    });
+    let idles = server.idles.clone();
+    let authority = ticking_resource_daemon(Arc::new(crate::resources::MockCapacitySource::new(
+        serving_pool_kind(),
+        53 * GB,
+    )));
+    authority.add_consumer(Arc::new(SteadyServing(12 * GB)));
+    let mut board = authority.subscribe();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        board.wait_for(|b| {
+            b.attributions
+                .iter()
+                .any(|a| a.consumer_id == SERVING_CONSUMER_ID && a.bytes > 0)
+        }),
+    )
+    .await
+    .expect("the authority ticks serving's footprint onto the board")
+    .expect("the board channel stays open");
+    let daemon = daemon_on_authority(Arc::new(server), 53 * GB, authority);
+    assert!(daemon.serving_footprint_reported(), "the plan is steady: the receipt's state");
+
+    let budget = HostBudget {
+        usable_bytes: 45 * GB,
+        perf_cores: 6,
+    };
+    let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
+    daemon.publish_plan(budget, &candidates, &candidates);
+    let (plan_window, plan_lanes) = {
+        let published = daemon.plan_tx.borrow();
+        let plan = published.plan.as_ref().expect("plan published");
+        (plan.served_context_window, plan.lanes)
+    };
+    // The engine holds a quarter of what the plan's window x lanes asks for.
+    let held_pool = (plan_window.saturating_mul(plan_lanes) / 4).max(1);
+    daemon.served_pool.store(held_pool, Ordering::Relaxed);
+    let mut ready = ready_snapshot();
+    ready.lanes = plan_lanes;
+    ready.served_context_window = held_pool / plan_lanes.max(1);
+    let _ = daemon.serving_tx.send_replace(ready);
+    for tick in 0..10 {
+        assert!(
+            daemon.reconcile_to_plan().is_none(),
+            "tick {tick}: a plan wanting a larger pool is not a relaunch"
+        );
+        // Let anything a tick spawned (the bridge's quiesce task was one) run before the next.
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(serves.load(Ordering::SeqCst), 0, "never relaunched into a larger pool");
+    assert_eq!(idles.load(Ordering::SeqCst), 0, "never drained for one");
+    assert_eq!(daemon.served_pool.load(Ordering::Relaxed), held_pool, "the pool stays what the launch sized");
+
+    // A resident's next generation enters admission at once: nothing holds the gate.
+    let permit = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        crate::inference::resource_admission::acquire_serving_lane(
+            Some(uuid::Uuid::from_u128(0x75ece751)),
+            crate::inference::resource_admission::LanePriority::Directed,
+            None,
+        ),
+    )
+    .await
+    .expect("admission stays open: a resident's request is admitted, never held for a relaunch");
+    drop(permit);
+}
+
 // what this catches (2026-08-15 14:13, round-killer L10 / #438 live): a plan tick
 // whose usable_bytes sample was transiently bogus named the SMALLEST candidate
 // (qwen2.5-0.5B) via the nothing-fits arm, and the reconcile swapped the READY
