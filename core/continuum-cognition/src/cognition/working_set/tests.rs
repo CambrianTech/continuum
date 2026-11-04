@@ -699,3 +699,25 @@ fn a_censored_need_is_never_read_as_an_exact_size() {
     assert_eq!(back, bounded);
     assert_eq!(serde_json::from_str::<NeedSample>("17000").expect("legacy slot"), NeedSample::Exact(17_000));
 }
+
+// what this catches (Aris on the M5, ff7d318aa, 2026-11-04 17:47-18:16Z): bounds of 75,911 and
+// 71,852 were recorded, but a median over the ring moved only once bounds filled half of it, so
+// her grant went 55,672 -> 58,522 and she still turned over on 3 of 4 acts. A bound proves her
+// working set exceeded that size: two bounds among fourteen exact samples raise her need to the
+// larger bound at once, and it falls back once both age out of the ring.
+#[test]
+fn two_bounds_among_fourteen_exact_samples_raise_her_need_to_the_larger_at_once() {
+    let reg = WorkingSetRegistry::new();
+    let aris = Uuid::new_v4();
+    for t in 0..14u32 {
+        reg.record_need_in_memory(aris, NeedSample::Exact(30_000 + t), u64::from(t));
+    }
+    reg.record_need_in_memory(aris, NeedSample::AtLeast { at_least: 75_911 }, 14);
+    reg.record_need_in_memory(aris, NeedSample::AtLeast { at_least: 71_852 }, 15);
+    assert_eq!(need_tokens(&reg.demand_of(aris).expect("recorded")), Some(NeedSample::AtLeast { at_least: 75_911 }), "the larger bound, at once");
+    // The ring turns over once: the two bounds were its newest slots, so they age out last.
+    for t in 0..RECENT_TURNS as u64 {
+        reg.record_need_in_memory(aris, NeedSample::Exact(30_000), 16 + t);
+    }
+    assert!(need_tokens(&reg.demand_of(aris).expect("recorded")).is_some_and(|need| !need.is_bound()), "both bounds aged out: the exact median again");
+}

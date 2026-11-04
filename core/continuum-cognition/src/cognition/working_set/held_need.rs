@@ -37,14 +37,22 @@ pub fn need_sample(sent_tokens: u32, framing_tokens: u32, fit_ok: bool) -> Optio
     (fit_ok && sent_tokens > framing_tokens).then_some(sent_tokens)
 }
 
-/// What a lane must hold for her: the median of her recent need observations, raised to her
-/// newest turn's irreducible window when that is larger (a turn that cannot be sent below it is a
-/// need, not a wish). The median is the product-limit estimate over the exact samples with the
-/// bounds as censored ones ([`product_limit`]): a bound moves its weight only to larger sizes, so
-/// it can raise the median and never lower it, and a newer, smaller bound never undoes a larger
-/// one while that one is in the ring (it ages out with the ring, so the need can fall again).
-/// `AtLeast` when the bounds raised it past what the exact samples alone say, so a reader sizes
-/// her target from it too. `None` until anything is measured; the allocator then gates on the wish.
+/// What a lane must hold for her: the larger of two reads of her ring, raised to her newest turn's
+/// irreducible window when that is larger (a turn that cannot be sent below it is a need, not a
+/// wish).
+/// - Her typical turn: the median, the product-limit estimate over the exact samples with the
+///   bounds as censored ones ([`product_limit`]), so a bound can raise it and never lower it.
+/// - Her largest live bound: a bound is a PROOF that her working set exceeded that size within
+///   the ring's turns, and the question a need answers is what her view must hold so it does not
+///   turn over, not what a typical turn held. Read as a median alone, two overflows among fourteen
+///   older exact samples changed nothing (Aris on the M5, ff7d318aa, 2026-11-04 17:47-18:16Z:
+///   bounds of 75,911 and 71,852 recorded, her grant moved 55,672 -> 58,522, and she still turned
+///   over on 3 of 4 acts).
+///
+/// A bound ages out of the 16-slot ring, so the need can fall again once her epochs stop
+/// overflowing (the upward move has its downward test). `AtLeast` when a bound decided it, so a
+/// reader sizes her target from it and clamps it to any limit as a bound
+/// (`Observed::within`). `None` until anything is measured; the allocator then gates on the wish.
 pub fn need_tokens(d: &PersonaDemand) -> Option<NeedSample> {
     let observed = || d.need_recent.iter().copied().filter(|s| s.value() > 0);
     let exact: Vec<u32> = observed().filter(|s| !s.is_bound()).map(NeedSample::value).collect();
@@ -52,7 +60,8 @@ pub fn need_tokens(d: &PersonaDemand) -> Option<NeedSample> {
     // The upper median, as `median_of` reads a ring: the share of turns past it falls below half.
     let median =
         |bounds: &[u32]| product_limit(&exact, bounds, |survival_num, survival_den| survival_num * 2 < survival_den);
-    let held = match (median(&[]), median(&bounds)) {
+    let bounded = median(&bounds).max(bounds.iter().copied().max());
+    let held = match (median(&[]), bounded) {
         (Some(measured), Some(estimate)) if measured >= estimate => Some(NeedSample::Exact(measured)),
         (_, estimate) => estimate.map(|at_least| NeedSample::AtLeast { at_least }),
     };
