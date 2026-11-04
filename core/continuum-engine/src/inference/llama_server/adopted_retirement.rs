@@ -37,16 +37,24 @@ impl LlamaServerProcess {
 
     /// Every refusal retiring the adopted engine can make before its drain (the replacement's
     /// pre-flight, `EndpointSlots::drain_for_replacement`). The checkpoint repeats its own checks
-    /// under the guard.
-    pub(super) fn adopted_retirement_preflight(&self) -> Result<(), LlamaServerError> {
+    /// under the guard. A never probed endpoint discovers its pool here, before anything is
+    /// condemned (the M5 2026-11-04 14:56Z: growth refused 5 s after adoption, before any request).
+    pub(super) async fn adopted_retirement_preflight(&self) -> Result<(), LlamaServerError> {
         match self.adopted_plan()? {
             AdoptedPlan::Alive(incarnation) => {
-                let endpoint = crate::inference::slots::directory().endpoint(&self.root);
-                if endpoint.paging_recovery_required() {
+                let directory = crate::inference::slots::directory();
+                if directory.endpoint(&self.root).paging_recovery_required() {
                     return Ok(());
                 }
-                endpoint
-                    .adopted_checkpoint_pool(incarnation)
+                // Bounded like every lifecycle probe: a wedged engine refuses, never stalls the launch.
+                let discovery = directory.adopted_checkpoint_pool(&self.client, &self.root, incarnation);
+                let checked = match tokio::time::timeout(PROBE_TIMEOUT, discovery).await {
+                    Ok(checked) => checked,
+                    Err(_) => Err(crate::inference::slots::AdoptedCheckpointRefusal::UnknownPool(
+                        crate::inference::slots::PoolDiscoveryMiss::TimedOut,
+                    )),
+                };
+                checked
                     .map(drop)
                     .map_err(|refusal| LlamaServerError::RetirementRefused(refusal.into()))
             }
@@ -210,7 +218,9 @@ mod tests {
         let transition = untouched.transition_if(&|| true).await.map_err(|()| "transition refused")?;
         super::super::launch::handle_retirement_failure(&transition,
             &LlamaServerError::RetirementRefused(RetirementRefusal::Checkpoint(
-                crate::inference::slots::AdoptedCheckpointRefusal::UnknownPool,
+                crate::inference::slots::AdoptedCheckpointRefusal::UnknownPool(
+                    crate::inference::slots::PoolDiscoveryMiss::NoGeometry,
+                ),
             )));
         drop(transition);
         assert!(untouched.admit().await.is_ok(), "pre-signal refusal still hands admission back");

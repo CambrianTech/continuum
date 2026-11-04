@@ -236,10 +236,11 @@ impl EndpointSlots {
     }
 
     /// What an adopted engine's checkpoint needs of this endpoint, read from its state alone: an
-    /// unowned, certain pool that is known, with a verified ledger naming `incarnation`. One
-    /// owner for the replacement's pre-flight (before anything is condemned or drained) and for
-    /// the checkpoint itself, under the guard.
-    pub(crate) fn adopted_checkpoint_pool(
+    /// unowned, certain pool that is known, with a verified ledger naming `incarnation`. A never
+    /// probed endpoint answers `Unprobed`, which `SlotDirectory::adopted_checkpoint_pool` turns
+    /// into discovery; that is the one caller for the replacement's pre-flight (before anything is
+    /// condemned or drained) and for the checkpoint itself, under the guard.
+    pub(super) fn adopted_checkpoint_pool(
         &self,
         incarnation: crate::inference::engine_residency::EngineIncarnation,
     ) -> Result<Arc<KvSlotPool>, AdoptedCheckpointRefusal> {
@@ -248,7 +249,11 @@ impl EndpointSlots {
             if state.generation().is_some() || state.paging_uncertain {
                 return Err(AdoptedCheckpointRefusal::OwnedOrUncertain);
             }
-            state.current_pool().cloned().ok_or(AdoptedCheckpointRefusal::UnknownPool)?
+            match state.pool_entry() {
+                None => return Err(AdoptedCheckpointRefusal::Unprobed),
+                Some(None) => return Err(AdoptedCheckpointRefusal::UnknownPool(PoolDiscoveryMiss::LatchedUnsupported)),
+                Some(Some(pool)) => Arc::clone(pool),
+            }
         };
         let ledger = pool.ledger.get().ok_or(AdoptedCheckpointRefusal::UnverifiedLedger)?;
         if ledger.incarnation.get().copied() != Some((incarnation.pid, incarnation.started_s)) {
@@ -322,7 +327,7 @@ impl EndpointTransition {
         if !Arc::ptr_eq(&directory().endpoint(root), &self.endpoint) {
             return Err(AdoptedCheckpointRefusal::EndpointMismatch);
         }
-        let pool = self.endpoint.adopted_checkpoint_pool(incarnation)?;
+        let pool = directory().adopted_checkpoint_pool(client, root, incarnation).await?;
         let verify = || match incarnation.liveness() {
             Liveness::Alive => Ok(()),
             Liveness::Dead => Err(AdoptedCheckpointRefusal::EngineGone),
