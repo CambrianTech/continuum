@@ -118,10 +118,6 @@ pub type CardLabels = std::collections::HashMap<uuid::Uuid, (String, airc_work::
 ///
 /// Board unread (`None`): every post renders verbatim. Nothing is dropped and nothing is
 
-/// Maximum number of wall posts delivered to context at once. Older posts
-/// remain readable via their pointer links (`persona/wall/list`) but do not
-/// consume the persona's prompt budget.
-const MAX_WALL_POSTS: usize = 15;
 fn ledgers_for_context(posts: Vec<WallPostPublished>, labels: Option<&CardLabels>) -> Vec<WallPostPublished> {
     let Some(labels) = labels else {
         return posts;
@@ -419,17 +415,13 @@ impl RagSource for WallSource {
         if posts.is_empty() {
             return empty();
         }
-        // Cap total wall posts to prevent context budget exhaustion (card b51f4b59).
-        let post_count = posts.len().min(MAX_WALL_POSTS);
-
-        let items: Vec<RagItem> = posts[..post_count].iter().map(Self::item).collect();
+        let items: Vec<RagItem> = posts.iter().map(Self::item).collect();
 
         tracing::debug!(
             persona_id = %self.persona_id,
-            posts = post_count,
+            posts = items.len(),
             "wall_posts: deliver"
         );
-        RagDelivery::of(WALL, items, false)
     }
 
 }
