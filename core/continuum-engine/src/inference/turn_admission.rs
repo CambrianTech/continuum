@@ -28,7 +28,8 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::inference::slots::{KvSlotPool, MindTurn, PageKey, SlotPermit, SlotPin};
+use crate::inference::resource_admission::{LanePriority, ServingLanePermit};
+use crate::inference::slots::{KvSlotPool, MindTurn, PageKey, SlotClass, SlotPermit, SlotPin};
 
 mod page_liveness;
 mod page_quote;
@@ -85,6 +86,10 @@ pub struct TurnAdmission {
     uncommitted: Option<(Arc<KvSlotPool>, PageKey, u32)>,
     _endpoint: crate::inference::slots::EndpointAdmission,
     scratch: Option<u32>,
+    /// A dream's ambient serving lane, taken only where it borrows a citizen slot (no scratch
+    /// slot): there it must yield to residents through the lane gate. With a scratch slot its
+    /// admission is that slot's permit, and it holds no resident lane (Cormac, card 920c43bc).
+    _lane: Option<ServingLanePermit>,
     /// The mind's act gate ([`crate::inference::slots::MindTurn`]), held for the whole
     /// generation. Declared LAST so it drops after the pin and permits: the mind's next
     /// act, woken by it, finds her slot already released.
@@ -230,6 +235,7 @@ impl From<std::time::Duration> for AdmissionPatience {
 /// for the boot window that cost Kimi 16 turns.
 pub async fn admit_turn(
     concurrency: &Arc<Semaphore>,
+    class: SlotClass,
     key: Option<PageKey>,
     pool: Option<Arc<KvSlotPool>>,
     client: &reqwest::Client,
@@ -238,7 +244,7 @@ pub async fn admit_turn(
     patience: impl Into<AdmissionPatience>,
 ) -> Result<TurnAdmission, String> {
     let patience = patience.into();
-    let admission = admit(concurrency, key, pool, client, root, approx_tokens, false, patience.readiness);
+    let admission = admit(concurrency, class, key, pool, client, root, approx_tokens, false, patience.readiness);
     match patience.deadline {
         Some(deadline) => {
             if deadline <= tokio::time::Instant::now() {
@@ -273,7 +279,7 @@ pub(crate) async fn warm_ahead(
         return Ok(());
     };
     // Best-effort: a closed endpoint is an instant no, never a held permit.
-    let mut admission = admit(concurrency, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
+    let mut admission = admit(concurrency, SlotClass::Turn, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
     if admission.page_confirmed {
         admission.uncommitted = None;
     }
@@ -294,6 +300,7 @@ pub(crate) async fn warm_ahead(
 
 async fn admit(
     concurrency: &Arc<Semaphore>,
+    class: SlotClass,
     key: Option<PageKey>,
     pool: Option<Arc<KvSlotPool>>,
     client: &reqwest::Client,
@@ -311,14 +318,26 @@ async fn admit(
         Some(k) if !warm_only => Some(MindTurn::begin(k).await?),
         _ => None,
     };
+    // A dream's ambient serving lane, held only while it must borrow a citizen slot.
+    let mut lane: Option<ServingLanePermit> = None;
     'admit: loop {
         // 1. PERMIT FIRST — event-driven wait for a free lane. Cannot fail: the
-        //    semaphore is never closed over the adapter's lifetime.
-        let _permit = concurrency
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("adapter semaphore never closed");  // expect: the semaphore lives as long as the adapter, never closed
+        //    semaphore is never closed over the adapter's lifetime. A dream holding its lane
+        //    only TRIES: when the adapter is full it lets the lane go, waits for a permit
+        //    holding nothing, and takes both again (Codex on #5786).
+        let _permit = match lane.as_ref().map(|_| concurrency.clone().try_acquire_owned()) {
+            Some(Ok(permit)) => permit,
+            Some(Err(_)) => {
+                lane = None;
+                drop(concurrency.clone().acquire_owned().await.expect("adapter semaphore never closed")); // expect: the semaphore lives as long as the adapter, never closed
+                continue 'admit;
+            }
+            None => concurrency
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("adapter semaphore never closed"), // expect: the semaphore lives as long as the adapter, never closed
+        };
 
         // 2. THE ENDPOINT — a turn holds through a closed one (an engine still loading,
         //    a transition in flight) for the caller's `patience` before it is refused;
@@ -347,7 +366,24 @@ async fn admit(
             scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
             _endpoint: endpoint,
             _mind: None,
+            _lane: None,
         };
+
+        // A DREAM YIELDS TO RESIDENTS (Fable, M5 0b2854327 01:24-01:50Z: a dream parked on scratch
+        // holding a lane while Aiko waited 1,141 s and Benchy 132 s with two slots idle). Decided
+        // each pass from the ADMITTED generation's pool (Codex on #5786: a transition can change
+        // it). Where it borrows a citizen slot (no scratch slot) it holds an ambient lane, so a
+        // waiting turn still wins, and takes it holding nothing; with a scratch slot that slot is
+        // its admission and it holds no lane.
+        if class == SlotClass::Dream && pool.as_ref().is_some_and(|pool| pool.scratch_slot().is_none()) {
+            if lane.is_none() {
+                drop(admission);
+                lane = Some(crate::inference::resource_admission::acquire_serving_lane(None, LanePriority::Ambient, None).await);
+                continue 'admit;
+            }
+        } else {
+            lane = None;
+        }
 
         if warm_only
             && pool
@@ -517,8 +553,14 @@ async fn admit(
             // BEFORE the await so cancellation cannot leave the next page treating
             // transient KV as its own warm tail.
             let slot = pool.transient_slot();
+            let Some(permit) = pool.try_acquire_slot(slot) else {
+                drop(admission);
+                lane = None;
+                wait_until_free(pool, slot).await?;
+                continue 'admit;
+            };
             admission = admission
-                .borrow_slot_for_transient(pool, slot, client, root, crate::inference::slots::page_io::gate())
+                .borrow_slot_for_transient(pool, slot, permit, client, root, crate::inference::slots::page_io::gate())
                 .await?;
         } else if let (Some(pool), Some(scratch)) = (pool.as_ref(), admission.scratch) {
             // Anonymous traffic lands on the SCRATCH slot, and takes its operation permit
@@ -529,13 +571,22 @@ async fn admit(
             // while the same round trip on an owned slot measured 658/662 reused. The
             // server already runs one request per slot at a time, so this moves the queue
             // into the owner, where it is visible, rather than adding any.
-            admission._slot_permit = Some(pool.acquire_slot(scratch).await?);
+            // Queued behind the scratch slot's holder, it holds NOTHING: not the adapter
+            // permit (sized to every slot, so a held one blocks traffic that could run now)
+            // and no serving lane (card 920c43bc).
+            let Some(permit) = pool.try_acquire_slot(scratch) else {
+                drop(admission);
+                wait_until_free(pool, scratch).await?;
+                continue 'admit;
+            };
+            admission._slot_permit = Some(permit);
             admission._endpoint.check_ready()?;
         }
 
         if admission._mind.is_none() {
             admission._mind = mind.take();
         }
+        admission._lane = lane.take();
         return Ok(admission);
     }
 }
@@ -553,11 +604,12 @@ impl TurnAdmission {
         mut self,
         pool: &Arc<KvSlotPool>,
         slot: u32,
+        permit: SlotPermit,
         client: &reqwest::Client,
         root: &str,
         page_io: &'static crate::runtime::admission_gate::AdmissionGate,
     ) -> Result<Self, String> {
-        self._slot_permit = Some(pool.acquire_slot(slot).await?);
+        self._slot_permit = Some(permit);
         self._endpoint.check_ready()?;
         let page_io = crate::inference::slots::admit_page_io(page_io).map_err(|closed| closed.to_string())?;
         let (previous, pin) = pool.take_resident(slot);
@@ -634,6 +686,7 @@ async fn admit_transient_through(
         scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
         _endpoint: endpoint,
         _mind: None,
+        _lane: None,
     };
     let Some(pool) = pool else {
         return Ok(admission);
@@ -647,7 +700,9 @@ async fn admit_transient_through(
             pool.n_slots()
         ));
     }
-    admission = admission.borrow_slot_for_transient(&pool, slot, client, root, page_io).await?;
+    // It holds no lane and no adapter permit, so waiting for the slot here holds nothing.
+    let permit = pool.acquire_slot(slot).await?;
+    admission = admission.borrow_slot_for_transient(&pool, slot, permit, client, root, page_io).await?;
     Ok(admission)
 }
 
@@ -929,6 +984,15 @@ async fn kv_page_action_with_capacity(
          the returner's state in; an uncertain receipt quarantines the endpoint",
     );
     outcome
+}
+
+/// Wait until `slot` is free, holding nothing, and let it go: the caller then takes every gate
+/// again (its slot without waiting). Waiting on the slot's own semaphore cannot miss the release
+/// the way a notification raised before the permit returns could; the next pass may still lose
+/// the slot to another caller and wait again, which is how a non-turn call yields.
+async fn wait_until_free(pool: &KvSlotPool, slot: u32) -> Result<(), String> {
+    drop(pool.acquire_slot(slot).await?);
+    Ok(())
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@
     mod one_act_per_mind;
     mod lifecycle;
     mod page_liveness;
+    mod queued_dream;
     mod unresolved_page;
 
     // what this catches (M5, 2026-09-25 and 2026-09-26): a slow switch on a moving engine
@@ -116,7 +117,7 @@
         let held = pool.acquire_slot(scratch).await.expect("test: the probe holds scratch");
         let sem = Arc::new(Semaphore::new(4));
         let client = reqwest::Client::new();
-        let waiting = admit_turn(&sem, None, Some(pool.clone()), &client, "test://scratch-owner", 0, std::time::Duration::ZERO);
+        let waiting = admit_turn(&sem, crate::inference::slots::SlotClass::Background, None, Some(pool.clone()), &client, "test://scratch-owner", 0, std::time::Duration::ZERO);
         tokio::pin!(waiting);
         assert!(
             futures::poll!(&mut waiting).is_pending(),
@@ -200,13 +201,13 @@
         // Two residents warm their slots: a large working set and a small one. Each
         // turn COMPLETES (a dropped, uncommitted turn forgets its attribution — the
         // cancellation rule — and would leave both slots reading as free).
-        let mut adm_a = admit_turn(&sem, Some(a), Some(pool.clone()), &client, &root, 20_000, std::time::Duration::ZERO)
+        let mut adm_a = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(a), Some(pool.clone()), &client, &root, 20_000, std::time::Duration::ZERO)
             .await
             .expect("test: a admitted");
         let slot_a = adm_a.slot().expect("test: a leased a slot");
         adm_a.generation_completed();
         drop(adm_a);
-        let mut adm_b = admit_turn(&sem, Some(b), Some(pool.clone()), &client, &root, 500, std::time::Duration::ZERO)
+        let mut adm_b = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(b), Some(pool.clone()), &client, &root, 500, std::time::Duration::ZERO)
             .await
             .expect("test: b admitted");
         let slot_b = adm_b.slot().expect("test: b leased a slot");
@@ -215,7 +216,7 @@
         assert_ne!(slot_a, slot_b);
         assert_eq!(pool.transient_slot(), slot_b, "the cheapest page to lose is the small one");
         // Anonymous traffic: borrowed THROUGH the pool — b's page saved, the slot carried.
-        let transient = admit_turn(&sem, None, Some(pool.clone()), &client, &root, 0, std::time::Duration::ZERO)
+        let transient = admit_turn(&sem, crate::inference::slots::SlotClass::Background, None, Some(pool.clone()), &client, &root, 0, std::time::Duration::ZERO)
             .await
             .expect("test: transient admitted");
         assert_eq!(transient.slot(), Some(slot_b), "pinned to the borrowed slot, never left to the server");
@@ -285,7 +286,7 @@
 
         // A is admitted: holds the permit and pins the one slot.
         let adm_a = admit_turn(
-            &sem,
+            &sem, crate::inference::slots::SlotClass::Turn,
             Some(a),
             Some(pool.clone()),
             &client,
@@ -321,7 +322,7 @@
 
         // The endpoint lease is shared across adapter semaphores. A different
         // adapter cannot enter while retirement drains this admitted turn.
-        let adm = admit_turn(&sem, Some(b), Some(pool), &client, "test://admit", 100, std::time::Duration::ZERO)
+        let adm = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(b), Some(pool), &client, "test://admit", 100, std::time::Duration::ZERO)
             .await
             .expect("test: second turn");
         let endpoint = crate::inference::slots::directory().endpoint("test://admit");
@@ -330,7 +331,7 @@
         assert!(futures::poll!(&mut transition).is_pending());
         let other_adapter = Arc::new(Semaphore::new(1));
         assert!(
-            admit_turn(&other_adapter, None, None, &client, "test://admit", 0, std::time::Duration::ZERO)
+            admit_turn(&other_adapter, crate::inference::slots::SlotClass::Background, None, None, &client, "test://admit", 0, std::time::Duration::ZERO)
                 .await
                 .is_err(),
             "another adapter cannot bypass endpoint suspension"
@@ -338,7 +339,7 @@
         drop(adm);
         drop(transition.await);
         assert!(
-            admit_turn(&other_adapter, None, None, &client, "test://admit", 0, std::time::Duration::ZERO)
+            admit_turn(&other_adapter, crate::inference::slots::SlotClass::Background, None, None, &client, "test://admit", 0, std::time::Duration::ZERO)
                 .await
                 .is_err(),
             "failed transition remains closed"
@@ -358,7 +359,7 @@
         let client = reqwest::Client::new();
         let a = PageKey::mind(Uuid::from_u128(11)).unwrap(); // test: non-nil ids
         let b = PageKey::mind(Uuid::from_u128(13)).unwrap(); // test: non-nil ids
-        let adm_a = admit_turn(&sem, Some(a), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO)
+        let adm_a = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(a), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO)
             .await
             .expect("test: A admitted");
         let slot_a = adm_a.slot().expect("A pinned the one slot"); // test: a 1-slot pool leases to the first admission
@@ -366,7 +367,7 @@
         let warm = warm_ahead(&sem, b, pool.clone(), &client, root);
         assert!(warm.await.is_ok(), "warm-ahead is best-effort: it gives up at once, never waits");
 
-        let turn_b = admit_turn(&sem, Some(b), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO);
+        let turn_b = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(b), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO);
         tokio::pin!(turn_b);
         assert!(futures::poll!(&mut turn_b).is_pending(), "B was admitted unpinned while every slot was held");
         assert_eq!(sem.available_permits(), 1, "a turn waiting for a slot must not hold a lane permit (Fable on #4515)");
@@ -392,12 +393,12 @@
         let first_key = PageKey::mind(Uuid::new_v4()).ok_or("first key")?;
         let waiting_key = PageKey::mind(Uuid::new_v4()).ok_or("waiting key")?;
         let first = admit_turn(
-            &first_adapter, Some(first_key), Some(pool.clone()), &client, &root,
+            &first_adapter, crate::inference::slots::SlotClass::Turn, Some(first_key), Some(pool.clone()), &client, &root,
             100, std::time::Duration::ZERO,
         ).await?;
         let first_slot = first.slot().ok_or("first admission must pin the slot")?;
         let mut waiting = Box::pin(admit_turn(
-            &waiting_adapter, Some(waiting_key), Some(pool.clone()), &client, &root,
+            &waiting_adapter, crate::inference::slots::SlotClass::Turn, Some(waiting_key), Some(pool.clone()), &client, &root,
             100, std::time::Duration::ZERO,
         ));
         assert!(futures::poll!(&mut waiting).is_pending(), "the only slot is pinned");
@@ -410,7 +411,7 @@
         let mut transition = Box::pin(endpoint.transition_if(&superseded));
         assert!(futures::poll!(&mut transition).is_pending(), "existing readers must drain");
         let mut later = Box::pin(admit_turn(
-            &waiting_adapter, None, None, &client, &root,
+            &waiting_adapter, crate::inference::slots::SlotClass::Background, None, None, &client, &root,
             0, std::time::Duration::ZERO,
         ));
         assert!(futures::poll!(&mut later).is_pending(), "a later reader cannot overtake the writer");
@@ -446,9 +447,9 @@
         let root = format!("test://admission-queue-drain-{}", Uuid::new_v4());
         let sem = Arc::new(Semaphore::new(1));
         let client = reqwest::Client::new();
-        let running = admit_turn(&sem, None, None, &client, &root, 0, std::time::Duration::ZERO).await?;
-        let mut first = Box::pin(admit_turn(&sem, None, None, &client, &root, 0, std::time::Duration::ZERO));
-        let mut second = Box::pin(admit_turn(&sem, None, None, &client, &root, 0, std::time::Duration::ZERO));
+        let running = admit_turn(&sem, crate::inference::slots::SlotClass::Background, None, None, &client, &root, 0, std::time::Duration::ZERO).await?;
+        let mut first = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Background, None, None, &client, &root, 0, std::time::Duration::ZERO));
+        let mut second = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Background, None, None, &client, &root, 0, std::time::Duration::ZERO));
         assert!(futures::poll!(&mut first).is_pending());
         assert!(futures::poll!(&mut second).is_pending());
         let endpoint = crate::inference::slots::directory().endpoint(&root);
@@ -494,9 +495,9 @@
         let client = reqwest::Client::new();
         let first_key = PageKey::mind(Uuid::new_v4()).ok_or("first key")?;
         let waiting_key = PageKey::mind(Uuid::new_v4()).ok_or("waiting key")?;
-        let first = admit_turn(&sem, Some(first_key), Some(old_pool.clone()), &client, &root,
+        let first = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(first_key), Some(old_pool.clone()), &client, &root,
             100, std::time::Duration::ZERO).await?;
-        let mut waiting = Box::pin(admit_turn(&sem, Some(waiting_key), Some(old_pool.clone()),
+        let mut waiting = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(waiting_key), Some(old_pool.clone()),
             &client, &root, 100, AdmissionPatience::for_turn()));
         assert!(futures::poll!(&mut waiting).is_pending());
         // Healthy slot contention outlasts the 240s readiness allowance without
@@ -539,13 +540,13 @@
         let client = reqwest::Client::new();
         let first_key = PageKey::mind(Uuid::new_v4()).ok_or("first key")?;
         let waiting_key = PageKey::mind(Uuid::new_v4()).ok_or("waiting key")?;
-        let first = admit_turn(&sem, Some(first_key), Some(pool.clone()), &client, &root,
+        let first = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(first_key), Some(pool.clone()), &client, &root,
             100, std::time::Duration::ZERO).await?;
         let started = tokio::time::Instant::now();
-        let mut waiting = Box::pin(admit_turn(&sem, Some(waiting_key), Some(pool.clone()),
+        let mut waiting = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(waiting_key), Some(pool.clone()),
             &client, &root, 100, std::time::Duration::from_secs(10)));
         assert!(futures::poll!(&mut waiting).is_pending());
-        let mut cancelled = Box::pin(admit_turn(&sem, Some(waiting_key), Some(pool.clone()),
+        let mut cancelled = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(waiting_key), Some(pool.clone()),
             &client, &root, 100, std::time::Duration::from_secs(10)));
         assert!(futures::poll!(&mut cancelled).is_pending());
         drop(cancelled);
@@ -577,10 +578,10 @@
             let client = reqwest::Client::new();
             let first_key = PageKey::mind(Uuid::new_v4()).ok_or("first key")?;
             let next_key = PageKey::mind(Uuid::new_v4()).ok_or("next key")?;
-            let running = admit_turn(&sem, Some(first_key), Some(pool.clone()), &client, &root,
+            let running = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(first_key), Some(pool.clone()), &client, &root,
                 100, std::time::Duration::ZERO).await?;
             let started = tokio::time::Instant::now();
-            let waiting = admit_turn(&sem, Some(next_key), Some(pool), &client, &root, 100,
+            let waiting = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(next_key), Some(pool), &client, &root, 100,
                 AdmissionPatience::until(started + std::time::Duration::from_secs(8)));
             assert!(waiting.await.is_err());
             assert_eq!(started.elapsed(), std::time::Duration::from_secs(8));
@@ -606,10 +607,10 @@
         let b = PageKey::mind(Uuid::from_u128(23)).unwrap(); // test: non-nil ids
         // A decode is in flight on slot 0, so A leases and pins, then waits for the permit.
         let busy = pool.acquire_slot(0).await.expect("test: the stand-in decode holds slot 0");
-        let mut turn_a = Box::pin(admit_turn(&sem, Some(a), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO));
+        let mut turn_a = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(a), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO));
         assert!(futures::poll!(&mut turn_a).is_pending(), "A waits for the slot permit");
         assert!(pool.pin(&a).is_some(), "A holds its lease, pinned");
-        let turn_b = admit_turn(&sem, Some(b), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO);
+        let turn_b = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(b), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO);
         tokio::pin!(turn_b);
         assert!(futures::poll!(&mut turn_b).is_pending(), "every slot pinned: B parks");
         assert!(pool.pin(&b).is_none(), "B has no lease while it is parked");
@@ -768,7 +769,7 @@
                 }
             }).await.expect("restore request reached fixture");
             let mut queued = Box::pin(admit_turn(
-                &sem,
+                &sem, crate::inference::slots::SlotClass::Turn,
                 Some(key),
                 Some(pool.clone()),
                 &client,
@@ -813,7 +814,7 @@
         // A warm-ahead while her act runs, even from another adapter, is a no-op: her KV is
         // already in her slot, and it never queues behind her act (`slots::mind_gate`). It
         // cannot see or erase her act's provisional holder.
-        let mut turn = admit_turn(&sem, Some(key), Some(pool.clone()), &client, &root, 100, std::time::Duration::ZERO)
+        let mut turn = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()), &client, &root, 100, std::time::Duration::ZERO)
             .await
             .expect("turn restore");
         let other_adapter = Arc::new(Semaphore::new(2));
