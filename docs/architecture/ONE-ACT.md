@@ -848,3 +848,12 @@ live validation remain pending. The M5's supported 584c deployment was deferred
 before stopping because its lifecycle gate is busy; the old 2069 slot was restored
 and verified. The code defect is reproduced; it is not yet proof of the complete
 live gate's cause. No forced restart or page deletion was performed.
+
+At 22:12Z, PR #5794 passed all applicable CI and merged as
+`8b964d5d58d1af236f47deaa60a6308ebebe6553`. Publication run `42119014603`
+is the source for the common three-node deployment target, containing both
+fairness and declined-growth settlement. An isolated deployment checkout is
+prepared; the stale Windows checkout is not a deployment source. Acceptance
+requires this validated revision running on Windows, M5 and IntelMac with live
+useful resident work, saved-page continuity and bounded waits. Neither CI nor
+historical rollback activity establishes that result.
