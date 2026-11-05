@@ -86,7 +86,8 @@ pub struct WorkSubmit {
     pub benchmark: Arc<dyn BenchmarkSubmissionAdapter>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+// Deserialize only: the `Shown` ids are read from her call, never re-rendered.
+#[derive(Debug, Clone, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/work/WorkSubmitParams.ts"
@@ -104,9 +105,10 @@ pub struct WorkSubmitParams {
     #[ts(type = "string")]
     pub card_id: String,
     /// Minted when omitted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[ts(optional, type = "string")]
-    pub submission_id: Option<Uuid>,
+    #[schemars(with = "Option<String>")]
+    pub submission_id: Option<Shown<airc_work::SubmissionId>>,
     /// Your claim; defaults to the board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
@@ -325,11 +327,27 @@ pub(super) fn same_submission(earlier: impl IntoIterator<Item = SubmissionKey>, 
 /// - **Not an authorization.** Resolving an id grants nothing; the holder and ownership
 ///   guards downstream are untouched and still run on the canonical id.
 pub(super) fn resolve_shown(raw: &str, candidates: &[uuid::Uuid], label: &str) -> Result<Uuid, CommandError> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Err(CommandError::Invalid(format!("a {label} id is required")));
-    }
     continuum_base::id_resolve::resolve_handle(raw, candidates, label).map_err(CommandError::Invalid)
+}
+
+/// An id she typed back ([`Shown`], parsed by serde in the params) that named no candidate
+/// or several, at the command boundary. The typed [`ShownIdError`] is decided by
+/// [`Shown::resolve`] against the one card (or one submission) this verb read; its sentence
+/// names the candidates and the accepted form ("the full id or at least 4 of its leading hex
+/// characters"), so the refusal is what she needs to call again.
+pub(super) fn shown_refused(e: ShownIdError) -> CommandError {
+    CommandError::Invalid(e.to_string())
+}
+
+/// A submission on `card` (the one card each verb already read off its board), named by what
+/// she was shown. A full id passes through (a new id she mints, or a retry); a prefix must
+/// name exactly one of that card's submissions. Both `work/submit` and `work/review` resolve
+/// here, so the candidate set is decided once.
+pub(super) fn submission_named(
+    shown: &Shown<airc_work::SubmissionId>,
+    card: Option<&airc_lib::WorkCard>,
+) -> Result<airc_work::SubmissionId, ShownIdError> {
+    shown.resolve(card.into_iter().flat_map(|c| c.submissions.iter().map(|s| s.submission_id)))
 }
 
 /// What a submit is made of when the citizen only names her card: her checkout for

@@ -227,6 +227,141 @@
         assert!(p.room.is_none(), "the card decides the room");
     }
 
+    // what this catches (Cormac's review of #5775 at 79e9dec89; the 2026-07-13 measurement
+    // that 28% of live work/claim calls carried a full UUID with one character added or
+    // dropped, e.g. `d7cfe47e0-8e39-...`): work/submit's `claim_id` stays a String on the
+    // `id_resolve` path it had on canary, scoped to THIS card's one claim. Its full and
+    // shown forms resolve. The corrupted full id is pinned as REFUSED, because that path is
+    // `resolve_handle`, which never repaired (the repairing `id_resolve::resolve` is not
+    // what work/submit called): card 484b000b adds the 8-hex-group form to `Shown` and
+    // flips the last assertion when it migrates this field.
+    #[test]
+    fn a_submit_claim_id_keeps_its_canary_path_full_and_shown_resolve(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let claim = uuid::Uuid::parse_str("d7cfe47e-8e39-4c1a-9b2f-0a1b2c3d4e5f")?;
+        let p: super::WorkSubmitParams = serde_json::from_value(serde_json::json!({
+            "card_id": "0c4317e1", "claim_id": "d7cfe47e"
+        }))?;
+        assert_eq!(p.claim_id.as_deref(), Some("d7cfe47e"), "the claim handle decodes as she typed it");
+        let resolve = |raw: &str| resolve_shown(raw, &[claim], "claim");
+        assert!(matches!(resolve("d7cfe47e"), Ok(id) if id == claim), "the shown form");
+        assert!(matches!(resolve(&claim.to_string()), Ok(id) if id == claim), "the full form");
+        assert!(
+            resolve("d7cfe47e0-8e39-4c1a-9b2f-0a1b2c3d4e5f").is_err(),
+            "canary's strict path refuses a one-char-corrupted full id; 484b000b flips this"
+        );
+        Ok(())
+    }
+
+    /// A card holding `submissions`, the one candidate set `submission_named` reads.
+    fn card_with_submissions(
+        submissions: &[airc_work::SubmissionId],
+    ) -> Result<airc_work::WorkCard, Box<dyn std::error::Error>> {
+        use airc_core::PeerId;
+        use airc_work::{CardState, ClaimId, GitObjectId, Priority, RepoId, WorkCard, WorkCardId, WorkSubmission};
+        let card_id = WorkCardId::new();
+        let claim_id = ClaimId::new();
+        let artifact: airc_work::SubmissionArtifact = serde_json::from_value(serde_json::json!({
+            "hash": "a".repeat(64), "size_bytes": 5, "mime": "text/x-diff"
+        }))?;
+        let base_sha = GitObjectId::new("b".repeat(40))?;
+        let publisher = PeerId::new();
+        Ok(WorkCard {
+            card_id,
+            repo: RepoId::new("CambrianTech/continuum")?,
+            title: "a card".to_string(),
+            body: None,
+            priority: Priority::P2,
+            lane_id: None,
+            state: CardState::Claimed,
+            owner: Some(publisher),
+            claim_provenance: None,
+            claim_id: Some(claim_id),
+            claim_expires_at_ms: None,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: publisher,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            reviews: None,
+            submissions: submissions
+                .iter()
+                .map(|&submission_id| WorkSubmission {
+                    submission_id,
+                    card_id,
+                    claim_id,
+                    instance: "ordinary".into(),
+                    base_sha: base_sha.clone(),
+                    artifact: artifact.clone(),
+                    publisher,
+                    submitted_at_ms: 10,
+                })
+                .collect(),
+            last_submission_rejection: None,
+        })
+    }
+
+    // what this catches (Benchy, M5 2026-11-04 17:51:56Z): `persona.act.refused
+    // command="work/submit" reason=work/submit: [arguments] CommandRequest deserialization
+    // failed: UUID parsing failed: invalid length: expected length 32 for simple f...`.
+    // work/submit's submission_id (and work/review's review_id, submission_id and
+    // review_claim_id) were raw `Uuid`, so the id she was SHOWN died in serde before any
+    // handler could resolve it. They decode as airc's `Shown<T>` and resolve against the one
+    // card the verb read: a short id resolves on both verbs, a full id passes through, a
+    // prefix two submissions share is the typed `Ambiguous` refusal naming both, and junk is
+    // refused at decode with a sentence that names the accepted form.
+    #[test]
+    fn a_shown_submission_id_resolves_on_its_card_and_a_shared_prefix_is_refused_by_type(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use airc_core::shown_id::ShownIdError;
+        use airc_work::SubmissionId;
+        let a = SubmissionId::from_uuid(uuid::Uuid::parse_str("d61513e4-a332-4cd3-a208-5bf0e8acd50d")?);
+        let b = SubmissionId::from_uuid(uuid::Uuid::parse_str("d61599ff-0000-4000-8000-000000000000")?);
+        let card = card_with_submissions(&[a, b])?;
+
+        // work/submit: the short id she was shown decodes and names her submission.
+        let submit: super::WorkSubmitParams = serde_json::from_value(serde_json::json!({
+            "card_id": "0c4317e1", "submission_id": "d61513e4", "claim_id": "136f8174"
+        }))?;
+        let named = submit.submission_id.ok_or("the submission id she sent")?;
+        assert_eq!(super::submission_named(&named, Some(&card)), Ok(a));
+
+        // work/review: every id she was shown decodes; the submission resolves the same way.
+        let review: super::WorkReviewParams = serde_json::from_value(serde_json::json!({
+            "review_card_id": "3f2a91c0", "outcome": "passed", "card_id": "0c4317e1",
+            "submission_id": "d61599ff", "review_id": "9a0b1c2d", "review_claim_id": "136f8174"
+        }))?;
+        let named = review.submission_id.ok_or("the submission id she sent")?;
+        assert_eq!(super::submission_named(&named, Some(&card)), Ok(b));
+
+        // A full id still works, and passes without its candidates (a new id she mints).
+        let fresh = uuid::Uuid::new_v4();
+        let full: super::WorkSubmitParams = serde_json::from_value(serde_json::json!({
+            "card_id": "0c4317e1", "submission_id": fresh.to_string()
+        }))?;
+        let named = full.submission_id.ok_or("the submission id she sent")?;
+        assert_eq!(super::submission_named(&named, None), Ok(SubmissionId::from_uuid(fresh)));
+
+        // A prefix both submissions share is refused by TYPE, naming both, never guessed.
+        let shared: super::WorkSubmitParams = serde_json::from_value(serde_json::json!({
+            "card_id": "0c4317e1", "submission_id": "d615"
+        }))?;
+        let named = shared.submission_id.ok_or("the submission id she sent")?;
+        let refused = super::submission_named(&named, Some(&card));
+        assert!(
+            matches!(&refused, Err(ShownIdError::Ambiguous { matches, .. }) if matches.len() == 2),
+            "{refused:?}"
+        );
+
+        // Junk never decodes, and what she reads names the form that is accepted.
+        let junk = serde_json::from_value::<super::WorkSubmitParams>(serde_json::json!({
+            "card_id": "0c4317e1", "submission_id": "placeholder"
+        }));
+        let what_she_reads = junk.err().ok_or("junk must not decode")?.to_string();
+        assert!(what_she_reads.contains("give the full id or at least"), "{what_she_reads}");
+        Ok(())
+    }
+
     // what this catches (Kimi, 2026-09-28): a citizen with a pushed commit in hand passes its
     // git sha as the artifact hash and gets a bare parse error. A git sha is named as one and
     // the refusal says to omit the field; a real 64-hex hash is never mistaken for one.
