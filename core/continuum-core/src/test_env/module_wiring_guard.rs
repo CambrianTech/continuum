@@ -218,6 +218,49 @@ fn every_service_module_is_registered_or_declares_why_not() {
 }
 
 #[test]
+// what this catches: a ModuleSpec left in MODULES after its module was deleted. required_modules()
+// then demands a name nothing registers, and a full-citizen boot refuses to start ("Module
+// registration incomplete ... missing [agent]": canary 107e10ddc on the M5, 2026-10-31, fixed by
+// #5673; runtime.rs records the same trap for `search` and `inference`). The check above looks the
+// other way (a module with no registration); this one closes the pair: every spec names a module
+// whose config still declares it in production code. Card 39a5c0f6.
+fn every_required_module_spec_names_a_declared_module() {
+    let files = crate::test_env::source_tree::crate_sources();
+    assert!(files.len() > 100, "source scan found only {} files: the walk is broken", files.len());
+
+    // The `name: "..."` of every `ModuleConfig { .. }` literal in production code (comments and
+    // test modules dropped by `code()`): the names a boot can actually register.
+    let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for file in &files {
+        let code = file.code();
+        for (at, _) in code.match_indices("ModuleConfig {") {
+            let body = &code[at..];
+            let body = &body[..body.find('}').unwrap_or(body.len())]; // unwrap_or: an unclosed literal is read to the end of the file
+            if let Some(name_at) = body.find("name: \"") {
+                let rest = &body[name_at + "name: \"".len()..];
+                if let Some(end) = rest.find('"') {
+                    declared.insert(rest[..end].to_string());
+                }
+            }
+        }
+    }
+    assert!(declared.len() > 50, "found only {} module config names: the scan regressed", declared.len());
+
+    let missing: Vec<&str> = crate::runtime::runtime::MODULES
+        .iter()
+        .map(|spec| spec.name)
+        .filter(|name| !declared.contains(*name))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these ModuleSpec rows name a module no production ModuleConfig declares, so a boot that \
+         requires them refuses to start:\n  {}\n\nDelete the spec with its module (runtime.rs \
+         MODULES), or restore the module.",
+        missing.join("\n  ")
+    );
+}
+
+#[test]
 // what this catches: an UNWIRED entry added as a silent mute. Every
 // exemption must carry a reason, and the two categories that are not
 // self-evidently harmless (staging, defect) must name the task that
