@@ -301,7 +301,8 @@
         registry.register(Arc::new(ToolsTrap(reached.clone())));
         let exec = exec_over(registry, Uuid::new_v4());
         let calls = vec![NativeToolCall { id: "cut".into(), name: THOUGHT_CUT_SENTINEL.into(), input: json!({}) }];
-        let out = exec.execute_native_batch(&calls, &ctx()).await.expect("batch itself succeeds");
+        let batch = crate::ai::types::CallBatch::classify(calls, crate::ai::types::CallOrigin::Substrate);
+        let out = exec.execute_native_batch(&batch, &ctx()).await.expect("batch itself succeeds");
         assert_eq!(reached.load(std::sync::atomic::Ordering::SeqCst), 0, "the router never saw the note");
         assert!(out.results[0].content.contains("NOT run for you"), "her teacher text, whole: {}", out.results[0].content);
     }
