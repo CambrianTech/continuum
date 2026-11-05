@@ -91,5 +91,6 @@ async fn a_refused_erase_preserves_the_saved_page_without_reclamation_proof() {
     assert_eq!(engine.saved.lock().expect("saved").as_deref(), Some("resident-context"));
     assert_eq!(engine.resident.lock().expect("resident").as_deref(), Some("resident-context"));
     assert!(pool.confirms(&key));
+    assert!(!pool.holders.lock().contains_key(&0), "erase refusal can mean invalid slot: never invent warm attribution from a rejection");
     server.abort();
 }
