@@ -714,3 +714,25 @@ not proof of a new scheduler. CI is pending for the recovered branch.
 The measured 5c/5d admission validator remains unfinished. The older contention
 replay assumes an equal prefill/decode split and a constant prefill rate; it
 cannot certify nonpreemptible chunk boundaries or measured warm-decode gaps.
+
+### Handoff implementation checkpoint — 2026-11-05 18:24Z
+
+The recovered dyno passed all CI and merged as `24e31fb919`. The scratch-slot
+wake fix passed all CI and merged as `f5bcda1dd5`; its platform publication
+`42078670563` is running. Neither milestone establishes live speed gains.
+
+Fairness work is isolated on `codex/grant-receipt-fairness`. Commit `a078faf257`
+records terminal receipt revisions under the same mutex as fixed reservations.
+Seventeen grant tests pass: progress survives completion and restart between
+publisher ticks; unsent retries and cancellation do not count as service; a
+fenced engine's late receipt cannot resurrect progress. This is implemented
+custody bookkeeping, not yet a serving-policy change.
+
+The next phase fences a completed holder's reacquisition while continuing to
+charge its resident capacity. The existing re-home path keeps a binding when
+its grant disappears, and the shared engine deliberately retains idle KV.
+Therefore deleting a grant is not a reclamation receipt. The pending handoff
+must not release its fixed claim until verified save-and-erase or an engine
+fence. The pinned engine fork exposes `/slots/{id}?action=erase`; production
+integration must validate its response, protect page IO and endpoint identity,
+and retain custody across cancellation before enabling the new policy.
