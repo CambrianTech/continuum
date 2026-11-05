@@ -150,7 +150,6 @@ crate::action_command! {
         let mut response = match (think, sink) {
             // A forwarded think budget: generated under it, or refused typed by the adapter.
             (Some(think), sink) => {
-                use crate::ai::adapter::DispatchTermsPolicy as _;
                 let terms = crate::ai::types::DispatchTerms { admission: None, think: Some(think) };
                 match sink {
                     Some(sink) => adapter.generate_admitted(request, terms, sink).await.map_err(|e| e.to_string())?,

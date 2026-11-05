@@ -5,7 +5,7 @@
 //! 2026-11-03: "System accommodates it doesn't do stupid division"). Published on every tick
 //! that moves a grant; the re-home reconciler binds each mind to hers.
 use super::*;
-use crate::capacity::window_grant::{Demand, DemandFollowing, PoolGrants, WindowPolicy};
+use crate::capacity::window_grant::{Demand, DemandFollowing, PoolGrants};
 
 impl ServingDaemonModule {
     /// The minds' grants on the running engine, published when one moves.
