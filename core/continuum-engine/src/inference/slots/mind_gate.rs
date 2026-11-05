@@ -57,17 +57,32 @@ fn gate(key: PageKey) -> Arc<Semaphore> {
 
 impl MindTurn {
     /// Wait for `key`'s running act (and every act queued before this one) to finish.
-    /// Nothing closes a gate, so the error is unreachable; it is a refusal, never a panic.
+    /// A transferring grant parks on the existing grant watch, holding no physical custody.
     pub(crate) async fn begin(key: PageKey) -> Result<MindTurn, String> {
-        let read = custody(key.persona()).read_owned().await;
-        if crate::capacity::window_grant::is_grant_retiring(key.persona()) {
-            return Err("resident grant is transferring physical custody".into());
+        Self::begin_waiting(key, crate::capacity::mind_window::grants_waiter,
+            || crate::capacity::window_grant::is_grant_retiring(key.persona())).await
+    }
+
+    async fn begin_waiting<S, W, B>(key: PageKey, subscribe: S, blocked: B) -> Result<MindTurn, String>
+    where
+        S: Fn() -> Result<W, crate::capacity::mind_window::GrantsUnavailable>,
+        W: std::future::Future<Output = Result<(), crate::capacity::mind_window::GrantsUnavailable>>,
+        B: Fn() -> bool,
+    {
+        loop {
+            // Subscribe before inspecting state, so publication between check and wait is seen.
+            let next = subscribe();
+            if !blocked() {
+                let read = custody(key.persona()).read_owned().await;
+                let permit = gate(key).acquire_owned().await.map_err(|_| format!("the act gate of {key} was closed"))?;
+                if !blocked() {
+                    return Ok(MindTurn { _permit: permit, _custody: read });
+                }
+                drop(permit);
+                drop(read);
+            }
+            next.map_err(|e| e.to_string())?.await.map_err(|e| e.to_string())?;
         }
-        let permit = gate(key).acquire_owned().await.map_err(|_| format!("the act gate of {key} was closed"))?;
-        if crate::capacity::window_grant::is_grant_retiring(key.persona()) {
-            return Err("resident grant began transferring while queued".into());
-        }
-        Ok(MindTurn { _permit: permit, _custody: read })
     }
 
     /// All page users of this persona (including forks) drain before physical reclamation.
@@ -87,6 +102,28 @@ impl MindTurn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn a_transferring_mind_parks_without_holding_page_custody() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let persona = uuid::Uuid::new_v4();
+        let key = PageKey::mind(persona).expect("mind");
+        let blocked = AtomicBool::new(true);
+        let (tx, rx) = tokio::sync::watch::channel(0u8);
+        let begin = MindTurn::begin_waiting(key, || {
+            let mut rx = rx.clone();
+            rx.borrow_and_update();
+            Ok(async move { rx.changed().await.map_err(|_| crate::capacity::mind_window::GrantsUnavailable) })
+        }, || blocked.load(Ordering::SeqCst));
+        tokio::pin!(begin);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut begin).await.is_err());
+        let physical = tokio::time::timeout(std::time::Duration::from_secs(1), MindTurn::reclaim(persona)).await.expect("waiting turn holds no read custody");
+        drop(physical);
+        tx.send(1).expect("publication");
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut begin).await.is_err(), "still blocked after unrelated publication");
+        blocked.store(false, Ordering::SeqCst);
+        tx.send(2).expect("grant returned");
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(1), begin).await.expect("wake").is_ok());
+    }
     #[tokio::test]
     async fn reclaim_drains_forks_and_bars_new_page_users_without_stopping_other_minds() {
         let persona = uuid::Uuid::new_v4();

@@ -331,7 +331,10 @@ pub(crate) fn record_reclaimed_grant(proof: crate::inference::slots::grant_hando
 }
 
 pub(crate) fn is_grant_retiring(persona: uuid::Uuid) -> bool {
-    RESERVATIONS.lock().retiring.contains_key(&persona)
+    let state = RESERVATIONS.lock();
+    state.retiring.contains_key(&persona) || state.yield_after.get(&persona).is_some_and(|(lease, baseline)| {
+        state.receipts.get(&persona).is_some_and(|(engine, revision)| *engine == lease.engine && revision > baseline)
+    })
 }
 
 /// A refused transfer returns authority, never free capacity. The publisher must restore

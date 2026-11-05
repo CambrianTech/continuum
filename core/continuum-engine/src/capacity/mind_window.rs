@@ -40,6 +40,7 @@ impl Decided {
 /// The window of mind `persona`, whose requests go to `adapter` and whose binding says `bound`.
 pub fn mind_window(persona: uuid::Uuid, adapter: &dyn AIProviderAdapter, bound: u32) -> MindWindow {
     if adapter.serves_on_shared_pool() {
+        if super::window_grant::is_grant_retiring(persona) { return MindWindow::Ungranted; }
         return match super::window_grant::current_grant(persona).and_then(Tokens::new) {
             Some(granted) => MindWindow::Decided(Decided::Granted(granted)),
             None => MindWindow::Ungranted,
