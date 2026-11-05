@@ -790,3 +790,12 @@ Twenty-four grant tests pass, including restoration without immediate retry;
 three HTTP handoff tests cover successful save/erase and refusal of either action.
 Serving integration and its wait path remain unconnected. Resident-only reclaim
 still refuses existing fork pages, so this is not proof of fairness for that case.
+
+At 19:48Z, serving publication is connected to persistent `FairGrantState` and
+endpoint-retained reclamation. `mind_window` treats a due handoff as ungranted;
+the page-user gate parks on the existing grant watch without holding a lane or
+page custody. The serving crate passes `cargo check`; two mind-gate tests and
+24 grant tests pass. The new wait test covers an unrelated publication and
+verifies that the physical reclaimer can acquire custody while the mind waits.
+This is an integration checkpoint, not rollout acceptance: the combined HTTP
+handoff-to-publication test, current-canary integration and CI are still required.
