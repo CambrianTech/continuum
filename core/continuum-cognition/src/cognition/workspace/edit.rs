@@ -505,6 +505,15 @@ impl Contribution {
         contribution
     }
 
+    /// An act refused because her required floors and measured output need do not fit her window
+    /// ([`IrreducibleShortfall`]): parked like any capacity refusal, its cause typed.
+    pub fn output_room_refused(short: IrreducibleShortfall) -> Self {
+        let mut contribution = Self::prompt_capacity_refused(short.into());
+        contribution.reasoning = "her measured output need does not fit the serving window".into();
+        contribution.capacity_refusal = Some(short.into());
+        contribution
+    }
+
     pub fn with_capacity_readiness(mut self, readiness: Arc<CapacityReadiness>) -> Self {
         if let Some(refusal) = &mut self.capacity_refusal {
             refusal.readiness = Some(readiness);

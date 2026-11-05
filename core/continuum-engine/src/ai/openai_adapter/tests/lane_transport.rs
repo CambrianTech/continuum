@@ -263,7 +263,9 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
                     reply: 0,
                     request_id: "fixture",
                 }),
+                admission: None,
             },
+            &mut None,
         ),
     )
     .await

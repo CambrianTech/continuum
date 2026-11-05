@@ -186,6 +186,10 @@ pub enum CapabilityId {
     /// verifies and places a returned adapter in its own job directory for adoption (card
     /// 92cd2251). A grid trainer leases only when BOTH ends advertise this and `TrainingLease`.
     TrainingLeaseReturn,
+    /// The seat's `ai/generate` takes a mind's think budget (`GenerateParams::think`) and bounds
+    /// her think with it on its own engine. A grid lane forwards a turn with a think budget only to
+    /// a seat advertising this; absence means a core that would generate it unbounded.
+    RemoteThinkBudget,
     /// Parse-only: a name THIS build does not know (a newer core advertising a capability we
     /// predate). It never grants — membership of this list is exact-name, so an unknown name
     /// cannot stand in for another — but its presence must not drop the rest of the beacon,
@@ -207,6 +211,7 @@ pub fn this_build_capabilities() -> Vec<CapabilityId> {
         CapabilityId::RemoteGenerateCancel,
         CapabilityId::TrainingLease,
         CapabilityId::TrainingLeaseReturn,
+        CapabilityId::RemoteThinkBudget,
     ]
 }
 
@@ -256,15 +261,19 @@ pub fn decode_tps_of(milli: u32) -> Option<f32> {
     (milli > 0).then(|| milli as f32 / 1000.0)
 }
 
-/// The 9-hex build sha prefix as the integer a beacon carries (0 when unparsable).
+/// How many hex digits of the build sha a beacon carries: the wire format's one owner, read by
+/// both directions below (the prefix operators recognise).
+const BEACON_BUILD_DIGITS: usize = 9;
+
+/// The build sha prefix as the integer a beacon carries (0 when unparsable).
 pub fn build_from_sha(sha: &str) -> u64 {
-    let hex: String = sha.chars().take(9).collect();
+    let hex: String = sha.chars().take(BEACON_BUILD_DIGITS).collect();
     u64::from_str_radix(&hex, 16).unwrap_or(0) // JUSTIFIED unwrap_or: a non-hex build string beacons as "unknown", never a fake sha
 }
 
-/// The beacon's build back as the 9-hex prefix operators recognise.
+/// The beacon's build back as the prefix operators recognise.
 pub fn build_hex(build: u64) -> Option<String> {
-    (build != 0).then(|| format!("{build:09x}"))
+    (build != 0).then(|| format!("{build:0width$x}", width = BEACON_BUILD_DIGITS))
 }
 
 impl CapacityOffer {
@@ -898,7 +907,7 @@ mod tests {
         let wire = serde_json::to_string(&this_build_capabilities())?;
         assert_eq!(
             wire,
-            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\",\"training_lease\",\"training_lease_return\"]"
+            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\",\"training_lease\",\"training_lease_return\",\"remote_think_budget\"]"
         );
         assert!(!this_build_capabilities().contains(&CapabilityId::Unknown), "emission never advertises Unknown");
 

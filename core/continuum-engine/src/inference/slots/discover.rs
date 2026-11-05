@@ -202,7 +202,11 @@ impl SlotDirectory {
             Some(lane) if crate::inference::engine_residency::process_start_s(lane.pid) != Some(lane.started_s) => {
                 Err("live_lane_is_another_process")
             }
-            Some(lane) => match lane.page_dir.as_deref() {
+            Some(lane) => {
+                // The live lane IS this process (pid and start time just verified): name it on the
+                // pool, with or without a page dir, so every admission on it is bound to it.
+                pool.mark_incarnation((lane.pid, lane.started_s));
+                match lane.page_dir.as_deref() {
                 None => Err("live_lane_has_no_page_dir"),
                 Some(page_dir) => {
                     // the adopted engine's page dir is this core's to trim and measure too
@@ -211,7 +215,7 @@ impl SlotDirectory {
                     adopt_engine_ledger(&pool, page_dir, lane.pid, lane.started_s)
                         .map_err(AdoptRefusal::as_str)
                 }
-            },
+            }},
         }};
         continuum_base::probe!(
             class = "inference.kv_page.ledger_adopted",

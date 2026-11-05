@@ -448,9 +448,9 @@
         );
     }
     // what this catches (Cormac on #4409): with the loop CLOSED and a thinking model that
-    // thinks to whatever budget it is given, a think stopped AT the deliberation budget
-    // must not teach the need ring the budget — verbatim, the next allowance would be
-    // 5/4 × (3/4 A + answer) and contract geometrically toward max(time floor, 20 × answer);
+    // thinks to whatever budget it is given, a think stopped AT its budget (her allowance past
+    // her measured answer, `act_room::act_reasoning_budget`) must not teach the need ring the
+    // budget — verbatim, each turn's shorter answer would shrink the next allowance geometrically;
     // recorded at the allowance it would compound toward the reserve instead. Skipped as a
     // sample, the allowance holds exactly at her landed shape.
     #[test]
@@ -463,8 +463,7 @@
         let mut allowance = landed.total();
         let first = allowance;
         for t in 0..(NEED_SAMPLES as u64 + 4) {
-            let budget = crate::inference::request_body::deliberation_reasoning_budget(u64::from(allowance))
-                .expect("an allowance large enough to budget") as u32;
+            let budget = allowance - landed.answer; // her allowance past her measured answer
             let answer = 300u32;
             let stop = EmissionStop::classify_with_budget(false, true, budget, Some(budget), allowance);
             assert_eq!(stop, EmissionStop::ThinkBudgetHit { allowance }, "turn {t}");
@@ -485,10 +484,11 @@
         for t in 0..3u64 {
             reg2.record_emission_in_memory(p(5), 6_448, 6_000, EmissionStop::Landed, t);
         }
+        let answer2 = reg2.need_of(p(5)).expect("need measured").answer;
         let mut a2 = reg2.need_of(p(5)).expect("need measured").total();
         let start2 = a2;
         for t in 0..(NEED_SAMPLES as u64 * 10) {
-            let budget = crate::inference::request_body::deliberation_reasoning_budget(u64::from(a2)).expect("budget") as u32;
+            let budget = a2.saturating_sub(answer2); // her allowance past her measured answer
             reg2.record_emission_in_memory(p(5), budget + 300, budget, EmissionStop::classify(false, true), 200 + t);
             a2 = reg2.need_of(p(5)).expect("need measured").total();
         }

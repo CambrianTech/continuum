@@ -9,6 +9,9 @@ pub struct PromptCalibration {
     pub(in super::super) measured: std::num::NonZeroU32,
     /// The input a refusal measured, when it came from one.
     pub(in super::super) input_identity: Option<[u8; 32]>,
+    /// Whether the request this prices is admitted by the engine's exact count of its finalized
+    /// prompt: only then may a price fall below the estimate ([`Self::charge`]).
+    pub(in super::super) admission: crate::ai::provenance::PromptAdmission,
 }
 
 impl Default for PromptCalibration {
@@ -17,6 +20,7 @@ impl Default for PromptCalibration {
             estimated: std::num::NonZeroUsize::MIN,
             measured: std::num::NonZeroU32::MIN,
             input_identity: None,
+            admission: crate::ai::provenance::PromptAdmission::Estimated,
         }
     }
 }
@@ -37,7 +41,34 @@ impl PromptCalibration {
             estimated,
             measured: std::num::NonZeroU32::new(measured.max(at_least_estimate))?,
             input_identity,
+            admission: crate::ai::provenance::PromptAdmission::Estimated,
         })
+    }
+
+    /// The engine's EXACT count of the finalized prompt it refused (the strict admission guard's
+    /// `ContextExceeded`), over its estimate: the price of that very prompt, lighter or denser,
+    /// behind the same count. A sparse-to-dense input (code or JSON after a ring of prose) is
+    /// priced at the count, once, never at the ring's lighter bound again.
+    pub(in super::super) fn counted(estimated: usize, counted: u32, input_identity: [u8; 32]) -> Option<Self> {
+        Some(Self {
+            estimated: std::num::NonZeroUsize::new(estimated)?,
+            measured: std::num::NonZeroU32::new(counted)?,
+            input_identity: Some(input_identity),
+            admission: crate::ai::provenance::PromptAdmission::EngineCounted,
+        })
+    }
+
+    /// This density as priced behind `admission`: the request it prices carries the engine's
+    /// exact count ([`PromptAdmission::EngineCounted`]) or does not.
+    ///
+    /// [`PromptAdmission::EngineCounted`]: crate::ai::provenance::PromptAdmission::EngineCounted
+    pub(in super::super) fn behind(self, admission: crate::ai::provenance::PromptAdmission) -> Self {
+        Self { admission, ..self }
+    }
+
+    /// The calibration identity a receipt names: estimated tokens against the engine's count.
+    pub(in super::super) fn density(self) -> (u64, u32) {
+        (self.estimated.get() as u64, self.measured.get())
     }
 
     /// This calibration as it prices `input`.
@@ -55,25 +86,39 @@ impl PromptCalibration {
         let text_density = u128::from(self.measured.get())
             <= self.estimated.get() as u128 * continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN as u128;
         match self.input_identity {
-            Some(key) if key != input && !text_density => Self::default(),
+            Some(key) if key != input && !text_density => Self::default().behind(self.admission),
             _ => self,
         }
     }
 
     /// `estimate` in the engine's tokens, at this calibration's ratio: above the estimate for a
-    /// refusal's price, below it for a measured density whose bound is lighter ([`Density`]).
-    /// u128 keeps this portable even for a full usize-sized estimate multiplied by a u32 count.
+    /// refusal's price; below it for a measured density whose bound is lighter ([`Density`]) ONLY
+    /// behind the engine's exact count ([`PromptAdmission::EngineCounted`]). The engine counted
+    /// 0.83 of the estimate on the M5 (2026-11-04, a95afe3d1, 549 samples), and an act charged at
+    /// the raw estimate lost ~2,174 tokens of room it never used (302 of 414 acts cut at their
+    /// first sentence). Without that count nothing checks a lighter price, so a price never falls
+    /// below the estimate. u128 keeps this portable for a full usize-sized estimate times a u32.
+    ///
+    /// [`PromptAdmission::EngineCounted`]: crate::ai::provenance::PromptAdmission::EngineCounted
     pub fn charge(self, estimate: usize) -> usize {
-        let tokens =
-            (estimate as u128 * self.measured.get() as u128).div_ceil(self.estimated.get() as u128);
-        tokens.min(usize::MAX as u128) as usize
+        let tokens = (estimate as u128 * self.measured.get() as u128)
+            .div_ceil(self.estimated.get() as u128)
+            .min(usize::MAX as u128) as usize;
+        match self.admission {
+            crate::ai::provenance::PromptAdmission::Estimated => tokens.max(estimate),
+            crate::ai::provenance::PromptAdmission::EngineCounted => tokens,
+        }
     }
 
-    /// The estimate that fits `measured_budget` engine tokens: the inverse of [`Self::charge`].
+    /// The estimate that fits `measured_budget` engine tokens: the inverse of [`Self::charge`],
+    /// under the same admission rule.
     pub(in super::super) fn prompt_budget(self, measured_budget: usize) -> usize {
-        let tokens =
-            measured_budget as u128 * self.estimated.get() as u128 / self.measured.get() as u128;
-        tokens.min(usize::MAX as u128) as usize
+        let tokens = (measured_budget as u128 * self.estimated.get() as u128 / self.measured.get() as u128)
+            .min(usize::MAX as u128) as usize;
+        match self.admission {
+            crate::ai::provenance::PromptAdmission::Estimated => tokens.min(measured_budget),
+            crate::ai::provenance::PromptAdmission::EngineCounted => tokens,
+        }
     }
 }
 
@@ -148,7 +193,8 @@ impl Density {
             mean_milli: milli(engine_sum, estimated_sum),
             bound_milli: milli(u128::from(bound_measured.get()), bound_estimated.get() as u128),
         };
-        let price = PromptCalibration { estimated: bound_estimated, measured: bound_measured, input_identity: None };
+        // Priced behind the admission the next request has (`fit_within` sets it per binding).
+        let price = PromptCalibration { estimated: bound_estimated, measured: bound_measured, input_identity: None, admission: crate::ai::provenance::PromptAdmission::Estimated };
         Some((Self::Measured { served: served.to_owned(), samples }, price, reading))
     }
 
@@ -526,6 +572,12 @@ pub struct DeliberationPromptView {
     /// The raw tokens the allocation granted her hands: a retry on a server that refuses
     /// `tail_tools` re-selects at this grant, without her learned head.
     pub tools_grant: usize,
+    /// Her measured output need as this view's reply claim read it: an act's think budget and
+    /// its receipt are sized from it (`act_room.rs`).
+    pub act_room: crate::cognition::working_set::ActRoom,
+    /// An ACT whose required floors and measured output need do not fit her window
+    /// (`ActPlan::irreducible_shortfall`): refused, never sent with a cap below her need.
+    pub output_shortfall: Option<continuum_context::allocation::IrreducibleShortfall>,
 }
 
 impl DeliberationPromptView {
@@ -556,10 +608,11 @@ mod tests {
     /// The densest prompt that day: ratio 0.99, the guard barely above the engine's count.
     const DENSEST: (usize, u32) = (10_000, 9_900);
 
+    /// The ring's price as a request behind the engine's exact count reads it (`fit_within`).
     fn ring_on(served: &str, from: Density, samples: &[(usize, u32)]) -> (Density, PromptCalibration) {
         samples.iter().fold((from, PromptCalibration::default()), |(density, _), &(estimated, engine)| {
             let (next, price, _) = density.observe(estimated, engine, served).expect("test: positive counts"); // JUSTIFIED: test fixture
-            (next, price)
+            (next, price.behind(crate::ai::provenance::PromptAdmission::EngineCounted))
         })
     }
 
@@ -579,6 +632,9 @@ mod tests {
         assert_eq!(PromptCalibration::default().prompt_budget(window), window, "unmeasured: the estimate itself");
         let measured = price.prompt_budget(window);
         assert!(measured * 100 >= window * 113, "{measured}");
+        // Without the engine's exact count nothing checks a lighter price: the estimate stands.
+        let unguarded = price.behind(crate::ai::provenance::PromptAdmission::Estimated);
+        assert_eq!((unguarded.prompt_budget(window), unguarded.charge(ARIS.0)), (window, ARIS.0), "never below the estimate unguarded");
         let (_, _, reading) = Density::Unmeasured.observe(ARIS.0, ARIS.1, SERVED).expect("test: positive counts"); // JUSTIFIED: test fixture
         assert_eq!(reading.bound_milli, 826, "Aris alone: 11,111 / 13,449");
     }

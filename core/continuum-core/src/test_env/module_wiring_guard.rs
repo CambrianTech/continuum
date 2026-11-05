@@ -44,6 +44,10 @@ const UNWIRED: &[Unwired] = &[
         why: "fixture: barrier for the command-executor concurrency test",
     },
     Unwired {
+        module: "ToolsTrap",
+        why: "fixture: claims `tools/` so the reported-note test proves a note never reaches the router",
+    },
+    Unwired {
         module: "UndeclaredCommandModule",
         why: "fixture: half-declared command (constructor, no descriptor) — \
               the boot guard's positive control",

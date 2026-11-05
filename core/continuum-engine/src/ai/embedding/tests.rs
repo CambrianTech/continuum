@@ -240,6 +240,7 @@
         supports: bool,
         embeds: Vec<f32>,
     }
+    crate::dispatch_without_thinking!(FakeEmbedAdapter);
     #[async_trait]
     impl AIProviderAdapter for FakeEmbedAdapter {
         fn provider_id(&self) -> &str {

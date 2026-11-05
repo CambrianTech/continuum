@@ -372,9 +372,10 @@ pub enum GenerationAdmissionOwner {
 /// The universal AI provider adapter trait
 ///
 /// All AI providers implement this trait. The AIProviderModule calls
-/// these methods; adapters translate to native provider API calls.
+/// these methods; adapters translate to native provider API calls. Every adapter also states,
+/// with no default, how it honours a mind's dispatch terms ([`super::DispatchTermsPolicy`]).
 #[async_trait]
-pub trait AIProviderAdapter: Send + Sync {
+pub trait AIProviderAdapter: super::DispatchTermsPolicy + Send + Sync {
     /// Get adapter provider ID (e.g., "openai", "anthropic")
     fn provider_id(&self) -> &str;
 
@@ -415,6 +416,14 @@ pub trait AIProviderAdapter: Send + Sync {
     /// outside the rendered head), decided for the destination that request is routed to.
     /// Default `false`: only a server that declares it gets a learned tool head.
     fn accepts_tail_tools(&self, _model: &str) -> bool {
+        false
+    }
+
+    /// Whether a request through this adapter is admitted by the ENGINE'S exact count of its
+    /// finalized prompt (the strict admission guard a request's `admission` asks for),
+    /// decided for the destination the request is routed to now. Only then may a caller price
+    /// its prompt below its estimate. Default `false`: no engine count, the estimate stands.
+    fn counts_prompts_exactly(&self) -> bool {
         false
     }
 
