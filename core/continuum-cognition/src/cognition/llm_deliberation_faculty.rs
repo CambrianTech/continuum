@@ -97,6 +97,8 @@ mod admission;
 pub(crate) mod admission_clock;
 use self::request::*;
 mod reply_claim;
+mod act_room;
+use self::act_room::*;
 mod read_receipt;
 pub use read_receipt::ReadReceipt;
 use self::reply_claim::*;
@@ -763,6 +765,8 @@ pub mod test_support {
         pub seen: Mutex<Vec<TextGenerationRequest>>,
         pub rejections: Mutex<VecDeque<crate::ai::inference_error::InferenceError>>,
         pub live_window: Option<u32>,
+        /// The adapter admits by the engine's exact prompt count (`counts_prompts_exactly`).
+        pub counts_exactly: bool,
         pub window_sequence: Mutex<VecDeque<u32>>,
         pub on_window_read: Mutex<Option<WindowReadHook>>,
         pub on_request: Mutex<Option<RequestHook>>,
@@ -775,6 +779,7 @@ pub mod test_support {
                 seen: Mutex::new(Vec::new()),
                 rejections: Mutex::new(VecDeque::new()),
                 live_window: None,
+                counts_exactly: false,
                 window_sequence: Mutex::new(VecDeque::new()),
                 on_window_read: Mutex::new(None),
                 on_request: Mutex::new(None),
@@ -795,6 +800,9 @@ pub mod test_support {
         }
         fn default_model(&self) -> &str {
             "scripted"
+        }
+        fn counts_prompts_exactly(&self) -> bool {
+            self.counts_exactly
         }
         fn live_served_window(&self) -> Option<u32> {
             // Inject the exact load → observation → publication interleaving

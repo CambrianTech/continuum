@@ -444,6 +444,8 @@ mod tests {
             purpose: None,
             persona_id: None,
             turn_bound: None,
+            admission_window: None,
+            reasoning_budget: None,
         }
     }
 

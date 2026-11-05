@@ -422,6 +422,8 @@ mod tests {
             temperature: Some(0.35),
             stop_sequences: Some(vec!["original-stop".into()]),
             turn_bound: Some(std::time::Duration::from_secs(675)),
+            admission_window: None,
+            reasoning_budget: None,
             active_adapters: Some(vec![crate::ai::ActiveAdapterRequest {
                 name: "captured-adapter".into(), path: "captured.gguf".into(), domain: "coding".into(), scale: 0.75,
             }]),

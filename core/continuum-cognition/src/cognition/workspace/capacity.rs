@@ -17,6 +17,22 @@ impl std::fmt::Display for PromptCapacityError {
     }
 }
 
+/// An act's required floors and measured output need (think plus answer, one claim) do not fit her
+/// window: the one allocation's typed [`IrreducibleShortfall`], reused here as the act's refusal. The
+/// act is not sent: a cap below her need spends itself on her think and cuts her at its first
+/// sentence (the M5, 2026-11-04, 302 of 414 acts). Her need is recorded with her window's floor
+/// (`working_set::record_floor`), which is demand, never a grant: the governor's fit grants
+/// residency or she waits, and the refusal parks on her window's readiness, so the same window is
+/// never retried unchanged.
+pub use continuum_context::allocation::IrreducibleShortfall;
+
+impl From<IrreducibleShortfall> for PromptCapacityError {
+    /// As a capacity refusal: the window her turn needs against the window she has.
+    fn from(short: IrreducibleShortfall) -> Self {
+        Self { required_tokens: short.needed as usize, budget_tokens: short.window as usize }
+    }
+}
+
 /// The refused assembly and the exact binding whose capacity was observed.
 /// The readiness handle owns no task or scheduler; it is awaited by the existing
 /// service loop and cancelled with that loop's other wake branches.
@@ -26,6 +42,8 @@ pub struct CapacityRefusal {
     receipt_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
     pub error: PromptCapacityError,
     pub readiness: Option<std::sync::Arc<CapacityReadiness>>,
+    /// The typed cause when it was an act's output room, never re-read from the numbers.
+    pub output_room: Option<IrreducibleShortfall>,
 }
 impl From<PromptCapacityError> for CapacityRefusal {
     fn from(error: PromptCapacityError) -> Self {
@@ -34,7 +52,13 @@ impl From<PromptCapacityError> for CapacityRefusal {
             receipt_state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
             error,
             readiness: None,
+            output_room: None,
         }
+    }
+}
+impl From<IrreducibleShortfall> for CapacityRefusal {
+    fn from(short: IrreducibleShortfall) -> Self {
+        Self { output_room: Some(short), ..Self::from(PromptCapacityError::from(short)) }
     }
 }
 /// One park and one disposition per refusal, shared across settlement projections.

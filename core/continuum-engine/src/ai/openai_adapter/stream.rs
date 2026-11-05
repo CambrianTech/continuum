@@ -465,7 +465,11 @@ impl OpenAICompatibleAdapter {
             );
         }
 
-        let exact_prompt_quote = self.config.single_resident_model && self.targets_local_serving_lane();
+        let exact_prompt_quote = self.exact_prompt_admission();
+        // A request priced behind the engine's exact count is never sent without that count.
+        if request.admission_window.is_some() && !exact_prompt_quote {
+            return Err(crate::ai::inference_error::InferenceError::AdmissionUncounted { model: model.to_owned() });
+        }
         // Pre-flight the single-resident gateway (the serving guard, now its own module:
         // `inference::serving_guard`). Refuses when the lane cannot guarantee `model` or
         // the prompt alone overflows the served slot (#175).
@@ -495,6 +499,7 @@ impl OpenAICompatibleAdapter {
                         dedicated_lane: self.dedicated_lane,
                         caller: request.persona_id.as_deref().unwrap_or("non-persona"), // no persona: label the non-persona caller in a refusal; not a budget default
                         reply: request.max_tokens.unwrap_or(0), // absent max_tokens reserves no explicit output allowance
+                        admission_window: request.admission_window,
                         request_id: &request_id,
                     }),
             },

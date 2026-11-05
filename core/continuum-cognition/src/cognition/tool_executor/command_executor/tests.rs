@@ -257,6 +257,53 @@
         assert_eq!(content.matches("refused").count(), 1, "no client-wrapper prefix leaks to the model: {content}");
     }
 
+    // what this catches: a reported note (a thought cut at the output limit) routed as a command
+    // path (the M5, 2026-11-04: every cut note logged `routing.acl.refused` for
+    // `tools/<thought cut at the output limit>`). It is decoded typed, once, and answered before
+    // the router: a module claiming `tools/` is never reached, and her result is the whole teacher
+    // text. A real `tools/` name and an unknown `tools/<…>` are not notes.
+    #[tokio::test]
+    async fn a_reported_note_is_answered_before_the_router_and_never_dispatched() {
+        struct ToolsTrap(Arc<std::sync::atomic::AtomicUsize>);
+        #[async_trait]
+        impl ServiceModule for ToolsTrap {
+            fn config(&self) -> ModuleConfig {
+                ModuleConfig {
+                    name: "tools-trap",
+                    priority: ModulePriority::Normal,
+                    command_prefixes: &["tools/"],
+                    event_subscriptions: &[],
+                    needs_dedicated_thread: false,
+                    max_concurrency: 0,
+                    tick_interval: None,
+                }
+            }
+            async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+                Ok(())
+            }
+            async fn handle_command(&self, _command: &str, params: Value) -> Result<CommandResult, String> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(CommandResult::Json(params))
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+        for note in ReportedNote::ALL {
+            assert_eq!(ReportedNote::of(note.name()), Some(note), "every note decodes from its own name");
+        }
+        assert_eq!(ReportedNote::of("tools/<made up>"), None, "only the reserved names are notes");
+        assert_eq!(ReportedNote::of("code/read"), None);
+        let reached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let registry = Arc::new(ModuleRegistry::new());
+        registry.register(Arc::new(ToolsTrap(reached.clone())));
+        let exec = exec_over(registry, Uuid::new_v4());
+        let calls = vec![NativeToolCall { id: "cut".into(), name: THOUGHT_CUT_SENTINEL.into(), input: json!({}) }];
+        let out = exec.execute_native_batch(&calls, &ctx()).await.expect("batch itself succeeds");
+        assert_eq!(reached.load(std::sync::atomic::Ordering::SeqCst), 0, "the router never saw the note");
+        assert!(out.results[0].content.contains("NOT run for you"), "her teacher text, whole: {}", out.results[0].content);
+    }
+
     /// Concurrency + load proofs. Gated behind `stress-tests` per the test
     /// doctrine (timing/multi-thread tests are compile-time gated, not `#[ignore]`).
     /// Run them: `cargo test -p continuum-core --features stress-tests \

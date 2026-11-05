@@ -409,6 +409,8 @@ pub(super) async fn run_adapter_inference(
         purpose: Some("inference-llm".to_string()),
         persona_id: Some(request.persona.as_uuid().to_string()),
         turn_bound: None,
+        admission_window: None,
+        reasoning_budget: None,
     };
 
     let response = adapter

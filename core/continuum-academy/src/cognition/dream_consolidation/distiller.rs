@@ -347,6 +347,8 @@ impl SemanticDistiller {
             purpose: Some(lens.purpose.to_string()),
             persona_id: persona_id.map(|id| id.to_string()),
             turn_bound: None,
+            admission_window: None,
+            reasoning_budget: None,
         };
 
         // Take a NON-directed serving lane before the dream's model call. Dream

@@ -85,6 +85,10 @@ pub(crate) struct PromptQuote<'a> {
     pub caller: &'a str,
     pub reply: u32,
     pub request_id: &'a str,
+    /// The request's strict admission guard (`TextGenerationRequest::admission_window`): the
+    /// quoted prompt plus `reply` must fit strictly inside it, or the send is refused with the
+    /// exact count.
+    pub admission_window: Option<u32>,
 }
 
 /// Send `body` through `request_builder` (headers already set). `Ok(response)` is a 2xx response ready to stream; every failure is the
@@ -145,6 +149,10 @@ pub(crate) async fn send_with_lane_retry(
             super::serving_guard::guard_resident_model(
                 cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }, quote.caller,
             ).await?;
+            if let Some(window) = quote.admission_window {
+                super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }
+                    .check(window, &cfg.name, quote.caller)?;
+            }
             continuum_base::probe!(
                 class = "inference.prompt.prompt_quote",
                 request_id = quote.request_id,

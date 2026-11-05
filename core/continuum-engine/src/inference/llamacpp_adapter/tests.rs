@@ -66,6 +66,8 @@ fn text_request(response_format: Option<ResponseFormat>) -> TextGenerationReques
         purpose: None,
         persona_id: None,
         turn_bound: None,
+        admission_window: None,
+        reasoning_budget: None,
     }
 }
 
@@ -298,6 +300,8 @@ async fn owned_gene_page_in_changes_output() {
         purpose: None,
         persona_id: Some(uuid::Uuid::nil().to_string()),
         turn_bound: None,
+        admission_window: None,
+        reasoning_budget: None,
     };
 
     // context_length MUST be set explicitly — the scheduler refuses the

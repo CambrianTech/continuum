@@ -141,6 +141,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         !self.dedicated_lane && self.config.single_resident_model
     }
 
+    /// The managed local engine quotes every finalized body before generating
+    /// (`lane_send::PromptQuote`) and refuses at the exact count; nothing else here counts.
+    fn counts_prompts_exactly(&self) -> bool {
+        self.exact_prompt_admission()
+    }
+
     fn live_served_window(&self) -> Option<u32> {
         if self.dedicated_lane || !self.config.single_resident_model {
             return None;

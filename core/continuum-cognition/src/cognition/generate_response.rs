@@ -436,6 +436,8 @@ pub fn build_response_generation_request(
         purpose: Some("cognition/generate-response".to_string()),
         persona_id: Some(request.context.persona_id.clone()),
         turn_bound: None,
+        admission_window: None,
+        reasoning_budget: None,
     }
 }
 

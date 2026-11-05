@@ -88,6 +88,13 @@ pub enum InferenceError {
     /// her a head that lacks verbs she was told she could call, so it is refused instead.
     /// PERMANENT for the unchanged request: the caller rebuilds her surface without the tail.
     TailToolsUnreachable { model: String },
+
+    /// The request was priced behind the engine's exact prompt count (it carries an
+    /// `admission_window`), but the engine it reaches cannot count its prompt now (the route
+    /// moved to a lane without the count). Sending it would admit a prompt priced below its
+    /// estimate with no exact check, so it is refused before anything is sent. PERMANENT for
+    /// the unchanged request: the caller re-prices at its estimate.
+    AdmissionUncounted { model: String },
 }
 
 impl InferenceError {
@@ -101,6 +108,7 @@ impl InferenceError {
             Self::ContextExceeded { .. } => false,
             Self::Protocol(_) => false,
             Self::TailToolsUnreachable { .. } => false,
+            Self::AdmissionUncounted { .. } => false,
             Self::Unavailable(_) | Self::Transient(_) => true,
         }
     }
@@ -202,6 +210,10 @@ impl fmt::Display for InferenceError {
             Self::TailToolsUnreachable { model } => write!(
                 f,
                 "the engine serving {model} does not take tail_tools now: rebuild the request without its tail"
+            ),
+            Self::AdmissionUncounted { model } => write!(
+                f,
+                "the engine serving {model} cannot count this prompt exactly now: re-price it at its estimate"
             ),
         }
     }

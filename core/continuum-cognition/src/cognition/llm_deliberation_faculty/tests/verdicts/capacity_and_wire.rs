@@ -199,14 +199,15 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
     }
 }
 
-// what this catches: the reply taking from REQUIRED input. A mind whose measured
-// turn is far larger than a small seat (15,000 tokens of think + answer on an 8,192
-// window) must still see her whole stimulus and her act's result: the reply's floor
-// is capped by what required input leaves, and above it the reply only trades
-// optional history. No capacity fault, the reply keeps a usable floor, and the
-// request fits the window.
+// what this catches: the reply taking from REQUIRED input, and an act sent with less than her
+// need. A mind whose measured turn is far larger than a small seat (12,000 tokens of think +
+// answer on an 8,192 window) still has her whole stimulus and her act's result in her view: the
+// reply never takes from required content. But the act is NOT sent with what is left: a cap below
+// her measured need spends itself on her think and cuts her at its first sentence (the M5,
+// 2026-11-04, a95afe3d1: 302 of 414 acts). It is refused as the typed IrreducibleShortfall, with
+// no request, and waits for a window that holds her need (`act_output_room.rs`).
 #[tokio::test]
-async fn an_8192_window_keeps_required_content_under_a_large_measured_need() {
+async fn an_8192_window_keeps_required_content_and_refuses_an_act_past_her_need() {
     use crate::cognition::working_memory::WorkingMemory;
     use crate::cognition::working_set::{EmissionStop, WorkingSetRegistry};
     let home = tempfile::tempdir().expect("isolated fixture emission storage");
@@ -242,21 +243,16 @@ async fn an_8192_window_keeps_required_content_under_a_large_measured_need() {
     // window never shares it away at the start: her view is shown, and nothing refused it.
     assert!(view.budget_fault.is_none(), "her view's start was not refused: {:?}", view.budget_fault);
     assert!(view.refit.grounding_at > 0, "her view is shown at its start, at least at its collapsed minimum");
-    let contribution = faculty.contribute(&ws).await.expect("a verdict or named fault");
-    assert!(contribution.fault.is_none(), "{:?}", contribution.fault);
-    let seen = adapter.seen.lock().unwrap();
-    let request = &seen[0];
-    let wire_text: String = request.messages.iter().map(|m| m.content_text().to_string()).collect();
-    assert!(wire_text.contains("Write the migration file now"), "the stimulus rides the wire");
-    assert!(wire_text.contains("accounts_table_defined"), "the act's result rides the wire");
-    let reply = request.max_tokens.expect("the reply is bounded");
-    assert!(reply >= LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS, "a usable reply: {reply}");
-    let wire_tokens =
-        LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
-            + LlmDeliberationFaculty::messages_cost(&request.messages)
-            + crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap())
-            + reply as usize;
-    assert!(wire_tokens <= window as usize, "prompt + reply {wire_tokens} > window {window}");
+    let view_text = view.user_text();
+    assert!(view_text.contains("Write the migration file now"), "the stimulus is in her view");
+    assert!(view_text.contains("accounts_table_defined"), "the act's result is in her view");
+    let short = view.output_shortfall.expect("her need past the window is typed");
+    assert!(short.needed > window && short.window == window, "{short:?}");
+    let contribution = faculty.contribute(&ws).await.expect("a typed refusal");
+    let refusal = contribution.capacity_refusal.as_ref().expect("refused for capacity");
+    let refused = refusal.output_room.expect("typed as her output room");
+    assert!(refused.needed > window && refused.window == window, "{refused:?}");
+    assert_eq!(adapter.call_count(), 0, "never sent with less than her need");
 }
 
 // what this catches (Codex on #5779: required means refuse if underfunded, never mint budget):

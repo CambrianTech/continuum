@@ -32,12 +32,21 @@ impl LlmDeliberationFaculty {
         self.fit_within(binding, binding.context_window)
     }
 
+    /// The window and density this binding's next prompt is fitted with, priced behind the
+    /// admission its adapter gives the request now: the engine's exact count of the finalized
+    /// prompt, or the estimate alone (`PromptCalibration::charge`).
     fn fit_within(&self, binding: &ModelBinding, window: u32) -> (u32, PromptCalibration) {
+        let admission = if binding.adapter.counts_prompts_exactly() {
+            crate::ai::provenance::PromptAdmission::EngineCounted
+        } else {
+            crate::ai::provenance::PromptAdmission::Estimated
+        };
         let feedback = self.prompt_feedback.load();
-        feedback.as_ref().filter(|f| f.applies_to(binding)).map_or(
+        let (window, calibration) = feedback.as_ref().filter(|f| f.applies_to(binding)).map_or(
             (window, PromptCalibration::default()),
             |f| (window.min(f.available), f.calibration),
-        )
+        );
+        (window, calibration.behind(admission))
     }
 
     /// The window this faculty's turn is fitted to (its binding's served window): the shares
@@ -130,9 +139,11 @@ impl LlmDeliberationFaculty {
             .map_or(0, |wm| wm.pending_emission_peak(ws.activity_room_id));
         let kind = self.turn_kind(ws);
         let time_term = kind.time_term(crate::inference::decode_knee::rate_for(self.binding.load().requested_model()).tps);
+        let need = self.working_set.as_ref().and_then(|reg| reg.need_of(self.persona_id));
+        let act_room = crate::cognition::working_set::ActRoom::of(need);
         let reply = reply_claim(
             kind,
-            self.working_set.as_ref().and_then(|reg| reg.need_of(self.persona_id)),
+            need,
             pending_peak,
             Self::holds_live_work(ws),
             ws.directed_at_self(),
@@ -316,6 +327,8 @@ impl LlmDeliberationFaculty {
                     grant: act.granted(&claim.source_id),
                 })
                 .collect(),
+            // Stamped per request, once its cap is known (`act_room.rs`).
+            output_room: None,
         });
 
         // Her newest result at the level the allocation chose: whole when the window holds it,
@@ -343,11 +356,14 @@ impl LlmDeliberationFaculty {
         all_messages.grounding_tokens = grounding.trailing_tokens();
         let ctx_floor = if grounding.pieces.is_empty() { grounding_min.min(grounding_grant) } else { grounding.context_reserve() };
 
-        // The smallest window this turn can be sent in: the reply's floor plus what cannot be shed
-        // (the required claims' floors, her newest result at its chosen level). Recorded held or
-        // refused, so a turn short by 123 tokens raises her need by them.
+        // The smallest window this turn can be sent in: what cannot be shed (the required claims'
+        // floors, her newest result at its chosen level) plus her reply's MEASURED need, uncapped
+        // (an act's think plus answer; a pass's smallest reply; an unmeasured act adds nothing, it
+        // is a state, not a number). Recorded held or refused, so a turn short by 123 tokens raises
+        // her need by them. A record, never a grant: the governor sizes residency from it
+        // (`requirements_for`) or she waits.
         if let Some(reg) = &self.working_set {
-            let irreducible_window = Self::COMPLETION_FLOOR_TOKENS.saturating_add(act.irreducible());
+            let irreducible_window = act.irreducible().saturating_add(reply_need);
             reg.record_floor(
                 self.persona_id,
                 irreducible_window,
@@ -356,7 +372,11 @@ impl LlmDeliberationFaculty {
         }
         // IRREDUCIBLE growth, typed apart from a view that outgrew its grant (reducible, a turnover):
         // KEEP THE OVERFLOW, by part, so a turn over its window says which part and by how much.
-        if let Some(short) = act.irreducible_shortfall() {
+        let shortfall = act.irreducible_shortfall();
+        // An ACT is never sent with a cap below her measured need: a short cap spends itself on her
+        // think and cuts her at its first sentence (the M5, 2026-11-04). A pass proceeds as before.
+        let output_shortfall = shortfall.filter(|_| kind == TurnKind::Act);
+        if let Some(short) = shortfall {
             continuum_base::probe!(
                 class = "delib.payload.over_window",
                 persona = %self.persona_name,
@@ -739,6 +759,8 @@ impl LlmDeliberationFaculty {
             allocation,
             tools: selected.into_owned(),
             tools_grant,
+            act_room,
+            output_shortfall,
         }
     }
 

@@ -468,6 +468,8 @@ async fn run_inference_probe(
         purpose: Some("persona_decide_and_respond".to_string()),
         persona_id: None,
         turn_bound: None,
+        admission_window: None,
+        reasoning_budget: None,
     };
 
     let items_count = items.len();

@@ -585,7 +585,8 @@ async fn a_prompt_denser_than_her_measured_density_is_refit_before_generation() 
         })
         .collect();
     let ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(crate::identity::ActivityRoom::mint(), turns));
-    let adapter = Arc::new(ScriptedAdapter::new(vec![]));
+    // Her engine counts every finalized prompt: only then is a price below the estimate allowed.
+    let adapter = Arc::new(ScriptedAdapter { counts_exactly: true, ..ScriptedAdapter::new(vec![]) });
     let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone()).with_context_window(window);
     // A sparse history: her reply counted 3/4 of the estimate.
     let first = faculty.prompt_view(&ws);

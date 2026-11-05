@@ -569,6 +569,7 @@ mod tests {
             let mut body = serde_json::json!({"max_tokens": params["maxTokens"]});
             let budget = crate::inference::request_body::apply_reasoning_budget(
                 params["purpose"].as_str(),
+                None,
                 &mut body,
             )
             .expect("vision descriptions must reserve answer room");
@@ -577,7 +578,7 @@ mod tests {
         }
         let mut unrelated = serde_json::json!({"max_tokens": 500});
         assert_eq!(
-            crate::inference::request_body::apply_reasoning_budget(None, &mut unrelated),
+            crate::inference::request_body::apply_reasoning_budget(None, None, &mut unrelated),
             None
         );
         assert!(unrelated.get("reasoning_budget_tokens").is_none());

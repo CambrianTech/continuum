@@ -74,4 +74,23 @@ personaId?: string,
  * floors govern alone. Serialized as serde's `{secs, nanos}` so the SERVING peer's
  * lane honours it too.
  */
-turnBound?: { secs: number, nanos: number }, };
+turnBound?: { secs: number, nanos: number }, 
+/**
+ * THE STRICT ADMISSION GUARD: the window this prompt plus `max_tokens` must fit, strictly
+ * (`prompt + max_tokens < window`), by the ENGINE'S exact count of the finalized body. Set
+ * only by a caller that priced its prompt at a measured density below its estimate, which is
+ * sound only behind that count: the adapter quotes the body and refuses with
+ * [`ContextExceeded`] carrying the exact count, or, when the engine it reaches cannot count,
+ * refuses as [`AdmissionUncounted`] before sending. `None` = no such pricing; the window the
+ * lane serves is the only bound.
+ *
+ * [`ContextExceeded`]: crate::ai::inference_error::InferenceError::ContextExceeded
+ * [`AdmissionUncounted`]: crate::ai::inference_error::InferenceError::AdmissionUncounted
+ */
+admissionWindow?: number, 
+/**
+ * The think's bound for this request, sized by the caller from the mind's MEASURED output
+ * need (an act: what her room holds past her measured answer), so the answer keeps its
+ * room inside `max_tokens`. `None` = the purpose's own rule (`request_body::apply_reasoning_budget`).
+ */
+reasoningBudget?: number, };

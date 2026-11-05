@@ -530,6 +530,11 @@ impl AIProviderAdapter for PlacementSwitch {
     fn serves_on_shared_pool(&self) -> bool {
         self.current().serves_on_shared_pool()
     }
+    /// The adapter her request goes to now decides, like every capability here: a home lane on
+    /// the managed engine counts her prompt exactly, a remote seat does not.
+    fn counts_prompts_exactly(&self) -> bool {
+        self.current().counts_prompts_exactly()
+    }
     /// Asked of the adapter her request actually goes to, like every other capability here: a
     /// home lane on our fork's gateway may take her learned tool head, a remote seat may not.
     /// Left to the trait default, every resident read `false` behind this switch, so the head

@@ -224,6 +224,8 @@ pub async fn evaluate_gating(
         purpose: Some("cognition/should-respond".to_string()),
         persona_id: Some(request.context.persona_id.clone()),
         turn_bound: None,
+        admission_window: None,
+        reasoning_budget: None,
     };
 
     let registry_arc = global_registry();

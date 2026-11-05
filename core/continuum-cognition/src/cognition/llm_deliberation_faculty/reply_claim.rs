@@ -14,9 +14,16 @@ use super::*;
 /// her view of the reads she had just made, so every act re-read them (the M5, 2026-10-30,
 /// ONE-BUDGET.md slice 6).
 ///
-/// - floor = min: an act's measured answer channel (the tool call itself), else the smallest
-///   usable reply ([`LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS`]). The caller caps it so
-///   required input always fits: the reply never takes from required content.
+/// - floor = min: an act's measured output need as ONE claim, think plus answer
+///   ([`OutputNeed::act_room`], raised by a recent cut), never the answer alone; an unmeasured
+///   act reserves nothing ([`ActRoom::Unmeasured`], a state, not a number). A pass's floor is the
+///   smallest usable reply ([`LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS`]). The allocation
+///   caps it so required input always fits; an act whose need is capped is refused as the typed
+///   `IrreducibleShortfall`, never sent with less (the M5, 2026-11-04: an answer-only floor left
+///   caps of 72-89 tokens and 302 of 414 acts were cut mid-thought).
+///
+/// [`OutputNeed::act_room`]: super::super::working_set::OutputNeed::act_room
+/// [`ActRoom::Unmeasured`]: super::super::working_set::ActRoom::Unmeasured
 /// - max: her measured need (reasoning + answer), or the reply-sized cold prior until it is
 ///   measured; at least a pending cut's measured peak, retained until that concern settles
 ///   (the ordinary need decays through the short reads between, and the retried write would
@@ -42,15 +49,23 @@ pub fn reply_claim(
     directed: bool,
     time_term: Option<u32>,
 ) -> continuum_context::flex::FlexClaim {
-    let floor = match (kind, need) {
-        (TurnKind::Act, Some(n)) => n.answer.max(LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS),
-        _ => LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS,
+    let floor = match kind {
+        TurnKind::Act => super::super::working_set::ActRoom::of(need).needed().map_or(0, |room| room), // map_or: unmeasured reserves nothing in her name
+        TurnKind::Pass => LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS,
     };
     // A recent cut think raises the want toward its lower bound (`reasoning_at_least`, censored
     // and corrected), only under the measured time term: a thinking model fills whatever room it
     // gets (8k to 184k in 20 simulated turns), so growth stops at what her latency allows, and
     // with no measured rate it does not test upward at all (Cormac's design, card b726a311).
-    let tested = match (need.and_then(|n| n.reasoning_at_least.map(|at_least| at_least.saturating_add(n.answer))), time_term) {
+    // An act's floor already holds that bound (`act_room`) and her think is closed at what her
+    // grant leaves past her answer (`act_reasoning_budget`), so a think censored there would read
+    // the same bound forever: her upward test is the doubled bound, the answer channel's own growth
+    // path, under the same measured time term (both ways, or it ratchets down).
+    let upward = |at_least: u32| match kind {
+        TurnKind::Act => at_least.saturating_mul(2),
+        TurnKind::Pass => at_least,
+    };
+    let tested = match (need.and_then(|n| n.reasoning_at_least.map(|at_least| upward(at_least).saturating_add(n.answer))), time_term) {
         (Some(upward), Some(ceiling)) => upward.min(ceiling),
         _ => 0,
     };

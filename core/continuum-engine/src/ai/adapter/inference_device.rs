@@ -418,6 +418,14 @@ pub trait AIProviderAdapter: Send + Sync {
         false
     }
 
+    /// Whether a request through this adapter is admitted by the ENGINE'S exact count of its
+    /// finalized prompt (the strict admission guard a request's `admission_window` asks for),
+    /// decided for the destination the request is routed to now. Only then may a caller price
+    /// its prompt below its estimate. Default `false`: no engine count, the estimate stands.
+    fn counts_prompts_exactly(&self) -> bool {
+        false
+    }
+
     /// Get API style.
     ///
     /// Default: `Local` (in-process inference). Cloud adapters override

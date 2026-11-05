@@ -144,6 +144,8 @@ pub async fn generate_recipe_with_ai(
         purpose: Some("cognition-generate-recipe".to_string()),
         persona_id: None,
         turn_bound: None,
+        admission_window: None,
+        reasoning_budget: None,
     };
 
     let registry = global_registry();

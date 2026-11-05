@@ -243,14 +243,46 @@ pub(crate) const CUT_AT_LIMIT_SENTINEL: &str = "tools/<cut at the output limit>"
 /// never executed; her thinking is already in working memory, and she decides.
 pub(crate) const THOUGHT_CUT_SENTINEL: &str = "tools/<thought cut at the output limit>";
 
-/// A reserved `tools/<…>` pseudo-call: the substrate REPORTING a turn's shape (no name given, a
-/// think-only turn, a cut at the output limit), never a command that runs. The one owner of
-/// that test: the refusal probe skips them, and stop-drain S2 never records one as an effect.
+/// A reported note: the substrate REPORTING a turn's shape (no name given, a think-only turn, a
+/// cut at the output limit), never a command that runs. Typed once here, from the exact reserved
+/// name the faculty wrote, and handled BEFORE dispatch: it never reaches the router, so it is
+/// never permission-checked as a command path (the M5, 2026-11-04: every cut note logged
+/// `routing.acl.refused` for `tools/<thought cut at the output limit>`) and never refused as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReportedNote {
+    NamelessArgs,
+    ThinkOnly,
+    CutAtLimit,
+    ThoughtCut,
+}
+
+impl ReportedNote {
+    pub(crate) const ALL: [Self; 4] = [Self::NamelessArgs, Self::ThinkOnly, Self::CutAtLimit, Self::ThoughtCut];
+
+    /// The reserved name the faculty writes for this note.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::NamelessArgs => NAMELESS_ARGS_SENTINEL,
+            Self::ThinkOnly => THINK_ONLY_SENTINEL,
+            Self::CutAtLimit => CUT_AT_LIMIT_SENTINEL,
+            Self::ThoughtCut => THOUGHT_CUT_SENTINEL,
+        }
+    }
+
+    /// The note a call's name reports, if it is one: the one decoding of the reserved names.
+    pub(crate) fn of(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|note| note.name() == name)
+    }
+}
+
+/// Whether `name` is a [`ReportedNote`]. The one owner of that test: the refusal probe skips them,
+/// dispatch answers them without the router, and stop-drain S2 never records one as an effect.
 pub(crate) fn is_reported_sentinel(name: &str) -> bool {
-    name.starts_with("tools/<")
+    ReportedNote::of(name).is_some()
 }
 
 pub fn persona_tool_error(attempted: &str, raw: String) -> String {
+    let note = ReportedNote::of(attempted);
     // The MISSING-name case, which is not the wrong-name case and must not borrow its
     // sentence. Rendering "`X` is not a tool you can call" here would be actively
     // misleading: nothing she wrote was wrong, something was absent. Measured live
@@ -264,7 +296,7 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
     // nothing), and silence would be the dead turn this sentinel exists to break. Name
     // what happened and the three commitment affordances; her reasoning is already in
     // working memory, so the retry starts from her own conclusions.
-    if attempted == THINK_ONLY_SENTINEL {
+    if note == Some(ReportedNote::ThinkOnly) {
         return "Your whole generation was private reasoning — the turn ended inside the \
                 thinking channel, so nothing was said and nothing ran. Your thinking is \
                 saved in your working memory, but nobody else can see it, and it is not \
@@ -286,7 +318,7 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
     // thinking, before she had committed anything. Whatever call she was weighing at the
     // cut was NOT run on her behalf: it was a thought, not a choice. Say so, and hand the
     // decision back.
-    if attempted == THOUGHT_CUT_SENTINEL {
+    if note == Some(ReportedNote::ThoughtCut) {
         return "Your thinking reached the output limit before you decided anything, so \
                 nothing ran and nothing changed. Any tool call you were weighing when it \
                 was cut was NOT run for you. Your thinking so far is saved in your working \
@@ -295,7 +327,7 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
             .to_string();
     }
 
-    if attempted == CUT_AT_LIMIT_SENTINEL {
+    if note == Some(ReportedNote::CutAtLimit) {
         return "Your last generation reached the output limit before a tool call was \
                 committed, so NOTHING ran and nothing changed — the act did not land. \
                 What you were composing is noted in your working memory. Do not \
@@ -305,7 +337,7 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
             .to_string();
     }
 
-    if attempted == NAMELESS_ARGS_SENTINEL {
+    if note == Some(ReportedNote::NamelessArgs) {
         return format!(
             "You emitted tool ARGUMENTS with no tool NAME, so nothing ran:\n{raw}\n\n\
              The arguments look right — they just need a tool in front of them. The form is:\n\
@@ -570,6 +602,13 @@ impl ToolExecutor for CommandToolExecutor {
                 // day (M5, 09-16). Each verb refused in its own words and she tried again.
                 // One seam names the FIELD and what belongs in it, and never dispatches.
                 let outcome: Result<Value, _> = match manual_blanks_in(&call.input) {
+                    // A reported note is answered here, before the router: never a command path to
+                    // permission-check or resolve, and her teacher text is the whole result.
+                    _ if is_reported_sentinel(&call.name) => Err(ClientError::Refused {
+                        command: call.name.clone(),
+                        outcome: None,
+                        reason: format!("reported, not run: {}", call.input),
+                    }),
                     blanks if !blanks.is_empty() => {
                         continuum_base::probe!(
                             class = "tool.call.manual_blank",

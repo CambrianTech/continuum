@@ -329,7 +329,25 @@ pub struct TextGenerationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "{ secs: number, nanos: number }")]
     pub turn_bound: Option<std::time::Duration>,
-
+    /// THE STRICT ADMISSION GUARD: the window this prompt plus `max_tokens` must fit, strictly
+    /// (`prompt + max_tokens < window`), by the ENGINE'S exact count of the finalized body. Set
+    /// only by a caller that priced its prompt at a measured density below its estimate, which is
+    /// sound only behind that count: the adapter quotes the body and refuses with
+    /// [`ContextExceeded`] carrying the exact count, or, when the engine it reaches cannot count,
+    /// refuses as [`AdmissionUncounted`] before sending. `None` = no such pricing; the window the
+    /// lane serves is the only bound.
+    ///
+    /// [`ContextExceeded`]: crate::ai::inference_error::InferenceError::ContextExceeded
+    /// [`AdmissionUncounted`]: crate::ai::inference_error::InferenceError::AdmissionUncounted
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub admission_window: Option<u32>,
+    /// The think's bound for this request, sized by the caller from the mind's MEASURED output
+    /// need (an act: what her room holds past her measured answer), so the answer keeps its
+    /// room inside `max_tokens`. `None` = the purpose's own rule (`request_body::apply_reasoning_budget`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reasoning_budget: Option<u32>,
 }
 
 /// Constrains the model's output format. OpenAI-compatible serialization:

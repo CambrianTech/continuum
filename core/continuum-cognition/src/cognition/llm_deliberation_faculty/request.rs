@@ -83,33 +83,6 @@ pub(super) fn output_allowance(
     }
 }
 
-/// The `max_tokens` a turn's request carries, for the view it is sent with. Pure.
-///
-/// The two output channels have opposite natures, so each has one owner. The THINK runs away (a
-/// thinking model fills whatever room it gets), so it is bounded by its reasoning budget on the
-/// wire, never by `max_tokens`. The ANSWER of an act is payload: a tool call carrying a file ends
-/// by itself, and its size is the file's, not her past answers'. So an act's cap is the room this
-/// view's window physically leaves after its charged prompt, less the one token the local
-/// admission's strict `prompt + reply < window` needs (`serving_guard`); the slot's window grant
-/// bounds the KV, and nothing is reserved by the cap. A pass keeps its measured grant.
-///
-/// Why (the M5, 2026-11-04): an act's cap was her measured reply grant, sized from read-sized
-/// acts (Aiko 676-701 tokens, Aris 809, Benchy 518-690 on 31-43k windows), so every write-shaped
-/// call arrived truncated (`__malformed_tool_arguments`, finish `length`, 22 since 11:00Z): a
-/// downward measurement with no upward test. The reply's claim still sizes her view (the
-/// allocation reserves `reserve`); only the request's cap changes, and never below that reserve.
-pub(super) fn request_allowance(kind: TurnKind, reserve: u32, window: u32, charged_prompt: usize) -> u32 {
-    let reserve = reserve.max(1);
-    match kind {
-        TurnKind::Pass => reserve,
-        TurnKind::Act => {
-            // The prompt is clamped to the window before the cast, so the cast cannot truncate.
-            let prompt = charged_prompt.min(window as usize) as u32;
-            window.saturating_sub(prompt).saturating_sub(1).max(reserve)
-        }
-    }
-}
-
 impl LlmDeliberationFaculty {
     /// This faculty thinks for a measurement FORK of the mind (an eval exam beside her):
     /// its turns warm their own page per room and never queue behind her act
@@ -424,6 +397,8 @@ impl LlmDeliberationFaculty {
             // The turn's bound on the wire: her measured expectation with headroom
             // (card ba82d0a0). Every waiting seam takes max(its floor, this).
             turn_bound: self.turn_bound(),
+            admission_window: None,
+            reasoning_budget: None,
         }
     }
 }

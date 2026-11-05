@@ -164,6 +164,8 @@ impl LlmDeliberationFaculty {
         let mut gen_await_ms = 0u64;
         // The allowance the request actually carried (set where it is built, read at the seam).
         let mut sent_allowance: Option<u32> = None;
+        // The think's bound the act request carried (`act_room.rs`): the classifier reads the same one.
+        let mut sent_reasoning_budget: Option<u32>;
         let kind = self.turn_kind(ws);
         // An act's cap follows its prompt's room, so a refusal its reserve would have passed is
         // re-sent once at the engine's measured prompt, with the same view (never a refit of her view).
@@ -178,6 +180,10 @@ impl LlmDeliberationFaculty {
             // The one budget broke (`prompt/budget.rs` probed each claim): never sent.
             if let Some(fault) = &view.budget_fault {
                 return Some(Contribution::deliberation_fault(fault.clone()));
+            }
+            // Her measured output need does not fit: never sent, parked on her window's readiness.
+            if let Some(short) = view.output_shortfall {
+                return Some(self.output_room_refused(short, Arc::new(capacity_readiness.as_ref().clone().with_fit_window(fit_window))));
             }
             if let Some(error) = view.capacity_error {
                 continuum_base::probe!(
@@ -301,6 +307,9 @@ impl LlmDeliberationFaculty {
             // is built once, and a template's `max_tokens` from an earlier plan would
             // bound the reply to a window the prompt no longer leaves.
             request.max_tokens = Some(allowance);
+            let output_room = self.stamp_output_room(kind, &view, calibration, fit_window, &mut request);
+            sent_reasoning_budget = request.reasoning_budget;
+            let allocation = view.allocation.clone().map(|allocation| crate::ai::provenance::AllocationReceipt { output_room, ..allocation });
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
             if rejected_prompt_tokens.is_some_and(|previous| estimated_prompt_tokens >= previous) {
                 return Some(Contribution::deliberation_fault(
@@ -316,7 +325,7 @@ impl LlmDeliberationFaculty {
             // previous value is also what keeps the initializer honest).
             sent_allowance = request.max_tokens.or(sent_allowance);
             let result = self
-                .generate_for_workspace(ws, &binding, fit_window, request, view.allocation.clone(), receipts)
+                .generate_for_workspace(ws, &binding, fit_window, request, allocation, receipts)
                 .await?;
             gen_await_ms = gen_await_ms.saturating_add(started.elapsed().as_millis() as u64);
             match result {
@@ -324,11 +333,18 @@ impl LlmDeliberationFaculty {
                     requested,
                     available,
                 }) => {
-                    let Some(observed) = PromptCalibration::observed(
-                        estimated_prompt_tokens,
-                        requested,
-                        Some(view.input_identity),
-                    ) else {
+                    // Behind the engine's exact count the refusal's count IS this prompt's price
+                    // (a dense input after prose samples is priced at it, once); without it a
+                    // refusal only ever raises the price.
+                    let observed = match calibration.admission {
+                        crate::ai::provenance::PromptAdmission::EngineCounted => {
+                            PromptCalibration::counted(estimated_prompt_tokens, requested, view.input_identity)
+                        }
+                        crate::ai::provenance::PromptAdmission::Estimated => {
+                            PromptCalibration::observed(estimated_prompt_tokens, requested, Some(view.input_identity))
+                        }
+                    };
+                    let Some(observed) = observed else {
                         return Some(Contribution::deliberation_fault(
                             "provider capacity refusal lacked a positive request/token measurement",
                         ));
@@ -405,6 +421,20 @@ impl LlmDeliberationFaculty {
                         }
                     };
                 }
+                // Priced below its estimate for an engine that cannot count it now: re-priced once
+                // at the estimate, at the same window, never sent unguarded.
+                Err(crate::ai::inference_error::InferenceError::AdmissionUncounted { model })
+                    if calibration.admission == crate::ai::provenance::PromptAdmission::EngineCounted =>
+                {
+                    continuum_base::probe!(
+                        class = "delib.act.admission_uncounted",
+                        persona = %self.persona_name,
+                        model = %model,
+                        "the engine her request reaches cannot count it: re-priced at its estimate"
+                    );
+                    calibration = calibration.behind(crate::ai::provenance::PromptAdmission::Estimated);
+                    view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
+                }
                 Err(crate::ai::inference_error::InferenceError::TailToolsUnreachable { model }) if !tail_refused => {
                     continuum_base::probe!(
                         class = "delib.tool_head.tail_refused",
@@ -460,7 +490,7 @@ impl LlmDeliberationFaculty {
                 u64::from(allowance),
             )
             .map(|b| b as u32),
-            TurnKind::Act => None,
+            TurnKind::Act => sent_reasoning_budget,
         };
         // The one classification, from what the response carries (an answer is text or a call;
         // a stream may not report usage), counted here before any await after the generation: a
@@ -552,45 +582,8 @@ impl LlmDeliberationFaculty {
             }
         }
 
-        // SEGMENT ATTRIBUTION (the rent ledger, compression-ladder rung 2):
-        // the server's reused-prefix length lands somewhere in the prompt's
-        // segment map — the run containing that frontier NAMES what broke
-        // reuse this turn, and the stream of these rows IS each segment's
-        // rent. Only when the lane measured timings (same honesty rule as
-        // delib.generate.cache: a fabricated attribution is a lying receipt).
-        if let Some(t) = resp.timing.as_ref() {
-            let cached = t.cached_tokens;
-            // Her last turn's shape — what the next work call's occupancy bound is read from.
-            LAST_TURN_SHAPE.insert(
-                self.persona_id,
-                TurnShape {
-                    input: resp.usage.input_tokens,
-                    cached,
-                    output: resp.usage.output_tokens,
-                },
-            );
-            let frontier = view
-                .segments
-                .iter()
-                .find(|(_, end)| *end > cached)
-                .map(|(label, _)| *label)
-                .unwrap_or("fully-warm"); // reuse extends past every mapped segment — nothing broke
-            let mut map = String::with_capacity(64);
-            for (label, end) in &view.segments {
-                use std::fmt::Write as _;
-                let _ = write!(map, "{label}:{end},");
-            }
-            continuum_base::probe!(
-                class = "delib.segment.attribution",
-                persona = %self.persona_name,
-                cached_tokens = cached as u64,
-                broke_in = %frontier,
-                cold = cached == 0,
-                segments = %map,
-                "which prompt segment the KV reuse frontier died in — every miss becomes \
-                 an attribution, and the stream is the rent ledger the dream curriculum reads",
-            );
-        }
+        // Which segment broke reuse this turn (the rent ledger, `segment_attribution.rs`).
+        self.attribute_segments(&view, &resp);
 
         // Verbatim glass box: the EXACT request thread + the raw response. Iteration
         // is always 0 now (single shot); the act→observe driver re-enters this
