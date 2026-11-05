@@ -324,7 +324,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
     /// forms exactly like a local one, and the lane's liveness is the next chunk.
     async fn generate_stream(
         &self,
-        mut request: TextGenerationRequest,
+        request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, String> {
         self.generate_with(request, None, sink).await

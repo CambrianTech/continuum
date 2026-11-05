@@ -84,7 +84,9 @@ macro_rules! dispatch_without_thinking {
     };
 }
 
-// The heuristic test adapter answers canned text: it never thinks.
+// The heuristic test adapter answers canned text: it never thinks. It exists only under the
+// test-fixtures gate its module carries, so its policy does too.
+#[cfg(any(test, feature = "test-fixtures"))]
 dispatch_without_thinking!(crate::ai::heuristic_adapter::HeuristicInferenceAdapter);
 // The cloud Anthropic adapter sends no `thinking` block, so its turns never think.
 dispatch_without_thinking!(crate::ai::anthropic_adapter::AnthropicAdapter);
