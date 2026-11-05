@@ -4,6 +4,37 @@ use super::*;
 use crate::inference::planning::window_allocator::test_tokens as t;
 
 #[test]
+fn a_large_waiter_accumulates_reclaimed_capacity_across_two_holders() {
+    let owner = Box::leak(Box::new(Reservations::new()));
+    let (a, b, c) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2), uuid::Uuid::from_u128(3));
+    let demands = [(a, 20), (b, 60), (c, 90)].map(|(mind, n)| Demand {
+        mind, need: t(n), target: t(n), wish: t(n), in_flight: false, ceiling: 100,
+    });
+    let mut fair = FairGrantState::default();
+    let mut current = None;
+    let publish = |fair: &mut FairGrantState, current: &mut Option<PoolGrants>| {
+        let before = current.clone();
+        owner.fair_publish(fair, &demands, 100, 100, engine(), || before, |next| *current = Some(next)).1
+    };
+    publish(&mut fair, &mut current);
+    for mind in [a, b] {
+        let lease = current.as_ref().expect("published").lease_for(mind).expect("holder");
+        let request = owner.reserve_against(mind, lease, 10, || Some(lease)).expect("request");
+        settle(request, Some(&TerminalReceipt { finish: "stop".into() }));
+    }
+    let first = publish(&mut fair, &mut current).pop().expect("first reclaim");
+    assert_eq!(first.persona(), a);
+    owner.lock().reclaimed.insert(a, first.lease());
+    let second = publish(&mut fair, &mut current).pop().expect("second reclaim");
+    assert_eq!(second.persona(), b);
+    assert!(!current.as_ref().expect("published").by_mind.contains_key(&a),
+        "do not spend the first reclaimed cells while the oldest waiter needs both holders");
+    owner.lock().reclaimed.insert(b, second.lease());
+    assert!(publish(&mut fair, &mut current).is_empty());
+    assert_eq!(current.as_ref().expect("published").by_mind, BTreeMap::from([(c, 90)]));
+}
+
+#[test]
 fn refusal_restores_the_charged_holder_without_giving_capacity_to_the_waiter() {
     let owner = Box::leak(Box::new(Reservations::new()));
     let (a, b) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));

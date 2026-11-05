@@ -64,7 +64,8 @@ impl Reservations {
             .unwrap_or_default(); // no publication on this engine holds no grants
         let live: BTreeSet<_> = demands.iter().map(|d| d.mind).collect();
         fair.baseline.retain(|mind, _| live.contains(mind));
-        fair.waiters.retain(|mind| live.contains(mind));
+        fair.waiters.retain(|mind| demands.iter().any(|d| d.mind == *mind
+            && d.need.get() <= d.ceiling && d.need.get() <= pool));
         for demand in demands {
             if demand.need.get() <= demand.ceiling
                 && demand.need.get() <= pool
@@ -140,6 +141,16 @@ impl Reservations {
                 .collect();
             let mut grants =
                 grant_with_reservations(&mut DemandFollowing, &open, held, pool, &fixed);
+            if let Some(first) = fair.waiters.front() {
+                if ordered.iter().any(|d| d.mind == *first
+                    && !grants.get(first).is_some_and(|tokens| *tokens >= d.need.get())) {
+                    // Multiple holders may need reclamation. Do not re-admit a smaller
+                    // queued mind into the first freed cells while the oldest still waits.
+                    // Existing held and unresolved claims remain protected throughout.
+                    let eligible: Vec<_> = open.iter().filter(|d| d.mind == *first || held.contains_key(&d.mind)).copied().collect();
+                    grants = grant_with_reservations(&mut DemandFollowing, &eligible, held, pool, &fixed);
+                }
+            }
             grants.retain(|mind, _| !state.retiring.contains_key(mind));
             grants
         };
