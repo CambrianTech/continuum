@@ -147,6 +147,8 @@ fn an_unsaved_result_never_collapses_to_a_line_nothing_reopens() {
 // whole when the allocation grants it, labelled exactly as it read resident.
 #[test]
 fn an_evicted_result_is_still_seen_whole_through_its_stored_level() {
+    // It saves through the production store: the class is the test fixture's, never ~/.continuum.
+    crate::cognition::tool_executor::spill::prepare_store_fixture();
     let persona = uuid::Uuid::new_v4();
     let memory = WorkingMemory::new(8);
     let body = "a line of the evicted result\n".repeat(400);

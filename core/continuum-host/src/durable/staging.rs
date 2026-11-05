@@ -74,6 +74,7 @@ impl Staging {
     pub fn publish_new(self, name: &Path) -> io::Result<()> {
         self.file.sync_all()?;
         self.dir.hard_link(&self.name, &self.dir, name)?;
+        injected_fence_failure()?;
         super::os::sync_placed(&self.dir, name)
         // The hard link leaves the staging name; dropping `self` removes it.
     }
@@ -91,8 +92,19 @@ impl Drop for Staging {
 /// Complete the durability fence of `name` in `dir`, a name another publisher created and may not
 /// have synced yet, so a reader never trusts an unfenced name.
 pub fn fence_existing(dir: &Dir, name: &Path) -> io::Result<()> {
+    injected_fence_failure()?;
     dir.open_with(name, OpenOptions::new().read(true).write(true))?.sync_all()?;
     super::os::sync_placed(dir, name)
+}
+
+/// A fence a test made fail (`fault_injection`): the held-directory forms fail where the path forms
+/// do, so a publisher's caller is tested against the same fault whichever form it uses.
+fn injected_fence_failure() -> io::Result<()> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if super::fault_injection::fence_fails() {
+        return Err(io::Error::other("injected durability fence failure"));
+    }
+    Ok(())
 }
 
 /// An exclusive lock on a file, held until dropped. The lock file is created on first use and

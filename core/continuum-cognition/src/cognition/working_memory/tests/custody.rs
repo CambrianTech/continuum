@@ -369,6 +369,8 @@ fn an_unsaved_result_keeps_its_bytes_through_a_shed_and_restore() {
 // saved output; one whose output can't be read stays a pointer, never a guessed size.
 #[test]
 fn a_restore_prices_a_legacy_evicted_result_from_its_saved_output() {
+    // It saves through the production store: the class is the test fixture's, never ~/.continuum.
+    crate::cognition::tool_executor::spill::prepare_store_fixture();
     let wm = WorkingMemory::new(8);
     let persona = Uuid::new_v4();
     let pin = crate::cognition::tool_executor::spill::LivePin::new();
