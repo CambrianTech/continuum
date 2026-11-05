@@ -2,7 +2,7 @@
 //! receipt can produce ReclaimedGrant. Caller cancellation does not cancel endpoint-owned IO.
 use super::{directory, page_io, EndpointAdmission, KvSlotPool, PageKey, SlotPermit, SlotPin};
 use crate::capacity::window_grant::GrantHandoff;
-use crate::inference::turn_admission::{kv_page_action, PageOutcome};
+use crate::inference::turn_admission::{kv_page_action, PageOutcome, PageResolution};
 use std::sync::Arc;
 
 /// Constructed only after a confirmed save followed by the engine's erase receipt.
@@ -77,45 +77,36 @@ async fn reclaim(
     // An interrupted overwrite must not leave an older save marked valid.
     pool.note_page_lost(&key);
     custody.pending = true;
-    match kv_page_action(client, root, slot, &key, "save").await {
-        PageOutcome::Completed => {
-            custody.pending = false;
-            pool.note_saved(key);
-        }
-        PageOutcome::Rejected => {
-            custody.pending = false;
-            return Err("handoff save refused; resident capacity remains charged".into());
-        }
-        PageOutcome::Uncertain => return Err("handoff save has no verified receipt".into()),
-        PageOutcome::Unresolved(operation) => {
-            custody.pending = false; // UnresolvedPage owns quarantine and custody until its receipt
-            operation.hold(custody);
-            return Err("handoff save still unresolved; capacity remains charged".into());
-        }
-    }
+    let (returned, saved) = resolve(kv_page_action(client, root, slot, &key, "save").await, custody).await?;
+    custody = returned;
+    if !saved { return Err("handoff save refused; resident capacity remains charged".into()); }
+    pool.note_saved(key);
     // No checkpoint or returner may call this erased/uncertain slot warm. The confirmed file
     // remains valid throughout erase and is never overwritten by a later empty-slot save.
     pool.forget_resident(slot, key);
     custody.pending = true;
-    match kv_page_action(client, root, slot, &key, "erase").await {
-        PageOutcome::Completed => {
-            custody.pending = false;
-            let ticket = custody.ticket.take().ok_or_else(|| "handoff ticket already consumed".to_string())?;
-            Ok(ReclaimedGrant(ticket))
-        }
-        PageOutcome::Rejected => {
-            custody.pending = false;
-            Err("handoff erase refused; capacity remains charged".into())
-        }
-        PageOutcome::Uncertain => Err("handoff erase has no verified receipt".into()),
+    let (mut custody, erased) = resolve(kv_page_action(client, root, slot, &key, "erase").await, custody).await?;
+    if !erased { return Err("handoff erase refused; capacity remains charged".into()); }
+    let ticket = custody.ticket.take().ok_or_else(|| "handoff ticket already consumed".to_string())?;
+    Ok(ReclaimedGrant(ticket))
+}
+
+async fn resolve(outcome: PageOutcome, mut custody: Custody) -> Result<(Custody, bool), String> {
+    match outcome {
+        PageOutcome::Completed => { custody.pending = false; Ok((custody, true)) }
+        PageOutcome::Rejected => { custody.pending = false; Ok((custody, false)) }
+        PageOutcome::Uncertain => Err("handoff page operation has no verified receipt".into()),
         PageOutcome::Unresolved(operation) => {
-            custody.pending = false;
-            operation.hold(custody);
-            Err("handoff erase still unresolved; capacity remains charged".into())
+            custody.pending = false; // retained page owner now owns quarantine and custody
+            match operation.resume(custody).await {
+                Ok(PageResolution::Completed(custody)) => Ok((custody, true)),
+                Ok(PageResolution::Rejected(custody)) => Ok((custody, false)),
+                Ok(PageResolution::Fenced) => Err("handoff page operation fenced; no reclamation proof".into()),
+                Err(_) => Err("handoff page continuation lost; capacity remains charged".into()),
+            }
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests;

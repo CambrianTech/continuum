@@ -47,7 +47,7 @@ use page_liveness::{bounded_page_receipt, wait_while_engine_progresses, PageLive
 #[cfg(test)]
 use page_quote::read_quote;
 use page_quote::{request_quote, QuoteMiss};
-pub(crate) use unresolved_page::UnresolvedPage;
+pub(crate) use unresolved_page::{PageResolution, UnresolvedPage};
 
 /// How this turn's KV reached its slot: the evidence the restore economy is judged by
 /// (`inference.restored_turn`). A restore the engine refused is a fast-path MISS, recorded
