@@ -105,13 +105,9 @@ crate::action_command! {
     run(this, ctx, p) => {
         // 1. Resolve the id — a clean UUID passes through; the 8-char SHORT form a
         //    caller was shown (rosters DISPLAY short ids) or a one-char-mistyped
-        //    UUID expands against who's online. The ONE shared id_resolve primitive
+        //    UUID expands against who's online. Airc's Shown reading
         //    (#164), candidates = the live runtime registry — same as instances/get.
-        let persona_id = continuum_base::id_resolve::resolve(
-            p.persona_id.as_str(),
-            &this.registry.ids(),
-            "persona",
-        )
+        let persona_id = crate::persona::persona_scope::persona_in(p.persona_id.as_str(), &this.registry)
         .map_err(|e| CommandError::Invalid(format!("{e} — call persona/instances/list")))?;
 
         // 2. Dormant first: a despawn that lands without its record is undone by the next
