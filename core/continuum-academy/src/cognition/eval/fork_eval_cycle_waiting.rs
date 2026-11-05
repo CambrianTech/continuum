@@ -398,7 +398,8 @@ pub(super) async fn perception_grade(
     // Grading needs the WHOLE JSON (structure tree + inline PNG); results come back whole.
     let out = match acting
         .executor
-        .execute_native_batch(std::slice::from_ref(&observe_call), &ws_ctx)
+        // The eval composed this observation itself: no generation cut it.
+        .execute_native_batch(&crate::ai::types::CallBatch::classify([observe_call], crate::ai::types::CallOrigin::Substrate), &ws_ctx)
         .await
     {
         Ok(o) => o,
@@ -430,10 +431,9 @@ pub(super) async fn perception_grade(
     let obs: crate::perception::ObserveResult = match serde_json::from_str(content) {
         Ok(o) => o,
         Err(e) => {
-            let preview: String = content.chars().take(400).collect();
             return (
                 false,
-                format!("could not parse observation for '{target_url}': {e} — got: {preview}"),
+                format!("could not parse observation for '{target_url}': {e} — got: {content}"),
             );
         }
     };

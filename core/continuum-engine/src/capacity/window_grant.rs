@@ -18,6 +18,79 @@ use std::collections::BTreeMap;
 
 use crate::inference::planning::window_allocator::Tokens;
 
+mod lease;
+pub use lease::{grant_with_reservations, honoring_reservations, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
+
+/// One publication of one mind's grant: monotonic and never reused in this process. A grant that
+/// moves, or a new engine incarnation, takes a new revision, so a lease priced at an old one fails
+/// even when the size came back (shrink then regrow to the same size is the ABA case a size compare
+/// would miss).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GrantRevision(u64);
+
+impl GrantRevision {
+    /// A test's revision literal (production revisions are only issued at a publish).
+    #[cfg(test)]
+    pub(crate) const fn test(n: u64) -> Self {
+        Self(n)
+    }
+
+    /// The next revision this process has never issued.
+    fn issue() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+/// The grant owner that issued a revision: one per process (the serving daemon's grant table), so
+/// a revision from another owner (another core on the grid, a restarted one) is never this one's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GrantOwner(uuid::Uuid);
+
+impl GrantOwner {
+    /// This process's grant owner.
+    pub fn this_process() -> Self {
+        static OWNER: std::sync::OnceLock<GrantOwner> = std::sync::OnceLock::new();
+        *OWNER.get_or_init(|| GrantOwner(uuid::Uuid::new_v4()))
+    }
+}
+
+/// What a request is priced against: her grant's size and its IDENTITY, the revision that
+/// published it on which engine incarnation by which owner. A reserve compares the identity,
+/// never the size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GrantLease {
+    pub tokens: u32,
+    pub revision: GrantRevision,
+    /// The engine incarnation the grant is on (pid, OS start time, port: a restarted pid is another).
+    pub engine: Option<crate::inference::engine_residency::EngineIncarnation>,
+    pub owner: GrantOwner,
+}
+
+impl GrantLease {
+    /// The same publication of the same grant: revision, incarnation and owner.
+    pub fn same_identity(&self, other: &GrantLease) -> bool {
+        (self.revision, self.engine, self.owner) == (other.revision, other.engine, other.owner)
+    }
+}
+
+/// Stamp `next`'s revisions against `current` (what is published now): a mind whose grant is
+/// unchanged on the same engine incarnation keeps her revision; any other takes a new one.
+pub fn stamp_revisions(current: Option<&PoolGrants>, next: &mut PoolGrants) {
+    let same_engine = current.filter(|c| c.engine == next.engine);
+    let revisions = next
+        .by_mind
+        .iter()
+        .map(|(mind, tokens)| {
+            let kept = same_engine
+                .filter(|c| c.grant_for(*mind) == Some(*tokens))
+                .and_then(|c| c.revisions.get(mind).copied());
+            (*mind, kept.unwrap_or_else(GrantRevision::issue)) // unwrap_or_else: a moved grant (or a new engine) takes a new revision
+        })
+        .collect();
+    next.revisions = revisions;
+}
+
 /// What the serving daemon grants the local minds on its engine's pool, each by her persona id.
 /// Published on every tick that moves a grant; a mind's binding follows hers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -28,12 +101,27 @@ pub struct PoolGrants {
     /// window), a slot's window on fixed slots. No grant exceeds it.
     pub per_sequence_cap: u32,
     pub by_mind: BTreeMap<uuid::Uuid, u32>,
+    /// The engine incarnation these grants are on, as the serving layer reads it
+    /// (`LlamaServerControl::served_incarnation`); a new one re-issues every revision.
+    pub engine: Option<crate::inference::engine_residency::EngineIncarnation>,
+    /// Each mind's grant revision ([`stamp_revisions`]).
+    pub revisions: BTreeMap<uuid::Uuid, GrantRevision>,
 }
 
 impl PoolGrants {
     /// Her grant, when she is one of the minds on this pool.
     pub fn grant_for(&self, persona: uuid::Uuid) -> Option<u32> {
         self.by_mind.get(&persona).copied()
+    }
+
+    /// Her grant with the revision that published it.
+    pub fn lease_for(&self, persona: uuid::Uuid) -> Option<GrantLease> {
+        Some(GrantLease {
+            tokens: self.grant_for(persona)?,
+            revision: *self.revisions.get(&persona)?,
+            engine: self.engine,
+            owner: GrantOwner::this_process(),
+        })
     }
 }
 
@@ -55,6 +143,11 @@ pub fn grants_receiver() -> Option<tokio::sync::watch::Receiver<Option<PoolGrant
 /// the engine serves, or while she has none yet. A `watch` borrow, no I/O.
 pub fn current_grant(persona: uuid::Uuid) -> Option<u32> {
     GRANTS.get()?.borrow().as_ref()?.grant_for(persona)
+}
+
+/// Her current grant and its revision: what a request is priced against and reserved by.
+pub fn current_lease(persona: uuid::Uuid) -> Option<GrantLease> {
+    GRANTS.get()?.borrow().as_ref()?.lease_for(persona)
 }
 
 /// One measured mind's current demand on the pool: her floor and target, and whether a turn of hers

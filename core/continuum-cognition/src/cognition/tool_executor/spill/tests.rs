@@ -1,6 +1,17 @@
 #![cfg(test)]
     use super::*;
 
+    /// The tool-output class rooted at `root`, as boot registers it (`standard_tracked_dirs`):
+    /// every save in these tests goes through the class writer, never a hand-built path.
+    fn class(root: &Path) -> ClassWriter {
+        continuum_kernel::system_resources::disk_reporters::TrackedDir::new("tool-output", root.to_path_buf()).writer()
+    }
+
+    /// Where the class keeps `persona_id`'s results: what the tests assert the layout against.
+    fn persona_dir(root: &Path, persona_id: Uuid) -> PathBuf {
+        root.join(persona_id.to_string())
+    }
+
     // what this catches (Codex on #4982): the restore retain loop untested, a restored
     // handle that does not resolve to the exact bytes the mind saw, a failed save that drops
     // the text or leaves a pin, and a new file visible to eviction before it is pinned.
@@ -14,10 +25,10 @@
             ("third result".to_string(), None),
         ];
         let pin = LivePin::new();
-        retain_handleless_with(|t| retain_in(&tmp, persona, t, &pin), results.iter_mut().map(|(t, h)| (t.as_str(), h)));
+        retain_handleless_with(|t| retain_in(&class(&tmp), persona, t, &pin), results.iter_mut().map(|(t, h)| (t.as_str(), h)));
         for (text, handle) in [&results[0], &results[2]] {
             let handle = handle.as_deref().expect("a handle-less result is saved");
-            assert_eq!(std::fs::read_to_string(resolve_in(&tmp, persona, handle).unwrap()).unwrap(), *text, "byte-identical");
+            assert_eq!(std::fs::read_to_string(resolve_in(&class(&tmp), persona, handle).unwrap()).unwrap(), *text, "byte-identical");
         }
         assert_eq!(results[1].1.as_deref(), Some("feedfacefeedface"), "a saved result keeps its handle");
         let live: std::collections::HashSet<String> = live_handles().lock().get(&pin.0).cloned().unwrap_or_default();
@@ -31,7 +42,7 @@
         std::fs::write(&blocked, b"not a directory").unwrap();
         let mut failed = vec![("kept whole".to_string(), None::<String>)];
         let failing = LivePin::new();
-        retain_handleless_with(|t| retain_in(&blocked, persona, t, &failing), failed.iter_mut().map(|(t, h)| (t.as_str(), h)));
+        retain_handleless_with(|t| retain_in(&class(&blocked), persona, t, &failing), failed.iter_mut().map(|(t, h)| (t.as_str(), h)));
         assert_eq!(failed[0], ("kept whole".to_string(), None), "a failed save keeps its text and claims no handle");
         assert!(live_handles().lock().get(&failing.0).is_none_or(|set| set.is_empty()), "and pins nothing");
 
@@ -42,7 +53,7 @@
         assert!(ordered.hold(&handle), "entered");
         let path = persona_dir(&tmp, persona).join(format!("{handle}.log"));
         assert!(!path.exists() && live_handles().lock().values().any(|set| set.contains(&handle)), "live before written");
-        assert!(matches!(retain_in(&tmp, persona, "pinned first", &ordered), ResultCustody::Whole { .. }) && path.exists());
+        assert!(matches!(retain_in(&class(&tmp), persona, "pinned first", &ordered), ResultCustody::Whole { .. }) && path.exists());
 
         // THE INTERLEAVING (Codex on #4982): a content-addressed file that already exists is
         // never deleted while pinned. Eviction decides and deletes in one critical section, so a
@@ -55,7 +66,7 @@
         });
         assert!(matches!(removal, Removal::Removed) && !path.exists(), "unpinned: removed");
         let again = LivePin::new();
-        assert!(matches!(retain_in(&tmp, persona, "pinned first", &again), ResultCustody::Whole { .. }) && path.exists(), "a pin after the delete rewrites the file");
+        assert!(matches!(retain_in(&class(&tmp), persona, "pinned first", &again), ResultCustody::Whole { .. }) && path.exists(), "a pin after the delete rewrites the file");
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::remove_file(&blocked);
     }
@@ -69,12 +80,12 @@
         let persona = Uuid::new_v4();
         let large = format!("HEAD-MARK\n{}TAIL-MARK error: boom\n", "compiling module\n".repeat(5000));
         for body in ["ok: 2 passed".to_string(), large] {
-            let Fitted::Complete { text, handle } = whole_or_handle_in(&tmp, body.clone(), persona, &LivePin::new())
+            let Fitted::Complete { text, handle } = whole_or_handle_in(&class(&tmp), body.clone(), persona, &LivePin::new())
             else {
                 panic!("a saved result is complete")
             };
             assert_eq!(text, body, "handed back byte-identical");
-            let path = resolve_in(&tmp, persona, &handle).expect("resolve");
+            let path = resolve_in(&class(&tmp), persona, &handle).expect("resolve");
             assert_eq!(std::fs::read_to_string(path).unwrap(), body, "and saved byte-identical");
         }
 
@@ -83,7 +94,7 @@
         std::fs::write(&blocked, b"file where the persona dir must go").unwrap();
         let unsaved_body = "UNSAVED-HEAD ".repeat(100);
         let Fitted::RetentionFailed { shown } =
-            whole_or_handle_in(&blocked, unsaved_body.clone(), persona, &LivePin::new())
+            whole_or_handle_in(&class(&blocked), unsaved_body.clone(), persona, &LivePin::new())
         else {
             panic!("a failed save is its own state")
         };
@@ -100,14 +111,14 @@
         let tmp = std::env::temp_dir().join(format!("spill-test-{}", Uuid::new_v4()));
         let persona = Uuid::new_v4();
         let batch = "code/read(a.rs)\nResult:\nfn a() {}\n\ncode/run(t)\nResult:\nerror[E0601]\n";
-        let ResultCustody::Whole { handle } = retain_in(&tmp, persona, batch, &LivePin::new()) else {
+        let ResultCustody::Whole { handle } = retain_in(&class(&tmp), persona, batch, &LivePin::new()) else {
             panic!("the batch is saved")
         };
-        let saved = std::fs::read_to_string(resolve_in(&tmp, persona, &handle).unwrap()).unwrap();
+        let saved = std::fs::read_to_string(resolve_in(&class(&tmp), persona, &handle).unwrap()).unwrap();
         assert_eq!(saved, batch, "both results, byte-identical");
         let blocked = tmp.join("not-a-dir");
         std::fs::write(&blocked, b"x").unwrap();
-        assert_eq!(retain_in(&blocked, persona, batch, &LivePin::new()), ResultCustody::Unsaved);
+        assert_eq!(retain_in(&class(&blocked), persona, batch, &LivePin::new()), ResultCustody::Unsaved);
         std::fs::remove_dir_all(&tmp).ok();
     }
 
@@ -135,10 +146,10 @@
         let tmp = std::env::temp_dir().join(format!("spill-test-{}", Uuid::new_v4()));
         let persona = Uuid::new_v4();
         let body = "line one\nline two\nthe error is here\n";
-        let r = LivePin::new().save_in(&tmp, persona, body).expect("spill");
+        let r = LivePin::new().save_in(&class(&tmp), persona, body).expect("spill");
         assert_eq!(r.handle.len(), 16);
         assert!(r.handle.chars().all(|c| c.is_ascii_hexdigit()));
-        let path = resolve_in(&tmp, persona, &r.handle).expect("resolve");
+        let path = resolve_in(&class(&tmp), persona, &r.handle).expect("resolve");
         assert_eq!(path, r.path);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
         std::fs::remove_dir_all(&tmp).ok();
@@ -153,12 +164,12 @@
         let persona = Uuid::new_v4();
         for bad in ["../secret", "a/b", "..", "deadbeefZZ", ""] {
             assert!(
-                resolve_in(&tmp, persona, bad).is_err(),
+                resolve_in(&class(&tmp), persona, bad).is_err(),
                 "must reject handle {bad:?}"
             );
         }
         // a well-formed hex handle is accepted (existence is the reader's concern)
-        assert!(resolve_in(&tmp, persona, "deadbeefcafe0000").is_ok());
+        assert!(resolve_in(&class(&tmp), persona, "deadbeefcafe0000").is_ok());
     }
 
     // what this catches: grep finds the failure line and carries context around
@@ -251,7 +262,7 @@
         let dir = tempfile::tempdir().unwrap();
         let persona = Uuid::new_v4();
         let handle = "deadbeef";
-        let path = write_in(dir.path(), persona, handle, "original\n").unwrap();
+        let path = write_in(&class(dir.path()), persona, handle, "original\n").unwrap();
         let file = fs::File::open(&path).unwrap();
         let mut first = ExtentReader {
             file: &file,
@@ -266,9 +277,9 @@
         let mut bytes = [0; 3];
         first.read_exact(&mut bytes).unwrap();
         assert_eq!(&bytes, b"ori");
-        write_in(dir.path(), persona, handle, "original\n").unwrap();
+        write_in(&class(dir.path()), persona, handle, "original\n").unwrap();
         assert_eq!(
-            write_in(dir.path(), persona, handle, "replacement\n")
+            write_in(&class(dir.path()), persona, handle, "replacement\n")
                 .unwrap_err()
                 .kind(),
             std::io::ErrorKind::InvalidData
@@ -308,9 +319,17 @@
         let handle = "deadbeef";
         let pin = LivePin::new();
         pin.hold(handle);
-        let staging = parent.join(format!("{handle}.{}", Uuid::new_v4()));
+        // The class writer's staging file names no content address (Cormac on #5782): written in
+        // this life it may be a save in flight, so it is protected; one a crashed life left (older
+        // than this life's first save) is evicted.
+        let _ = store();
+        let staging = parent.join(format!(".{}-7.staging", std::process::id()));
         fs::write(&staging, "retained").unwrap();
-        assert!(matches!(evict_unless_live(&staging), Removal::Protected));
+        assert!(matches!(evict_unless_live(&staging), Removal::Protected), "a save in flight is protected");
+        let leftover = parent.join(".1-1.staging");
+        fs::write(&leftover, "a crashed life's").unwrap();
+        fs::File::options().write(true).open(&leftover).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+        assert!(matches!(evict_unless_live(&leftover), Removal::Removed) && !leftover.exists(), "a leftover is evicted");
         let published = parent.join(format!("{handle}.log"));
         continuum_host::durable::publish_new(&staging, &published).unwrap();
         let _ = fs::remove_file(&staging);
@@ -332,12 +351,12 @@
         pin.hold(&handle);
         let path = persona_dir(dir.path(), persona).join(format!("{handle}.log"));
         continuum_host::durable::fault_injection::with_failed_fence(|| {
-            assert!(write_in(dir.path(), persona, &handle, body).is_err());
+            assert!(write_in(&class(dir.path()), persona, &handle, body).is_err());
             assert_eq!(fs::read_to_string(&path).unwrap(), body);
             // The object is already visible; byte equality must not bypass the fence.
-            assert!(write_in(dir.path(), persona, &handle, body).is_err());
+            assert!(write_in(&class(dir.path()), persona, &handle, body).is_err());
         });
-        assert_eq!(write_in(dir.path(), persona, &handle, body).unwrap(), path);
+        assert_eq!(write_in(&class(dir.path()), persona, &handle, body).unwrap(), path);
     }
 
     #[cfg(feature = "stress-tests")]
@@ -358,7 +377,7 @@
             std::thread::scope(|scope| {
                 let publish = || {
                     ready.wait();
-                    write_in(dir.path(), persona, &handle, &content).unwrap()
+                    write_in(&class(dir.path()), persona, &handle, &content).unwrap()
                 };
                 let first = scope.spawn(publish);
                 let second = scope.spawn(publish);
@@ -368,4 +387,92 @@
             });
             assert_eq!(fs::read_dir(persona_dir(dir.path(), persona)).unwrap().count(), 1);
         }
+    }
+
+    // what this catches: a board with no count cap reaching her as one line, or as a level that
+    // drops her first card or the board's counts. work/list lists every match (its default count
+    // is gone); the result goes on one card per line, and the level the one allocation shows when
+    // the board outgrows the window (`operation_level`, `prompt/newest_result.rs`) keeps the first
+    // card whole, the counts after the list, and the marker that reopens the rest.
+    #[test]
+    fn a_board_larger_than_the_window_shows_its_first_card_whole_and_the_rest_behind_a_handle() {
+        let card = |i: usize| {
+            serde_json::json!({
+                "id": format!("{i:08x}"),
+                "title": format!("card number {i} of the board"),
+                "claimable": i < 3,
+                "state": "open",
+                "priority": "p2",
+                "age_hours": i,
+            })
+        };
+        let cards: Vec<_> = (0..400).map(card).collect();
+        let board = serde_json::json!({ "cards": cards, "claimable_now": 3, "total_on_board": 400 });
+        let text = result_text(&board);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&text).ok(), Some(board.clone()), "still the same JSON");
+        assert!(text.lines().any(|line| line.trim_end_matches(',') == card(399).to_string()), "one card per line, never one 400-card line");
+        let level = crate::cognition::working_memory::operation_level(&text, None).expect("a long board has a smaller level");
+        assert!(level.chars().count() * 4 < text.chars().count(), "the level is a real reduction");
+        assert!(level.contains(&card(0).to_string()), "the first card is whole:\n{level}");
+        assert!(!level.contains("card number 200 of"), "a middle card is behind the handle");
+        assert!(level.contains("expand"), "the level says how to reopen the rest");
+        assert!(level.contains("\"total_on_board\":400"), "the counts after the list survive");
+        // A result with no structure inside stays its one compact line.
+        let flat = serde_json::json!({ "success": true, "id": "abc" });
+        assert_eq!(result_text(&flat), flat.to_string());
+        // A list of scalars (paths) is a list too (Cormac on #5782): one per line, so a level keeps
+        // whole paths and the count after them.
+        let paths: Vec<String> = (0..400).map(|i| format!("src/module_{i}/mod.rs")).collect();
+        let listing = result_text(&serde_json::json!({ "paths": paths, "total": 400 }));
+        assert!(listing.lines().any(|line| line.trim_end_matches(',') == "\"src/module_399/mod.rs\""), "one path per line");
+        let level = crate::cognition::working_memory::operation_level(&listing, None).expect("a long listing has a smaller level");
+        assert!(level.contains("\"src/module_0/mod.rs\"") && level.contains("\"total\":400"), "{level}");
+    }
+
+    // what this catches: a result saved through the class writer that does not reopen by its
+    // handle to the bytes she saw, or a handle form that changed under the move to the class (every
+    // handle already in a checkpoint must still name its file: the content hash's leading 64 bits).
+    #[test]
+    fn a_saved_result_reopens_by_its_handle_byte_identical() {
+        use sha2::{Digest, Sha256};
+        let dir = tempfile::tempdir().unwrap();
+        let persona = Uuid::new_v4();
+        let body = "line one\nline two\n".repeat(50);
+        let Fitted::Complete { text, handle } = whole_or_handle_in(&class(dir.path()), body.clone(), persona, &LivePin::new()) else {
+            panic!("a writable class saves the result");
+        };
+        assert_eq!(text, body, "handed back whole");
+        assert!(format!("{:x}", Sha256::digest(body.as_bytes())).starts_with(&handle), "the handle is the hash's address: {handle}");
+        let path = resolve_in(&class(dir.path()), persona, &handle).unwrap();
+        assert_eq!(path, persona_dir(dir.path(), persona).join(format!("{handle}.log")), "filed under her directory of the class");
+        assert_eq!(fs::read_to_string(&path).unwrap(), body, "reopens byte-identical");
+        let page = investigate_file(&path, None, 0, Some((1, 2)), 10, 4096).unwrap();
+        assert!(page.rendered.contains("     1 line one") && page.rendered.contains("     2 line two"), "{}", page.rendered);
+    }
+
+    // what this catches: a tail that is a fixed count of lines (80, whatever the read's budget), so
+    // a small budget truncates it from its NEWEST end and a large one shows less than it holds.
+    // The tail is the newest lines that fit the budget: it grows with the budget, always ends at
+    // the last line, and is never truncated.
+    #[test]
+    fn the_tail_is_the_newest_lines_the_budget_holds() {
+        let body = (1..=500).map(|n| format!("row {n}")).collect::<Vec<_>>().join("\n");
+        let shown = |budget: usize| {
+            let inv = investigate(&body, None, 0, None, 50, budget).expect("ok");
+            assert!(inv.rendered.contains("   500 row 500"), "the newest line is always shown (budget {budget})");
+            assert!(!inv.result_truncated, "the tail is sized to fit, never cut (budget {budget})");
+            assert!(inv.rendered.len() <= budget, "within the budget");
+            inv.rendered.lines().filter(|line| line.contains(" row ")).count()
+        };
+        let (small, large) = (shown(600), shown(6000));
+        assert!(small > 0 && large > small * 5, "the tail follows the budget: {small} lines at 600, {large} at 6000");
+        assert_eq!(shown(1 << 20), 500, "a budget that holds the whole output shows all of it");
+
+        // A one-line log longer than the budget (Cormac on #5782): her newest line never vanishes
+        // behind a complete-looking empty tail. The read says it is truncated and where she reads on.
+        let long = format!("{}\n", "x".repeat(5000));
+        let inv = investigate(&long, None, 0, None, 50, 600).expect("ok");
+        assert!(inv.result_truncated, "not complete: {}", inv.rendered);
+        assert_eq!(inv.next_byte_offset, Some(0), "she reads the newest line on from its offset");
+        assert!(inv.rendered.contains("byteOffset 0") && !inv.rendered.contains("last 0 lines"), "{}", inv.rendered);
     }

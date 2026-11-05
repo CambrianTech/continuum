@@ -28,10 +28,26 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::inference::llama_server::EngineProbe;
-use crate::inference::slots::{KvSlotPool, MindTurn, PageKey, SlotPermit, SlotPin};
+use crate::inference::resource_admission::{LanePriority, ServingLanePermit};
+use crate::inference::slots::{KvSlotPool, MindTurn, PageKey, SlotClass, SlotPermit, SlotPin};
 
+mod page_liveness;
+mod page_quote;
+mod page_receipt;
 mod paging_lifetime;
+mod unresolved_page;
+mod transient;
+
+pub use transient::admit_transient;
+#[cfg(test)]
+use transient::admit_transient_through;
+
+use page_receipt::{terminal_receipt, Terminal};
+use page_liveness::{bounded_page_receipt, wait_while_engine_progresses, PageLiveness, Receipt};
+#[cfg(test)]
+use page_quote::read_quote;
+use page_quote::{request_quote, QuoteMiss};
+pub(crate) use unresolved_page::UnresolvedPage;
 
 /// How this turn's KV reached its slot: the evidence the restore economy is judged by
 /// (`inference.restored_turn`). A restore the engine refused is a fast-path MISS, recorded
@@ -75,6 +91,10 @@ pub struct TurnAdmission {
     uncommitted: Option<(Arc<KvSlotPool>, PageKey, u32)>,
     _endpoint: crate::inference::slots::EndpointAdmission,
     scratch: Option<u32>,
+    /// A dream's ambient serving lane, taken only where it borrows a citizen slot (no scratch
+    /// slot): there it must yield to residents through the lane gate. With a scratch slot its
+    /// admission is that slot's permit, and it holds no resident lane (Cormac, card 920c43bc).
+    _lane: Option<ServingLanePermit>,
     /// The mind's act gate ([`crate::inference::slots::MindTurn`]), held for the whole
     /// generation. Declared LAST so it drops after the pin and permits: the mind's next
     /// act, woken by it, finds her slot already released.
@@ -91,28 +111,45 @@ impl TurnAdmission {
         self.scratch
     }
 
+    /// The engine incarnation this turn's endpoint admission is bound to (`EndpointAdmission::incarnation`).
+    pub(crate) fn engine_incarnation(&self) -> Option<(u32, u64)> {
+        self._endpoint.incarnation()
+    }
+
     /// How this turn's KV reached its slot ([`PageIn`]).
     pub(crate) fn page_in(&self) -> PageIn {
         self.page_in
     }
 
+    /// Page `key` through `slot`. The admission is CONSUMED: a terminal receipt hands it back;
+    /// an uncertain switch drops it in flight (its drop quarantines); an unresolved switch moves
+    /// it, with the request, into the endpoint's custody until the engine answers (Codex on
+    /// #5772), so no later turn can take this slot while the engine still works on it.
     async fn page_action(
-        &mut self,
+        mut self,
         client: &reqwest::Client,
         root: &str,
         slot: u32,
         key: &PageKey,
         action: &str,
-    ) -> Result<bool, String> {
+    ) -> Result<(Self, bool), String> {
         self.paging_in_flight = true;
         match kv_page_action(client, root, slot, key, action).await {
             PageOutcome::Completed => {
                 self.paging_in_flight = false;
-                Ok(true)
+                Ok((self, true))
             }
             PageOutcome::Rejected => {
                 self.paging_in_flight = false;
-                Ok(false)
+                Ok((self, false))
+            }
+            PageOutcome::Unresolved(unresolved) => {
+                self.paging_in_flight = false;
+                // The mind is not the slot: her next act may proceed on another slot or cold.
+                drop(self._mind.take());
+                unresolved.hold(self);
+                Err("KV page switch unresolved: the engine kept working without a receipt; its slot is held \
+                    until the engine answers, the page is held not resident, the engine is not replaced on this alone".into())
             }
             PageOutcome::Uncertain => Err("KV paging completion unverified; endpoint quarantined until verified engine replacement".into()),
         }
@@ -208,6 +245,7 @@ impl From<std::time::Duration> for AdmissionPatience {
 /// for the boot window that cost Kimi 16 turns.
 pub async fn admit_turn(
     concurrency: &Arc<Semaphore>,
+    class: SlotClass,
     key: Option<PageKey>,
     pool: Option<Arc<KvSlotPool>>,
     client: &reqwest::Client,
@@ -216,7 +254,7 @@ pub async fn admit_turn(
     patience: impl Into<AdmissionPatience>,
 ) -> Result<TurnAdmission, String> {
     let patience = patience.into();
-    let admission = admit(concurrency, key, pool, client, root, approx_tokens, false, patience.readiness);
+    let admission = admit(concurrency, class, key, pool, client, root, approx_tokens, false, patience.readiness);
     match patience.deadline {
         Some(deadline) => {
             if deadline <= tokio::time::Instant::now() {
@@ -251,7 +289,7 @@ pub(crate) async fn warm_ahead(
         return Ok(());
     };
     // Best-effort: a closed endpoint is an instant no, never a held permit.
-    let mut admission = admit(concurrency, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
+    let mut admission = admit(concurrency, SlotClass::Turn, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
     if admission.page_confirmed {
         admission.uncommitted = None;
     }
@@ -272,6 +310,7 @@ pub(crate) async fn warm_ahead(
 
 async fn admit(
     concurrency: &Arc<Semaphore>,
+    class: SlotClass,
     key: Option<PageKey>,
     pool: Option<Arc<KvSlotPool>>,
     client: &reqwest::Client,
@@ -289,14 +328,26 @@ async fn admit(
         Some(k) if !warm_only => Some(MindTurn::begin(k).await?),
         _ => None,
     };
+    // A dream's ambient serving lane, held only while it must borrow a citizen slot.
+    let mut lane: Option<ServingLanePermit> = None;
     'admit: loop {
         // 1. PERMIT FIRST — event-driven wait for a free lane. Cannot fail: the
-        //    semaphore is never closed over the adapter's lifetime.
-        let _permit = concurrency
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("adapter semaphore never closed");  // expect: the semaphore lives as long as the adapter, never closed
+        //    semaphore is never closed over the adapter's lifetime. A dream holding its lane
+        //    only TRIES: when the adapter is full it lets the lane go, waits for a permit
+        //    holding nothing, and takes both again (Codex on #5786).
+        let _permit = match lane.as_ref().map(|_| concurrency.clone().try_acquire_owned()) {
+            Some(Ok(permit)) => permit,
+            Some(Err(_)) => {
+                lane = None;
+                drop(concurrency.clone().acquire_owned().await.expect("adapter semaphore never closed")); // expect: the semaphore lives as long as the adapter, never closed
+                continue 'admit;
+            }
+            None => concurrency
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("adapter semaphore never closed"), // expect: the semaphore lives as long as the adapter, never closed
+        };
 
         // 2. THE ENDPOINT — a turn holds through a closed one (an engine still loading,
         //    a transition in flight) for the caller's `patience` before it is refused;
@@ -325,7 +376,24 @@ async fn admit(
             scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
             _endpoint: endpoint,
             _mind: None,
+            _lane: None,
         };
+
+        // A DREAM YIELDS TO RESIDENTS (Fable, M5 0b2854327 01:24-01:50Z: a dream parked on scratch
+        // holding a lane while Aiko waited 1,141 s and Benchy 132 s with two slots idle). Decided
+        // each pass from the ADMITTED generation's pool (Codex on #5786: a transition can change
+        // it). Where it borrows a citizen slot (no scratch slot) it holds an ambient lane, so a
+        // waiting turn still wins, and takes it holding nothing; with a scratch slot that slot is
+        // its admission and it holds no lane.
+        if class == SlotClass::Dream && pool.as_ref().is_some_and(|pool| pool.scratch_slot().is_none()) {
+            if lane.is_none() {
+                drop(admission);
+                lane = Some(crate::inference::resource_admission::acquire_serving_lane(None, LanePriority::Ambient, None).await);
+                continue 'admit;
+            }
+        } else {
+            lane = None;
+        }
 
         if warm_only
             && pool
@@ -444,18 +512,16 @@ async fn admit(
                             // A failed or cancelled save may have replaced an older file.
                             // Only a completed save can make this page restorable again.
                             pool.note_page_lost(&prev);
-                            if admission
-                                .page_action(&client, &paging_root, pg.slot, &prev, "save")
-                                .await?
-                            {
+                            let saved;
+                            (admission, saved) = admission.page_action(&client, &paging_root, pg.slot, &prev, "save").await?;
+                            if saved {
                                 pool.note_saved(prev);
                                 admission.saved_evictee = true;
                             }
                         }
                         if pg.restore && interested.load(std::sync::atomic::Ordering::Acquire) {
-                            let restored = admission
-                                .page_action(&client, &paging_root, pg.slot, &k, "restore")
-                                .await?;
+                            let restored;
+                            (admission, restored) = admission.page_action(&client, &paging_root, pg.slot, &k, "restore").await?;
                             admission.page_confirmed = restored;
                             admission.page_in = if restored {
                                 PageIn::Restored
@@ -497,8 +563,14 @@ async fn admit(
             // BEFORE the await so cancellation cannot leave the next page treating
             // transient KV as its own warm tail.
             let slot = pool.transient_slot();
+            let Some(permit) = pool.try_acquire_slot(slot) else {
+                drop(admission);
+                lane = None;
+                wait_until_free(pool, slot).await?;
+                continue 'admit;
+            };
             admission = admission
-                .borrow_slot_for_transient(pool, slot, client, root, crate::inference::slots::page_io::gate())
+                .borrow_slot_for_transient(pool, slot, permit, client, root, crate::inference::slots::page_io::gate())
                 .await?;
         } else if let (Some(pool), Some(scratch)) = (pool.as_ref(), admission.scratch) {
             // Anonymous traffic lands on the SCRATCH slot, and takes its operation permit
@@ -509,124 +581,24 @@ async fn admit(
             // while the same round trip on an owned slot measured 658/662 reused. The
             // server already runs one request per slot at a time, so this moves the queue
             // into the owner, where it is visible, rather than adding any.
-            admission._slot_permit = Some(pool.acquire_slot(scratch).await?);
+            // Queued behind the scratch slot's holder, it holds NOTHING: not the adapter
+            // permit (sized to every slot, so a held one blocks traffic that could run now)
+            // and no serving lane (card 920c43bc).
+            let Some(permit) = pool.try_acquire_slot(scratch) else {
+                drop(admission);
+                wait_until_free(pool, scratch).await?;
+                continue 'admit;
+            };
+            admission._slot_permit = Some(permit);
             admission._endpoint.check_ready()?;
         }
 
         if admission._mind.is_none() {
             admission._mind = mind.take();
         }
+        admission._lane = lane.take();
         return Ok(admission);
     }
-}
-
-impl TurnAdmission {
-    /// Borrow physical `slot` for traffic that serves no page: wait for the slot's
-    /// operation permit (event-driven, behind any live decode), detach its resident and
-    /// SAVE the resident's page so its warmth survives, and leave the slot unattributed
-    /// so no page later mistakes this traffic's KV for its own.
-    ///
-    /// The `page_io` permit is taken before the resident is detached, as on the keyed
-    /// path: once a stop has closed page IO, a borrow neither detaches a resident nor
-    /// starts a save, and a save it started holds the stop until its ledger update.
-    async fn borrow_slot_for_transient(
-        mut self,
-        pool: &Arc<KvSlotPool>,
-        slot: u32,
-        client: &reqwest::Client,
-        root: &str,
-        page_io: &'static crate::runtime::admission_gate::AdmissionGate,
-    ) -> Result<Self, String> {
-        self._slot_permit = Some(pool.acquire_slot(slot).await?);
-        self._endpoint.check_ready()?;
-        let page_io = crate::inference::slots::admit_page_io(page_io).map_err(|closed| closed.to_string())?;
-        let (previous, pin) = pool.take_resident(slot);
-        self._pin = pin;
-        if let Some(previous) = previous {
-            let pool = pool.clone();
-            let client = client.clone();
-            let paging_root = root.to_owned();
-            self = self.retain_paging(root, move |mut admission, _interested| async move {
-                // Held until this save's ledger update: the stop waits for it.
-                let _page_io = page_io;
-                pool.note_page_lost(&previous);
-                if admission.page_action(&client, &paging_root, slot, &previous, "save").await? {
-                    pool.note_saved(previous);
-                    admission.saved_evictee = true;
-                }
-                Ok(admission)
-            }).await?;
-        }
-        self.slot = Some(slot);
-        Ok(self)
-    }
-}
-
-/// Admit operator traffic — `serving/cache-probe` — onto one physical slot through the
-/// same owner as every turn, never around it. It holds no lane (it serves no page);
-/// it holds the slot's operation permit, so it waits behind a live decode instead of
-/// queueing inside the server, and it saves and detaches the resident first.
-///
-/// Before this the probe posted straight to the slot: on a live node it queued behind a
-/// persona's decode past its caller's patience (the M5 deploy self-check, 2026-09-25,
-/// no answer in 280 s — read as `unknown` and held the fleet's deploys), overwrote her
-/// warm KV without saving it, and restored its own filler under her attribution, so
-/// her next save wrote filler under her name. An endpoint with no slot pool (external,
-/// cloud) has no resident to protect; `slot()` is then `None`.
-///
-/// `slot: None` asks for the pool's SCRATCH slot when the server has one: a slot no
-/// page holds, so the probe waits behind nobody and evicts nobody (Cormac's review
-/// of #4388: behind a 7-minute turn even an admitted probe on slot 0 outwaits a 280 s
-/// caller). Without a scratch slot it borrows slot 0 and saves its resident first.
-pub async fn admit_transient(
-    client: &reqwest::Client,
-    root: &str,
-    slot: Option<u32>,
-) -> Result<TurnAdmission, String> {
-    admit_transient_through(client, root, slot, crate::inference::slots::page_io::gate()).await
-}
-
-/// [`admit_transient`] through the page-IO gate `page_io`.
-async fn admit_transient_through(
-    client: &reqwest::Client,
-    root: &str,
-    slot: Option<u32>,
-    page_io: &'static crate::runtime::admission_gate::AdmissionGate,
-) -> Result<TurnAdmission, String> {
-    let endpoint = crate::inference::slots::directory()
-        .endpoint(root)
-        .admit()
-        .await?;
-    let pool = endpoint.pool.clone();
-    let mut admission = TurnAdmission {
-        slot: None,
-        _pin: None,
-        _slot_permit: None,
-        released: None,
-        page_confirmed: false,
-        page_in: PageIn::None,
-        saved_evictee: false,
-        paging_in_flight: false,
-        _permit: None,
-        uncommitted: None,
-        scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
-        _endpoint: endpoint,
-        _mind: None,
-    };
-    let Some(pool) = pool else {
-        return Ok(admission);
-    };
-    let slot = slot
-        .or_else(|| pool.scratch_slot())
-        .unwrap_or_else(|| pool.transient_slot()); // JUSTIFIED unwrap_or_else: no named slot and no scratch slot = the cheapest citizen slot, whose resident is saved and detached first
-    if slot >= pool.n_slots() {
-        return Err(format!(
-            "slot {slot} does not exist on this endpoint ({} slots)",
-            pool.n_slots()
-        ));
-    }
-    admission = admission.borrow_slot_for_transient(&pool, slot, client, root, page_io).await?;
-    Ok(admission)
 }
 
 /// The page switches this node has completed (ms), newest kept: what a save/restore
@@ -671,43 +643,29 @@ pub fn kv_page_wedge_bound(measured_p90_ms: u64) -> std::time::Duration {
 }
 
 /// Only a complete server receipt establishes terminal paging state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum PageOutcome {
     Completed,
     Rejected,
+    /// The engine stopped, vanished or went silent with no receipt: the endpoint's paging is
+    /// unverified and the engine must be replaced.
     Uncertain,
-}
-
-/// How many consecutive checkpoints a switch may wait on an engine that is doing nothing
-/// else — no counter moving, no slot processing — before it is called stuck. On such an
-/// engine the queue head is the switch itself (a save/restore moves no slot counter), so
-/// "quiet" is not evidence of a stall; this caps how long quiet may last.
-// derived-or-floor: a CEILING on a wait that has no progress signal to read — the slot counters cannot see a save/restore, so the bound (itself derived from this node's measured switch p90) times this count is the patience for the engine's own queue head; it only ever ENDS a wait, never shortens one that shows progress.
-const QUIET_ENGINE_CHECKPOINTS: u32 = 8;
-
-/// A page switch's wait: [`crate::inference::llama_server::wait_while_engine_progresses`]
-/// with this module's quiet allowance, because a save/restore moves no slot counter and a
-/// quiet engine here is working the switch itself.
-async fn wait_while_engine_progresses<T, W, P, PF>(
-    work: W,
-    bounds: impl Into<crate::inference::llama_server::WaitBounds>,
-    progress: P,
-    on_busy: impl FnMut(u64),
-) -> Option<T>
-where
-    W: std::future::Future<Output = T>,
-    P: FnMut() -> PF,
-    PF: std::future::Future<Output = EngineProbe>,
-{
-    crate::inference::llama_server::wait_while_engine_progresses(work, bounds, QUIET_ENGINE_CHECKPOINTS, progress, on_busy).await
+    /// No receipt within the switch's bound while the engine's own process kept spending CPU
+    /// (`page_liveness`). CPU is evidence against replacing the engine, not proof the switch
+    /// progresses, so the engine is NOT replaced on this alone. The request is still in flight,
+    /// and the only way to consume it is [`UnresolvedPage::hold`] with the slot's custody, kept
+    /// until the engine answers (`unresolved_page`). The page is held as an uncertain switch
+    /// leaves it (not resident in the slot; a save's page not restorable).
+    Unresolved(UnresolvedPage),
 }
 
 /// Execute one page action through the shared turn/warm-ahead boundary. The
 /// measured wedge bound is a progress checkpoint (see [`wait_while_engine_progresses`]):
-/// a switch queued behind a moving engine keeps waiting; a stalled or silent engine
+/// a switch queued behind a moving engine keeps waiting; a stopped or vanished engine
 /// makes the outcome uncertain, and
 /// uncertainty never acknowledges remote completion — the admission owner must
-/// quarantine before releasing its lease.
+/// quarantine before releasing its lease. A switch whose engine kept spending CPU without
+/// a receipt is [`PageOutcome::Unresolved`], never a replacement on that alone.
 pub(crate) async fn kv_page_action(
     client: &reqwest::Client,
     root: &str,
@@ -734,86 +692,6 @@ pub(crate) async fn kv_page_action(
             volume.total_bytes, bytes,
         ).map_err(|error| error.to_string())
     }).await
-}
-
-// Keep receipt consumption inside the watchdog's owned future. Tests use this
-// same HTTP boundary with local progress evidence, without global serving state
-// or the concurrently updated switch-cost distribution.
-async fn bounded_page_receipt<P, PF>(
-    request: reqwest::RequestBuilder,
-    bounds: impl Into<crate::inference::llama_server::WaitBounds>,
-    progress: P,
-    on_busy: impl FnMut(u64),
-) -> Option<Result<(u16, Option<serde_json::Value>), reqwest::Error>>
-where
-    P: FnMut() -> PF,
-    PF: std::future::Future<Output = EngineProbe>,
-{
-    let receipt = async {
-        let response = request.send().await?;
-        let status = response.status().as_u16();
-        let body = response.json::<serde_json::Value>().await.ok();
-        Ok((status, body))
-    };
-    wait_while_engine_progresses(receipt, bounds, progress, on_busy).await
-}
-
-/// Why a page save's size quote gave no size: each a different fault, so the refusal names which
-/// (card 8fa1c147; enrico 2026-10-25/26: 11 refusals and 13 cold turns read only "quote
-/// unavailable", and nothing said whether the engine refused, answered for another slot, or was
-/// still busy with a prefill when the bound passed).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum QuoteMiss {
-    /// The request did not reach the engine or its reply did not arrive.
-    Unsent(String),
-    /// The engine answered with a non-success status.
-    Status(u16),
-    /// The engine answered for another slot or another file.
-    Mismatch,
-    /// The answer named no positive size.
-    NoSize,
-    /// The engine stopped making progress (or stopped answering) before it quoted.
-    EngineStopped,
-}
-
-impl std::fmt::Display for QuoteMiss {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unsent(error) => write!(f, "request not delivered: {error}"),
-            Self::Status(status) => write!(f, "engine answered HTTP {status}"),
-            Self::Mismatch => f.write_str("engine answered for another slot or file"),
-            Self::NoSize => f.write_str("engine named no positive size"),
-            Self::EngineStopped => f.write_str("engine stopped progressing before it quoted"),
-        }
-    }
-}
-
-/// Ask the engine what a save of `slot` into `filename` would write. The quote names the same
-/// checkpoint subset as the write, or the admitted bytes lie. A non-success status returns before
-/// its body is read, so an engine that refuses and then stalls its error body is a `Status` miss
-/// at once, never a wait that a stall watchdog could report as `EngineStopped` (Codex on #5441).
-pub(crate) async fn request_quote(client: &reqwest::Client, root: &str, slot: u32, filename: &str) -> Result<u64, QuoteMiss> {
-    let response = client.post(format!("{}/slots/{slot}?action=save-size", root.trim_end_matches('/')))
-        .json(&page_body(filename)).send().await
-        .map_err(|error| QuoteMiss::Unsent(error.to_string()))?;
-    let status = response.status().as_u16();
-    if !response.status().is_success() {
-        return Err(QuoteMiss::Status(status));
-    }
-    let body = response.json::<serde_json::Value>().await.ok();
-    read_quote(status, body.as_ref(), slot, filename)
-}
-
-/// PURE: the size an engine's `save-size` reply quotes for exactly this slot and file.
-pub(crate) fn read_quote(status: u16, body: Option<&serde_json::Value>, slot: u32, filename: &str) -> Result<u64, QuoteMiss> {
-    if !(200..300).contains(&status) {
-        return Err(QuoteMiss::Status(status));
-    }
-    let body = body.ok_or(QuoteMiss::NoSize)?;
-    if body["id_slot"].as_u64() != Some(u64::from(slot)) || body["filename"].as_str() != Some(filename) {
-        return Err(QuoteMiss::Mismatch);
-    }
-    body["projected_bytes"].as_u64().filter(|bytes| *bytes > 0).ok_or(QuoteMiss::NoSize)
 }
 
 // The page-action boundary accepts capacity evidence from its existing owner;
@@ -848,6 +726,9 @@ async fn kv_page_action_with_capacity(
     // queue this switch sits in is moving and the switch keeps waiting. A queue that
     // stops moving, or an engine that stops answering, turns the switch uncertain at
     // that checkpoint, and a dead engine ends it sooner when its socket drops.
+    // `/slots` is itself a task on that queue, so it cannot answer during one long batch:
+    // the engine PROCESS's CPU, read beside it, says busy or dead (`page_liveness`).
+    let liveness = PageLiveness::for_root(root);
     let mut payload = if action == "save" { page_body(&filename) } else { json!({ "filename": filename }) };
     if let Some(operation) = operation {
         payload["operation_id"] = json!(operation);
@@ -856,7 +737,11 @@ async fn kv_page_action_with_capacity(
         // A separate action is required: older engines must not mistake a quote for a write.
         let projected = wait_while_engine_progresses(
             request_quote(client, root, slot, &filename), bounds,
-            || crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client),
+            || {
+                let probe = crate::inference::llama_server::slots_probe(root.trim_end_matches('/'), client);
+                let liveness = &liveness;
+                liveness.probe(probe)
+            },
             |_| {},
         ).await.unwrap_or(Err(QuoteMiss::EngineStopped)); // unwrap_or: the wait gives up only when the engine stopped progressing or answering
         let admission = projected.map_err(|miss| format!("exact page file quote unavailable ({miss}); no write requested"))
@@ -874,13 +759,14 @@ async fn kv_page_action_with_capacity(
         }
     }
     // The same progress bound covers the complete receipt, not just headers.
-    let resp = bounded_page_receipt(
+    let receipt = bounded_page_receipt(
         client.post(&url).json(&payload),
         bounds,
+        &liveness,
         || async {
             match operation {
                 Some(operation) => crate::inference::llama_server::restore_probe(root.trim_end_matches('/'), client, operation, slot).await,
-                None => crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client).await,
+                None => crate::inference::llama_server::slots_probe(root.trim_end_matches('/'), client).await,
             }
         },
         |busy_checkpoints| {
@@ -893,16 +779,32 @@ async fn kv_page_action_with_capacity(
                 unmoved_ms = bounds.unmoved.as_millis() as u64,
                 unmoved_rate_source = bounds.unmoved_rate_source,
                 busy_checkpoints,
-                "a page switch outlived its bound while the engine's queue kept moving \
+                // the engine process's CPU over this checkpoint: the busy evidence when `/slots` is silent
+                engine_cpu_ms = %liveness.cpu_spent().map_or_else(|| "unread".to_string(), |spent| spent.as_millis().to_string()),
+                "a page switch outlived its bound while the engine kept working \
                  — waiting on it, not replacing the engine",
             );
         },
     )
-    .await
-    .and_then(Result::ok);
-    let (status, body) = match resp {
-        Some(receipt) => receipt,
-        None => (0, None), // Status zero records transport/watchdog failure, never success.
+    .await;
+    let mut unresolved = None;
+    let (status, body) = match receipt {
+        Receipt::Answered(Ok(reply)) => reply,
+        // Status zero records transport/watchdog failure, never success.
+        Receipt::Answered(Err(_)) | Receipt::Stopped => (0, None),
+        Receipt::Unresolved { cpu_spent, pending } => {
+            unresolved = Some(UnresolvedPage {
+                root: root.to_owned(),
+                action: action.to_owned(),
+                slot,
+                filename: filename.clone(),
+                cpu_spent,
+                checkpoint: bounds.checkpoint,
+                pending,
+                liveness,
+            });
+            (0, None)
+        }
     };
 
     // Headers alone are not a terminal receipt. A disconnected waiter can leave
@@ -915,28 +817,27 @@ async fn kv_page_action_with_capacity(
         b["timings"][if action == "save" { "save_ms" } else { "restore_ms" }].as_f64().map(|ms| ms as u64)
     });
     let engine_bytes = body.as_ref().and_then(|b| b[if action == "save" { "n_written" } else { "n_read" }].as_u64());
-    let outcome = match body {
-        Some(body)
-            if (200..300).contains(&status)
-                && body["id_slot"].as_u64() == Some(slot as u64)
-                && body["filename"].as_str() == Some(filename.as_str())
-                && body[if action == "save" { "n_saved" } else { "n_restored" }].as_u64().is_some() =>
-        {
-            PageOutcome::Completed
-        }
-        Some(body)
-            if status == 400
-                && body["error"]["code"].as_u64() == Some(400)
-                && body["error"]["type"].as_str() == Some("invalid_request_error")
-                && body["error"]["message"].as_str().is_some() =>
-        {
-            PageOutcome::Rejected
-        }
-        _ => PageOutcome::Uncertain,
+    let outcome = match terminal_receipt(action, slot, &filename, status, body.as_ref()) {
+        Some(Terminal::Completed) => PageOutcome::Completed,
+        Some(Terminal::Rejected) => PageOutcome::Rejected,
+        None => unresolved.map_or(PageOutcome::Uncertain, PageOutcome::Unresolved),
     };
-    // An uncertain receipt quarantines this engine: what it was doing is taken now, while it
-    // is still the engine that did not answer (card 3913621a).
-    if outcome == PageOutcome::Uncertain {
+    if let PageOutcome::Unresolved(unresolved) = &outcome {
+        let cpu_spent = unresolved.cpu_spent();
+        continuum_base::probe!(
+            class = "inference.kv_page.unresolved",
+            action = %action,
+            slot = slot as u64,
+            waited_ms = started.elapsed().as_millis() as u64,
+            unmoved_ms = bounds.unmoved.as_millis() as u64,
+            engine_cpu_ms = cpu_spent.as_millis() as u64,
+            "a page switch outlived its measured bound while the engine's process kept spending CPU: \
+             held unresolved with its slot's custody until the engine answers; the engine is not replaced on this alone"
+        );
+    }
+    // A switch without a receipt: what the engine was doing is taken now, while it is still the
+    // engine that did not answer (card 3913621a), and before a replacement if one follows.
+    if matches!(outcome, PageOutcome::Uncertain | PageOutcome::Unresolved(_)) {
         let evidence = crate::inference::engine_stall::capture(root).await;
         continuum_base::probe!(
             class = "inference.kv_page.stall_evidence",
@@ -945,10 +846,11 @@ async fn kv_page_action_with_capacity(
             status = status as u64,
             silent_ms = %evidence.silent_ms.map_or_else(|| "unknown".to_string(), |ms| ms.to_string()),
             sample = %evidence.sample.as_ref().map_or_else(|why| format!("none: {why}"), |path| path.display().to_string()),
-            "the engine did not complete a page switch: its stack and how long its log was silent, taken before it is replaced"
+            unresolved = matches!(outcome, PageOutcome::Unresolved(_)),
+            "the engine did not complete a page switch: its stack and how long its log was silent"
         );
     }
-    let ok = outcome == PageOutcome::Completed;
+    let ok = matches!(outcome, PageOutcome::Completed);
     let ms = started.elapsed().as_millis() as u64;
     if ok {
         KV_PAGE_SWITCH_MS.note(ms);
@@ -959,7 +861,7 @@ async fn kv_page_action_with_capacity(
         slot = slot as u64,
         page = %key,
         ok,
-        terminal = outcome != PageOutcome::Uncertain,
+        terminal = matches!(outcome, PageOutcome::Completed | PageOutcome::Rejected),
         status = status as u64,
         ms,
         // absent when the engine gave no timing (an older engine, or no terminal body)
@@ -977,6 +879,15 @@ async fn kv_page_action_with_capacity(
          the returner's state in; an uncertain receipt quarantines the endpoint",
     );
     outcome
+}
+
+/// Wait until `slot` is free, holding nothing, and let it go: the caller then takes every gate
+/// again (its slot without waiting). Waiting on the slot's own semaphore cannot miss the release
+/// the way a notification raised before the permit returns could; the next pass may still lose
+/// the slot to another caller and wait again, which is how a non-turn call yields.
+async fn wait_until_free(pool: &KvSlotPool, slot: u32) -> Result<(), String> {
+    drop(pool.acquire_slot(slot).await?);
+    Ok(())
 }
 
 #[cfg(test)]

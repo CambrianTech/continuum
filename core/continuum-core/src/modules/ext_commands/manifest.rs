@@ -333,6 +333,8 @@ impl DynCommand for ProcessCommand {
             description: self.description,
             wire: WireShape::Bare,
             native: self.manifest.native,
+            // Its params are the authored process's to decode: no Rust type owns them.
+            arguments: crate::sdk_codegen::ArgumentsContract::External,
             aliases: &[],
             // An authored command runs an arbitrary process and its manifest declares no
             // effect: undeclared, so it is never a repeat and never taken as observing.

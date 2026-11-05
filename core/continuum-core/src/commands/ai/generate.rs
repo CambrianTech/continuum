@@ -40,6 +40,13 @@ pub struct GenerateParams {
     #[serde(default)]
     #[ts(optional, type = "string")]
     pub stream_id: Option<uuid::Uuid>,
+    /// The requesting mind's think budget (her grant past her measured answer), forwarded by a
+    /// grid lane (`RemoteInferenceRequest::think`). Present: generated under it on this seat's
+    /// adapter (`DispatchTermsPolicy`), refused typed by one that cannot bound a think. This seat
+    /// advertises it as `CapabilityId::RemoteThinkBudget`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub think: Option<crate::ai::types::ThinkBudget>,
 }
 
 /// Result of `ai/generate` — the exact camelCase shape the inference seam has always
@@ -105,7 +112,7 @@ crate::action_command! {
     run(this, ctx, p) => {
         let _timer = TimingGuard::new("module", "ai_generate");
 
-        let GenerateParams { request, stream_id } = p;
+        let GenerateParams { request, stream_id, think } = p;
         // The one shape check serde cannot express on today's `Vec`: an empty conversation.
         // Follow-up (Fable): `TextGenerationRequest::messages` becomes non-empty by type.
         if request.messages.is_empty() {
@@ -140,9 +147,19 @@ crate::action_command! {
         // local persona turn rides — and the assembled response at the end. No sink
         // registered (a plain call) = the drain, exactly as before.
         let sink = stream_id.and_then(crate::ai::stream_sinks::take);
-        let mut response = match sink {
-            Some(sink) => adapter.generate_stream(request, sink).await?,
-            None => adapter.generate_text(request).await?,
+        let mut response = match (think, sink) {
+            // A forwarded think budget: generated under it, or refused typed by the adapter.
+            (Some(think), sink) => {
+                let terms = crate::ai::types::DispatchTerms { admission: None, think: Some(think) };
+                match sink {
+                    Some(sink) => adapter.generate_admitted(request, terms, sink).await.map_err(|e| e.to_string())?,
+                    None => crate::ai::stream_sinks::drain_generation(|sink| adapter.generate_admitted(request, terms, sink))
+                        .await
+                        .map_err(|e| e.to_string())?,
+                }
+            }
+            (None, Some(sink)) => adapter.generate_stream(request, sink).await?,
+            (None, None) => adapter.generate_text(request).await?,
         };
         // A generate from a cross-grid caller is inference this seat performed for a mind
         // hosted on ANOTHER node. Its measured prompt size (the server's own count) joins

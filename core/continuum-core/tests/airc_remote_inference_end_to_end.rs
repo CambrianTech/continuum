@@ -146,6 +146,8 @@ struct AlwaysFailingAdapter {
     message: String,
 }
 
+continuum_engine::dispatch_without_thinking!(AlwaysFailingAdapter);
+
 #[async_trait]
 impl AIProviderAdapter for AlwaysFailingAdapter {
     fn provider_id(&self) -> &str {

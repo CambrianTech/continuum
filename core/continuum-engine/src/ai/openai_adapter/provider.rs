@@ -141,6 +141,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         !self.dedicated_lane && self.config.single_resident_model
     }
 
+    /// The managed local engine quotes every finalized body before generating
+    /// (`lane_send::PromptQuote`) and refuses at the exact count; nothing else here counts.
+    fn counts_prompts_exactly(&self) -> bool {
+        self.exact_prompt_admission()
+    }
+
     fn live_served_window(&self) -> Option<u32> {
         if self.dedicated_lane || !self.config.single_resident_model {
             return None;
@@ -330,7 +336,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
-        self.stream_checked(request, sink).await
+        self.stream_checked(request, crate::ai::types::DispatchTerms::default(), sink).await
     }
 
     /// Create embeddings over the OpenAI-compatible `/v1/embeddings` endpoint.
@@ -514,6 +520,20 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .model_prefixes
             .iter()
             .any(|prefix| lower.starts_with(&prefix.to_lowercase()))
+    }
+}
+
+/// The managed engine enforces a mind's dispatch terms itself: her think budget on the body, her
+/// lease reserved at dispatch, a price below the estimate behind its exact count.
+#[async_trait]
+impl crate::ai::adapter::DispatchTermsPolicy for OpenAICompatibleAdapter {
+    async fn generate_admitted(
+        &self,
+        request: TextGenerationRequest,
+        terms: crate::ai::types::DispatchTerms,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+        self.stream_checked(request, terms, sink).await
     }
 }
 

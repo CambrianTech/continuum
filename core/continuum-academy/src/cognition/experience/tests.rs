@@ -242,6 +242,7 @@
             decision: Decision::Act {
                 calls: Vec::new(),
                 intent: "re-run the failing test".into(),
+                origin: crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
             },
             spoken: None,
             acts: 8,
@@ -458,6 +459,7 @@
             decision: Decision::Act {
                 calls: Vec::new(),
                 intent: "keep trying".into(),
+                origin: crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
             },
             spoken: None,
             acts: 8,

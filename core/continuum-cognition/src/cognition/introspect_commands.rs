@@ -26,11 +26,6 @@ use ts_rs::TS;
 
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
-/// Default number of recent records returned when the caller doesn't set `limit`.
-const DEFAULT_LIMIT: usize = 10;
-/// Hard cap so a huge trace can't blow up the caller's context.
-const MAX_LIMIT: usize = 100;
-
 /// Read the last `limit` JSONL lines from a per-persona fixture file under
 /// the shared fixture directory. Missing file → empty.
 pub(super) fn tail_persona_jsonl(
@@ -64,8 +59,7 @@ pub(super) fn tail_persona_jsonl(
         }
     };
     let lines: Vec<&str> = body.lines().filter(|l| !l.trim().is_empty()).collect();
-    let n = limit.min(MAX_LIMIT);
-    let start = lines.len().saturating_sub(n);
+    let start = lines.len().saturating_sub(limit);
     Ok(lines[start..].iter().map(|s| s.to_string()).collect())
 }
 
@@ -82,9 +76,9 @@ pub struct CognitionTrace;
 pub struct CognitionTraceParams {
     /// The persona (UUID) whose cognition to inspect — yours or a peer's.
     pub persona_id: crate::identity::PersonaRef,
-    /// How many recent ticks to return (newest last). Default 10, max 100.
-    #[serde(default)]
-    pub limit: Option<u32>,
+    /// How many of the newest ticks to return (newest last): the caller's page, never a size
+    /// this verb picks for her.
+    pub limit: u32,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -116,7 +110,7 @@ impl ActionCommand for CognitionTrace {
         _ctx: &Ctx,
         p: CognitionTraceParams,
     ) -> Result<CognitionTraceResult, CommandError> {
-        let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT);
+        let limit = p.limit as usize;
         let records = tail_persona_jsonl(
             super::workspace_capture::FIXTURE_DIR,
             p.persona_id.as_str(),
@@ -143,9 +137,9 @@ pub struct CognitionPrompt;
 pub struct CognitionPromptParams {
     /// The persona (UUID) whose verbatim LLM I/O to inspect.
     pub persona_id: crate::identity::PersonaRef,
-    /// How many recent LLM calls to return (newest last). Default 10, max 100.
-    #[serde(default)]
-    pub limit: Option<u32>,
+    /// How many of the newest LLM calls to return (newest last): the caller's page, never a
+    /// size this verb picks for her.
+    pub limit: u32,
     /// Read the retained previous capture segment instead of the current one.
     #[serde(default)]
     #[ts(optional)]
@@ -182,9 +176,9 @@ impl ActionCommand for CognitionPrompt {
         _ctx: &Ctx,
         p: CognitionPromptParams,
     ) -> Result<CognitionPromptResult, CommandError> {
-        let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT);
+        let limit = p.limit as usize;
         let persona = uuid::Uuid::parse_str(p.persona_id.as_str())
-            .map_err(|_| CommandError::Arguments("persona_id must be a UUID".into()))?;
+            .map_err(|_| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::not_an_id("persona_id", p.persona_id.as_str(), "persona")))?;
         let dir = crate::cognition::capture::fixture_dir(super::prompt_capture::FIXTURE_DIR)
             .ok_or_else(|| {
                 CommandError::Internal("cannot resolve capture home directory".into())
@@ -198,7 +192,7 @@ impl ActionCommand for CognitionPrompt {
             };
             let records = super::prompt_capture::completed_file(
                 &dir.join(format!("{persona}{suffix}.jsonl")),
-                limit.min(MAX_LIMIT),
+                limit,
             )
             .map_err(|error| CommandError::Internal(error.to_string()))?
             .into_iter()
@@ -335,7 +329,7 @@ impl ActionCommand for CognitionPlayback {
     type Output = CognitionPlaybackResult;
     async fn run(&self, _ctx: &Ctx, p: Self::Params) -> Result<Self::Output, CommandError> {
         let persona = uuid::Uuid::parse_str(p.persona_id.as_str())
-            .map_err(|_| CommandError::Arguments("persona_id must be a UUID".into()))?;
+            .map_err(|_| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::not_an_id("persona_id", p.persona_id.as_str(), "persona")))?;
         let dir = crate::cognition::capture::fixture_dir(super::prompt_capture::FIXTURE_DIR)
             .ok_or_else(|| {
                 CommandError::Internal("cannot resolve capture home directory".into())

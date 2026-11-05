@@ -147,7 +147,6 @@ impl ActionCommand for WorkRelease {
                 .await;
         }
         attempt.map_err(|e| CommandError::Internal(e.to_string()))?;
-        crate::persona::work_burst::note_hold_boundary(airc.peer_id().as_uuid()); // a release is a hold boundary too
         crate::persona::held_claims::forget(airc.peer_id().as_uuid(), airc.home(), card_id.as_uuid());
         Ok(WorkReleaseResult { released: true })
     }
@@ -194,46 +193,48 @@ impl ActionCommand for WorkState {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let state = parse_state(&p.state)?;
-        // A HOLDER NEVER "OPENS" HER OWN CARD. `open` from the live holder is a release
-        // with no note and no hand-off — and it is almost never intent: Atlas, 2026-09-13
-        // 12:58Z, "let me get the card" → `work/state` (open) on the card she held with a
-        // real edit in her checkout; Joaquin pulled it and re-staged fresh. Reading is
-        // `work/get`; handing back is `work/release` (say why). The operator and a
-        // non-holder may still reopen a card — that is a board repair, not a slip.
-        if state == CardState::Open {
-            let held = crate::persona::airc_runtime::board_held_by(airc.as_ref())
-                .await
-                .map(|cards| cards.iter().any(|c| c.card_id == card_id))
-                .unwrap_or(false); // unwrap_or: an unreadable board cannot prove she holds it — the reopen proceeds as before
-            if held {
-                return Err(CommandError::Invalid(format!(
-                    "you HOLD card {} — `open` from its holder would drop your claim and leave your diff \
-                     behind. To read the card: work/get. To hand it back: work/release (with a note for \
-                     the next holder). To mark progress: work/state in_progress|review|done.",
-                    short8(card_id.as_uuid())
-                )));
-            }
-        }
-        // A STATE THAT MEANS "I HOLD THIS" IS A CLAIM. `claimed` / `in_progress` are the
-        // holder's columns; setting one is unambiguous intent to hold the card, and
-        // there is ONE way to hold a card — `work/claim` (lease + owner + staged
-        // checkout). Measured 2026-09-13 03:0xZ: Joaquin took matplotlib-21568 with
-        // `work/state claimed`, which moved the column and set no owner; the sweep read
-        // "claimed, owner none = held by nobody" and reopened it while she worked it
-        // believing it hers. Idempotent for the holder (the claim verb's already-yours
-        // arm), so `in_progress` on a held card costs one re-claim, never a refusal.
-        // Revision resumes the owner's existing lease. Re-claiming first refuses
-        // Review as settled, so the owner can never leave that column (Kimi,
-        // 2026-09-30). Only explicit in_progress on her live review may skip the
-        // claim path; it neither grants ownership nor marks review as passed.
-        let resume_review = if state == CardState::InProgress {
-            card_in_subscribed_rooms(&airc, card_id).await.is_some_and(|(_, card)| {
-                resumes_held_review(&card, state, airc.peer_id(), EpochMs::now().millis())
-            })
-        } else {
-            false
+        // THE PRECONDITION, at the mutation boundary, against the card as the board holds it now
+        // (`work_preconditions::state`, the one owner the surface reads too):
+        // - A HOLDER NEVER "OPENS" HER OWN CARD. `open` from the live holder is a release with no
+        //   note and no hand-off, and almost never intent (Atlas, 2026-09-13 12:58Z: "let me get
+        //   the card", then `work/state open` on the card she held with a real edit in her
+        //   checkout). Reading is `work/get`; handing back is `work/release`. The operator and a
+        //   non-holder may still reopen a card: a board repair, not a slip.
+        // - A STATE THAT MEANS "I HOLD THIS" IS A CLAIM. `claimed` / `in_progress` are the holder's
+        //   columns, and there is ONE way to hold a card, `work/claim` (lease, owner, staged
+        //   checkout): Joaquin took a card with `work/state claimed` (2026-09-13 03:0xZ), which
+        //   moved the column and set no owner, and the sweep reopened it under her.
+        // - Her own live review returns to in_progress for a revision under the same claim
+        //   (re-claiming refuses Review as settled, so the owner could never leave it: Kimi,
+        //   2026-09-30). It grants no ownership and does not mark the review passed.
+        // - ANOTHER'S CARD IS TAKEN OVER, ON THE RECORD (Joel, 2026-10-06: anyone may take any card at
+        //   any time). Her claim releases theirs naming whom it was taken from, then the column moves.
+        // A card on no board she stands in is the board's to decide; her column still goes
+        // through the claim path.
+        let now_ms = EpochMs::now().millis();
+        let board_card = card_in_subscribed_rooms(&airc, card_id).await;
+        let route = match &board_card {
+            Some((_, card)) => work_preconditions::decide(work_preconditions::state(card, airc.peer_id(), state, now_ms), card, airc.peer_id(), now_ms)
+                .map_err(super::refused)?,
+            None if matches!(state, CardState::Claimed | CardState::InProgress) => work_preconditions::StateRoute::ThroughClaim,
+            None => work_preconditions::StateRoute::Direct,
         };
-        if matches!(state, CardState::Claimed | CardState::InProgress) && !resume_review {
+        if let (work_preconditions::StateRoute::Takeover { from }, Some((room, _))) = (route, &board_card) {
+            // airc's claim takes a held card over: `ClaimReleased { taken_over_from }` by her, then her claim.
+            let claim_id = airc
+                .claim_work_card_with_provenance_in(room, ClaimWorkCard { card_id, ttl_ms: DEFAULT_CLAIM_TTL_MS }, airc_work::ClaimOrigin::Explicit, None)
+                .await
+                .map_err(|e| CommandError::Internal(e.to_string()))?;
+            continuum_base::probe!(
+                class = "work.state.taken_over",
+                card_id = %card_id.as_uuid(),
+                from = %from.as_uuid(),
+                claim_id = %claim_id.as_uuid(),
+                state = state_str(&state),
+                "another's card taken over on the record before its column moved"
+            );
+        }
+        if route == work_preconditions::StateRoute::ThroughClaim {
             let claim = WorkClaim {
                 registry: self.registry.clone(),
             }

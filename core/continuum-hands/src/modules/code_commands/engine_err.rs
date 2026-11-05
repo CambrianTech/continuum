@@ -262,13 +262,6 @@ pub struct CodeReadParams {
     /// 1-indexed last line to return (inclusive). Omit to read to the end.
     #[serde(default)]
     pub end_line: Option<u32>,
-    /// With no range, the most characters this read answers with: the reading mind's share
-    /// of her view's measured per-act headroom, filled by her act layer on the call it
-    /// dispatches, never by her (so not in the schema she is shown). Absent: whole.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(skip)]
-    #[ts(skip)]
-    pub page_budget: Option<crate::code::file_engine::PageBudget>,
 }
 
 #[async_trait]
@@ -278,8 +271,8 @@ impl ActionCommand for CodeRead {
     const ALIASES: &'static [&'static str] = &["read_file", "view", "cat", "open_file"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
-        "Read a file from the workspace, optionally a line range; a large file without one \
-         returns its first page. Lines come back NUMBERED (`   12 | text`), the numbers \
+        "Read a file from the workspace, optionally a line range; without one, the whole \
+         file. Lines come back NUMBERED (`   12 | text`), the numbers \
          code/edit's line_range and insert_at address. The `N | ` gutter is display: never \
          write it back into a file.";
     type Params = CodeReadParams;
@@ -287,10 +280,10 @@ impl ActionCommand for CodeRead {
 
     async fn run(&self, ctx: &Ctx, p: CodeReadParams) -> Result<ReadResult, CommandError> {
         let engine = engine!(self, ctx);
-        let read = engine
+        // The selection she asked for, never sized here: her view is the only sizer (HER-TOOLS §Answer).
+        engine
             .read_in(&p.file_path, p.start_line, p.end_line, read_scope_of(&self.state, ctx, &engine.workspace_root())?)
-            .map_err(engine_err)?;
-        Ok(crate::code::file_engine::PageBudget::answer(read, p.start_line, p.end_line, p.page_budget))
+            .map_err(engine_err)
     }
 }
 
@@ -361,92 +354,3 @@ pub struct CodeEdit {
     pub state: Arc<CodeState>,
 }
 
-/// The one true shape + the recovery guidance, kept in ONE place so the runtime error and
-/// the field docs never drift.
-pub(super) const EDIT_MODE_HELP: &str = "edit_mode must be ONE of (preferred = a tagged object): \
-{\"type\":\"search_replace\",\"search\":\"old text\",\"replace\":\"new text\"} | \
-{\"type\":\"line_range\",\"start_line\":N,\"end_line\":M,\"new_content\":\"...\"} | \
-{\"type\":\"insert_at\",\"line\":N,\"content\":\"...\"} | \
-{\"type\":\"append\",\"content\":\"...\"}. A bare mode string (e.g. \"append\") with the fields at top level is also accepted.";
-
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-pub struct CodeEditParams {
-    /// Path to the file, relative to the workspace (repo) root.
-    pub file_path: String,
-    /// How to edit. Preferred: a tagged object like `{"type":"search_replace","search":"old","replace":"new"}`,
-    /// `{"type":"line_range","start_line":N,"end_line":M,"new_content":"..."}`,
-    /// `{"type":"insert_at","line":N,"content":"..."}`, or `{"type":"append","content":"..."}`.
-    /// Forgiving: a bare mode string (e.g. `"append"`) with the fields at top level also works.
-    #[serde(default)]
-    #[ts(type = "any")]
-    pub edit_mode: serde_json::Value,
-    // Top-level convenience fields — accepted when edit_mode is given as a bare mode string
-    // (or when the mode is inferred from which of these are present). Forgives the common
-    // flat-call shape a model reaches for instead of the nested tagged object.
-    #[serde(default)]
-    pub content: Option<String>,
-    // `old_string`/`new_string` (Claude Code / most agents) and `old_str`/`new_str` are the
-    // UNIVERSAL edit idiom every citizen — persona, Claude, or human-over-Positron — reaches for
-    // first. Dogfooded 2026-08-09: a bare `code/edit old_string=… new_string=…` was refused
-    // ("could not determine the edit mode") because these weren't fields. Serde aliases map them
-    // straight onto search/replace at the shared handler, so search_replace is INFERRED and the
-    // edit lands first-try for everyone. [[dogfood-the-continuum-command-surface]]
-    #[serde(default, alias = "old_string", alias = "old_str")]
-    pub search: Option<String>,
-    #[serde(default, alias = "new_string", alias = "new_str")]
-    pub replace: Option<String>,
-    #[serde(default)]
-    pub new_content: Option<String>,
-    #[serde(default)]
-    #[ts(optional, type = "number")]
-    pub start_line: Option<u32>,
-    #[serde(default)]
-    #[ts(optional, type = "number")]
-    pub end_line: Option<u32>,
-    #[serde(default)]
-    #[ts(optional, type = "number")]
-    pub line: Option<u32>,
-    #[serde(default)]
-    pub all: Option<bool>,
-    /// Optional note describing the change (recorded in the change history).
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
-// Advertise one typed call shape; the serde structure above deliberately also accepts
-// legacy flat and alias forms. Deriving its schema would make the defaulted operation
-// optional (even `schemars(required)` cannot override serde(default) in schemars 0.8).
-// Keep compatibility parsing out of the native tool contract and recovery example.
-impl JsonSchema for CodeEditParams {
-    fn schema_name() -> String {
-        "CodeEditParams".into()
-    }
-
-    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        CanonicalEdit::json_schema(generator)
-    }
-}
-
-/// The normalized edit consumed by the executor and advertised to callers.
-#[derive(JsonSchema)]
-pub(super) struct CanonicalEdit {
-    /// Path relative to the workspace root.
-    pub(super) file_path: String,
-    /// Operation to apply.
-    pub(super) edit_mode: EditMode,
-    /// Optional note recorded in change history.
-    pub(super) description: Option<String>,
-}
-
-impl TryFrom<CodeEditParams> for CanonicalEdit {
-    type Error = CommandError;
-
-    fn try_from(params: CodeEditParams) -> Result<Self, Self::Error> {
-        let edit_mode = normalize_edit_mode(&params)?;
-        Ok(Self {
-            file_path: params.file_path,
-            edit_mode,
-            description: params.description,
-        })
-    }
-}

@@ -8,3 +8,5 @@ mod window_feedback;
 mod capacity_and_wire;
 
 mod act_verdicts;
+
+mod act_output_room;

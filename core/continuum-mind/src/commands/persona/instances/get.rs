@@ -50,14 +50,9 @@ crate::action_command! {
         // Short-form persona ids resolve too (#164): the roster/personas surfaces
         // DISPLAY 8-char short ids, so accept the id a caller was shown. A clean
         // UUID passes straight through; a short/mistyped form expands against the
-        // live registry — the ONE shared id_resolve primitive, candidates = who's
-        // online.
-        let persona_id = continuum_base::id_resolve::resolve(
-            p.persona_id.as_str(),
-            &this.registry.ids(),
-            "persona",
-        )
-        .map_err(|e| CommandError::Invalid(format!("{e} — call persona/instances/list")))?;
+        // live registry through airc's Shown reading, candidates = who's online.
+        let persona_id = crate::persona::persona_scope::persona_in(p.persona_id.as_str(), &this.registry)
+        .map_err(|e| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::id("persona_id", e)))?;
         let runtime = this.registry.get(persona_id).ok_or_else(|| {
             CommandError::NotFound(format!(
                 "no persona with id {persona_id} is currently online — call persona/instances/list"
@@ -118,6 +113,15 @@ mod tests {
             )
             .await
             .expect_err("malformed id must fail loud");
-        assert!(matches!(err, CommandError::Invalid(_)), "got {err:?}");
+        assert!(
+            matches!(
+                err,
+                CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::Field(crate::sdk_codegen::FieldRefusal {
+                    problem: crate::sdk_codegen::FieldProblem::Id(airc_core::shown_id::ShownIdError::NotAnId { .. }),
+                    ..
+                }))
+            ),
+            "airc's typed id refusal, kept whole: {err:?}"
+        );
     }
 }

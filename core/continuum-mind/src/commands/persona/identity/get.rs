@@ -38,11 +38,11 @@ crate::action_command! {
     run(this, ctx, p) => {
         let _ = this;
         // A short/mistyped id a caller quotes back resolves against the personas
-        // this process knows (their registered cards) — the ONE id_resolve
-        // primitive (#164). Omitted → your own card (the authenticated caller).
+        // this process knows (their registered cards) through airc's Shown
+        // reading (#164, ONE-ACT stage 6). Omitted → your own card (the authenticated caller).
         let target_id = match p.persona_id.as_ref().map(|r| r.as_str()) {
-            Some(raw) => continuum_base::id_resolve::resolve(raw, &crate::persona::card::ids(), "persona")
-                .map_err(CommandError::Invalid)?,
+            Some(raw) => crate::persona::persona_scope::persona_in(raw, &crate::persona::persona_scope::PersonaCards)
+                .map_err(|e| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::id("persona_id", e)))?,
             None => ctx
                 .caller
                 .as_ref()

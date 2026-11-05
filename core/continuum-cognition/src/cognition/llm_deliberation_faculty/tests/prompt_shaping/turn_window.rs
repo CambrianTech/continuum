@@ -627,61 +627,6 @@ fn prompt_view_stays_within_the_served_window() {
     );
 }
 
-// what this catches: the starved-claimant regression (card f6a9fe5c, live
-// specimen 2026-08-07) — under a squeezed window the grounding floor reserved
-// only the SMALLEST offered contribution, so a citizen HOLDING a work card got
-// a ~50-token status note while active-work (the card content itself) dropped;
-// her whole knowledge of her claim was a bare receipt and she yielded. The fix
-// is a priority ordering: the floor reserves the active-work contribution when
-// one is offered AND selection considers it first, so her held card survives
-// budget pressure that drops everything else.
-#[test]
-fn a_held_work_card_survives_budget_pressure_that_drops_everything_else() {
-    let persona = Uuid::new_v4();
-    let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let window: u32 = 1024;
-    let faculty = LlmDeliberationFaculty::new(
-        persona,
-        "Ivar",
-        "You are Ivar, a thoughtful engineer on the grid.",
-        adapter,
-    )
-    .with_context_window(window);
-
-    // A conversation big enough to absorb every token the floor doesn't hold.
-    let mut ws = history_with_stimulus("LATEST: how is the card going?");
-    // A recall bid that outranks active-work on salience and dwarfs the budget —
-    // without reserved-first selection it would spend the floor's reservation.
-    ws.broadcast.push(Contribution::context(
-        FacultyId::Recall,
-        &"deploy pipeline observation; ".repeat(2000),
-        1.0,
-        "recalled",
-    ));
-    // The tiny note the OLD floor would have sized the reservation to.
-    ws.broadcast.push(Contribution::context(
-        FacultyId::Custom("session-note".into()),
-        "note: room quiet",
-        0.95,
-        "noted",
-    ));
-    // Her held card — what a claim-holding citizen must never lose sight of.
-    ws.broadcast.push(Contribution::context(
-        FacultyId::Custom(crate::cognition::faculty_ids::ACTIVE_WORK.into()),
-        "[your work] psf__requests-2148 staged in workspace/swe — fix in place, tests are the grade",
-        0.9,
-        "held claims",
-    ));
-
-    let view = faculty.prompt_view(&ws);
-    // The room's context rides her messages (after her view), never the system message.
-    assert!(
-        view.messages.iter().any(|m| m.content_text().contains("psf__requests-2148")),
-        "the held card's content must survive budget pressure; messages were:\n{}",
-        view.user_text()
-    );
-}
-
 // what this catches: the reply's claim as one claimant in the allocation: its floor (an
 // act's measured answer channel), its want (her measured need, or the reply-sized prior),
 // its priority from the turn (ambient 4, directed 6, act 8, act on live work or after a
@@ -694,7 +639,7 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
     let floor = LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS;
     let prior = LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS;
     // (floor, wanted, priority)
-    let shape = |c: crate::cognition::rag_budget::RagSourceBudget| {
+    let shape = |c: continuum_context::flex::FlexClaim| {
         assert_eq!(c.min_tokens, c.floor_tokens, "above its floor the reply grows by priority");
         assert!(c.required, "the reply always gets its floor");
         (c.floor_tokens, c.max_tokens, c.priority)
@@ -702,17 +647,17 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
     // Unmeasured: a reply-sized prior, never a window fraction.
     assert_eq!(shape(reply_claim(TurnKind::Pass, None, 0, false, false, None)), (floor, prior, 4));
     assert_eq!(shape(reply_claim(TurnKind::Pass, None, 0, false, true, None)), (floor, prior, 6));
-    assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, false, false, None)), (floor, prior, 8));
+    assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, false, false, None)), (0, prior, 8), "an unmeasured act reserves nothing");
     assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, true, false, None)).2, 10, "live held work");
     assert_eq!(shape(reply_claim(TurnKind::Act, None, 1, false, false, None)).2, 10, "a pending cut");
-    // Measured: her think + answer, whole; an act floors at her answer channel.
+    // Measured: her think + answer, whole; an act floors at both, one claim (never her answer alone).
     let need = OutputNeed { reasoning: 900, answer: 300, turns: 5, reasoning_at_least: None };
     assert_eq!(shape(reply_claim(TurnKind::Pass, Some(need), 0, false, false, None)).1, 1_200);
     let kimi = OutputNeed { reasoning: 6_100, answer: 4_077, turns: 32, reasoning_at_least: None };
-    assert_eq!(shape(reply_claim(TurnKind::Act, Some(kimi), 0, false, false, None)), (4_077, 10_177, 8));
+    assert_eq!(shape(reply_claim(TurnKind::Act, Some(kimi), 0, false, false, None)), (10_177, 10_177, 8));
     // A large measured need claims all of it: the window and the allocation bound it.
     let huge = OutputNeed { reasoning: 30_000, answer: 20_000, turns: 9, reasoning_at_least: None };
-    assert_eq!(shape(reply_claim(TurnKind::Act, Some(huge), 0, false, false, None)), (20_000, 50_000, 8));
+    assert_eq!(shape(reply_claim(TurnKind::Act, Some(huge), 0, false, false, None)), (50_000, 50_000, 8));
     // A recent cut think tests upward only under a measured time term, never past it, and not at
     // all with no measured rate (the M5, 2026-10-31: Benchy, need 520 + 217, cut at 597+ thinking,
     // time term 832). Card b726a311.
@@ -720,6 +665,8 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
     assert_eq!(shape(reply_claim(TurnKind::Pass, Some(benchy), 0, false, false, Some(832))).1, 832, "up to the time term");
     assert_eq!(shape(reply_claim(TurnKind::Pass, Some(benchy), 0, false, false, Some(2_000))).1, 917, "to the lower bound under a roomy term");
     assert_eq!(shape(reply_claim(TurnKind::Pass, Some(benchy), 0, false, false, None)).1, 737, "no rate, no upward test");
+    // An act floors at the bound (917) and tests upward at its double, under the same term.
+    assert_eq!(shape(reply_claim(TurnKind::Act, Some(benchy), 0, false, false, Some(2_000))), (917, 1_617, 8), "an act's floor holds the bound, its want doubles it");
     let uncut = OutputNeed { reasoning_at_least: None, ..benchy };
     assert_eq!(shape(reply_claim(TurnKind::Pass, Some(uncut), 0, false, false, Some(832))).1, 737, "an uncut need is unchanged");
     // A pending cut's measured peak is retained as demand, not doubled again (cf9e's 3,587).

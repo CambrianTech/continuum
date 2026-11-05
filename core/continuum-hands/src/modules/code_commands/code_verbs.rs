@@ -1,97 +1,5 @@
 use super::*;
 
-/// Normalize a (possibly mis-shaped) code/edit call into a real [`EditMode`]. Forgives the
-/// ways a model mis-calls the tool — glass-boxed live: a 14B sent `edit_mode:"append"` (bare
-/// variant string) with no nested fields. Order: (1) strict tagged object, unchanged; (2) a
-/// bare mode string, or a mode INFERRED from which top-level fields are present; then build the
-/// variant, failing LOUD and naming the missing field (never a silent no-op that scores a false
-/// zero). [[px-persona-experience-tools-as-good-ux]] [[fallbacks-are-illegal-fail-loud]]
-pub(super) fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
-    // (1) Strict: already the tagged object — deserialize as-is (the preferred path, unchanged).
-    if p.edit_mode.get("type").is_some() {
-        return serde_json::from_value::<EditMode>(p.edit_mode.clone())
-            .map_err(|e| CommandError::Arguments(format!("code/edit: {e}. {EDIT_MODE_HELP}")));
-    }
-    // A field pulled from top-level OR from an untyped edit_mode object (flat call shapes).
-    let s = |top: &Option<String>, key: &str| -> Option<String> {
-        top.clone().or_else(|| {
-            p.edit_mode
-                .get(key)
-                .and_then(|v| v.as_str().map(str::to_string))
-        })
-    };
-    let content = s(&p.content, "content");
-    // Top-level old_string/new_string land on p.search/p.replace via serde aliases above; this
-    // also accepts them NESTED inside an untyped `edit_mode:{old_string:…,new_string:…}` object.
-    let search = s(&p.search, "search")
-        .or_else(|| s(&None, "old_string"))
-        .or_else(|| s(&None, "old_str"));
-    let replace = s(&p.replace, "replace")
-        .or_else(|| s(&None, "new_string"))
-        .or_else(|| s(&None, "new_str"));
-    let new_content = s(&p.new_content, "new_content");
-    // Numeric fields, pulled from top-level OR the nested untyped edit_mode object.
-    // Live glass-box (2026-07-14): Devstral emitted `edit_mode:{end_line:65535,
-    // new_content:"…"}` — the line numbers were NESTED, not top-level, so the
-    // top-level-only read missed them and the edit failed. One extractor, both
-    // placements. [[px-persona-experience-tools-as-good-ux]]
-    let n = |top: Option<u32>, key: &str| -> Option<u32> {
-        top.or_else(|| {
-            p.edit_mode
-                .get(key)
-                .and_then(|v| v.as_u64())
-                .map(|x| x.min(u32::MAX as u64) as u32)
-        })
-    };
-    let start_line = n(p.start_line, "start_line");
-    let end_line = n(p.end_line, "end_line");
-    let line = n(p.line, "line");
-    // (2) The mode name: a bare string, else inferred from which fields are present.
-    let mode = p.edit_mode.as_str().map(str::to_string).or_else(|| {
-        if search.is_some() || replace.is_some() {
-            Some("search_replace".into())
-        } else if start_line.is_some() || end_line.is_some() || new_content.is_some() {
-            Some("line_range".into())
-        } else if line.is_some() {
-            Some("insert_at".into())
-        } else if content.is_some() {
-            Some("append".into())
-        } else {
-            None
-        }
-    });
-    let miss =
-        |what: &str| CommandError::Arguments(format!("code/edit: needs `{what}`. {EDIT_MODE_HELP}"));
-    match mode.as_deref().map(|m| m.trim().to_lowercase()).as_deref() {
-        Some("search_replace") => Ok(EditMode::SearchReplace {
-            search: search.ok_or_else(|| miss("search"))?,
-            replace: replace.ok_or_else(|| miss("replace"))?,
-            all: p.all.unwrap_or(false),
-        }),
-        Some("append") => Ok(EditMode::Append {
-            content: content.ok_or_else(|| miss("content"))?,
-        }),
-        Some("insert_at") => Ok(EditMode::InsertAt {
-            line: line.ok_or_else(|| miss("line"))?,
-            content: content.ok_or_else(|| miss("content"))?,
-        }),
-        Some("line_range") => Ok(EditMode::LineRange {
-            // The reflexive "replace the file" shape a model emits is
-            // `{new_content, end_line: 65535}` with NO start_line: it means
-            // "from the top, to the end". Default start_line→1 and end_line→MAX
-            // (apply_edit clamps MAX to EOF) so that intent LANDS instead of
-            // missing a field and looping. new_content is the one truly required
-            // field — without it there is nothing to write. [[fallbacks-are-illegal-fail-loud]]
-            start_line: start_line.unwrap_or(1),
-            end_line: end_line.unwrap_or(u32::MAX),
-            new_content: new_content.ok_or_else(|| miss("new_content"))?,
-        }),
-        _ => Err(CommandError::Arguments(format!(
-            "code/edit: could not determine the edit mode. {EDIT_MODE_HELP}"
-        ))),
-    }
-}
-
 /// Reject a `file_path` that is a PLACEHOLDER rather than a real path. Glass-boxed live: a 14B
 /// wrote `file_path:"<path_to_blueprints.py>"` — it echoed the schema's angle-bracket placeholder
 /// syntax (or a `path_to_X` template) instead of substituting the concrete path it had ALREADY
@@ -129,10 +37,9 @@ impl ActionCommand for CodeEdit {
     async fn run(&self, ctx: &Ctx, p: CodeEditParams) -> Result<WriteResult, CommandError> {
         reject_placeholder_path(&p.file_path)?;
         let engine = engine!(self, ctx);
-        let edit = CanonicalEdit::try_from(p)?;
         let scope = read_scope_of(&self.state, ctx, &engine.workspace_root())?;
         engine
-            .edit_in(&edit.file_path, &edit.edit_mode, edit.description.as_deref(), &scope)
+            .edit_in(&p.file_path, &p.edit_mode, p.description.as_deref(), &scope)
             .map_err(engine_err)
     }
 }

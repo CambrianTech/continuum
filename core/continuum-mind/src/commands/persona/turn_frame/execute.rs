@@ -293,10 +293,10 @@ fn settle_step_to_json(
         SettleStep::Acted { calls, intent } => serde_json::json!({
             "outcome": "acted", "intent": intent, "calls": calls.len(),
         }),
-        SettleStep::WouldAct { calls, intent } => serde_json::json!({
+        SettleStep::WouldAct { calls, intent, .. } => serde_json::json!({
             "outcome": "wouldAct", "intent": intent, "calls": calls.len(),
         }),
-        SettleStep::ActUnfulfilled { calls, intent } => serde_json::json!({
+        SettleStep::ActUnfulfilled { calls, intent, .. } => serde_json::json!({
             "outcome": "actUnfulfilled", "intent": intent, "calls": calls.len(),
         }),
         SettleStep::CapacityRefused {

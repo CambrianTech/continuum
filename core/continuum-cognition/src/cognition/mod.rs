@@ -17,6 +17,7 @@ pub use continuum_engram::recall_metadata;
 pub use continuum_engram::trace;
 pub use continuum_rooms::card_facts;
 pub use continuum_rooms::card_holder;
+pub use continuum_rooms::work_preconditions;
 pub use continuum_grounding::grounding_invalidation;
 pub use continuum_rooms::room_substrates;
 pub use continuum_prompt::framing_echo;

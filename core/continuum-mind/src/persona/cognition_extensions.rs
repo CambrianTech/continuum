@@ -22,6 +22,7 @@ pub fn install() {
     });
     ext::install_quiesce_fleet(quiesce_fleet);
     ext::install_card_room(card_room);
+    ext::install_held_work(held_work);
     crate::cognition::dream_consolidation::install_resident_review_boundaries(|persona| {
         crate::persona::training_producer::reviewed::boundaries::ReviewBoundaryStore::resident(persona)
             .map(|store| Arc::new(store) as Arc<dyn crate::cognition::dream_consolidation::ReviewBoundaryLedger>)
@@ -53,6 +54,11 @@ fn card_room(persona: Uuid, card: Uuid) -> SlotFuture<Option<Uuid>> {
             .await
             .map(|room| room.channel.as_uuid())
     })
+}
+
+/// Her held work as her board shows it now (`persona::held_work`).
+fn held_work(persona: Uuid) -> SlotFuture<Option<crate::cognition::workspace::HeldWork>> {
+    Box::pin(crate::persona::held_work::read(persona))
 }
 
 fn quiesce_fleet() -> Option<FleetLease> {

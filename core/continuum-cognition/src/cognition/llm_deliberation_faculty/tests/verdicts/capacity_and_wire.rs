@@ -79,7 +79,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         ws.room_updates = Arc::new(vec![Arc::clone(&update)]);
         ws.broadcast.push(
             Contribution::context(
-                FacultyId::Custom(crate::cognition::faculty_ids::ACTIVE_WORK.into()),
+                FacultyId::Custom(crate::cognition::faculty_ids::WALL.into()),
                 format!(
                     "Held activity context: continue independent source review.{}",
                     "x".repeat(padding)
@@ -187,7 +187,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         // reserve the plan sized her view beside.
         assert_eq!(
             request.max_tokens,
-            Some(request_allowance(TurnKind::Act, view.completion_reserve, window, prompt_tokens)),
+            request_allowance(TurnKind::Act, view.completion_reserve, window, prompt_tokens).ok(),
             "the act's cap is the window's room after its prompt"
         );
         assert!(request.max_tokens.unwrap() >= view.completion_reserve);
@@ -199,14 +199,15 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
     }
 }
 
-// what this catches: the reply taking from REQUIRED input. A mind whose measured
-// turn is far larger than a small seat (15,000 tokens of think + answer on an 8,192
-// window) must still see her whole stimulus and her act's result: the reply's floor
-// is capped by what required input leaves, and above it the reply only trades
-// optional history. No capacity fault, the reply keeps a usable floor, and the
-// request fits the window.
+// what this catches: the reply taking from REQUIRED input, and an act sent with less than her
+// need. A mind whose measured turn is far larger than a small seat (12,000 tokens of think +
+// answer on an 8,192 window) still has her whole stimulus and her act's result in her view: the
+// reply never takes from required content. But the act is NOT sent with what is left: a cap below
+// her measured need spends itself on her think and cuts her at its first sentence (the M5,
+// 2026-11-04, a95afe3d1: 302 of 414 acts). It is refused as the typed IrreducibleShortfall, with
+// no request, and waits for a window that holds her need (`act_output_room.rs`).
 #[tokio::test]
-async fn an_8192_window_keeps_required_content_under_a_large_measured_need() {
+async fn an_8192_window_keeps_required_content_and_refuses_an_act_past_her_need() {
     use crate::cognition::working_memory::WorkingMemory;
     use crate::cognition::working_set::{EmissionStop, WorkingSetRegistry};
     let home = tempfile::tempdir().expect("isolated fixture emission storage");
@@ -237,21 +238,48 @@ async fn an_8192_window_keeps_required_content_under_a_large_measured_need() {
 
     let view = faculty.prompt_view(&ws);
     assert!(view.capacity_error.is_none(), "{:?}", view.capacity_error);
-    let contribution = faculty.contribute(&ws).await.expect("a verdict or named fault");
-    assert!(contribution.fault.is_none(), "{:?}", contribution.fault);
-    let seen = adapter.seen.lock().unwrap();
-    let request = &seen[0];
-    let wire_text: String = request.messages.iter().map(|m| m.content_text().to_string()).collect();
-    assert!(wire_text.contains("Write the migration file now"), "the stimulus rides the wire");
-    assert!(wire_text.contains("accounts_table_defined"), "the act's result rides the wire");
-    let reply = request.max_tokens.expect("the reply is bounded");
-    assert!(reply >= LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS, "a usable reply: {reply}");
-    let wire_tokens =
-        LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
-            + LlmDeliberationFaculty::messages_cost(&request.messages)
-            + crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap())
-            + reply as usize;
-    assert!(wire_tokens <= window as usize, "prompt + reply {wire_tokens} > window {window}");
+    // Her view's EPOCH START (this first view starts her epoch and sizes it, Codex on #5779): on an
+    // act her view's collapsed minimum is required, so a reply whose measured need exceeds the
+    // window never shares it away at the start: her view is shown, and nothing refused it.
+    assert!(view.budget_fault.is_none(), "her view's start was not refused: {:?}", view.budget_fault);
+    assert!(view.refit.grounding_at > 0, "her view is shown at its start, at least at its collapsed minimum");
+    let view_text = view.user_text();
+    assert!(view_text.contains("Write the migration file now"), "the stimulus is in her view");
+    assert!(view_text.contains("accounts_table_defined"), "the act's result is in her view");
+    let short = view.output_shortfall.expect("her need past the window is typed");
+    assert!(short.needed > window && short.window == window, "{short:?}");
+    let contribution = faculty.contribute(&ws).await.expect("a typed refusal");
+    let refusal = contribution.capacity_refusal.as_ref().expect("refused for capacity");
+    let refused = refusal.output_room.expect("typed as her output room");
+    assert!(refused.needed > window && refused.window == window, "{refused:?}");
+    assert_eq!(adapter.call_count(), 0, "never sent with less than her need");
+}
+
+// what this catches (Codex on #5779: required means refuse if underfunded, never mint budget):
+// the cognition refusal boundary. A window that holds exactly her act's input floors (framing,
+// required input, her hands, her last move, her view at its collapsed minimum) proceeds, the reply
+// at what is left (the reply-only shortfall, which does not refuse); one token less underfunds a
+// required floor and refuses the turn typed (`capacity_error`), never a raised start.
+#[test]
+fn a_turn_whose_input_floors_exactly_fit_proceeds_and_one_token_short_is_refused_typed() {
+    let build = |window: u32| {
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Benchy", "You are Benchy.", Arc::new(ScriptedAdapter::new(vec![])))
+            .with_context_window(window)
+            .with_tools(vec![read_tool()])
+    };
+    let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 40, true);
+    let roomy = build(65_536).prompt_view(&ws);
+    let receipt = roomy.allocation.as_ref().expect("test: the view names its allocation"); // JUSTIFIED: test fixture
+    let input = |source: &str| {
+        ["framing", "required_input", "newest_result", "tools", "last_move"].contains(&source) || source.starts_with("view/")
+    };
+    let floors: u32 = receipt.claims.iter().filter(|claim| input(&claim.source)).map(|claim| claim.floor).sum();
+    let fits = build(floors).prompt_view(&ws);
+    assert!(fits.capacity_error.is_none(), "exactly her input floors: the turn proceeds: {:?}", fits.capacity_error);
+    assert!(fits.budget_fault.is_none(), "{:?}", fits.budget_fault);
+    let short = build(floors - 1).prompt_view(&ws);
+    assert!(short.capacity_error.is_some(), "one token short of her input floors: refused typed for capacity");
+    assert!(short.budget_fault.is_none(), "a capacity refusal, never a broken-contract fault: {:?}", short.budget_fault);
 }
 
 // what this catches: an indivisible oversized stimulus, room update or active
@@ -440,7 +468,7 @@ async fn tool_use_response_becomes_an_act_verdict() {
     let c = faculty.contribute(&ws).await.expect("verdict");
 
     match c.decision {
-        Some(Decision::Act { calls, intent }) => {
+        Some(Decision::Act { calls, intent, .. }) => {
             assert_eq!(calls.len(), 1, "the one requested call rides the verdict");
             assert_eq!(calls[0].name, "code/read");
             assert_eq!(calls[0].input, json!({ "path": "deploy.md" }));
@@ -561,7 +589,7 @@ async fn a_refused_tail_rebuilds_her_request_without_it_once() {
         let rebuilt = &seen[1];
         assert!(rebuilt.tail_tools.is_none(), "the rebuilt request carries no tail");
         let offered: Vec<&str> = rebuilt.tools.iter().flatten().map(|tool| tool.name.as_str()).collect();
-        let activity = faculty.tool_surface().select_granted(&ws.room_affordances, faculty.prompt_view(&ws).tools_grant).expect("activity fits granted tools");
+        let activity = faculty.tool_surface().select_granted(&ws.room_affordances, &ws.held.move_commands(), faculty.prompt_view(&ws).tools_grant).expect("activity fits granted tools");
         let expected: Vec<&str> = activity.specs.iter().flat_map(|specs| specs.iter()).map(|tool| tool.name.as_str()).collect();
         assert!(!offered.is_empty() && offered == expected, "she is offered exactly her activity's surface: {offered:?}");
         if refusals == 1 {
@@ -607,12 +635,11 @@ async fn an_allocator_answering_for_the_wrong_sources_refuses_the_turn_before_di
 #[test]
 fn an_acts_cap_is_its_windows_room_and_a_pass_keeps_its_grant() {
     let (window, prompt, reserve) = (40_960u32, 25_000usize, 700u32);
-    assert_eq!(request_allowance(TurnKind::Act, reserve, window, prompt), window - prompt as u32 - 1);
-    assert_eq!(request_allowance(TurnKind::Pass, reserve, window, prompt), reserve, "a pass carries its grant");
-    assert_eq!(
-        request_allowance(TurnKind::Act, reserve, window, window as usize),
-        reserve,
-        "a prompt that leaves less than the reserve keeps the reserve"
+    assert_eq!(request_allowance(TurnKind::Act, reserve, window, prompt), Ok(window - prompt as u32 - 1));
+    assert_eq!(request_allowance(TurnKind::Pass, reserve, window, prompt), Ok(reserve), "a pass carries its grant");
+    assert!(
+        request_allowance(TurnKind::Act, reserve, window, window as usize).is_err(),
+        "a prompt that leaves less than the reserve is refused, never a cap past the window"
     );
 }
 
@@ -707,10 +734,10 @@ async fn a_tool_call_cut_at_the_limit_is_an_answer_cut_held_for_the_retry() {
     let write = ToolCall {
         id: "call-write".into(),
         name: "code/write".into(),
-        input: json!({ "__malformed_tool_arguments": {
-            "error": "EOF while parsing a string",
-            "raw": "{\"path\":\"src/accounts.rs\",\"content\":\"pub fn create_accounts(",
-        } }),
+        input: crate::ai::types::UnparsedArguments::Cut {
+            raw: "{\"path\":\"src/accounts.rs\",\"content\":\"pub fn create_accounts(".into(),
+        }
+        .into_input(),
     };
     let mut cut = make_response(FinishReason::Length, "", Some(vec![write]));
     cut.usage.output_tokens = 900;
@@ -738,4 +765,22 @@ async fn a_tool_call_cut_at_the_limit_is_an_answer_cut_held_for_the_retry() {
     let peak = reg.emission_of(persona).expect("the cut was measured").peak_tokens;
     assert_eq!(peak, 1_800, "the answer channel recorded at double");
     assert_eq!(wm.pending_emission_peak(ws.activity_room_id), peak, "held for the retry");
+
+    // Codex on #5779: an incomplete tool call never executes, even when its arguments happen to
+    // parse whole. Finish `length` means the model did not commit the call (the reply was cut by
+    // the window, as the typed IrreducibleShortfall lets an act proceed with a reply at what is
+    // left): it is reported as the cut-act sentinel, never run.
+    let parsed = ToolCall { id: "call-read".into(), name: "code/read".into(), input: json!({ "file_path": "src/accounts.rs" }) };
+    let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Length, "", Some(vec![parsed]))]));
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aiko", "You are Aiko.", adapter)
+        .with_context_window(40_960)
+        .with_tools(vec![read_tool()]);
+    let contribution = faculty.contribute(&ws).await.expect("a verdict or named fault");
+    match contribution.decision {
+        Some(Decision::Act { calls, .. }) => {
+            assert_eq!(calls.len(), 1, "the cut call is not among the calls that run: {calls:?}");
+            assert_eq!(calls[0].name, crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL);
+        }
+        other => panic!("expected the cut-act sentinel for a parseable call cut at the limit, got {other:?}"),
+    }
 }

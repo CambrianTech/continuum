@@ -261,7 +261,7 @@
 
         // A LIVE lease is a real person on a real card — still reported.
         assert_eq!(
-            live_holder(&card(true, Some(now + 60_000)), now),
+            crate::cognition::work_preconditions::holder_on_record(&card(true, Some(now + 60_000)), now),
             Some(owner),
             "a live claim IS contention and must still name the holder"
         );
@@ -269,7 +269,7 @@
         // A lapsed lease: the owner field survives, the hold does not. Whatever
         // refused the claim, it was not a person.
         assert_eq!(
-            live_holder(&card(true, Some(now - 1)), now),
+            crate::cognition::work_preconditions::holder_on_record(&card(true, Some(now - 1)), now),
             None,
             "an expired lease must NOT be reported as someone holding the card"
         );
@@ -277,15 +277,25 @@
         // The exact live shape: owner set, claim long expired. This is the ~50
         // of 61 cards on #general.
         assert_eq!(
-            live_holder(&card(true, Some(now - 134 * 60 * 60 * 1000)), now),
+            crate::cognition::work_preconditions::holder_on_record(&card(true, Some(now - 134 * 60 * 60 * 1000)), now),
             None,
             "a lease expired 134h ago is not a holder"
+        );
+
+        // Since airc's takeover-on-record date (projection/apply.rs:293) a lapsed claim still on
+        // the card is its holder's while she is away: a stranger's claim is ignored there, so the
+        // claim path names her rather than reporting a fault.
+        let after = airc_work::TAKEOVER_ON_RECORD_SINCE_MS + 1_000;
+        assert_eq!(
+            crate::cognition::work_preconditions::holder_on_record(&card(true, Some(after - 1)), after),
+            Some(owner),
+            "a claim on record stands after the takeover date"
         );
 
         // Owner set with no claim at all — the shape a release leaves behind in
         // some projections. Also not a hold.
         assert_eq!(
-            live_holder(&card(false, None), now),
+            crate::cognition::work_preconditions::holder_on_record(&card(false, None), now),
             None,
             "an owner with no claim is not a live hold"
         );
@@ -294,15 +304,16 @@
         for state in [CardState::Review, CardState::Merged, CardState::Closed] {
             let mut settled = card(true, Some(now + 60_000));
             settled.state = state;
-            let holder = live_holder(&settled, now).map(|p| p.as_uuid());
+            let holder = crate::cognition::work_preconditions::holder_on_record(&settled, now).map(|p| p.as_uuid());
             assert_eq!(classify_refusal(holder, Some(owner.as_uuid())), ClaimRefusal::Fault);
             assert_eq!(classify_refusal(holder, Some(Uuid::new_v4())), ClaimRefusal::Fault);
             // Returning a live review to revision preserves its owner's claim;
             // this exception must never grant another caller or reopen done work.
-            assert_eq!(resumes_held_review(&settled, CardState::InProgress, owner, now), state == CardState::Review);
-            assert!(!resumes_held_review(&settled, CardState::InProgress, PeerId::new(), now));
-            assert!(!resumes_held_review(&settled, CardState::Claimed, owner, now));
-            assert!(!resumes_held_review(&settled, CardState::InProgress, owner, now + 60_000));
+            use crate::cognition::work_preconditions::{resumes_held_review, state as state_precondition, StateRoute};
+            assert_eq!(resumes_held_review(&settled, owner, now), state == CardState::Review);
+            assert!(!resumes_held_review(&settled, PeerId::new(), now));
+            assert_ne!(state_precondition(&settled, owner, CardState::Claimed, now), Ok(StateRoute::ResumeReview));
+            assert!(!resumes_held_review(&settled, owner, now + 60_000));
         }
     }
 
@@ -485,7 +496,7 @@
         }
     }
 
-    /// The self-vs-other half of the refusal rule. `live_holder` (tested above,
+    /// The self-vs-other half of the refusal rule. `holder_on_record` (tested above,
     /// #357) answers "is a person on this card"; these answer "is that person YOU".
     pub(super) mod refusal_identity {
         use super::*;
@@ -511,31 +522,14 @@
             );
         }
 
-        /// what this catches: over-correcting into "self" and swallowing real
-        /// contention — the failure the #357 fix was careful to avoid. A DIFFERENT
-        /// live holder is a normal shared-board outcome and must still be named.
+        /// what this catches: another's card classified as a refusal reason. Anyone may take any
+        /// card (Joel, 2026-10-06), so a different holder, or a holder with no caller identity to
+        /// match, is never contention: a failed claim on it is a fault.
         #[test]
-        fn a_different_live_holder_is_still_reported_as_contention() {
-            let her = Uuid::new_v4();
-            let peer = Uuid::new_v4();
-            assert_eq!(
-                classify_refusal(Some(peer), Some(her)),
-                ClaimRefusal::HeldByPeer(peer),
-                "someone else's live claim is real contention and must name them"
-            );
-        }
-
-        /// what this catches: an unidentified caller silently classifying as
-        /// "yours". Identity absent is NOT identity matched — without a caller we
-        /// cannot claim the card is hers, so the holder is reported as a peer.
-        #[test]
-        fn an_unknown_caller_is_not_treated_as_the_holder() {
+        fn another_holder_is_never_a_refusal_reason() {
             let holder = Uuid::new_v4();
-            assert_eq!(
-                classify_refusal(Some(holder), None),
-                ClaimRefusal::HeldByPeer(holder),
-                "no caller identity means no self-match — never assume it is hers"
-            );
+            assert_eq!(classify_refusal(Some(holder), Some(Uuid::new_v4())), ClaimRefusal::Fault);
+            assert_eq!(classify_refusal(Some(holder), None), ClaimRefusal::Fault, "no caller identity is never hers");
         }
 
         /// what this catches: regression of the #357 rule through the new arm —
@@ -598,6 +592,34 @@
             lobby.channel,
             "closing a card on another board never moves her current room"
         );
+    }
+
+    // what this catches: a precondition (`work_preconditions`) naming a verb the registry does not
+    // have, so what her surface, her held-work item or a refusal says she can do is a command that
+    // does not exist (STATE-DRIVEN-SURFACE.md). Each verb's name is pinned to the command's own
+    // `NAME`, and every subtree a verb grants (`code/**`) to a registered command under it, so it
+    // never matches nothing.
+    #[test]
+    fn every_work_verb_and_grant_names_a_registered_command() {
+        use crate::cognition::work_preconditions::{names, WorkVerb};
+        use super::submission::{WorkReview, WorkSubmission, WorkSubmit};
+        for verb in WorkVerb::ALL {
+            let registered = match verb {
+                WorkVerb::Claim => <WorkClaim as ActionCommand>::NAME,
+                WorkVerb::Heartbeat => <WorkHeartbeat as ActionCommand>::NAME,
+                WorkVerb::Note => <WorkNote as ActionCommand>::NAME,
+                WorkVerb::Release => <WorkRelease as ActionCommand>::NAME,
+                WorkVerb::Review => <WorkReview as ActionCommand>::NAME,
+                WorkVerb::State => <WorkState as ActionCommand>::NAME,
+                WorkVerb::Submission => <WorkSubmission as ActionCommand>::NAME,
+                WorkVerb::Submit => <WorkSubmit as ActionCommand>::NAME,
+            };
+            assert_eq!(verb.command(), registered, "{verb:?}");
+            for grant in verb.grants() {
+                let known = [<continuum_hands::commands::code::run::CodeRun as ActionCommand>::NAME, <WorkSubmission as ActionCommand>::NAME];
+                assert!(known.iter().any(|command| names(grant, command)), "{verb:?} grants {grant}, which names no registered command");
+            }
+        }
     }
 
 mod part_2;

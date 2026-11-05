@@ -68,133 +68,89 @@
         assert_eq!(req.request_id, Some(7));
     }
 
+    use crate::runtime::arguments::{FieldProblem, FieldRefusal, JsonKind, Segment};
+
+    fn missing(value: Value) -> (Vec<Segment>, Option<Vec<String>>, Option<String>) {
+        #[derive(Debug, Deserialize)]
+        struct ShellParams {
+            cmd: String,
+        }
+        match CommandRequest::<ShellParams>::from_value(value) {
+            Ok(req) => panic!("expected a refusal, decoded cmd {}", req.params.cmd),
+            Err(ArgumentsRefusal::Field(FieldRefusal { path, problem: FieldProblem::Missing { sent, sent_as } })) => (path.0, sent, sent_as),
+            other => panic!("expected a missing-field refusal, got {other:?}"),
+        }
+    }
+
+    // what this catches: a wrong-typed field refused as text (or with its name lost to serde's
+    // flatten) instead of naming the field, what it needed and what she sent, as data.
     #[test]
-    fn request_parse_error_carries_diagnostic() {
-        // Wrong types — `max_tokens` is a string. Parser must surface
-        // a String error, not panic.
+    fn a_wrong_typed_field_is_refused_naming_the_field() {
         let value = json!({ "model": "qwen", "max_tokens": "not-a-number" });
-        let err = CommandRequest::<StartParams>::from_value(value)
-            .expect_err("type mismatch must surface as Err, not panic");
-        assert!(
-            err.contains("CommandRequest deserialization failed"),
-            "error must name the envelope so the caller knows which layer failed: {err}"
-        );
+        match CommandRequest::<StartParams>::from_value(value) {
+            Err(ArgumentsRefusal::Field(FieldRefusal { path, problem: FieldProblem::WrongType { expected, sent } })) => {
+                assert_eq!(path.0, vec![Segment::Key("max_tokens".into())]);
+                assert_eq!(sent, JsonKind::String);
+                assert_eq!(expected, "u32");
+            }
+            other => panic!("expected the max_tokens field refused, got {other:?}"),
+        }
     }
 
     // what this catches: the most common tool-use failure there is — a NAME mismatch, reported
     // one-sidedly. serde says "missing field `cmd`" and never mentions that the caller sent
     // `command`, so the message reads as "you forgot something" when the truth is "you called
-    // it something else". Measured on myself: two commands, two mismatches, two minutes. ONE
-    // seam fixes every command, because this is the only place a params object is decoded.
+    // it something else". The correspondence is data now (`sent_as`), never read out of text.
     #[test]
     fn a_param_name_mismatch_names_what_was_sent_not_just_what_was_wanted() {
-        let msg = param_mismatch_message(
-            "missing field `cmd`",
-            &["command".to_string(), "timeout".to_string()],
-        );
-        assert!(
-            msg.contains("You sent `command`"),
-            "must name what she sent: {msg}"
-        );
-        assert!(
-            msg.contains("calls that parameter `cmd`, not `command`"),
-            "must state the correspondence, not just the wanted name: {msg}"
-        );
-
-        // Envelope fields are the kernel's, never the caller's mistake — they must not be
-        // paraded back as if she had mis-named something.
-        let msg = param_mismatch_message(
-            "missing field `file_path`",
-            &[
-                "path".to_string(),
-                "sessionId".to_string(),
-                "userId".to_string(),
-            ],
-        );
-        assert!(msg.contains("`path`"), "the real candidate survives: {msg}");
-        assert!(
-            !msg.contains("sessionId"),
-            "envelope fields are not param candidates: {msg}"
-        );
+        let (path, sent, sent_as) = missing(json!({ "command": "ls", "timeout": 5 }));
+        assert_eq!(path, vec![Segment::Key("cmd".into())]);
+        assert_eq!(sent_as.as_deref(), Some("command"));
+        assert_eq!(sent, Some(vec!["command".to_string(), "timeout".to_string()]));
     }
 
     // what this catches: a NEW envelope field being added to `CommandRequest` without being
-    // added to the filter — the exact way `actorKind` got missed. The sibling assertion above
-    // spot-checks two fields; this one pins the WHOLE set, so the next field someone adds has
-    // to be considered here or this fails.
-    //
-    // The cost when it was missed, measured 2026-09-05: both IntelMac personas sent NO
-    // parameters. With actorKind filtered, `candidates` is empty and the dedicated
-    // "you sent no parameters at all" branch fires — true and actionable. Instead actorKind
-    // made it non-empty, that branch was skipped, and they were told to fix a field the
-    // KERNEL had added. Unremovable, so they resent the identical call and got the identical
-    // message. Six-plus times across two citizens in minutes.
+    // added to the filter — the exact way `actorKind` got missed. The cost when it was missed,
+    // measured 2026-09-05: both IntelMac personas sent NO parameters and were told to fix a
+    // field the KERNEL had added. Unremovable, so they resent the identical call six-plus times.
     #[test]
     fn every_envelope_field_is_filtered_from_the_you_sent_list() {
-        // Every wire name on `CommandRequest` that is NOT the caller's params — the one
-        // list the envelope owns, so a field added to the struct without being added
-        // there breaks THIS test rather than the next citizen's retry loop.
-        let sent: Vec<String> = ENVELOPE_FIELDS.iter().map(|f| f.to_string()).collect();
-        let msg = param_mismatch_message("missing field `cmd`", &sent);
-        assert!(
-            msg.contains("no parameters at all"),
-            "a call carrying ONLY envelope fields sent no parameters — it must say so, not \
-             name a field the kernel added: {msg}"
-        );
+        let mut call = serde_json::Map::new();
         for field in ENVELOPE_FIELDS {
-            assert!(
-                !msg.contains(field),
-                "`{field}` is an envelope field and must never appear in the you-sent list: {msg}"
-            );
+            call.insert(field.to_string(), Value::Null);
         }
+        let (_, sent, sent_as) = missing(Value::Object(call));
+        assert_eq!(sent, Some(Vec::new()), "a call carrying ONLY envelope fields sent no parameters");
+        assert_eq!(sent_as, None);
     }
 
-    // what this catches: over-filtering. `command` is DELIBERATELY not filtered even though
-    // the CLI adds it — for `code/shell` it is the single likeliest mis-name for `cmd`, and
-    // suppressing it would break the case this function exists for. Pinned so a future tidy-up
-    // of the filter list cannot quietly take it.
+    // what this catches: over-filtering. `command` is DELIBERATELY not an envelope field even
+    // though the CLI adds it — for `code/shell` it is the single likeliest mis-name for `cmd`.
     #[test]
     fn command_stays_a_candidate_because_it_is_the_likeliest_misname() {
-        let msg = param_mismatch_message(
-            "missing field `cmd`",
-            &["command".to_string(), "actorKind".to_string()],
-        );
-        assert!(
-            msg.contains("`cmd`") && msg.contains("`command`"),
-            "the real mis-name must still be named on both sides: {msg}"
-        );
-        assert!(
-            !msg.contains("actorKind"),
-            "...while the envelope field alongside it stays filtered: {msg}"
-        );
+        let (_, sent, sent_as) = missing(json!({ "command": "ls", "actorKind": "agent" }));
+        assert_eq!(sent_as.as_deref(), Some("command"));
+        assert_eq!(sent, Some(vec!["command".to_string()]), "the envelope field alongside it stays filtered");
     }
 
     // what this catches: a confident WRONG rename is worse than none — it sends her to change
-    // the wrong field. Unrelated names must degrade to a plain listing, and no params at all
-    // must say so plainly rather than implying a rename.
+    // the wrong field. An unrelated name is listed as sent and never offered as the field.
     #[test]
     fn an_unrelated_param_gets_a_listing_never_an_invented_rename() {
-        let msg = param_mismatch_message("missing field `cmd`", &["colour".to_string()]);
-        assert!(
-            !msg.contains("not `colour`"),
-            "must not invent a correspondence between unrelated names: {msg}"
-        );
-        assert!(
-            msg.contains("You sent `colour`") && msg.contains("requires `cmd`"),
-            "but must still show both sides: {msg}"
-        );
+        let (_, sent, sent_as) = missing(json!({ "colour": "red" }));
+        assert_eq!(sent_as, None);
+        assert_eq!(sent, Some(vec!["colour".to_string()]));
+        let (_, sent, _) = missing(json!({}));
+        assert_eq!(sent, Some(Vec::new()), "an empty call says so");
+    }
 
-        let msg = param_mismatch_message("missing field `cmd`", &[]);
-        assert!(
-            msg.contains("no parameters at all"),
-            "an empty call deserves its own sentence: {msg}"
-        );
-
-        // A non-missing-field error is passed through untouched.
-        let msg = param_mismatch_message("invalid type: string, expected u32", &["n".to_string()]);
-        assert!(
-            msg.ends_with("expected u32"),
-            "unrelated errors are not rewritten: {msg}"
+    // what this catches: arguments that are not an object reaching serde's flatten (which
+    // reports them as a struct mismatch) instead of a refusal saying what she sent.
+    #[test]
+    fn arguments_that_are_not_an_object_are_refused_by_kind() {
+        assert_eq!(
+            CommandRequest::<StartParams>::from_value(json!("qwen")).err(),
+            Some(ArgumentsRefusal::NotAnObject { sent: JsonKind::String })
         );
     }
 

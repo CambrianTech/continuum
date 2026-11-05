@@ -33,7 +33,7 @@ async fn persona_executes_ping_via_typed_object_path() {
         input: json!({}),
     }];
     let out = exec
-        .execute_native_batch(&calls, &ctx())
+        .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx())
         .await
         .expect("batch ok");
 

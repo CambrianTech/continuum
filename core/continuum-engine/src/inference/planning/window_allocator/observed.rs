@@ -66,13 +66,3 @@ impl Observed<Tokens> {
         }
     }
 }
-
-impl<T> Observed<Option<T>> {
-    /// `None` when the value is absent, else the observation of the value.
-    pub fn transpose(self) -> Option<Observed<T>> {
-        match self {
-            Self::Exact(value) => value.map(Observed::Exact),
-            Self::AtLeast { at_least } => at_least.map(|at_least| Observed::AtLeast { at_least }),
-        }
-    }
-}

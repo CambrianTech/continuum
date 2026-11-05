@@ -2,49 +2,33 @@
 
 use super::*;
 
-// what this catches: the `{"_raw": …}` fallback returning. Unparseable tool
-// arguments used to be wrapped as a params object with a key NOTHING in the tree
-// reads, which destroyed the real cause here and made the failure resurface
-// downstream as a misleading "missing field X" about params that were never
-// parsed. Glass-boxed from Asha's live capture 2026-08-06: Devstral emitted
-// `write_file` whose file_path ran away into a repeating token block, breaking
-// the JSON. The marker must NAME the failure and carry the parser's own error.
-// [[fallbacks-are-illegal-fail-loud]] (#334)
+// what this catches: the engine reading a cut as bad JSON (or the reverse), or a finish the
+// backend never reported as finished. Only `length` is the output limit, and an absent marker is
+// Unreported; a call whose arguments do not parse under a reported finish is hers to retry.
+// Glass-boxed from Asha's capture 2026-08-06: Devstral's runaway `file_path` broke the JSON
+// with finish `stop`, and the turn showed a "missing field" story instead.
 #[test]
-fn unparseable_tool_arguments_are_marked_malformed_never_silently_wrapped() {
-    let runaway = format!(
-        "{{\"content\":\"x\",\"file_path\":\"/a{}",
-        "e072".repeat(50)
-    );
-    let parsed: Result<serde_json::Value, _> = serde_json::from_str(&runaway);
-    let err = parsed.expect_err("fixture must actually be invalid JSON");
-
-    let input = json!({
-        "__malformed_tool_arguments": { "error": err.to_string(), "raw": runaway.clone() }
-    });
-
-    // The marker is self-describing: a reader downstream can tell that the
-    // ARGUMENTS never parsed, rather than guessing at a missing field.
-    let m = input
-        .get("__malformed_tool_arguments")
-        .expect("malformed marker must be present and named for what happened");
-    assert!(
-        m.get("error")
-            .and_then(|e| e.as_str())
-            .is_some_and(|e| !e.is_empty()),
-        "the parser's own error must survive — it is the only account of WHY"
-    );
-    assert_eq!(
-        m.get("raw").and_then(|r| r.as_str()),
-        Some(runaway.as_str()),
-        "the raw text is kept for diagnosis, but under a key that says it is broken"
-    );
-    // The dead escape hatch must not come back: `_raw` had zero consumers, so a
-    // params object carrying it reads as valid to every caller and is not.
-    assert!(
-        input.get("_raw").is_none(),
-        "the silent `_raw` wrapper must stay gone"
-    );
+fn only_the_output_limit_reads_as_a_cut() {
+    use continuum_tool_protocol::{GenerationEnd, UnparsedArguments};
+    let runaway = format!("{{\"content\":\"x\",\"file_path\":\"/a{}", "e072".repeat(50));
+    for (finish, end) in [
+        (FinishReason::Length, GenerationEnd::OutputLimit),
+        (FinishReason::Stop, GenerationEnd::Finished),
+        (FinishReason::ToolUse, GenerationEnd::Finished),
+        (FinishReason::Error, GenerationEnd::Failed),
+        (FinishReason::Unreported, GenerationEnd::Unreported),
+    ] {
+        assert_eq!(finish.generation_end(), end, "{finish}");
+        let unparsed = UnparsedArguments::parse(runaway.clone(), end).expect_err("the fixture is not JSON"); // JUSTIFIED: the fixture is invalid by construction
+        let expected = match end {
+            GenerationEnd::OutputLimit => matches!(unparsed, UnparsedArguments::Cut { .. }),
+            GenerationEnd::Finished => matches!(unparsed, UnparsedArguments::Malformed { .. }),
+            GenerationEnd::Failed => matches!(unparsed, UnparsedArguments::Errored { .. }),
+            GenerationEnd::Unreported => matches!(unparsed, UnparsedArguments::Unexplained { .. }),
+        };
+        assert!(expected, "{finish}: {unparsed:?}");
+        assert_eq!(unparsed.raw(), runaway, "the raw text is kept whole");
+    }
 }
 
 // what this catches (card 394017ed, f3ba3b56 item 5): a /props transport failure left
@@ -279,7 +263,9 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
                     reply: 0,
                     request_id: "fixture",
                 }),
+                admission: None,
             },
+            &mut None,
         ),
     )
     .await

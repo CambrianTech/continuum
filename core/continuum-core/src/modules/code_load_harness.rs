@@ -35,21 +35,31 @@ use std::time::Instant;
 use tempfile::TempDir;
 use uuid::Uuid;
 
-/// A shared project tree: `files` source files of ~`lines`×2 lines each — a small
-/// crate's worth of realistic, searchable content (not `{"i": n}`).
-fn make_project(files: usize, lines: usize) -> TempDir {
+/// A shared project tree: `FILES` source files of `FUNCTIONS` documented functions each — a
+/// small crate's worth of realistic, searchable content (not `{"i": n}`), written through the
+/// real `code/write` the team itself uses, so the fixture's bytes land through the owner of
+/// workspace writes.
+async fn make_project(executor: &Arc<CommandExecutor>) -> TempDir {
     let dir = TempDir::new().expect("tempdir");
-    for f in 0..files {
-        let mut content = String::with_capacity(lines * 120);
-        content.push_str(&format!("//! module {f} — the quick brown fox\n\n"));
-        for l in 0..lines {
-            content.push_str(&format!(
-                "/// doc for func_{f}_{l}: the quick brown fox jumps over the lazy dog\n\
-                 pub fn func_{f}_{l}(x: usize) -> usize {{ x * {l} + {f} + 42 }}\n\n"
-            ));
-        }
-        std::fs::write(dir.path().join(format!("mod_{f}.rs")), content).expect("write file");
-    }
+    let root = dir.path().to_string_lossy().to_string();
+    let (id, seeder) = team_of(executor, &root, 1).await.remove(0);
+    let writes: Vec<NativeToolCall> = (0..FILES)
+        .map(|f| {
+            let mut content = format!("//! module {f} — the quick brown fox\n\n");
+            for l in 0..FUNCTIONS {
+                content.push_str(&format!(
+                    "/// doc for func_{f}_{l}: the quick brown fox jumps over the lazy dog\n\
+                     pub fn func_{f}_{l}(x: usize) -> usize {{ x * {l} + {f} + 42 }}\n\n"
+                ));
+            }
+            tool(&format!("seed-{f}"), "code/write", json!({ "file_path": format!("mod_{f}.rs"), "content": content }))
+        })
+        .collect();
+    let out = seeder
+        .execute_native_batch(&crate::ai::types::CallBatch::classify(writes, crate::ai::types::CallOrigin::Substrate), &ctx(id))
+        .await
+        .expect("seed batch");
+    assert!(out.results.iter().all(|r| r.is_error.is_none()), "seeding the project failed");
     dir
 }
 
@@ -101,7 +111,7 @@ fn tool(id: &str, name: &str, input: serde_json::Value) -> NativeToolCall {
 const PERSONAS: usize = 50;
 const ROUNDS: usize = 20;
 const FILES: usize = 40;
-const LINES: usize = 50; // ~100 lines / ~7KB per file
+const FUNCTIONS: usize = 50; // ~100 lines / ~7KB per file
 
 /// Stand up `PERSONAS` clients sharing `executor`, each with a created workspace
 /// rooted at the shared project. Returns (persona_id, client) pairs.
@@ -119,7 +129,7 @@ async fn team(executor: &Arc<CommandExecutor>, root: &str) -> Vec<(Uuid, Command
             json!({ "workspace_root": root }),
         )];
         let out = client
-            .execute_native_batch(&calls, &ctx(id))
+            .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx(id))
             .await
             .expect("workspace batch");
         assert!(
@@ -160,7 +170,7 @@ async fn profile_op<F>(
                     let calls = vec![tool("op", command, mk(id, r))];
                     let t0 = Instant::now();
                     let out = client
-                        .execute_native_batch(&calls, &c)
+                        .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &c)
                         .await
                         .unwrap();
                     stats.record(t0.elapsed().as_micros() as u64);
@@ -200,11 +210,10 @@ async fn team_of(
         let client = persona(executor.clone(), id);
         client
             .execute_native_batch(
-                &[tool(
-                    "ws",
-                    "code/create-workspace",
-                    json!({ "workspace_root": root }),
-                )],
+                &crate::ai::types::CallBatch::classify(
+                    [tool("ws", "code/create-workspace", json!({ "workspace_root": root }))],
+                    crate::ai::types::CallOrigin::Substrate,
+                ),
                 &ctx(id),
             )
             .await
@@ -221,9 +230,9 @@ async fn team_of(
 // mean a lock/serialization point under load).
 #[tokio::test(flavor = "multi_thread")]
 async fn read_scaling_sweep() {
-    let project = make_project(FILES, LINES);
-    let root = project.path().to_string_lossy().to_string();
     let executor = substrate();
+    let project = make_project(&executor).await;
+    let root = project.path().to_string_lossy().to_string();
 
     println!(
         "\n  cores={}  read scaling ({ROUNDS} reads/persona)",
@@ -249,7 +258,7 @@ async fn read_scaling_sweep() {
                     for r in 0..ROUNDS {
                         let calls = vec![tool("r", "code/read", json!({ "persona_id": id.to_string(), "file_path": format!("mod_{}.rs", r % FILES) }))];
                         let t0 = Instant::now();
-                        client.execute_native_batch(&calls, &c).await.unwrap();
+                        client.execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &c).await.unwrap();
                         stats.record(t0.elapsed().as_micros() as u64);
                     }
                 })
@@ -278,9 +287,9 @@ async fn read_scaling_sweep() {
 // client at 50-persona concurrency with zero errors.
 #[tokio::test(flavor = "multi_thread")]
 async fn realistic_collaborative_tool_load() {
-    let project = make_project(FILES, LINES);
-    let root = project.path().to_string_lossy().to_string();
     let executor = substrate();
+    let project = make_project(&executor).await;
+    let root = project.path().to_string_lossy().to_string();
     let team = team(&executor, &root).await;
 
     println!(
@@ -350,7 +359,7 @@ async fn realistic_collaborative_tool_load() {
                         tool("t", "code/tree", json!({ "persona_id": id.to_string(), "max_depth": 5 })),
                     ];
                     let t0 = Instant::now();
-                    client.execute_native_batch(&batch, &c).await.unwrap();
+                    client.execute_native_batch(&crate::ai::types::CallBatch::classify(batch.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &c).await.unwrap();
                     stats.record(t0.elapsed().as_micros() as u64);
                 }
             })

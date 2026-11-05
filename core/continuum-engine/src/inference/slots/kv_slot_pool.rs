@@ -61,6 +61,7 @@ impl KvSlotPool {
                 .collect(),
             released: Arc::new(tokio::sync::Notify::new()),
             ledger: std::sync::OnceLock::new(),
+            incarnation: std::sync::OnceLock::new(),
             ledger_generation: AtomicU64::new(0),
         }
     }
@@ -94,6 +95,7 @@ impl KvSlotPool {
     /// Stamp the engine process into this pool's ledger and rewrite it, so a core that
     /// later adopts this engine can prove the ledger is its own. Once per ledger.
     pub(super) fn stamp_incarnation(&self, incarnation: (u32, u64)) {
+        self.mark_incarnation(incarnation);
         let Some(ledger) = self.ledger.get() else {
             return;
         };
@@ -101,6 +103,17 @@ impl KvSlotPool {
             return;
         }
         self.persist_ledger(self.current_snapshot());
+    }
+
+    /// Name the engine process this pool belongs to, once (a later name for the same pool is
+    /// ignored: a replacement engine gets a new pool). Independent of the page ledger.
+    pub(crate) fn mark_incarnation(&self, incarnation: (u32, u64)) {
+        let _ = self.incarnation.set(incarnation);
+    }
+
+    /// The engine process this pool belongs to, when stamped.
+    pub(crate) fn incarnation(&self) -> Option<(u32, u64)> {
+        self.incarnation.get().copied()
     }
 
     pub fn n_slots(&self) -> u32 {
@@ -270,6 +283,13 @@ impl KvSlotPool {
             .await
             .map_err(|_| "physical KV slot admission closed".to_string())?;
         Ok(SlotPermit { _permit: permit, released: Arc::clone(&self.released) })
+    }
+
+    /// The slot's permit when it is free right now, without queueing: a caller holding other
+    /// gates checks first and, when the slot is busy, drops what it holds before it waits.
+    pub(crate) fn try_acquire_slot(&self, slot: u32) -> Option<SlotPermit> {
+        let permit = self.operations.get(slot as usize)?.clone().try_acquire_owned().ok()?;
+        Some(SlotPermit { _permit: permit, released: Arc::clone(&self.released) })
     }
 
     /// The signal a slot release raises; see [`Self::released`] on the struct.
@@ -595,6 +615,13 @@ pub struct EndpointAdmission {
 }
 
 impl EndpointAdmission {
+    /// The engine incarnation (pid, OS start time) this admission is bound to: the one its pool
+    /// was stamped with when the engine was verified ready or adopted. The read lease holds it
+    /// against replacement for the admission's life. `None` when this endpoint has no stamped pool.
+    pub(crate) fn incarnation(&self) -> Option<(u32, u64)> {
+        self.pool.as_ref()?.incarnation()
+    }
+
     /// The response must name this owned engine's launch alias. The read lease
     /// prevents replacement while this evidence is checked; a discovered or
     /// remote endpoint without a launch contract cannot certify local service.

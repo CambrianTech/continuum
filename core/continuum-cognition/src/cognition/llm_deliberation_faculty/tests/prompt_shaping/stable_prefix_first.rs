@@ -17,7 +17,7 @@ fn at(v: &DeliberationPromptView, needle: &str) -> usize {
 
 // what this catches (card c119ace7): the standing grounding that rides the
 // conversation tail rendered in BROADCAST order — the arbiter's per-turn
-// salience — so `[workspace-map]`, `[active-work]` and `[room-kanban]` traded
+// salience — so `[workspace-map]`, the held card and `[room-kanban]` traded
 // places turn to turn (both orders are in the M5's 2026-09-20 captures), and
 // the prefix cache lost every byte behind the swap although none had changed.
 // Same set in, same bytes out, whatever attention ranked and whatever order
@@ -29,10 +29,9 @@ fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() 
         LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
             .with_context_window(16_384);
     let room_uuid = Uuid::new_v4();
-    let view_for = |order: [usize; 4], sal: [f32; 4]| {
+    let view_for = |order: [usize; 3], sal: [f32; 3]| {
         let bodies = [
             ("workspace-map", "MAP: src/ tests/ docs/"),
-            ("active-work", "HELD: card 1234 [InProgress] \"fix the thing\""),
             ("room-kanban", "BOARD: you hold 1 card here; 3 claimable"),
             ("room-wall", "WALL: card 1234 ledger — known: the repro is in tests/"),
         ];
@@ -52,7 +51,14 @@ fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() 
                 Some(1_700_000_120_000),
             ),
         ];
-        let mut ws = Workspace::new(Burst::from_turns(room, turns));
+        let her = airc_core::PeerId::from_uuid(Uuid::from_u128(1));
+        use crate::cognition::work_preconditions::{fixture_card, Held, FIXTURE_NOW_MS};
+        let card = fixture_card(airc_work::CardState::InProgress, Some(her), None, "fix the thing");
+        let held = crate::cognition::workspace::HeldWork {
+            holds: Held::of(card, her, FIXTURE_NOW_MS, 1).into_iter().collect(),
+            ..Default::default()
+        };
+        let mut ws = Workspace::new(Burst::from_turns(room, turns)).held_work(held);
         ws.now_ms = Some(1_700_000_180_000);
         for &i in order.iter() {
             ws.broadcast.push(
@@ -69,9 +75,9 @@ fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() 
         faculty.prompt_view(&ws)
     };
 
-    let a = view_for([0, 1, 2, 3], [0.9, 0.5, 0.3, 0.7]);
+    let a = view_for([0, 1, 2], [0.9, 0.3, 0.7]);
     // Re-ranked AND re-ordered arrival: the bytes must not move.
-    let b = view_for([3, 2, 0, 1], [0.3, 0.9, 0.7, 0.5]);
+    let b = view_for([2, 1, 0], [0.3, 0.9, 0.5]);
     assert_eq!(a.system, b.system, "the system prefix is a function of the persona + ground");
     assert_eq!(
         bodies(&a),
@@ -80,7 +86,8 @@ fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() 
     );
 
     // The order, most stable first: the settled grounding in churn order (STANDING map,
-    // then the BOARD's held card and wall, by name) leads her view; then the conversation
+    // then the BOARD's wall), then her held work (one item per card, changing only on a
+    // transition) lead her view; then the conversation
     // (dated history, which grows and collapses at its front); then the kanban's CLAIMS,
     // which count and change fastest; then the per-turn facts; then the clock + presence
     // framing; then the ask, last. Within an epoch every act appends, so the
@@ -94,22 +101,22 @@ fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() 
     let history_first = at(&a, "[occurred 2023-11-14T22:13:20.000Z] Operator: we shipped");
     let history_last = at(&a, "[occurred 2023-11-14T22:14:20.000Z] I saw it land.");
     let map = at(&a, "[workspace-map]");
-    let held = at(&a, "[active-work]");
+    let held = at(&a, "[my work]");
     let board = at(&a, "[room-kanban]");
     let wall = at(&a, "[room-wall]");
     let facts = at(&a, "[context]");
     let clock = at(&a, "[now ");
     let ask = at(&a, "[occurred 2023-11-14T22:15:20.000Z] Operator: what's next");
     assert!(
-        map < held
-            && held < wall
-            && wall < history_first
+        map < wall
+            && wall < held
+            && held < history_first
             && history_last < board
             && board < facts
             && facts < clock
             && clock < ask,
-        "order must be map < active-work < wall < history < kanban < facts < clock < ask, \
-                     got {map} {held} {wall} {history_first}..{history_last} {board} {facts} \
+        "order must be map < wall < my work < history < kanban < facts < clock < ask, \
+                     got {map} {wall} {held} {history_first}..{history_last} {board} {facts} \
                      {clock} {ask}:\n{:#?}",
         bodies(&a)
     );
@@ -133,7 +140,7 @@ fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() 
     assert!(
         a.messages[..history_first].iter().all(|m| {
             let text = m.content_text();
-            ["[workspace-map]", "[active-work]", "[room-wall]"].iter().any(|tag| text.starts_with(tag))
+            ["[workspace-map]", "[my work]", "[room-wall]"].iter().any(|tag| text.starts_with(tag))
         }),
         "every message ahead of the history is settled grounding — no clock, no fact, no \
                      counter, nothing that grows:\n{:#?}",

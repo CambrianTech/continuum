@@ -74,7 +74,7 @@ impl Rig {
     async fn attempt(&self, lanes: &Arc<Semaphore>, client: &reqwest::Client, mind: u128, tokens: u64) -> Attempt {
         let admitted = tokio::time::timeout(
             crate::inference::turn_admission::kv_page_wedge_bound(0),
-            admit_turn(lanes, Some(key(mind)), Some(self.pool.clone()), client, &self.root, tokens, std::time::Duration::ZERO),
+            admit_turn(lanes, crate::inference::slots::SlotClass::Turn, Some(key(mind)), Some(self.pool.clone()), client, &self.root, tokens, std::time::Duration::ZERO),
         )
         .await;
         let Ok(Ok(mut turn)) = admitted else {

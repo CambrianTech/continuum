@@ -63,6 +63,7 @@ impl WorkingMemory {
             action_fps: Mutex::new(VecDeque::new()),
             action_fp_counts: Mutex::new(HashMap::new()),
             actions: Mutex::new(Default::default()),
+            thoughts: Mutex::new(Default::default()),
             view: Mutex::new(None),
             receipt_children: Mutex::new(BTreeMap::new()),
             active_from_seq: AtomicU64::new(0),
@@ -165,8 +166,6 @@ impl WorkingMemory {
         ));
     }
 
-    /// Record the reasoning the persona just produced. Blank/empty is ignored
-    /// (suppressed-thinking turns record nothing). Oldest ages out past capacity.
     /// Record `entry` in her ring: stamped with the next occurrence (the one owner of entry
     /// identity), the oldest leaving past capacity.
     pub(super) fn push_entry(&self, entries: &mut VecDeque<WmEntry>, mut entry: WmEntry) {
@@ -177,21 +176,21 @@ impl WorkingMemory {
         }
     }
 
+    /// Record the reasoning the persona just produced in her thought log ([`thought_log`]): one
+    /// record, never aged out by the `entries` ring. Blank/empty is ignored (suppressed-thinking
+    /// turns record nothing).
     pub fn record(&self, reasoning: &str) {
         let r = reasoning.trim();
         if r.is_empty() {
             return;
         }
-        let mut e = self.entries.lock();
-        self.push_entry(&mut e, WmEntry {
-            disk_change: Default::default(),
-            kind: WmKind::Thought,
-            text: r.to_string(),
-            acts: Vec::new(),
-            native_calls: Vec::new(),
-            scope: None,
-            occurrence: 0,
-        });
+        let occurrence = self.next_entry_seq.fetch_add(1, Ordering::Relaxed);
+        self.thoughts.lock().push(thought_log::ThoughtRecord::new(occurrence, r.to_string(), continuum_base::time::EpochMs::now().millis()));
+    }
+
+    /// Her thoughts, oldest first.
+    pub fn thoughts(&self) -> Vec<thought_log::ThoughtRecord> {
+        self.thoughts.lock().records().cloned().collect()
     }
 
     /// Record an ACTION the persona's hands just took (a tool call + its result
@@ -435,9 +434,8 @@ pub(crate) fn operation_level(text: &str, act: Option<&Observation>) -> Option<S
 /// operations summarizes each under its call's name, a part with no smaller level kept whole, so
 /// an error or a second file after a long read is never lost: one code outline over the whole
 /// batch dropped every unnumbered line after the first numbered one (Codex on #5422). `None` when
-/// the result is its own best summary (more than a quarter of it).
+/// the parts together are no smaller than the result (`levels::is_a_level`).
 fn result_summary(result: &str, acts: &[Observation]) -> Option<String> {
-    use continuum_context::levels::LEVEL_RATIO;
     let level = operation_level;
     match acts {
         [] => level(result, None),
@@ -446,13 +444,12 @@ fn result_summary(result: &str, acts: &[Observation]) -> Option<String> {
             // Each part is the act as the receipt shows it (its header over its humanized body),
             // at its own level: the same seam the single-act branch reads through `result`.
             let parts: String = many.iter().map(|act| act.render_summary_part(|body| level(body, Some(act)))).collect();
-            (parts.chars().count() * LEVEL_RATIO <= result.chars().count()).then_some(parts)
+            continuum_context::levels::is_a_level(&parts, result).then_some(parts)
         }
     }
 }
 
-/// An act's invariant-4 identity, from her calls as she made them (never the dispatched copy that
-/// carries a page budget): each call resolved through the dispatch seam to the command that runs,
+/// An act's invariant-4 identity, from her calls as she made them: each call resolved through the dispatch seam to the command that runs,
 /// fingerprinted with its canonical arguments, and given that command's declared effect. `None`
 /// for an act with no typed call.
 fn act_identity(acts: &[crate::cognition::act_observe::Observation]) -> Option<continuum_context::cause::Act> {

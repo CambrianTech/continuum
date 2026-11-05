@@ -136,7 +136,7 @@ impl crate::persona::wall_source::WallReader for AircHandleAdapter {
 }
 
 #[async_trait]
-impl crate::persona::active_work_source::AircWorkReader for AircHandleAdapter {
+impl crate::persona::held_work::AircWorkReader for AircHandleAdapter {
     async fn active_claims(&self) -> Result<Vec<airc_lib::WorkCard>, AircError> {
         let status = self
             .inner

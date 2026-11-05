@@ -157,7 +157,7 @@ pub fn get(identity: &str) -> Option<PersonaCard> {
 
 /// Every registered card's persona_id — the candidate set for resolving a
 /// short/mistyped persona id a caller quotes back (`persona/identity/{get,set}`
-/// via [`continuum_base::id_resolve::resolve`], #164). Cards register at spawn and on
+/// through [`crate::persona::persona_scope::PersonaCards`], #164). Cards register at spawn and on
 /// every identity edit, so this is "the personas this process knows about" — the
 /// same role `PersonaAircRuntimeRegistry::ids()` plays for the runtime verbs.
 pub fn ids() -> Vec<Uuid> {
@@ -215,7 +215,7 @@ mod tests {
 
     // what this catches: ids() reports every REGISTERED card's persona_id — the
     // candidate set that lets a short/mistyped persona id a caller quotes back
-    // resolve via id_resolve (#164). Membership, not equality: the registry is a
+    // resolve via `persona_scope::PersonaCards` (#164). Membership, not equality: the registry is a
     // process-global shared with other tests, so we only assert OUR two ids appear
     // (and remove them after) rather than pinning the whole set.
     #[test]

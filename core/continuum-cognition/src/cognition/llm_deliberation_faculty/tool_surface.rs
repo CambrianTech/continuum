@@ -116,15 +116,15 @@ impl LlmDeliberationFaculty {
     /// Whole demand before focus allocation. The epoch owner records this beside
     /// the grant; the grant never becomes a demand observation.
     pub fn tool_claim_tokens(&self, ws: &Workspace) -> (usize, usize) {
-        let held = self.working_memory.as_ref().and_then(|wm| wm.tool_head().held()).unwrap_or_default(); // unwrap_or_default: no learned head contributes no extra verbs
-        self.surface.claim_with_head(&ws.room_affordances, &held)
+        let head = self.working_memory.as_ref().and_then(|wm| wm.tool_head().held()).unwrap_or_default(); // unwrap_or_default: no learned head contributes no extra verbs
+        self.surface.claim_with_head(&ws.room_affordances, &ws.held.move_commands(), &head)
     }
 
     /// Called at epoch start with the ONE allocation's tools grant. Retain the
     /// returned selection for accounting and the wire until the next epoch.
     pub fn select_tool_surface_granted(&self, ws: &Workspace, grant_tokens: usize) -> Result<SelectedSurface<'_>, usize> {
         let (_, want) = self.tool_claim_tokens(ws);
-        let activity = self.surface.select_granted(&ws.room_affordances, grant_tokens)?;
+        let activity = self.surface.select_granted(&ws.room_affordances, &ws.held.move_commands(), grant_tokens)?;
         let selected = self.with_learned_head(activity, ws, grant_tokens);
         if selected.tokens > grant_tokens { return Err(selected.tokens); }
         Ok(selected.with_demand(want))

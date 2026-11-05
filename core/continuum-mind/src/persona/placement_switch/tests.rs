@@ -526,6 +526,8 @@ use crate::persona::scripted_adapter_factory::ScriptedPersonaAdapterFactory;
 // An admission/window contract fixture: preparation must never generate itself.
 struct HomeLane(u32);
 
+continuum_engine::dispatch_without_thinking!(HomeLane);
+
 #[async_trait::async_trait]
 impl AIProviderAdapter for HomeLane {
     fn provider_id(&self) -> &str {
@@ -773,6 +775,8 @@ async fn capacity_park_resumes_when_local_1_5b_routes_to_larger_remote_seat() {
 
 // A home lane on the fork's gateway: it takes a learned tool head.
 struct TailLane;
+
+continuum_engine::dispatch_without_thinking!(TailLane);
 
 #[async_trait::async_trait]
 impl AIProviderAdapter for TailLane {

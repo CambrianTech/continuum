@@ -12,53 +12,9 @@ use super::*;
 // write-only surface eventually proves it needs its read half.
 /// The board's displayed 8-char short form of an id — what every surface
 /// shows and what the lifecycle verbs accept back.
-/// The peer genuinely ON this card right now, or `None`.
-///
-/// The one question `work/claim`'s error path is allowed to ask before it tells
-/// a citizen someone else has her card. It is NOT `card.owner`: expiry never
-/// clears owner/claim_id (airc-work's projection clears them only on release or
-/// on a new claim), so a card claimed once carries an owner forever. Keying off
-/// the bare field relabelled EVERY refusal — settled work, wrong-room, transport
-/// faults — as "held by peer X", and `claim_rejections::record` then burned that
-/// fabrication into perception for ten minutes.
-///
-/// Named and separated from the call site so the rule can be tested without a
-/// board, an airc daemon, or a running persona — the call site is where this
-/// went wrong, and an inline `match` is not something a test can reach.
-///
-/// Uses the shared claimability-state and lease predicates. A settled card's
-/// retained lease must not override its original claim refusal.
-pub(super) fn live_holder(card: &airc_work::WorkCard, now_ms: u64) -> Option<airc_core::PeerId> {
-    // A retained lease on settled work is not claim contention. Otherwise a
-    // refused re-claim becomes AlreadyYours and select_work_claim replaces the
-    // useful settled-state refusal with WorkClaimNotCurrent (Kimi, 2026-09-30).
-    if crate::cognition::card_holder::refused_by_claim(card.state) {
-        return None;
-    }
-    match crate::cognition::card_holder::hold_of(card, now_ms) {
-        crate::cognition::card_holder::Hold::Held => card.owner,
-        // Lapsed or unclaimed: whatever refused the claim, it was not a person.
-        crate::cognition::card_holder::Hold::Lapsed
-        | crate::cognition::card_holder::Hold::Unclaimed => None,
-    }
-}
-
-pub(super) fn resumes_held_review(
-    card: &airc_work::WorkCard,
-    requested: CardState,
-    caller: airc_core::PeerId,
-    now_ms: u64,
-) -> bool {
-    requested == CardState::InProgress
-        && card.state == CardState::Review
-        && card.owner == Some(caller)
-        && crate::cognition::card_holder::hold_of(card, now_ms)
-            == crate::cognition::card_holder::Hold::Held
-}
-
 /// What a refused claim MEANS for the citizen who made it.
 ///
-/// `live_holder` answers "is a person on this card". It does NOT answer "is that
+/// `work_preconditions::holder_on_record` answers "whose claim stands on this card". It does NOT answer "is that
 /// person YOU" — and without that second question the refusal path told a citizen
 /// a stranger held her own work. Glass-boxed live 2026-08-14: Anon (a20b3ada) held
 /// 13 cards and was told `card 17531483 ... is held by peer a20b3ada` — her own
@@ -73,17 +29,16 @@ pub(super) fn resumes_held_review(
 /// shape — `work/list` renders holders through `card_holder`, and the claim path
 /// needed the same self-vs-other distinction as a NAMED rule rather than prose.
 ///
-/// Separated from the call site for the reason `live_holder` was: the call site is
+/// Separated from the call site for the reason the holder rule is: the call site is
 /// where this went wrong, and an inline `if` is not something a test can reach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClaimRefusal {
-    /// The live holder IS the caller — she already owns this card. Not contention,
-    /// not a fault: the claim's goal ("this citizen holds this card") is already
-    /// true, so the verb is satisfied and must not manufacture a rival.
+    /// The live holder IS the caller — she already owns this card. Not a fault: the
+    /// claim's goal ("this citizen holds this card") is already true, so the verb is
+    /// satisfied and must not manufacture a rival.
     AlreadyYours,
-    /// A different peer genuinely holds it right now. A normal shared-board outcome.
-    HeldByPeer(Uuid),
-    /// Nobody holds it; whatever refused the claim was not a person.
+    /// Not hers: whatever refused the claim was not a person (another's card is taken over,
+    /// never refused, Joel 2026-10-06).
     Fault,
 }
 
@@ -93,8 +48,7 @@ pub(crate) fn classify_refusal(holder: Option<Uuid>, caller: Option<Uuid>) -> Cl
     match (holder, caller) {
         // Self-comparison FIRST: a caller who holds the card is never contention.
         (Some(h), Some(c)) if h == c => ClaimRefusal::AlreadyYours,
-        (Some(h), _) => ClaimRefusal::HeldByPeer(h),
-        (None, _) => ClaimRefusal::Fault,
+        _ => ClaimRefusal::Fault,
     }
 }
 
@@ -130,17 +84,17 @@ pub struct WorkListParams {
     /// day reporting they had no work, and they were reading their tool correctly.
     #[serde(default)]
     pub claimable: Option<bool>,
-    /// At most this many cards (default 40): claimable first, then priority, then newest.
+    /// At most this many cards: claimable first, then priority, then newest.
     // Not a doc comment: this struct's docs are the tool surface a citizen pays tokens for.
-    // Measured 2026-10-16 on the M5: an unbounded list answered with all 776 cards as 198k
-    // chars of JSON, past her window's share, and she could read none of it (card ee003c55).
+    // No default count. Measured 2026-10-16 on the M5: 776 cards went on as ONE 198k-char
+    // JSON line she could read none of (card ee003c55). A long result now goes on one card per
+    // line (`spill::result_text`) and is saved, and how much of it she sees is her act's one
+    // allocation: whole when the window holds it, else the largest level that fits (its first
+    // and last cards, the counts, and the handle that reopens the rest).
     #[serde(default)]
     #[ts(optional)]
     pub limit: Option<usize>,
 }
-
-/// `work/list`'s default bound on listed cards (see [`WorkListParams::limit`]).
-pub const WORK_LIST_DEFAULT_LIMIT: usize = 40;
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct WorkListCard {
@@ -336,7 +290,9 @@ impl ActionCommand for WorkList {
                 .then_with(|| a.priority.cmp(&b.priority))
                 .then_with(|| a.age_hours.cmp(&b.age_hours))
         });
-        cards.truncate(p.limit.unwrap_or(WORK_LIST_DEFAULT_LIMIT).max(1));
+        if let Some(limit) = p.limit {
+            cards.truncate(limit.max(1));
+        }
 
         // A zero that explains itself. `{"cards":[]}` on a full board is the receipt
         // that cost the residents a day: it is indistinguishable from an empty board,
@@ -346,7 +302,7 @@ impl ActionCommand for WorkList {
         let note = if matched > cards.len() {
             Some(format!(
                 "{} of the {matched} matching cards are listed (claimable first, then priority, then \
-                 newest); pass limit for more, or narrow with state / claimable",
+                 newest) under the limit you passed; raise it or omit it for every match",
                 cards.len()
             ))
         } else if cards.is_empty() && total_on_board > 0 {

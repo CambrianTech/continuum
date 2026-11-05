@@ -231,6 +231,28 @@ pub async fn room_holding_card(persona: Uuid, card: Uuid) -> Option<Uuid> {
     lookup(persona, card).await
 }
 
+// ─── Her held work ───────────────────────────────────────────────────────────────────────
+
+/// What `persona`'s board shows she holds now, with the claims that ended since her last good
+/// read (STATE-DRIVEN-SURFACE.md). `None` when the read failed or she has no citizen here: a
+/// degraded read is an absence, never an empty board (which would read as every claim lost).
+pub type HeldWorkRead = fn(persona: Uuid) -> SlotFuture<Option<crate::cognition::workspace::HeldWork>>;
+
+static HELD_WORK: RwLock<Option<HeldWorkRead>> = RwLock::new(None);
+
+pub fn install_held_work(read: HeldWorkRead) {
+    *HELD_WORK.write() = Some(read);
+}
+
+/// Empty slot: probed, and `None` (no read): her turn carries no held work.
+pub async fn held_work(persona: Uuid) -> Option<crate::cognition::workspace::HeldWork> {
+    let Some(read) = *HELD_WORK.read() else {
+        missing("held_work");
+        return None;
+    };
+    read(persona).await
+}
+
 // ─── The pinned workspace map ────────────────────────────────────────────────────────────
 
 /// The workspace-map grounding source for `persona`, rooted at a pinned `root`.

@@ -39,7 +39,7 @@ async fn a_batch_whose_effect_mark_is_refused_never_reaches_the_executor() {
     let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), adm.clone()));
     let chain = ActChain::new().with_effects(Some(crate::cognition::act_observe::EffectGate(Arc::new(Refused))));
-    let outcome = apply_act(&cycle, &[tool_call()], "check the math", Uuid::new_v4(), &chain, None, None).await;
+    let outcome = apply_act(&cycle, &[tool_call()], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished), "check the math", Uuid::new_v4(), &chain, None, None).await;
     assert!(!outcome.produced_an_act(), "a refused mark is an unfulfilled act: {outcome:?}");
     assert!(exec.seen_context.lock().unwrap().is_none(), "the executor was never called"); // unwrap: test lock
     let told = cycle.acting().expect("the test cycle has hands").working_memory.recent_entries(); // expect: built with_acting above
@@ -77,10 +77,63 @@ async fn a_sentinel_only_batch_is_no_effect_and_takes_no_mark() {
         name: crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL.into(),
         input: serde_json::json!({}),
     };
-    apply_act(&cycle, &[cut], "composing a long reply", Uuid::new_v4(), &chain, None, None).await;
+    apply_act(&cycle, &[cut], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished), "composing a long reply", Uuid::new_v4(), &chain, None, None).await;
     assert!(exec.seen_context.lock().unwrap().is_some(), "the sentinel batch was not refused by the mark"); // unwrap: test lock
     let told = cycle.acting().expect("the test cycle has hands").working_memory.recent_entries(); // expect: built with_acting above
     assert!(!told.iter().any(|entry| entry.text.contains("[not run]")), "no 'not run' notice for a sentinel");
+}
+
+// what this catches: a call her generation never committed taking effect through the act seam.
+// Valid JSON whose generation the output limit cut, that errored, or that the engine never said
+// ended is complete-looking, yet: it takes no pre-effect mark (a gate refusing every mark does not
+// stop the turn), and the executor receives it held, never committed (Codex on #5790: the Cut
+// status existed only where contribute.rs recomputed it).
+#[tokio::test]
+async fn valid_json_from_an_uncommitted_generation_takes_no_effect_at_the_act_seam() {
+    use crate::ai::types::{CallBatch, CallOrigin, GenerationEnd};
+    struct Refused;
+    #[async_trait]
+    impl crate::cognition::act_observe::EffectMark for Refused {
+        fn turn(&self) -> Uuid {
+            Uuid::nil()
+        }
+        async fn before(&self, _effect: &crate::cognition::act_observe::Effect) -> Result<(), String> {
+            Err("a held call must never be marked as an effect".into())
+        }
+    }
+    /// Records how the act seam disposed the batch it was handed.
+    #[derive(Clone, Default)]
+    struct Disposition(Arc<Mutex<Vec<(usize, usize)>>>);
+    #[async_trait]
+    impl ToolExecutor for Disposition {
+        async fn execute_native_batch(&self, batch: &CallBatch, _context: &ToolExecutionContext) -> Result<NativeBatchOutcome, ToolError> {
+            if let Ok(mut seen) = self.0.lock() {
+                seen.push((batch.committed().count(), batch.held().count()));
+            }
+            Ok(NativeBatchOutcome { results: Vec::new(), media: Vec::new(), stored_ids: Vec::new(), verdicts: Vec::new() })
+        }
+        async fn parse_response(&self, _response_text: &str, _model_family: Option<&str>) -> Result<ParsedToolBatch, ToolError> {
+            Ok(ParsedToolBatch { tool_calls: Vec::new(), cleaned_text: String::new(), parse_time_us: 0 })
+        }
+        async fn store_outcome(&self, _outcome: &ToolOutcome, _context: &ToolExecutionContext) -> Result<Uuid, ToolError> {
+            Ok(Uuid::nil())
+        }
+    }
+    let write = ToolCall {
+        id: "write-1".into(),
+        name: "code/write".into(),
+        input: serde_json::json!({"file_path": "src/accounts.rs", "content": "pub fn create() {}"}),
+    };
+    for end in [GenerationEnd::OutputLimit, GenerationEnd::Failed, GenerationEnd::Unreported] {
+        let exec = Disposition::default();
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter)).with_acting(body(Arc::new(exec.clone()), admission()));
+        let chain = ActChain::new().with_effects(Some(crate::cognition::act_observe::EffectGate(Arc::new(Refused))));
+        apply_act(&cycle, std::slice::from_ref(&write), CallOrigin::Generated(end), "write the file", Uuid::new_v4(), &chain, None, None).await;
+        let told = cycle.acting().expect("the test cycle has hands").working_memory.recent_entries(); // expect: built with_acting above
+        assert!(!told.iter().any(|entry| entry.text.contains("[not run]")), "{end:?}: a held call took an effect mark");
+        let seen = exec.0.lock().map(|seen| seen.clone()).unwrap_or_default(); // unwrap_or_default: a poisoned test lock reads as nothing seen, which fails below
+        assert_eq!(seen, vec![(0, 1)], "{end:?}: the executor got the call held, never committed");
+    }
 }
 
 // what this catches: an act is scoped to the room it is FOR (one mind is in
@@ -101,7 +154,7 @@ async fn apply_act_scopes_to_the_room_and_observes_the_result() {
     let room = Uuid::new_v4();
     let acts = match apply_act(
         &cycle,
-        &[tool_call()],
+        &[tool_call()], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
         "check the math",
         room,
         &ActChain::new(),
@@ -164,9 +217,12 @@ struct FoldedRunningExecutor {
 impl ToolExecutor for FoldedRunningExecutor {
     async fn execute_native_batch(
         &self,
-        calls: &[ToolCall],
+        batch: &crate::ai::types::CallBatch,
         _context: &ToolExecutionContext,
     ) -> Result<NativeBatchOutcome, ToolError> {
+        // A double runs only what the classifier committed, as the live executor does.
+        let calls: Vec<crate::ai::types::ToolCall> = batch.committed().map(|c| c.call().clone()).collect();
+        let calls = calls.as_slice();
         let results = calls
             .iter()
             .map(|c| crate::ai::types::ToolResult {
@@ -246,7 +302,7 @@ async fn a_folded_running_alias_still_registers_its_dispatch_handle() {
     };
     let acts = match apply_act(
         &cycle,
-        std::slice::from_ref(&call),
+        std::slice::from_ref(&call), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
         "building",
         Uuid::new_v4(),
         &ActChain::new(),
@@ -297,7 +353,7 @@ async fn apply_act_without_hands_abstains() {
         matches!(
             apply_act(
                 &cycle,
-                &[tool_call()],
+                &[tool_call()], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
                 "try",
                 Uuid::new_v4(),
                 &ActChain::new(),
@@ -323,7 +379,7 @@ async fn apply_act_abstains_when_the_hand_fails() {
         matches!(
             apply_act(
                 &cycle,
-                &[tool_call()],
+                &[tool_call()], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
                 "run",
                 Uuid::new_v4(),
                 &ActChain::new(),
@@ -356,9 +412,12 @@ async fn an_acts_calls_carry_the_generation_that_issued_them() {
         }
         async fn execute_native_batch(
             &self,
-            calls: &[ToolCall],
+            batch: &crate::ai::types::CallBatch,
             _context: &ToolExecutionContext,
         ) -> Result<NativeBatchOutcome, ToolError> {
+            // A double runs only what the classifier committed, as the live executor does.
+            let calls: Vec<crate::ai::types::ToolCall> = batch.committed().map(|c| c.call().clone()).collect();
+            let calls = calls.as_slice();
             if let Ok(mut seen) = self.seen.lock() {
                 seen.extend(calls.iter().map(|_| self.issued.clone()));
             }
@@ -396,19 +455,19 @@ async fn an_acts_calls_carry_the_generation_that_issued_them() {
     let exec = StampingExecutor { issued: None, seen: Arc::new(Mutex::new(Vec::new())) };
     let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(Arc::new(exec.clone()), admission()));
-    let stamped = apply_act(&cycle, &two_submits, "submit both", Uuid::new_v4(), &ActChain::new(), None, Some("gen-1".into())).await;
+    let stamped = apply_act(&cycle, &two_submits, crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished), "submit both", Uuid::new_v4(), &ActChain::new(), None, Some("gen-1".into())).await;
     assert!(matches!(stamped, ActOutcome::Acted { .. }), "{stamped:?}");
     assert_eq!(seen_of(&exec), vec![Some("gen-1".to_string()); 2], "one act, one issuing generation, every call");
 
     let exec = StampingExecutor { issued: None, seen: Arc::new(Mutex::new(Vec::new())) };
     let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(Arc::new(exec.clone()), admission()));
-    let unstamped = apply_act(&cycle, &[tool_call()], "no generation", Uuid::new_v4(), &ActChain::new(), None, None).await;
+    let unstamped = apply_act(&cycle, &[tool_call()], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished), "no generation", Uuid::new_v4(), &ActChain::new(), None, None).await;
     assert!(matches!(unstamped, ActOutcome::Acted { .. }), "{unstamped:?}");
     assert_eq!(seen_of(&exec), vec![None], "no generation, no stamp");
 
     let plain = Arc::new(RecordingExecutor { seen_context: Arc::new(Mutex::new(None)), result_content: "ok".into() });
     let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter)).with_acting(body(plain, admission()));
-    let acted = apply_act(&cycle, &[tool_call()], "cannot stamp", Uuid::new_v4(), &ActChain::new(), None, Some("gen-2".into())).await;
+    let acted = apply_act(&cycle, &[tool_call()], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished), "cannot stamp", Uuid::new_v4(), &ActChain::new(), None, Some("gen-2".into())).await;
     assert!(matches!(acted, ActOutcome::Acted { .. }), "hands that cannot stamp still act: {acted:?}");
 }

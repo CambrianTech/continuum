@@ -44,7 +44,6 @@ mod apply;
 pub mod effect_mark;
 pub use effect_mark::{Effect, EffectGate, EffectMark};
 pub(crate) mod disk_change;
-mod page_budget;
 pub use apply::{apply_act, ActChain};
 
 mod settle;
@@ -142,9 +141,12 @@ pub mod test_support {
     impl ToolExecutor for ScriptedExecutor {
         async fn execute_native_batch(
             &self,
-            calls: &[ToolCall],
+            batch: &crate::ai::types::CallBatch,
             context: &ToolExecutionContext,
         ) -> Result<NativeBatchOutcome, ToolError> {
+            // A double runs only what the classifier committed, as the live executor does.
+            let calls: Vec<crate::ai::types::ToolCall> = batch.committed().map(|c| c.call().clone()).collect();
+            let calls = calls.as_slice();
             let act = {
                 let mut rooms = self.rooms.lock().unwrap();
                 rooms.push(context.context_id);
@@ -290,9 +292,12 @@ pub mod test_support {
         }
         async fn execute_native_batch(
             &self,
-            calls: &[ToolCall],
+            batch: &crate::ai::types::CallBatch,
             context: &ToolExecutionContext,
         ) -> Result<NativeBatchOutcome, ToolError> {
+            // A double runs only what the classifier committed, as the live executor does.
+            let calls: Vec<crate::ai::types::ToolCall> = batch.committed().map(|c| c.call().clone()).collect();
+            let calls = calls.as_slice();
             *self.seen_context.lock().unwrap() = Some(context.context_id);
             let results = calls
                 .iter()
@@ -431,6 +436,7 @@ pub mod test_support {
                     Decision::Act {
                         calls: vec![tool_call()],
                         intent: "run the code".into(),
+                        origin: crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
                     },
                     0.9,
                     "reaching for hands",

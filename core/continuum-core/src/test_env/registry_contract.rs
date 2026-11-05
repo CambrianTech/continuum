@@ -270,6 +270,22 @@ mod conformance {
                 .join("\n")
         );
     }
+
+    // what this catches: a native tool whose own result is never read, so a failure it
+    // returns as data renders as a success (code/edit and code/write before ONE-ACT 6b: a
+    // refused edit ticked). Run where every crate's commands link: the whole native surface.
+    #[test]
+    fn every_native_tool_projects_its_outcome() {
+        let natives = crate::sdk_codegen::command_registry().into_iter().filter(|d| d.native).count();
+        assert!(natives >= 20, "only {natives} native tools in the registry: the filter is broken");
+        let missing = crate::sdk_codegen::natives_without_an_outcome();
+        assert!(
+            missing.is_empty(),
+            "native tool(s) with no outcome projection: {missing:?}. Implement `ProjectsOutcome` and \
+             `register_outcome!(Cmd)` (or `register_outcome!(Cmd, refusals_only)` when its result has \
+             no failure state)"
+        );
+    }
 }
 
 mod events {
