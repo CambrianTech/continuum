@@ -321,6 +321,36 @@ mod tests {
         assert_eq!(after.get(&b), Some(&100));
     }
 
+    // ONE-ACT: fairness must use engine custody, not a sampled service-loop boolean. The
+    // waiter cannot take the fixed claim before the receipt, but a completed holder must not
+    // retain it indefinitely merely because she was granted first.
+    #[test]
+    #[ignore = "ONE-ACT slice 5: terminal receipt must hand an oversubscribed grant to its waiter"]
+    fn a_waiter_inherits_capacity_only_after_the_holders_terminal_receipt() {
+        let (a, b) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let owner = owner();
+        let lease = publish(None, a, 60, engine(7)).lease_for(a).expect("granted");
+        let reservation = owner.reserve_against(a, lease, 50, || Some(lease)).expect("reserved");
+        let demands = [a, b].map(|mind| Demand {
+            mind, need: t(60), target: t(60), wish: t(60), in_flight: false, ceiling: 100,
+        });
+        let held = BTreeMap::from([(a, 60)]);
+        let grants = owner.honoring(engine(7), |reserved| {
+            grant_with_reservations(&mut DemandFollowing, &demands, &held, 100, reserved)
+        });
+        assert_eq!(grants.get(&a), Some(&60), "the engine still owns her reservation");
+        assert_eq!(grants.get(&b), None, "a waiter cannot steal live capacity");
+        assert!(grants.values().sum::<u32>() <= 100);
+        settle(reservation, Some(&TerminalReceipt { finish: "stop".into() }));
+        let after = owner.honoring(engine(7), |reserved| {
+            assert!(reserved.is_empty(), "the holder has a verified terminal receipt");
+            grant_with_reservations(&mut DemandFollowing, &demands, &held, 100, reserved)
+        });
+        assert!(after.values().sum::<u32>() <= 100);
+        assert_eq!(after.get(&b), Some(&60), "a verified completion owes the waiting mind admission");
+        assert_eq!(after.get(&a), None, "the old holder waits rather than overspending the pool");
+    }
+
     // what this catches: a cancellation, or a stream that ended without its finish, taken for a
     // terminal receipt. Either leaves the reservation held, unresolved; a fence (the engine
     // incarnation changed) ends it.
