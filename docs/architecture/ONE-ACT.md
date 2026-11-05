@@ -828,3 +828,13 @@ existing held and unresolved claims stay protected. A waiter whose need no longe
 fits the pool/ceiling is removed from that priority queue. The new regression
 fails before the correction and passes after it; all 26 grant tests pass,
 including the combined HTTP proof test. CI must validate this newer PR head.
+
+At 20:30Z, every applicable CI check passed on exact head `44fe91a0c0`,
+including engine, serving, core, source hygiene, Windows compilation and binding
+drift. PR #5793 was marked ready and squash-merged into canary as
+`584c987fd016e2231e0d3348644861472c9e96e8`. Binary publication run
+`42103921846` was dispatched behind active run `42084725475`; the active
+publication was preserved. This is CI acceptance, not live acceptance. Deploy
+only the verified artifact through the supported lifecycle, with baseline,
+rollback and a 15-minute resident outcome gate. Fork-page reclaim and measured
+5c/5d scheduling validation remain unfinished.
