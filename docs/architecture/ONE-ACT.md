@@ -466,6 +466,25 @@ content anchoring (through a shared `Anchor` argument type), and results as code
 the contract. The ratchet `tools_outside_the_contract` = 0 means a tool defined any other way does not
 build.
 
+Refined with Cormac (2026-11-05):
+- **One refusal shape.** It is already proven twice, in #5782's `Unmet` and in airc's `ShownIdError`.
+  The derive generates `<Tool>Refusal` with `next_moves() -> Vec<Move>`, where `Move::command()` is
+  pinned to `ActionCommand::NAME`. When there is no move, the refusal carries a typed reason instead
+  (`NoMove::{Held(by), Ended(state)}`). The ratchet fails a refusal that carries neither.
+- **The read hash advances with her own edits.** Every landed edit returns the file's new hash, and
+  her working set records it. So her second edit in one act is checked against her first edit's
+  result, never refused as stale against her own write. A peer's concurrent edit is stale, and is
+  refused with the current region. One test pins both.
+- **Continuation is the guarantee; payload sizing is the optimization.** A tool's first call is
+  `Unmeasured` and can exceed any reserve, so continuation lands first.
+  - In the fork, a raw `/completion` takes the rendered prompt plus the partial output, so a warm
+    prefix costs about zero prefill.
+  - The tool-call parser and grammar state resume mid-JSON instead of restarting.
+- **Order:** (5) schema validation and (4) typed refusals need no fork work and land first, then (2)
+  anchors, then (1) continuation once the fork is verified.
+- **Second gate number:** bytes re-sent per landed edit (the 35,796-byte write landed and still broke
+  "payload = the change only").
+
 Ratchets: `line_number_edit_modes` = 0; `tools_without_declared_payload` = 0;
 `untyped_tool_errors` falls; `truncation_outside_the_view` = 0.
 
