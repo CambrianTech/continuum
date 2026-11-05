@@ -683,3 +683,34 @@ The runtime had relaunched a nine-slot engine (PID 25045, pool 294912). This is
 containment of the retry storm, not evidence that productive-act latency is fixed.
 Earlier claims that Intel's engine remained unchanged are explicitly withdrawn.
 The subsequent live observation remains open; no further rollout is accepted.
+
+### Engineering recovery — 2026-11-05 17:43Z
+
+Intel's full reversal window (16:36:50–16:51:50) contained only one
+`reached_model=true` outcome (Eitan, 535 seconds). Nine other pace records
+were aborted attempts with `reached_model=false`, not completed model work.
+The live gate failed despite containment of the retry storm. M5's 21 rollback
+outcomes were checked and all reached the model; neither count establishes
+useful writes or a controlled causal speed improvement.
+
+PR #5792, head `2f4c33382a`, fixes a demonstrated notification defect: releasing
+a reserved scratch slot broadcast to citizen waiters although no citizen slot
+became available. The regression failed with one unexpected wake before the
+fix; nine contention tests and 38 admission tests pass afterward. Both permit
+acquisition paths now use one constructor; scratch releases retain their own
+semaphore wake without broadcasting citizen availability. Engine CI passed;
+full CI and live acceptance remain pending. This does not establish the source
+of the entire Intel retry storm.
+
+Fable's original dyno PR #5777 was recovered and integrated with canary `9a0`
+at `8c25a1e160`, preserving the newer stamped-admission and custody tests.
+Four recorded dyno checks pass (three future gates remain explicitly ignored),
+and admission integration passes 37 tests with six ignored. Running the ignored
+whole-pool fairness gate explicitly still fails: Aris receives no grant by the
+holder's first completed turn, with the last grant remaining `{1: 114592}`.
+This is a reproduced production grant-policy failure using recorded inputs,
+not proof of a new scheduler. CI is pending for the recovered branch.
+
+The measured 5c/5d admission validator remains unfinished. The older contention
+replay assumes an equal prefill/decode split and a constant prefill rate; it
+cannot certify nonpreemptible chunk boundaries or measured warm-decode gaps.
