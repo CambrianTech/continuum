@@ -1,19 +1,20 @@
 #![cfg(test)]
 
 // what this catches (Kimi, 2026-09-25): a cut act must leave her a record of what
-// she was composing and that it did not land; a long payload is trimmed to its two
-// edges so the record cannot crowd the retry the way the payload did.
+// she was composing and that it did not land. A long many-line payload reads at the codec's
+// level (its head and tail, the count between), so the record cannot crowd the retry the way
+// the payload did; nothing is cut at a size picked here.
 #[test]
 fn a_cut_act_records_that_it_did_not_land_and_what_it_was() {
     let short = cut_act_fact("work/note({\"card\": \"a9c8f8ae\"");
     assert!(short.contains("did not land"), "{short}");
     assert!(short.contains("a9c8f8ae"), "{short}");
-    let long: String = format!("HEAD{}TAIL", "x".repeat(5_000));
+    let long: String = format!("HEAD\n{}TAIL", "line of the payload\n".repeat(500));
     let fact = cut_act_fact(&long);
-    assert!(fact.contains("after 5008 chars"), "{fact}");
+    assert!(fact.contains(&format!("after {} chars", long.chars().count())), "{fact}");
     assert!(fact.starts_with("my last act was CUT"), "{fact}");
     assert!(fact.contains("HEAD") && fact.contains("TAIL"), "both edges survive");
-    assert!(fact.chars().count() < 800, "the record is bounded, not the payload: {}", fact.chars().count());
+    assert!(fact.chars().count() < long.chars().count() / 2, "the record reads at a level, not the payload: {}", fact.chars().count());
 }
 
 use super::*;

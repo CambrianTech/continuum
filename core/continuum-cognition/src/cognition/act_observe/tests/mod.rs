@@ -37,7 +37,7 @@ struct FailingExecutor;
 impl ToolExecutor for FailingExecutor {
     async fn execute_native_batch(
         &self,
-        _calls: &[ToolCall],
+        _batch: &crate::ai::types::CallBatch,
         _context: &ToolExecutionContext,
     ) -> Result<NativeBatchOutcome, ToolError> {
         Err(ToolError::ExecutionFailed {
@@ -81,6 +81,7 @@ impl Faculty for AlwaysAct {
             Decision::Act {
                 calls: vec![tool_call()],
                 intent: "act again".into(),
+                origin: crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
             },
             0.9,
             "never settles",

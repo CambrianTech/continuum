@@ -14,11 +14,9 @@
 //!
 //! [`WorkingMemory::view_headroom`]: crate::cognition::working_memory::WorkingMemory::view_headroom
 
-use std::borrow::Cow;
-
 use continuum_hands::modules::code_commands::CodeRead;
 
-use crate::ai::types::ToolCall;
+use crate::ai::types::{CallBatch, ToolCall};
 use crate::code::file_engine::PageBudget;
 use crate::sdk_codegen::ActionCommand;
 
@@ -28,28 +26,25 @@ fn reads_unranged(call: &ToolCall) -> bool {
 
 /// `calls` as the hands should run them: each `code/read` with no range carrying its equal
 /// share of `headroom`. Borrowed unchanged when nothing is measured or nothing reads unranged.
-pub(super) fn with_page_budgets(calls: &[ToolCall], headroom: Option<usize>) -> Cow<'_, [ToolCall]> {
-    let reads = calls.iter().filter(|call| reads_unranged(call)).count();
+pub(super) fn with_page_budgets(batch: CallBatch, headroom: Option<usize>) -> CallBatch {
+    let reads = batch.committed().filter(|call| reads_unranged(call.call())).count();
     let Some(budget) = headroom.zip((reads > 0).then_some(reads)).and_then(|(chars, reads)| PageBudget::new(chars / reads)) else {
-        return Cow::Borrowed(calls);
+        return batch;
     };
-    Cow::Owned(
-        calls
-            .iter()
-            .cloned()
-            .map(|mut call| {
-                if reads_unranged(&call) {
-                    budget.stamp(&mut call.input);
-                }
-                call
-            })
-            .collect(),
-    )
+    batch.map_committed(|committed| {
+        if !reads_unranged(committed.call()) {
+            return committed;
+        }
+        let mut input = committed.call().input.clone();
+        budget.stamp(&mut input);
+        committed.with_input(input)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::types::{CallOrigin, GenerationEnd};
 
     fn call(id: &str, name: &str, input: serde_json::Value) -> ToolCall {
         ToolCall { id: id.into(), name: name.into(), input }
@@ -59,14 +54,17 @@ mod tests {
         call.input.get(PageBudget::FIELD).and_then(serde_json::Value::as_u64)
     }
 
+    fn budgets(calls: &[ToolCall], headroom: Option<usize>) -> Vec<Option<u64>> {
+        let batch = CallBatch::classify(calls.iter().cloned(), CallOrigin::Generated(GenerationEnd::Finished));
+        with_page_budgets(batch, headroom).entries().iter().map(|entry| budget_of(entry.call())).collect()
+    }
+
     // what this catches: a read paged before her view has measured an act (a constant in
     // disguise), or a budget stamped on her calls when nothing reads unranged.
     #[test]
     fn with_no_measured_headroom_every_read_is_whole() {
         let calls = vec![call("a", "code/read", serde_json::json!({"file_path": "src/lib.rs"}))];
-        let dispatched = with_page_budgets(&calls, None);
-        assert!(matches!(dispatched, Cow::Borrowed(_)));
-        assert_eq!(budget_of(&dispatched[0]), None);
+        assert_eq!(budgets(&calls, None), vec![None]);
     }
 
     // what this catches: the act's unranged reads not sharing the headroom equally, a ranged
@@ -79,9 +77,7 @@ mod tests {
             call("c", "code/read", serde_json::json!({"file_path": "c.rs"})),
             call("d", "code/shell", serde_json::json!({"cmd": "ls"})),
         ];
-        let dispatched = with_page_budgets(&calls, Some(9_000));
-        let budgets: Vec<Option<u64>> = dispatched.iter().map(budget_of).collect();
-        assert_eq!(budgets, vec![Some(4_500), None, Some(4_500), None]);
+        assert_eq!(budgets(&calls, Some(9_000)), vec![Some(4_500), None, Some(4_500), None]);
         assert!(calls.iter().all(|call| budget_of(call).is_none()), "her own calls stay as she made them");
     }
 }

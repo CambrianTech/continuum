@@ -109,6 +109,7 @@ impl ActChain {
 pub async fn apply_act(
     cycle: &WorkspaceCycle,
     calls: &[ToolCall],
+    origin: crate::ai::types::CallOrigin,
     intent: &str,
     room_id: Uuid,
     chain: &ActChain,
@@ -178,8 +179,13 @@ pub async fn apply_act(
     // a cut turn recorded as acting would read as uncertain and never be handed back (enrico,
     // 2026-10-27 02:54Z: Eitan's only "call" was the cut-at-limit sentinel). A batch of only
     // sentinels takes no mark.
-    let effect_calls: Vec<(String, String)> = calls
-        .iter()
+    // Each call's disposition, decided ONCE by the one classifier from where the batch came from
+    // (ONE-ACT 6b): a held call (cut, errored, unreported, malformed) is no effect, is never
+    // dispatched in the background, and reaches the executor only to be answered with why.
+    let batch = crate::ai::types::CallBatch::classify(calls.iter().cloned(), origin);
+    let effect_calls: Vec<(String, String)> = batch
+        .committed()
+        .map(|committed| committed.call())
         .filter(|call| !crate::cognition::tool_executor::command_executor::is_reported_sentinel(&call.name))
         .map(|call| (call.id.clone(), call.name.clone()))
         .collect();
@@ -212,9 +218,10 @@ pub async fn apply_act(
     let fg_calls: Vec<ToolCall> = match executor.command_executor() {
         Some(exec) => {
             let mut fg = Vec::with_capacity(calls.len());
-            for call in calls {
+            for entry in batch.entries() {
+                let call = entry.call();
                 let cmd = call.name.replace('_', "/");
-                if is_long_running(&cmd) {
+                if is_long_running(&cmd) && matches!(entry, crate::ai::types::Disposed::Committed(_)) {
                     let handle = exec.dispatch_background(
                         cmd.clone(),
                         call.input.clone(),
@@ -279,7 +286,8 @@ pub async fn apply_act(
     // Her reads with no range answer with their first page when the whole file is more than
     // their share of her view's measured per-act headroom (plan S1): the tool answering a
     // smaller question, never her view cutting a result. Only this dispatched copy carries it.
-    let dispatched = super::page_budget::with_page_budgets(&fg_calls, body.working_memory.view_headroom());
+    let foreground = batch.without_committed(|committed| dispatched_calls.iter().any(|bg| bg.id == committed.call().id));
+    let dispatched = super::page_budget::with_page_budgets(foreground, body.working_memory.view_headroom());
     let batch_result = tokio::time::timeout(
         TOOL_BATCH_CEILING,
         executor

@@ -21,7 +21,7 @@ use airc_core::shown_id::ShownIdError;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-pub use continuum_tool_protocol::call_ending::UnparsedArguments;
+pub use continuum_tool_protocol::call_ending::{UnparsedArguments, UnreadableMarker};
 
 use json_args::{ArgError, JsonArgs};
 
@@ -31,6 +31,9 @@ pub enum ArgumentsRefusal {
     /// The engine could not hand the arguments on as an object at all: the output limit cut them,
     /// or the model wrote text that is not JSON. The raw text is kept whole.
     Unparsed(UnparsedArguments),
+    /// The engine marked the call's arguments in a form this build cannot read (a renamed tag,
+    /// version skew): refused as malformed, never run with the marker as its params.
+    UnreadableMarker(UnreadableMarker),
     /// The arguments are JSON, but not an object of named fields.
     NotAnObject { sent: JsonKind },
     /// One field did not decode as the command's own type for it.
@@ -147,9 +150,13 @@ impl ArgumentsRefusal {
     }
 
     /// Whether her next move is the same command again with the arguments fixed. A cut is not:
-    /// the same call cuts at the same limit.
+    /// the same call cuts at the same limit. Nor is a call whose generation errored or never said
+    /// how it ended: the fault is the engine's, and no change to her call answers it.
     pub fn retries(&self) -> bool {
-        !matches!(self, ArgumentsRefusal::Unparsed(UnparsedArguments::Cut { .. }))
+        !matches!(
+            self,
+            ArgumentsRefusal::Unparsed(UnparsedArguments::Cut { .. } | UnparsedArguments::Errored { .. } | UnparsedArguments::Unexplained { .. })
+        )
     }
 }
 
@@ -194,6 +201,24 @@ impl std::fmt::Display for ArgumentsRefusal {
                 "your arguments are not valid JSON ({parse_error}), so nothing ran. What you sent \
                  ({} bytes):\n{raw}",
                 raw.len()
+            ),
+            ArgumentsRefusal::Unparsed(UnparsedArguments::Unexplained { raw }) => write!(
+                f,
+                "the engine did not say why your generation stopped, so this call ({} bytes) cannot \
+                 be known complete, and nothing ran. This is a fault in the engine's transport, not \
+                 in your call.",
+                raw.len()
+            ),
+            ArgumentsRefusal::Unparsed(UnparsedArguments::Errored { raw }) => write!(
+                f,
+                "the engine reported an error ending your generation, so this call ({} bytes) has no \
+                 completion receipt, and nothing ran. The fault is the engine's, not your call's.",
+                raw.len()
+            ),
+            ArgumentsRefusal::UnreadableMarker(UnreadableMarker { parse_error }) => write!(
+                f,
+                "the engine marked this call's arguments as unparsed in a form this build cannot read \
+                 ({parse_error}), so nothing ran. Send the call again."
             ),
             ArgumentsRefusal::NotAnObject { sent } => {
                 write!(f, "the arguments must be an object of named fields; you sent {}", sent.noun())

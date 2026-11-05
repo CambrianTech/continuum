@@ -361,20 +361,3 @@ pub struct CodeEdit {
     pub state: Arc<CodeState>,
 }
 
-/// A `code/edit` call: its schema IS its parser (ONE-ACT 6b). The schema she is shown is
-/// derived from this type, and her call decodes into it directly, so what she is told to send
-/// and what is accepted cannot drift. Names other agents reach for (`old_string`/`new_string`,
-/// `replace_all`) are serde aliases on [`EditMode`] itself, never a normalizer guessing a mode
-/// from which fields are present.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-pub struct CodeEditParams {
-    // The field docs are what the advertised schema says, so they stay as short as the
-    // operation's own variants (the agentic surface's token ceiling pins them).
-    /// Path relative to the workspace root.
-    pub file_path: String,
-    /// Operation to apply.
-    pub edit_mode: EditMode,
-    /// Optional note recorded in change history.
-    #[serde(default)]
-    pub description: Option<String>,
-}

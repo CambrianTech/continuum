@@ -262,21 +262,18 @@
         assert!(security.validate_write("../escape.swift").is_err());
     }
 
+    // what this catches: a write bounded by a constant instead of the room it needs. A write
+    // larger than the volume's measured free space is refused naming that measurement; one that
+    // fits (a few MiB, past the old 1 MiB constant) lands.
     #[test]
-    fn test_file_too_large() {
-        let (_dir, security) = setup_workspace();
-        let result = security.validate_size("test.ts", MAX_WRITE_SIZE + 1);
-        assert!(matches!(
-            result,
-            Err(PathSecurityError::FileTooLarge { .. })
-        ));
-    }
-
-    #[test]
-    fn test_file_within_limit() {
-        let (_dir, security) = setup_workspace();
-        let result = security.validate_size("test.ts", MAX_WRITE_SIZE);
-        assert!(result.is_ok());
+    fn a_write_is_bounded_by_the_measured_free_space() {
+        let (dir, security) = setup_workspace();
+        let free = fs2::available_space(dir.path()).expect("the test volume reports free space"); // JUSTIFIED: the measurement under test
+        match security.validate_size("test.ts", u64::MAX) {
+            Err(PathSecurityError::FileTooLarge { max, .. }) => assert!(max < u64::MAX && free < u64::MAX, "max is a measured free space, not a cap"),
+            other => panic!("expected FileTooLarge, got {other:?}"),
+        }
+        assert!(security.validate_size("test.ts", 4 * 1024 * 1024).is_ok());
     }
 
     #[test]

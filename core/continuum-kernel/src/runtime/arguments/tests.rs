@@ -93,5 +93,7 @@ fn a_cut_is_never_answered_with_a_retry() {
     assert!(!cut.retries());
     let malformed = ArgumentsRefusal::Unparsed(UnparsedArguments::Malformed { parse_error: "eof".into(), raw: "{".into() });
     assert!(malformed.retries());
+    let unexplained = ArgumentsRefusal::Unparsed(UnparsedArguments::Unexplained { raw: "{}".into() });
+    assert!(!unexplained.retries(), "an unreported finish is the transport's fault: no retry answers it");
     assert!(malformed.to_string().contains('{'), "the raw text she sent is shown whole");
 }

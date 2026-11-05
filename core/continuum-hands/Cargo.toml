@@ -26,6 +26,7 @@ async-trait.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 futures = { workspace = true }  # For VAD block_on in audio thread
+fs2 = { workspace = true }  # a write's room: the free space measured on the workspace volume
 sysinfo = { workspace = true }  # Cross-platform CPU, memory, system resource monitoring
 tracing.workspace = true
 ts-rs.workspace = true  # TypeScript type generation

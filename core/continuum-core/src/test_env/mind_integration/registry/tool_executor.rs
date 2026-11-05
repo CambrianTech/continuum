@@ -57,7 +57,7 @@ async fn an_unprojected_command_is_untouched_at_the_executor() {
         input: json!({}),
     }];
     let out = exec
-        .execute_native_batch(&calls, &ctx())
+        .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx())
         .await
         .expect("batch ok");
     assert_eq!(out.results[0].is_error, None);

@@ -134,6 +134,7 @@ pub enum SettleStep {
     WouldAct {
         calls: Vec<ToolCall>,
         intent: String,
+        origin: crate::ai::types::CallOrigin,
     },
     /// She chose silence (`Pass`) — honored as a turn that produces no utterance.
     /// `reason` carries her OWN words for why (from `Decision::Pass`), so the
@@ -153,6 +154,7 @@ pub enum SettleStep {
     ActUnfulfilled {
         calls: Vec<ToolCall>,
         intent: String,
+        origin: crate::ai::types::CallOrigin,
     },
     /// The deliberation model call itself FAILED — a timeout, a 5xx, or the serving
     /// lane refusing a model it isn't hosting (the swept-model bug). NO verdict was
@@ -227,7 +229,7 @@ impl SettleStep {
             Decision::Speak { text } | Decision::RaiseUnprompted { text } => {
                 SettleStep::Spoke(text)
             }
-            Decision::Act { calls, intent } => SettleStep::Acted { calls, intent },
+            Decision::Act { calls, intent, .. } => SettleStep::Acted { calls, intent },
             Decision::Pass { reason } => SettleStep::Passed { reason },
         };
         (step, metrics, generation_receipts)
@@ -315,6 +317,7 @@ mod tests {
             Decision::Act {
                 calls: vec![],
                 intent: "kept gathering".into(),
+                origin: crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
             },
             None,
         ));

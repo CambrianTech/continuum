@@ -2,25 +2,31 @@
 
 use super::*;
 
-// what this catches: the engine reading a cut as bad JSON (or the reverse). Only `length` is
-// the output limit; a call whose arguments do not parse under any other finish is hers to
-// retry, and under `length` it is a cut no retry escapes (call_ending's four cells).
+// what this catches: the engine reading a cut as bad JSON (or the reverse), or a finish the
+// backend never reported as finished. Only `length` is the output limit, and an absent marker is
+// Unreported; a call whose arguments do not parse under a reported finish is hers to retry.
 // Glass-boxed from Asha's capture 2026-08-06: Devstral's runaway `file_path` broke the JSON
 // with finish `stop`, and the turn showed a "missing field" story instead.
 #[test]
 fn only_the_output_limit_reads_as_a_cut() {
     use continuum_tool_protocol::{GenerationEnd, UnparsedArguments};
     let runaway = format!("{{\"content\":\"x\",\"file_path\":\"/a{}", "e072".repeat(50));
-    for (finish, cut) in [
-        (FinishReason::Length, true),
-        (FinishReason::Stop, false),
-        (FinishReason::ToolUse, false),
-        (FinishReason::Error, false),
-        (FinishReason::Unreported, false),
+    for (finish, end) in [
+        (FinishReason::Length, GenerationEnd::OutputLimit),
+        (FinishReason::Stop, GenerationEnd::Finished),
+        (FinishReason::ToolUse, GenerationEnd::Finished),
+        (FinishReason::Error, GenerationEnd::Failed),
+        (FinishReason::Unreported, GenerationEnd::Unreported),
     ] {
-        assert_eq!(finish.generation_end() == GenerationEnd::OutputLimit, cut, "{finish}");
-        let unparsed = UnparsedArguments::parse(runaway.clone(), finish.generation_end()).expect_err("the fixture is not JSON"); // JUSTIFIED: the fixture is invalid by construction
-        assert_eq!(matches!(unparsed, UnparsedArguments::Cut { .. }), cut, "{finish}");
+        assert_eq!(finish.generation_end(), end, "{finish}");
+        let unparsed = UnparsedArguments::parse(runaway.clone(), end).expect_err("the fixture is not JSON"); // JUSTIFIED: the fixture is invalid by construction
+        let expected = match end {
+            GenerationEnd::OutputLimit => matches!(unparsed, UnparsedArguments::Cut { .. }),
+            GenerationEnd::Finished => matches!(unparsed, UnparsedArguments::Malformed { .. }),
+            GenerationEnd::Failed => matches!(unparsed, UnparsedArguments::Errored { .. }),
+            GenerationEnd::Unreported => matches!(unparsed, UnparsedArguments::Unexplained { .. }),
+        };
+        assert!(expected, "{finish}: {unparsed:?}");
         assert_eq!(unparsed.raw(), runaway, "the raw text is kept whole");
     }
 }

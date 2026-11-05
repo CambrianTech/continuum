@@ -440,7 +440,7 @@ async fn tool_use_response_becomes_an_act_verdict() {
     let c = faculty.contribute(&ws).await.expect("verdict");
 
     match c.decision {
-        Some(Decision::Act { calls, intent }) => {
+        Some(Decision::Act { calls, intent, .. }) => {
             assert_eq!(calls.len(), 1, "the one requested call rides the verdict");
             assert_eq!(calls[0].name, "code/read");
             assert_eq!(calls[0].input, json!({ "path": "deploy.md" }));

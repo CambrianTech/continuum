@@ -284,9 +284,9 @@ impl FileEngine {
     ///
     /// Patterns are workspace-relative globs like `**/*.rs` or
     /// `core/**/Cargo.toml`. Output is workspace-relative
-    /// paths, sorted alphabetically. Capped at `GLOB_MAX_MATCHES`
-    /// (5000) so a runaway pattern doesn't OOM the caller —
-    /// `truncated: true` flags the cap.
+    /// paths, sorted alphabetically. Every match is returned: the result reaches her through
+    /// the one codec (saved whole, a handle when it outgrows her view), so the glob never
+    /// clips its own answer at a size it picked.
     pub fn glob_match(
         &self,
         pattern: &str,
@@ -330,7 +330,6 @@ impl FileEngine {
 
         let workspace_root = self.security.workspace_root();
         let mut matches: Vec<String> = Vec::new();
-        let mut truncated = false;
 
         for entry in walker {
             let entry = match entry {
@@ -367,10 +366,6 @@ impl FileEngine {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| path.to_string_lossy().to_string());
 
-            if matches.len() >= GLOB_MAX_MATCHES {
-                truncated = true;
-                break;
-            }
             matches.push(rel);
         }
 
@@ -382,7 +377,6 @@ impl FileEngine {
             pattern: pattern.to_string(),
             matches,
             total_matches,
-            truncated,
             error: None,
         })
     }

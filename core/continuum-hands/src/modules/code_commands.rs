@@ -74,6 +74,8 @@ pub use code_verbs::*;
 mod code_shell_kill_result;
 pub use code_shell_kill_result::*;
 mod outcomes;
+mod edit_params;
+pub use edit_params::CodeEditParams;
 
 #[cfg(test)]
 mod tests;

@@ -45,7 +45,7 @@ use super::types::{
     CallVerdict, NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
 };
 use super::ToolExecutor;
-use crate::ai::types::{ToolCall as NativeToolCall, ToolResult as NativeToolResult};
+use crate::ai::types::{CallBatch, Disposed, ToolCall as NativeToolCall, ToolResult as NativeToolResult};
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport};
 use crate::sdk_codegen::{command_registry, AccessLevel, ActVerdict};
@@ -464,6 +464,9 @@ pub(crate) fn manual_blanks_in(input: &Value) -> Vec<String> {
 /// Why a call in her batch did not run: its arguments, refused typed before dispatch, or the
 /// substrate's refusal of the dispatch itself.
 enum Refused {
+    /// The classifier held it: its generation never committed it (cut, errored, unreported, or
+    /// malformed). Never dispatched.
+    Held(crate::ai::types::CallEnding),
     Arguments { canonical: String, refusal: crate::sdk_codegen::ArgumentsRefusal },
     Client(ClientError),
 }
@@ -504,16 +507,16 @@ impl ToolExecutor for CommandToolExecutor {
 
     async fn execute_native_batch(
         &self,
-        calls: &[NativeToolCall],
+        batch: &CallBatch,
         ctx: &ToolExecutionContext,
     ) -> Result<NativeBatchOutcome, ToolError> {
         // No memory records this batch's handles, so its saves are pinned only while it runs.
-        self.execute_native_batch_pinned(calls, ctx, &spill::LivePin::new()).await
+        self.execute_native_batch_pinned(batch, ctx, &spill::LivePin::new()).await
     }
 
     async fn execute_native_batch_pinned(
         &self,
-        calls: &[NativeToolCall],
+        batch: &CallBatch,
         ctx: &ToolExecutionContext,
         pin: &spill::LivePin,
     ) -> Result<NativeBatchOutcome, ToolError> {
@@ -527,9 +530,14 @@ impl ToolExecutor for CommandToolExecutor {
         // irrelevant. No per-call FIFO — a burst at O(batch). Each future holds
         // its own cheap Connection clone, so they share zero mutable state beyond
         // the lock-free executor underneath.
-        let dispatches = calls.iter().map(|call| {
+        let dispatches = batch.entries().iter().map(|entry| {
             let conn = scoped.clone();
             async move {
+                let call = entry.call();
+                // Only a committed call is dispatched: a held one answers with why it never ran.
+                if let Disposed::Held(held) = entry {
+                    return (call.id.clone(), Err(Refused::Held(held.ending())));
+                }
                 // Tool name IS the command name. Map the underscore form some
                 // models emit (`code_read`) back to the slash form (`code/read`)
                 // — but only ALLOCATE when there's actually an underscore; the
@@ -602,12 +610,12 @@ impl ToolExecutor for CommandToolExecutor {
         });
 
         // Filled by the Ok arm below, correlated by tool_use_id (never position).
-        let mut verdicts: Vec<CallVerdict> = Vec::with_capacity(calls.len());
+        let mut verdicts: Vec<CallVerdict> = Vec::with_capacity(batch.len());
         let results = join_all(dispatches)
             .await
             .into_iter()
             // Each result is its call's: zipped, never indexed, so a result can never lack one.
-            .zip(calls.iter())
+            .zip(batch.entries().iter().map(Disposed::call))
             .map(|((tool_use_id, outcome), call)| match outcome {
                 Ok(mut value) => {
                     // THE TOOL'S OWN VERDICT, derived HERE — before the fold, from
@@ -703,6 +711,16 @@ impl ToolExecutor for CommandToolExecutor {
                     // this — names are only needed to build recovery guidance).
                     let attempted = call.name.as_str();
                     let (raw, guidance) = match refused {
+                        // A reported sentinel held with its cut generation keeps its own words.
+                        Refused::Held(_) if is_reported_sentinel(attempted) => {
+                            let raw = call.input.to_string();
+                            (raw.clone(), persona_tool_error(attempted, raw))
+                        }
+                        Refused::Held(ending) => {
+                            let canonical = crate::ai::tool_dialect::resolve_wire_name(attempted);
+                            let refusal = super::arguments::refusal_of_held(call, ending);
+                            (refusal.to_string(), super::arguments::render(&canonical, &refusal))
+                        }
                         Refused::Arguments { canonical, refusal } => {
                             (refusal.to_string(), super::arguments::render(&canonical, &refusal))
                         }
@@ -853,7 +871,7 @@ pub mod test_support {
             input,
         }];
         let out = exec
-            .execute_native_batch(&calls, &ctx())
+            .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx())
             .await
             .expect("batch itself succeeds — a failed CALL is a result, not a batch error");
         let r = &out.results[0];

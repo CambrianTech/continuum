@@ -10,7 +10,6 @@
 
 use std::path::{Path, PathBuf};
 
-use super::types::MAX_WRITE_SIZE;
 
 /// Workspace-scoped path security validator.
 ///
@@ -48,8 +47,10 @@ pub enum ReadScope {
 pub enum PathSecurityError {
     /// Path escapes the workspace boundary.
     TraversalBlocked { path: String, workspace: String },
-    /// File exceeds maximum write size.
+    /// A write larger than the free space measured on the workspace's volume at the write.
     FileTooLarge { path: String, size: u64, max: u64 },
+    /// The workspace volume's free space could not be read, so a write's room is unknown.
+    SpaceUnreadable { path: String, kind: std::io::ErrorKind },
     /// Path is not valid UTF-8.
     InvalidPath { path: String },
     /// Workspace root does not exist or is not a directory.
@@ -135,22 +136,16 @@ fn missing_path_lead(root: &std::path::Path, normalized: &str) -> String {
     }
 
     // No near-miss: name the divergence point and show what is actually there, so her next
-    // act is a corrected read rather than another guess.
-    let shown: Vec<String> = names.iter().take(12).cloned().collect();
-    let more = names.len().saturating_sub(shown.len());
+    // act is a corrected read rather than another guess. Every entry: her refusal renders
+    // through the one codec, which decides what of it she reads.
     format!(
-        "The path is good up to '{}' — but that directory has no '{broke}'. It contains: {}{}.",
+        "The path is good up to '{}' — but that directory has no '{broke}'. It contains: {}.",
         if existing_prefix.is_empty() {
             "."
         } else {
             &existing_prefix
         },
-        shown.join(", "),
-        if more > 0 {
-            format!(", …+{more} more")
-        } else {
-            String::new()
-        }
+        names.join(", "),
     )
 }
 
@@ -197,7 +192,10 @@ impl std::fmt::Display for PathSecurityError {
                 write!(f, "Path '{}' escapes workspace '{}'", path, workspace)
             }
             Self::FileTooLarge { path, size, max } => {
-                write!(f, "File '{}' is {} bytes (max: {})", path, size, max)
+                write!(f, "File '{}' is {} bytes, more than the {} bytes free on the workspace's volume", path, size, max)
+            }
+            Self::SpaceUnreadable { path, kind } => {
+                write!(f, "Cannot write '{}': the workspace volume's free space is unreadable ({kind})", path)
             }
             Self::InvalidPath { path } => {
                 write!(f, "Invalid path: '{}'", path)
@@ -507,14 +505,14 @@ impl PathSecurity {
         self.resolve_for_write(relative_path)
     }
 
-    /// Validate file size for a write operation.
+    /// Whether a write of `size` bytes fits: the bound is the free space measured on the
+    /// workspace's volume at the write, never a size picked here (the 1 MiB constant it replaced
+    /// refused real files and protected no disk).
     pub fn validate_size(&self, path: &str, size: u64) -> Result<(), PathSecurityError> {
-        if size > MAX_WRITE_SIZE {
-            return Err(PathSecurityError::FileTooLarge {
-                path: path.to_string(),
-                size,
-                max: MAX_WRITE_SIZE,
-            });
+        let free = fs2::available_space(&self.workspace_root)
+            .map_err(|e| PathSecurityError::SpaceUnreadable { path: path.to_string(), kind: e.kind() })?;
+        if size > free {
+            return Err(PathSecurityError::FileTooLarge { path: path.to_string(), size, max: free });
         }
         Ok(())
     }

@@ -2,9 +2,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
+pub mod call_batch;
 pub mod call_ending;
 pub mod parser;
-pub use call_ending::{CallEnding, GenerationEnd, UnparsedArguments};
+pub use call_batch::{CallBatch, CallOrigin, CommittedCall, Disposed, HeldCall};
+pub use call_ending::{CallEnding, GenerationEnd, UnparsedArguments, UnreadableMarker};
 
 /// Native tool specification for providers with JSON tool support
 /// (Anthropic, OpenAI, DeepSeek, etc.)

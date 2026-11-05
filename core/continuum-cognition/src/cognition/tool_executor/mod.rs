@@ -43,7 +43,7 @@ pub use types::{
 
 use async_trait::async_trait;
 
-use crate::ai::types::ToolCall as NativeToolCall;
+use crate::ai::types::CallBatch;
 
 /// The trait callers (cognition pipeline) depend on. One impl today
 /// (`TsIpcToolExecutor`, lands next commit). A future rust-native impl
@@ -69,9 +69,12 @@ pub trait ToolExecutor: Send + Sync {
     /// for batch-level failures (e.g. the executor itself is
     /// unavailable / IPC channel down). Every result is saved whole and handed back whole with
     /// its handle; no size is passed in, what she sees is her view's decision.
+    ///
+    /// The batch carries each call's disposition (`CallBatch::classify`, the one classifier):
+    /// only a committed call may run, and a held one is answered with why it never ran.
     async fn execute_native_batch(
         &self,
-        calls: &[NativeToolCall],
+        batch: &CallBatch,
         context: &ToolExecutionContext,
     ) -> Result<NativeBatchOutcome, ToolError>;
 
@@ -81,11 +84,11 @@ pub trait ToolExecutor: Send + Sync {
     /// runs the unpinned batch, for executors that save nothing.
     async fn execute_native_batch_pinned(
         &self,
-        calls: &[NativeToolCall],
+        batch: &CallBatch,
         context: &ToolExecutionContext,
         _pin: &spill::LivePin,
     ) -> Result<NativeBatchOutcome, ToolError> {
-        self.execute_native_batch(calls, context).await
+        self.execute_native_batch(batch, context).await
     }
 
     /// The core `CommandExecutor` behind these hands, if any. A live persona's executor

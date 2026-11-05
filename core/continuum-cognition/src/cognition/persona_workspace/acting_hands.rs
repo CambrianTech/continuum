@@ -85,7 +85,8 @@ pub async fn drive_create_workspace(
     };
     let ws_out = hands
         .executor
-        .execute_native_batch(std::slice::from_ref(&ws_call), &ws_ctx)
+        // The substrate composed this call (her workspace's setup), so no generation cut it.
+        .execute_native_batch(&crate::ai::types::CallBatch::classify([ws_call], crate::ai::types::CallOrigin::Substrate), &ws_ctx)
         .await
         .map_err(|e| {
             crate::sdk_codegen::CommandError::Internal(format!(

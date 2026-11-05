@@ -1,6 +1,7 @@
-//! Her call's arguments are checked BEFORE the tool runs (ONE-ACT 6b, item 5): the engine's typed
-//! marker for arguments that never parsed, then the command's own `Params` through its descriptor
-//! (`ArgumentsContract`), the same decoder its dispatch uses. A refusal is the typed
+//! Her call's arguments are checked BEFORE the tool runs (ONE-ACT 6b, item 5): a call the
+//! classifier held (`CallBatch`) never runs and says why, and a committed one is checked against
+//! the command's own `Params` through its descriptor (`ArgumentsContract`), the same decoder its
+//! dispatch uses. A refusal is the typed
 //! `ArgumentsRefusal`, matched here by variant; nothing reads an `[arguments]` prefix back out of
 //! a rendered message.
 //!
@@ -10,15 +11,31 @@
 
 use serde_json::Value;
 
-use crate::runtime::arguments::UnparsedArguments;
+use crate::ai::types::{CallEnding, ToolCall, UnparsedArguments};
 use crate::sdk_codegen::{command_descriptor, AccessLevel, ArgumentsRefusal};
 
-/// Why `canonical` must not run with `input`, or `None` when it may.
+/// Why a committed call to `canonical` must not run with `input`, or `None` when it may: its
+/// arguments decoded as the command's own params, through the same decoder its dispatch uses.
 pub(crate) fn refusal_before_dispatch(canonical: &str, input: &Value) -> Option<ArgumentsRefusal> {
-    if let Some(unparsed) = UnparsedArguments::of(input) {
-        return Some(ArgumentsRefusal::Unparsed(unparsed));
-    }
     command_descriptor(canonical)?.arguments.check(input).err()
+}
+
+/// Why a held call never ran: the engine's marker when it wrote one, else the classifier's
+/// ending with her raw call kept whole.
+pub(crate) fn refusal_of_held(call: &ToolCall, ending: CallEnding) -> ArgumentsRefusal {
+    match UnparsedArguments::of(&call.input) {
+        Ok(Some(unparsed)) => ArgumentsRefusal::Unparsed(unparsed),
+        Err(unreadable) => ArgumentsRefusal::UnreadableMarker(unreadable),
+        Ok(None) => {
+            let raw = call.input.to_string();
+            ArgumentsRefusal::Unparsed(match ending {
+                CallEnding::Failed => UnparsedArguments::Errored { raw },
+                CallEnding::Unreported => UnparsedArguments::Unexplained { raw },
+                // A complete call at the output limit, or (never held without a marker) any other.
+                CallEnding::Cut | CallEnding::Malformed | CallEnding::Committed => UnparsedArguments::Cut { raw },
+            })
+        }
+    }
 }
 
 /// The exact how-to-call manual for a command SHE can run, rendered inline so the fix rides back

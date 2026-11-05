@@ -116,7 +116,7 @@ async fn dispatch_verdict(
         input: json!({ "mode": mode }),
     }];
     let out = exec
-        .execute_native_batch(&calls, &ctx())
+        .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx())
         .await
         .expect("batch itself succeeds");
     let r = out
@@ -258,7 +258,7 @@ async fn required_args_missing_fails_loud_across_the_stateless_surface() {
 async fn dispatch_input(input: serde_json::Value) -> (Option<bool>, String, crate::sdk_codegen::ActVerdict) {
     let exec = stateless_surface_hands();
     let calls = vec![NativeToolCall { id: "vp".to_string(), name: "test/verdict-probe".to_string(), input }];
-    let out = exec.execute_native_batch(&calls, &ctx()).await.expect("batch itself succeeds");
+    let out = exec.execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx()).await.expect("batch itself succeeds");
     let r = out.results.iter().find(|r| r.tool_use_id == "vp").expect("result correlates by tool_use_id");
     let v = out.verdicts.iter().find(|v| v.tool_use_id == "vp").map(|v| v.verdict).unwrap_or_default(); // JUSTIFIED: absence means unprojected
     (r.is_error, r.content.clone(), v)
@@ -297,6 +297,73 @@ async fn a_wrong_typed_field_is_refused_before_dispatch_naming_the_field() {
     assert!(verdict.failed(), "{verdict:?}");
     assert!(content.contains("`mode` must be a string; you sent a number"), "{content}");
     assert!(content.contains("Here is the correct call"), "her next move carries the manual: {content}");
+}
+
+/// Params of the effect probe: a token naming the run that wrote it.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+pub struct EffectProbeParams {
+    /// A token unique to the test run, recorded when the command runs.
+    pub token: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+pub struct EffectProbeResult {
+    pub recorded: bool,
+}
+
+/// The tokens of every run of `test/effect-probe`: its effect, observable by the test.
+static EFFECTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+#[derive(Default)]
+pub struct EffectProbe;
+
+#[async_trait::async_trait]
+impl crate::sdk_codegen::ActionCommand for EffectProbe {
+    const NAME: &'static str = "test/effect-probe";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str = "test-only: records that it ran.";
+    type Params = EffectProbeParams;
+    type Output = EffectProbeResult;
+
+    async fn run(&self, _ctx: &crate::sdk_codegen::Ctx, p: EffectProbeParams) -> Result<EffectProbeResult, crate::sdk_codegen::CommandError> {
+        if let Ok(mut effects) = EFFECTS.lock() {
+            effects.push(p.token);
+        }
+        Ok(EffectProbeResult { recorded: true })
+    }
+}
+
+crate::register_stateless_command!(EffectProbe);
+
+fn ran(token: &str) -> bool {
+    EFFECTS.lock().map(|effects| effects.iter().any(|t| t == token)).unwrap_or(false) // unwrap_or: a poisoned test lock reads as not run, which the committed control below catches
+}
+
+// what this catches: valid JSON from a generation the engine never reported finished (the
+// output limit cut it, it errored, or the backend said nothing) RUN by her live executor. Zero
+// effects: the command never runs, and she gets a refusal naming why. The committed control
+// proves the probe does record a run.
+#[tokio::test]
+async fn valid_json_from_an_uncommitted_generation_never_runs_through_the_live_executor() {
+    use crate::ai::types::{CallBatch, CallOrigin, GenerationEnd};
+    let exec = stateless_surface_hands();
+    for (end, says) in [
+        (GenerationEnd::OutputLimit, "output limit"),
+        (GenerationEnd::Failed, "reported an error"),
+        (GenerationEnd::Unreported, "did not say why"),
+    ] {
+        let token = format!("held-{end:?}-{}", uuid::Uuid::new_v4());
+        let call = NativeToolCall { id: "ep".into(), name: "test/effect-probe".into(), input: json!({ "token": token }) };
+        let out = exec.execute_native_batch(&CallBatch::classify([call], CallOrigin::Generated(end)), &ctx()).await.expect("batch itself succeeds");
+        assert!(!ran(&token), "{end:?}: the held call ran");
+        assert_eq!(out.results[0].is_error, Some(true), "{end:?}");
+        assert!(out.results[0].content.contains(says), "{end:?}: {}", out.results[0].content);
+        assert!(out.verdicts.iter().all(|v| v.verdict.failed()), "{end:?}: a held call is a failure");
+    }
+    let token = format!("committed-{}", uuid::Uuid::new_v4());
+    let call = NativeToolCall { id: "ep".into(), name: "test/effect-probe".into(), input: json!({ "token": token }) };
+    exec.execute_native_batch(&CallBatch::classify([call], CallOrigin::Generated(GenerationEnd::Finished)), &ctx()).await.expect("batch itself succeeds");
+    assert!(ran(&token), "a committed call runs: the probe records it");
 }
 
 /// Every command name core's own production source declares: the `name:` of an

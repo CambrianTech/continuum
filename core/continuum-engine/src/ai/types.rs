@@ -114,7 +114,10 @@ pub struct VideoInput {
 // TOOL CALLING TYPES
 // ============================================================================
 
-pub use continuum_tool_protocol::{CallEnding, GenerationEnd, NativeToolSpec, ToolCall, ToolInputSchema, UnparsedArguments};
+pub use continuum_tool_protocol::{
+    CallBatch, CallEnding, CallOrigin, CommittedCall, Disposed, GenerationEnd, HeldCall, NativeToolSpec, ToolCall, ToolInputSchema,
+    UnparsedArguments, UnreadableMarker,
+};
 
 /// Tool result to send back to AI after execution
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -456,14 +459,16 @@ pub enum FinishReason {
 }
 
 impl FinishReason {
-    /// Why the generation stopped, as far as a tool call's fate is concerned: only `Length` is
-    /// the output limit (`continuum_tool_protocol::call_ending`).
+    /// Why the generation stopped, as far as a tool call's fate is concerned: `Length` is the
+    /// output limit, `Error` is no completion receipt, and a backend that said nothing is
+    /// `Unreported`; only `Stop` and `ToolUse` are finished
+    /// (`continuum_tool_protocol::call_ending`).
     pub fn generation_end(self) -> continuum_tool_protocol::GenerationEnd {
         match self {
             FinishReason::Length => continuum_tool_protocol::GenerationEnd::OutputLimit,
-            FinishReason::Stop | FinishReason::ToolUse | FinishReason::Error | FinishReason::Unreported => {
-                continuum_tool_protocol::GenerationEnd::Finished
-            }
+            FinishReason::Unreported => continuum_tool_protocol::GenerationEnd::Unreported,
+            FinishReason::Error => continuum_tool_protocol::GenerationEnd::Failed,
+            FinishReason::Stop | FinishReason::ToolUse => continuum_tool_protocol::GenerationEnd::Finished,
         }
     }
 }

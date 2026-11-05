@@ -144,32 +144,61 @@
         }
     }
 
-    // what this catches: code/edit's parser drifting from the schema she is shown. The tagged
-    // object decodes, and every shape the old normalizer guessed at (a bare mode string, a mode inferred from top-level fields) is a
-    // typed refusal naming `edit_mode`, never a guess that edits the wrong thing.
-    #[test]
-    fn code_edit_decodes_its_schema_and_refuses_every_guessed_shape() {
-        let p = edit_call(serde_json::json!({ "file_path": "a.py", "edit_mode": {"type":"append","content":"X"} })).unwrap();
-        assert!(matches!(p.edit_mode, EditMode::Append { content } if content == "X"));
-        let p = edit_call(serde_json::json!({
-            "file_path": "a.py", "edit_mode": {"type":"search_replace","search":"o","replace":"n","all":true}
-        }))
-        .unwrap();
-        assert!(matches!(p.edit_mode, EditMode::SearchReplace { search, replace, all: true } if search == "o" && replace == "n"));
-        // A name the schema does not publish is refused by the field it is missing, with what
-        // she sent: the parser accepts exactly what the schema says.
-        let (path, problem) = refused_at(serde_json::json!({
-            "file_path": "a.py", "edit_mode": {"type":"search_replace","old_string":"o","new_string":"n"}
-        }));
-        assert_eq!(path, "edit_mode.search");
-        assert!(matches!(problem, crate::sdk_codegen::FieldProblem::Missing { .. }), "{problem:?}");
+    fn search_replace(v: serde_json::Value) -> (String, String, bool) {
+        match edit_call(v).map(|p| p.edit_mode) {
+            Ok(EditMode::SearchReplace { search, replace, all }) => (search, replace, all),
+            other => panic!("expected a SearchReplace, got {other:?}"),
+        }
+    }
 
-        let (path, problem) = refused_at(serde_json::json!({ "file_path": "a.py", "edit_mode": "append", "content": "Y" }));
-        assert_eq!(path, "edit_mode");
-        assert!(matches!(problem, crate::sdk_codegen::FieldProblem::WrongType { .. }), "{problem:?}");
-        let (path, problem) = refused_at(serde_json::json!({ "file_path": "a.py", "search": "o", "replace": "n" }));
-        assert_eq!(path, "edit_mode");
-        assert!(matches!(problem, crate::sdk_codegen::FieldProblem::Missing { .. }), "{problem:?}");
+    // what this catches: the shape models emit most (Claude Code's Edit tool: `old_string`,
+    // `new_string`, `replace_all`, inside `edit_mode` or flat beside `file_path`) refused, which
+    // trades one failure class for another. Every spelling parses to the SAME SearchReplace as
+    // the canonical names, and so does a bare mode name with its fields beside it.
+    #[test]
+    fn old_string_new_string_parse_to_the_same_search_replace_as_search_replace() {
+        let canonical = search_replace(serde_json::json!({
+            "file_path": "a.py", "edit_mode": {"type":"search_replace","search":"o","replace":"n","all":true}
+        }));
+        assert_eq!(canonical, ("o".to_string(), "n".to_string(), true));
+        for call in [
+            serde_json::json!({ "file_path": "a.py", "edit_mode": {"type":"search_replace","old_string":"o","new_string":"n","replace_all":true} }),
+            serde_json::json!({ "file_path": "a.py", "old_string": "o", "new_string": "n", "replace_all": true }),
+            serde_json::json!({ "file_path": "a.py", "search": "o", "replace": "n", "all": true }),
+            serde_json::json!({ "file_path": "a.py", "edit_mode": "search_replace", "old_str": "o", "new_str": "n", "all": true }),
+        ] {
+            assert_eq!(search_replace(call.clone()), canonical, "{call}");
+        }
+        let p = edit_call(serde_json::json!({ "file_path": "a.py", "edit_mode": "append", "content": "Y" })).unwrap();
+        assert!(matches!(p.edit_mode, EditMode::Append { content } if content == "Y"));
+        let p = edit_call(serde_json::json!({ "file_path": "a.py", "line": 3, "content": "x" })).unwrap();
+        assert!(matches!(p.edit_mode, EditMode::InsertAt { line: 3, .. }));
+    }
+
+    // what this catches: a flat or named shape accepted by GUESSING. Fields that name no single
+    // mode, a partial mode, a flat field beside a tagged operation, or an unknown mode name are
+    // each refused typed by the field at fault, never read as the nearest edit (the old
+    // normalizer took `{end_line, new_content}` as "from line 1").
+    #[test]
+    fn a_shape_that_names_no_single_edit_is_refused_by_its_field() {
+        let missing = |v: serde_json::Value| match refused_at(v) {
+            (path, crate::sdk_codegen::FieldProblem::Missing { .. }) => path,
+            (path, problem) => panic!("expected a missing field, got {path}: {problem:?}"),
+        };
+        assert_eq!(missing(serde_json::json!({ "file_path": "a.py", "end_line": 603, "new_content": "x" })), "start_line");
+        assert_eq!(missing(serde_json::json!({ "file_path": "a.py", "new_content": "x" })), "start_line");
+        assert_eq!(missing(serde_json::json!({ "file_path": "a.py", "old_string": "o" })), "replace");
+        assert_eq!(missing(serde_json::json!({ "file_path": "a.py", "search": "o", "content": "x" })), "edit_mode");
+        assert_eq!(missing(serde_json::json!({ "file_path": "a.py" })), "edit_mode");
+        let (path, problem) = refused_at(serde_json::json!({
+            "file_path": "a.py", "edit_mode": {"type":"append","content":"X"}, "search": "o"
+        }));
+        assert_eq!(path, "search");
+        assert!(matches!(problem, crate::sdk_codegen::FieldProblem::UnknownField { .. }), "{problem:?}");
+        let (path, problem) = refused_at(serde_json::json!({ "file_path": "a.py", "edit_mode": "rewrite", "content": "x" }));
+        assert!(matches!(problem, crate::sdk_codegen::FieldProblem::UnknownVariant { .. }), "{path}: {problem:?}");
+        // A tagged operation keeps its own typed refusal and path through the flat reader.
+        assert_eq!(missing(serde_json::json!({ "file_path": "a.py", "edit_mode": {"type":"search_replace","search":"o"} })), "edit_mode.replace");
     }
 
     // what this catches: a line range defaulted where she gave none. The old normalizer read a
@@ -282,7 +311,6 @@
             pattern: "**/*.rs".to_string(),
             matches: vec!["core/main.rs".to_string(), "lib.rs".to_string()],
             total_matches: 2,
-            truncated: false,
             error: None,
         };
         let listing = list_result_from_glob("**/*.rs", glob);

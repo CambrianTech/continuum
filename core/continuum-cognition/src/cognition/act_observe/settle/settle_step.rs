@@ -123,7 +123,7 @@ pub async fn settle_step(
         continuum_base::probe!(
             class = "settle.inference_failed",
             room = %room_id,
-            error = &error.to_string()[..error.to_string().len().min(160)],
+            error = %error,
             "deliberation generation FAILED — surfacing before the step returns"
         );
         return (
@@ -139,21 +139,21 @@ pub async fn settle_step(
         );
     }
     let step = match ws.decision().cloned() {
-        Some(Decision::Act { calls, intent }) => {
+        Some(Decision::Act { calls, intent, origin }) => {
             if !may_act {
-                SettleStep::WouldAct { calls, intent }
+                SettleStep::WouldAct { calls, intent, origin }
             } else {
                 // The typed outcome: `Acted` (any act ran or was short-circuited) →
                 // re-perceive next step; `NoHands`/`ExecutorError` → unfulfilled. Behavior
                 // identical to the old `Some`/`None`, but `ExecutorError` is now
                 // distinguishable for a future backstop.
-                if apply_act(cycle, &calls, &intent, ws.activity_room_id, chain, hands, ws.decision_generation())
+                if apply_act(cycle, &calls, origin, &intent, ws.activity_room_id, chain, hands, ws.decision_generation())
                     .await
                     .produced_an_act()
                 {
                     SettleStep::Acted { calls, intent }
                 } else {
-                    SettleStep::ActUnfulfilled { calls, intent }
+                    SettleStep::ActUnfulfilled { calls, intent, origin }
                 }
             }
         }
