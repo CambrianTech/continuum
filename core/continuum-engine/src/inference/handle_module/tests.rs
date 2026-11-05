@@ -38,7 +38,7 @@ fn empty_request() -> TextGenerationRequest {
         purpose: None,
         persona_id: None,
         turn_bound: None,
-        admission_window: None,
+        admission: None,
         reasoning_budget: None,
     }
 }

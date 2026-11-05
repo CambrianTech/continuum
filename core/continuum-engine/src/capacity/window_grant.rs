@@ -18,6 +18,9 @@ use std::collections::BTreeMap;
 
 use crate::inference::planning::window_allocator::Tokens;
 
+mod lease;
+pub use lease::{honor, reserve, GrantReservation, ReserveRefused, Reservations, RESERVATIONS};
+
 /// What the serving daemon grants the local minds on its engine's pool, each by her persona id.
 /// Published on every tick that moves a grant; a mind's binding follows hers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -144,7 +144,7 @@ async fn run_text_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, Op
         purpose: Some("models/try:text".to_string()),
         persona_id: None,
         turn_bound: None,
-        admission_window: None,
+        admission: None,
         reasoning_budget: None,
     };
 
@@ -222,7 +222,7 @@ async fn run_vision_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, 
         purpose: Some("models/try:vision".to_string()),
         persona_id: None,
         turn_bound: None,
-        admission_window: None,
+        admission: None,
         reasoning_budget: None,
     };
 

@@ -467,9 +467,20 @@ impl OpenAICompatibleAdapter {
 
         let exact_prompt_quote = self.exact_prompt_admission();
         // A request priced behind the engine's exact count is never sent without that count.
-        if request.admission_window.is_some() && !exact_prompt_quote {
+        let priced_below_estimate = request.admission.is_some_and(|a| a.priced == crate::ai::types::PromptAdmission::EngineCounted);
+        if priced_below_estimate && !exact_prompt_quote {
             return Err(crate::ai::inference_error::InferenceError::AdmissionUncounted { model: model.to_owned() });
         }
+        // Whose grant the request was rendered against: re-checked at dispatch, after the lane wait.
+        let dispatch_admission = match (request.admission, request.persona_id.as_deref().map(uuid::Uuid::parse_str)) {
+            (Some(admission), Some(Ok(persona))) => Some(crate::inference::lane_send::DispatchAdmission { persona, admission }),
+            (Some(_), _) => {
+                return Err(crate::ai::inference_error::InferenceError::Protocol(
+                    "a request carrying a grant admission must name its persona by id".into(),
+                ))
+            }
+            (None, _) => None,
+        };
         // Pre-flight the single-resident gateway (the serving guard, now its own module:
         // `inference::serving_guard`). Refuses when the lane cannot guarantee `model` or
         // the prompt alone overflows the served slot (#175).
@@ -485,6 +496,8 @@ impl OpenAICompatibleAdapter {
         // The managed engine quotes the finalized body before generation; the heuristic
         // preflight above checks residency only so an overestimate cannot refuse a fit.
         // POST through the lane with the mid-relaunch retry (`inference::lane_send`).
+        // Her grant's reservation, held until this request's terminal receipt (dropped with it).
+        let mut grant_reservation = None;
         let response = crate::inference::lane_send::send_with_lane_retry(
             &self.config,
             request_builder,
@@ -499,10 +512,11 @@ impl OpenAICompatibleAdapter {
                         dedicated_lane: self.dedicated_lane,
                         caller: request.persona_id.as_deref().unwrap_or("non-persona"), // no persona: label the non-persona caller in a refusal; not a budget default
                         reply: request.max_tokens.unwrap_or(0), // absent max_tokens reserves no explicit output allowance
-                        admission_window: request.admission_window,
                         request_id: &request_id,
                     }),
+                admission: dispatch_admission,
             },
+            &mut grant_reservation,
         )
         .await?;
 

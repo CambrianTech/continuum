@@ -89,12 +89,18 @@ pub enum InferenceError {
     /// PERMANENT for the unchanged request: the caller rebuilds her surface without the tail.
     TailToolsUnreachable { model: String },
 
-    /// The request was priced behind the engine's exact prompt count (it carries an
-    /// `admission_window`), but the engine it reaches cannot count its prompt now (the route
+    /// The request was priced behind the engine's exact prompt count (its `admission` says
+    /// `EngineCounted`), but the engine it reaches cannot count its prompt now (the route
     /// moved to a lane without the count). Sending it would admit a prompt priced below its
     /// estimate with no exact check, so it is refused before anything is sent. PERMANENT for
     /// the unchanged request: the caller re-prices at its estimate.
     AdmissionUncounted { model: String },
+
+    /// Her grant changed between render and dispatch (a re-home while she waited for a lane):
+    /// the request was priced against `rendered`, her grant is now `current` (`None` = withdrawn).
+    /// Refused before anything is sent. PERMANENT for the unchanged request: the caller re-renders
+    /// against the current grant.
+    GrantChanged { rendered: u32, current: Option<u32> },
 }
 
 impl InferenceError {
@@ -109,6 +115,7 @@ impl InferenceError {
             Self::Protocol(_) => false,
             Self::TailToolsUnreachable { .. } => false,
             Self::AdmissionUncounted { .. } => false,
+            Self::GrantChanged { .. } => false,
             Self::Unavailable(_) | Self::Transient(_) => true,
         }
     }
@@ -214,6 +221,10 @@ impl fmt::Display for InferenceError {
             Self::AdmissionUncounted { model } => write!(
                 f,
                 "the engine serving {model} cannot count this prompt exactly now: re-price it at its estimate"
+            ),
+            Self::GrantChanged { rendered, current } => write!(
+                f,
+                "her grant changed since this request was rendered ({rendered} -> {current:?}): re-render it"
             ),
         }
     }

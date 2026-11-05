@@ -224,7 +224,7 @@ pub async fn evaluate_gating(
         purpose: Some("cognition/should-respond".to_string()),
         persona_id: Some(request.context.persona_id.clone()),
         turn_bound: None,
-        admission_window: None,
+        admission: None,
         reasoning_budget: None,
     };
 

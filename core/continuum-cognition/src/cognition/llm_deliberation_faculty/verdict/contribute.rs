@@ -63,6 +63,12 @@ impl LlmDeliberationFaculty {
             Err(refused) => return Some(Contribution::deliberation_fault(refused.to_string())),
         };
         let decided_window = decided.tokens();
+        // The grant this turn is rendered against, when she is on the shared pool: the engine
+        // re-checks it at dispatch, after any wait for a lane (`RequestAdmission::grant`).
+        let mut rendered_grant = match decided {
+            crate::capacity::mind_window::Decided::Granted(granted) => Some(granted.get()),
+            _ => None,
+        };
         let capacity_readiness = Arc::new(crate::cognition::workspace::CapacityReadiness::new(
             self.persona_id,
             self.binding.clone(),
@@ -170,6 +176,8 @@ impl LlmDeliberationFaculty {
         // An act's cap follows its prompt's room, so a refusal its reserve would have passed is
         // re-sent once at the engine's measured prompt, with the same view (never a refit of her view).
         let mut room_resized = false;
+        // Re-rendered once against a grant that moved between render and dispatch.
+        let mut grant_rerendered = false;
         // Correct only frozen admitted input, consuming a finite optional unit on
         // every retry. Exact measured progress is required too. No accepted cognition
         // is replayed, and no working-memory or RAG source is re-read or refilled.
@@ -307,7 +315,7 @@ impl LlmDeliberationFaculty {
             // is built once, and a template's `max_tokens` from an earlier plan would
             // bound the reply to a window the prompt no longer leaves.
             request.max_tokens = Some(allowance);
-            let output_room = self.stamp_output_room(kind, &view, calibration, fit_window, &mut request);
+            let output_room = self.stamp_output_room(kind, &view, calibration, (fit_window, rendered_grant), &mut request);
             sent_reasoning_budget = request.reasoning_budget;
             let allocation = view.allocation.clone().map(|allocation| crate::ai::provenance::AllocationReceipt { output_room, ..allocation });
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
@@ -423,6 +431,32 @@ impl LlmDeliberationFaculty {
                 }
                 // Priced below its estimate for an engine that cannot count it now: re-priced once
                 // at the estimate, at the same window, never sent unguarded.
+                // Her grant moved while she waited for a lane: re-rendered ONCE against the grant
+                // she now has, never sent at the old one; withdrawn, or moved again, she parks.
+                Err(crate::ai::inference_error::InferenceError::GrantChanged { rendered, current: Some(current) })
+                    if !grant_rerendered =>
+                {
+                    continuum_base::probe!(
+                        class = "delib.turn.grant_changed",
+                        persona = %self.persona_name,
+                        rendered,
+                        current,
+                        "her grant changed between render and dispatch: re-rendered against it, never sent"
+                    );
+                    grant_rerendered = true;
+                    rendered_grant = Some(current);
+                    fit_window = current;
+                    view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
+                }
+                Err(crate::ai::inference_error::InferenceError::GrantChanged { rendered, current }) => {
+                    let error = crate::cognition::workspace::PromptCapacityError {
+                        required_tokens: rendered as usize,
+                        budget_tokens: current.map_or(0, |c| c as usize), // map_or: a withdrawn grant holds nothing
+                    };
+                    return Some(Contribution::prompt_capacity_refused(error).with_capacity_readiness(Arc::new(
+                        capacity_readiness.as_ref().clone().with_fit_window(fit_window),
+                    )));
+                }
                 Err(crate::ai::inference_error::InferenceError::AdmissionUncounted { model })
                     if calibration.admission == crate::ai::provenance::PromptAdmission::EngineCounted =>
                 {

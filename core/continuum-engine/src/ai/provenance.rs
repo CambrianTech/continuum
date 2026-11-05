@@ -84,18 +84,8 @@ pub struct AllocationReceipt {
     pub output_room: Option<OutputRoom>,
 }
 
-/// How a prompt's price is admitted: whether a price below its estimate is backed by the engine's
-/// exact count of the finalized body (`TextGenerationRequest::admission_window`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PromptAdmission {
-    /// No engine count: a prompt is never priced below its estimate.
-    #[default]
-    Estimated,
-    /// The engine counts the finalized prompt and refuses at its exact count: the measured
-    /// density prices it, below the estimate too.
-    EngineCounted,
-}
+/// How a prompt's price is admitted (its one owner is the request type).
+pub use crate::ai::types::PromptAdmission;
 
 /// One act's output room, as sent: what she was allowed to write and every input that decided it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

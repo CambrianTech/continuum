@@ -51,7 +51,7 @@ pub struct ToolSchemaComparison {
     pub comparison_schema_sha256: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ReplaySource {
     pub input_comparison: InputComparison,
     /// Whether replay pinned an implicit model using its recorded terminal response.

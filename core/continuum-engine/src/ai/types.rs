@@ -329,25 +329,54 @@ pub struct TextGenerationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "{ secs: number, nanos: number }")]
     pub turn_bound: Option<std::time::Duration>,
-    /// THE STRICT ADMISSION GUARD: the window this prompt plus `max_tokens` must fit, strictly
-    /// (`prompt + max_tokens < window`), by the ENGINE'S exact count of the finalized body. Set
-    /// only by a caller that priced its prompt at a measured density below its estimate, which is
-    /// sound only behind that count: the adapter quotes the body and refuses with
-    /// [`ContextExceeded`] carrying the exact count, or, when the engine it reaches cannot count,
-    /// refuses as [`AdmissionUncounted`] before sending. `None` = no such pricing; the window the
-    /// lane serves is the only bound.
-    ///
-    /// [`ContextExceeded`]: crate::ai::inference_error::InferenceError::ContextExceeded
-    /// [`AdmissionUncounted`]: crate::ai::inference_error::InferenceError::AdmissionUncounted
+    /// THE STRICT ADMISSION GUARD this request was rendered under ([`RequestAdmission`]): the
+    /// window its prompt plus `max_tokens` must fit by the ENGINE'S exact count, the grant it was
+    /// rendered against (re-checked at dispatch, after any lane wait), and how its prompt was
+    /// priced. `None` = no guard beyond the lane's own window.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub admission_window: Option<u32>,
+    pub admission: Option<RequestAdmission>,
     /// The think's bound for this request, sized by the caller from the mind's MEASURED output
     /// need (an act: what her room holds past her measured answer), so the answer keeps its
     /// room inside `max_tokens`. `None` = the purpose's own rule (`request_body::apply_reasoning_budget`).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub reasoning_budget: Option<u32>,
+}
+
+/// How a prompt's price is admitted: whether a price below its estimate is backed by the engine's
+/// exact count of the finalized body.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/PromptAdmission.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum PromptAdmission {
+    /// No engine count: a prompt is never priced below its estimate.
+    #[default]
+    Estimated,
+    /// The engine counts the finalized prompt and refuses at its exact count: the measured
+    /// density prices it, below the estimate too.
+    EngineCounted,
+}
+
+/// The admission a request was rendered under, checked at DISPATCH (after any wait for a lane),
+/// never only at render: on the M5 (0b2854327, 2026-11-05 01:25Z) Atlas's act was rendered
+/// against a 148,838 window, her grant shrank to 40,282 0.6 s later while she waited 26.3 s for a
+/// lane, and the engine counted 139,007 tokens and SENT it (3.45x her grant), because the only
+/// count check compared against the slot's window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/RequestAdmission.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct RequestAdmission {
+    /// The window prompt plus `max_tokens` must fit strictly, by the engine's exact count.
+    pub window: u32,
+    /// Her grant on the shared pool when the request was rendered; at dispatch her CURRENT grant
+    /// must equal it, or the request is refused (`InferenceError::GrantChanged`) and re-rendered.
+    /// `None` = not on the shared pool (no grant to re-check).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub grant: Option<u32>,
+    /// How its prompt was priced: below the estimate only behind the engine's count.
+    pub priced: PromptAdmission,
 }
 
 /// Constrains the model's output format. OpenAI-compatible serialization:

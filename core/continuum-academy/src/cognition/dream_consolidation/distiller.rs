@@ -347,7 +347,7 @@ impl SemanticDistiller {
             purpose: Some(lens.purpose.to_string()),
             persona_id: persona_id.map(|id| id.to_string()),
             turn_bound: None,
-            admission_window: None,
+            admission: None,
             reasoning_budget: None,
         };
 

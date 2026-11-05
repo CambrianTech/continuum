@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! An act's output room (`act_room.rs`): her think plus answer as one required claim, priced at her
 //! measured density behind the engine's exact count. Pinned from the live cut-think regression
 //! (the M5, 2026-11-04 21:31Z-01:09Z, build a95afe3d1, 414 acts: 302 cut at max_tokens exactly,
@@ -84,7 +85,8 @@ async fn an_act_carries_her_measured_room_the_guard_and_its_receipt() {
     assert!(cap >= view.completion_reserve, "never below the reply's grant");
     let budget = request.reasoning_budget.expect("an act's think is bounded by her need");
     assert!(budget >= 338 && budget + 96 <= cap, "the answer keeps its room inside the cap: {budget} of {cap}");
-    assert_eq!(request.admission_window, Some(window), "priced below the estimate only behind the engine's count");
+    let admission = request.admission.expect("every request carries the admission it was rendered under");
+    assert_eq!((admission.window, admission.priced), (window, PromptAdmission::EngineCounted), "priced below the estimate only behind the engine's count");
     let allocation = receipts.last().and_then(|r| r.allocation.as_ref()).expect("the receipt names its allocation");
     assert_eq!(allocation.revision, env!("CONTINUUM_BUILD_GIT_SHA"), "the build that sized it");
     let room = allocation.output_room.as_ref().expect("an act's output room rides its receipt");
@@ -164,7 +166,7 @@ async fn a_denser_prompt_than_her_samples_is_recapped_once_from_the_engines_coun
         let exact = (LlmDeliberationFaculty::framing_cost(request.system_prompt.as_deref().unwrap_or_default()) // unwrap_or_default: test fixture, no system prompt costs none
             + LlmDeliberationFaculty::messages_cost(&request.messages)
             + request.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of)) as u32; // map_or: no tools, no schemas
-        let window = request.admission_window?;
+        let window = request.admission?.window;
         (exact + request.max_tokens? >= window).then_some(InferenceError::ContextExceeded { requested: exact, available: window })
     }));
     let contribution = faculty.contribute(&ws).await.expect("a verdict");
@@ -195,4 +197,52 @@ fn a_served_model_change_resets_her_density() {
     let (other, price, _) = prose.observe(10_000, 10_000, "model-b").expect("measured");
     assert_eq!(other.samples(), 1, "a new served model starts a fresh ring");
     assert_eq!(price.behind(PromptAdmission::EngineCounted).charge(10_000), 10_000, "priced at the new model's own count");
+}
+
+// what this catches: Atlas on the M5 (0b2854327, 01:25Z): rendered against 148,838, her grant
+// shrank to 40,282 while she waited 26.3 s for a lane, and 139,007 counted tokens were sent. The
+// engine refuses at dispatch (`serving_guard::dispatch_window`, typed GrantChanged, nothing sent);
+// the turn is re-rendered ONCE against the grant she now has, its prompt and cap inside it; moved
+// again, she parks on readiness instead of a third render.
+#[tokio::test]
+async fn a_grant_that_shrinks_before_dispatch_re_renders_her_turn_against_it() {
+    use crate::ai::inference_error::InferenceError;
+    let home = tempfile::tempdir().expect("isolated fixture emission storage");
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let (rendered, current, persona) = (65_536u32, 16_384u32, Uuid::new_v4());
+    let adapter = counted_adapter(1);
+    adapter
+        .rejections
+        .lock()
+        .unwrap() // JUSTIFIED: test fixture lock, never poisoned
+        .push_back(InferenceError::GrantChanged { rendered, current: Some(current) });
+    let faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", adapter.clone())
+        .with_context_window(rendered)
+        .with_tools(vec![read_tool()])
+        .with_working_set(measured(persona, 338, 96));
+    let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 200, true);
+    let contribution = faculty.contribute(&ws).await.expect("a verdict");
+    assert!(contribution.fault.is_none() && contribution.capacity_refusal.is_none(), "{:?}", contribution.fault);
+    let seen = adapter.seen.lock().unwrap(); // JUSTIFIED: test fixture lock, never poisoned
+    assert_eq!(seen.len(), 2, "the refused dispatch and one re-render");
+    let (stale, fresh) = (&seen[0], &seen[1]);
+    assert_eq!(stale.admission.map(|a| a.window), Some(rendered));
+    let admission = fresh.admission.expect("the re-render carries its admission");
+    assert_eq!((admission.window, admission.grant), (current, Some(current)), "rendered against the grant she has now");
+    let prompt = LlmDeliberationFaculty::framing_cost(fresh.system_prompt.as_deref().unwrap_or_default()) // unwrap_or_default: test fixture
+        + LlmDeliberationFaculty::messages_cost(&fresh.messages)
+        + fresh.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of); // map_or: no tools, no schemas
+    assert!(prompt + fresh.max_tokens.unwrap_or_default() as usize <= current as usize, "inside her current grant: {prompt}"); // unwrap_or_default: test fixture
+    drop(seen);
+    // Moved again before the next dispatch: refused for capacity and parked, never a third render.
+    for grant in [Some(12_000), Some(8_192)] {
+        adapter
+            .rejections
+            .lock()
+            .unwrap() // JUSTIFIED: test fixture lock, never poisoned
+            .push_back(InferenceError::GrantChanged { rendered: current, current: grant }); // the engine reports what it saw: re-rendered at 12,000, then moved again
+    }
+    let parked = faculty.contribute(&ws).await.expect("a typed refusal");
+    assert!(parked.capacity_refusal.is_some(), "her grant moved twice: she waits for it to settle");
+    assert_eq!(adapter.call_count(), 4, "two refused dispatches, no third render");
 }

@@ -278,9 +278,10 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
                     caller: "fixture",
                     reply: 0,
                     request_id: "fixture",
-                    admission_window: None,
                 }),
+                admission: None,
             },
+            &mut None,
         ),
     )
     .await

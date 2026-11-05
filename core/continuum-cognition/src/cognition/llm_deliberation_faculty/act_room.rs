@@ -23,7 +23,7 @@ use crate::cognition::working_set::ActRoom;
 /// call carrying a file ends by itself, and its size is the file's, not her past answers'. So an
 /// act's cap is the room this view's window physically leaves after its charged prompt, less the
 /// one token the strict `prompt + reply < window` admission needs (`serving_guard`, and the
-/// request's own `admission_window` when the prompt was priced below its estimate); the slot's
+/// request's own `admission`, re-checked against her grant at dispatch); the slot's
 /// window grant bounds the KV, and nothing is reserved by the cap. A pass keeps its measured grant.
 ///
 /// Why (the M5, 2026-11-04): an act's cap was her measured reply grant, sized from read-sized
@@ -57,25 +57,24 @@ pub(super) fn act_reasoning_budget(room: ActRoom, reserve: u32) -> Option<u32> {
 }
 
 impl LlmDeliberationFaculty {
-    /// Stamp an act's request with its output room: the think's bound inside its cap and, when the
-    /// prompt was priced below its estimate, the strict admission guard that makes that sound (the
-    /// engine counts the finalized body and refuses at its exact count). Returns the receipt the
-    /// request's allocation carries; a pass is left as its grant made it.
+    /// Stamp a turn's request with the admission it was rendered under (its window, the grant it
+    /// was priced against, how its prompt was priced: the engine re-checks all three at dispatch,
+    /// after any lane wait), and an act's with its output room: the think's bound inside its cap.
+    /// Returns the receipt an act's allocation carries; a pass is left as its grant made it.
     pub(super) fn stamp_output_room(
         &self,
         kind: TurnKind,
         view: &DeliberationPromptView,
         calibration: PromptCalibration,
-        window: u32,
+        (window, grant): (u32, Option<u32>),
         request: &mut TextGenerationRequest,
     ) -> Option<crate::ai::provenance::OutputRoom> {
+        request.admission = Some(crate::ai::types::RequestAdmission { window, grant, priced: calibration.admission });
         if kind != TurnKind::Act {
             return None;
         }
         let cap = request.max_tokens?;
         request.reasoning_budget = act_reasoning_budget(view.act_room, view.completion_reserve);
-        request.admission_window = (calibration.admission == crate::ai::provenance::PromptAdmission::EngineCounted)
-            .then_some(window);
         let (density_estimated, density_measured) = calibration.density();
         let room = crate::ai::provenance::OutputRoom {
             model: request.model.clone().unwrap_or_default(), // unwrap_or_default: a request naming no model is the adapter's default, said as empty

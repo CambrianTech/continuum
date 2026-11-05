@@ -353,6 +353,10 @@ mod tests {
     fn refuses_measured_prompt_and_reply_overflow_without_pricing_base64_as_text() {
         let measured = PromptCount::Measured { prompt: 1319, reply: 128 }.overflow(1024, "fixture", "persona");
         assert!(matches!(measured, InferenceError::ContextExceeded { requested: 1319, available: 1024 }));
+        // what this catches: Atlas on the M5 (0b2854327): 139,007 counted tokens sent against a
+        // 40,282 grant. Checked against her window, the exact count refuses typed with the count.
+        let over = PromptCount::Measured { prompt: 139_007, reply: 2_000 }.check(40_282, "p", "Atlas");
+        assert_eq!(over, Err(InferenceError::ContextExceeded { requested: 139_007, available: 40_282 }), "over her grant: the exact count, typed");
         assert!(!measured.is_retryable_unchanged(), "measured overflow must refit, not replay");
         let estimated = PromptCount::Estimated(1319).overflow(1024, "fixture", "persona");
         assert!(matches!(estimated, InferenceError::Transient(_)), "a text estimate is not a provider measurement");

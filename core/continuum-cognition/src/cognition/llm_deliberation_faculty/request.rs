@@ -397,7 +397,7 @@ impl LlmDeliberationFaculty {
             // The turn's bound on the wire: her measured expectation with headroom
             // (card ba82d0a0). Every waiting seam takes max(its floor, this).
             turn_bound: self.turn_bound(),
-            admission_window: None,
+            admission: None,
             reasoning_budget: None,
         }
     }

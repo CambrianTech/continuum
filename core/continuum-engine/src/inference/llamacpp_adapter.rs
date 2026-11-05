@@ -300,7 +300,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             purpose: Some("warmup".to_string()),
             persona_id: None,
             turn_bound: None,
-            admission_window: None,
+            admission: None,
             reasoning_budget: None,
         };
         match self.generate_text(warmup_request).await {
