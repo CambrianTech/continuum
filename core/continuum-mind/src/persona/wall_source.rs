@@ -60,7 +60,6 @@ use crate::cognition::rag_budget::{RagContext, RagDelivery, RagItem, RagSource};
 
 use crate::cognition::faculty_ids::WALL;
 
-/// Abstract reader over the airc room wall. Production rides on
 /// `airc_lib::Airc::wall_posts`; tests stub it without a daemon. Mirrors
 /// the `AircDoctrineReader` / `AircRosterReader` rails.
 #[async_trait]
@@ -118,7 +117,11 @@ pub type CardLabels = std::collections::HashMap<uuid::Uuid, (String, airc_work::
 /// her active card's, labelled only `[card-ledger]` with the card's id buried in JSON.
 ///
 /// Board unread (`None`): every post renders verbatim. Nothing is dropped and nothing is
-/// labelled, since a board that could not be read cannot say a card is over or gone.
+
+/// Maximum number of wall posts delivered to context at once. Older posts
+/// remain readable via their pointer links (`persona/wall/list`) but do not
+/// consume the persona's prompt budget.
+const MAX_WALL_POSTS: usize = 15;
 fn ledgers_for_context(posts: Vec<WallPostPublished>, labels: Option<&CardLabels>) -> Vec<WallPostPublished> {
     let Some(labels) = labels else {
         return posts;
@@ -416,14 +419,16 @@ impl RagSource for WallSource {
         if posts.is_empty() {
             return empty();
         }
-        let items: Vec<RagItem> = posts.iter().map(Self::item).collect();
+        // Cap total wall posts to prevent context budget exhaustion (card b51f4b59).
+        let post_count = posts.len().min(MAX_WALL_POSTS);
+
+        let items: Vec<RagItem> = posts[..post_count].iter().map(Self::item).collect();
 
         tracing::debug!(
             persona_id = %self.persona_id,
-            posts = posts.len(),
+            posts = post_count,
             "wall_posts: deliver"
         );
-
         RagDelivery::of(WALL, items, false)
     }
 
