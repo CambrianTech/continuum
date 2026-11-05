@@ -261,15 +261,19 @@ pub fn decode_tps_of(milli: u32) -> Option<f32> {
     (milli > 0).then(|| milli as f32 / 1000.0)
 }
 
-/// The 9-hex build sha prefix as the integer a beacon carries (0 when unparsable).
+/// How many hex digits of the build sha a beacon carries: the wire format's one owner, read by
+/// both directions below (the prefix operators recognise).
+const BEACON_BUILD_DIGITS: usize = 9;
+
+/// The build sha prefix as the integer a beacon carries (0 when unparsable).
 pub fn build_from_sha(sha: &str) -> u64 {
-    let hex: String = sha.chars().take(9).collect();
+    let hex: String = sha.chars().take(BEACON_BUILD_DIGITS).collect();
     u64::from_str_radix(&hex, 16).unwrap_or(0) // JUSTIFIED unwrap_or: a non-hex build string beacons as "unknown", never a fake sha
 }
 
-/// The beacon's build back as the 9-hex prefix operators recognise.
+/// The beacon's build back as the prefix operators recognise.
 pub fn build_hex(build: u64) -> Option<String> {
-    (build != 0).then(|| format!("{build:09x}"))
+    (build != 0).then(|| format!("{build:0width$x}", width = BEACON_BUILD_DIGITS))
 }
 
 impl CapacityOffer {
