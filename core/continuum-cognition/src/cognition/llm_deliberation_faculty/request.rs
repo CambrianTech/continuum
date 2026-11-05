@@ -1,4 +1,5 @@
 use super::*;
+use crate::ai::adapter::DispatchTermsPolicy as _;
 
 /// The kind of turn a completion is for — its latency budget and its runaway bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

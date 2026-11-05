@@ -101,6 +101,11 @@ pub enum InferenceError {
     /// Refused before anything is sent. PERMANENT for the unchanged request: the caller re-renders
     /// against the current grant.
     GrantChanged { rendered: u32, current: Option<u32> },
+
+    /// The request carries a think budget the adapter (or the peer it reaches) cannot carry: no
+    /// reasoning-budget sampler, or a grid peer that does not advertise one. Refused before
+    /// anything is sent, never generated with an unbounded think. PERMANENT for this adapter.
+    ThinkUnenforceable { model: String },
 }
 
 impl InferenceError {
@@ -116,6 +121,7 @@ impl InferenceError {
             Self::TailToolsUnreachable { .. } => false,
             Self::AdmissionUncounted { .. } => false,
             Self::GrantChanged { .. } => false,
+            Self::ThinkUnenforceable { .. } => false,
             Self::Unavailable(_) | Self::Transient(_) => true,
         }
     }
@@ -200,6 +206,10 @@ impl fmt::Display for InferenceError {
             Self::GrantChanged { rendered, current } => write!(
                 f,
                 "her grant changed since this request was rendered ({rendered} -> {current:?}): re-render it"
+            ),
+            Self::ThinkUnenforceable { model } => write!(
+                f,
+                "the adapter serving {model} cannot bound this turn's think: refused rather than sent unbounded"
             ),
         }
     }

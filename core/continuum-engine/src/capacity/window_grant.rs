@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use crate::inference::planning::window_allocator::Tokens;
 
 mod lease;
-pub use lease::{honor, honoring_reservations, reserve, GrantReservation, ReserveRefused};
+pub use lease::{grant_with_reservations, honoring_reservations, reserve, GrantReservation, ReserveRefused};
 
 /// One publication of one mind's grant: monotonic and never reused in this process. A grant that
 /// moves, or a new engine incarnation, takes a new revision, so a lease priced at an old one fails
@@ -56,8 +56,8 @@ impl GrantOwner {
 pub struct GrantLease {
     pub tokens: u32,
     pub revision: GrantRevision,
-    /// The engine incarnation (its pid) the grant is on.
-    pub engine: Option<u32>,
+    /// The engine incarnation the grant is on (pid, OS start time, port: a restarted pid is another).
+    pub engine: Option<crate::inference::engine_residency::EngineIncarnation>,
     pub owner: GrantOwner,
 }
 
@@ -95,8 +95,9 @@ pub struct PoolGrants {
     /// window), a slot's window on fixed slots. No grant exceeds it.
     pub per_sequence_cap: u32,
     pub by_mind: BTreeMap<uuid::Uuid, u32>,
-    /// The engine incarnation these grants are on (its pid); a new one re-issues every revision.
-    pub engine: Option<u32>,
+    /// The engine incarnation these grants are on, as the serving layer reads it
+    /// (`LlamaServerControl::served_incarnation`); a new one re-issues every revision.
+    pub engine: Option<crate::inference::engine_residency::EngineIncarnation>,
     /// Each mind's grant revision ([`stamp_revisions`]).
     pub revisions: BTreeMap<uuid::Uuid, GrantRevision>,
 }

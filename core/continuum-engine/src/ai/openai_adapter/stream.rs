@@ -498,7 +498,8 @@ impl OpenAICompatibleAdapter {
         // The managed engine quotes the finalized body before generation; the heuristic
         // preflight above checks residency only so an overestimate cannot refuse a fit.
         // POST through the lane with the mid-relaunch retry (`inference::lane_send`).
-        // Her grant's reservation, held until this request's terminal receipt (dropped with it).
+        // Her grant's reservation: released by the engine's terminal receipt (the stream's final
+        // frame, below); dropped without it (a cancelled caller, a broken stream) it stays held.
         let mut grant_reservation = None;
         let response = crate::inference::lane_send::send_with_lane_retry(
             &self.config,
@@ -542,6 +543,10 @@ impl OpenAICompatibleAdapter {
             &sink,
         )
         .await?;
+        // The engine's terminal receipt for this request: her reservation ends.
+        if let Some(reservation) = grant_reservation.take() {
+            reservation.complete();
+        }
         let response_time_ms = start.elapsed().as_millis() as u64;
 
         // Separate reasoning from the answer AT THE BOUNDARY: a reasoning model's

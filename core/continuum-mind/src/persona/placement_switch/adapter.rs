@@ -415,6 +415,9 @@ impl PlacementSwitch {
 /// that could not be built and no remote bound). Every generation fails by name.
 struct NoSeat(String);
 
+// No seat: every generation refuses, so no turn ever thinks.
+continuum_engine::dispatch_without_thinking!(NoSeat);
+
 #[async_trait]
 impl AIProviderAdapter for NoSeat {
     fn provider_id(&self) -> &str {
@@ -434,6 +437,19 @@ impl AIProviderAdapter for NoSeat {
             "{}: no seat — her home adapter could not be built and no remote lane is bound",
             self.0
         ))
+    }
+}
+
+/// The adapter her request goes to now honours her dispatch terms, like every capability here.
+#[async_trait]
+impl crate::ai::adapter::DispatchTermsPolicy for PlacementSwitch {
+    async fn generate_admitted(
+        &self,
+        request: TextGenerationRequest,
+        terms: crate::ai::types::DispatchTerms,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+        self.current().generate_admitted(request, terms, sink).await
     }
 }
 
@@ -559,14 +575,6 @@ impl AIProviderAdapter for PlacementSwitch {
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
         self.current().generate_stream_checked(request, sink).await
-    }
-    async fn generate_admitted(
-        &self,
-        request: TextGenerationRequest,
-        terms: crate::ai::types::DispatchTerms,
-        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
-    ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
-        self.current().generate_admitted(request, terms, sink).await
     }
     async fn generate_text(
         &self,

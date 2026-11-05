@@ -372,9 +372,10 @@ pub enum GenerationAdmissionOwner {
 /// The universal AI provider adapter trait
 ///
 /// All AI providers implement this trait. The AIProviderModule calls
-/// these methods; adapters translate to native provider API calls.
+/// these methods; adapters translate to native provider API calls. Every adapter also states,
+/// with no default, how it honours a mind's dispatch terms ([`super::DispatchTermsPolicy`]).
 #[async_trait]
-pub trait AIProviderAdapter: Send + Sync {
+pub trait AIProviderAdapter: super::DispatchTermsPolicy + Send + Sync {
     /// Get adapter provider ID (e.g., "openai", "anthropic")
     fn provider_id(&self) -> &str;
 
@@ -563,26 +564,6 @@ pub trait AIProviderAdapter: Send + Sync {
         self.generate_stream(request, sink)
             .await
             .map_err(Into::into)
-    }
-
-    /// Generate a mind's turn under the terms her faculty rendered it with
-    /// ([`crate::ai::types::DispatchTerms`]): her think budget, and the admission it was priced and
-    /// granted under, enforced at DISPATCH. Default: an adapter that cannot enforce an admission
-    /// (no exact prompt count, no grant to reserve) refuses it typed, never sends without it; a
-    /// think budget it cannot carry is left to the model.
-    async fn generate_admitted(
-        &self,
-        request: TextGenerationRequest,
-        terms: crate::ai::types::DispatchTerms,
-        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
-    ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
-        let enforced = terms.admission.is_some_and(|a| a.lease.is_some() || a.priced == crate::ai::types::PromptAdmission::EngineCounted);
-        if enforced {
-            return Err(crate::ai::inference_error::InferenceError::AdmissionUncounted {
-                model: request.model.clone().unwrap_or_default(), // unwrap_or_default: a request naming no model is the adapter's default, said as empty
-            });
-        }
-        self.generate_stream_checked(request, sink).await
     }
 
     /// Generate text (convenience drain over [`generate_stream`])

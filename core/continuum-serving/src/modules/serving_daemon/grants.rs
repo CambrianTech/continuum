@@ -13,8 +13,9 @@ impl ServingDaemonModule {
     /// mind whose request holds a reserved lease is never regranted below it until that request's
     /// terminal receipt releases it; the shrink applies at the first publish after.
     pub(super) fn publish_grants(&self) {
-        let (next, changed) = crate::capacity::window_grant::honoring_reservations(|reserved| {
-            let mut next = self.grants_now(reserved);
+        let engine = self.server.served_incarnation();
+        let (next, changed) = crate::capacity::window_grant::honoring_reservations(engine, |reserved| {
+            let mut next = self.grants_now(reserved, engine);
             // Every moved grant takes a new revision: a lease priced at an old one never reserves.
             let current = self.grants_tx.borrow().clone();
             if let Some(next) = next.as_mut() {
@@ -48,7 +49,11 @@ impl ServingDaemonModule {
     }
 
     /// `None` until the engine serves and has reported its pool: there is nothing to grant from.
-    fn grants_now(&self, reserved: &std::collections::BTreeMap<uuid::Uuid, u32>) -> Option<PoolGrants> {
+    fn grants_now(
+        &self,
+        reserved: &std::collections::BTreeMap<uuid::Uuid, u32>,
+        engine: Option<crate::inference::engine_residency::EngineIncarnation>,
+    ) -> Option<PoolGrants> {
         let live = self.serving_tx.borrow().clone();
         // The pool the engine itself reports (`context_geometry.allocated_tokens`), never a
         // published share multiplied back by a count (Cormac on #5733).
@@ -79,16 +84,15 @@ impl ServingDaemonModule {
                     need: r.measure.observed_need()?.map(|need| need.min(trained)).within(per_sequence_cap),
                     target: r.measure.target()?.min(trained),
                     wish: r.wish?.min(trained),
-                    // A reserved lease is a request in flight too: it keeps what it holds.
-                    in_flight: crate::cognition::turn_ledger::turn_in_flight(r.persona) || reserved.contains_key(&r.persona),
+                    in_flight: crate::cognition::turn_ledger::turn_in_flight(r.persona),
                     ceiling: per_sequence_cap,
                 })
             })
             .collect();
         let held = self.grants_tx.borrow().as_ref().map(|g| g.by_mind.clone()).unwrap_or_default(); // unwrap_or_default: nothing granted yet holds nothing
-        let mut by_mind = DemandFollowing.grant(&demands, &held, pool_tokens);
-        crate::capacity::window_grant::honor(&mut by_mind, reserved);
-        Some(PoolGrants { pool_tokens, per_sequence_cap, by_mind, engine: crate::inference::lane_pidfile::read(), revisions: Default::default() })
+        // A reserved lease is a fixed claim off the pool first, whether or not her demand is listed.
+        let by_mind = crate::capacity::window_grant::grant_with_reservations(&mut DemandFollowing, &demands, &held, pool_tokens, reserved);
+        Some(PoolGrants { pool_tokens, per_sequence_cap, by_mind, engine, revisions: Default::default() })
     }
 
     /// Whether the running engine is on the shared pool, read off its argv once per process.

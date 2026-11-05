@@ -186,6 +186,10 @@ pub enum CapabilityId {
     /// verifies and places a returned adapter in its own job directory for adoption (card
     /// 92cd2251). A grid trainer leases only when BOTH ends advertise this and `TrainingLease`.
     TrainingLeaseReturn,
+    /// The seat's `ai/generate` takes a mind's think budget (`GenerateParams::think`) and bounds
+    /// her think with it on its own engine. A grid lane forwards a turn with a think budget only to
+    /// a seat advertising this; absence means a core that would generate it unbounded.
+    RemoteThinkBudget,
     /// Parse-only: a name THIS build does not know (a newer core advertising a capability we
     /// predate). It never grants — membership of this list is exact-name, so an unknown name
     /// cannot stand in for another — but its presence must not drop the rest of the beacon,
@@ -207,6 +211,7 @@ pub fn this_build_capabilities() -> Vec<CapabilityId> {
         CapabilityId::RemoteGenerateCancel,
         CapabilityId::TrainingLease,
         CapabilityId::TrainingLeaseReturn,
+        CapabilityId::RemoteThinkBudget,
     ]
 }
 
@@ -898,7 +903,7 @@ mod tests {
         let wire = serde_json::to_string(&this_build_capabilities())?;
         assert_eq!(
             wire,
-            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\",\"training_lease\",\"training_lease_return\"]"
+            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\",\"training_lease\",\"training_lease_return\",\"remote_think_budget\"]"
         );
         assert!(!this_build_capabilities().contains(&CapabilityId::Unknown), "emission never advertises Unknown");
 

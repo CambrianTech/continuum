@@ -350,7 +350,8 @@ pub struct DispatchTerms {
 /// (`common/reasoning-budget.cpp`: `remaining <= 0` -> `REASONING_BUDGET_FORCING`), and only `-1`
 /// (never sent) means unlimited (`common/sampling.cpp`). It applies where the model's chat template
 /// declares thinking end tags (`server-common.cpp`, `thinking_end_tags`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/ThinkBudget.ts")]
 pub struct ThinkBudget(pub u32);
 
 /// How a prompt's price is admitted: whether a price below its estimate is backed by the engine's

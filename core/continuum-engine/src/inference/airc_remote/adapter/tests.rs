@@ -547,3 +547,41 @@ async fn the_served_window_on_an_answer_reaches_the_sink() {
     assert_eq!(receipt.correlation_id, "wire-correlation");
     assert_eq!(receipt.elapsed_ms, 42);
 }
+
+// ── dispatch terms: the grid lane's difference ─────────────
+
+// what this catches: a mind's think budget sent to a seat that would generate it unbounded. The
+// lane forwards the budget only to a seat whose beacon advertises `RemoteThinkBudget`
+// (affirmative membership, never a version guess); with no such offer heard it refuses typed and
+// nothing reaches the transport. On the wire the budget rides beside the request as `think`.
+#[tokio::test]
+async fn the_grid_lane_carries_a_think_budget_only_to_a_seat_that_advertises_it() {
+    use crate::ai::adapter::DispatchTermsPolicy;
+    use crate::ai::types::{DispatchTerms, ThinkBudget};
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = sent.clone();
+    let transport = StubInferenceTransport::new(move |_| {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(RemoteInferenceError::Transport { message: "not reached".to_string() })
+    });
+    let adapter = AircRemoteInferenceAdapter::new(transport).with_target_peer(uuid::Uuid::new_v4().to_string());
+    let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let terms = DispatchTerms { admission: None, think: Some(ThinkBudget(338)) };
+    let refused = adapter.generate_admitted(req("act"), terms, sink).await;
+    assert!(matches!(refused, Err(crate::ai::inference_error::InferenceError::ThinkUnenforceable { .. })), "{refused:?}");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0, "never sent unbounded");
+
+    let mut offer: crate::capacity::gossip::CapacityOffer = serde_json::from_value(serde_json::json!({
+        "gpuTotalBytes": 1u64, "gpuFreeBytesLive": 0u64, "systemRamFreeBytes": 0u64, "atMs": 0u64,
+    }))
+    .expect("the wire shape of a seat's beacon");
+    assert!(!takes_think(Some(&offer)), "an older seat advertises nothing: refused");
+    assert!(!takes_think(None), "no beacon heard: refused");
+    offer.capabilities = crate::capacity::gossip::this_build_capabilities();
+    assert!(takes_think(Some(&offer)), "this build's seat advertises it");
+
+    let wire = RemoteInferenceRequest::new(req("act")).with_think(Some(ThinkBudget(0))).wire_params().expect("serializable");
+    assert_eq!(wire["think"], serde_json::json!(0), "zero is a budget on the wire too");
+    let plain = RemoteInferenceRequest::new(req("act")).wire_params().expect("serializable");
+    assert!(plain.get("think").is_none(), "no budget, no field");
+}

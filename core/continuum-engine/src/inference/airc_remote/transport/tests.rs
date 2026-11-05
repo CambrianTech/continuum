@@ -189,6 +189,7 @@ async fn local_adapter_transport_round_trips_via_heuristic() {
 async fn local_adapter_transport_propagates_peer_adapter_errors() {
     // Adapter that always errors.
     struct AlwaysFails;
+    crate::dispatch_without_thinking!(AlwaysFails);
     #[async_trait]
     impl AIProviderAdapter for AlwaysFails {
         fn provider_id(&self) -> &str {

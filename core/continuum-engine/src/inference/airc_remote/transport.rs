@@ -182,11 +182,14 @@ impl AircInferenceTransport for LocalAdapterTransport {
         &self,
         request: RemoteInferenceRequest,
     ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
-        let text_response = self
-            .adapter
-            .generate_text(request.text_request)
-            .await
-            .map_err(|e| RemoteInferenceError::PeerAdapterFailed { message: e })?;
+        // The seat honours the requester's think budget exactly as `ai/generate` does.
+        let terms = crate::ai::types::DispatchTerms { admission: None, think: request.think };
+        use crate::ai::adapter::DispatchTermsPolicy as _;
+        let text_response = crate::ai::stream_sinks::drain_generation(|sink| async move {
+            self.adapter.generate_admitted(request.text_request, terms, sink).await.map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| RemoteInferenceError::PeerAdapterFailed { message: e })?;
         Ok(RemoteInferenceResponse {
             correlation_id: request.correlation_id,
             served_by: self.fake_peer_id.clone(),
@@ -374,10 +377,8 @@ impl AircLiveTransport {
         // `params` as a `TextGenerationRequest`. RemoteInferenceRequest
         // is the transport-internal envelope; only its `text_request`
         // crosses the wire.
-        let params = serde_json::to_value(&request.text_request).map_err(|e| {
-            RemoteInferenceError::Transport {
-                message: format!("serialize TextGenerationRequest: {e}"),
-            }
+        let params = request.wire_params().map_err(|e| RemoteInferenceError::Transport {
+            message: format!("serialize TextGenerationRequest: {e}"),
         })?;
 
         let envelope = AircCommandRequest::new(

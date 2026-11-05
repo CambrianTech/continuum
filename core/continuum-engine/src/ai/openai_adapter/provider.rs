@@ -339,17 +339,6 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         self.stream_checked(request, crate::ai::types::DispatchTerms::default(), sink).await
     }
 
-    /// The managed engine enforces a mind's dispatch terms itself: her think budget on the body,
-    /// her lease reserved at dispatch, a price below the estimate behind its exact count.
-    async fn generate_admitted(
-        &self,
-        request: TextGenerationRequest,
-        terms: crate::ai::types::DispatchTerms,
-        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
-    ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
-        self.stream_checked(request, terms, sink).await
-    }
-
     /// Create embeddings over the OpenAI-compatible `/v1/embeddings` endpoint.
     /// This is the path continuum's neural recall (`NeuralEmbeddingProvider`)
     /// takes through the local llama-server /v1 gateway — it replaces the in-process
@@ -531,6 +520,20 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .model_prefixes
             .iter()
             .any(|prefix| lower.starts_with(&prefix.to_lowercase()))
+    }
+}
+
+/// The managed engine enforces a mind's dispatch terms itself: her think budget on the body, her
+/// lease reserved at dispatch, a price below the estimate behind its exact count.
+#[async_trait]
+impl crate::ai::adapter::DispatchTermsPolicy for OpenAICompatibleAdapter {
+    async fn generate_admitted(
+        &self,
+        request: TextGenerationRequest,
+        terms: crate::ai::types::DispatchTerms,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+        self.stream_checked(request, terms, sink).await
     }
 }
 

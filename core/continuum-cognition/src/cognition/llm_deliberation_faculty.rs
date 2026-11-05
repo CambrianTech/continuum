@@ -793,6 +793,20 @@ pub mod test_support {
         }
     }
 
+    /// Records the terms each request was dispatched under beside it (`terms_seen`).
+    #[async_trait]
+    impl crate::ai::adapter::DispatchTermsPolicy for ScriptedAdapter {
+        async fn generate_admitted(
+            &self,
+            request: TextGenerationRequest,
+            terms: crate::ai::types::DispatchTerms,
+            sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
+        ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+            self.terms_seen.lock().expect("fixture terms log").push(terms); // JUSTIFIED: test fixture lock, never poisoned
+            self.generate_stream_checked(request, sink).await
+        }
+    }
+
     #[async_trait]
     impl AIProviderAdapter for ScriptedAdapter {
         fn provider_id(&self) -> &str {
@@ -806,16 +820,6 @@ pub mod test_support {
         }
         fn counts_prompts_exactly(&self) -> bool {
             self.counts_exactly
-        }
-        /// Records the terms each request was dispatched under beside it (`terms_seen`).
-        async fn generate_admitted(
-            &self,
-            request: TextGenerationRequest,
-            terms: crate::ai::types::DispatchTerms,
-            sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
-        ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
-            self.terms_seen.lock().expect("fixture terms log").push(terms); // JUSTIFIED: test fixture lock, never poisoned
-            self.generate_stream_checked(request, sink).await
         }
         fn live_served_window(&self) -> Option<u32> {
             // Inject the exact load → observation → publication interleaving
