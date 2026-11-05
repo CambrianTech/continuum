@@ -157,15 +157,14 @@ e03c2aa0), and Shown ids plus their ratchet (card 484b000b). Codex owns engine s
   the newest lines its budget holds. The work turn's stimulus no longer lists her cards (her
   held-work items do) or her progress receipts (her actions and open views carry every act across
   turns and restarts, `a_restart_keeps_every_act_as_she_read_it`).
-- Still owed (Fable): her last thoughts. Her thoughts share working memory's capacity-bounded
-  `entries` ring with receipts (`ledger.rs::push_entry`), so the thoughts source does not carry them
-  across a turn of several acts, and the work turn still pages them off the room store
-  (`act_question.rs` `WORK_GATE_PAGE_ROWS`, and `own_recent_thoughts_about` with its 4/400 and
-  its head cut of older thoughts: the two `self_sized` sites left). The fix: her thoughts become a
-  log like her actions (one record each, checkpointed, levels from `levels::summarize`), so the
-  thoughts source carries them and her view sizes them; then the page, its constant, the scoped
-  resume block and its cut are deleted, and the write-less count reads her action log from the
-  hold boundary (stamped as an action seq, not a room-row time).
+- Her thoughts are a log like her actions (`working_memory::thought_log`: one record each, kept
+  whole, checkpointed under its occurrence; an older checkpoint's ring thoughts move into it). The
+  thoughts source reads every one, her newest whole and the older ones at the level her one
+  allocation affords. So the work turn no longer pages her thoughts off the room store:
+  `WORK_GATE_PAGE_ROWS`, the 4/400 keep-count and length, the scoped resume block and its
+  older-thought head cut are deleted, and the write-less count reads her action log from the hold
+  boundary (`WorkingMemory::operations_since`). The entry ring keeps receipts, facts and
+  settlements; no thought rides it.
 - Command-boundary tests through the real handlers on an airc fixture. The decisions are tested at
   the boundary function (`decide`), not yet through `WorkSubmit::run`.
 - The live read after deploy (Fable, within the deploy's 15-minute window), on the M5, per

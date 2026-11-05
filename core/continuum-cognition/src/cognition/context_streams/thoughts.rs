@@ -1,4 +1,5 @@
-//! Her own recent thoughts and the answers she settled, one item each. Her actions are not
+//! Her own thoughts and the answers she settled, one item each: every thought in her log, her
+//! newest whole, and how much of each older one she reads is the one allocation's at an epoch start. Her actions are not
 //! here: they are the action stream, rendered once ([`super::actions`]).
 
 use continuum_context::cause::{Cause, Origin};
@@ -23,13 +24,17 @@ impl Source<ContextMessage> for Thoughts<'_> {
     }
 
     fn items(&self) -> Vec<Item<ContextMessage>> {
-        let thoughts: Vec<(u64, String)> = self
-            .memory
-            .recent_entries()
-            .into_iter()
-            .filter(|entry| matches!(entry.kind, WmKind::Thought | WmKind::Settlement))
-            .map(|entry| (entry.occurrence, entry.text))
-            .collect();
+        // Her thought log, whole (`working_memory::thought_log`: every thought, across a turn of
+        // many acts and a restart), and the answers she settled, in the one order of her memory.
+        let mut thoughts: Vec<(u64, String)> = self.memory.thoughts().into_iter().map(|record| (record.occurrence, record.text)).collect();
+        thoughts.extend(
+            self.memory
+                .recent_entries()
+                .into_iter()
+                .filter(|entry| entry.kind == WmKind::Settlement)
+                .map(|entry| (entry.occurrence, entry.text)),
+        );
+        thoughts.sort_by_key(|(occurrence, _)| *occurrence);
         if thoughts.is_empty() {
             return Vec::new();
         }

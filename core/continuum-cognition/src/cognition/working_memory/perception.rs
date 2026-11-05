@@ -467,7 +467,13 @@ impl WorkingMemory {
         }
     }
 
-    /// Snapshot of recent reasonings, oldest → newest.
+    /// The commands she called since `since_ms`, one per call, oldest first: read off her action
+    /// log (every act's one record), so a count over them needs no room page.
+    pub fn operations_since(&self, since_ms: u64) -> Vec<String> {
+        self.actions.lock().operations_since(since_ms).map(str::to_owned).collect()
+    }
+
+    /// Snapshot of the ring's recent entries (receipts, facts, settlements), oldest → newest.
     pub fn recent(&self) -> Vec<String> {
         self.entries.lock().iter().map(|e| e.text.clone()).collect()
     }
@@ -483,6 +489,7 @@ impl WorkingMemory {
     pub fn clear(&self) {
         self.pending_emissions.lock().clear();
         self.entries.lock().clear();
+        self.thoughts.lock().clear();
         *self.last_action.lock() = None; // the full latest result is proprioception too
         self.dispatched.lock().clear(); // dispatched handles belong to the cleared concern
         self.action_fps.lock().clear(); // loop-awareness resets with the concern
@@ -490,6 +497,6 @@ impl WorkingMemory {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.lock().is_empty()
+        self.entries.lock().is_empty() && self.thoughts.lock().is_empty()
     }
 }

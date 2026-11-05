@@ -182,19 +182,23 @@ fn a_finished_dispatch_stays_until_a_receipt_acknowledges_it() {
     assert_eq!(handles, vec![compile, sentinel], "acts alone never retire a finished end, and a running one stays");
 }
 
-// what this catches: record/recent round-trips, blank reasoning is ignored, and
-// the buffer ROLLS at capacity (oldest dropped) — it's a scratchpad, not a log.
+// what this catches: her thoughts aged out by the entry ring her receipts roll through. A thought
+// is a record in her thought log, kept past the ring's capacity (blank reasoning is ignored); the
+// ring still rolls her receipts at capacity, oldest dropped.
 #[test]
-fn records_recent_and_rolls_at_capacity() {
+fn her_thoughts_are_a_log_and_the_ring_rolls_her_receipts() {
     let wm = WorkingMemory::new(2);
     assert!(wm.is_empty());
     wm.record("first thought");
     wm.record("   "); // blank → ignored
+    for act in 1..=3 {
+        wm.record_receipt(&format!("ran act {act}"));
+    }
     wm.record("second thought");
-    assert_eq!(wm.recent(), vec!["first thought", "second thought"]);
-    // third pushes out the oldest (capacity 2).
     wm.record("third thought");
-    assert_eq!(wm.recent(), vec!["second thought", "third thought"]);
+    let thoughts: Vec<String> = wm.thoughts().into_iter().map(|record| record.text).collect();
+    assert_eq!(thoughts, ["first thought", "second thought", "third thought"], "every thought is kept");
+    assert_eq!(wm.recent(), ["[action #2] ran act 2", "[action #3] ran act 3"], "the ring rolls at capacity 2");
 }
 
 // what this catches: THE loop-break property. A repeated identical action must
@@ -317,9 +321,9 @@ fn clear_empties_buffer_but_keeps_stamps_monotonic() {
 #[test]
 fn capacity_floored_at_one() {
     let wm = WorkingMemory::new(0);
-    wm.record("a");
-    wm.record("b");
-    assert_eq!(wm.recent(), vec!["b"], "floor-1 buffer keeps the latest");
+    wm.record_receipt("a");
+    wm.record_receipt("b");
+    assert_eq!(wm.recent(), vec!["[action #2] b"], "floor-1 buffer keeps the latest");
 }
 
 /// One typed act whose output is `content`, for a receipt that batches several.

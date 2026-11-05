@@ -32,17 +32,21 @@ fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
 // what this catches: a restart changing what she reads of her own acts (Cormac on #5254: a
 // collapsed pointer re-rendered as "operation unrecorded" with no workspace, because the
 // checkpoint kept a pointer only as text). Every record is checkpointed whole, so her ring
-// and her ledger read the same after a restore as before it.
+// and her ledger read the same after a restore as before it. Her thoughts are records the same
+// way: a turn of more acts than the entry ring holds keeps every one, and a restart keeps them
+// under the same occurrences (an older checkpoint's ring thoughts: `provenance`).
 #[test]
 fn a_restart_keeps_every_act_as_she_read_it() {
     let wm = WorkingMemory::new(8);
     wm.set_scope(Some("/work/foo".into()));
     let room = Uuid::new_v4();
     let cap = 2 * BODY;
+    wm.record("the parser drops the index");
     wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), Some(room), saved("first-handle"));
-    for act in 2..=5 {
+    for act in 2..=12 {
         wm.record_receipt_typed(&[], &format!("act {act}\n{}", "s".repeat(cap / 2)), Some(room), saved("ring-test"));
     }
+    wm.record("so the fix is at checks.py:118");
     wm.record_settlement("done", None);
     shed(&wm, cap / 2);
     // The pointer index and the ledger. (Which act counts as in flight after a restore is
@@ -52,11 +56,16 @@ fn a_restart_keeps_every_act_as_she_read_it() {
     };
     let (index, lines) = (pointers(&wm), ledger(&wm));
     assert!(index.join("\n").contains("workspace foo — collapsed]"), "precondition: a collapsed pointer with its workspace: {index:?}");
+    let thoughts = wm.thoughts();
+    assert_eq!(thoughts.len(), 2, "a turn of twelve acts on an eight-entry ring keeps both thoughts");
     let restored = WorkingMemory::new(8);
     restored.set_scope(Some("/work/foo".into()));
     restored.restore(wm.snapshot());
     assert_eq!(pointers(&restored), index);
     assert_eq!(ledger(&restored), lines);
+    assert_eq!(restored.thoughts(), thoughts, "every thought, under its occurrence");
+    restored.record("next thought");
+    assert!(restored.thoughts().windows(2).all(|pair| pair[0].occurrence < pair[1].occurrence), "the sequence resumes past them");
 }
 
 // what this catches (card d624a9a1): an act's line cutting an argument mid-value. A cut path

@@ -36,15 +36,6 @@
 use crate::persona::service_loop::{CitizenConversation, LIVE_MAX_ACTS};
 use crate::persona::supervisor::HostedPersona;
 
-/// How many run-room rows the write-or-release gate reads to count a holder's
-/// acts since her last write. 80 rows was ~15 minutes of a five-coder room
-/// (⚙ receipts + 💭 thoughts interleaved), so a holder's six write-less acts
-/// scrolled off the page before the gate could see them: measured 2026-09-07
-/// 07:40–08:40Z, 51 acts / 4 writes across five holders and the gate fired
-/// twice, both for the one holder whose acts happened to cluster. The wall is
-/// a cached projection (airc#1389/#1390), so a deeper page costs nothing.
-const WORK_GATE_PAGE_ROWS: usize = 400;
-
 /// Ask the act-question for a citizen who may be holding work.
 ///
 /// Called from BOTH turn outcomes — after she speaks, and after she passes — because
@@ -188,57 +179,15 @@ pub(crate) async fn ask_the_act_question(
             );
             {
                 if !held.is_empty() {
-                    // Her own newest thoughts on this work lead the turn (see
-                    // `held_work_burst`); paged from the durable store, the
-                    // same page the catch-up reads. A failed page is a missing
-                    // block, never a failed turn.
-                    let page =
-                        crate::persona::durable_history::room_rows(turn_room, crate::persona::durable_history::RoomPage::Newest, WORK_GATE_PAGE_ROWS)
-                            .await;
-                    let last_state = match &page {
-                        Ok(rows) => {
-                            let about: Vec<String> = held
-                                .iter()
-                                .flat_map(|c| {
-                                    let id8 = airc_core::shown_id::shown_form(c.card_id.as_uuid());
-                                    let inst =
-                                        crate::recipe::bench_title::parse_card_title(&c.title)
-                                            .map(|(_, i)| i)
-                                            .unwrap_or_default(); // unwrap_or: a non-bench title has no instance to scope on
-                                    [id8, inst]
-                                })
-                                .collect();
-                            crate::persona::work_burst::own_recent_thoughts_about(
-                                &rows,
-                                ctx.identity.peer_id.as_uuid(),
-                                4,
-                                400,
-                                &about,
-                            )
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "work turn: last-state page failed; opening without it");
-                            Vec::new()
-                        }
-                    };
-                    continuum_base::probe!(
-                        class = "persona.work.last_state",
-                        persona = %ctx.identity.agent_name,
-                        thoughts = last_state.len() as u64,
-                        "her own newest thoughts lead the work turn"
-                    );
-                    let acts_without_write = page
-                        .as_ref()
-                        .map(|rows| {
-                            crate::persona::work_burst::acts_since_last_write_since(
-                                rows,
-                                ctx.identity.peer_id.as_uuid(),
-                                crate::persona::work_burst::last_hold_boundary_ms(
-                                    ctx.identity.peer_id.as_uuid(),
-                                ),
-                            )
-                        })
-                        .unwrap_or(0); // unwrap_or: no page = no acts counted; the gate stays open, never closes on absence
+                    // Her acts since her hold boundary, read off her action log (every act's one
+                    // record, across turns and restarts), never a page of room rows: a page sized
+                    // by a count let a busy room scroll her write-less acts off it (2026-09-07). Her
+                    // thoughts on this work are her view's thoughts source, her newest whole.
+                    let acts_without_write = cycle.acting().map_or(0, |body| { // map_or: no hands, no acts to count
+                        let since = crate::persona::work_burst::last_hold_boundary_ms(ctx.identity.peer_id.as_uuid());
+                        let operations = body.working_memory.operations_since(since);
+                        crate::persona::work_burst::acts_since_last_write(operations.iter().map(String::as_str))
+                    });
                     if acts_without_write >= crate::persona::work_burst::WRITE_OR_RELEASE_AFTER_ACTS
                     {
                         continuum_base::probe!(
@@ -255,7 +204,7 @@ pub(crate) async fn ask_the_act_question(
                     // her edits uncommitted. The gate probe above records the stretch; a card leaves
                     // her only by her own release, an explicit reassignment, or an activity's
                     // declared policy (the benchmark round's idle reconciler is one).
-                    let burst_text = crate::persona::work_burst::held_work_burst_gated(&last_state, acts_without_write);
+                    let burst_text = crate::persona::work_burst::held_work_burst_gated(acts_without_write);
                     // The producer's CONTEXT half, kept before the burst is
                     // moved into the driver — one construction, so the
                     // training example records the prompt she was actually

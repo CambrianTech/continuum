@@ -32,9 +32,10 @@ pub(crate) struct ResidentResults {
 }
 
 impl WorkingMemory {
-    /// The RAM her action records hold, in bytes: bodies, lines and summaries. Cheap: one pass, no allocation.
+    /// The RAM her action records hold, in bytes: bodies, lines and summaries, and her thoughts
+    /// (pinned charge: no shed releases a thought). Cheap: one pass, no allocation.
     pub(crate) fn resident_result_bytes(&self) -> u64 {
-        self.actions.lock().resident_bytes()
+        self.actions.lock().resident_bytes() + self.thoughts.lock().resident_bytes()
     }
 
     /// Her resident bodies and the saved ones a shed could move. Only memory is read under the
@@ -53,7 +54,7 @@ impl WorkingMemory {
             })
             .collect();
         ResidentResults {
-            resident_bytes: actions.resident_bytes(),
+            resident_bytes: actions.resident_bytes() + self.thoughts.lock().resident_bytes(),
             candidates,
         }
     }

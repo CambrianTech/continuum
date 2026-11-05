@@ -290,12 +290,12 @@ fn an_old_snapshot_without_acts_restores_without_panic() {
     // count — restore ALSO appends a `[resumed]` wake-orientation fact by design,
     // #147/#165: a restore IS an interruption, so she wakes oriented, never blank).
     let texts = fresh.recent();
-    assert!(
-        texts
-            .iter()
-            .any(|t| t.contains("thinking about the tokenizer")),
-        "the legacy thought restored"
+    assert_eq!(
+        fresh.thoughts().into_iter().map(|record| record.text).collect::<Vec<_>>(),
+        ["thinking about the tokenizer"],
+        "the legacy ring thought restored into her thought log"
     );
+    assert!(!texts.iter().any(|t| t.contains("thinking about the tokenizer")), "and left the ring");
     assert!(
         texts.iter().any(|t| t.contains("[action #1] code/list")),
         "the legacy receipt restored"

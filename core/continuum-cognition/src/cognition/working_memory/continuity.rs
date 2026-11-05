@@ -209,6 +209,7 @@ impl WorkingMemory {
                 .map(|d| d.label.clone())
                 .collect(),
             actions: records,
+            thoughts: self.thoughts(),
             context_view: self.view.lock().clone(),
             receipt_children: self.receipt_children.lock().clone(),
             open_views: self.open_views.lock().saved(),
@@ -254,6 +255,22 @@ impl WorkingMemory {
                 snap.entries.insert(index.min(snap.entries.len()), entry);
             }
         }
+        // Her thoughts first, under their own occurrences, so the entries restored below take
+        // theirs after them. A checkpoint from before the log carries them as `Thought` entries:
+        // they move into it, oldest first.
+        let mut thoughts = std::mem::take(&mut snap.thoughts);
+        let mut next = thoughts.iter().map(|record| record.occurrence + 1).max().unwrap_or(1); // unwrap_or: no thought checkpointed, the sequence starts at its first
+        snap.entries.retain(|entry| {
+            if entry.kind != WmKind::Thought {
+                return true;
+            }
+            thoughts.push(super::thought_log::ThoughtRecord { occurrence: next, text: entry.text.clone(), at_ms: snap.saved_at_ms });
+            next += 1;
+            false
+        });
+        let log = super::thought_log::ThoughtLog::from_records(thoughts);
+        self.next_entry_seq.fetch_max(log.next_occurrence(), Ordering::Relaxed);
+        *self.thoughts.lock() = log;
         {
             let mut e = self.entries.lock();
             e.clear();

@@ -134,6 +134,16 @@ impl ActionLog {
         self.records.iter()
     }
 
+    /// The commands each act since `since_ms` called, in order, oldest act first (an act's
+    /// `operation` names its calls). A record from a build before `received_ms` was kept counts as
+    /// before any boundary.
+    pub fn operations_since(&self, since_ms: u64) -> impl Iterator<Item = &str> {
+        self.records
+            .iter()
+            .filter(move |record| record.received_ms.is_some_and(|at| at >= since_ms))
+            .flat_map(|record| record.operation.split(", "))
+    }
+
     /// Results retained whole, oldest first.
     pub fn retained(&self) -> impl Iterator<Item = &ActionRecord> {
         self.records.iter().filter(|record| record.result.is_some())

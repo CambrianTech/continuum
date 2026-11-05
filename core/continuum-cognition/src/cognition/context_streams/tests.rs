@@ -246,6 +246,33 @@ fn her_folded_acts_name_their_range_and_count_in_one_line() {
     assert!(actions.fold(&[item("banner")]).is_none(), "a run that is not acts names nothing");
 }
 
+// what this catches: her newest thought dropped or cut when her thoughts outgrow their grant, or
+// a level chosen by the source instead of the allocation. Each thought is its own item with its
+// levels: a start that grants less than all of them shows her newest whole and the older ones at
+// the level the grant affords (their summary or pointer), and a start that grants every whole
+// shows every one whole.
+#[test]
+fn her_newest_thought_is_whole_and_the_allocation_levels_the_older_ones() {
+    use continuum_context::view::{Claim, Level, View};
+    let memory = WorkingMemory::new(2);
+    for n in 0..12 {
+        memory.record(&format!("thought {n}: {}", "weighing the parser branch and its index. ".repeat(30)));
+    }
+    let newest = "thought 12: so the fix is at checks.py:118, include the index in the label";
+    memory.record(newest);
+    let thoughts = super::thoughts::Thoughts { memory: &memory, persona: uuid::Uuid::nil() };
+    let levels = |grant: &dyn Fn(&[Claim]) -> Vec<usize>| {
+        let (view, _) = View::start(Vec::new(), &[&thoughts as &dyn Source<_>], grant).unwrap(); // unwrap: one grant per claim cannot mismatch
+        let text = view.render().map(|m: &super::ContextMessage| m.text.clone()).collect::<Vec<_>>().join("\n");
+        (text, view.receipt().items.into_iter().map(|item| item.level).collect::<Vec<Level>>())
+    };
+    let (text, tight) = levels(&|claims: &[Claim]| claims.iter().map(|claim| claim.newest_chars + claim.floor_chars).collect());
+    assert!(text.contains(newest), "her newest thought is whole: {text}");
+    assert!(tight.iter().any(|level| *level != Level::Full), "a tight grant shows older thoughts smaller: {tight:?}");
+    let (_, roomy) = levels(&|claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect());
+    assert!(roomy.iter().all(|level| *level == Level::Full), "a grant of every whole shows every one whole: {roomy:?}");
+}
+
 // what this catches: a repeated settlement collapsing into the earlier one because thoughts were
 // keyed by their text: she settled passed, failed, passed and her view read passed once and
 // failed once, so her latest state looked like "failed" (found porting e731576c, 2026-10-31).

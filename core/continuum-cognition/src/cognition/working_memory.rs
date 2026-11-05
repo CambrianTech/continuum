@@ -272,6 +272,9 @@ pub struct WorkingMemory {
     /// of a code read is broken code), and the handle that reopens it once collapsed
     /// (2026-08-24: collapse, never delete). One record per act, so one act has one key.
     actions: Mutex<action_log::ActionLog>,
+    /// Her thoughts, one record each ([`thought_log`]), kept whole and checkpointed like her
+    /// actions: a thought outlives the `entries` ring and a restart, and her view sizes it.
+    thoughts: Mutex<thought_log::ThoughtLog>,
     /// Her context view as her last act left it (`llm_deliberation_faculty/prompt/epoch.rs`),
     /// kept here so it is checkpointed with the rest of her volatile mind: restored after a
     /// restart it renders the same bytes, and the engine's saved page for them still matches,
@@ -312,7 +315,8 @@ pub struct WorkingMemory {
 /// kind, never the string.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WmKind {
-    /// Chain-of-thought the persona produced (`record`).
+    /// Chain-of-thought, as a checkpoint written before her thought log carried it; a restore moves
+    /// it into the log (`thought_log`). Nothing records a new one.
     Thought,
     /// Public text authored alongside native tool calls, scoped to their activity.
     ActionStatement { room: Uuid },
@@ -426,6 +430,10 @@ pub struct VolatileSnapshot {
     /// for another build: this is the first version, Joel 2026-10-31).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) actions: Vec<action_log::ActionRecord>,
+    /// Her thoughts, whole ([`thought_log`]). A checkpoint from before them carries her thoughts
+    /// as `entries` of kind `Thought`; a restore moves those into the log.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thoughts: Vec<ThoughtRecord>,
     /// Her context view ([`WorkingMemory`]'s `view`), derived: absent, or no longer decodable
     /// (`derived::or_none`), her first act after the restore starts a new one.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "derived::or_none")]
@@ -606,10 +614,12 @@ mod continuity;
 mod ledger;
 mod perception;
 mod residency;
+mod thought_log;
 
 pub use action_log::ActOutputRefusal;
 pub(crate) use ledger::operation_level;
 pub(crate) use residency::{ResidentResults, ShedCandidate};
+pub use thought_log::ThoughtRecord;
 
 impl Drop for WorkingMemory {
     /// A mind that is gone points at nothing: its saved results may be evicted again.
