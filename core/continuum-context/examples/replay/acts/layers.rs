@@ -86,7 +86,7 @@ impl Layer {
 }
 
 /// Tags that open a message, and the layer each opens.
-const TAGS: [(&str, Layer); 23] = [
+const TAGS: &[(&str, Layer)] = &[
     ("[result #", Layer::ResultWhole), // refined by its level below
     ("[occurred ", Layer::Conversation),
     ("[Room message received", Layer::Conversation),
