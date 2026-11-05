@@ -81,6 +81,11 @@ pub struct GrantHandoff {
 }
 
 impl GrantHandoff {
+    #[cfg(test)]
+    pub(crate) fn for_test(persona: uuid::Uuid) -> Self {
+        Self { persona, lease: GrantLease { tokens: 60, revision: super::GrantRevision::test(1),
+            engine: None, owner: super::GrantOwner::this_process() }, receipt: 1 }
+    }
     pub fn persona(&self) -> uuid::Uuid { self.persona }
     pub fn lease(&self) -> GrantLease { self.lease }
 }
@@ -103,6 +108,7 @@ struct ReservationState {
     next_receipt: u64,
     receipts: BTreeMap<uuid::Uuid, (Option<EngineIncarnation>, u64)>,
     retiring: BTreeMap<uuid::Uuid, GrantLease>,
+    reclaimed: BTreeMap<uuid::Uuid, GrantLease>,
 }
 
 /// The reservations and terminal progress share one lock: a publisher cannot observe a
@@ -114,7 +120,7 @@ pub(super) struct Reservations {
 impl Reservations {
     pub(super) const fn new() -> Self {
         Self { held: std::sync::Mutex::new(ReservationState {
-            next_id: 0, entries: BTreeMap::new(), next_receipt: 0, receipts: BTreeMap::new(), retiring: BTreeMap::new(),
+            next_id: 0, entries: BTreeMap::new(), next_receipt: 0, receipts: BTreeMap::new(), retiring: BTreeMap::new(), reclaimed: BTreeMap::new(),
         }) }
     }
 
@@ -168,6 +174,7 @@ impl Reservations {
         held.entries.retain(|_, entries| !entries.is_empty());
         held.receipts.retain(|_, (incarnation, _)| *incarnation == engine);
         held.retiring.retain(|_, lease| lease.engine == engine);
+        held.reclaimed.retain(|_, lease| lease.engine == engine);
         let mut reserved: BTreeMap<uuid::Uuid, u32> = held.entries.iter().map(|(mind, entries)| {
             (*mind, entries.iter().map(|e| e.tokens).max().unwrap_or(0)) // unwrap_or: empty entries were removed above
         }).collect();
@@ -294,6 +301,22 @@ pub fn honoring_reservations_and_receipts<R>(
 /// "release retirement" API: the physical save-and-erase receipt integration is still required.
 pub fn begin_grant_handoff(persona: uuid::Uuid, leased: GrantLease, receipt: u64) -> Result<GrantHandoff, HandoffRefused> {
     RESERVATIONS.begin_handoff(persona, leased, receipt, || super::current_lease(persona))
+}
+
+/// A physical proof is retained even if the operation's requester disappeared. The charged
+/// retirement is NOT released here: the publisher must consume it with the next grant update.
+pub(crate) fn record_reclaimed_grant(proof: crate::inference::slots::grant_handoff::ReclaimedGrant) -> Result<(), String> {
+    let ticket = proof.into_ticket();
+    let mut state = RESERVATIONS.lock();
+    if !state.retiring.get(&ticket.persona).is_some_and(|lease| lease.same_identity(&ticket.lease)) {
+        return Err("reclaimed grant was already fenced or replaced".into());
+    }
+    state.reclaimed.insert(ticket.persona, ticket.lease);
+    Ok(())
+}
+
+pub(crate) fn is_grant_retiring(persona: uuid::Uuid) -> bool {
+    RESERVATIONS.lock().retiring.contains_key(&persona)
 }
 
 /// One dispatch ATTEMPT's reservation, re-made before every POST: the previous attempt's (never

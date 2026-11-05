@@ -30,6 +30,17 @@ static GATES: LazyLock<Mutex<HashMap<PageKey, Weak<Semaphore>>>> = LazyLock::new
 /// The right to run one act of a mind. Dropping it lets the next queued act of that mind run.
 pub(crate) struct MindTurn {
     _permit: OwnedSemaphorePermit,
+    _custody: tokio::sync::OwnedRwLockReadGuard<()>,
+}
+
+static CUSTODY: LazyLock<Mutex<HashMap<uuid::Uuid, Weak<tokio::sync::RwLock<()>>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+fn custody(persona: uuid::Uuid) -> Arc<tokio::sync::RwLock<()>> {
+    let mut owners = CUSTODY.lock();
+    if let Some(owner) = owners.get(&persona).and_then(Weak::upgrade) { return owner; }
+    owners.retain(|_, owner| owner.strong_count() > 0);
+    let owner = Arc::new(tokio::sync::RwLock::new(()));
+    owners.insert(persona, Arc::downgrade(&owner));
+    owner
 }
 
 /// The gate of `key`, made on first use; dead entries are swept on the way.
@@ -48,13 +59,49 @@ impl MindTurn {
     /// Wait for `key`'s running act (and every act queued before this one) to finish.
     /// Nothing closes a gate, so the error is unreachable; it is a refusal, never a panic.
     pub(crate) async fn begin(key: PageKey) -> Result<MindTurn, String> {
+        let read = custody(key.persona()).read_owned().await;
+        if crate::capacity::window_grant::is_grant_retiring(key.persona()) {
+            return Err("resident grant is transferring physical custody".into());
+        }
         let permit = gate(key).acquire_owned().await.map_err(|_| format!("the act gate of {key} was closed"))?;
-        Ok(MindTurn { _permit: permit })
+        if crate::capacity::window_grant::is_grant_retiring(key.persona()) {
+            return Err("resident grant began transferring while queued".into());
+        }
+        Ok(MindTurn { _permit: permit, _custody: read })
+    }
+
+    /// All page users of this persona (including forks) drain before physical reclamation.
+    pub(crate) async fn reclaim(persona: uuid::Uuid) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        custody(persona).write_owned().await
     }
 
     /// The act now, or `None` when the mind is mid-act (best-effort callers such as
     /// warm-ahead: a mind mid-act already has her KV in a slot).
     pub(crate) fn try_begin(key: PageKey) -> Option<MindTurn> {
-        gate(key).try_acquire_owned().ok().map(|permit| MindTurn { _permit: permit })
+        let read = custody(key.persona()).try_read_owned().ok()?;
+        if crate::capacity::window_grant::is_grant_retiring(key.persona()) { return None; }
+        gate(key).try_acquire_owned().ok().map(|permit| MindTurn { _permit: permit, _custody: read })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn reclaim_drains_forks_and_bars_new_page_users_without_stopping_other_minds() {
+        let persona = uuid::Uuid::new_v4();
+        let fork = PageKey::fork(persona, uuid::Uuid::new_v4()).expect("fork");
+        let active = MindTurn::begin(fork).await.expect("active fork");
+        let reclaim = MindTurn::reclaim(persona);
+        tokio::pin!(reclaim);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut reclaim).await.is_err());
+        let other = PageKey::mind(uuid::Uuid::new_v4()).expect("other mind");
+        assert!(MindTurn::try_begin(other).is_some(), "unrelated residents keep running");
+        drop(active);
+        let reclaimed = tokio::time::timeout(std::time::Duration::from_secs(1), reclaim).await.expect("writer progresses");
+        assert!(MindTurn::try_begin(fork).is_none());
+        assert!(MindTurn::try_begin(PageKey::mind(persona).expect("mind")).is_none());
+        drop(reclaimed);
+        assert!(MindTurn::try_begin(fork).is_some());
     }
 }
