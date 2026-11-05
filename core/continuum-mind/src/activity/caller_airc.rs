@@ -198,7 +198,7 @@ pub struct ActivityInviteParams {
     pub members: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, TS)]
 pub struct ActivityInviteResult {
     /// Members now subscribed (idempotent — already-in counts as joined).
     pub joined: Vec<String>,

@@ -148,7 +148,7 @@ crate::action_command! {
         let caller = ctx.caller.as_ref();
         let target_id = match p.persona_id.as_ref().map(|r| r.as_str()) {
             Some(raw) => crate::persona::persona_scope::persona_in(raw, &crate::persona::persona_scope::PersonaCards)
-                .map_err(|e| CommandError::Invalid(e.to_string()))?,
+                .map_err(|e| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::id("persona_id", e)))?,
             None => caller
                 .map(|c| c.peer_id.as_uuid())
                 .ok_or_else(|| CommandError::Invalid(

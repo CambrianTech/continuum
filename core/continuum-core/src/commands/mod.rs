@@ -45,6 +45,7 @@ pub mod keys;
 pub mod log;
 pub mod mcp;
 pub mod memory;
+mod native_outcomes;
 pub use continuum_store::commands::migration;
 pub use continuum_models::commands as models;
 pub mod persona;

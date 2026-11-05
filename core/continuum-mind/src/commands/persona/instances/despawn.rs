@@ -108,7 +108,7 @@ crate::action_command! {
         //    UUID expands against who's online. Airc's Shown reading
         //    (#164), candidates = the live runtime registry — same as instances/get.
         let persona_id = crate::persona::persona_scope::persona_in(p.persona_id.as_str(), &this.registry)
-        .map_err(|e| CommandError::Invalid(format!("{e} — call persona/instances/list")))?;
+        .map_err(|e| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::id("persona_id", e)))?;
 
         // 2. Dormant first: a despawn that lands without its record is undone by the next
         //    restart, the exact failure this option exists to end.
@@ -214,6 +214,15 @@ mod tests {
             .run(&Ctx::default(), params)
             .await
             .expect_err("malformed id must fail loud");
-        assert!(matches!(err, CommandError::Invalid(_)), "got {err:?}");
+        assert!(
+            matches!(
+                err,
+                CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::Field(crate::sdk_codegen::FieldRefusal {
+                    problem: crate::sdk_codegen::FieldProblem::Id(airc_core::shown_id::ShownIdError::NotAnId { .. }),
+                    ..
+                }))
+            ),
+            "airc's typed id refusal, kept whole: {err:?}"
+        );
     }
 }

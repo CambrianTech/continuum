@@ -133,51 +133,59 @@
     use crate::sdk_codegen::{AccessLevel, Ctx};
     use dashmap::DashMap;
 
-    // what this catches: code/edit forgives the ways a model mis-calls it (glass-boxed: a 14B
-    // sent edit_mode:"append" as a bare string) — strict tagged object still works, a bare mode
-    // string + top-level fields is accepted, the mode is inferred from present fields, and a
-    // MISSING required field fails loud NAMING it (never a silent no-op that scores false-zero).
+    fn edit_call(v: serde_json::Value) -> Result<CodeEditParams, crate::sdk_codegen::ArgumentsRefusal> {
+        crate::runtime::CommandRequest::<CodeEditParams>::decode(&v).map(|req| req.params)
+    }
+
+    fn refused_at(v: serde_json::Value) -> (String, crate::sdk_codegen::FieldProblem) {
+        match edit_call(v) {
+            Err(crate::sdk_codegen::ArgumentsRefusal::Field(refusal)) => (refusal.path.to_string(), refusal.problem),
+            other => panic!("expected a field refusal, got {other:?}"),
+        }
+    }
+
+    // what this catches: code/edit's parser drifting from the schema she is shown. The tagged
+    // object decodes, and every shape the old normalizer guessed at (a bare mode string, a mode inferred from top-level fields) is a
+    // typed refusal naming `edit_mode`, never a guess that edits the wrong thing.
     #[test]
-    fn code_edit_normalizes_forgiving_shapes_and_fails_loud() {
-        let mk =
-            |v: serde_json::Value| serde_json::from_value::<CodeEditParams>(v).expect("params");
-        // (1) strict tagged object — unchanged
-        let m = normalize_edit_mode(&mk(serde_json::json!({
-            "file_path": "a.py", "edit_mode": {"type":"append","content":"X"}
-        })))
+    fn code_edit_decodes_its_schema_and_refuses_every_guessed_shape() {
+        let p = edit_call(serde_json::json!({ "file_path": "a.py", "edit_mode": {"type":"append","content":"X"} })).unwrap();
+        assert!(matches!(p.edit_mode, EditMode::Append { content } if content == "X"));
+        let p = edit_call(serde_json::json!({
+            "file_path": "a.py", "edit_mode": {"type":"search_replace","search":"o","replace":"n","all":true}
+        }))
         .unwrap();
-        assert!(matches!(m, EditMode::Append { content } if content == "X"));
-        // (2) bare mode string + top-level content
-        let m = normalize_edit_mode(&mk(serde_json::json!({
-            "file_path": "a.py", "edit_mode": "append", "content": "Y"
-        })))
-        .unwrap();
-        assert!(matches!(m, EditMode::Append { content } if content == "Y"));
-        // (3) bare "search_replace" + top-level fields
-        let m = normalize_edit_mode(&mk(serde_json::json!({
-            "file_path": "a.py", "edit_mode": "search_replace", "search": "old", "replace": "new"
-        })))
-        .unwrap();
-        assert!(
-            matches!(m, EditMode::SearchReplace { search, replace, .. } if search=="old" && replace=="new")
-        );
-        // (4) inferred from present fields (no edit_mode at all)
-        let m = normalize_edit_mode(&mk(serde_json::json!({
-            "file_path": "a.py", "search": "o", "replace": "n"
-        })))
-        .unwrap();
-        assert!(matches!(m, EditMode::SearchReplace { .. }));
-        // (5) bare "append" with NO content → loud error naming the missing field (the exact
-        //     glass-boxed failure: edit_mode:"append", no content).
-        let err = normalize_edit_mode(&mk(serde_json::json!({
-            "file_path": "a.py", "edit_mode": "append"
-        })))
-        .unwrap_err();
-        assert!(matches!(&err, CommandError::Arguments(_)), "missing edit fields need argument recovery: {err}");
-        assert!(
-            format!("{err}").contains("content"),
-            "names the missing field: {err}"
-        );
+        assert!(matches!(p.edit_mode, EditMode::SearchReplace { search, replace, all: true } if search == "o" && replace == "n"));
+        // A name the schema does not publish is refused by the field it is missing, with what
+        // she sent: the parser accepts exactly what the schema says.
+        let (path, problem) = refused_at(serde_json::json!({
+            "file_path": "a.py", "edit_mode": {"type":"search_replace","old_string":"o","new_string":"n"}
+        }));
+        assert_eq!(path, "edit_mode.search");
+        assert!(matches!(problem, crate::sdk_codegen::FieldProblem::Missing { .. }), "{problem:?}");
+
+        let (path, problem) = refused_at(serde_json::json!({ "file_path": "a.py", "edit_mode": "append", "content": "Y" }));
+        assert_eq!(path, "edit_mode");
+        assert!(matches!(problem, crate::sdk_codegen::FieldProblem::WrongType { .. }), "{problem:?}");
+        let (path, problem) = refused_at(serde_json::json!({ "file_path": "a.py", "search": "o", "replace": "n" }));
+        assert_eq!(path, "edit_mode");
+        assert!(matches!(problem, crate::sdk_codegen::FieldProblem::Missing { .. }), "{problem:?}");
+    }
+
+    // what this catches: a line range defaulted where she gave none. The old normalizer read a
+    // missing start as line 1 and a missing end as u32::MAX, so `{end_line: 603, new_content}`
+    // replaced from the top of the file; a range without both ends is now refused by name.
+    #[test]
+    fn a_line_range_without_both_ends_is_refused_naming_the_end() {
+        let (path, problem) = refused_at(serde_json::json!({
+            "file_path": "src/main.rs", "edit_mode": {"type": "line_range", "end_line": 65535, "new_content": "fn main() {}"}
+        }));
+        assert_eq!(path, "edit_mode.start_line");
+        assert!(matches!(problem, crate::sdk_codegen::FieldProblem::Missing { .. }), "{problem:?}");
+        let (path, _) = refused_at(serde_json::json!({
+            "file_path": "src/main.rs", "edit_mode": {"type": "line_range", "start_line": 1, "new_content": "x"}
+        }));
+        assert_eq!(path, "edit_mode.end_line");
     }
 
     // what this catches: the edit tool advertised as `edit_mode: {allOf: [{$ref}], ...}`,
@@ -194,97 +202,65 @@
         assert_eq!(edit_mode["description"], "Operation to apply.", "its doc survives the fold");
     }
 
+    // what this catches: code/edit's PUBLISHED schema and its parser disagreeing. Every
+    // alternative of the advertised `edit_mode` is built from the schema alone (its tag, and a
+    // value of the declared type for each required field) and must decode; the manual's own
+    // fill-in example must decode and land through the real executor.
     #[test]
-    fn generated_edit_recovery_contains_a_normalizable_operation() {
-        let schema = serde_json::to_value(schemars::schema_for!(CodeEditParams)).unwrap();
+    fn code_edit_published_schema_round_trips_through_its_parser() {
+        let schema = crate::sdk_codegen::input_schema::<CodeEditParams>();
         assert!(schema["required"].as_array().unwrap().contains(&serde_json::json!("edit_mode")));
-        assert_eq!(schema["properties"].as_object().unwrap().len(), 3,
-            "legacy fallback fields must not duplicate the canonical operation schema");
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 3, "file_path, edit_mode, description");
+        let alternatives = schema["definitions"]["EditMode"]["oneOf"].as_array().expect("EditMode is a oneOf");
+        for alternative in alternatives {
+            let mut op = serde_json::Map::new();
+            for field in alternative["required"].as_array().unwrap() {
+                let field = field.as_str().unwrap();
+                let spec = &alternative["properties"][field];
+                let value = match (spec["enum"].as_array(), spec["type"].as_str()) {
+                    (Some(tags), _) => tags[0].clone(),
+                    (None, Some("string")) => serde_json::json!("x"),
+                    (None, Some("integer")) => serde_json::json!(1),
+                    (None, Some("boolean")) => serde_json::json!(false),
+                    other => panic!("an edit field of a type this test does not build: {other:?}"),
+                };
+                op.insert(field.to_string(), value);
+            }
+            let call = serde_json::json!({ "file_path": "a.rs", "edit_mode": op });
+            edit_call(call.clone()).unwrap_or_else(|refusal| panic!("the schema's own alternative {call} is refused: {refusal}"));
+        }
+
         let manual = crate::sdk_codegen::ai_help::render_ai_help("code/edit", "edit", &schema);
         let envelope = manual.split_once("\n{").unwrap().1;
         let envelope = format!("{{{}", envelope.split_once("\n\nArguments:").unwrap().0);
         let envelope: serde_json::Value = serde_json::from_str(&envelope).unwrap();
-        let mut params: CodeEditParams = serde_json::from_value(envelope["tool_call"]["arguments"].clone()).unwrap();
+        let mut params = edit_call(envelope["tool_call"]["arguments"].clone()).expect("the manual's example decodes");
         // Fill the path blank; retain the generated numeric addresses unchanged and
         // exercise the real executor, which rejects zero-based line positions.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("example.txt"), "original\n").unwrap();
         params.file_path = "example.txt".into();
         let engine = crate::code::FileEngine::new("edit-help-fixture", crate::code::PathSecurity::new(dir.path()).unwrap());
-        let edit = CanonicalEdit::try_from(params).expect("generated recovery must resolve an operation");
-        assert!(engine.edit(&edit.file_path, &edit.edit_mode, edit.description.as_deref()).unwrap().success);
+        assert!(engine.edit(&params.file_path, &params.edit_mode, params.description.as_deref()).unwrap().success);
         assert_ne!(std::fs::read_to_string(dir.path().join("example.txt")).unwrap(), "original\n");
         for name in ["line_range", "search_replace", "insert_at", "append"] {
             assert!(manual.contains(name), "operation alternative missing: {name}");
         }
-        let path_only: CodeEditParams = serde_json::from_value(serde_json::json!({"file_path":"x"})).unwrap();
-        assert!(matches!(normalize_edit_mode(&path_only), Err(CommandError::Arguments(_))));
     }
 
-    // what this catches: THE live edit-stall (2026-07-14). Devstral personas
-    // emitted edit_mode as a NESTED, untyped object with the line numbers inside
-    // it and NO start_line — `{"edit_mode":{"end_line":65535,"new_content":"…"}}`
-    // — their reflexive "replace the whole file" shape. The old normalizer read
-    // start/end only from top-level, missed them, and failed `needs start_line`;
-    // personas re-emitted the identical call forever and never reached run. The
-    // nested numbers must resolve and the missing start_line must default to 1.
+    // what this catches: a refused edit rendering as a success. `code/edit` and `code/write`
+    // projected no outcome, so `WriteResult { success: false }` took the success arm (Benchy,
+    // the M5, 2026-11-05 on 0b2854327: one of five writes landed, every refusal ticked).
     #[test]
-    fn code_edit_forgives_nested_lines_and_the_reflexive_whole_file_shape() {
-        let mk =
-            |v: serde_json::Value| serde_json::from_value::<CodeEditParams>(v).expect("params");
-
-        // (a) nested end_line + new_content, no start_line → LineRange{1, 65535, …}
-        let m = normalize_edit_mode(&mk(serde_json::json!({
-            "file_path": "src/main.rs",
-            "edit_mode": {"end_line": 65535, "new_content": "fn main() {}"}
-        })))
-        .unwrap();
-        match m {
-            EditMode::LineRange {
-                start_line,
-                end_line,
-                new_content,
-            } => {
-                assert_eq!(start_line, 1);
-                assert_eq!(end_line, 65535);
-                assert_eq!(new_content, "fn main() {}");
-            }
-            other => panic!("expected LineRange, got {other:?}"),
+    fn a_refused_edit_projects_as_a_failure() {
+        let refused = serde_json::json!({ "success": false, "file_path": "a.rs", "bytes_written": 0, "error": "no match" });
+        let landed = serde_json::json!({ "success": true, "file_path": "a.rs", "bytes_written": 3 });
+        for name in ["code/edit", "code/write"] {
+            let (verdict, _) = crate::sdk_codegen::project_result(name, &refused);
+            assert!(verdict.failed(), "{name}: a refused write is a failure, got {verdict:?}");
+            let (verdict, _) = crate::sdk_codegen::project_result(name, &landed);
+            assert!(verdict.succeeded(), "{name}: a landed write is a success, got {verdict:?}");
         }
-
-        // (b) ONLY new_content (no lines at all) → whole-file replace: start 1, end MAX
-        let m = normalize_edit_mode(&mk(serde_json::json!({
-            "file_path": "src/main.rs", "new_content": "whole new file"
-        })))
-        .unwrap();
-        match m {
-            EditMode::LineRange {
-                start_line,
-                end_line,
-                ..
-            } => {
-                assert_eq!(start_line, 1);
-                assert_eq!(end_line, u32::MAX);
-            }
-            other => panic!("expected LineRange, got {other:?}"),
-        }
-
-        // (c) nested line for insert_at resolves from inside edit_mode too
-        let m = normalize_edit_mode(&mk(serde_json::json!({
-            "file_path": "a.py", "edit_mode": {"line": 3, "content": "x"}
-        })))
-        .unwrap();
-        assert!(matches!(m, EditMode::InsertAt { line, .. } if line == 3));
-
-        // (d) still loud when there's genuinely nothing to write
-        let err = normalize_edit_mode(&mk(serde_json::json!({
-            "file_path": "a.py", "edit_mode": {"end_line": 10}
-        })))
-        .unwrap_err();
-        assert!(
-            format!("{err}").contains("new_content"),
-            "names missing field: {err}"
-        );
     }
 
     // what this catches: the code/list glob-recovery (#160). A model that reflexively

@@ -94,8 +94,9 @@ impl crate::sdk_codegen::ProjectsOutcome for VerdictProbe {
     }
 }
 
-crate::register_stateless_command!(VerdictProbe);
 crate::register_outcome!(VerdictProbe);
+
+crate::register_stateless_command!(VerdictProbe);
 
 /// Dispatch through the REAL batch path and hand back the receipt plus the
 /// typed carrier, correlated the way the act seam correlates them.
@@ -200,7 +201,8 @@ async fn unknown_tool_name_fails_loud_never_silent() {
         );
         // The recovery affordance rides back in the same observation.
         assert!(
-            content.contains("commands/help") || content.contains("not a tool"),
+            // `write_file` is code/write's alias: its arguments are refused typed, with the manual.
+            content.contains("commands/help") || content.contains("not a tool") || content.contains("Here is the correct call"),
             "'{bogus}' feedback must point at discovery so she recovers: {content}"
         );
     }
@@ -250,6 +252,51 @@ async fn required_args_missing_fails_loud_across_the_stateless_surface() {
         "no stateless AiSafe command with required params was examined — the filter \
          is broken; the exam checked nothing"
     );
+}
+
+/// One call through the real batch path, by its tool input: (is_error, content, verdict).
+async fn dispatch_input(input: serde_json::Value) -> (Option<bool>, String, crate::sdk_codegen::ActVerdict) {
+    let exec = stateless_surface_hands();
+    let calls = vec![NativeToolCall { id: "vp".to_string(), name: "test/verdict-probe".to_string(), input }];
+    let out = exec.execute_native_batch(&calls, &ctx()).await.expect("batch itself succeeds");
+    let r = out.results.iter().find(|r| r.tool_use_id == "vp").expect("result correlates by tool_use_id");
+    let v = out.verdicts.iter().find(|v| v.tool_use_id == "vp").map(|v| v.verdict).unwrap_or_default(); // JUSTIFIED: absence means unprojected
+    (r.is_error, r.content.clone(), v)
+}
+
+// what this catches: a malformed call (arguments that are not JSON) running as a params object
+// that holds only the engine's marker, and refused as "missing field `mode`": a story about a
+// field she wrote, with the parse error and her raw text dropped (Benchy, the M5, 2026-11-05).
+// It is refused before dispatch, typed, naming what broke and carrying her text whole.
+#[tokio::test]
+async fn a_malformed_call_is_refused_as_malformed_never_as_a_missing_field() {
+    let raw = r#"{"mode":"ok"#;
+    let input = crate::runtime::arguments::UnparsedArguments::Malformed {
+        parse_error: "EOF while parsing a string at line 1 column 11".into(),
+        raw: raw.into(),
+    }
+    .into_input();
+    let (is_error, content, verdict) = dispatch_input(input).await;
+    assert_eq!(is_error, Some(true));
+    assert!(verdict.failed(), "{verdict:?}");
+    assert!(content.contains("not valid JSON") && content.contains(raw), "names what broke, keeps her text: {content}");
+    assert!(!content.contains("missing field") && !content.contains("is required"), "never a missing-field story: {content}");
+    assert!(content.contains("retry"), "a malformed call's next move is a retry with the manual: {content}");
+
+    let cut = crate::runtime::arguments::UnparsedArguments::Cut { raw: raw.into() }.into_input();
+    let (_, content, _) = dispatch_input(cut).await;
+    assert!(content.contains("output limit") && !content.contains("Here is the correct call"), "a cut offers no retry: {content}");
+}
+
+// what this catches: a wrong-typed field reaching the command, or refused without naming the
+// field: the executor checks the call against the command's own params before it runs.
+#[tokio::test]
+async fn a_wrong_typed_field_is_refused_before_dispatch_naming_the_field() {
+    let (is_error, content, verdict) = dispatch_input(json!({ "mode": 5 })).await;
+    assert_eq!(is_error, Some(true));
+    assert!(verdict.failed(), "{verdict:?}");
+    assert!(content.contains("`mode` must be a string; you sent a number"), "{content}");
+    assert!(content.contains("Here is the correct call"), "her next move carries the manual: {content}");
 }
 
 /// Every command name core's own production source declares: the `name:` of an

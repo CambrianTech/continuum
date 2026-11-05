@@ -137,11 +137,14 @@ inventory::collect!(StatelessCommand);
 // payload the model needs to recover (for `code/run` that payload IS the compiler
 // stderr). The command PROJECTS its own typed result into an outcome.
 //
-// Opt-in BY SUBMISSION, the same way `StatelessCommand` above opts in: the
-// descriptor's `of::<C: CommandSpec>()` is generic over the base trait and cannot
-// see that `C` also implements [`ProjectsOutcome`] (Rust has no specialization),
-// so participation is a second inventory entry rather than a type test. A command
-// that submits nothing keeps today's behaviour byte for byte.
+// REQUIRED of every native tool (ONE-ACT 6b). A command projects by submitting an
+// [`OutcomeProjector`] (`register_outcome!`), because the descriptor's
+// `of::<C: CommandSpec>()` cannot see that `C` also implements [`ProjectsOutcome`] (Rust
+// has no specialization). `action_command!`'s `native: true` submits it itself, so a native
+// tool declared through the macro without a `ProjectsOutcome` does not compile; a hand-written
+// native command is held to it by [`natives_without_an_outcome`] (= 0). Before
+// this, `code/edit` and `code/write` projected nothing, so a refused edit (`success: false`)
+// rendered as a success tick (Benchy, the M5, 2026-11-05 on 0b2854327).
 
 /// What a tool call actually did, as its OWN typed result reports it.
 ///
@@ -160,6 +163,17 @@ pub enum ToolVerdict {
     Running,
 }
 
+impl ToolVerdict {
+    /// The verdict of a result that reports its own outcome as a `success` flag.
+    pub fn of_success(success: bool) -> Self {
+        if success {
+            ToolVerdict::Succeeded
+        } else {
+            ToolVerdict::Failed
+        }
+    }
+}
+
 /// What the act seam KNOWS about one call's outcome. Three states, because two
 /// would lie: "no projector" and "a projector that could not read its own result"
 /// are different facts, and collapsing them is what let schema drift render as a
@@ -167,7 +181,7 @@ pub enum ToolVerdict {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "verdict")]
 pub enum ActVerdict {
-    /// The command never opted in. Byte-for-byte the pre-projection behaviour —
+    /// The command declares no projection (a catalog command; every native tool projects):
     /// the transport arm alone decides, and nothing here claims anything.
     #[default]
     Unprojected,
@@ -209,18 +223,18 @@ impl ActVerdict {
     }
 }
 
-/// A command's opt-in projection from its own typed output to a [`ToolVerdict`].
+/// A command's projection from its own typed result to a [`ToolVerdict`]: required of every
+/// native tool.
 ///
-/// The `DeserializeOwned` bound lands HERE rather than on [`ActionCommand::Output`],
-/// so only commands that opt in pay it — every other command's output keeps the
-/// `TS + Serialize + Send` it has today.
-pub trait ProjectsOutcome: ActionCommand
+/// The `DeserializeOwned` bound lands HERE rather than on the result type, so only commands
+/// that project pay it.
+pub trait ProjectsOutcome: CommandSpec
 where
-    Self::Output: serde::de::DeserializeOwned,
+    <Self as CommandSpec>::Result: serde::de::DeserializeOwned,
 {
     /// Read this command's own typed result. No key scanning, no guessing: the
     /// field being read is one the command already declares and documents.
-    fn outcome(output: &Self::Output) -> ToolVerdict;
+    fn outcome(output: &<Self as CommandSpec>::Result) -> ToolVerdict;
 
     /// The long-running handle this result hands back, when it has one.
     ///
@@ -229,7 +243,7 @@ where
     /// find `execution_id` — against the FOLDED preview, and matching the command
     /// name by hand, so a `bash` alias missed it entirely and a flood-sized result
     /// failed to parse. Defaults to none; a command with no handle ignores it.
-    fn dispatch_handle(_output: &Self::Output) -> Option<uuid::Uuid> {
+    fn dispatch_handle(_output: &<Self as CommandSpec>::Result) -> Option<uuid::Uuid> {
         None
     }
 }
@@ -237,10 +251,8 @@ where
 /// One command's registered projector, keyed by the command name the executor
 /// already holds at dispatch.
 ///
-/// ONE function pointer, not two. An earlier draft had separate `project` and
-/// `handle` fns and a comment claiming the value was decoded once — it was decoded
-/// twice (Astra on #4352). Both facts come from the same `Output`, so they are read
-/// in a single decode and returned together.
+/// ONE function pointer, not two: both facts come from the same `Output`, so they are read
+/// in a single decode and returned together (Astra on #4352).
 pub struct OutcomeProjector {
     name: &'static str,
     read: fn(&serde_json::Value) -> (ActVerdict, Option<uuid::Uuid>),
@@ -270,6 +282,27 @@ impl OutcomeProjector {
 
 inventory::collect!(OutcomeProjector);
 
+/// `C`'s projection of a dispatched value: ONE decode of its declared result, both facts from
+/// it. A value that does not decode is schema drift ([`ActVerdict::Undecodable`]), never a
+/// success. What `register_outcome!(C)` submits.
+pub fn read_outcome<C>(value: &Value) -> (ActVerdict, Option<uuid::Uuid>)
+where
+    C: ProjectsOutcome,
+    <C as CommandSpec>::Result: serde::de::DeserializeOwned,
+{
+    match <<C as CommandSpec>::Result as Deserialize>::deserialize(value) {
+        Ok(output) => (ActVerdict::Declared(C::outcome(&output)), C::dispatch_handle(&output)),
+        Err(_) => (ActVerdict::Undecodable, None),
+    }
+}
+
+/// The projection of a command whose result carries no failure state: every failure it has is
+/// a refusal (`Err`), so a value it returns is the work done. What
+/// `register_outcome!(C, refusals_only)` submits: declared at the registration, like any outcome.
+pub fn read_refusals_only(_: &Value) -> (ActVerdict, Option<uuid::Uuid>) {
+    (ActVerdict::Declared(ToolVerdict::Succeeded), None)
+}
+
 /// The projector for `name`, or `None` when that command has not opted in.
 ///
 /// Callers MUST pass the CANONICAL name (`tool_dialect::resolve_wire_name`), never
@@ -279,6 +312,19 @@ pub fn outcome_projector(name: &str) -> Option<&'static OutcomeProjector> {
     inventory::iter::<OutcomeProjector>
         .into_iter()
         .find(|p| p.name == name)
+}
+
+/// Every native tool that does not say what its own result means (ONE-ACT 6b), by name: empty
+/// is conformant. `action_command!`'s `native: true` cannot appear here (it submits the
+/// projection, so a macro-declared native tool without a `ProjectsOutcome` does not compile);
+/// this holds the hand-written native commands to the same contract. Without it, `code/edit`'s
+/// refused edit (`success: false`) rendered as a success tick (Benchy, the M5, 2026-11-05).
+pub fn natives_without_an_outcome() -> Vec<&'static str> {
+    super::command_registry()
+        .into_iter()
+        .filter(|d| d.native && outcome_projector(d.name).is_none())
+        .map(|d| d.name)
+        .collect()
 }
 
 /// The act seam's ONE read of a dispatched result: resolve the canonical name,
@@ -331,7 +377,8 @@ pub trait ActionCommand: Send + Sync + Sized + 'static {
     /// Whether this command joins the persona's NATIVE tool surface (the bounded set
     /// given as full structured tool-call schemas every turn). Defaults `false`
     /// (catalog-only); a core agentic command overrides it to `true` — and then it's
-    /// offered natively AUTOMATICALLY, no central list. See [`CommandSpec::NATIVE`].
+    /// offered natively AUTOMATICALLY, no central list. See [`CommandSpec::NATIVE`]: a native
+    /// command must project its outcome (`register_outcome!`).
     const NATIVE: bool = false;
     /// The trained/former/expected names this command ANSWERS TO — the conventional
     /// tool-call names a model reaches for (`read_file`, `bash`), plus any FORMER

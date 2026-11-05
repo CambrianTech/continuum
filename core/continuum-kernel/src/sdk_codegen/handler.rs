@@ -40,6 +40,7 @@ use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 use uuid::Uuid;
 
+use crate::runtime::arguments::{ArgumentsRefusal, FieldProblem};
 use crate::runtime::cell_shapes::HandleRef;
 use crate::runtime::command_envelope::{CommandRequest, CommandResponse};
 use crate::runtime::CommandResult;
@@ -54,8 +55,9 @@ use super::{CommandSpec, WireShape};
 /// parsing prose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandError {
-    /// The request could not be decoded, or a required envelope argument is absent.
-    Arguments(String),
+    /// The arguments did not decode as the command's params, or a field failed a check past
+    /// its type: which field, and what it needed, typed.
+    Arguments(ArgumentsRefusal),
     /// A decoded request failed validation or a domain precondition.
     Invalid(String),
     /// A referenced resource (handle, id, session) was not found.
@@ -76,32 +78,26 @@ impl CommandError {
             CommandError::Internal(_) => "internal",
         }
     }
-
-    fn message(&self) -> &str {
-        match self {
-            CommandError::Arguments(m)
-            | CommandError::Invalid(m)
-            | CommandError::NotFound(m)
-            | CommandError::Denied(m)
-            | CommandError::Internal(m) => m,
-        }
-    }
-
-    /// Read our category at the refusal boundary, never a tag quoted in domain prose.
-    /// The transport preserves command errors as `command: [category] message`.
-    pub fn is_argument_refusal(command: &str, refusal: &str) -> bool {
-        let body = refusal.strip_prefix(command).and_then(|rest| rest.strip_prefix(": ")).unwrap_or(refusal);
-        body.starts_with("[arguments] ")
-    }
 }
 
 impl std::fmt::Display for CommandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}", self.category(), self.message())
+        match self {
+            CommandError::Arguments(refusal) => write!(f, "[{}] {refusal}", self.category()),
+            CommandError::Invalid(m) | CommandError::NotFound(m) | CommandError::Denied(m) | CommandError::Internal(m) => {
+                write!(f, "[{}] {m}", self.category())
+            }
+        }
     }
 }
 
 impl std::error::Error for CommandError {}
+
+impl From<ArgumentsRefusal> for CommandError {
+    fn from(refusal: ArgumentsRefusal) -> Self {
+        CommandError::Arguments(refusal)
+    }
+}
 
 /// Existing module helpers return `Result<T, String>`; `From<String>` lets an
 /// author `?` them straight into a handler without restating the error. A bare
@@ -155,7 +151,7 @@ impl Ctx {
     pub fn handle(&self) -> Result<HandleRef, CommandError> {
         self.handle
             .clone()
-            .ok_or_else(|| CommandError::Arguments("missing required `handle` on the request".into()))
+            .ok_or_else(|| CommandError::Arguments(ArgumentsRefusal::field("handle", FieldProblem::Missing { sent: None, sent_as: None })))
     }
 }
 
@@ -248,7 +244,7 @@ where
 {
     let name = <H::Spec as CommandSpec>::NAME;
     let req = CommandRequest::<<H::Spec as CommandSpec>::Params>::from_value(params)
-        .map_err(|e| format!("{name}: {}", CommandError::Arguments(e.to_string())))?;
+        .map_err(|e| format!("{name}: {}", CommandError::Arguments(e)))?;
     let ctx = Ctx {
         handle: req.handle,
         session_id: req.session_id,
@@ -522,6 +518,6 @@ pub mod tests {
             err.starts_with("test/echo-bare: [arguments]"),
             "named + categorized: {err}"
         );
-        assert!(CommandError::is_argument_refusal("test/echo-bare", &err));
+        assert!(err.contains("`text` must be a string"), "names the field and its type: {err}");
     }
 }

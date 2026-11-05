@@ -3,6 +3,7 @@
 use super::*;
 // The SSE wire types + stream consumer live in `crate::inference::sse_stream` (S3b decompose).
 use crate::inference::sse_stream::warn_if_decode_collapsed;
+use continuum_tool_protocol::UnparsedArguments;
 
 impl OpenAICompatibleAdapter {
     pub(super) async fn stream_checked(
@@ -633,28 +634,24 @@ impl OpenAICompatibleAdapter {
                     // the JSON. The turn showed a confusing downstream error instead of
                     // "your tool arguments were not valid JSON."
                     // [[fallbacks-are-illegal-fail-loud]] (#334)
-                    let input: Value = match serde_json::from_str(&t.arguments) {
+                    // The fate of a call whose arguments do not parse is decided HERE, the
+                    // one seam that knows why the generation stopped: the output limit cut
+                    // it (never a retry: the same call re-cuts), or she wrote bad JSON (a
+                    // retry). Typed in the call, so no reader infers it from a JSON EOF
+                    // (`continuum_tool_protocol::call_ending`, ONE-ACT 6b).
+                    let arg_len = t.arguments.len();
+                    let input: Value = match UnparsedArguments::parse(t.arguments, finish_reason.generation_end()) {
                         Ok(v) => v,
-                        Err(e) => {
+                        Err(unparsed) => {
                             continuum_base::probe!(
                                 class = "ai.tool_call.unparseable_args",
                                 tool = t.name.as_str(),
-                                error = e.to_string().as_str(),
-                                arg_len = t.arguments.len(),
-                                // The whole blob rides in the call's result below
-                                // (`__malformed_tool_arguments.raw`); the probe names its size.
+                                cut = matches!(unparsed, UnparsedArguments::Cut { .. }),
+                                arg_len,
+                                // The whole blob rides in the call's input below; the probe names its size.
                                 "model emitted tool arguments that are not valid JSON — the call cannot be honored as written",
                             );
-                            // Carry the parse error itself, under a SELF-DESCRIBING key,
-                            // so whatever rejects this call downstream can say what
-                            // actually went wrong instead of inventing a missing-field
-                            // story about params that were never parsed.
-                            json!({
-                                "__malformed_tool_arguments": {
-                                    "error": e.to_string(),
-                                    "raw": t.arguments,
-                                }
-                            })
+                            unparsed.into_input()
                         }
                     };
                     ToolCall {

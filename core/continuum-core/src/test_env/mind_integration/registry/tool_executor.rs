@@ -53,7 +53,7 @@ async fn an_unprojected_command_is_untouched_at_the_executor() {
     let exec = stateless_surface_hands();
     let calls = vec![NativeToolCall {
         id: "u".to_string(),
-        name: "commands/list".to_string(),
+        name: "ping".to_string(),
         input: json!({}),
     }];
     let out = exec
@@ -161,20 +161,3 @@ fn unknown_command_feedback_is_persona_actionable_not_dev_noise() {
     );
 }
 
-// what this catches: a bad-args refusal keeps the substrate's own field-naming
-// reason AND inlines the command's correct call shape — feedback that names the
-// problem and the fix in the SAME observation, no help-lookup turn (#1916).
-#[test]
-fn invalid_params_feedback_reinforces_help() {
-    let raw = "code/write: [arguments] missing field `filePath`".to_string();
-    let out = persona_tool_error("code/write", raw);
-    assert!(
-        out.contains("missing field `filePath`"),
-        "keeps the real cause: {out}"
-    );
-    assert!(
-        out.contains("fix your arguments and retry") || out.contains("commands/help"),
-        "must hand her the correct shape (inline manual) or the manual pointer: {out}"
-    );
-    assert!(out.contains("code/write"), "names the tool: {out}");
-}

@@ -7,9 +7,10 @@ export type CognitionPromptParams = {
  */
 persona_id: PersonaRef, 
 /**
- * How many recent LLM calls to return (newest last). Default 10, max 100.
+ * How many of the newest LLM calls to return (newest last): the caller's page, never a
+ * size this verb picks for her.
  */
-limit: number | null, 
+limit: number, 
 /**
  * Read the retained previous capture segment instead of the current one.
  */
