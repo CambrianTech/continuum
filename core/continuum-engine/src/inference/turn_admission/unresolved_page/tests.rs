@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use super::super::page_liveness::Condemnation;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};

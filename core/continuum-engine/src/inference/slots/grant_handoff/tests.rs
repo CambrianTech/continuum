@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use axum::{extract::{Path, Query, State}, routing::post, Json, Router};
 use serde_json::{json, Value};

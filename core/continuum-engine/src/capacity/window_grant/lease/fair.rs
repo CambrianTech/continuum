@@ -165,7 +165,7 @@ impl Reservations {
                         return None;
                     }
                     let (_, revision) = state.receipts.get(mind)?;
-                    if *revision <= fair.baseline.get(mind).copied().unwrap_or(0) {
+                    if *revision <= fair.baseline.get(mind).copied().unwrap_or(0) { // no grant baseline means no prior completed service
                         return None;
                     } // no service since grant
                     let lease = current.as_ref()?.lease_for(*mind)?;
