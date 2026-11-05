@@ -33,12 +33,12 @@ use uuid::Uuid;
 /// "nagging about last hour's board state".
 const REJECTION_FACT_TTL: Duration = Duration::from_secs(10 * 60);
 
-/// Ring cap per persona — a claim-storm must not flood perception; the
-/// newest few rejections carry all the signal.
-const MAX_PER_PERSONA: usize = 4;
-
+/// One rejection per card she named, the newest: a claim-storm on one card is one fact, and
+/// how many cards' facts she sees is her view's budget (each is a keyed item there), never a
+/// count decided here. The ring is bounded by the cards she tried within the TTL.
 struct Entry {
     at: Instant,
+    card_ref: String,
     line: String,
 }
 
@@ -64,11 +64,8 @@ fn record_at(persona: Uuid, card_ref: &str, error: &str, now: Instant) {
     );
     let Ok(mut map) = ring().lock() else { return };
     let entries = map.entry(persona).or_default();
-    entries.push(Entry { at: now, line });
-    if entries.len() > MAX_PER_PERSONA {
-        let overflow = entries.len() - MAX_PER_PERSONA;
-        entries.drain(..overflow);
-    }
+    entries.retain(|e| e.card_ref != card_ref && now.duration_since(e.at) < REJECTION_FACT_TTL);
+    entries.push(Entry { at: now, card_ref: card_ref.to_string(), line });
 }
 
 /// The persona's still-live rejection facts, newest last. Prunes expired
@@ -98,10 +95,10 @@ mod tests {
 
     // what this catches: the whole ring contract — a recorded rejection
     // renders for its TTL and ONLY for its persona, expires afterward
-    // (no eternal nag), and the per-persona cap drops oldest-first so a
-    // claim-storm cannot flood perception.
+    // (no eternal nag), and a claim-storm on one card is ONE fact (its
+    // newest), so repetition cannot flood perception.
     #[test]
-    fn rejections_render_per_persona_expire_and_cap() {
+    fn rejections_render_per_persona_expire_and_keep_one_per_card() {
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
         let t0 = Instant::now();
@@ -117,16 +114,17 @@ mod tests {
         // Past TTL: gone, and the persona's slot is cleaned up.
         assert!(recent_at(a, t0 + REJECTION_FACT_TTL + Duration::from_secs(1)).is_empty());
 
-        // Cap: 6 recorded → the newest MAX_PER_PERSONA survive.
+        // A storm on one card: six rejections are one fact, the newest, and it moves last.
+        record_at(a, "card0", "held", t0);
         for i in 0..6 {
-            record_at(a, &format!("card{i}"), "held", t0);
+            record_at(a, "card1", &format!("held, attempt {i}"), t0);
         }
         let facts = recent_at(a, t0 + Duration::from_secs(1));
-        assert_eq!(facts.len(), MAX_PER_PERSONA);
+        assert_eq!(facts.len(), 2, "one fact per card: {facts:?}");
+        assert!(facts[0].contains("card0"), "the other card's fact is kept");
         assert!(
-            facts.last().is_some_and(|f| f.contains("card5")),
-            "newest kept"
+            facts.last().is_some_and(|f| f.contains("card1") && f.contains("attempt 5")),
+            "the storm's newest rejection is the one kept, newest last"
         );
-        assert!(!facts.iter().any(|f| f.contains("card0")), "oldest dropped");
     }
 }

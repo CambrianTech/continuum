@@ -116,7 +116,7 @@ pub fn names(pattern: &str, command: &str) -> bool {
 }
 
 /// Why a verb's precondition does not hold: the typed reason a refusal carries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unmet {
     /// Another actor holds the card: a live lease, or a lapsed claim still on record (airc keeps
     /// a card its holder's while she is away, `TAKEOVER_ON_RECORD_SINCE_MS`).
