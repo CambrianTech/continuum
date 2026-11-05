@@ -1,6 +1,26 @@
 use super::*;
 use crate::inference::planning::window_allocator::test_tokens as t;
 
+#[test]
+fn refusal_restores_the_charged_holder_without_giving_capacity_to_the_waiter() {
+    let owner = Box::leak(Box::new(Reservations::new()));
+    let (a, b) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
+    let mut fair = FairGrantState::default();
+    let mut current = None;
+    tick(owner, &mut fair, &[a, b], &mut current);
+    let lease = current.as_ref().expect("published").lease_for(a).expect("holder");
+    let served = owner.reserve_against(a, lease, 50, || Some(lease)).expect("reserved");
+    settle(served, Some(&TerminalReceipt { finish: "stop".into() }));
+    let ticket = tick(owner, &mut fair, &[a, b], &mut current).pop().expect("handoff");
+    owner.lock().refused.insert(a, ticket.lease());
+    assert!(tick(owner, &mut fair, &[a, b], &mut current).is_empty());
+    assert_eq!(current.as_ref().expect("restored").by_mind, BTreeMap::from([(a, 60)]));
+    assert!(owner.lock().retiring.is_empty());
+    let restored = current.as_ref().expect("published").lease_for(a).expect("holder");
+    owner.reserve_against(a, restored, 50, || Some(restored)).expect("refusal is not permanent retirement").release_unsent();
+    assert!(tick(owner, &mut fair, &[a, b], &mut current).is_empty(), "no immediate retry without a new completion");
+}
+
 fn engine() -> Option<EngineIncarnation> {
     Some(EngineIncarnation {
         pid: 7,

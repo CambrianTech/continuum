@@ -10,11 +10,12 @@ struct Engine {
     saved: Mutex<Option<String>>,
     resident: Mutex<Option<String>>,
     reject_save: bool,
+    reject_erase: std::sync::atomic::AtomicBool,
 }
 async fn action(State(engine): State<Arc<Engine>>, Path(slot): Path<u32>, Query(q): Query<HashMap<String, String>>, Json(body): Json<Value>) -> (axum::http::StatusCode, Json<Value>) {
     let action = q.get("action").expect("action");
     engine.actions.lock().expect("actions").push(action.clone());
-    if action == "save" && engine.reject_save {
+    if (action == "save" && engine.reject_save) || (action == "erase" && engine.reject_erase.load(std::sync::atomic::Ordering::SeqCst)) {
         return (axum::http::StatusCode::BAD_REQUEST, Json(json!({"error":{"code":400,"type":"invalid_request_error","message":"save refused"}})));
     }
     match action.as_str() {
@@ -76,5 +77,17 @@ async fn a_refused_save_never_erases_the_resident() {
     assert_eq!(*engine.actions.lock().expect("actions"), ["save"]);
     assert_eq!(engine.resident.lock().expect("resident").as_deref(), Some("resident-context"));
     assert_eq!(pool.holders.lock().get(&0), Some(&key));
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_refused_erase_preserves_the_saved_page_without_reclamation_proof() {
+    let (root, engine, pool, key, custody, server) = fixture(false).await;
+    engine.reject_erase.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(reclaim(&reqwest::Client::new(), &root, pool.clone(), 0, key, custody).await.is_err());
+    assert_eq!(*engine.actions.lock().expect("actions"), ["save", "erase"]);
+    assert_eq!(engine.saved.lock().expect("saved").as_deref(), Some("resident-context"));
+    assert_eq!(engine.resident.lock().expect("resident").as_deref(), Some("resident-context"));
+    assert!(pool.confirms(&key));
     server.abort();
 }

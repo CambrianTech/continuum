@@ -112,6 +112,7 @@ struct ReservationState {
     receipts: BTreeMap<uuid::Uuid, (Option<EngineIncarnation>, u64)>,
     retiring: BTreeMap<uuid::Uuid, GrantLease>,
     reclaimed: BTreeMap<uuid::Uuid, GrantLease>,
+    refused: BTreeMap<uuid::Uuid, GrantLease>,
     /// A queued waiter is owed the holder's next completed turn. This blocks reserve at the
     /// receipt boundary, rather than hoping the publisher catches an idle interval.
     yield_after: BTreeMap<uuid::Uuid, (GrantLease, u64)>,
@@ -126,7 +127,7 @@ pub(super) struct Reservations {
 impl Reservations {
     pub(super) const fn new() -> Self {
         Self { held: std::sync::Mutex::new(ReservationState {
-            next_id: 0, entries: BTreeMap::new(), next_receipt: 0, receipts: BTreeMap::new(), retiring: BTreeMap::new(), reclaimed: BTreeMap::new(), yield_after: BTreeMap::new(),
+            next_id: 0, entries: BTreeMap::new(), next_receipt: 0, receipts: BTreeMap::new(), retiring: BTreeMap::new(), reclaimed: BTreeMap::new(), refused: BTreeMap::new(), yield_after: BTreeMap::new(),
         }) }
     }
 
@@ -187,6 +188,7 @@ impl Reservations {
         held.receipts.retain(|_, (incarnation, _)| *incarnation == engine);
         held.retiring.retain(|_, lease| lease.engine == engine);
         held.reclaimed.retain(|_, lease| lease.engine == engine);
+        held.refused.retain(|_, lease| lease.engine == engine);
         held.yield_after.retain(|_, (lease, _)| lease.engine == engine);
         let mut reserved: BTreeMap<uuid::Uuid, u32> = held.entries.iter().map(|(mind, entries)| {
             (*mind, entries.iter().map(|e| e.tokens).max().unwrap_or(0)) // unwrap_or: empty entries were removed above
@@ -330,6 +332,18 @@ pub(crate) fn record_reclaimed_grant(proof: crate::inference::slots::grant_hando
 
 pub(crate) fn is_grant_retiring(persona: uuid::Uuid) -> bool {
     RESERVATIONS.lock().retiring.contains_key(&persona)
+}
+
+/// A refused transfer returns authority, never free capacity. The publisher must restore
+/// the charged holder atomically before allowing another dispatch.
+pub(crate) fn record_refused_grant(proof: crate::inference::slots::grant_handoff::RefusedGrant) -> Result<(), String> {
+    let ticket = proof.into_ticket();
+    let mut state = RESERVATIONS.lock();
+    if !state.retiring.get(&ticket.persona).is_some_and(|lease| lease.same_identity(&ticket.lease)) {
+        return Err("refused grant was already fenced or replaced".into());
+    }
+    state.refused.insert(ticket.persona, ticket.lease);
+    Ok(())
 }
 
 /// One dispatch ATTEMPT's reservation, re-made before every POST: the previous attempt's (never

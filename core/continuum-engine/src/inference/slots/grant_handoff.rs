@@ -11,6 +11,13 @@ impl ReclaimedGrant {
     pub(crate) fn into_ticket(self) -> GrantHandoff { self.0 }
 }
 
+/// No save/erase was submitted, or the engine positively refused the action. This returns
+/// the original charged claim to its holder; it is never a reclamation proof.
+pub(crate) struct RefusedGrant(GrantHandoff);
+impl RefusedGrant {
+    pub(crate) fn into_ticket(self) -> GrantHandoff { self.0 }
+}
+
 struct Custody {
     endpoint: EndpointAdmission,
     _mind: tokio::sync::OwnedRwLockWriteGuard<()>,
@@ -28,12 +35,35 @@ impl Drop for Custody {
 
 /// Starts one retained operation. Dropping this receiver never releases the slot or abandons
 /// its IO; successful proof is recorded with the grant owner before notifying the caller.
-/// A failure leaves retirement charged and the old holder fenced from new dispatch.
-pub async fn reclaim_grant(
+/// A known refusal restores the charged holder at publication; uncertainty keeps it fenced.
+pub fn reclaim_grant(
     client: reqwest::Client,
     root: String,
     ticket: GrantHandoff,
-) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+) -> tokio::sync::oneshot::Receiver<Result<(), String>> {
+    let endpoint = directory().endpoint(&root);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    endpoint.retain_paging(async move {
+        let result = match prepare(&client, &root, &ticket).await {
+            Ok((mut custody, pool, slot, key)) => {
+                custody.ticket = Some(ticket);
+                reclaim(&client, &root, pool, slot, key, custody).await
+                    .and_then(crate::capacity::window_grant::record_reclaimed_grant)
+            }
+            Err(reason) => return_refused(ticket, reason),
+        };
+        let _ = tx.send(result); // owner records the outcome even if caller leaves during preparation
+    });
+    rx
+}
+
+fn return_refused<T>(ticket: GrantHandoff, reason: String) -> Result<T, String> {
+    crate::capacity::window_grant::record_refused_grant(RefusedGrant(ticket))?;
+    Err(reason)
+}
+
+async fn prepare(client: &reqwest::Client, root: &str, ticket: &GrantHandoff)
+    -> Result<(Custody, Arc<KvSlotPool>, u32, PageKey), String> {
     let engine = ticket.lease().engine.ok_or_else(|| "handoff requires an engine incarnation".to_string())?;
     let url = reqwest::Url::parse(&root).map_err(|e| e.to_string())?;
     if url.port_or_known_default() != Some(engine.port) {
@@ -60,14 +90,8 @@ pub async fn reclaim_grant(
         return Err("handoff slot attribution changed before physical custody".into());
     }
     let page_io = super::admit_page_io(page_io::gate()).map_err(|e| e.to_string())?;
-    let custody = Custody { endpoint: admission, _mind: mind, _permit: permit, _pin: pin, _page_io: page_io, ticket: Some(ticket), pending: false };
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    endpoint.retain_paging(async move {
-        let result = reclaim(&client, &root, pool, slot, key, custody).await
-            .and_then(crate::capacity::window_grant::record_reclaimed_grant);
-        let _ = tx.send(result); // the owner already retained success even if the caller left
-    });
-    Ok(rx)
+    let custody = Custody { endpoint: admission, _mind: mind, _permit: permit, _pin: pin, _page_io: page_io, ticket: None, pending: false };
+    Ok((custody, pool, slot, key))
 }
 
 async fn reclaim(
@@ -79,14 +103,20 @@ async fn reclaim(
     custody.pending = true;
     let (returned, saved) = resolve(kv_page_action(client, root, slot, &key, "save").await, custody).await?;
     custody = returned;
-    if !saved { return Err("handoff save refused; resident capacity remains charged".into()); }
+    if !saved {
+        let ticket = custody.ticket.take().ok_or_else(|| "handoff ticket already consumed".to_string())?;
+        return return_refused(ticket, "handoff save refused; holder claim will be restored".into());
+    }
     pool.note_saved(key);
     // No checkpoint or returner may call this erased/uncertain slot warm. The confirmed file
     // remains valid throughout erase and is never overwritten by a later empty-slot save.
     pool.forget_resident(slot, key);
     custody.pending = true;
     let (mut custody, erased) = resolve(kv_page_action(client, root, slot, &key, "erase").await, custody).await?;
-    if !erased { return Err("handoff erase refused; capacity remains charged".into()); }
+    if !erased {
+        let ticket = custody.ticket.take().ok_or_else(|| "handoff ticket already consumed".to_string())?;
+        return return_refused(ticket, "handoff erase refused; holder claim will be restored".into());
+    }
     let ticket = custody.ticket.take().ok_or_else(|| "handoff ticket already consumed".to_string())?;
     Ok(ReclaimedGrant(ticket))
 }

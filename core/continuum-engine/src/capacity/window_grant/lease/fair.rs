@@ -55,6 +55,7 @@ impl Reservations {
             .retain(|_, (incarnation, _)| *incarnation == engine);
         state.retiring.retain(|_, lease| lease.engine == engine);
         state.reclaimed.retain(|_, lease| lease.engine == engine);
+        state.refused.retain(|_, lease| lease.engine == engine);
         let current = current();
         let held = current
             .as_ref()
@@ -95,6 +96,15 @@ impl Reservations {
             }
         }
         let mut held_for_policy = held.clone();
+        let restored: BTreeMap<_, _> = state.refused.iter().filter_map(|(mind, lease)| {
+            state.retiring.get(mind).filter(|retired| retired.same_identity(lease)).map(|_| (*mind, lease.tokens))
+        }).collect();
+        for (mind, tokens) in &restored {
+            state.retiring.remove(mind);
+            state.refused.remove(mind);
+            held_for_policy.insert(*mind, *tokens);
+            fair.baseline.insert(*mind, state.receipts.get(mind).map_or(0, |(_, revision)| *revision));
+        }
         for mind in reclaimed.iter().chain(state.retiring.keys()) {
             held_for_policy.remove(mind);
         }
@@ -117,6 +127,7 @@ impl Reservations {
             for (mind, lease) in &state.retiring {
                 fixed.insert(*mind, lease.tokens);
             }
+            fixed.extend(restored.iter().map(|(mind, tokens)| (*mind, *tokens)));
             // Actual dispatch reservations above own in-flight protection. A service-loop
             // boolean can outlive terminal/erase receipts and must not outrank queued minds.
             let open: Vec<_> = ordered
@@ -149,6 +160,7 @@ impl Reservations {
                     if *mind == waiter
                         || state.entries.contains_key(mind)
                         || reclaimed.contains(mind)
+                        || restored.contains_key(mind)
                     {
                         return None;
                     }
