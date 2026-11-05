@@ -38,6 +38,8 @@ pub struct SourceAllocation {
     pub requested_floor: u32,
     pub requested_min: u32,
     pub requested_max: u32,
+    /// Whether the claim was required: its floor is never shared away by any consumer of the plan.
+    pub required: bool,
     pub state: AllocationState,
 }
 
@@ -227,6 +229,7 @@ pub fn flex_allocate(available: u32, claims: &[FlexClaim]) -> FlexAllocation {
             requested_floor: src.floor_tokens,
             requested_min: src.min_tokens,
             requested_max: src.max_tokens,
+            required: src.required,
             state: st,
         })
         .collect();

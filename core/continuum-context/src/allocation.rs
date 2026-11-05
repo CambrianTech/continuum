@@ -226,11 +226,26 @@ impl ActPlan {
     /// pass (reply priority 4) and the act after it (10) start her view alike: before, a second
     /// allocation with the reply seated at its want decided this (one 16,384 window started her
     /// conversation at 4,005 tokens on a pass and 2,402 on the act, and her prefix moved).
+    ///
+    /// Never below her view's REQUIRED floors: the reply's want beyond its grant is taken from what
+    /// her view could grow into, never from the collapsed minimum she acts on (Codex on #5779: an
+    /// 8,192 window with a 9,000 reply need left a start room of 0 beside a required 600).
     pub fn start_room(&self) -> u32 {
         let reply_short = self
             .reply()
             .map_or(0, |reply| reply.max_tokens.saturating_sub(self.granted(id::REPLY))); // map_or: no reply claimed wants nothing more
-        self.view_granted().saturating_add(self.room()).saturating_sub(reply_short)
+        let grown = self.view_granted().saturating_add(self.room()).saturating_sub(reply_short);
+        grown.max(self.required_view_floors())
+    }
+
+    /// The sum of her view's REQUIRED sources' floors: what a start must hold.
+    pub fn required_view_floors(&self) -> u32 {
+        self.plan
+            .allocations
+            .iter()
+            .filter(|a| a.required && a.source_id.starts_with(id::VIEW))
+            .map(|a| a.requested_floor)
+            .fold(0, u32::saturating_add)
     }
 
     /// The view sources the allocation could not grant their floor (dropped, never a required
@@ -275,29 +290,49 @@ impl ActPlan {
     }
 }
 
-/// One view source at a start: its floor, and the grant the one allocation gave it. A `fixed`
-/// source (any priority above the lowest: identity, policy, standing blocks) starts whole at its
-/// grant; the lowest-priority sources (her conversation, results, thoughts) grow by appends and
-/// share what the start leaves them.
+/// One view source at a start: its floor, whether that floor is required, and the grant the one
+/// allocation gave it. A `fixed` source (any priority above the lowest: identity, policy, standing
+/// blocks) starts whole at its grant; the lowest-priority sources (her conversation, results,
+/// thoughts) grow by appends and share what the start leaves them. A `required` floor (her view's
+/// collapsed minimum on an act, or a source that is required in itself) is never shared away.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartSource {
     pub priority: u8,
     pub fixed: bool,
+    pub required: bool,
     pub floor: u32,
     pub grant: u32,
 }
 
+/// A start too small for its sources' REQUIRED floors: a typed refusal, never a silent drop of a
+/// floor she acts on. Admission's to answer (ONE-ACT stage 3/4); the view refuses the start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartRefused {
+    /// The required floors' sum.
+    pub required: u32,
+    pub start: u32,
+}
+
 /// Each view source's share of a start of `start` tokens, arithmetic on the one plan's grants
-/// (never a second allocation): every source its floor, in priority order, while the start holds
-/// it (a floor that does not fit starts that source empty); then the fixed sources up to their
+/// (never a second allocation): every REQUIRED floor first (all of them, or the typed
+/// [`StartRefused`]); then every optional floor, in priority order, while the start holds it (an
+/// optional floor that does not fit starts that source empty); then the fixed sources up to their
 /// grant, in priority order; then what is left shared among the growing sources in proportion to
-/// what each lacks of its grant. No source exceeds its grant.
-pub fn start_shares(start: u32, sources: &[StartSource]) -> Vec<u32> {
+/// what each lacks of its grant. No source exceeds its grant, except a required floor its grant
+/// did not cover.
+pub fn start_shares(start: u32, sources: &[StartSource]) -> Result<Vec<u32>, StartRefused> {
+    let required: u32 = sources.iter().filter(|s| s.required).map(|s| s.floor).fold(0, u32::saturating_add);
+    if required > start {
+        return Err(StartRefused { required, start });
+    }
     let mut order: Vec<usize> = (0..sources.len()).collect();
     order.sort_by(|&a, &b| sources[b].priority.cmp(&sources[a].priority));
     let mut shares = vec![0u32; sources.len()];
-    let mut left = start;
-    for &i in &order {
+    let mut left = start - required;
+    for &i in order.iter().filter(|&&i| sources[i].required) {
+        shares[i] = sources[i].floor;
+    }
+    for &i in order.iter().filter(|&&i| !sources[i].required) {
         let floor = sources[i].floor.min(sources[i].grant);
         if floor <= left {
             shares[i] = floor;
@@ -321,7 +356,7 @@ pub fn start_shares(start: u32, sources: &[StartSource]) -> Vec<u32> {
             shares[i] += (pool * u64::from(lack) / total_lacking) as u32;
         }
     }
-    shares
+    Ok(shares)
 }
 
 #[cfg(test)]

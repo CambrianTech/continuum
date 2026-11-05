@@ -566,18 +566,34 @@ pub(in super::super) fn start_grants(
         })
         .sum();
     let growing = growing.max(newest.min(growable));
-    let start = grounding + growing;
     // Each source's share of the start: arithmetic on the one plan's grants, never a second
-    // allocation (`continuum_context::allocation::start_shares`).
+    // allocation (`continuum_context::allocation::start_shares`). A REQUIRED floor (her view's
+    // collapsed minimum on an act) is never shared away: the start holds every one of them.
     let sources: Vec<continuum_context::allocation::StartSource> = claims
         .iter()
         .zip(&grants)
         .map(|(claim, grant)| {
-            let (floor, max) = grant.map_or((0, 0), |a| (a.requested_floor, a.allocated_tokens)); // map_or: a source the window granted nothing starts collapsed
-            continuum_context::allocation::StartSource { priority: claim.priority, fixed: claim.priority > lowest, floor, grant: max }
+            let (floor, max, required) = grant.map_or((0, 0, false), |a| (a.requested_floor, a.allocated_tokens, a.required)); // map_or: a source the window granted nothing starts collapsed
+            continuum_context::allocation::StartSource { priority: claim.priority, fixed: claim.priority > lowest, required, floor, grant: max }
         })
         .collect();
-    let shares = continuum_context::allocation::start_shares(LlmDeliberationFaculty::clamp_u32(start), &sources);
+    let required_floors: usize = sources.iter().filter(|s| s.required).map(|s| s.floor as usize).sum();
+    let start = (grounding + growing).max(required_floors);
+    let shares = match continuum_context::allocation::start_shares(LlmDeliberationFaculty::clamp_u32(start), &sources) {
+        Ok(shares) => shares,
+        // A start too small for its required floors: refused typed, never a floor dropped. An
+        // empty answer is the view's own typed refusal (`GrantMismatch`): the turn is refused, the
+        // held view stays as state.
+        Err(refused) => {
+            continuum_base::probe!(
+                class = "delib.view.start_refused",
+                required_tokens = refused.required,
+                start_tokens = refused.start,
+                "a view start could not hold its required floors: refused, never a floor dropped"
+            );
+            return Vec::new();
+        }
+    };
     let grants: Vec<usize> = claims
         .iter()
         .zip(&grants)

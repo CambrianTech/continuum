@@ -88,6 +88,28 @@ fn a_reply_need_past_the_window_keeps_her_view_floor_and_reports_the_shortfall()
     // Required floors: framing 4,000 + required 500 + tools 1,000 + last move 200 + view 600 = 6,300.
     assert_eq!(plan.granted(id::REPLY), window - 6_300, "the reply gets what the required floors leave");
     assert_eq!(plan.irreducible_shortfall(), Some(IrreducibleShortfall { needed: 6_300 + 9_000, window }));
+    // At an epoch START (Codex on #5779): the reply's want beyond its grant left a start room of 0,
+    // so `start_shares` could drop the required 600. The start holds every required view floor.
+    let start = plan.start_room();
+    assert!(start >= 600, "a start holds her required view floor: {start}");
+    let source = plan.plan.of("view/conversation").expect("test: the view claim was made"); // JUSTIFIED: test fixture
+    let shares = start_shares(start, &[StartSource { priority: 4, fixed: false, required: source.required, floor: source.requested_floor, grant: source.allocated_tokens }])
+        .expect("test: the start holds the required floor"); // JUSTIFIED: test fixture
+    assert!(shares[0] >= 600, "her view starts at least at its required floor: {shares:?}");
+}
+
+// what this catches (Codex on #5779): a start too small for a required floor silently dropping it.
+// It is a typed refusal the view surfaces, never a source started empty.
+#[test]
+fn a_start_too_small_for_a_required_floor_is_refused_typed() {
+    let sources = [
+        StartSource { priority: 4, fixed: false, required: true, floor: 600, grant: 600 },
+        StartSource { priority: 6, fixed: true, required: false, floor: 50, grant: 400 },
+    ];
+    assert_eq!(start_shares(500, &sources), Err(StartRefused { required: 600, start: 500 }));
+    let shares = start_shares(700, &sources).expect("test: the required floor fits"); // JUSTIFIED: test fixture
+    assert_eq!(shares[0], 600, "the required floor first");
+    assert!(shares[1] <= 100, "the optional source shares what is left: {shares:?}");
 }
 
 // what this catches (Codex on Cormac's finding, #5779, goal 7): an off-by-one at the exact
@@ -152,11 +174,11 @@ fn a_pass_and_the_act_after_it_start_her_view_alike() {
 #[test]
 fn start_shares_keep_floors_fill_fixed_sources_and_share_the_rest() {
     let sources = [
-        StartSource { priority: 9, fixed: true, floor: 100, grant: 2_000 },
-        StartSource { priority: 4, fixed: false, floor: 200, grant: 6_000 },
-        StartSource { priority: 4, fixed: false, floor: 200, grant: 2_000 },
+        StartSource { priority: 9, fixed: true, required: false, floor: 100, grant: 2_000 },
+        StartSource { priority: 4, fixed: false, required: false, floor: 200, grant: 6_000 },
+        StartSource { priority: 4, fixed: false, required: false, floor: 200, grant: 2_000 },
     ];
-    let shares = start_shares(5_000, &sources);
+    let shares = start_shares(5_000, &sources).expect("test: no required floor"); // JUSTIFIED: test fixture
     assert_eq!(shares[0], 2_000, "the fixed source starts at its grant");
     assert!(shares[1] >= 200 && shares[2] >= 200, "every floor kept: {shares:?}");
     assert!(shares.iter().zip(&sources).all(|(share, s)| *share <= s.grant), "{shares:?}");
@@ -248,10 +270,11 @@ fn act_through_the_view(day: &Recorded, view: &mut View<String>, sources: &[&dyn
             .iter()
             .map(|claim| {
                 let grant = grant_of(claim).map_or(0, |a| a.allocated_tokens); // map_or: an unclaimed source starts collapsed
-                StartSource { priority: claim.priority, fixed: false, floor: tokens(claim.floor_chars) as u32, grant }
+                StartSource { priority: claim.priority, fixed: false, required: false, floor: tokens(claim.floor_chars) as u32, grant }
             })
             .collect();
         start_shares(start, &starts)
+            .expect("test: no required floor in this start") // JUSTIFIED: test fixture
             .iter()
             .zip(claims)
             .map(|(&share, claim)| (share as usize * claim.full_chars) / tokens(claim.full_chars).max(1))

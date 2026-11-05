@@ -237,6 +237,11 @@ async fn an_8192_window_keeps_required_content_under_a_large_measured_need() {
 
     let view = faculty.prompt_view(&ws);
     assert!(view.capacity_error.is_none(), "{:?}", view.capacity_error);
+    // Her view's EPOCH START (this first view starts her epoch and sizes it, Codex on #5779): on an
+    // act her view's collapsed minimum is required, so a reply whose measured need exceeds the
+    // window never shares it away at the start: her view is shown, and nothing refused it.
+    assert!(view.budget_fault.is_none(), "her view's start was not refused: {:?}", view.budget_fault);
+    assert!(view.refit.grounding_at > 0, "her view is shown at its start, at least at its collapsed minimum");
     let contribution = faculty.contribute(&ws).await.expect("a verdict or named fault");
     assert!(contribution.fault.is_none(), "{:?}", contribution.fault);
     let seen = adapter.seen.lock().unwrap();
@@ -738,4 +743,22 @@ async fn a_tool_call_cut_at_the_limit_is_an_answer_cut_held_for_the_retry() {
     let peak = reg.emission_of(persona).expect("the cut was measured").peak_tokens;
     assert_eq!(peak, 1_800, "the answer channel recorded at double");
     assert_eq!(wm.pending_emission_peak(ws.activity_room_id), peak, "held for the retry");
+
+    // Codex on #5779: an incomplete tool call never executes, even when its arguments happen to
+    // parse whole. Finish `length` means the model did not commit the call (the reply was cut by
+    // the window, as the typed IrreducibleShortfall lets an act proceed with a reply at what is
+    // left): it is reported as the cut-act sentinel, never run.
+    let parsed = ToolCall { id: "call-read".into(), name: "code/read".into(), input: json!({ "file_path": "src/accounts.rs" }) };
+    let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Length, "", Some(vec![parsed]))]));
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aiko", "You are Aiko.", adapter)
+        .with_context_window(40_960)
+        .with_tools(vec![read_tool()]);
+    let contribution = faculty.contribute(&ws).await.expect("a verdict or named fault");
+    match contribution.decision {
+        Some(Decision::Act { calls, .. }) => {
+            assert_eq!(calls.len(), 1, "the cut call is not among the calls that run: {calls:?}");
+            assert_eq!(calls[0].name, crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL);
+        }
+        other => panic!("expected the cut-act sentinel for a parseable call cut at the limit, got {other:?}"),
+    }
 }
