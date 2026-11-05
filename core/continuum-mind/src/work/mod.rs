@@ -29,6 +29,7 @@ use serde_json::Value;
 use ts_rs::TS;
 use uuid::Uuid;
 
+use airc_core::shown_id::{Shown, ShownIdError, ShownKind};
 use airc_lib::{Airc, CardState, ClaimId, ClaimWorkCard, CreateWorkCard, HeartbeatWorkClaim, Priority, ReleaseWorkClaim, RepoId, WorkCard, WorkCardId};
 
 use crate::persona::PersonaAircRuntimeRegistry;
