@@ -25,7 +25,8 @@ fn claims(window_newest: Newest, view: Vec<FlexClaim>, reply_priority: u8) -> Ac
         newest: window_newest,
         tools: Span { floor: 1_000, min: 1_000, want: 3_000 },
         grounding: Span { floor: 0, min: 300, want: 1_200 },
-        history: Span { floor: 200, min: 200, want: 800 },
+        last_move: 200,
+        history: Span { floor: 0, min: 0, want: 600 },
         reply: reply(800, 2_400, reply_priority),
         view,
     }
@@ -43,8 +44,8 @@ fn the_newest_result_is_the_largest_of_its_levels_that_fits_and_the_rest_reaches
     let view = || vec![view_source("conversation", 4, 600, 20_000)];
     let roomy = allocate(40_000, claims(newest(), view(), 8));
     assert_eq!((roomy.newest_level(), roomy.granted(id::NEWEST)), (0, 9_000), "whole");
-    // Required floors: framing 4,000 + required 500 + tools 1,000 + reply 800 = 6,300; 12,000
-    // leaves 5,700: the 2,000 level fits, the whole does not.
+    // Required floors: framing 4,000 + required 500 + tools 1,000 + last move 200 + reply 800 =
+    // 6,500; 12,000 leaves 5,500: the 2,000 level fits, the whole does not.
     let tight = allocate(12_000, claims(newest(), view(), 8));
     assert_eq!((tight.newest_level(), tight.granted(id::NEWEST)), (1, 2_000), "the largest level that fits");
     assert!(tight.view_granted() > 600, "what the level leaves reaches her view past its floor: {}", tight.view_granted());
@@ -56,15 +57,50 @@ fn the_newest_result_is_the_largest_of_its_levels_that_fits_and_the_rest_reaches
 // what this catches (Cormac on #5779, goal 7: never clip the newest end, shrink oldest-first):
 // her newest result's level chosen against EVERY floor, optional ones included, so enrichment and
 // older history pushed it to a summary on a window that held it whole (allocate(15_500): level 1,
-// 2,000 granted, with required floors 6,300 + whole 9,000 = 15,300 <= 15,500). It is chosen
-// against the required floors and the reply's; history and her view shed in the floor pass.
+// 2,000 granted, with the required floors and the whole within 15,500). It is chosen against the
+// required floors (her last move among them, now required) and the reply's; older history,
+// grounding and her view shed in the floor pass.
 #[test]
 fn optional_claims_shed_before_her_newest_result_is_shown_smaller() {
     let view = vec![view_source("conversation", 4, 600, 20_000)];
     let plan = allocate(15_500, claims(Newest { levels: vec![9_000, 2_000, 900] }, view, 8));
     assert_eq!((plan.newest_level(), plan.granted(id::NEWEST)), (0, 9_000), "whole: it fits beside every required floor");
+    assert_eq!(plan.granted(id::LAST_MOVE), 200, "her last move whole");
     let optional = plan.granted(id::HISTORY) + plan.view_granted() + plan.granted(id::GROUNDING);
-    assert!(optional <= 15_500 - 15_300, "history, grounding and her view shed first: {optional}");
+    assert_eq!(optional, 0, "older history, grounding and her view shed first: the required parts fill 15,500");
+    assert!(plan.irreducible_shortfall().is_none());
+}
+
+// what this catches (Codex on Cormac's finding, #5779, goal 7): an off-by-one at the exact
+// required-floor boundary. When the required floors, the reply's floor and the whole newest result
+// equal the window exactly, the whole is chosen; one token less and the next level is.
+#[test]
+fn the_newest_result_is_whole_at_the_exact_boundary_and_the_next_level_one_token_under() {
+    let newest = || Newest { levels: vec![9_000, 2_000, 900] };
+    let view = || vec![view_source("conversation", 4, 600, 20_000)];
+    // Required: framing 4,000 + required 500 + tools 1,000 + last move 200 + reply 800 = 6,500.
+    let exact = 6_500 + 9_000;
+    let at = allocate(exact, claims(newest(), view(), 8));
+    assert_eq!((at.newest_level(), at.granted(id::NEWEST)), (0, 9_000), "exactly the window: whole");
+    assert!(at.irreducible_shortfall().is_none());
+    let under = allocate(exact - 1, claims(newest(), view(), 8));
+    assert_eq!((under.newest_level(), under.granted(id::NEWEST)), (1, 2_000), "one token under: the next level");
+}
+
+// what this catches (goal 7: the newest complete interaction is whole; ONE-ACT stage 2; Cormac on
+// #5779): her last move was the floor of an OPTIONAL history claim, so on a tight window the
+// reply's cap (or any optional claim's floor) could take it. It is its own required claim: on a
+// tight window her last move survives whole while older history and her optional view shed, and
+// her reply keeps its measured floor.
+#[test]
+fn on_a_tight_window_her_last_move_and_reply_floor_survive_and_optional_claims_shed() {
+    let view = vec![view_source("conversation", 4, 600, 20_000)];
+    // Required: framing 4,000 + required 500 + tools 1,000 + last move 200 + reply 800 = 6,500.
+    let plan = allocate(6_600, claims(Newest::default(), view, 8));
+    assert_eq!(plan.granted(id::LAST_MOVE), 200, "her last move whole");
+    assert!(plan.granted(id::REPLY) >= 800, "her reply keeps its floor: {}", plan.granted(id::REPLY));
+    assert!(plan.view_granted() < 600, "the optional view source shed below its floor: {}", plan.view_granted());
+    assert!(plan.granted(id::HISTORY) <= 100, "older history sheds: {}", plan.granted(id::HISTORY));
     assert!(plan.irreducible_shortfall().is_none());
 }
 
@@ -175,6 +211,7 @@ fn act_through_the_view(day: &Recorded, view: &mut View<String>, sources: &[&dyn
         newest: Newest::default(),
         tools: Span::default(),
         grounding: Span::default(),
+        last_move: 0,
         history: Span::default(),
         reply: reply(day.reply_tokens.value, day.reply_tokens.value, 8),
         view: source_claims.iter().map(as_claim).collect(),

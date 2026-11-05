@@ -256,9 +256,11 @@ impl LlmDeliberationFaculty {
             0 => 0,
             offered => offered.saturating_add(Self::working_context_header_cost()),
         };
-        // Her own last move and its result are history's FLOOR: clipping them costs a WHOLE EXTRA
-        // TURN when she re-issues the act. Her view's sources claim for themselves; the history
-        // claim is this act's fresh optional tail (facts, the clock, demoted payloads).
+        // Her own last move and its result are a REQUIRED claim of their own (`last_move`, goal 7:
+        // the newest complete interaction is whole): clipping them costs a WHOLE EXTRA TURN when
+        // she re-issues the act. The rest of this act's fresh tail (older acts, facts, the clock,
+        // demoted payloads) is the optional `history` claim and sheds first. Her view's sources
+        // claim for themselves.
         let evidence = all_messages.recent_move_evidence();
         let view_tokens = Self::messages_cost(&all_messages.history[..view.len()]);
         let optional_history = all_messages.tokens().saturating_sub(required.total()).saturating_sub(view_tokens);
@@ -285,7 +287,8 @@ impl LlmDeliberationFaculty {
                 newest: continuum_context::allocation::Newest { levels: newest_levels.iter().map(|&cost| claim(cost)).collect() },
                 tools: continuum_context::allocation::Span { floor: claim(tools.floor), min: claim(tools.floor), want: claim(tools.want) },
                 grounding: continuum_context::allocation::Span { floor: 0, min: claim(grounding_min), want: claim(grounding_want.max(grounding_min)) },
-                history: continuum_context::allocation::Span { floor: claim(history_floor), min: claim(history_floor), want: claim(optional_history) },
+                last_move: claim(history_floor),
+                history: continuum_context::allocation::Span { floor: 0, min: 0, want: claim(optional_history.saturating_sub(history_floor)) },
                 reply,
                 view: view_claims,
             },
@@ -381,6 +384,7 @@ impl LlmDeliberationFaculty {
             required_tokens = act.granted(claim_id::REQUIRED),
             newest_granted = act.granted(claim_id::NEWEST),
             grounding_granted = act.granted(claim_id::GROUNDING),
+            last_move_granted = act.granted(claim_id::LAST_MOVE),
             history_granted = act.granted(claim_id::HISTORY),
             tools_granted = act.granted(claim_id::TOOLS),
             reply_priority = reply_claimed.map_or(0, |r| r.priority), // map_or: the reply is always claimed; 0 reads as absent
@@ -405,7 +409,10 @@ impl LlmDeliberationFaculty {
         let view_room = act.room();
         // History and her view get their grants; the required input is never part of the trade.
         let msg_budget = window_msg_budget.min(all_messages.required_tokens().saturating_add(calibration.prompt_budget(
-            act.granted(claim_id::HISTORY).saturating_add(view_granted).saturating_add(view_room) as usize,
+            act.granted(claim_id::LAST_MOVE)
+                .saturating_add(act.granted(claim_id::HISTORY))
+                .saturating_add(view_granted)
+                .saturating_add(view_room) as usize,
         )));
         // Her view within what the allocation granted its sources (`epoch.rs`): the only place
         // it is ever collapsed. A broken allocator contract refuses the turn (`budget_fault`),
@@ -693,7 +700,7 @@ impl LlmDeliberationFaculty {
                 grounding_len: refit.grounding_len,
                 framing_grant: act.granted(claim_id::FRAMING).saturating_add(act.granted(claim_id::TOOLS)),
                 required_grant: act.granted(claim_id::REQUIRED).saturating_add(act.granted(claim_id::NEWEST)),
-                history_grant: act.granted(claim_id::HISTORY),
+                history_grant: act.granted(claim_id::LAST_MOVE).saturating_add(act.granted(claim_id::HISTORY)),
                 grounding_grant: act.granted(claim_id::GROUNDING),
                 view_grant: view_granted.saturating_add(view_room),
             })

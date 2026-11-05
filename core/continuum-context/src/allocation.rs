@@ -9,8 +9,9 @@
 //!
 //! Now:
 //! - every part is a claim ([`ActClaims`]): framing, the required input, her NEWEST result (the
-//!   largest of its own levels that fits beside every other floor: whole whenever the window holds
-//!   it, goal 7), her hands, the standing grounding, the fresh history, the reply, her view's sources;
+//!   largest of its own levels that fits beside the required floors: whole whenever the window
+//!   holds it, goal 7), her hands, her LAST MOVE (required, whole), the standing grounding, the
+//!   rest of the fresh history (optional), the reply, her view's sources;
 //! - her view's START is arithmetic on the one plan ([`ActPlan::start_room`],
 //!   [`start_shares`]), never a second allocation;
 //! - irreducible growth is typed apart from reducible history: required floors past the window
@@ -29,6 +30,7 @@ pub mod id {
     pub const NEWEST: &str = "newest_result";
     pub const GROUNDING: &str = "grounding";
     pub const HISTORY: &str = "history";
+    pub const LAST_MOVE: &str = "last_move";
     pub const REPLY: &str = "reply";
     pub const TOOLS: &str = "tools";
     /// The prefix of each of her view's sources' claims: `view/<source>`.
@@ -73,7 +75,11 @@ pub struct ActClaims {
     pub tools: Span,
     /// Enrichment: optional, never a reason to refuse a turn.
     pub grounding: Span,
-    /// This act's fresh optional tail: floor = her last move and its outcome.
+    /// Her LAST MOVE in this act's fresh tail: her newest complete act and its outcome. Required
+    /// and whole (goal 7, ONE-ACT stage 2: the newest complete interaction is whole): clipping it
+    /// costs a whole extra turn when she re-issues the act.
+    pub last_move: u32,
+    /// The rest of this act's fresh tail (older acts, facts, the clock): optional, shed first.
     pub history: Span,
     /// The reply's claim as the turn kind priced it (`reply_claim`). Its floor is capped here so
     /// it never takes from another claim's floor; its uncapped floor is her need.
@@ -134,6 +140,7 @@ pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
         fixed(id::FRAMING, claims.framing),
         fixed(id::REQUIRED, claims.required),
         span(id::TOOLS, TOOLS_PRIORITY, claims.tools, true),
+        fixed(id::LAST_MOVE, claims.last_move),
         span(id::GROUNDING, GROUNDING_PRIORITY, claims.grounding, false),
         span(id::HISTORY, HISTORY_PRIORITY, claims.history, false),
     ];
