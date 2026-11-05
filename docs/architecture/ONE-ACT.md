@@ -416,6 +416,51 @@ count admission obeys. Every downward adaptation schedules its upward test.
 - **Repeats:** ONE owner: the view's repeat fact (`continuum-context/view/repeat.rs`), fed by the
   settle evidence; the other two detectors feed it or are deleted (card e03c2aa0).
 
+### 6b. The tool contract: a call is a transaction, never cut, never clipped
+
+Measured on the M5, 2026-11-05 02:20-02:54Z (build 0b2854327, Benchy's prompt captures). One write
+landed out of five attempts:
+- Two `edit_file` calls were cut inside their arguments by the output limit (JSON ended at col 126
+  and col 4,033).
+- Two line-range edits (`end_line 603`) ended inside a construct and were refused.
+- One whole-file write of 35,796 bytes landed, to add one test.
+
+Earlier, on a95afe3d1, 302 of 414 acts were cut mid-thought because output room was priced from the
+window's leftovers. None of this is a defect in one tool. Each failure is a pattern every tool owes,
+and none of them is owned in one place. Claude Code's own tools keep these guarantees, which is why
+their calls do not fail this way.
+
+One `ToolContract` every tool implements. The compiler requires it, and the ratchets forbid each
+way around it:
+
+1. **A call is never cut.**
+   - Each tool's schema declares its payload fields (a write's content, an edit's new text).
+   - Stage 2's one allocation reserves her measured think plus the measured payload of the call she
+     is making (per tool, from her history), so the budget fits the call.
+   - A `Length` finish inside a call continues the same generation from its warm prefix; it is not
+     discarded and re-thought. Whether our fork can continue through its chat endpoint is to be
+     verified in the fork.
+   - A call that still cannot fit is a typed `WindowTooSmall`, never a truncated call (stage 2, #5787).
+2. **An edit anchors on content.**
+   - Line-range edit modes are deleted. A text edit requires a unique anchor; a whole-file write is
+     for a new file.
+   - Each edit carries the content hash of her last read of that file. An anchor that is stale or
+     appears more than once is refused, typed, with the current region.
+   - The payload is only the change, never a re-sent file.
+3. **A result is never clipped.** Every result is a `continuum-context` item with levels and a handle
+   (stage 2's one codec, #5779 and #5782), so no tool cuts its own output.
+4. **A refusal is a typed variant with her next move** (stage 6), never prose. Today the parse guard
+   already words the right next move ("anchor on the text with search_replace") in plain text.
+5. **Arguments are validated against the schema before execution**, typed per field, so a malformed
+   or partial call never reaches a tool.
+
+Ratchets: `line_number_edit_modes` = 0; `tools_without_declared_payload` = 0;
+`untyped_tool_errors` falls; `truncation_outside_the_view` = 0.
+
+Gate, live: the share of a mind's tool calls that land, from her prompt captures (cut calls, refused
+edits and landed calls per mind), together with bytes written per landed change against the change's
+own size.
+
 ### 7. Around the act
 
 - **Learning** is a low-duty dream stage between decode steps under the governor, with its slowdown
@@ -463,6 +508,7 @@ deploy with the 15-minute read and immediate rollback if worse (rule 3).
 | 4c | The pipeline (5e): encoders record, the dispatcher executes double-buffered frames by sort key; tool results prefill as they stream; page-in ahead; write-back behind | Fable (core encoders) + Codex (dispatcher) | GPU idle fraction while minds wait, before/after; per-act split tool/wait/prefill/decode |
 | 5 | Admission: one decision over residency, prefill, decode; fairness by completion identity; rotation THROUGH the proven custodian | Codex | dyno 2, 3 green |
 | 6 | Her state: command preconditions, results with next moves, Shown ids, one repeat owner | Fable + Cormac | precondition tests; live: no verb hunted (`commands/help` loops) |
+| 6b | The tool contract: payload-sized output room + continuation of a cut call; content-anchored edits with read hashes (line modes deleted); results only through the codec; typed refusals; schema validation before execution | Fable (contract, cognition) + Codex (fork continuation) + Cormac (typed refusals) | live: landed calls per attempted call per mind; ratchets at 0 |
 | 7 | Learning as a dream stage; persistence on change; deploy custody | Cormac | slowdown measured within its bound |
 
 ## Open branches, fitted
