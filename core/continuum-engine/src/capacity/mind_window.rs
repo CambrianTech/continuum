@@ -5,6 +5,7 @@
 //! snapshot's per-sequence window (18,380) back into her binding, 15 rebinds in 12 minutes.
 
 use crate::ai::adapter::AIProviderAdapter;
+use super::window_grant::TurnsEnded;
 use crate::inference::planning::window_allocator::Tokens;
 
 /// A mind's window, decided once per question: decided, or not granted yet.
@@ -37,10 +38,12 @@ impl Decided {
     }
 }
 
-/// The window of mind `persona`, whose requests go to `adapter` and whose binding says `bound`.
-pub fn mind_window(persona: uuid::Uuid, adapter: &dyn AIProviderAdapter, bound: u32) -> MindWindow {
+/// The window of mind `persona`, whose requests go to `adapter` and whose binding says `bound`;
+/// `ended` is her ended-turn count now (`turn_ledger::turns_ended`), so a grant that lapsed with the
+/// turn it served is refused at her next turn's start (`window_grant::PoolGrants::grant_for`).
+pub fn mind_window(persona: uuid::Uuid, adapter: &dyn AIProviderAdapter, bound: u32, ended: TurnsEnded) -> MindWindow {
     if adapter.serves_on_shared_pool() {
-        return match super::window_grant::current_grant(persona).and_then(Tokens::new) {
+        return match super::window_grant::current_grant(persona, ended).and_then(Tokens::new) {
             Some(granted) => MindWindow::Decided(Decided::Granted(granted)),
             None => MindWindow::Ungranted,
         };
@@ -124,6 +127,7 @@ mod tests {
             pool_tokens: 200_000,
             per_sequence_cap: 200_000,
             by_mind: by_mind.iter().copied().collect(),
+            lapses: Default::default(),
         })
     }
 

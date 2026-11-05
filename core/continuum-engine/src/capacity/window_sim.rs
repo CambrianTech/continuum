@@ -17,7 +17,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::inference::planning::window_allocator::Tokens;
+use crate::inference::planning::window_allocator::observed::Observed;
+use crate::inference::planning::window_allocator::{Floor, Tokens};
 
 /// A scenario's literal token count, checked nonzero when the scenario compiles: a zero literal is a
 /// compile error, never a runtime fallback.
@@ -84,10 +85,14 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
             event.mind,
             Demand {
                 mind: event.mind,
-                need: event.need,
+                need: Observed::Exact(event.need),
+                // the sim measures no irreducible window: each exact need is admitted whole or waits
+                floor: Floor::Unmeasured,
                 target: event.need,
                 wish: event.need,
                 in_flight: event.in_flight,
+                // the sim ends no turns: its minds' grants never lapse
+                turns_ended: super::window_grant::TurnsEnded::default(),
                 // the shared pool: one sequence may hold all of it
                 ceiling: scenario.pool_tokens,
             },
@@ -107,7 +112,7 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
                 true => held.get(&d.mind).copied().unwrap_or(0), // unwrap_or: a turn that holds nothing yet is owed only her demand
                 false => 0,
             };
-            u64::from(d.need.get().max(floor))
+            u64::from(d.need.value().get().max(floor))
         };
         let demanded: u64 = current.iter().map(owed).sum();
         // Granted past what is owed: room an idle mind holds that a reading mind could have used.
@@ -127,7 +132,7 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
             {
                 out.in_flight_shrinks += 1;
             }
-            if granted < demand.need.get() {
+            if granted < demand.need.value().get() {
                 if demanded <= u64::from(scenario.pool_tokens) {
                     out.unmet_when_fits += 1;
                 }
@@ -211,7 +216,7 @@ mod tests {
     // in-flight shrink, or a mind cut while the pool holds every demand.
     #[test]
     fn demand_following_grants_every_mind_what_she_reads_within_the_pool() {
-        let run = run(&m5_uneven_reading(), &mut DemandFollowing);
+        let run = run(&m5_uneven_reading(), &mut DemandFollowing::<MindId>::default());
         assert!(run.kept(), "{run:?}");
     }
 
@@ -225,7 +230,7 @@ mod tests {
             pool_tokens: 100_000,
             events: vec![e(0, 1, tokens!(60_000), true), e(1, 1, tokens!(30_000), true), e(2, 2, tokens!(20_000), false)],
         };
-        let run = run(&scenario, &mut DemandFollowing);
+        let run = run(&scenario, &mut DemandFollowing::<MindId>::default());
         assert!(run.kept(), "{run:?}");
     }
 
@@ -240,7 +245,7 @@ mod tests {
             pool_tokens: 100_000,
             events: vec![e(0, 1, tokens!(60_000), true), e(1, 1, tokens!(30_000), true), e(2, 2, tokens!(50_000), false)],
         };
-        let run = run(&scenario, &mut DemandFollowing);
+        let run = run(&scenario, &mut DemandFollowing::<MindId>::default());
         assert!(run.kept(), "{run:?}");
     }
 
@@ -262,7 +267,7 @@ mod tests {
                 e(2, 3, tokens!(30_000), false),
             ],
         };
-        let run = run(&scenario, &mut DemandFollowing);
+        let run = run(&scenario, &mut DemandFollowing::<MindId>::default());
         assert_eq!(run.in_flight_shrinks, 0, "{run:?}");
         assert_eq!(run.over_pool, 0, "{run:?}");
     }

@@ -933,7 +933,7 @@ pub fn requirements_for(
         .iter()
         .map(|p| {
             let demand = working_set.demand_of(*p);
-            use crate::inference::planning::window_allocator::{LaneRequirement, Tokens};
+            use crate::inference::planning::window_allocator::{Floor, LaneRequirement, Tokens};
             let need = demand.as_ref().and_then(need_tokens);
             // A censored need says her untrimmed assembly was at least that too: her wish (and so
             // her target) rises with it, or `held` clamps the bound back to the target it outgrew.
@@ -953,6 +953,7 @@ pub fn requirements_for(
                 Some(need) => measured.held(need),
                 None => measured,
             }
+            .with_floor(Floor::of(demand.as_ref().and_then(|d| d.floor_tokens).and_then(Tokens::new)))
             .with_training(training)
         })
         .collect()

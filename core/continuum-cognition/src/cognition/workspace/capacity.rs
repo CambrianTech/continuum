@@ -102,7 +102,7 @@ impl CapacityReadiness {
             .unwrap_or_else(|| observed.adapter.clone()); // No forwarding target means the bound adapter itself serves.
         // A granted or lane-reported window moves on its own; a bound one moves only with the binding.
         let dynamic_window = !matches!(
-            crate::capacity::mind_window::mind_window(persona, observed.adapter.as_ref(), observed.context_window),
+            crate::capacity::mind_window::mind_window(persona, observed.adapter.as_ref(), observed.context_window, crate::cognition::turn_ledger::turns_ended(persona)),
             crate::capacity::mind_window::MindWindow::Decided(crate::capacity::mind_window::Decided::Bound(_))
         );
         Self {
@@ -145,7 +145,7 @@ impl CapacityReadiness {
         }
         // Her window as the one determiner decides it now: ungranted is a change (her turn waits),
         // a bound window counts only when this observation was bound too.
-        let now = crate::capacity::mind_window::mind_window(self.persona, current.adapter.as_ref(), current.context_window);
+        let now = crate::capacity::mind_window::mind_window(self.persona, current.adapter.as_ref(), current.context_window, crate::cognition::turn_ledger::turns_ended(self.persona));
         match now {
             crate::capacity::mind_window::MindWindow::Ungranted => true,
             crate::capacity::mind_window::MindWindow::Decided(crate::capacity::mind_window::Decided::Bound(window)) => {
@@ -204,7 +204,7 @@ mod tests {
         let persona = uuid::Uuid::from_u128(1);
         let observed = handle.load_full();
         let crate::capacity::mind_window::MindWindow::Decided(decided) =
-            crate::capacity::mind_window::mind_window(persona, observed.adapter.as_ref(), observed.context_window)
+            crate::capacity::mind_window::mind_window(persona, observed.adapter.as_ref(), observed.context_window, crate::cognition::turn_ledger::turns_ended(persona))
         else {
             panic!("a test adapter is never on the shared pool")
         };

@@ -206,6 +206,12 @@ pub fn turn_shape_of(persona: uuid::Uuid) -> Option<TurnShape> {
     TURN_SHAPES.lock().get(&persona).copied().filter(|s| s.turns > 0)
 }
 
+/// How many turns `persona` has ended this boot: bumped as each turn's guard drops, so a turn that
+/// ends and restarts between two grant ticks is still counted (the grant's re-entry evidence).
+pub fn turns_ended(persona: uuid::Uuid) -> continuum_engine::capacity::window_grant::TurnsEnded {
+    continuum_engine::capacity::window_grant::TurnsEnded(TURN_SHAPES.lock().get(&persona).map_or(0, |s| s.turns)) // map_or: no turn ended yet is zero ended
+}
+
 /// The TYPICAL turn among `personas`: the median of their measured turn durations.
 /// `None` when nobody has finished a turn — an absence, never a number.
 pub fn typical_turn_ms(personas: &[uuid::Uuid]) -> Option<u64> {
