@@ -36,11 +36,36 @@ impl GrantRevision {
     }
 }
 
-/// What a request is priced against: her grant's size and the revision that published it.
+/// The grant owner that issued a revision: one per process (the serving daemon's grant table), so
+/// a revision from another owner (another core on the grid, a restarted one) is never this one's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GrantOwner(uuid::Uuid);
+
+impl GrantOwner {
+    /// This process's grant owner.
+    pub fn this_process() -> Self {
+        static OWNER: std::sync::OnceLock<GrantOwner> = std::sync::OnceLock::new();
+        *OWNER.get_or_init(|| GrantOwner(uuid::Uuid::new_v4()))
+    }
+}
+
+/// What a request is priced against: her grant's size and its IDENTITY, the revision that
+/// published it on which engine incarnation by which owner. A reserve compares the identity,
+/// never the size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GrantLease {
     pub tokens: u32,
     pub revision: GrantRevision,
+    /// The engine incarnation (its pid) the grant is on.
+    pub engine: Option<u32>,
+    pub owner: GrantOwner,
+}
+
+impl GrantLease {
+    /// The same publication of the same grant: revision, incarnation and owner.
+    pub fn same_identity(&self, other: &GrantLease) -> bool {
+        (self.revision, self.engine, self.owner) == (other.revision, other.engine, other.owner)
+    }
 }
 
 /// Stamp `next`'s revisions against `current` (what is published now): a mind whose grant is
@@ -84,7 +109,12 @@ impl PoolGrants {
 
     /// Her grant with the revision that published it.
     pub fn lease_for(&self, persona: uuid::Uuid) -> Option<GrantLease> {
-        Some(GrantLease { tokens: self.grant_for(persona)?, revision: *self.revisions.get(&persona)? })
+        Some(GrantLease {
+            tokens: self.grant_for(persona)?,
+            revision: *self.revisions.get(&persona)?,
+            engine: self.engine,
+            owner: GrantOwner::this_process(),
+        })
     }
 }
 

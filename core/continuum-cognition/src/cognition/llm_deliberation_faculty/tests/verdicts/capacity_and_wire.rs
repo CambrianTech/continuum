@@ -187,7 +187,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         // reserve the plan sized her view beside.
         assert_eq!(
             request.max_tokens,
-            Some(request_allowance(TurnKind::Act, view.completion_reserve, window, prompt_tokens)),
+            request_allowance(TurnKind::Act, view.completion_reserve, window, prompt_tokens).ok(),
             "the act's cap is the window's room after its prompt"
         );
         assert!(request.max_tokens.unwrap() >= view.completion_reserve);
@@ -635,12 +635,11 @@ async fn an_allocator_answering_for_the_wrong_sources_refuses_the_turn_before_di
 #[test]
 fn an_acts_cap_is_its_windows_room_and_a_pass_keeps_its_grant() {
     let (window, prompt, reserve) = (40_960u32, 25_000usize, 700u32);
-    assert_eq!(request_allowance(TurnKind::Act, reserve, window, prompt), window - prompt as u32 - 1);
-    assert_eq!(request_allowance(TurnKind::Pass, reserve, window, prompt), reserve, "a pass carries its grant");
-    assert_eq!(
-        request_allowance(TurnKind::Act, reserve, window, window as usize),
-        reserve,
-        "a prompt that leaves less than the reserve keeps the reserve"
+    assert_eq!(request_allowance(TurnKind::Act, reserve, window, prompt), Ok(window - prompt as u32 - 1));
+    assert_eq!(request_allowance(TurnKind::Pass, reserve, window, prompt), Ok(reserve), "a pass carries its grant");
+    assert!(
+        request_allowance(TurnKind::Act, reserve, window, window as usize).is_err(),
+        "a prompt that leaves less than the reserve is refused, never a cap past the window"
     );
 }
 

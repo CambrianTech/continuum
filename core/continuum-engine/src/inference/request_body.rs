@@ -58,8 +58,8 @@ pub const VISION_DESCRIPTION_PURPOSE: &str = "cognition/vision-describe";
 /// 2026-11-04, a95afe3d1: 302 of 414 acts); a quarter-of-the-allowance answer share stood beside
 /// it, a constant where her measured answer exists. A sensory description does not think at all
 /// (`finish_body`): its whole allowance is the answer.
-pub fn apply_reasoning_budget(requested: Option<u32>, body: &mut Value) -> Option<u64> {
-    let budget = u64::from(requested?);
+pub fn apply_reasoning_budget(requested: Option<crate::ai::types::ThinkBudget>, body: &mut Value) -> Option<u64> {
+    let budget = u64::from(requested?.0);
     body.as_object_mut()?.insert("reasoning_budget_tokens".to_string(), json!(budget));
     Some(budget)
 }
@@ -75,8 +75,8 @@ pub(crate) fn finish_body(
     request: &TextGenerationRequest,
     model: &str,
     tail_tools: bool,
-    // The think's bound her caller sized (`DispatchTerms::reasoning_budget`); `None` leaves it to the model.
-    reasoning_budget: Option<u32>,
+    // The think's bound her caller sized (`DispatchTerms::think`), zero included; `None` leaves it to the model.
+    reasoning_budget: Option<crate::ai::types::ThinkBudget>,
     body: &mut Value,
 ) -> Result<(), crate::ai::inference_error::InferenceError> {
     // Thinking suppression — the REAL lever for qwen3-family forged templates.
@@ -691,8 +691,11 @@ mod tests {
     #[test]
     fn the_think_budget_is_the_callers_measured_one_and_nothing_else() {
         let mut act = json!({ "model": "m", "max_tokens": 434 });
-        assert_eq!(apply_reasoning_budget(Some(338), &mut act), Some(338));
+        assert_eq!(apply_reasoning_budget(Some(crate::ai::types::ThinkBudget(338)), &mut act), Some(338));
         assert_eq!(act["reasoning_budget_tokens"], json!(338));
+        let mut closed = json!({ "model": "m", "max_tokens": 96 });
+        assert_eq!(apply_reasoning_budget(Some(crate::ai::types::ThinkBudget(0)), &mut closed), Some(0), "zero is a budget: no thinking");
+        assert_eq!(closed["reasoning_budget_tokens"], json!(0));
         let mut none = json!({ "model": "m", "max_tokens": 400 });
         assert_eq!(apply_reasoning_budget(None, &mut none), None);
         assert!(none.get("reasoning_budget_tokens").is_none(), "no caller budget, no rule of its own");
@@ -709,7 +712,7 @@ mod tests {
         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], json!(false), "the description is all answer");
         let act = TextGenerationRequest { purpose: Some(ACT_PURPOSE.into()), ..Default::default() };
         let mut body = json!({ "model": "m", "max_tokens": 434 });
-        assert!(finish_body(&gateway(true), &act, "m", false, Some(338), &mut body).is_ok());
+        assert!(finish_body(&gateway(true), &act, "m", false, Some(crate::ai::types::ThinkBudget(338)), &mut body).is_ok());
         assert!(body.get("chat_template_kwargs").is_none(), "her turn thinks");
         assert_eq!(body["reasoning_budget_tokens"], json!(338), "at her measured budget");
     }

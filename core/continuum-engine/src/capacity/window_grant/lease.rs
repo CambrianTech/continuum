@@ -52,7 +52,7 @@ impl Reservations {
     ) -> Result<GrantReservation, ReserveRefused> {
         let mut held = self.lock();
         let current = current();
-        if current.map(|lease| lease.revision) != Some(leased.revision) {
+        if !current.is_some_and(|lease| lease.same_identity(&leased)) {
             return Err(ReserveRefused::Changed { leased, current });
         }
         if needed >= leased.tokens {
@@ -161,8 +161,10 @@ mod tests {
         assert_eq!(over.err(), Some(ReserveRefused::Over { count: 141_007, grant: 40_282 }));
         let held = owner.reserve_against(atlas, now, 141_007, || Some(now));
         assert!(held.is_ok(), "her lease's revision still stands: reserved");
-        let relaunched = publish(Some(&rev3), atlas, 148_838, 8);
-        assert_ne!(relaunched.lease_for(atlas), Some(now), "a new engine incarnation re-issues every revision");
+        let relaunched = publish(Some(&rev3), atlas, 148_838, 8).lease_for(atlas).expect("granted");
+        assert!(!relaunched.same_identity(&now), "a new engine incarnation re-issues every revision");
+        let foreign = GrantLease { owner: super::super::GrantOwner(uuid::Uuid::new_v4()), ..now };
+        assert!(matches!(owner.reserve_against(atlas, foreign, 1, || Some(now)), Err(ReserveRefused::Changed { .. })), "another owner's lease is never this one's");
     }
 
     // what this catches: (b) a shrink between the reserve and the send. The regrant runs under the

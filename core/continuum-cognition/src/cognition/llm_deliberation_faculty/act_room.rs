@@ -31,29 +31,54 @@ use crate::cognition::working_set::ActRoom;
 /// call arrived truncated (`__malformed_tool_arguments`, finish `length`, 22 since 11:00Z): a
 /// downward measurement with no upward test. The reply's claim still sizes her view (the
 /// allocation reserves `reserve`); only the request's cap changes, and never below that reserve.
-pub(super) fn request_allowance(kind: TurnKind, reserve: u32, window: u32, charged_prompt: usize) -> u32 {
+///
+/// `window` is already the smaller of her LEASED window and the physical sequence window (her
+/// grant never exceeds what one sequence holds, `window_grant::PoolGrants::per_sequence_cap`; off
+/// the pool it is the lane's own). The protocol margin is the fork's, not a guess: the engine's
+/// count (`/input_tokens`, `handle_count_tokens`) already includes the template's generation
+/// prompt and BOS (`tokenize_mixed(.., add_special = true, ..)`), and its admission refuses a
+/// sequence that leaves no free cell (`server-context.cpp`: `n_tokens() >= n_ctx`), so the margin
+/// is that one cell. The reply's grant is the MINIMUM room to keep, never a second maximum: when
+/// the room is below it the act is refused typed ([`ShortRoom`]) and re-rendered, never sent with
+/// a cap past either bound (the old `.max(reserve)` sent 80 tokens past a prompt that already
+/// overflowed, the M5 2026-11-04).
+pub(super) fn request_allowance(kind: TurnKind, reserve: u32, window: u32, charged_prompt: usize) -> Result<u32, ShortRoom> {
     let reserve = reserve.max(1);
     match kind {
-        TurnKind::Pass => reserve,
+        TurnKind::Pass => Ok(reserve),
         TurnKind::Act => {
             // The prompt is clamped to the window before the cast, so the cast cannot truncate.
             let prompt = charged_prompt.min(window as usize) as u32;
-            window.saturating_sub(prompt).saturating_sub(1).max(reserve)
+            let room = window.saturating_sub(prompt).saturating_sub(1); // the fork's one free cell (above)
+            match room >= reserve {
+                true => Ok(room),
+                false => Err(ShortRoom { room, reserve, window, prompt }),
+            }
         }
     }
+}
+
+/// The room an act's prompt leaves is below the reply's grant: refused, re-rendered, never sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ShortRoom {
+    pub(super) room: u32,
+    pub(super) reserve: u32,
+    pub(super) window: u32,
+    pub(super) prompt: u32,
 }
 
 /// The think's bound inside a turn's cap: the room her reply claim was granted past her MEASURED
 /// answer (an act's call and its serialization, a pass's sentence), so the answer always keeps its
 /// measured room; unmeasured, past the smallest usable reply
 /// ([`LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS`], the reply claim's own floor). Never a
-/// fixed count or a share of the cap. `None` when the grant leaves the think nothing.
-pub(super) fn act_reasoning_budget(room: ActRoom, reserve: u32) -> Option<u32> {
+/// fixed count or a share of the cap, and never unbounded: a grant that leaves the think nothing
+/// is a budget of ZERO (no thinking; the fork forces the end tag at once).
+pub(super) fn act_reasoning_budget(room: ActRoom, reserve: u32) -> crate::ai::types::ThinkBudget {
     let answer = match room {
         ActRoom::Needs { answer, .. } => answer,
         ActRoom::Unmeasured => LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS,
     };
-    Some(reserve.saturating_sub(answer)).filter(|budget| *budget > 0)
+    crate::ai::types::ThinkBudget(reserve.saturating_sub(answer))
 }
 
 impl LlmDeliberationFaculty {
@@ -71,7 +96,7 @@ impl LlmDeliberationFaculty {
     ) -> (crate::ai::types::DispatchTerms, Option<crate::ai::provenance::OutputRoom>) {
         let terms = crate::ai::types::DispatchTerms {
             admission: Some(crate::ai::types::RequestAdmission { window, lease, priced: calibration.admission }),
-            reasoning_budget: act_reasoning_budget(view.act_room, view.completion_reserve),
+            think: Some(act_reasoning_budget(view.act_room, view.completion_reserve)),
         };
         let Some(cap) = request.max_tokens.filter(|_| kind == TurnKind::Act) else {
             return (terms, None);
@@ -80,7 +105,7 @@ impl LlmDeliberationFaculty {
         let room = crate::ai::provenance::OutputRoom {
             model: request.model.clone().unwrap_or_default(), // unwrap_or_default: a request naming no model is the adapter's default, said as empty
             cap,
-            reasoning_budget: terms.reasoning_budget,
+            reasoning_budget: terms.think.map(|think| think.0),
             need: view.act_room.needed(),
             density_estimated,
             density_measured,

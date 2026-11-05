@@ -244,12 +244,33 @@ impl LlmDeliberationFaculty {
             );
             // This view's cap ([`request_allowance`]): a pass's grant, an act's window room after
             // the prompt as the calibration prices it (the engine's own count after a refusal).
-            let allowance = request_allowance(
+            let allowance = match request_allowance(
                 kind,
                 view.completion_reserve,
                 fit_window,
                 calibration.charge(view.estimated_prompt_tokens),
-            );
+            ) {
+                Ok(allowance) => allowance,
+                // The room is below the reply's grant: never sent past a bound; refused and re-rendered.
+                Err(short) => {
+                    continuum_base::probe!(
+                        class = "delib.act.room_short",
+                        persona = %self.persona_name,
+                        room = short.room,
+                        reserve = short.reserve,
+                        window = short.window,
+                        prompt = short.prompt,
+                        "her prompt leaves less than her reply's grant: refused, never a cap past her window"
+                    );
+                    let error = crate::cognition::workspace::PromptCapacityError {
+                        required_tokens: (short.prompt as usize).saturating_add(short.reserve as usize).saturating_add(1),
+                        budget_tokens: short.window as usize,
+                    };
+                    return Some(Contribution::prompt_capacity_refused(error).with_capacity_readiness(Arc::new(
+                        capacity_readiness.as_ref().clone().with_fit_window(fit_window),
+                    )));
+                }
+            };
             // SINGLE SHOT: one accepted generation → one verdict. A strictly
             // shrinking corrective admission replay follows a typed refusal; no
             // provider text or tool action has been accepted at that point.
@@ -317,7 +338,7 @@ impl LlmDeliberationFaculty {
             // bound the reply to a window the prompt no longer leaves.
             request.max_tokens = Some(allowance);
             let (terms, output_room) = self.dispatch_terms(kind, &view, calibration, (fit_window, rendered_lease), &request);
-            sent_reasoning_budget = terms.reasoning_budget;
+            sent_reasoning_budget = terms.think.map(|think| think.0);
             let allocation = view.allocation.clone().map(|allocation| crate::ai::provenance::AllocationReceipt { output_room, ..allocation });
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
             if rejected_prompt_tokens.is_some_and(|previous| estimated_prompt_tokens >= previous) {

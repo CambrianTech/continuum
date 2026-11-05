@@ -340,9 +340,18 @@ pub struct DispatchTerms {
     /// The strict admission guard it was rendered under; `None` = the lane's own window only.
     pub admission: Option<RequestAdmission>,
     /// The think's bound inside `max_tokens`, sized from her MEASURED output need (her grant past
-    /// her measured answer), so the answer keeps its room. `None` = no bound on the think.
-    pub reasoning_budget: Option<u32>,
+    /// her measured answer), so the answer keeps its room. A mind's turn always carries one, zero
+    /// included; `None` only for a caller with no measured need.
+    pub think: Option<ThinkBudget>,
 }
+
+/// A think budget in tokens. ZERO is a budget, not "unbounded": on our fork the reasoning-budget
+/// sampler forces the end tag the moment the think opens when its budget is 0
+/// (`common/reasoning-budget.cpp`: `remaining <= 0` -> `REASONING_BUDGET_FORCING`), and only `-1`
+/// (never sent) means unlimited (`common/sampling.cpp`). It applies where the model's chat template
+/// declares thinking end tags (`server-common.cpp`, `thinking_end_tags`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ThinkBudget(pub u32);
 
 /// How a prompt's price is admitted: whether a price below its estimate is backed by the engine's
 /// exact count of the finalized body.

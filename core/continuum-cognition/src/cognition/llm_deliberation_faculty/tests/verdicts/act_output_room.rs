@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::ai::provenance::PromptAdmission;
+use crate::ai::types::ThinkBudget;
 use crate::cognition::working_set::{EmissionStop, WorkingSetRegistry};
 
 /// A mind whose acts measured `reasoning` + `answer` (three landed acts).
@@ -34,16 +35,25 @@ fn the_live_cut_caps_become_her_measured_room_behind_the_engines_count() {
     let (_, price, _) = Density::default()
         .observe(estimate, counted, "qwen3.6-35b-a3b")
         .expect("a measured reply");
+    // The old path sent `.max(reserve)`, 80 tokens past a prompt priced over the window: now that
+    // is a typed refusal (re-render), never a cap past the bound.
     let old = request_allowance(TurnKind::Act, clipped_grant, window, price.charge(estimate));
-    assert_eq!(old, clipped_grant, "at the raw estimate the act kept only its clipped grant");
+    assert!(old.is_err(), "at the raw estimate the room is below her grant: refused, not 80 tokens past it");
     let counted_price = price.behind(PromptAdmission::EngineCounted);
-    let new = request_allowance(TurnKind::Act, clipped_grant, window, counted_price.charge(estimate));
+    let new = request_allowance(TurnKind::Act, clipped_grant, window, counted_price.charge(estimate)).expect("room");
     assert_eq!(new, window - counted - 1, "the engine's count leaves the room");
+    // A grant smaller than the slot (Atlas: leased 40,282 on a 148,822 slot): her window is the
+    // smaller of the two, so the cap is bounded by the grant, never by the slot.
+    let (leased, slot, prompt) = (40_282u32, 148_822u32, 30_000usize);
+    let bounded = request_allowance(TurnKind::Act, 434, leased.min(slot), prompt).expect("room");
+    assert_eq!(bounded, leased - prompt as u32 - 1);
+    assert!(prompt as u32 + bounded < leased, "prompt plus cap strictly inside her grant");
     let need = crate::cognition::working_set::OutputNeed { reasoning: 338, answer: 96, turns: 3, reasoning_at_least: None };
     let claim = reply_claim(TurnKind::Act, Some(need), 0, true, false, None);
     assert_eq!(claim.floor_tokens, 434, "her floor is think plus answer, never the answer alone");
     assert!(new >= claim.floor_tokens);
-    assert_eq!(act_reasoning_budget(crate::cognition::working_set::ActRoom::of(Some(need)), 434), Some(338), "the answer keeps its measured room");
+    assert_eq!(act_reasoning_budget(crate::cognition::working_set::ActRoom::of(Some(need)), 434), ThinkBudget(338), "the answer keeps its measured room");
+    assert_eq!(act_reasoning_budget(crate::cognition::working_set::ActRoom::of(Some(need)), 96), ThinkBudget(0), "a grant that holds only her answer: zero, never unbounded");
     assert_eq!(
         reply_claim(TurnKind::Act, None, 0, true, false, None).floor_tokens,
         0,
@@ -84,8 +94,10 @@ async fn an_act_carries_her_measured_room_the_guard_and_its_receipt() {
     assert!(cap >= 434, "her measured think plus answer: {cap}");
     assert!(cap >= view.completion_reserve, "never below the reply's grant");
     let terms = *adapter.terms_seen.lock().unwrap().last().expect("dispatched under terms"); // JUSTIFIED: test fixture lock, never poisoned
-    let budget = terms.reasoning_budget.expect("an act's think is bounded by her need");
+    let budget = terms.think.expect("an act's think is bounded by her need").0;
     assert!(budget >= 338 && budget + 96 <= cap, "the answer keeps its room inside the cap: {budget} of {cap}");
+    // A large write with a bounded thought: the cap allows the long answer, the think stays at its budget.
+    assert!(cap >= budget + 1_000, "room for a write far past her measured answer: think {budget}, cap {cap}");
     let admission = terms.admission.expect("every request carries the admission it was rendered under");
     assert_eq!((admission.window, admission.priced), (window, PromptAdmission::EngineCounted), "priced below the estimate only behind the engine's count");
     let allocation = receipts.last().and_then(|r| r.allocation.as_ref()).expect("the receipt names its allocation");
@@ -246,4 +258,43 @@ async fn a_grant_that_shrinks_before_dispatch_re_renders_her_turn_against_it() {
     let parked = faculty.contribute(&ws).await.expect("a typed refusal");
     assert!(parked.capacity_refusal.is_some(), "her grant moved twice: she waits for it to settle");
     assert_eq!(adapter.call_count(), 4, "two refused dispatches, no third render");
+}
+
+// what this catches: a prompt that consumes her reply's reserve sent anyway with a cap past the
+// window (the old `.max(reserve)`). The engine's exact count leaves less than her grant: the act is
+// never resent at that size with the reserve stacked past the window; it is re-rendered smaller or
+// refused, and every request that does go out fits strictly inside the window.
+#[tokio::test]
+async fn a_prompt_that_eats_the_reserve_is_re_rendered_or_refused_never_sent_past_the_window() {
+    use crate::ai::inference_error::InferenceError;
+    let home = tempfile::tempdir().expect("isolated fixture emission storage");
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let (window, persona) = (40_960u32, Uuid::new_v4());
+    let adapter = counted_adapter(2);
+    let mut once = true;
+    *adapter.on_request.lock().unwrap() = Some(Box::new(move |_request| { // JUSTIFIED: test fixture lock, never poisoned
+        // The engine counts the prompt at all but 200 tokens of the window: below her 434 reserve.
+        std::mem::take(&mut once).then_some(InferenceError::ContextExceeded { requested: window - 200, available: window })
+    }));
+    let faculty = LlmDeliberationFaculty::new(persona, "Aris", "You are Aris.", adapter.clone())
+        .with_context_window(window)
+        .with_tools(vec![read_tool()])
+        .with_working_set(measured(persona, 338, 96));
+    let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 200, true);
+    let _ = faculty.contribute(&ws).await.expect("a verdict or a typed refusal");
+    let seen = adapter.seen.lock().unwrap(); // JUSTIFIED: test fixture lock, never poisoned
+    let first = &seen[0];
+    for resent in seen.iter().skip(1) {
+        let prompt = LlmDeliberationFaculty::framing_cost(resent.system_prompt.as_deref().unwrap_or_default()) // unwrap_or_default: test fixture
+            + LlmDeliberationFaculty::messages_cost(&resent.messages)
+            + resent.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of); // map_or: no tools, no schemas
+        let cap = resent.max_tokens.unwrap_or_default(); // unwrap_or_default: test fixture
+        assert!(prompt + (cap as usize) < window as usize, "inside the window: {prompt} + {cap}");
+        assert!(cap >= 434, "never below her reserve: {cap}");
+        assert_ne!(
+            serde_json::to_value(&resent.messages).unwrap(), // JUSTIFIED: test fixture, serializable messages
+            serde_json::to_value(&first.messages).unwrap(), // JUSTIFIED: test fixture, serializable messages
+            "re-rendered smaller, never the same prompt with the reserve stacked past the window"
+        );
+    }
 }
