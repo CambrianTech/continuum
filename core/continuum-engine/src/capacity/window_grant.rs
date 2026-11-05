@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use crate::inference::planning::window_allocator::Tokens;
 
 mod lease;
-pub use lease::{begin_grant_handoff, HandoffRefused, grant_with_reservations, honoring_reservations, honoring_reservations_and_receipts, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
+pub use lease::{begin_grant_handoff, GrantHandoff, HandoffRefused, grant_with_reservations, honoring_reservations, honoring_reservations_and_receipts, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
 
 /// One publication of one mind's grant: monotonic and never reused in this process. A grant that
 /// moves, or a new engine incarnation, takes a new revision, so a lease priced at an old one fails

@@ -70,12 +70,28 @@ pub struct TerminalReceipt {
     pub finish: String,
 }
 
+/// Owned authority to reclaim exactly one publication. Dropping it does not release the
+/// charged claim. Physical reclamation must carry it through endpoint and slot custody.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use = "a handoff ticket must remain owned until verified physical reclamation or fencing"]
+pub struct GrantHandoff {
+    persona: uuid::Uuid,
+    lease: GrantLease,
+    receipt: u64,
+}
+
+impl GrantHandoff {
+    pub fn persona(&self) -> uuid::Uuid { self.persona }
+    pub fn lease(&self) -> GrantLease { self.lease }
+}
+
 /// Why a proposed transfer cannot begin. None authorizes freeing cached KV.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandoffRefused {
     GrantChanged,
     ReceiptChanged,
     CustodyOutstanding,
+    AlreadyPending,
 }
 
 /// Engine-terminal progress survives a finish/restart between publisher ticks.
@@ -170,7 +186,7 @@ impl Reservations {
         leased: GrantLease,
         receipt: u64,
         current: impl FnOnce() -> Option<GrantLease>,
-    ) -> Result<(), HandoffRefused> {
+    ) -> Result<GrantHandoff, HandoffRefused> {
         let mut held = self.lock();
         if leased.engine.is_none() || !current().is_some_and(|now| now.same_identity(&leased)) {
             return Err(HandoffRefused::GrantChanged);
@@ -181,8 +197,11 @@ impl Reservations {
         if held.entries.get(&persona).is_some_and(|entries| !entries.is_empty()) {
             return Err(HandoffRefused::CustodyOutstanding);
         }
+        if held.retiring.contains_key(&persona) {
+            return Err(HandoffRefused::AlreadyPending);
+        }
         held.retiring.insert(persona, leased);
-        Ok(())
+        Ok(GrantHandoff { persona, lease: leased, receipt })
     }
 
     /// Release only this request. An unsent attempt is not completed service. A receipt from
@@ -273,7 +292,7 @@ pub fn honoring_reservations_and_receipts<R>(
 /// Fence the old holder's next dispatch while preserving its charged capacity. This is the
 /// first phase of handoff, NOT a grant to a waiter. There is deliberately no unverified
 /// "release retirement" API: the physical save-and-erase receipt integration is still required.
-pub fn begin_grant_handoff(persona: uuid::Uuid, leased: GrantLease, receipt: u64) -> Result<(), HandoffRefused> {
+pub fn begin_grant_handoff(persona: uuid::Uuid, leased: GrantLease, receipt: u64) -> Result<GrantHandoff, HandoffRefused> {
     RESERVATIONS.begin_handoff(persona, leased, receipt, || super::current_lease(persona))
 }
 
@@ -415,7 +434,12 @@ mod tests {
         let active = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("reserved");
         settle(active, Some(&TerminalReceipt { finish: "stop".into() }));
         let revision = owner.honoring_with_receipts(engine(7), |_, receipts| receipts[&mind]);
-        assert_eq!(owner.begin_handoff(mind, lease, revision, || Some(lease)), Ok(()));
+        let ticket = owner.begin_handoff(mind, lease, revision, || Some(lease)).expect("handoff starts");
+        assert_eq!(ticket.persona(), mind);
+        assert_eq!(ticket.lease(), lease);
+        assert_eq!(owner.begin_handoff(mind, lease, revision, || Some(lease)), Err(HandoffRefused::AlreadyPending));
+        drop(ticket); // cancellation must not return physically occupied cells
+
         let again = owner.reserve_against(mind, lease, 50, || Some(lease));
         assert_eq!(again.err(), Some(ReserveRefused::Retiring { leased: lease }));
         owner.honoring_with_receipts(engine(7), |fixed, _| {

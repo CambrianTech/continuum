@@ -22,10 +22,15 @@ pub(crate) fn terminal_receipt(
     body: Option<&serde_json::Value>,
 ) -> Option<Terminal> {
     let body = body?;
-    let count = if action == "save" { "n_saved" } else { "n_restored" };
+    let (count, file_matches) = match action {
+        "save" => ("n_saved", body["filename"].as_str() == Some(filename)),
+        "restore" => ("n_restored", body["filename"].as_str() == Some(filename)),
+        "erase" => ("n_erased", true), // the fork's erase receipt names a slot, not a file
+        _ => return None,
+    };
     if (200..300).contains(&status)
         && body["id_slot"].as_u64() == Some(u64::from(slot))
-        && body["filename"].as_str() == Some(filename)
+        && file_matches
         && body[count].as_u64().is_some()
     {
         return Some(Terminal::Completed);
@@ -35,4 +40,33 @@ pub(crate) fn terminal_receipt(
         && body["error"]["type"].as_str() == Some("invalid_request_error")
         && body["error"]["message"].as_str().is_some())
     .then_some(Terminal::Rejected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn erase_requires_its_own_slot_and_unsigned_count() {
+        let valid = json!({"id_slot": 3, "n_erased": 0});
+        assert_eq!(terminal_receipt("erase", 3, "unused", 200, Some(&valid)), Some(Terminal::Completed));
+        for invalid in [json!({"id_slot": 2, "n_erased": 10}), json!({"id_slot": 3}),
+            json!({"id_slot": 3, "n_erased": -1}), json!({"id_slot": 3, "n_erased": "10"}),
+            json!({"id_slot": 3, "filename": "page", "n_saved": 10})] {
+            assert_eq!(terminal_receipt("erase", 3, "page", 200, Some(&invalid)), None);
+        }
+        assert_eq!(terminal_receipt("erase", 3, "unused", 200, None), None);
+        assert_eq!(terminal_receipt("erase", 3, "unused", 500, Some(&valid)), None);
+    }
+
+    #[test]
+    fn erase_support_does_not_weaken_save_or_restore_receipts() {
+        let erased = json!({"id_slot": 3, "n_erased": 10});
+        for action in ["save", "restore", "unknown"] {
+            assert_eq!(terminal_receipt(action, 3, "page", 200, Some(&erased)), None);
+        }
+        let saved = json!({"id_slot": 3, "filename": "other", "n_saved": 10});
+        assert_eq!(terminal_receipt("save", 3, "page", 200, Some(&saved)), None);
+    }
 }
