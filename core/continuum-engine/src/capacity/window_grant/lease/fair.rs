@@ -196,6 +196,17 @@ impl Reservations {
             revisions: BTreeMap::new(),
         };
         stamp_revisions(current.as_ref(), &mut next);
+        // Arm one holder only after its stamped publication is known. Reserve checks this
+        // under the same mutex as terminal settlement, including between publisher ticks.
+        state.yield_after.clear();
+        if !fair.waiters.is_empty() && state.retiring.is_empty() && engine.is_some() {
+            if let Some((mind, lease)) = next.by_mind.keys().find_map(|mind| {
+                (!fair.waiters.contains(mind)).then(|| next.lease_for(*mind).map(|lease| (*mind, lease))).flatten()
+            }) {
+                let baseline = fair.baseline.get(&mind).copied().unwrap_or(0); // first grant has no completed service
+                state.yield_after.insert(mind, (lease, baseline));
+            }
+        }
         (publish(next), tickets)
     }
 }

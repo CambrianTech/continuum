@@ -112,6 +112,9 @@ struct ReservationState {
     receipts: BTreeMap<uuid::Uuid, (Option<EngineIncarnation>, u64)>,
     retiring: BTreeMap<uuid::Uuid, GrantLease>,
     reclaimed: BTreeMap<uuid::Uuid, GrantLease>,
+    /// A queued waiter is owed the holder's next completed turn. This blocks reserve at the
+    /// receipt boundary, rather than hoping the publisher catches an idle interval.
+    yield_after: BTreeMap<uuid::Uuid, (GrantLease, u64)>,
 }
 
 /// The reservations and terminal progress share one lock: a publisher cannot observe a
@@ -123,7 +126,7 @@ pub(super) struct Reservations {
 impl Reservations {
     pub(super) const fn new() -> Self {
         Self { held: std::sync::Mutex::new(ReservationState {
-            next_id: 0, entries: BTreeMap::new(), next_receipt: 0, receipts: BTreeMap::new(), retiring: BTreeMap::new(), reclaimed: BTreeMap::new(),
+            next_id: 0, entries: BTreeMap::new(), next_receipt: 0, receipts: BTreeMap::new(), retiring: BTreeMap::new(), reclaimed: BTreeMap::new(), yield_after: BTreeMap::new(),
         }) }
     }
 
@@ -146,6 +149,12 @@ impl Reservations {
             return Err(ReserveRefused::Changed { leased, current });
         }
         if held.retiring.get(&persona).is_some_and(|retired| retired.engine == leased.engine) {
+            return Err(ReserveRefused::Retiring { leased });
+        }
+        if held.yield_after.get(&persona).is_some_and(|(armed, baseline)| {
+            armed.same_identity(&leased) && held.receipts.get(&persona)
+                .is_some_and(|(engine, revision)| *engine == leased.engine && revision > baseline)
+        }) {
             return Err(ReserveRefused::Retiring { leased });
         }
         if needed >= leased.tokens {
@@ -178,6 +187,7 @@ impl Reservations {
         held.receipts.retain(|_, (incarnation, _)| *incarnation == engine);
         held.retiring.retain(|_, lease| lease.engine == engine);
         held.reclaimed.retain(|_, lease| lease.engine == engine);
+        held.yield_after.retain(|_, (lease, _)| lease.engine == engine);
         let mut reserved: BTreeMap<uuid::Uuid, u32> = held.entries.iter().map(|(mind, entries)| {
             (*mind, entries.iter().map(|e| e.tokens).max().unwrap_or(0)) // unwrap_or: empty entries were removed above
         }).collect();

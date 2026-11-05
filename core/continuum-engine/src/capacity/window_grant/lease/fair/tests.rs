@@ -115,15 +115,15 @@ fn cancellation_does_not_authorize_retirement_or_waiter_admission() {
     let finished = owner
         .reserve_against(a, lease, 50, || Some(lease))
         .expect("first request");
+    let unresolved = owner
+        .reserve_against(a, lease, 50, || Some(lease))
+        .expect("overlapping second request");
     settle(
         finished,
         Some(&TerminalReceipt {
             finish: "stop".into(),
         }),
     );
-    let unresolved = owner
-        .reserve_against(a, lease, 50, || Some(lease))
-        .expect("second request");
     drop(unresolved);
     assert!(tick(owner, &mut fair, &[a, b], &mut current).is_empty());
     assert_eq!(
@@ -132,6 +132,27 @@ fn cancellation_does_not_authorize_retirement_or_waiter_admission() {
     );
     assert_eq!(current.as_ref().expect("published").by_mind.get(&b), None);
     assert!(owner.lock().retiring.is_empty());
+}
+
+#[test]
+fn completion_bars_reacquisition_before_the_next_publisher_tick() {
+    let owner = Box::leak(Box::new(Reservations::new()));
+    let (a, b) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
+    let mut fair = FairGrantState::default();
+    let mut current = None;
+    tick(owner, &mut fair, &[a, b], &mut current);
+    let lease = current.as_ref().expect("published").lease_for(a).expect("holder");
+    let unsent = owner.reserve_against(a, lease, 50, || Some(lease)).expect("first attempt");
+    unsent.release_unsent();
+    let served = owner.reserve_against(a, lease, 50, || Some(lease)).expect("unsent did not spend turn");
+    settle(served, Some(&TerminalReceipt { finish: "stop".into() }));
+    assert!(matches!(owner.reserve_against(a, lease, 50, || Some(lease)), Err(ReserveRefused::Retiring { .. })),
+        "no publisher tick has run, but the terminal boundary already bars reacquisition");
+    assert_eq!(current.as_ref().expect("published").by_mind.get(&a), Some(&60), "capacity remains charged");
+    // A departed waiter disarms the obligation at publication without physical reclamation.
+    assert!(tick(owner, &mut fair, &[a], &mut current).is_empty());
+    let refreshed = current.as_ref().expect("published").lease_for(a).expect("holder");
+    owner.reserve_against(a, refreshed, 50, || Some(refreshed)).expect("no remaining waiter").release_unsent();
 }
 
 #[test]
