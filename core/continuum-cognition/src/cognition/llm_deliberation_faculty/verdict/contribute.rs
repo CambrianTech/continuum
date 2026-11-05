@@ -251,24 +251,9 @@ impl LlmDeliberationFaculty {
                 calibration.charge(view.estimated_prompt_tokens),
             ) {
                 Ok(allowance) => allowance,
-                // The room is below the reply's grant: never sent past a bound; refused and re-rendered.
+                // The room is below the reply's grant: never sent past a bound (`act_room.rs`).
                 Err(short) => {
-                    continuum_base::probe!(
-                        class = "delib.act.room_short",
-                        persona = %self.persona_name,
-                        room = short.room,
-                        reserve = short.reserve,
-                        window = short.window,
-                        prompt = short.prompt,
-                        "her prompt leaves less than her reply's grant: refused, never a cap past her window"
-                    );
-                    let error = crate::cognition::workspace::PromptCapacityError {
-                        required_tokens: (short.prompt as usize).saturating_add(short.reserve as usize).saturating_add(1),
-                        budget_tokens: short.window as usize,
-                    };
-                    return Some(Contribution::prompt_capacity_refused(error).with_capacity_readiness(Arc::new(
-                        capacity_readiness.as_ref().clone().with_fit_window(fit_window),
-                    )));
+                    return Some(self.room_short_refused(short, capacity_readiness.as_ref().clone().with_fit_window(fit_window)))
                 }
             };
             // SINGLE SHOT: one accepted generation → one verdict. A strictly
@@ -471,13 +456,7 @@ impl LlmDeliberationFaculty {
                     view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
                 }
                 Err(crate::ai::inference_error::InferenceError::GrantChanged { rendered, current }) => {
-                    let error = crate::cognition::workspace::PromptCapacityError {
-                        required_tokens: rendered as usize,
-                        budget_tokens: current.map_or(0, |c| c as usize), // map_or: a withdrawn grant holds nothing
-                    };
-                    return Some(Contribution::prompt_capacity_refused(error).with_capacity_readiness(Arc::new(
-                        capacity_readiness.as_ref().clone().with_fit_window(fit_window),
-                    )));
+                    return Some(self.grant_moved_refused(rendered, current, capacity_readiness.as_ref().clone().with_fit_window(fit_window)))
                 }
                 Err(crate::ai::inference_error::InferenceError::AdmissionUncounted { model })
                     if calibration.admission == crate::ai::provenance::PromptAdmission::EngineCounted =>

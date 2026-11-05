@@ -128,6 +128,43 @@ impl LlmDeliberationFaculty {
         (terms, Some(room))
     }
 
+    /// An act whose prompt leaves less room than her reply's grant: refused typed and parked (the
+    /// next render sizes against what she has), never sent with a cap past either bound.
+    pub(super) fn room_short_refused(
+        &self,
+        short: ShortRoom,
+        readiness: crate::cognition::workspace::CapacityReadiness,
+    ) -> Contribution {
+        continuum_base::probe!(
+            class = "delib.act.room_short",
+            persona = %self.persona_name,
+            room = short.room,
+            reserve = short.reserve,
+            window = short.window,
+            prompt = short.prompt,
+            "her prompt leaves less than her reply's grant: refused, never a cap past her window"
+        );
+        let error = crate::cognition::workspace::PromptCapacityError {
+            required_tokens: (short.prompt as usize).saturating_add(short.reserve as usize).saturating_add(1),
+            budget_tokens: short.window as usize,
+        };
+        Contribution::prompt_capacity_refused(error).with_capacity_readiness(Arc::new(readiness))
+    }
+
+    /// Her grant moved again (or was withdrawn) after one re-render: she parks until it settles.
+    pub(super) fn grant_moved_refused(
+        &self,
+        rendered: u32,
+        current: Option<u32>,
+        readiness: crate::cognition::workspace::CapacityReadiness,
+    ) -> Contribution {
+        let error = crate::cognition::workspace::PromptCapacityError {
+            required_tokens: rendered as usize,
+            budget_tokens: current.map_or(0, |c| c as usize), // map_or: a withdrawn grant holds nothing
+        };
+        Contribution::prompt_capacity_refused(error).with_capacity_readiness(Arc::new(readiness))
+    }
+
     /// An act refused because her measured output need does not fit her window: never sent, her
     /// need already recorded with her window's floor (`prompt/view.rs`), parked on readiness so the
     /// same window is never retried unchanged.
