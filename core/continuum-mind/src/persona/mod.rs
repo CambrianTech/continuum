@@ -33,6 +33,7 @@ pub mod airc_runtime_registry;
 pub mod airc_source;
 pub mod allocator;
 pub mod card;
+pub mod persona_scope;
 pub mod card_carry;
 pub mod card_hands;
 pub mod card_checkout;

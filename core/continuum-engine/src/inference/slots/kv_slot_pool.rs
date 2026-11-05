@@ -272,6 +272,13 @@ impl KvSlotPool {
         Ok(SlotPermit { _permit: permit, released: Arc::clone(&self.released) })
     }
 
+    /// The slot's permit when it is free right now, without queueing: a caller holding other
+    /// gates checks first and, when the slot is busy, drops what it holds before it waits.
+    pub(crate) fn try_acquire_slot(&self, slot: u32) -> Option<SlotPermit> {
+        let permit = self.operations.get(slot as usize)?.clone().try_acquire_owned().ok()?;
+        Some(SlotPermit { _permit: permit, released: Arc::clone(&self.released) })
+    }
+
     /// The signal a slot release raises; see [`Self::released`] on the struct.
     pub(crate) fn released(&self) -> Arc<tokio::sync::Notify> {
         Arc::clone(&self.released)

@@ -118,14 +118,14 @@ async fn an_unresolved_switch_holds_its_slot_until_the_engine_answers() {
     let patience = AdmissionPatience::for_turn;
 
     // The restore outlives its measured bound while the engine's process works: unresolved.
-    let turn = admit_turn(&sem, Some(held), Some(pool.clone()), &client, &engine.root, 100, patience()).await;
+    let turn = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(held), Some(pool.clone()), &client, &engine.root, 100, patience()).await;
     assert!(turn.is_err(), "an unresolved switch admits no generation");
     assert_eq!(engine.landed.load(Ordering::SeqCst), 0, "the engine has not answered yet");
     assert_eq!(sem.available_permits(), 1, "the held custody keeps its lane");
     assert!(!directory.endpoint(&engine.root).paging_recovery_required(), "unresolved alone never quarantines");
 
     // Same-slot reuse waits for the receipt, and gets the slot once the engine has answered.
-    let mut reuse = Box::pin(admit_turn(&sem, Some(next), Some(pool.clone()), &client, &engine.root, 100, patience()));
+    let mut reuse = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(next), Some(pool.clone()), &client, &engine.root, 100, patience()));
     assert!(tokio::time::timeout(ABSENT_FOR, &mut reuse).await.is_err(), "no turn takes a held slot");
     engine.release.notify_one();
     let mut reused = tokio::time::timeout(ARRIVES_WITHIN, reuse)
@@ -138,7 +138,7 @@ async fn an_unresolved_switch_holds_its_slot_until_the_engine_answers() {
     drop(reused);
 
     // The held activity again: unresolved again. An engine transition waits on the custody.
-    let turn = admit_turn(&sem, Some(held), Some(pool.clone()), &client, &engine.root, 100, patience()).await;
+    let turn = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(held), Some(pool.clone()), &client, &engine.root, 100, patience()).await;
     assert!(turn.is_err(), "unresolved again");
     let endpoint = directory.endpoint(&engine.root);
     let mut replacing = Box::pin(endpoint.transition());
@@ -171,14 +171,14 @@ async fn a_reply_cut_mid_body_quarantines_before_the_slot_is_let_go() {
     let sem = Arc::new(Semaphore::new(2));
     let client = reqwest::Client::new();
 
-    let turn = admit_turn(&sem, Some(held), Some(pool.clone()), &client, &engine.root, 100, AdmissionPatience::for_turn()).await;
+    let turn = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(held), Some(pool.clone()), &client, &engine.root, 100, AdmissionPatience::for_turn()).await;
     assert!(turn.is_err(), "the restore admits no generation");
     // The restore is IN the engine, held: wait on the engine's own event, never a virtual
     // timeout, which can pass before the request's bytes arrive.
     engine_event(&engine.entered, "the restore never reached the engine").await;
     assert_eq!(sem.available_permits(), 1, "unresolved, not uncertain: the held custody keeps its lane");
     assert!(!directory.endpoint(&engine.root).paging_recovery_required(), "unresolved alone never quarantines");
-    let mut reuse = Box::pin(admit_turn(&sem, Some(next), Some(pool.clone()), &client, &engine.root, 100, AdmissionPatience::for_turn()));
+    let mut reuse = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(next), Some(pool.clone()), &client, &engine.root, 100, AdmissionPatience::for_turn()));
     assert!(tokio::time::timeout(ABSENT_FOR, &mut reuse).await.is_err(), "no turn takes a held slot");
 
     engine.drops_reply.store(true, Ordering::SeqCst);
@@ -211,7 +211,7 @@ async fn a_checkpoint_left_unresolved_quarantines_the_endpoint() {
     let client = reqwest::Client::new();
     let sem = Arc::new(Semaphore::new(2));
     let resident = PageKey::mind(Uuid::new_v4()).expect("test: resident activity");
-    let mut turn = admit_turn(&sem, Some(resident), Some(pool), &client, &engine.root, 100, Duration::ZERO)
+    let mut turn = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(resident), Some(pool), &client, &engine.root, 100, Duration::ZERO)
         .await
         .expect("test: a cold resident");
     turn.generation_completed();
