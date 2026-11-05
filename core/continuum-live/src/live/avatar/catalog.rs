@@ -560,6 +560,7 @@ impl AvatarCatalog {
                         energy: m.parse_energy(),
                     },
                     tags: m.tags.clone(),
+                    receipt_frame: None,
                 }
             } else if let Some(static_model) = static_by_stem.get(stem.as_str()) {
                 // Known model from static catalog — inherit metadata
@@ -571,11 +572,11 @@ impl AvatarCatalog {
                     style: static_model.style,
                     voice_profile: static_model.voice_profile,
                     tags: Vec::new(),
+                    receipt_frame: None,
                 }
             } else {
                 // Unknown model — infer from stem name and assign alternating gender
                 // for better distribution when no metadata is available.
-                let gender = infer_gender_from_stem(stem);
                 DynamicAvatarModel {
                     id: stem.clone(),
                     name: humanize_stem(stem),
@@ -588,6 +589,7 @@ impl AvatarCatalog {
                         energy: EnergyLevel::Moderate,
                     },
                     tags: vec!["discovered".to_string()],
+                    receipt_frame: None,
                 }
             };
 
@@ -627,6 +629,7 @@ impl AvatarCatalog {
                 style: m.style,
                 voice_profile: m.voice_profile,
                 tags: Vec::new(),
+                receipt_frame: m.receipt_frame.map(|s| s.to_string()),
             })
             .collect();
         Self { models }
