@@ -366,10 +366,10 @@ pub enum PromptAdmission {
 pub struct RequestAdmission {
     /// The window prompt plus `max_tokens` must fit strictly, by the engine's exact count.
     pub window: u32,
-    /// Her grant on the shared pool when the request was rendered; at dispatch her CURRENT grant
-    /// must equal it, or the request is refused (`InferenceError::GrantChanged`) and re-rendered.
-    /// `None` = not on the shared pool (no grant to re-check).
-    pub grant: Option<u32>,
+    /// Her grant's LEASE when the request was rendered (its size and the revision that published
+    /// it); at dispatch the grant owner reserves that revision, or the request is refused
+    /// (`InferenceError::GrantChanged`) and re-rendered. `None` = not on the shared pool.
+    pub lease: Option<crate::capacity::window_grant::GrantLease>,
     /// How its prompt was priced: below the estimate only behind the engine's count.
     pub priced: PromptAdmission,
 }

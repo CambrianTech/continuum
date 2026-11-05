@@ -66,11 +66,11 @@ impl LlmDeliberationFaculty {
         kind: TurnKind,
         view: &DeliberationPromptView,
         calibration: PromptCalibration,
-        (window, grant): (u32, Option<u32>),
+        (window, lease): (u32, Option<crate::capacity::window_grant::GrantLease>),
         request: &TextGenerationRequest,
     ) -> (crate::ai::types::DispatchTerms, Option<crate::ai::provenance::OutputRoom>) {
         let terms = crate::ai::types::DispatchTerms {
-            admission: Some(crate::ai::types::RequestAdmission { window, grant, priced: calibration.admission }),
+            admission: Some(crate::ai::types::RequestAdmission { window, lease, priced: calibration.admission }),
             reasoning_budget: act_reasoning_budget(view.act_room, view.completion_reserve),
         };
         let Some(cap) = request.max_tokens.filter(|_| kind == TurnKind::Act) else {

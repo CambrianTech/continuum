@@ -63,10 +63,11 @@ impl LlmDeliberationFaculty {
             Err(refused) => return Some(Contribution::deliberation_fault(refused.to_string())),
         };
         let decided_window = decided.tokens();
-        // The grant this turn is rendered against, when she is on the shared pool: the engine
-        // re-checks it at dispatch, after any wait for a lane (`RequestAdmission::grant`).
-        let mut rendered_grant = match decided {
-            crate::capacity::mind_window::Decided::Granted(granted) => Some(granted.get()),
+        // The grant LEASE this turn is rendered against (size and revision), when she is on the
+        // shared pool: the grant owner reserves that revision at dispatch, after any lane wait.
+        let lease_now = || crate::capacity::window_grant::current_lease(self.persona_id);
+        let mut rendered_lease = match decided {
+            crate::capacity::mind_window::Decided::Granted(_) => lease_now(),
             _ => None,
         };
         let capacity_readiness = Arc::new(crate::cognition::workspace::CapacityReadiness::new(
@@ -315,7 +316,7 @@ impl LlmDeliberationFaculty {
             // is built once, and a template's `max_tokens` from an earlier plan would
             // bound the reply to a window the prompt no longer leaves.
             request.max_tokens = Some(allowance);
-            let (terms, output_room) = self.dispatch_terms(kind, &view, calibration, (fit_window, rendered_grant), &request);
+            let (terms, output_room) = self.dispatch_terms(kind, &view, calibration, (fit_window, rendered_lease), &request);
             sent_reasoning_budget = terms.reasoning_budget;
             let allocation = view.allocation.clone().map(|allocation| crate::ai::provenance::AllocationReceipt { output_room, ..allocation });
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
@@ -444,8 +445,8 @@ impl LlmDeliberationFaculty {
                         "her grant changed between render and dispatch: re-rendered against it, never sent"
                     );
                     grant_rerendered = true;
-                    rendered_grant = Some(current);
-                    fit_window = current;
+                    rendered_lease = lease_now();
+                    fit_window = rendered_lease.map_or(current, |lease| lease.tokens); // map_or: the refusal's own count when no lease is published
                     view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
                 }
                 Err(crate::ai::inference_error::InferenceError::GrantChanged { rendered, current }) => {

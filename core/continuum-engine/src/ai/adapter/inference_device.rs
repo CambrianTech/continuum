@@ -576,7 +576,7 @@ pub trait AIProviderAdapter: Send + Sync {
         terms: crate::ai::types::DispatchTerms,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
-        let enforced = terms.admission.is_some_and(|a| a.grant.is_some() || a.priced == crate::ai::types::PromptAdmission::EngineCounted);
+        let enforced = terms.admission.is_some_and(|a| a.lease.is_some() || a.priced == crate::ai::types::PromptAdmission::EngineCounted);
         if enforced {
             return Err(crate::ai::inference_error::InferenceError::AdmissionUncounted {
                 model: request.model.clone().unwrap_or_default(), // unwrap_or_default: a request naming no model is the adapter's default, said as empty

@@ -177,13 +177,13 @@ pub(crate) async fn send_with_lane_retry(
         // a grant that moved since render, or a count past it, refuses typed and nothing is sent;
         // a reserved lease holds every regrant off until this request ends.
         if let (Some(DispatchAdmission { persona, admission }), None) = (fill.admission, reservation.as_ref()) {
-            if let Some(leased) = admission.grant {
+            if let Some(leased) = admission.lease {
                 let needed = (fill.prompt_tokens as u64)
                     .saturating_add(u64::from(fill.prompt_quote.map_or(0, |q| q.reply))) // map_or: no quote, no explicit reply allowance
                     .min(u64::from(u32::MAX)) as u32;
                 *reservation = Some(crate::capacity::window_grant::reserve(persona, leased, needed).map_err(|refused| match refused {
                     crate::capacity::window_grant::ReserveRefused::Changed { leased, current } => {
-                        InferenceError::GrantChanged { rendered: leased, current }
+                        InferenceError::GrantChanged { rendered: leased.tokens, current: current.map(|lease| lease.tokens) }
                     }
                     crate::capacity::window_grant::ReserveRefused::Over { count, grant } => {
                         InferenceError::ContextExceeded { requested: count, available: grant }

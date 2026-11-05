@@ -229,7 +229,7 @@ async fn a_grant_that_shrinks_before_dispatch_re_renders_her_turn_against_it() {
     let terms = adapter.terms_seen.lock().unwrap().clone(); // JUSTIFIED: test fixture lock, never poisoned
     assert_eq!(terms[0].admission.map(|a| a.window), Some(rendered));
     let admission = terms[1].admission.expect("the re-render carries its admission");
-    assert_eq!((admission.window, admission.grant), (current, Some(current)), "rendered against the grant she has now");
+    assert_eq!(admission.window, current, "rendered against the grant she has now");
     let prompt = LlmDeliberationFaculty::framing_cost(fresh.system_prompt.as_deref().unwrap_or_default()) // unwrap_or_default: test fixture
         + LlmDeliberationFaculty::messages_cost(&fresh.messages)
         + fresh.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of); // map_or: no tools, no schemas

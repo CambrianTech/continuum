@@ -14,7 +14,12 @@ impl ServingDaemonModule {
     /// terminal receipt releases it; the shrink applies at the first publish after.
     pub(super) fn publish_grants(&self) {
         let (next, changed) = crate::capacity::window_grant::honoring_reservations(|reserved| {
-            let next = self.grants_now(reserved);
+            let mut next = self.grants_now(reserved);
+            // Every moved grant takes a new revision: a lease priced at an old one never reserves.
+            let current = self.grants_tx.borrow().clone();
+            if let Some(next) = next.as_mut() {
+                crate::capacity::window_grant::stamp_revisions(current.as_ref(), next);
+            }
             let changed = self.grants_tx.send_if_modified(|current| {
                 if *current == next {
                     return false;
@@ -83,7 +88,7 @@ impl ServingDaemonModule {
         let held = self.grants_tx.borrow().as_ref().map(|g| g.by_mind.clone()).unwrap_or_default(); // unwrap_or_default: nothing granted yet holds nothing
         let mut by_mind = DemandFollowing.grant(&demands, &held, pool_tokens);
         crate::capacity::window_grant::honor(&mut by_mind, reserved);
-        Some(PoolGrants { pool_tokens, per_sequence_cap, by_mind })
+        Some(PoolGrants { pool_tokens, per_sequence_cap, by_mind, engine: crate::inference::lane_pidfile::read(), revisions: Default::default() })
     }
 
     /// Whether the running engine is on the shared pool, read off its argv once per process.

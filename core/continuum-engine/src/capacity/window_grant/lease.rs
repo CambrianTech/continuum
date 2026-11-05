@@ -10,16 +10,19 @@
 //! sent), and a regrant never takes a reserved grant below what is reserved; the shrink applies at
 //! the first publish after the reservation is released (its guard is dropped with the request).
 //!
-//! The lease is identified by the granted tokens: a grant that moved away and back to the same
-//! size is the same entitlement, which is all the reservation protects.
+//! The lease is identified by its grant REVISION ([`super::GrantRevision`]), never its size: a grant
+//! shrunk and regrown to the same size is a new revision, so a request priced before the shrink is
+//! refused (the ABA case a size compare would pass).
 
 use std::collections::BTreeMap;
+
+use super::GrantLease;
 
 /// Why a reservation was refused. Nothing was sent; the caller re-renders against her grant now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReserveRefused {
-    /// Her grant is no longer the one the request was priced against (`None`: withdrawn).
-    Changed { leased: u32, current: Option<u32> },
+    /// Her grant's revision is no longer the one the request was priced against (`None`: withdrawn).
+    Changed { leased: GrantLease, current: Option<GrantLease> },
     /// The engine's exact count plus the output reserve does not fit strictly inside the lease.
     Over { count: u32, grant: u32 },
 }
@@ -43,20 +46,20 @@ impl Reservations {
     fn reserve_against(
         &'static self,
         persona: uuid::Uuid,
-        leased: u32,
+        leased: GrantLease,
         needed: u32,
-        current: impl FnOnce() -> Option<u32>,
+        current: impl FnOnce() -> Option<GrantLease>,
     ) -> Result<GrantReservation, ReserveRefused> {
         let mut held = self.lock();
         let current = current();
-        if current != Some(leased) {
+        if current.map(|lease| lease.revision) != Some(leased.revision) {
             return Err(ReserveRefused::Changed { leased, current });
         }
-        if needed >= leased {
-            return Err(ReserveRefused::Over { count: needed, grant: leased });
+        if needed >= leased.tokens {
+            return Err(ReserveRefused::Over { count: needed, grant: leased.tokens });
         }
-        let entry = held.entry(persona).or_insert((leased, 0));
-        entry.0 = entry.0.max(leased);
+        let entry = held.entry(persona).or_insert((leased.tokens, 0));
+        entry.0 = entry.0.max(leased.tokens);
         entry.1 += 1;
         Ok(GrantReservation { owner: self, persona })
     }
@@ -101,8 +104,8 @@ pub fn honoring_reservations<R>(regrant: impl FnOnce(&BTreeMap<uuid::Uuid, u32>)
 
 /// Reserve `persona`'s lease of `leased` tokens for a request that needs `needed` (the engine's
 /// exact prompt count plus its output reserve), against her grant as published now.
-pub fn reserve(persona: uuid::Uuid, leased: u32, needed: u32) -> Result<GrantReservation, ReserveRefused> {
-    RESERVATIONS.reserve_against(persona, leased, needed, || super::current_grant(persona))
+pub fn reserve(persona: uuid::Uuid, leased: GrantLease, needed: u32) -> Result<GrantReservation, ReserveRefused> {
+    RESERVATIONS.reserve_against(persona, leased, needed, || super::current_lease(persona))
 }
 
 /// A regrant's result with every reserved grant held at least at its reservation: a mind whose
@@ -117,27 +120,49 @@ pub fn honor(grants: &mut BTreeMap<uuid::Uuid, u32>, reserved: &BTreeMap<uuid::U
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::{stamp_revisions, PoolGrants};
 
     fn owner() -> &'static Reservations {
         Box::leak(Box::new(Reservations::new()))
     }
 
+    /// The grants a publish would carry: `atlas` at `tokens` on engine `engine`, stamped against `current`.
+    fn publish(current: Option<&PoolGrants>, atlas: uuid::Uuid, tokens: u32, engine: u32) -> PoolGrants {
+        let mut next = PoolGrants { by_mind: BTreeMap::from([(atlas, tokens)]), engine: Some(engine), ..Default::default() };
+        stamp_revisions(current, &mut next);
+        next
+    }
+
     // what this catches: Atlas on the M5 (0b2854327): a request priced at 148,838 dispatched after a
     // re-home shrank her grant to 40,282, sent at 139,007 counted tokens. (a) A shrink during the
-    // lane wait refuses the reserve typed (re-render, nothing sent); an exact count over the lease
-    // refuses typed with the count; a lease that still holds reserves.
+    // lane wait refuses the reserve typed (re-render, nothing sent), and so does the ABA case:
+    // shrunk and regrown to the SAME size is a new revision. A count over the lease refuses typed
+    // with the count; a lease whose revision still stands reserves.
     #[test]
-    fn a_shrink_before_dispatch_or_a_count_over_the_lease_refuses_typed() {
+    fn a_moved_grant_even_regrown_to_its_size_or_a_count_over_it_refuses_typed() {
         let atlas = uuid::Uuid::new_v4();
         let owner = owner();
-        let shrunk = owner.reserve_against(atlas, 148_838, 141_007, || Some(40_282));
-        assert_eq!(shrunk.err(), Some(ReserveRefused::Changed { leased: 148_838, current: Some(40_282) }));
-        let withdrawn = owner.reserve_against(atlas, 148_838, 141_007, || None);
-        assert_eq!(withdrawn.err(), Some(ReserveRefused::Changed { leased: 148_838, current: None }));
-        let over = owner.reserve_against(atlas, 40_282, 141_007, || Some(40_282));
+        let rev1 = publish(None, atlas, 148_838, 7);
+        let rev1_again = publish(Some(&rev1), atlas, 148_838, 7);
+        assert_eq!(rev1.lease_for(atlas), rev1_again.lease_for(atlas), "an unchanged grant keeps its revision");
+        let rev2 = publish(Some(&rev1_again), atlas, 40_282, 7);
+        let rev3 = publish(Some(&rev2), atlas, 148_838, 7);
+        let priced = rev1.lease_for(atlas).expect("granted");
+        let now = rev3.lease_for(atlas).expect("granted");
+        assert_eq!(now.tokens, priced.tokens, "precondition: the same size again");
+        let aba = owner.reserve_against(atlas, priced, 141_007, || Some(now));
+        assert_eq!(aba.err(), Some(ReserveRefused::Changed { leased: priced, current: Some(now) }), "a new revision, refused");
+        let shrunk = owner.reserve_against(atlas, priced, 141_007, || rev2.lease_for(atlas));
+        assert!(matches!(shrunk, Err(ReserveRefused::Changed { .. })));
+        let withdrawn = owner.reserve_against(atlas, priced, 141_007, || None);
+        assert_eq!(withdrawn.err(), Some(ReserveRefused::Changed { leased: priced, current: None }));
+        let small = rev2.lease_for(atlas).expect("granted");
+        let over = owner.reserve_against(atlas, small, 141_007, || Some(small));
         assert_eq!(over.err(), Some(ReserveRefused::Over { count: 141_007, grant: 40_282 }));
-        let held = owner.reserve_against(atlas, 148_838, 141_007, || Some(148_838));
-        assert!(held.is_ok(), "her lease still holds: reserved");
+        let held = owner.reserve_against(atlas, now, 141_007, || Some(now));
+        assert!(held.is_ok(), "her lease's revision still stands: reserved");
+        let relaunched = publish(Some(&rev3), atlas, 148_838, 8);
+        assert_ne!(relaunched.lease_for(atlas), Some(now), "a new engine incarnation re-issues every revision");
     }
 
     // what this catches: (b) a shrink between the reserve and the send. The regrant runs under the
@@ -148,7 +173,8 @@ mod tests {
     fn a_reserved_grant_defers_a_shrink_until_its_request_ends() {
         let atlas = uuid::Uuid::new_v4();
         let owner = owner();
-        let reservation = owner.reserve_against(atlas, 148_838, 141_007, || Some(148_838)).expect("reserved");
+        let lease = publish(None, atlas, 148_838, 7).lease_for(atlas).expect("granted");
+        let reservation = owner.reserve_against(atlas, lease, 141_007, || Some(lease)).expect("reserved");
         let shrink = || BTreeMap::from([(atlas, 40_282u32)]);
         let during = owner.honoring(|reserved| {
             let mut grants = shrink();

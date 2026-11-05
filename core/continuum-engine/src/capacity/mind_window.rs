@@ -124,6 +124,7 @@ mod tests {
             pool_tokens: 200_000,
             per_sequence_cap: 200_000,
             by_mind: by_mind.iter().copied().collect(),
+            ..Default::default()
         })
     }
 
