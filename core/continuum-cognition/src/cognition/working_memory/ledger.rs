@@ -63,6 +63,7 @@ impl WorkingMemory {
             action_fps: Mutex::new(VecDeque::new()),
             action_fp_counts: Mutex::new(HashMap::new()),
             actions: Mutex::new(Default::default()),
+            thoughts: Mutex::new(Default::default()),
             view: Mutex::new(None),
             receipt_children: Mutex::new(BTreeMap::new()),
             active_from_seq: AtomicU64::new(0),
@@ -165,8 +166,6 @@ impl WorkingMemory {
         ));
     }
 
-    /// Record the reasoning the persona just produced. Blank/empty is ignored
-    /// (suppressed-thinking turns record nothing). Oldest ages out past capacity.
     /// Record `entry` in her ring: stamped with the next occurrence (the one owner of entry
     /// identity), the oldest leaving past capacity.
     pub(super) fn push_entry(&self, entries: &mut VecDeque<WmEntry>, mut entry: WmEntry) {
@@ -177,21 +176,21 @@ impl WorkingMemory {
         }
     }
 
+    /// Record the reasoning the persona just produced in her thought log ([`thought_log`]): one
+    /// record, never aged out by the `entries` ring. Blank/empty is ignored (suppressed-thinking
+    /// turns record nothing).
     pub fn record(&self, reasoning: &str) {
         let r = reasoning.trim();
         if r.is_empty() {
             return;
         }
-        let mut e = self.entries.lock();
-        self.push_entry(&mut e, WmEntry {
-            disk_change: Default::default(),
-            kind: WmKind::Thought,
-            text: r.to_string(),
-            acts: Vec::new(),
-            native_calls: Vec::new(),
-            scope: None,
-            occurrence: 0,
-        });
+        let occurrence = self.next_entry_seq.fetch_add(1, Ordering::Relaxed);
+        self.thoughts.lock().push(thought_log::ThoughtRecord::new(occurrence, r.to_string(), continuum_base::time::EpochMs::now().millis()));
+    }
+
+    /// Her thoughts, oldest first.
+    pub fn thoughts(&self) -> Vec<thought_log::ThoughtRecord> {
+        self.thoughts.lock().records().cloned().collect()
     }
 
     /// Record an ACTION the persona's hands just took (a tool call + its result

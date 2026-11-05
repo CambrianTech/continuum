@@ -38,9 +38,14 @@ pub enum SlotClass {
     /// Short same-context helper calls riding a live turn (gates, validators,
     /// recipe/proposal raters): scratch — never the page slot they'd clobber.
     Sidecar,
-    /// Background cognition with no live turn (dream lenses, module inference,
-    /// anything unrecognized): scratch.
+    /// Background cognition with no live turn (module inference, anything
+    /// unrecognized): scratch.
     Background,
+    /// A dream lens (consolidation, belief review, the historian): background work on
+    /// scratch that yields to residents. With a scratch slot its admission is that slot;
+    /// without one it borrows a citizen slot and takes an ambient serving lane first
+    /// (`turn_admission::admit`), so a waiting turn still wins the lane.
+    Dream,
     /// Infrastructure traffic (smoke probe, warmup, operator try-outs): scratch.
     Probe,
 }
@@ -52,6 +57,7 @@ impl SlotClass {
             SlotClass::Fork => "fork",
             SlotClass::Sidecar => "sidecar",
             SlotClass::Background => "background",
+            SlotClass::Dream => "dream",
             SlotClass::Probe => "probe",
         }
     }
@@ -85,6 +91,7 @@ pub fn class_for(purpose: Option<&str>) -> SlotClass {
         | Some("local-coding-agent")
         | Some("serving-smoke-probe")
         | Some("cognition/replay-request") => SlotClass::Probe,
+        Some("dream-consolidation") | Some("dream-belief-review") | Some("wanderer-historian") => SlotClass::Dream,
         Some(crate::inference::request_body::FORK_ACT_PURPOSE)
         | Some(crate::inference::request_body::FORK_DELIBERATION_PURPOSE) => SlotClass::Fork,
         _ => SlotClass::Background,
@@ -104,7 +111,7 @@ impl SlotClass {
         match self {
             SlotClass::Turn => PageKey::mind(persona?),
             SlotClass::Fork => ForkKey::new(persona?, room?).map(PageKey::Fork),
-            SlotClass::Sidecar | SlotClass::Background | SlotClass::Probe => None,
+            SlotClass::Sidecar | SlotClass::Background | SlotClass::Dream | SlotClass::Probe => None,
         }
     }
 }

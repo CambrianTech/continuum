@@ -86,7 +86,8 @@ pub struct WorkSubmit {
     pub benchmark: Arc<dyn BenchmarkSubmissionAdapter>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+// Deserialize only: the `Shown` ids are read from her call, never re-rendered.
+#[derive(Debug, Clone, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/work/WorkSubmitParams.ts"
@@ -104,9 +105,10 @@ pub struct WorkSubmitParams {
     #[ts(type = "string")]
     pub card_id: String,
     /// Minted when omitted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[ts(optional, type = "string")]
-    pub submission_id: Option<Uuid>,
+    #[schemars(with = "Option<String>")]
+    pub submission_id: Option<Shown<airc_work::SubmissionId>>,
     /// Your claim; defaults to the board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
@@ -325,11 +327,27 @@ pub(super) fn same_submission(earlier: impl IntoIterator<Item = SubmissionKey>, 
 /// - **Not an authorization.** Resolving an id grants nothing; the holder and ownership
 ///   guards downstream are untouched and still run on the canonical id.
 pub(super) fn resolve_shown(raw: &str, candidates: &[uuid::Uuid], label: &str) -> Result<Uuid, CommandError> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Err(CommandError::Invalid(format!("a {label} id is required")));
-    }
     continuum_base::id_resolve::resolve_handle(raw, candidates, label).map_err(CommandError::Invalid)
+}
+
+/// An id she typed back ([`Shown`], parsed by serde in the params) that named no candidate
+/// or several, at the command boundary. The typed [`ShownIdError`] is decided by
+/// [`Shown::resolve`] against the one card (or one submission) this verb read; its sentence
+/// names the candidates and the accepted form ("the full id or at least 4 of its leading hex
+/// characters"), so the refusal is what she needs to call again.
+pub(super) fn shown_refused(e: ShownIdError) -> CommandError {
+    CommandError::Invalid(e.to_string())
+}
+
+/// A submission on `card` (the one card each verb already read off its board), named by what
+/// she was shown. A full id passes through (a new id she mints, or a retry); a prefix must
+/// name exactly one of that card's submissions. Both `work/submit` and `work/review` resolve
+/// here, so the candidate set is decided once.
+pub(super) fn submission_named(
+    shown: &Shown<airc_work::SubmissionId>,
+    card: Option<&airc_lib::WorkCard>,
+) -> Result<airc_work::SubmissionId, ShownIdError> {
+    shown.resolve(card.into_iter().flat_map(|c| c.submissions.iter().map(|s| s.submission_id)))
 }
 
 /// What a submit is made of when the citizen only names her card: her checkout for
@@ -403,7 +421,7 @@ pub(super) async fn stage_for_owner_on_demand(
 
 /// Renew the owner's lease as part of her act. Best effort: the wire's refusal
 /// (a superseded claim, a node race) is a probe, not a reason to stop her submit,
-/// because `holder_guard` already established she is the owner.
+/// because the submit precondition (`work_preconditions::submit`) already established she is the owner.
 pub(super) async fn renew_owner_lease(airc: &airc_lib::Airc, card: &airc_lib::WorkCard, claim_id: ClaimId) {
     let lapsed = card.claim_expires_at_ms.is_none_or(|e| e <= EpochMs::now().millis());
     if !lapsed {
@@ -435,30 +453,6 @@ pub(super) async fn renew_owner_lease(airc: &airc_lib::Airc, card: &airc_lib::Wo
 /// presence signal than a heartbeat, and a Review card waits on others for hours.
 pub(super) const OWNER_ACT_LEASE_TTL_MS: u64 = 4 * 60 * 60 * 1000;
 
-pub(super) fn holder_guard(
-    owner: Option<airc_core::PeerId>,
-    me: airc_core::PeerId,
-    board_claim: Option<ClaimId>,
-    supplied: ClaimId,
-    card_id: Uuid,
-) -> Result<(), CommandError> {
-    if owner != Some(me) {
-        return Err(CommandError::Denied(format!(
-            "card {card_id} is held by {}, not by you — only the holder submits",
-            owner.map(|o| short8(o.as_uuid())).unwrap_or_else(|| "nobody".to_string()), // unwrap_or_else: an unclaimed card names that absence
-        )));
-    }
-    if board_claim != Some(supplied) {
-        return Err(CommandError::Denied(format!(
-            "the claim id you passed ({}) is not the live claim on card {card_id} — the \
-             board's claim is {}. YOU DO HOLD THIS CARD; omit claim_id and submit again and \
-             the live claim is read off the board for you.",
-            short8(supplied.as_uuid()),
-            board_claim.map(|c| short8(c.as_uuid())).unwrap_or_else(|| "none — the card is unclaimed".to_string()), // unwrap_or_else: says which absence it saw
-        )));
-    }
-    Ok(())
-}
 
 /// `workspace/swe/<instance>` names a benchmark checkout; anything else is a repo
 /// worktree and the card id is its instance name.
@@ -718,12 +712,51 @@ pub(super) fn artifact_of_patch(patch: &str) -> WorkArtifactReference {
     }
 }
 
+/// What a submit did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../protocol/typescript/work/SubmitOutcome.ts")]
+pub enum SubmitOutcome {
+    /// A new submission was published.
+    Published,
+    /// This exact submission was already on the card; the result names it.
+    AlreadySubmitted,
+}
+
+/// The answer to a submit of a submission the card already holds: that submission, as success,
+/// with what became of it so far.
+pub(super) fn already_submitted(existing: &airc_work::WorkSubmission, room_id: Uuid, outcomes: &[airc_work::WorkReviewOutcome], bench: bool) -> WorkSubmitResult {
+    let id = existing.submission_id.as_uuid();
+    let verdict = next_after_submission(Some(id), outcomes, bench, None).unwrap_or_default(); // unwrap_or_default: Some(..) in, so always Some
+    WorkSubmitResult {
+        outcome: SubmitOutcome::AlreadySubmitted,
+        submission_id: id,
+        card_id: existing.card_id.as_uuid(),
+        room_id,
+        publisher: existing.publisher.as_uuid(),
+        claim_id: existing.claim_id.as_uuid(),
+        base_sha: existing.base_sha.to_string(),
+        instance: existing.instance.clone(),
+        artifact: (&existing.artifact).into(),
+        submitted_at_ms: existing.submitted_at_ms,
+        bound_staged_revision_id: None,
+        next: format!(
+            "This exact patch is already your submission {} on this card, so nothing new was published. {verdict} \
+             To change it, change the patch and submit again.",
+            short8(id)
+        ),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/work/WorkSubmitResult.ts"
 )]
 pub struct WorkSubmitResult {
+    /// Published now, or already on the board as this exact submission (the same patch on the
+    /// same base for the same instance): success either way, never a refusal.
+    pub outcome: SubmitOutcome,
     #[ts(type = "string")]
     pub submission_id: Uuid,
     #[ts(type = "string")]

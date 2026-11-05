@@ -481,18 +481,12 @@ impl LlmDeliberationFaculty {
     /// becoming a second opinion about how small a window can get.
     pub const COMPLETION_FLOOR_TOKENS: u32 = crate::inference::planning::MIN_SERVE_CTX / 8;
 
-    /// Does this workspace carry an [active-work] grounding contribution naming a
-    /// card she currently holds IN PROGRESS? Structural claim-state (the source read
-    /// it from airc this turn), decoded from our own wire format at the one predicate
-    /// colocated with its renderer. Drives the working-presence contract on
-    /// undirected turns; derived ONCE per prompt so the framing-token estimate and
+    /// Does she hold a card IN PROGRESS this tick? Typed claim state, read once by the cycle
+    /// (`Workspace::held`), never decoded from rendered text. Drives the working-presence
+    /// contract on undirected turns; derived ONCE per prompt so the framing-token estimate and
     /// the final render agree byte-for-byte (the budget-math invariant).
     pub fn holds_live_work(ws: &Workspace) -> bool {
-        ws.broadcast
-            .iter()
-            .filter(|c| c.decision.is_none() && !c.trailing)
-            .filter(|c| c.faculty.as_str() == crate::cognition::faculty_ids::ACTIVE_WORK)
-            .any(|c| crate::cognition::faculty_ids::renders_held_in_progress(&c.content))
+        ws.held.holds_in_progress()
     }
 
     /// Does this workspace name a card she HOLDS (Claimed or InProgress)? The lane
@@ -530,11 +524,7 @@ impl LlmDeliberationFaculty {
     }
 
     fn holds_work_card(ws: &Workspace) -> bool {
-        ws.broadcast
-            .iter()
-            .filter(|c| c.decision.is_none() && !c.trailing)
-            .filter(|c| c.faculty.as_str() == crate::cognition::faculty_ids::ACTIVE_WORK)
-            .any(|c| crate::cognition::faculty_ids::renders_held_card(&c.content))
+        ws.held.holds_a_working_card()
     }
 }
 

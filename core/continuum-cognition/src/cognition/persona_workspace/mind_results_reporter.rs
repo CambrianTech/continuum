@@ -36,7 +36,7 @@ use uuid::Uuid;
 
 use super::PersonaWorkspaceRegistry;
 use crate::cognition::tool_executor::spill;
-use crate::cognition::working_memory::{ResidentResults, ShedCandidate, WorkingMemory};
+use crate::cognition::working_memory::{RecordId, ResidentResults, ShedCandidate, WorkingMemory};
 
 const NAME: &str = "mind_results";
 
@@ -86,7 +86,7 @@ pub(crate) fn prove(
     memory: &WorkingMemory,
     candidate: &ShedCandidate,
 ) -> Option<Result<(), LastCopy>> {
-    let body = memory.resident_body(candidate.seq, &candidate.handle)?;
+    let body = memory.resident_body(candidate.id, &candidate.handle)?;
     Some(match spill::reproduces(persona, &candidate.handle, &body) {
         Ok(true) => Ok(()),
         Ok(false) => Err(LastCopy::Mismatch),
@@ -189,26 +189,26 @@ pub(crate) fn budget_of(minds: &Minds, proven: &Mutex<ProvenCopies>) -> MemoryBu
 
 /// Per mind, the candidates to move so the total comes down to `allocation`, the oldest
 /// received across every mind first.
-pub(crate) fn plan_shed(minds: &[Residency], allocation: u64) -> Vec<HashSet<u64>> {
+pub(crate) fn plan_shed(minds: &[Residency], allocation: u64) -> Vec<HashSet<RecordId>> {
     let total: u64 = minds.iter().map(|mind| mind.resident_bytes).sum();
     let mut chosen = vec![HashSet::new(); minds.len()];
     if total > allocation {
-        let mut candidates: Vec<(Option<u64>, u64, usize, u64)> = minds
+        let mut candidates: Vec<(Option<u64>, RecordId, usize, u64)> = minds
             .iter()
             .enumerate()
             .flat_map(|(index, mind)| {
                 mind.evictable
                     .iter()
-                    .map(move |c| (c.received_ms, c.seq, index, c.bytes))
+                    .map(move |c| (c.received_ms, c.id, index, c.bytes))
             })
             .collect();
         candidates.sort_unstable();
         let mut need = total - allocation;
-        for (_, seq, index, bytes) in candidates {
+        for (_, id, index, bytes) in candidates {
             if need == 0 {
                 break;
             }
-            chosen[index].insert(seq);
+            chosen[index].insert(id);
             need = need.saturating_sub(bytes);
         }
     }
@@ -221,6 +221,8 @@ pub(crate) fn plan_shed(minds: &[Residency], allocation: u64) -> Vec<HashSet<u64
 fn prove_candidates(minds: &Minds, proven: &Mutex<ProvenCopies>) {
     let mut resident: HashSet<(Uuid, String)> = HashSet::new();
     for (persona, memory) in minds {
+        // A thought is saved only when a shed may need its copy, never by the act that thought it.
+        memory.save_unsaved_thoughts(*persona);
         for candidate in memory.resident_results().candidates {
             let key = (*persona, candidate.handle.clone());
             if !proven.lock().0.contains(&key) {
@@ -254,24 +256,24 @@ pub(crate) fn shed_to(minds: &Minds, allocation: u64, proven: &Mutex<ProvenCopie
         if chosen.is_empty() {
             continue;
         }
-        let handles: HashMap<u64, &str> = mind
+        let handles: HashMap<RecordId, &str> = mind
             .evictable
             .iter()
-            .filter(|candidate| chosen.contains(&candidate.seq))
-            .map(|candidate| (candidate.seq, candidate.handle.as_str()))
+            .filter(|candidate| chosen.contains(&candidate.id))
+            .map(|candidate| (candidate.id, candidate.handle.as_str()))
             .collect();
         let movable: u64 = mind
             .evictable
             .iter()
-            .filter(|c| handles.contains_key(&c.seq))
+            .filter(|c| handles.contains_key(&c.id))
             .map(|c| c.bytes)
             .sum();
         // Under her lock: only a planned record still naming its proven handle.
         memory.evict_resident_results_over(
             mind.resident_bytes.saturating_sub(movable),
-            &|seq, handle| {
+            &|id, handle| {
                 handles
-                    .get(&seq)
+                    .get(&id)
                     .is_some_and(|proven_handle| *proven_handle == handle)
             },
         );

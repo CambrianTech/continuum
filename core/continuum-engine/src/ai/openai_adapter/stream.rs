@@ -211,6 +211,7 @@ impl OpenAICompatibleAdapter {
             })?;
             let adm = crate::inference::turn_admission::admit_turn(
                 &self.concurrency,
+                class,
                 turn_key,
                 Some(pool),
                 &self.client,
@@ -455,6 +456,7 @@ impl OpenAICompatibleAdapter {
             _admission = Some(
                 crate::inference::turn_admission::admit_turn(
                     &self.concurrency,
+                    crate::inference::slots::class_for(request.purpose.as_deref()),
                     None,
                     None,
                     &self.client,

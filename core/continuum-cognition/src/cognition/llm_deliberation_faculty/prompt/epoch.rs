@@ -411,6 +411,9 @@ impl LlmDeliberationFaculty {
         };
         let mut sources: Vec<&dyn Source<ContextMessage>> =
             streams.blocks.iter().filter(settled).map(as_source).collect();
+        // Her held work changes only on a card's transition (board churn), so it rides with the
+        // settled blocks, where the active-work block it replaced sorted.
+        sources.push(&streams.held);
         sources.extend(memory.map(|m| &m.actions as &dyn Source<ContextMessage>));
         sources.push(&streams.conversation);
         sources.extend(streams.blocks.iter().filter(|block| !settled(block)).map(as_source));

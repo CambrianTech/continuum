@@ -123,19 +123,25 @@ impl Resident {
     }
 
     /// A review of `submission` on its review card, held by `holder`.
-    fn review(&self, submission: Uuid, review_card: airc_work::WorkCardId, claim: airc_work::ClaimId, outcome: ReviewOutcome) -> WorkReviewParams {
-        WorkReviewParams {
+    fn review(
+        &self,
+        submission: Uuid,
+        review_card: airc_work::WorkCardId,
+        claim: airc_work::ClaimId,
+        outcome: ReviewOutcome,
+    ) -> Result<WorkReviewParams, airc_core::shown_id::ShownIdError> {
+        Ok(WorkReviewParams {
             room: self.params.room.clone(),
-            review_id: Some(Uuid::new_v4()),
+            review_id: Some(shown(Uuid::new_v4())?),
             card_id: Some(self.card.as_uuid().to_string()),
-            submission_id: Some(submission),
+            submission_id: Some(shown(submission)?),
             artifact: self.params.artifact.clone(),
             review_card_id: review_card.as_uuid().to_string(),
-            review_claim_id: Some(claim.as_uuid()),
+            review_claim_id: Some(shown(claim.as_uuid())?),
             outcome,
             evidence_text: None,
             evidence: self.params.artifact.clone(),
-        }
+        })
     }
 
     fn reviewer(&self) -> WorkReview {
@@ -166,11 +172,11 @@ pub(super) async fn an_ordinary_submit_binds_the_turn_that_issued_it_through_rev
     let review_card = r.review_card(published.submission_id);
     let held = r.airc.claim_work_card(airc_lib::ClaimWorkCard { card_id: review_card, ttl_ms: 60_000 }).await?;
     let plain = Ctx { caller: Some(CallerIdentity::local_persona(r.airc.peer_id())), ..Default::default() };
-    let early = r.reviewer().run(&plain, r.review(published.submission_id, review_card, held, ReviewOutcome::Failed)).await?;
+    let early = r.reviewer().run(&plain, r.review(published.submission_id, review_card, held, ReviewOutcome::Failed)?).await?;
     assert_eq!(early.credit.map(|c| c.state), Some(State::ProvenanceHeld), "{:?}", early.credit_error);
 
     let issuing_row = r.stage("issuing-gen").await?;
-    let passed = r.reviewer().run(&plain, r.review(published.submission_id, review_card, held, ReviewOutcome::Passed)).await?;
+    let passed = r.reviewer().run(&plain, r.review(published.submission_id, review_card, held, ReviewOutcome::Passed)?).await?;
     assert!(passed.credit_error.is_none(), "{:?}", passed.credit_error);
     let credit = passed.credit.ok_or("the review reached her credit")?;
     assert_eq!(credit.state, State::IndependentReviewRequired);
@@ -183,7 +189,7 @@ pub(super) async fn an_ordinary_submit_binds_the_turn_that_issued_it_through_rev
     assert_eq!(binding.selection.staged_revision_id, issuing_row.id);
 
     let mut retry = r.params.clone();
-    retry.submission_id = Some(published.submission_id);
+    retry.submission_id = Some(shown(published.submission_id)?);
     let again = r.submit().run(&r.act("later-gen"), retry).await?;
     assert_eq!(again.submission_id, published.submission_id);
     let kept: reviewed::PendingCreditBinding = reviewed::read_one(&reopened, r.name, &published.submission_id.to_string())
@@ -312,7 +318,7 @@ pub(super) async fn a_retry_from_a_persisted_unpublished_record_keeps_the_first_
     let first_row = r.stage("first-gen").await?;
 
     let mut retry = r.params.clone();
-    retry.submission_id = Some(submission);
+    retry.submission_id = Some(shown(submission)?);
     let published = r.submit().run(&r.act("later-gen"), retry).await?;
     assert_eq!(published.submission_id, submission, "the retry publishes the same submission");
     let kept: reviewed::PendingCreditBinding = reviewed::read_one(&r.data(), r.name, &submission.to_string())
@@ -323,7 +329,7 @@ pub(super) async fn a_retry_from_a_persisted_unpublished_record_keeps_the_first_
     let review_card = r.review_card(submission);
     let held = r.airc.claim_work_card(airc_lib::ClaimWorkCard { card_id: review_card, ttl_ms: 60_000 }).await?;
     let plain = Ctx { caller: Some(CallerIdentity::local_persona(r.airc.peer_id())), ..Default::default() };
-    let reviewed = r.reviewer().run(&plain, r.review(submission, review_card, held, ReviewOutcome::Passed)).await?;
+    let reviewed = r.reviewer().run(&plain, r.review(submission, review_card, held, ReviewOutcome::Passed)?).await?;
     let credit = reviewed.credit.ok_or("the review reached her credit")?;
     assert_eq!(credit.staged_revision_id, Some(first_row.id), "{:?}", reviewed.credit_error);
     Ok(())
@@ -345,7 +351,7 @@ pub(super) async fn a_refused_record_publishes_nothing() -> TestResult {
     )
     .await?;
     let mut attempt = r.params.clone();
-    attempt.submission_id = Some(submission);
+    attempt.submission_id = Some(shown(submission)?);
     assert!(r.submit().run(&r.act("this-gen"), attempt).await.is_err(), "a refused record refuses the submit");
     let board = r.airc.work_board_in(&r.room).await?;
     assert!(

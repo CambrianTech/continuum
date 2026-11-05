@@ -6,7 +6,7 @@
 //! was published on a watch nobody held: a Resume turn could not show her own note.
 use std::sync::Arc;
 
-use crate::persona::active_work_source::AircWorkReader;
+use crate::persona::held_work::AircWorkReader;
 use crate::cognition::rag_budget::{RagContext, RagDelivery, RagItem, RagSource};
 
 use crate::cognition::faculty_ids::AWARENESS;

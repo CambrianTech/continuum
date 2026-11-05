@@ -617,7 +617,7 @@ mod discover;
         assert_eq!(class_for(Some("persona-respond")), SlotClass::Turn);
         assert_eq!(class_for(Some("cognition/should-respond")), SlotClass::Sidecar);
         assert_eq!(class_for(Some("serving-smoke-probe")), SlotClass::Probe);
-        assert_eq!(class_for(Some("dream-consolidation")), SlotClass::Background);
+        assert_eq!(class_for(Some("dream-consolidation")), SlotClass::Dream);
         assert_eq!(class_for(Some("some-future-producer")), SlotClass::Background,
             "unknown purposes default AWAY from citizen slots");
         assert_eq!(class_for(None), SlotClass::Background);

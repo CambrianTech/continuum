@@ -50,13 +50,8 @@ crate::action_command! {
         // Short-form persona ids resolve too (#164): the roster/personas surfaces
         // DISPLAY 8-char short ids, so accept the id a caller was shown. A clean
         // UUID passes straight through; a short/mistyped form expands against the
-        // live registry — the ONE shared id_resolve primitive, candidates = who's
-        // online.
-        let persona_id = continuum_base::id_resolve::resolve(
-            p.persona_id.as_str(),
-            &this.registry.ids(),
-            "persona",
-        )
+        // live registry through airc's Shown reading, candidates = who's online.
+        let persona_id = crate::persona::persona_scope::persona_in(p.persona_id.as_str(), &this.registry)
         .map_err(|e| CommandError::Invalid(format!("{e} — call persona/instances/list")))?;
         let runtime = this.registry.get(persona_id).ok_or_else(|| {
             CommandError::NotFound(format!(

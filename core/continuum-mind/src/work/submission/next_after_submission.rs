@@ -45,41 +45,33 @@ impl ActionCommand for WorkSubmit {
             let hint = card_elsewhere(airc, &p.card_id, room.channel.as_uuid()).await;
             return Err(with_hint(absent, hint));
         };
-        // The claim is HERS on THIS card, read off the board — a typed id she would
-        // otherwise have to remember from a claim receipt three turns ago.
-        let claim_id = match p.claim_id.as_deref() {
-            // Scoped to THIS card's own claim — the narrowest set there is, so a handle
-            // from a stale receipt is refused by name rather than silently accepted.
-            Some(c) => ClaimId::from_uuid(resolve_shown(
-                c,
-                &card.claim_id.map(|id| id.as_uuid()).into_iter().collect::<Vec<_>>(),
-                "claim",
-            )?),
-            None => match (card.owner, card.claim_id) {
-                (Some(owner), Some(claim)) if owner == airc.peer_id() => claim,
-                (Some(owner), _) => {
-                    return Err(CommandError::Invalid(format!(
-                        "card {} is held by {owner}, not by you — only the holder submits",
-                        card_uuid
-                    )))
-                }
-                _ => {
-                    return Err(CommandError::Invalid(format!(
-                        "card {} is not claimed — claim it (work/claim) before submitting",
-                        card_uuid
-                    )))
-                }
+        // THE PRECONDITION, at the mutation boundary, against the card as the board holds it
+        // now (`work_preconditions::submit`, the one owner the surface reads too): her own card,
+        // not ended, under her claim, the claim she names (from a receipt) the card's claim now.
+        // A supplied claim id never bypasses ownership before local work is read (#4309);
+        // publication below still validates the lease against the latest board.
+        let now_ms = EpochMs::now().millis();
+        let request = work_preconditions::Request {
+            at_ms: now_ms,
+            claim: match p.claim_id.as_deref() {
+                // Scoped to THIS card's own claim, so a handle from a stale receipt is refused
+                // by name rather than silently accepted.
+                Some(c) => work_preconditions::ClaimArg::Named(ClaimId::from_uuid(resolve_shown(
+                    c,
+                    &card.claim_id.map(|id| id.as_uuid()).into_iter().collect::<Vec<_>>(),
+                    "claim",
+                )?)),
+                None => work_preconditions::ClaimArg::Hers,
             },
+            seen_revision: None,
         };
-        // A supplied claim id must not bypass ownership before we read local work
-        // (#4309). Publication below still validates the current lease against the
-        // latest board. The decision is pure so both refusals are pinned by a test.
-        holder_guard(card.owner, airc.peer_id(), card.claim_id, claim_id, card_uuid)?;
+        let claim_id = work_preconditions::decide(work_preconditions::submit(card, airc.peer_id(), &request), card, airc.peer_id(), now_ms)
+            .map_err(super::super::refused)?;
         // Her act IS her presence: a lease that lapsed between wakes is renewed by the
         // submit itself, never a reason to refuse the owner. Responsibility is durable,
         // the lease is only presence (2026-09-28); the board kept her as owner through
         // the expiry, so this is a renewal, not a claim. A renewal the wire refuses is
-        // reported and the submit proceeds on her ownership (holder_guard passed).
+        // reported and the submit proceeds on her ownership (the precondition passed).
         renew_owner_lease(&airc, card, claim_id).await;
         // A complete, real artifact she wrote herself is honoured as-is; anything less
         // — an omitted part, or the manual's zero hash read back as a value — is read
@@ -163,18 +155,21 @@ impl ActionCommand for WorkSubmit {
                 base_sha: base_sha.to_string(),
                 instance: instance.clone(),
             };
-            if let Some(existing) = same_submission(earlier, &this) {
-                return Err(CommandError::Invalid(format!(
-                    "card {} already has your submission {} of this exact patch, \
-                     so nothing was submitted. Read it with work/submission (submission_id {}); \
-                     submit again only after the patch changes.",
-                    short8(card_uuid),
-                    short8(existing),
-                    existing
-                )));
+            // Answered at SUBMISSION IDENTITY, as success: the board already holds this exact
+            // submission, so she is told which one and what became of it, and her loop ends with
+            // information (Benchy, the M5 2026-11-04: 5 refused submits). A changed patch, or the
+            // same patch on a new base, is a new submission and publishes below.
+            if let Some(existing) = same_submission(earlier, &this).and_then(|id| card.submissions.iter().find(|s| s.submission_id.as_uuid() == id)) {
+                let outcomes: Vec<_> = board.submission_reviews_for(existing.submission_id).filter(|review| review.card_id == card_id).map(|review| review.outcome).collect();
+                return Ok(already_submitted(existing, room.channel.as_uuid(), &outcomes, crate::recipe::benchmark_catalog::graded_at_submit(&card.title)));
             }
         }
-        let submission_id = p.submission_id.unwrap_or_else(Uuid::new_v4); // unwrap_or: minted here when she named none — the id is ours to give
+        // A retry names her submission as she was shown it (Benchy, M5 2026-11-04 17:51:56Z:
+        // the short id died in serde as "expected length 32"); a full id she mints passes.
+        let submission_id = match &p.submission_id {
+            Some(shown) => submission_named(shown, Some(card)).map_err(shown_refused)?.as_uuid(),
+            None => Uuid::new_v4(),
+        };
         let candidate = airc_work::WorkSubmission {
             submission_id: airc_work::SubmissionId::from_uuid(submission_id),
             card_id,
@@ -296,6 +291,7 @@ impl ActionCommand for WorkSubmit {
         // arriving verdict appears on the next work/get or work/submission read.
         let outcomes: Vec<_> = board.submission_reviews_for(published.submission_id).filter(|review| review.card_id == card_id).map(|review| review.outcome).collect();
         Ok(WorkSubmitResult {
+            outcome: SubmitOutcome::Published,
             submission_id: published.submission_id.as_uuid(),
             card_id: published.card_id.as_uuid(),
             room_id: room.channel.as_uuid(),
@@ -353,7 +349,8 @@ impl From<ReviewOutcome> for airc_work::WorkReviewOutcome {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+// Deserialize only: the `Shown` ids are read from her call, never re-rendered.
+#[derive(Debug, Clone, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/work/WorkReviewParams.ts"
@@ -377,25 +374,28 @@ pub struct WorkReviewParams {
     #[ts(optional)]
     pub evidence_text: Option<String>,
     /// Minted when omitted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[ts(optional, type = "string")]
-    pub review_id: Option<Uuid>,
+    #[schemars(with = "Option<String>")]
+    pub review_id: Option<Shown<airc_work::WorkReviewId>>,
     /// Parent card (handle or UUID); defaults to review parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub card_id: Option<String>,
     /// Submission; defaults to latest.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[ts(optional, type = "string")]
-    pub submission_id: Option<Uuid>,
+    #[schemars(with = "Option<String>")]
+    pub submission_id: Option<Shown<airc_work::SubmissionId>>,
     /// Artifact; defaults to board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifact: Option<WorkArtifactReference>,
     /// Review claim; defaults to board.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[ts(optional, type = "string")]
-    pub review_claim_id: Option<Uuid>,
+    #[schemars(with = "Option<String>")]
+    pub review_claim_id: Option<Shown<ClaimId>>,
     /// Typed evidence instead of evidence_text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -488,35 +488,38 @@ impl ActionCommand for WorkReview {
             let hint = card_elsewhere(airc, &p.review_card_id, room.channel.as_uuid()).await;
             return Err(with_hint(absent, hint));
         };
-        let card_id = match p.card_id.as_deref() {
-            Some(c) => WorkCardId::from_uuid(resolve_shown(c, &shown, "card")?),
-            None => review_card.reviews.ok_or_else(|| {
-                CommandError::Invalid(
-                    "the card you named is not a review card (it reviews nothing) — pass card_id if you are reviewing out of band"
-                        .to_string(),
-                )
-            })?,
+        // THE PRECONDITION, at the mutation boundary (`work_preconditions::review`, the one
+        // owner the surface reads too): the card reviews something (the parent she names, when
+        // she names one), and she holds it unless she states the review claim herself.
+        let named = match p.card_id.as_deref() {
+            Some(c) => Some(WorkCardId::from_uuid(resolve_shown(c, &shown, "card")?)),
+            None => None,
         };
-        let review_claim_id = match p.review_claim_id {
-            Some(c) => ClaimId::from_uuid(c),
-            None => match (review_card.owner, review_card.claim_id) {
-                (Some(owner), Some(claim)) if owner == airc.peer_id() => claim,
-                (Some(_), _) => {
-                    return Err(CommandError::Invalid(
-                        "the review card you named is held by another peer, not by you — only its holder reviews".to_string(),
-                    ))
-                }
-                _ => {
-                    return Err(CommandError::Invalid(
-                        "the review card you named is not claimed — claim it (work/claim) before reviewing".to_string(),
-                    ))
-                }
-            },
-        };
-        if review_card.reviews != Some(card_id) {
-            return Err(CommandError::Invalid("review card does not review the named parent".into()));
-        }
-        let submission = board.candidate_for_review(review_card.card_id, p.submission_id.map(airc_work::SubmissionId::from_uuid))
+        // Her claim on THIS review card, named by what she was shown: a handle from a stale
+        // receipt is refused by name. The holder rule itself is the precondition's.
+        let stated_claim = p
+            .review_claim_id
+            .as_ref()
+            .map(|c| c.resolve(review_card.claim_id))
+            .transpose()
+            .map_err(shown_refused)?;
+        let now_ms = EpochMs::now().millis();
+        let (review_claim_id, card_id) = work_preconditions::decide(
+            work_preconditions::review(review_card, airc.peer_id(), named, stated_claim),
+            review_card,
+            airc.peer_id(),
+            now_ms,
+        )
+        .map_err(super::super::refused)?;
+        // The parent's submissions are the ones a review can name (Benchy's short id,
+        // M5 2026-11-04 17:51:56Z, is the form the board shows).
+        let requested = p
+            .submission_id
+            .as_ref()
+            .map(|shown| submission_named(shown, board.card(card_id)))
+            .transpose()
+            .map_err(shown_refused)?;
+        let submission = board.candidate_for_review(review_card.card_id, requested)
             .map_err(|e| CommandError::Invalid(format!("review candidate: {e}")))?;
         // SELF-REVIEW IS THE ROOM'S CALL (card fa4aaaaa). The author reviewing her own
         // submission is admitted only where the room's policy says `self`; a room that
@@ -539,7 +542,14 @@ impl ActionCommand for WorkReview {
                 ))
             }
         };
-        let review_id = p.review_id.unwrap_or_else(Uuid::new_v4); // unwrap_or: minted here when she named none — the id is ours to give
+        // A retry names her review as she was shown it; a full id she mints passes.
+        let review_id = match &p.review_id {
+            Some(shown) => shown
+                .resolve(board.submission_reviews_for(submission.submission_id).map(|r| r.review_id))
+                .map_err(shown_refused)?
+                .as_uuid(),
+            None => Uuid::new_v4(),
+        };
         continuum_base::probe!(
             class = "work.review.shaped",
             review_card = %short8(review_uuid),

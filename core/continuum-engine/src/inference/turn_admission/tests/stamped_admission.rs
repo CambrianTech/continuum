@@ -28,14 +28,14 @@ async fn every_ready_shared_pool_admission_names_its_engine() {
     let sem = Arc::new(Semaphore::new(2));
     let client = reqwest::Client::new();
     let key = PageKey::mind(Uuid::from_u128(7)).expect("test: a non-nil id"); // JUSTIFIED: test fixture
-    let unstamped = admit_turn(&sem, Some(key), Some(pool.clone()), &client, &root, 100, std::time::Duration::ZERO)
+    let unstamped = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()), &client, &root, 100, std::time::Duration::ZERO)
         .await
         .expect("test: admitted"); // JUSTIFIED: test fixture
     assert_eq!(unstamped.engine_incarnation(), None, "precondition: no engine has been readied here yet");
     drop(unstamped);
     // The owned engine verified ready, with no page ledger attached.
     crate::inference::slots::stamp_engine_incarnation(&root, 4_242, 1_800_000_000);
-    let admitted = admit_turn(&sem, Some(key), Some(pool.clone()), &client, &root, 100, std::time::Duration::ZERO)
+    let admitted = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()), &client, &root, 100, std::time::Duration::ZERO)
         .await
         .expect("test: admitted"); // JUSTIFIED: test fixture
     assert_eq!(admitted.engine_incarnation(), Some((4_242, 1_800_000_000)), "an act on a ready pool names its engine");

@@ -415,8 +415,10 @@ impl WorkingMemory {
         // are neither retained nor indexed as a pointer.
         children.retain(|key, _| receipts.contains(key));
         let views = self.open_views.lock().saved();
-        let handles = reachable_handles(receipts, &children, &views);
+        let mut handles = reachable_handles(receipts, &children, &views);
         drop(children);
+        // A thought shed to its handle exists only on disk: live while her log names it.
+        handles.extend(self.thoughts.lock().handles().map(str::to_owned));
         crate::cognition::tool_executor::spill::publish_live_handles(self.instance, handles);
     }
 
@@ -467,7 +469,13 @@ impl WorkingMemory {
         }
     }
 
-    /// Snapshot of recent reasonings, oldest → newest.
+    /// Her acts for `room` since `since_ms` after her latest that changed the world
+    /// ([`action_log::ActionLog::acts_since_change`]): read off her action log, never a room page.
+    pub fn acts_since_change(&self, room: Uuid, since_ms: u64) -> usize {
+        self.actions.lock().acts_since_change(room, since_ms)
+    }
+
+    /// Snapshot of the ring's recent entries (receipts, facts, settlements), oldest → newest.
     pub fn recent(&self) -> Vec<String> {
         self.entries.lock().iter().map(|e| e.text.clone()).collect()
     }
@@ -483,6 +491,7 @@ impl WorkingMemory {
     pub fn clear(&self) {
         self.pending_emissions.lock().clear();
         self.entries.lock().clear();
+        self.thoughts.lock().clear();
         *self.last_action.lock() = None; // the full latest result is proprioception too
         self.dispatched.lock().clear(); // dispatched handles belong to the cleared concern
         self.action_fps.lock().clear(); // loop-awareness resets with the concern
@@ -490,6 +499,6 @@ impl WorkingMemory {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.lock().is_empty()
+        self.entries.lock().is_empty() && self.thoughts.lock().is_empty()
     }
 }

@@ -88,7 +88,7 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
     let client = reqwest::Client::new();
     let persona = uuid::Uuid::new_v4();
     let key = crate::inference::slots::PageKey::mind(persona).expect("test: a non-nil id"); // JUSTIFIED: test fixture
-    let admitted = crate::inference::turn_admission::admit_turn(&sem, Some(key), Some(pool), &client, &root, 100, std::time::Duration::ZERO)
+    let admitted = crate::inference::turn_admission::admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool), &client, &root, 100, std::time::Duration::ZERO)
         .await
         .expect("test: admitted"); // JUSTIFIED: test fixture
     // Her grant published on that same engine.

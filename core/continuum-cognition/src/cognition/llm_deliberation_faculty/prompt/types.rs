@@ -232,6 +232,8 @@ impl PromptFeedback {
 pub(in super::super) struct Streams {
     pub(in super::super) conversation: crate::cognition::context_streams::conversation::Conversation,
     pub(in super::super) blocks: Vec<crate::cognition::context_streams::blocks::Grounding>,
+    /// Her held work: one keyed item per card she holds (STATE-DRIVEN-SURFACE.md).
+    pub(in super::super) held: crate::cognition::context_streams::held_work::HeldWorkStream,
 }
 
 /// Prompt roles are provider-facing; these slots retain the substrate's meaning

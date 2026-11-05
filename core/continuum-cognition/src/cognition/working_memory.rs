@@ -272,6 +272,9 @@ pub struct WorkingMemory {
     /// of a code read is broken code), and the handle that reopens it once collapsed
     /// (2026-08-24: collapse, never delete). One record per act, so one act has one key.
     actions: Mutex<action_log::ActionLog>,
+    /// Her thoughts, one record each ([`thought_log`]), kept whole and checkpointed like her
+    /// actions: a thought outlives the `entries` ring and a restart, and her view sizes it.
+    thoughts: Mutex<thought_log::ThoughtLog>,
     /// Her context view as her last act left it (`llm_deliberation_faculty/prompt/epoch.rs`),
     /// kept here so it is checkpointed with the rest of her volatile mind: restored after a
     /// restart it renders the same bytes, and the engine's saved page for them still matches,
@@ -312,7 +315,8 @@ pub struct WorkingMemory {
 /// kind, never the string.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WmKind {
-    /// Chain-of-thought the persona produced (`record`).
+    /// Chain-of-thought, as a checkpoint written before her thought log carried it; a restore moves
+    /// it into the log (`thought_log`). Nothing records a new one.
     Thought,
     /// Public text authored alongside native tool calls, scoped to their activity.
     ActionStatement { room: Uuid },
@@ -426,6 +430,10 @@ pub struct VolatileSnapshot {
     /// for another build: this is the first version, Joel 2026-10-31).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) actions: Vec<action_log::ActionRecord>,
+    /// Her thoughts, whole ([`thought_log`]). A checkpoint from before them carries her thoughts
+    /// as `entries` of kind `Thought`; a restore moves those into the log.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thoughts: Vec<ThoughtRecord>,
     /// Her context view ([`WorkingMemory`]'s `view`), derived: absent, or no longer decodable
     /// (`derived::or_none`), her first act after the restore starts a new one.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "derived::or_none")]
@@ -488,7 +496,9 @@ impl VolatileSnapshot {
     /// memory publishes live, through the same log and the same rule.
     pub(crate) fn reachable_handles(&self) -> HashSet<String> {
         let log = action_log::ActionLog::from_records(self.action_records());
-        reachable_handles(log.receipt_keys(), &self.receipt_children, &self.open_views)
+        let mut handles = reachable_handles(log.receipt_keys(), &self.receipt_children, &self.open_views);
+        handles.extend(self.thoughts.iter().filter_map(|thought| thought.handle.clone()));
+        handles
     }
 
     /// Read through [`Self::action_records`], the one accessor that also converts a checkpoint
@@ -575,11 +585,12 @@ pub struct WmEntry {
     /// This entry's occurrence, stamped once by the one owner of entry identity
     /// (`WorkingMemory::push_entry`, from `next_entry_seq`): two entries that say the same
     /// thing are two occurrences, so a settlement that repeats an earlier one is its own item
-    /// in her view (passed, failed, passed reads as passed). Never a content hash. Never in a
-    /// checkpoint: an occurrence names an item within one life's view, a restart begins a new
-    /// epoch that re-renders every item, and restore numbers each entry it brings back from
-    /// the same counter, so the checkpoint's shape does not change.
-    #[serde(skip)]
+    /// in her view (passed, failed, passed reads as passed). Never a content hash. Checkpointed:
+    /// her thoughts and her entries share ONE sequence, and her view orders and names them by it,
+    /// so a restore keeps every occurrence (a settlement still reads before the thought that
+    /// followed it). `0` on an entry from a checkpoint written before it was kept: restore
+    /// numbers those after everything it kept.
+    #[serde(default)]
     pub occurrence: u64,
     #[serde(default)]
     pub acts: Vec<Observation>,
@@ -606,10 +617,12 @@ mod continuity;
 mod ledger;
 mod perception;
 mod residency;
+mod thought_log;
 
 pub use action_log::ActOutputRefusal;
 pub(crate) use ledger::operation_level;
-pub(crate) use residency::{ResidentResults, ShedCandidate};
+pub(crate) use residency::{RecordId, ResidentResults, ShedCandidate};
+pub use thought_log::ThoughtRecord;
 
 impl Drop for WorkingMemory {
     /// A mind that is gone points at nothing: its saved results may be evicted again.

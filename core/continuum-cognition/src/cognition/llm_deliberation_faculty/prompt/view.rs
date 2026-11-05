@@ -251,14 +251,13 @@ impl LlmDeliberationFaculty {
         // budget it is fitted to below, shedding rather than failing.
         let standing = GroundingPlan::minimum(ws);
         let grounding_min = if standing.pieces.is_empty() {
-            // No standing source bid: the optional enrichment's own smallest piece (the active
-            // work's, else the smallest offered) and its header. No reservation without a bid.
+            // No standing source bid: the optional enrichment's smallest offered piece and its
+            // header. No reservation without a bid.
             let offered = || ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing);
             let cost = |c: &Contribution| Self::context_piece_tokens(c.faculty.as_str(), c.content.len());
             offered()
-                .find(|c| c.faculty.as_str() == crate::cognition::faculty_ids::ACTIVE_WORK)
                 .map(cost)
-                .or_else(|| offered().map(cost).min())
+                .min()
                 .map_or(0, |tokens| tokens + Self::working_context_header_cost()) // map_or: no optional source bid, no enrichment reservation
         } else {
             standing.context_reserve() + standing.trailing_tokens()
