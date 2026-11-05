@@ -91,6 +91,11 @@ impl TurnAdmission {
         self.scratch
     }
 
+    /// The engine incarnation this turn's endpoint admission is bound to (`EndpointAdmission::incarnation`).
+    pub(crate) fn engine_incarnation(&self) -> Option<(u32, u64)> {
+        self._endpoint.incarnation()
+    }
+
     /// How this turn's KV reached its slot ([`PageIn`]).
     pub(crate) fn page_in(&self) -> PageIn {
         self.page_in

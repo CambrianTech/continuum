@@ -16,9 +16,12 @@
 //!   its final frame with a finish reason, never a bare EOF; [`settle`]) or a FENCE. A caller that
 //!   drops the request (cancellation, a transport error, a stream that ended without its finish)
 //!   leaves it UNRESOLVED: the engine may still be decoding into that grant, so it stays held until
-//!   a later request of hers on the SAME SLOT of the same engine completes (the engine serves a
-//!   slot in order, so that receipt proves the earlier one ended; a newer one is never released by
-//!   an older one) or the engine incarnation changes;
+//!   explicit evidence ends it. A receipt releases ONLY its own entry: reservation ids are issued
+//!   before the POST, so an id order proves nothing about the engine's execution order (an older
+//!   request can be delayed in send or retry past a newer one's receipt). The evidence that ends an
+//!   unresolved reservation today is the engine FENCE (its incarnation changed); a cancel receipt or
+//!   a slot-drained observation from the engine are the follow-up that ends one sooner. Until then
+//!   a cancelled request holds her grant fixed (never shrunk, never grown) until the fence;
 //! - an attempt that was never sent (a connect refusal, a 503 before any token) releases its own
 //!   reservation, and every retry re-reserves against her grant NOW, so a retry that lands on a
 //!   replacement engine with a smaller grant is refused typed, never POSTed under the old lease
@@ -55,9 +58,6 @@ struct Entry {
     id: u64,
     tokens: u32,
     engine: Option<EngineIncarnation>,
-    /// The engine slot the request is pinned to, when it is: the only evidence that a later
-    /// request's receipt orders after this one.
-    slot: Option<u32>,
     custody: Custody,
 }
 
@@ -89,7 +89,6 @@ impl Reservations {
         persona: uuid::Uuid,
         leased: GrantLease,
         needed: u32,
-        slot: Option<u32>,
         current: impl FnOnce() -> Option<GrantLease>,
     ) -> Result<GrantReservation, ReserveRefused> {
         let mut held = self.lock();
@@ -102,7 +101,7 @@ impl Reservations {
         }
         held.0 += 1;
         let id = held.0;
-        held.1.entry(persona).or_default().push(Entry { id, tokens: leased.tokens, engine: leased.engine, slot, custody: Custody::Live });
+        held.1.entry(persona).or_default().push(Entry { id, tokens: leased.tokens, engine: leased.engine, custody: Custody::Live });
         Ok(GrantReservation { owner: self, persona, id })
     }
 
@@ -124,30 +123,12 @@ impl Reservations {
         regrant(&reserved)
     }
 
-    /// The engine's terminal receipt for reservation `id`: it ends, and so does every UNRESOLVED
-    /// reservation of hers issued BEFORE it on the same engine and the same slot (the engine serves
-    /// a slot in order). A newer reservation, or one with no slot evidence, stays held.
-    fn complete(&self, persona: uuid::Uuid, id: u64) {
-        self.release(persona, id, true);
-    }
-
-    /// Reservation `id` ends: its own entry, and with `predecessors` the unresolved ones its receipt
-    /// orders after.
-    fn release(&self, persona: uuid::Uuid, id: u64, predecessors: bool) {
+    /// Reservation `id` ends (its own terminal receipt, or an attempt never sent): its own entry
+    /// only. Another request's reservation, older or newer, ends on its own evidence.
+    fn release(&self, persona: uuid::Uuid, id: u64) {
         let mut held = self.lock();
         if let Some(entries) = held.1.get_mut(&persona) {
-            let own = entries.iter().find(|e| e.id == id).copied();
-            entries.retain(|e| {
-                let ordered_before = predecessors
-                    && own.is_some_and(|own| {
-                        e.custody == Custody::Unresolved
-                            && e.id < own.id
-                            && e.engine == own.engine
-                            && e.slot.is_some()
-                            && e.slot == own.slot
-                    });
-                e.id != id && !ordered_before
-            });
+            entries.retain(|e| e.id != id);
             if entries.is_empty() {
                 held.1.remove(&persona);
             }
@@ -173,16 +154,15 @@ pub struct GrantReservation {
 }
 
 impl GrantReservation {
-    /// The engine's terminal receipt for this request: released, with the unresolved reservations
-    /// of hers it orders after (same engine, same slot, issued before it).
+    /// The engine's terminal receipt for this request: its own reservation ends.
     fn complete(self) {
-        self.owner.complete(self.persona, self.id);
+        self.owner.release(self.persona, self.id);
         std::mem::forget(self);
     }
 
-    /// The attempt was never sent (refused before any token): only its own reservation ends.
+    /// The attempt was never sent (refused before any token): its own reservation ends.
     fn release_unsent(self) {
-        self.owner.release(self.persona, self.id, false);
+        self.owner.release(self.persona, self.id);
         std::mem::forget(self);
     }
 }
@@ -220,9 +200,8 @@ pub fn reserve_attempt(
     persona: uuid::Uuid,
     leased: GrantLease,
     needed: u32,
-    engine_slot: Option<u32>,
 ) -> Result<(), ReserveRefused> {
-    reserve_attempt_with(&RESERVATIONS, slot_for, persona, leased, needed, engine_slot, || super::current_lease(persona))
+    reserve_attempt_with(&RESERVATIONS, slot_for, persona, leased, needed, || super::current_lease(persona))
 }
 
 fn reserve_attempt_with(
@@ -231,13 +210,12 @@ fn reserve_attempt_with(
     persona: uuid::Uuid,
     leased: GrantLease,
     needed: u32,
-    engine_slot: Option<u32>,
     current: impl FnOnce() -> Option<GrantLease>,
 ) -> Result<(), ReserveRefused> {
     if let Some(previous) = slot_for.take() {
         previous.release_unsent();
     }
-    *slot_for = Some(owner.reserve_against(persona, leased, needed, engine_slot, current)?);
+    *slot_for = Some(owner.reserve_against(persona, leased, needed, current)?);
     Ok(())
 }
 
@@ -300,22 +278,22 @@ mod tests {
         let priced = rev1.lease_for(atlas).expect("granted");
         let now = rev3.lease_for(atlas).expect("granted");
         assert_eq!(now.tokens, priced.tokens, "precondition: the same size again");
-        let aba = owner.reserve_against(atlas, priced, 141_007, None, || Some(now));
+        let aba = owner.reserve_against(atlas, priced, 141_007, || Some(now));
         assert_eq!(aba.err(), Some(ReserveRefused::Changed { leased: priced, current: Some(now) }), "a new revision, refused");
-        let shrunk = owner.reserve_against(atlas, priced, 141_007, None, || rev2.lease_for(atlas));
+        let shrunk = owner.reserve_against(atlas, priced, 141_007, || rev2.lease_for(atlas));
         assert!(matches!(shrunk, Err(ReserveRefused::Changed { .. })));
-        let withdrawn = owner.reserve_against(atlas, priced, 141_007, None, || None);
+        let withdrawn = owner.reserve_against(atlas, priced, 141_007, || None);
         assert_eq!(withdrawn.err(), Some(ReserveRefused::Changed { leased: priced, current: None }));
         let small = rev2.lease_for(atlas).expect("granted");
-        let over = owner.reserve_against(atlas, small, 141_007, None, || Some(small));
+        let over = owner.reserve_against(atlas, small, 141_007, || Some(small));
         assert_eq!(over.err(), Some(ReserveRefused::Over { count: 141_007, grant: 40_282 }));
         // The same pid restarted is another incarnation (its start time), never the same engine.
         let restarted = Some(EngineIncarnation { started_s: 1_762_400_000, ..engine(7).expect("an engine") });
         let relaunched = publish(Some(&rev3), atlas, 148_838, restarted).lease_for(atlas).expect("granted");
         assert!(!relaunched.same_identity(&now), "a new engine incarnation re-issues every revision");
         let foreign = GrantLease { owner: GrantOwner(uuid::Uuid::new_v4()), ..now };
-        assert!(matches!(owner.reserve_against(atlas, foreign, 1, None, || Some(now)), Err(ReserveRefused::Changed { .. })), "another owner's lease is never this one's");
-        let held = owner.reserve_against(atlas, now, 141_007, None, || Some(now)).expect("her lease still stands: reserved");
+        assert!(matches!(owner.reserve_against(atlas, foreign, 1, || Some(now)), Err(ReserveRefused::Changed { .. })), "another owner's lease is never this one's");
+        let held = owner.reserve_against(atlas, now, 141_007, || Some(now)).expect("her lease still stands: reserved");
         held.complete();
     }
 
@@ -328,7 +306,7 @@ mod tests {
         let (a, b) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
         let owner = owner();
         let lease = publish(None, a, 60, engine(7)).lease_for(a).expect("granted");
-        let reservation = owner.reserve_against(a, lease, 50, None, || Some(lease)).expect("reserved");
+        let reservation = owner.reserve_against(a, lease, 50, || Some(lease)).expect("reserved");
         let b_wants = Demand { mind: b, need: t(30), target: t(100), wish: t(100), in_flight: false, ceiling: 100 };
         let grants = owner.honoring(engine(7), |reserved| {
             grant_with_reservations(&mut DemandFollowing, &[b_wants], &BTreeMap::from([(a, 60)]), 100, reserved)
@@ -343,62 +321,54 @@ mod tests {
         assert_eq!(after.get(&b), Some(&100));
     }
 
-    // what this catches: a cancellation taken for a terminal receipt. The caller drops the stream
-    // while the engine may still be decoding into her grant: the reservation stays held (a shrink
-    // stays blocked) until a later request of hers on the same slot of the same engine completes,
-    // or a fence (the engine incarnation changed) ends it; a stream that ended without its finish
-    // (a bare EOF) is settled as no receipt and stays held too.
+    // what this catches: a cancellation, or a stream that ended without its finish, taken for a
+    // terminal receipt. Either leaves the reservation held, unresolved; a fence (the engine
+    // incarnation changed) ends it.
     #[test]
-    fn a_dropped_or_unfinished_stream_holds_the_grant_until_a_receipt_on_its_slot_or_a_fence() {
+    fn a_dropped_or_unfinished_stream_holds_the_grant_until_a_fence() {
         let atlas = uuid::Uuid::new_v4();
         let owner = owner();
         let lease = publish(None, atlas, 148_838, engine(7)).lease_for(atlas).expect("granted");
-        let cancelled = owner.reserve_against(atlas, lease, 141_007, Some(2), || Some(lease)).expect("reserved");
+        let cancelled = owner.reserve_against(atlas, lease, 141_007, || Some(lease)).expect("reserved");
         drop(cancelled);
         assert_eq!(reserved_now(owner, engine(7)).get(&atlas), Some(&148_838), "unresolved: still held");
-        let eof = owner.reserve_against(atlas, lease, 1_000, Some(2), || Some(lease)).expect("reserved");
+        let eof = owner.reserve_against(atlas, lease, 1_000, || Some(lease)).expect("reserved");
         settle(eof, None);
         assert_eq!(reserved_now(owner, engine(7)).get(&atlas), Some(&148_838), "an EOF without a finish is no receipt");
-        let next = owner.reserve_against(atlas, lease, 1_000, Some(2), || Some(lease)).expect("her next act");
-        settle(next, Some(&TerminalReceipt { finish: "stop".into() }));
-        assert_eq!(reserved_now(owner, engine(7)).get(&atlas), None, "a later receipt on her slot resolves the earlier ones");
-        let again = owner.reserve_against(atlas, lease, 1_000, Some(2), || Some(lease)).expect("reserved");
-        drop(again);
-        assert_eq!(reserved_now(owner, engine(7)).get(&atlas), Some(&148_838));
         assert_eq!(reserved_now(owner, engine(8)).get(&atlas), None, "a fence: the engine incarnation changed");
     }
 
-    // what this catches (Codex on #5787): an older request's receipt releasing a NEWER unresolved
-    // one, or one on another slot. Only predecessors on the same slot are ordered before it.
+    // what this catches (Codex on #5787): a newer request's receipt releasing an OLDER request that
+    // was delayed in send or retry. Ids are issued before the POST, so they prove no engine order: a
+    // receipt releases only its own entry, and the older one stays held until its own evidence.
     #[test]
-    fn an_older_receipt_never_releases_a_newer_or_unordered_reservation() {
+    fn a_receipt_releases_only_its_own_reservation() {
         let atlas = uuid::Uuid::new_v4();
         let owner = owner();
         let lease = publish(None, atlas, 148_838, engine(7)).lease_for(atlas).expect("granted");
-        let older = owner.reserve_against(atlas, lease, 1_000, Some(2), || Some(lease)).expect("reserved");
-        let newer = owner.reserve_against(atlas, lease, 1_000, Some(2), || Some(lease)).expect("reserved");
-        let other_slot = owner.reserve_against(atlas, lease, 1_000, Some(3), || Some(lease)).expect("reserved");
-        drop(newer);
-        drop(other_slot);
-        settle(older, Some(&TerminalReceipt { finish: "stop".into() }));
-        let held = owner.lock().1.get(&atlas).map_or(0, Vec::len); // map_or: no entries at all reads as none held
-        assert_eq!(held, 2, "the newer unresolved one and the other slot's stay held");
+        let delayed = owner.reserve_against(atlas, lease, 1_000, || Some(lease)).expect("reserved first, sent late");
+        let newer = owner.reserve_against(atlas, lease, 1_000, || Some(lease)).expect("reserved");
+        settle(newer, Some(&TerminalReceipt { finish: "stop".into() }));
+        assert_eq!(reserved_now(owner, engine(7)).get(&atlas), Some(&148_838), "the delayed older request stays held");
+        settle(delayed, Some(&TerminalReceipt { finish: "stop".into() }));
+        assert_eq!(reserved_now(owner, engine(7)).get(&atlas), None, "released by its own receipt");
     }
 
-    // what this catches (Codex on #5787): a retry POSTed under a stale lease. Engine A was reserved;
-    // the connect retry reaches engine B, whose grant is smaller: the attempt re-reserves before its
-    // POST, the stale lease is refused typed, and nothing remains reserved under it.
+    // what this catches (Codex on #5787), at the reserve helper (the HTTP-level zero-POST pin is
+    // `a_stale_lease_posts_nothing` in the openai adapter's tests): an attempt re-reserves before
+    // every POST. Engine A was reserved; the retry's lease is compared against engine B's smaller
+    // grant, refused typed, and nothing stays reserved under the old lease.
     #[test]
-    fn a_retry_on_a_replacement_engine_re_reserves_or_is_refused_before_any_post() {
+    fn the_reserve_helper_re_reserves_each_attempt_and_refuses_a_replacement_engine() {
         let atlas = uuid::Uuid::new_v4();
         let owner = owner();
         let on_a = publish(None, atlas, 148_838, engine(7));
         let lease_a = on_a.lease_for(atlas).expect("granted");
         let mut attempt = None;
-        reserve_attempt_with(owner, &mut attempt, atlas, lease_a, 141_007, Some(2), || Some(lease_a)).expect("the first attempt reserves");
+        reserve_attempt_with(owner, &mut attempt, atlas, lease_a, 141_007, || Some(lease_a)).expect("the first attempt reserves");
         let on_b = publish(Some(&on_a), atlas, 40_282, engine(8)).lease_for(atlas).expect("granted");
-        let retried = reserve_attempt_with(owner, &mut attempt, atlas, lease_a, 141_007, Some(2), || Some(on_b));
-        assert_eq!(retried, Err(ReserveRefused::Changed { leased: lease_a, current: Some(on_b) }), "refused: zero POSTs under the old lease");
+        let retried = reserve_attempt_with(owner, &mut attempt, atlas, lease_a, 141_007, || Some(on_b));
+        assert_eq!(retried, Err(ReserveRefused::Changed { leased: lease_a, current: Some(on_b) }), "refused: the old lease reserves nothing");
         assert!(attempt.is_none(), "no reservation carried to the retry");
         assert_eq!(reserved_now(owner, engine(7)).get(&atlas), None, "the unsent attempt released its own");
     }

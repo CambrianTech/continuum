@@ -84,8 +84,9 @@ pub(crate) struct FillReceipt<'a> {
 pub(crate) struct DispatchAdmission {
     pub persona: uuid::Uuid,
     pub admission: crate::ai::types::RequestAdmission,
-    /// The engine slot the request is pinned to: ordering evidence for her reservations.
-    pub slot: Option<u32>,
+    /// The engine incarnation (pid, OS start time) the request's endpoint admission is bound to:
+    /// the lease must name it, or the attempt is refused (the published lease is only a watch value).
+    pub engine: Option<(u32, u64)>,
 }
 
 /// Request-specific authority for the engine's finalized-prompt counter. The adapter
@@ -179,12 +180,19 @@ pub(crate) async fn send_with_lane_retry(
         // the count just taken on this attempt's engine): a grant that moved since render, a
         // replacement engine, or a count past it refuses typed and nothing is sent; a reserved
         // lease holds every regrant off until the engine's terminal receipt.
-        if let Some(DispatchAdmission { persona, admission, slot }) = fill.admission {
+        if let Some(DispatchAdmission { persona, admission, engine }) = fill.admission {
             if let Some(leased) = admission.lease {
+                // Bound to the engine this request's endpoint admission holds, never inferred from
+                // the published grants: a lease on any other incarnation (or none known) is refused.
+                let leased_on = leased.engine.map(|e| (e.pid, e.started_s));
+                if engine.is_none() || leased_on != engine {
+                    *reservation = None;
+                    return Err(InferenceError::GrantChanged { rendered: leased.tokens, current: None });
+                }
                 let needed = (fill.prompt_tokens as u64)
                     .saturating_add(u64::from(fill.prompt_quote.map_or(0, |q| q.reply))) // map_or: no quote, no explicit reply allowance
                     .min(u64::from(u32::MAX)) as u32;
-                crate::capacity::window_grant::reserve_attempt(reservation, persona, leased, needed, slot).map_err(|refused| match refused {
+                crate::capacity::window_grant::reserve_attempt(reservation, persona, leased, needed).map_err(|refused| match refused {
                     crate::capacity::window_grant::ReserveRefused::Changed { leased, current } => {
                         InferenceError::GrantChanged { rendered: leased.tokens, current: current.map(|lease| lease.tokens) }
                     }

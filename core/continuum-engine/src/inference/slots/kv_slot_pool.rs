@@ -582,6 +582,13 @@ pub struct EndpointAdmission {
 }
 
 impl EndpointAdmission {
+    /// The engine incarnation (pid, OS start time) this admission is bound to: the one its pool's
+    /// ledger was stamped with when the engine was verified ready. The read lease holds it against
+    /// replacement for the admission's life. `None` when this endpoint has no stamped pool.
+    pub(crate) fn incarnation(&self) -> Option<(u32, u64)> {
+        self.pool.as_ref()?.ledger.get()?.incarnation.get().copied()
+    }
+
     /// The response must name this owned engine's launch alias. The read lease
     /// prevents replacement while this evidence is checked; a discovered or
     /// remote endpoint without a launch contract cannot certify local service.

@@ -29,6 +29,12 @@ pub use lease::{grant_with_reservations, honoring_reservations, reserve_attempt,
 pub struct GrantRevision(u64);
 
 impl GrantRevision {
+    /// A test's revision literal (production revisions are only issued at a publish).
+    #[cfg(test)]
+    pub(crate) const fn test(n: u64) -> Self {
+        Self(n)
+    }
+
     /// The next revision this process has never issued.
     fn issue() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);

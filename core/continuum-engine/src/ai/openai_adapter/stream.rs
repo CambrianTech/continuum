@@ -478,7 +478,7 @@ impl OpenAICompatibleAdapter {
             (Some(admission), Some(Ok(persona))) => Some(crate::inference::lane_send::DispatchAdmission {
                 persona,
                 admission,
-                slot: _admission.as_ref().and_then(|admitted| admitted.slot()),
+                engine: _admission.as_ref().and_then(|admitted| admitted.engine_incarnation()),
             }),
             (Some(_), _) => {
                 return Err(crate::ai::inference_error::InferenceError::Protocol(
