@@ -146,9 +146,17 @@ e03c2aa0), and Shown ids plus their ratchet (card 484b000b). Codex owns engine s
 
 ## Receipts owed
 
-- `cargo check` and the touched tests on a non-serving executor. This slice was written with
-  serving up and has not been compiled. The ts-rs bindings for `SubmitOutcome` and
-  `WorkSubmitResult` were hand-edited and must be regenerated.
+- Compiled and tested 2026-11-04 on the M5 (crate-scoped, low priority, serving up): lib tests
+  for continuum-rooms 27, -cognition 912, -mind 1111, -context 43, -prompt 63, all passing; `cargo
+  check --tests` clean for -core, -academy, -dreaming, -gateway, -grid, -serving. The ts-rs run
+  regenerated `SubmitOutcome` and `WorkSubmitResult` identical to the hand edit.
+- `self_sized` in two files this slice touches, owed by Fable as the next slice. Both need a size
+  from her grant, and no grant reaches a tool result or the work-turn block yet:
+  `work/list`'s `WORK_LIST_DEFAULT_LIMIT` (work_list.rs) and `work_burst`'s progress keeps
+  (`PROGRESS_READ_KEEP`, `PROGRESS_RAN_KEEP`) plus its two head cuts (the receipt object, the
+  older thoughts). The fix is the same seam for both: the result or block claims its size in the
+  turn's one allocation, or becomes keyed items of her view (as held work did), and the constants
+  go. Until then the source-hygiene ratchet job stays red on these two files.
 - Command-boundary tests through the real handlers on an airc fixture. The decisions are tested at
   the boundary function (`decide`), not yet through `WorkSubmit::run`.
 - The live read after deploy (Fable, within the deploy's 15-minute window), on the M5, per

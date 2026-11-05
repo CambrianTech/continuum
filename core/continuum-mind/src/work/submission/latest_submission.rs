@@ -421,7 +421,7 @@ pub(super) async fn stage_for_owner_on_demand(
 
 /// Renew the owner's lease as part of her act. Best effort: the wire's refusal
 /// (a superseded claim, a node race) is a probe, not a reason to stop her submit,
-/// because `holder_guard` already established she is the owner.
+/// because the submit precondition (`work_preconditions::submit`) already established she is the owner.
 pub(super) async fn renew_owner_lease(airc: &airc_lib::Airc, card: &airc_lib::WorkCard, claim_id: ClaimId) {
     let lapsed = card.claim_expires_at_ms.is_none_or(|e| e <= EpochMs::now().millis());
     if !lapsed {
