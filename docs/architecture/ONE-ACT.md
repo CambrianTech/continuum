@@ -736,3 +736,28 @@ must not release its fixed claim until verified save-and-erase or an engine
 fence. The pinned engine fork exposes `/slots/{id}?action=erase`; production
 integration must validate its response, protect page IO and endpoint identity,
 and retain custody across cancellation before enabling the new policy.
+
+### Reclamation and publication checkpoint — 2026-11-05 19:07Z
+
+The local fairness branch now implements endpoint-retained save then erase,
+with endpoint identity, slot permit, page IO and per-persona custody held across
+the operation. A confirmed save remains on disk; erase proof is recorded with
+the reservation owner before notifying the caller. Uncertainty keeps the claim
+charged. Existing fork pages refuse resident-only reclamation. Late unresolved
+completion recovery remains unfinished, so this mechanism is not enabled yet.
+
+The new publication transaction consumes physical proof and publishes the next
+queued grant while holding the dispatch reservation mutex. A completed holder
+joins behind existing waiters. A regression exposed a stale service-loop
+`in_flight` flag re-admitting the old holder even after erase; the transaction
+now derives in-flight protection from actual reservations. The regression
+failed before that correction and passes after it. Twenty-two grant tests pass,
+including cancellation protection, publication lock ownership, and three-mind
+rotation; the older ignored policy gate still documents the unwired path.
+The physical HTTP tests separately cover save-before-erase and save refusal.
+These are local component tests, not an end-to-end serving or live fairness proof.
+
+Serving integration still needs the pending wait path, known-refusal recovery
+and late completion recovery before enabling handoff. The scratch wake fix
+`f5bcda1dd5bf` has now published successfully on all three platforms in run
+`42078670563`; it has not been deployed by this takeover yet.
