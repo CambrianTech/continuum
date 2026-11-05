@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 use crate::inference::planning::window_allocator::test_tokens as t;

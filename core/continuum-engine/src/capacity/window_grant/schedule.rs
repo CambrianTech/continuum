@@ -76,12 +76,15 @@ pub fn play(minds: &[Busy], restart: Restart, ticks: u32, mut tick: impl FnMut(&
                 served.shrunk += 1;
             }
         }
-        // Turns end first, then turns start on the grants just published.
+        // Turns end first, then turns start on the grants just published. Every turn ending in one
+        // tick is simultaneous to the policy (the next grant sees them together), so a mind who queues
+        // this tick waits from the tick's last ending, never from her place in iteration order: in
+        // that order a mind was charged a same-tick ending of the mind queued level with her.
+        endings += state.values().filter(|(s, _)| matches!(s, State::Running { left: 1 })).count() as u64;
         for (mind, (s, ended)) in state.iter_mut() {
             *s = match *s {
                 State::Running { left: 1 } => {
                     *ended += 1;
-                    endings += 1;
                     *served.turns.entry(*mind).or_default() += 1;
                     match restart {
                         Restart::BetweenTicks => State::Waiting { since: endings },
