@@ -415,6 +415,9 @@ impl PlacementSwitch {
 /// that could not be built and no remote bound). Every generation fails by name.
 struct NoSeat(String);
 
+// No seat: every generation refuses, so no turn ever thinks.
+continuum_engine::dispatch_without_thinking!(NoSeat);
+
 #[async_trait]
 impl AIProviderAdapter for NoSeat {
     fn provider_id(&self) -> &str {
@@ -434,6 +437,19 @@ impl AIProviderAdapter for NoSeat {
             "{}: no seat — her home adapter could not be built and no remote lane is bound",
             self.0
         ))
+    }
+}
+
+/// The adapter her request goes to now honours her dispatch terms, like every capability here.
+#[async_trait]
+impl crate::ai::adapter::DispatchTermsPolicy for PlacementSwitch {
+    async fn generate_admitted(
+        &self,
+        request: TextGenerationRequest,
+        terms: crate::ai::types::DispatchTerms,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+        self.current().generate_admitted(request, terms, sink).await
     }
 }
 
@@ -529,6 +545,11 @@ impl AIProviderAdapter for PlacementSwitch {
 
     fn serves_on_shared_pool(&self) -> bool {
         self.current().serves_on_shared_pool()
+    }
+    /// The adapter her request goes to now decides, like every capability here: a home lane on
+    /// the managed engine counts her prompt exactly, a remote seat does not.
+    fn counts_prompts_exactly(&self) -> bool {
+        self.current().counts_prompts_exactly()
     }
     /// Asked of the adapter her request actually goes to, like every other capability here: a
     /// home lane on our fork's gateway may take her learned tool head, a remote seat may not.

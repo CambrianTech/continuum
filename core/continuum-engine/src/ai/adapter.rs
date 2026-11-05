@@ -27,6 +27,8 @@ use super::types::{
 
 mod inference_device;
 pub use inference_device::*;
+mod dispatch_terms;
+pub use dispatch_terms::{generate_without_thinking, refuse_think_budget, refuse_unenforceable_admission, DispatchTermsPolicy};
 mod adapter_selection_error;
 pub use adapter_selection_error::*;
 mod global_registry;

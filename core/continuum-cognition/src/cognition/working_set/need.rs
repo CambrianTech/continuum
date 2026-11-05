@@ -37,6 +37,47 @@ impl OutputNeed {
     pub fn total(self) -> u32 {
         self.reasoning.saturating_add(self.answer)
     }
+
+    /// What one ACT needs to write, as ONE claim: her think (raised to its censored bound after a
+    /// recent cut, `reasoning_at_least`) plus her answer (the tool call and its serialization).
+    /// Never the answer alone: the think and the call share `max_tokens`, and an act granted
+    /// her answer's room spent it thinking (the M5, 2026-11-04: caps of 72-89 tokens, every
+    /// one spent on reasoning, 302 of 414 acts cut at their first sentence).
+    pub fn act_room(self) -> u32 {
+        let think = match self.reasoning_at_least {
+            Some(bound) => bound.max(self.reasoning),
+            None => self.reasoning,
+        };
+        think.saturating_add(self.answer)
+    }
+}
+
+/// An act's output room as her measurements know it. Unknown is a state, never a number: a cold
+/// mind has no measured need, so nothing is reserved in her name and nothing is refused for it;
+/// her first act measures her.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActRoom {
+    /// No act of hers has landed yet.
+    Unmeasured,
+    /// Her measured need ([`OutputNeed::act_room`]) and the answer share inside it.
+    Needs { room: std::num::NonZeroU32, answer: u32 },
+}
+
+impl ActRoom {
+    pub fn of(need: Option<OutputNeed>) -> Self {
+        match need.and_then(|n| std::num::NonZeroU32::new(n.act_room()).map(|room| (room, n.answer))) {
+            Some((room, answer)) => Self::Needs { room, answer },
+            None => Self::Unmeasured,
+        }
+    }
+
+    /// The tokens her act must be able to write; `None` when unmeasured.
+    pub fn needed(self) -> Option<u32> {
+        match self {
+            Self::Unmeasured => None,
+            Self::Needs { room, .. } => Some(room.get()),
+        }
+    }
 }
 
 /// The p90 of `samples` (ascending sort, the value at the 90th percentile position).

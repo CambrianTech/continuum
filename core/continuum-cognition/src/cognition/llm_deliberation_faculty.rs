@@ -97,6 +97,8 @@ mod admission;
 pub(crate) mod admission_clock;
 use self::request::*;
 mod reply_claim;
+mod act_room;
+use self::act_room::*;
 mod read_receipt;
 pub use read_receipt::ReadReceipt;
 use self::reply_claim::*;
@@ -753,6 +755,10 @@ pub mod test_support {
         pub seen: Mutex<Vec<TextGenerationRequest>>,
         pub rejections: Mutex<VecDeque<crate::ai::inference_error::InferenceError>>,
         pub live_window: Option<u32>,
+        /// The adapter admits by the engine's exact prompt count (`counts_prompts_exactly`).
+        pub counts_exactly: bool,
+        /// The dispatch terms of every request, in order (`generate_admitted`), aligned with `seen`.
+        pub terms_seen: Mutex<Vec<crate::ai::types::DispatchTerms>>,
         pub window_sequence: Mutex<VecDeque<u32>>,
         pub on_window_read: Mutex<Option<WindowReadHook>>,
         pub on_request: Mutex<Option<RequestHook>>,
@@ -765,6 +771,8 @@ pub mod test_support {
                 seen: Mutex::new(Vec::new()),
                 rejections: Mutex::new(VecDeque::new()),
                 live_window: None,
+                counts_exactly: false,
+                terms_seen: Mutex::new(Vec::new()),
                 window_sequence: Mutex::new(VecDeque::new()),
                 on_window_read: Mutex::new(None),
                 on_request: Mutex::new(None),
@@ -772,6 +780,20 @@ pub mod test_support {
         }
         pub fn call_count(&self) -> usize {
             self.seen.lock().unwrap().len()
+        }
+    }
+
+    /// Records the terms each request was dispatched under beside it (`terms_seen`).
+    #[async_trait]
+    impl crate::ai::adapter::DispatchTermsPolicy for ScriptedAdapter {
+        async fn generate_admitted(
+            &self,
+            request: TextGenerationRequest,
+            terms: crate::ai::types::DispatchTerms,
+            sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
+        ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+            self.terms_seen.lock().expect("fixture terms log").push(terms); // JUSTIFIED: test fixture lock, never poisoned
+            self.generate_stream_checked(request, sink).await
         }
     }
 
@@ -785,6 +807,9 @@ pub mod test_support {
         }
         fn default_model(&self) -> &str {
             "scripted"
+        }
+        fn counts_prompts_exactly(&self) -> bool {
+            self.counts_exactly
         }
         fn live_served_window(&self) -> Option<u32> {
             // Inject the exact load → observation → publication interleaving

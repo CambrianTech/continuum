@@ -130,6 +130,15 @@ impl OpenAICompatibleAdapter {
         self.targets_serving_endpoint(&snap.base_url)
     }
 
+    /// Does the engine this adapter reaches count each finalized prompt before generating it?
+    /// The managed local lane does (`serving_guard::quote_prompt`); the one predicate for the
+    /// quote itself and for [`AIProviderAdapter::counts_prompts_exactly`].
+    ///
+    /// [`AIProviderAdapter::counts_prompts_exactly`]: crate::ai::adapter::AIProviderAdapter::counts_prompts_exactly
+    pub(super) fn exact_prompt_admission(&self) -> bool {
+        self.config.single_resident_model && self.targets_local_serving_lane()
+    }
+
     pub(super) fn targets_serving_endpoint(&self, serving_base: &str) -> bool {
         if serving_base.is_empty() {
             return false;

@@ -224,7 +224,7 @@ pub fn requirement_tokens(d: &PersonaDemand) -> u32 {
 /// 2026-08-31, the meta-loop spiral). Both reserve comments named this exact
 /// registry pattern as the honest endgame; this is it.
 mod need;
-pub use need::OutputNeed;
+pub use need::{ActRoom, OutputNeed};
 use need::{p90, reasoning_at_least, NEED_SAMPLES};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

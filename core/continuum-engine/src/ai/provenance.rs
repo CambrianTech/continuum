@@ -77,6 +77,33 @@ pub struct AllocationReceipt {
     /// The build that ran the allocator: its policy revision until the policy has its own.
     pub revision: String,
     pub claims: Vec<ClaimGrant>,
+    /// An act's output room as its request carried it (`None` for a pass, and for rows written
+    /// before this field): the cap beside the model, the measured need and the density it was
+    /// priced at, so a cut is read against the numbers that decided it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_room: Option<OutputRoom>,
+}
+
+/// How a prompt's price is admitted (its one owner is the request type).
+pub use crate::ai::types::PromptAdmission;
+
+/// One act's output room, as sent: what she was allowed to write and every input that decided it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputRoom {
+    /// The model the request named.
+    pub model: String,
+    /// `max_tokens`: think plus answer, one claim.
+    pub cap: u32,
+    /// The think's bound inside the cap; `None` = the purpose's share rule.
+    pub reasoning_budget: Option<u32>,
+    /// Her measured output need (reasoning + answer, raised by a recent cut); `None` = unmeasured.
+    pub need: Option<u32>,
+    /// The calibration identity: the one observation the prompt was priced from, estimated
+    /// tokens against the engine's count (1/1 = no observation).
+    pub density_estimated: u64,
+    pub density_measured: u32,
+    pub admission: PromptAdmission,
 }
 
 /// One claim of an allocation: what it could not go below, what it wanted whole, and what it got.

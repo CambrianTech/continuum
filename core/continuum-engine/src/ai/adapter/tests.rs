@@ -19,6 +19,7 @@
         model: Option<String>,
     }
 
+    crate::dispatch_without_thinking!(StubAdapter);
     #[async_trait]
     impl AIProviderAdapter for StubAdapter {
         fn provider_id(&self) -> &str {

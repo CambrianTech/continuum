@@ -278,6 +278,9 @@ pub(crate) struct StreamOutcome {
     pub(crate) stream_timings: Option<OpenAITimings>,
     pub(crate) resp_model: Option<String>,
     pub(crate) probe_persona: String,
+    /// The engine's terminal receipt: present only when its final frame carried a finish reason;
+    /// a stream that reached EOF without one did not end on the engine's word.
+    pub(crate) terminal: Option<crate::capacity::window_grant::TerminalReceipt>,
 }
 
 /// Consume `response`'s SSE stream to completion (or a watchdog failure).
@@ -837,7 +840,9 @@ pub(crate) async fn consume_sse_stream(
     }
 
 
+    let terminal = finish_reason_str.clone().map(|finish| crate::capacity::window_grant::TerminalReceipt { finish });
     Ok(StreamOutcome {
+        terminal,
         acc_content,
         acc_reasoning,
         acc_tools,

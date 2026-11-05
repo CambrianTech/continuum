@@ -3,6 +3,7 @@ import type { ActiveAdapterRequest } from "./ActiveAdapterRequest";
 import type { ChatMessage } from "./ChatMessage";
 import type { NativeToolSpec } from "./NativeToolSpec";
 import type { ResponseFormat } from "./ResponseFormat";
+import type { ThinkBudget } from "./ThinkBudget";
 import type { ToolChoice } from "./ToolChoice";
 
 /**
@@ -11,7 +12,14 @@ import type { ToolChoice } from "./ToolChoice";
  * every chunk reaches the remote mind as it is produced. The stream is the call's, never
  * the request's; a plain call has none and gets the assembled response.
  */
-export type GenerateParams = { streamId?: string, messages: Array<ChatMessage>, systemPrompt?: string, model?: string, provider?: string, temperature?: number, maxTokens?: number, topP?: number, topK?: number, repeatPenalty?: number, 
+export type GenerateParams = { streamId?: string, 
+/**
+ * The requesting mind's think budget (her grant past her measured answer), forwarded by a
+ * grid lane (`RemoteInferenceRequest::think`). Present: generated under it on this seat's
+ * adapter (`DispatchTermsPolicy`), refused typed by one that cannot bound a think. This seat
+ * advertises it as `CapabilityId::RemoteThinkBudget`.
+ */
+think?: ThinkBudget, messages: Array<ChatMessage>, systemPrompt?: string, model?: string, provider?: string, temperature?: number, maxTokens?: number, topP?: number, topK?: number, repeatPenalty?: number, 
 /**
  * llama.cpp-native, UNWINDOWED repetition guard: scales each token's penalty by how
  * often it has appeared across the ENTIRE generation (unlike `repeat_penalty`, which

@@ -110,6 +110,26 @@ impl LlmDeliberationFaculty {
         }
         let Some(memory) = self.working_memory.as_ref() else { return false };
         let Some((seq, _)) = memory.active_action_full() else { return false };
+        let observations = memory.active_action_observations(seq);
+        // A reported note (a thought cut at the output limit, a think-only turn) IS the result: a
+        // few sentences with nothing behind a handle and no smaller level that still says it.
+        // Shown smaller, she reads only "result #n" and her next act is her last one again (the
+        // M5, 2026-11-04: 83 consecutive cuts). It has one level, whole; a window that cannot
+        // hold it is the turn's capacity refusal.
+        let reported = |o: &Observation| crate::cognition::tool_executor::command_executor::is_reported_sentinel(&o.call.name);
+        if !observations.is_empty() && observations.iter().all(reported) {
+            if report {
+                continuum_base::probe!(
+                    class = "delib.newest_result.reported_note_whole",
+                    persona = %self.persona_name,
+                    seq,
+                    latest_result_tokens = whole_tokens,
+                    room,
+                    "her newest result is a reported note: kept whole, never a smaller level"
+                );
+            }
+            return false;
+        }
         let Ok(handle) = memory.saved_handle(seq) else {
             if report {
                 continuum_base::probe!(
@@ -124,7 +144,6 @@ impl LlmDeliberationFaculty {
             return false;
         };
         let label = format!("result #{seq}");
-        let observations = memory.active_action_observations(seq);
         let act_of = |id: &Option<String>| -> Option<&Observation> {
             id.as_ref().and_then(|id| observations.iter().find(|o| &o.output.result.tool_use_id == id))
         };
