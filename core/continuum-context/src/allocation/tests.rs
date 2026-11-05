@@ -43,14 +43,29 @@ fn the_newest_result_is_the_largest_of_its_levels_that_fits_and_the_rest_reaches
     let view = || vec![view_source("conversation", 4, 600, 20_000)];
     let roomy = allocate(40_000, claims(newest(), view(), 8));
     assert_eq!((roomy.newest_level(), roomy.granted(id::NEWEST)), (0, 9_000), "whole");
-    // Other floors: framing 4,000 + required 500 + tools 1,000 + history 200 + view 600 + reply
-    // 800 = 7,100; 12,000 leaves 4,900: the 2,000 level fits, the whole does not.
+    // Required floors: framing 4,000 + required 500 + tools 1,000 + reply 800 = 6,300; 12,000
+    // leaves 5,700: the 2,000 level fits, the whole does not.
     let tight = allocate(12_000, claims(newest(), view(), 8));
     assert_eq!((tight.newest_level(), tight.granted(id::NEWEST)), (1, 2_000), "the largest level that fits");
     assert!(tight.view_granted() > 600, "what the level leaves reaches her view past its floor: {}", tight.view_granted());
     assert!(tight.irreducible_shortfall().is_none(), "reducible: no growth asked");
     let floor_only = allocate(7_500, claims(newest(), view(), 8));
     assert_eq!(floor_only.newest_level(), 2, "nothing larger fits: its coarsest");
+}
+
+// what this catches (Cormac on #5779, goal 7: never clip the newest end, shrink oldest-first):
+// her newest result's level chosen against EVERY floor, optional ones included, so enrichment and
+// older history pushed it to a summary on a window that held it whole (allocate(15_500): level 1,
+// 2,000 granted, with required floors 6,300 + whole 9,000 = 15,300 <= 15,500). It is chosen
+// against the required floors and the reply's; history and her view shed in the floor pass.
+#[test]
+fn optional_claims_shed_before_her_newest_result_is_shown_smaller() {
+    let view = vec![view_source("conversation", 4, 600, 20_000)];
+    let plan = allocate(15_500, claims(Newest { levels: vec![9_000, 2_000, 900] }, view, 8));
+    assert_eq!((plan.newest_level(), plan.granted(id::NEWEST)), (0, 9_000), "whole: it fits beside every required floor");
+    let optional = plan.granted(id::HISTORY) + plan.view_granted() + plan.granted(id::GROUNDING);
+    assert!(optional <= 15_500 - 15_300, "history, grounding and her view shed first: {optional}");
+    assert!(plan.irreducible_shortfall().is_none());
 }
 
 // what this catches: required floors past the window answered by collapsing history (or by a

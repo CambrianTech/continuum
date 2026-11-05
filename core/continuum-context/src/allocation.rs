@@ -139,13 +139,17 @@ pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
     ];
     all.extend(claims.view);
     // Her newest result is a discrete choice among its own levels, never a span: whole whenever the
-    // window holds it beside every other floor (the reply's measured need included), else the
-    // largest level that does, else its coarsest (goal 7: the newest end is never cut, and a level
-    // she cannot see whole still carries content and its handle). As a span (floor coarsest, min
+    // window holds it beside the REQUIRED floors (the reply's measured need included), else the
+    // largest level that does, else its coarsest. Optional claims (grounding, history, every
+    // optional view source) never push it down: they shed in the floor pass, oldest first, which
+    // is what optional means (goal 7: the newest end is never cut; Cormac on #5779: counting
+    // every floor showed it at a summary on a window that held it whole). A level she cannot see
+    // whole still carries content and its handle. As a span (floor coarsest, min
     // whole) it took every token left in the min pass at its priority, showed the largest level
     // under that and wasted the rest, so her view's sources fell to their floors and a room update
     // that fit beside her result vanished (capacity_and_wire, the wire test).
-    let others = turn_need(&all).saturating_add(claims.reply.floor_tokens);
+    let required: Vec<FlexClaim> = all.iter().filter(|claim| claim.required).cloned().collect();
+    let others = turn_need(&required).saturating_add(claims.reply.floor_tokens);
     let left = window.saturating_sub(others);
     let newest_level = match claims.newest.levels.iter().position(|&cost| cost <= left) {
         Some(level) => level,
@@ -155,13 +159,16 @@ pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
     if let Some(&cost) = claims.newest.levels.get(newest_level) {
         all.insert(2, fixed(id::NEWEST, cost));
     }
-    // The reply never takes from another claim's floor: its floor is what the window leaves
-    // after every other floor. Leaving only the required input, the reply's floor filled an 8,192
-    // window to the token and her last action went to nothing (the required input refused at 275
-    // of 0).
+    // The reply never takes from a REQUIRED floor: its floor is what the window leaves after the
+    // required floors (her newest result at its chosen level among them). The required input once
+    // refused at 275 of 0 when the reply's floor filled an 8,192 window to the token. Optional
+    // floors (history, grounding, optional view sources) shed before her reply's measured need, as
+    // they shed before her newest result (Cormac on #5779): capped against every floor, the reply
+    // was cut to 200 of its 800 so optional history and view kept theirs.
     let mut reply = claims.reply;
     let reply_need = reply.floor_tokens;
-    reply.floor_tokens = reply_need.min(window.saturating_sub(turn_need(&all)));
+    let required_with_newest: Vec<FlexClaim> = all.iter().filter(|claim| claim.required).cloned().collect();
+    reply.floor_tokens = reply_need.min(window.saturating_sub(turn_need(&required_with_newest)));
     reply.min_tokens = reply.floor_tokens;
     reply.source_id = id::REPLY.to_owned();
     all.push(reply);
