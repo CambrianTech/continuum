@@ -152,7 +152,8 @@ impl Density {
         Some((Self::Measured { served: served.to_owned(), samples }, price, reading))
     }
 
-    /// How many replies the ring holds (0 unmeasured).
+    /// How many replies the ring holds (0 unmeasured). Only the ring's own tests read it.
+    #[cfg(test)]
     pub(in super::super) fn samples(&self) -> usize {
         match self {
             Self::Unmeasured => 0,
