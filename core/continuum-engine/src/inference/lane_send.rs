@@ -196,6 +196,9 @@ pub(crate) async fn send_with_lane_retry(
                     crate::capacity::window_grant::ReserveRefused::Changed { leased, current } => {
                         InferenceError::GrantChanged { rendered: leased.tokens, current: current.map(|lease| lease.tokens) }
                     }
+                    crate::capacity::window_grant::ReserveRefused::Retiring { leased } => {
+                        InferenceError::GrantChanged { rendered: leased.tokens, current: None }
+                    }
                     crate::capacity::window_grant::ReserveRefused::Over { count, grant } => {
                         InferenceError::ContextExceeded { requested: count, available: grant }
                     }

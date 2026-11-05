@@ -42,6 +42,8 @@ pub enum ReserveRefused {
     Changed { leased: GrantLease, current: Option<GrantLease> },
     /// The engine's exact count plus the output reserve does not fit strictly inside the lease.
     Over { count: u32, grant: u32 },
+    /// A verified completion began custody transfer; the old holder cannot reacquire.
+    Retiring { leased: GrantLease },
 }
 
 /// One reservation's custody.
@@ -68,6 +70,14 @@ pub struct TerminalReceipt {
     pub finish: String,
 }
 
+/// Why a proposed transfer cannot begin. None authorizes freeing cached KV.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandoffRefused {
+    GrantChanged,
+    ReceiptChanged,
+    CustodyOutstanding,
+}
+
 /// Engine-terminal progress survives a finish/restart between publisher ticks.
 /// A revision is issued only for a verified terminal receipt of an owned request.
 #[derive(Default)]
@@ -76,6 +86,7 @@ struct ReservationState {
     entries: BTreeMap<uuid::Uuid, Vec<Entry>>,
     next_receipt: u64,
     receipts: BTreeMap<uuid::Uuid, (Option<EngineIncarnation>, u64)>,
+    retiring: BTreeMap<uuid::Uuid, GrantLease>,
 }
 
 /// The reservations and terminal progress share one lock: a publisher cannot observe a
@@ -87,7 +98,7 @@ pub(super) struct Reservations {
 impl Reservations {
     pub(super) const fn new() -> Self {
         Self { held: std::sync::Mutex::new(ReservationState {
-            next_id: 0, entries: BTreeMap::new(), next_receipt: 0, receipts: BTreeMap::new(),
+            next_id: 0, entries: BTreeMap::new(), next_receipt: 0, receipts: BTreeMap::new(), retiring: BTreeMap::new(),
         }) }
     }
 
@@ -108,6 +119,9 @@ impl Reservations {
         let current = current();
         if !current.is_some_and(|lease| lease.same_identity(&leased)) {
             return Err(ReserveRefused::Changed { leased, current });
+        }
+        if held.retiring.get(&persona).is_some_and(|retired| retired.engine == leased.engine) {
+            return Err(ReserveRefused::Retiring { leased });
         }
         if needed >= leased.tokens {
             return Err(ReserveRefused::Over { count: needed, grant: leased.tokens });
@@ -137,11 +151,38 @@ impl Reservations {
         }
         held.entries.retain(|_, entries| !entries.is_empty());
         held.receipts.retain(|_, (incarnation, _)| *incarnation == engine);
-        let reserved = held.entries.iter().map(|(mind, entries)| {
+        held.retiring.retain(|_, lease| lease.engine == engine);
+        let mut reserved: BTreeMap<uuid::Uuid, u32> = held.entries.iter().map(|(mind, entries)| {
             (*mind, entries.iter().map(|e| e.tokens).max().unwrap_or(0)) // unwrap_or: empty entries were removed above
         }).collect();
+        for (mind, lease) in &held.retiring {
+            reserved.entry(*mind).and_modify(|tokens| *tokens = (*tokens).max(lease.tokens)).or_insert(lease.tokens);
+        }
         let receipts = held.receipts.iter().map(|(mind, (_, revision))| (*mind, *revision)).collect();
         regrant(&reserved, &receipts)
+    }
+
+    /// Start transfer only from the exact observed publication and terminal revision, with no
+    /// request still owning custody. The claim stays charged until physical reclamation or fence.
+    fn begin_handoff(
+        &self,
+        persona: uuid::Uuid,
+        leased: GrantLease,
+        receipt: u64,
+        current: impl FnOnce() -> Option<GrantLease>,
+    ) -> Result<(), HandoffRefused> {
+        let mut held = self.lock();
+        if leased.engine.is_none() || !current().is_some_and(|now| now.same_identity(&leased)) {
+            return Err(HandoffRefused::GrantChanged);
+        }
+        if held.receipts.get(&persona) != Some(&(leased.engine, receipt)) {
+            return Err(HandoffRefused::ReceiptChanged);
+        }
+        if held.entries.get(&persona).is_some_and(|entries| !entries.is_empty()) {
+            return Err(HandoffRefused::CustodyOutstanding);
+        }
+        held.retiring.insert(persona, leased);
+        Ok(())
     }
 
     /// Release only this request. An unsent attempt is not completed service. A receipt from
@@ -227,6 +268,13 @@ pub fn honoring_reservations_and_receipts<R>(
     regrant: impl FnOnce(&BTreeMap<uuid::Uuid, u32>, &BTreeMap<uuid::Uuid, u64>) -> R,
 ) -> R {
     RESERVATIONS.honoring_with_receipts(engine, regrant)
+}
+
+/// Fence the old holder's next dispatch while preserving its charged capacity. This is the
+/// first phase of handoff, NOT a grant to a waiter. There is deliberately no unverified
+/// "release retirement" API: the physical save-and-erase receipt integration is still required.
+pub fn begin_grant_handoff(persona: uuid::Uuid, leased: GrantLease, receipt: u64) -> Result<(), HandoffRefused> {
+    RESERVATIONS.begin_handoff(persona, leased, receipt, || super::current_lease(persona))
 }
 
 /// One dispatch ATTEMPT's reservation, re-made before every POST: the previous attempt's (never
@@ -357,6 +405,47 @@ mod tests {
         });
         assert_eq!(after.get(&a), None, "released at its terminal receipt: the deferred change applies");
         assert_eq!(after.get(&b), Some(&100));
+    }
+
+    #[test]
+    fn pending_handoff_blocks_reacquisition_but_keeps_physical_capacity_charged() {
+        let mind = uuid::Uuid::new_v4();
+        let owner = owner();
+        let lease = publish(None, mind, 60, engine(7)).lease_for(mind).expect("granted");
+        let active = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("reserved");
+        settle(active, Some(&TerminalReceipt { finish: "stop".into() }));
+        let revision = owner.honoring_with_receipts(engine(7), |_, receipts| receipts[&mind]);
+        assert_eq!(owner.begin_handoff(mind, lease, revision, || Some(lease)), Ok(()));
+        let again = owner.reserve_against(mind, lease, 50, || Some(lease));
+        assert_eq!(again.err(), Some(ReserveRefused::Retiring { leased: lease }));
+        owner.honoring_with_receipts(engine(7), |fixed, _| {
+            assert_eq!(fixed.get(&mind), Some(&60), "terminal receipt did not erase cached KV");
+        });
+        owner.honoring_with_receipts(engine(8), |fixed, receipts| {
+            assert!(fixed.is_empty(), "replacement engine fences physical custody");
+            assert!(receipts.is_empty());
+        });
+        let replacement = publish(None, mind, 60, engine(8)).lease_for(mind).expect("new engine grant");
+        owner.reserve_against(mind, replacement, 50, || Some(replacement)).expect("not blocked by old retirement").release_unsent();
+    }
+
+    #[test]
+    fn handoff_revalidates_receipt_publication_and_unresolved_custody() {
+        let mind = uuid::Uuid::new_v4();
+        let owner = owner();
+        let grant = publish(None, mind, 60, engine(7));
+        let lease = grant.lease_for(mind).expect("granted");
+        let finished = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("reserved");
+        settle(finished, Some(&TerminalReceipt { finish: "stop".into() }));
+        let revision = owner.honoring_with_receipts(engine(7), |_, receipts| receipts[&mind]);
+        assert_eq!(owner.begin_handoff(mind, lease, revision + 1, || Some(lease)), Err(HandoffRefused::ReceiptChanged));
+        let changed = publish(Some(&grant), mind, 70, engine(7)).lease_for(mind).expect("changed");
+        assert_eq!(owner.begin_handoff(mind, lease, revision, || Some(changed)), Err(HandoffRefused::GrantChanged));
+        let overlapping = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("second request");
+        assert_eq!(owner.begin_handoff(mind, lease, revision, || Some(lease)), Err(HandoffRefused::CustodyOutstanding));
+        drop(overlapping);
+        assert_eq!(owner.begin_handoff(mind, lease, revision, || Some(lease)), Err(HandoffRefused::CustodyOutstanding));
+        assert_eq!(reserved_now(owner, engine(7)).get(&mind), Some(&60));
     }
 
     #[test]
