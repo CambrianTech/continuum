@@ -87,8 +87,8 @@ pub const DIRECTED_PRESENCE_BLOCK: &str = "\n\n[Directed Presence]\n\
 
 /// The HELD-WORK variant of the presence block: appended on an UNDIRECTED turn when
 /// this persona holds a live in-progress work claim (a structural fact read from the
-/// airc claim state her own [active-work] grounding renders — never a read of her
-/// output). Glass-boxed 2026-08-07 (card f6a9fe5c's sequel): with a perfect window —
+/// airc claim state, typed on her workspace (`Workspace::held`), whose cards her view renders
+/// under [my work] — never a read of her output). Glass-boxed 2026-08-07 (card f6a9fe5c's sequel): with a perfect window —
 /// card title, workspace root, board, roster all present — all four citizens still
 /// yielded EVERY ambient turn, 7 tokens each, no reasoning. The conversational
 /// contract was doing exactly what it says: nobody spoke, so there was nothing to
@@ -100,7 +100,7 @@ pub const DIRECTED_PRESENCE_BLOCK: &str = "\n\n[Directed Presence]\n\
 /// stays available and legitimate — what changes is that a quiet room is no longer
 /// presented as the absence of anything to do.
 pub const WORKING_PRESENCE_BLOCK: &str = "\n\n[Working Presence]\n\
-    You hold claimed work in progress — your card(s) are listed under [active-work], \
+    You hold claimed work in progress — your card(s) are listed under [my work], \
     and the repository is staged in your workspace. A quiet room is not a stop sign: \
     with no message to answer, this turn is yours to ADVANCE that work with your \
     tools — open the staged repo under your workspace root, read the code, run the \

@@ -3,6 +3,7 @@
 
 use continuum_base::time::EpochMs;
 use super::*;
+use airc_core::shown_id::{Shown, ShownIdError};
 use crate::persona::training_producer::reviewed::{self, SubmissionSelection};
 use crate::runtime::{CommandExecutor, InProcessTransport, LateBound};
 use continuum_client::Connection;

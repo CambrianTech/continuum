@@ -1,16 +1,8 @@
 //! The ids persona's grounding sources deliver under: the faculty a workspace candidate
 //! carries when a persona source fed it. Cognition matches on them (the prompt's churn
-//! order, the held-work predicates) and persona's sources emit them, so they live here,
+//! order) and persona's sources emit them, so they live here,
 //! below both: one constant per source, never a second literal that can drift. Moved
 //! from each source's own `SOURCE_ID` so cognition names no persona module.
-
-/// `persona::active_work_source`.
-///
-/// Source identifier — used by budget presets, telemetry, and the projection that
-/// routes this delivery into system-prompt grounding (standing framing).
-/// The deliberation faculty's grounding floor keys on the SAME name to give a held
-/// claim's card content first call on the reservation.
-pub const ACTIVE_WORK: &str = "active-work";
 
 /// `persona::airc_source`.
 ///
@@ -34,7 +26,7 @@ pub const MISSION: &str = "mission";
 ///
 /// Source identifier — the deliberation faculty renders this delivery under a
 /// `[room-kanban]` header (generic `[<source_id>]` projection). Distinct from
-/// `active-work` (own claims) and `room-wall` (the wall, renamed from the
+/// her held work (a source of her view) and `room-wall` (the wall, renamed from the
 /// misleading `room-board` in #3874).
 pub const ROOM_BOARD: &str = "room-kanban";
 
@@ -80,25 +72,3 @@ pub const WORKSPACE_MAP: &str = "workspace-map";
 
 /// `persona::awareness_source`.
 pub const AWARENESS: &str = "awareness";
-
-/// True when an [active-work] contribution's rendered content names a card this
-/// persona currently HOLDS in progress. The writer is persona's `active_work_source`
-/// renderer (which writes `card <id8> [{state:?}] "<title>" …` for HELD cards only —
-/// the lost-claim and rejection facts carry no state tag); its test pins this reader to
-/// that writer so the wire format and its one reader cannot drift apart. Matching our
-/// OWN emitted format is protocol decoding, not inference about prose. Consumed by the
-/// deliberation prompt to choose the working-presence contract on undirected turns — a
-/// structural claim-state fact.
-pub fn renders_held_in_progress(active_work_content: &str) -> bool {
-    active_work_content.contains("[InProgress]")
-}
-
-/// True when the content names a card this persona HOLDS in either held state —
-/// `[Claimed]` or `[InProgress]` (the two states `card_holder` treats as held).
-/// Measured 2026-09-15 06:33Z on the M5: 11 held cards read Claimed and 3
-/// InProgress, so a predicate keyed on InProgress alone saw no work at all — every
-/// non-directed lane grant in 25 minutes was Ambient (#4058's receipt). The lane
-/// gate keys on THIS; the working-presence contract keeps its InProgress key.
-pub fn renders_held_card(active_work_content: &str) -> bool {
-    active_work_content.contains("[InProgress]") || active_work_content.contains("[Claimed]")
-}

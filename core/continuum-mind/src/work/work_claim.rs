@@ -54,6 +54,25 @@ impl ActionCommand for WorkClaim {
                         reason.trim_end_matches('.')
                     )));
                 }
+                // THE PRECONDITION, at the mutation boundary, against the card as the board holds
+                // it now (`work_preconditions::claim`, the one owner the surface reads too): any card
+                // not in a settled state. Another's claim is taken over on the record by airc's
+                // claim (ClaimReleased naming them, then hers). Refused, she gets the card now and
+                // her moves on it, and the rejection stays in her perception past the receipt.
+                let now_ms = EpochMs::now().millis();
+                match work_preconditions::decide(work_preconditions::claim(card, airc.peer_id(), now_ms), card, airc.peer_id(), now_ms) {
+                    Ok(work_preconditions::ClaimRoute::Takeover { from }) => continuum_base::probe!(
+                        class = "work.claim.taken_over",
+                        card_id = %card_id.as_uuid(),
+                        from = %from.as_uuid(),
+                        "a card someone else held is taken over on the record"
+                    ),
+                    Ok(work_preconditions::ClaimRoute::Fresh | work_preconditions::ClaimRoute::Resume) => {}
+                    Err(refusal) => {
+                        crate::persona::claim_rejections::record(airc.peer_id().as_uuid(), &p.card_id, &refusal.to_string());
+                        return Err(super::refused(refusal));
+                    }
+                }
             }
         }
         let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS);
@@ -84,19 +103,10 @@ impl ActionCommand for WorkClaim {
         let claim_id = match claim_attempt {
             Ok(id) => id,
             Err(e) => {
-                // Name the HOLDER, not just the fact (Joel, 2026-08-03, on
-                // Atlas's first live contention bounce: "It should tell you the
-                // peer"). A bare "already claimed" is a dead end; "claimed by
-                // <peer>" is a coordination move — ask them, watch their
-                // progress, or pick another card. Best-effort board read; the
-                // original error stands alone if the board is unreadable.
-                let mut msg = e.to_string();
-                // Whether the refusal is a CONTENTION (someone holds it) or a real
-                // fault decides the error CLASS below — a taken card is a normal
-                // outcome of a shared board, and telling a citizen "[internal]" for
-                // it teaches her the substrate is broken when the truth is "that one
-                // is Anwen's". Observed live 2026-08-06.
-                let mut contention = false;
+                // Another's card is never a refusal (it is taken over), so a failed claim is a fault,
+                // or a card she already holds. Best-effort board read; the original error stands
+                // alone if the board is unreadable.
+                let msg = e.to_string();
                 // Set when the live holder turns out to be the caller herself.
                 let mut already_yours = None;
                 let caller_short = ctx
@@ -128,34 +138,19 @@ impl ActionCommand for WorkClaim {
                         // string back — "expired leases or the cards being held by others"
                         // is THIS format string, both halves of it.
                         //
-                        // `hold_of` is the same predicate `work/list` renders through
-                        // (card_holder::holder, below) — one rule for "is someone on this",
-                        // not two in one file.
                         let now_ms = EpochMs::now().millis();
-                        // ASK WHO, NOT JUST WHETHER. `live_holder` says a person is on
+                        // ASK WHO, NOT JUST WHETHER. `holder_on_record` says whose claim is on
                         // the card; `classify_refusal` says whether that person is YOU.
                         // Without the second question this arm told Anon her own card was
                         // a stranger's (2026-08-14) — see `ClaimRefusal`.
                         let caller_uuid = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid());
-                        let holder = live_holder(card, now_ms).map(|o| o.as_uuid());
+                        // Whose claim stands, by the claim precondition's own rule
+                        // (`work_preconditions`, airc projection/apply.rs:285-300): a live lease, or a
+                        // claim still on record, which the projection keeps its holder's while she is away.
+                        let holder = crate::cognition::work_preconditions::holder_on_record(card, now_ms).map(|o| o.as_uuid());
                         match classify_refusal(holder, caller_uuid) {
                             ClaimRefusal::AlreadyYours => already_yours = card.claim_id,
-                            ClaimRefusal::HeldByPeer(owner) => {
-                                contention = true;
-                                msg = format!(
-                                    "card {} (\"{}\") is held by peer {} [{}]. Coordinate with \
-                                     them in the room, or take another card — work/list with \
-                                     claimable=true lists every card you can pick up right now \
-                                     (most sit in the `claimed` column with a lapsed lease, so \
-                                     filtering by state=\"open\" will not show them). \
-                                     (claim error: {e})",
-                                    short8(card_id.as_uuid()),
-                                    card.title,
-                                    short8(owner),
-                                    state_str(&card.state),
-                                );
-                            }
-                            // Nobody is on it — the original error stands as written.
+                            // Not hers: the original error stands as written.
                             ClaimRefusal::Fault => {}
                         }
                     }
@@ -186,8 +181,8 @@ impl ActionCommand for WorkClaim {
                 // A rejection is WORK-STATE, not a transient tool result: the
                 // raw receipt scrolls out of the persona's short window and the
                 // intent narrative resurfaces as "I've claimed it" (glass-boxed
-                // 2026-08-02, card 44ebaa41). Record it so ActiveWorkSource can
-                // keep the fact in perception past the receipt's lifetime.
+                // 2026-08-02, card 44ebaa41). Record it so her held work
+                // (`persona::held_work`) keeps the fact in perception past the receipt's lifetime.
                 if let Some(caller) = ctx.caller.as_ref() {
                     crate::persona::claim_rejections::record(
                         caller.peer_id.as_uuid(),
@@ -195,13 +190,7 @@ impl ActionCommand for WorkClaim {
                         &msg,
                     );
                 }
-                // A card someone else holds is a legitimate refusal, not a fault:
-                // `Denied` (the caller may not take THIS card), never `Internal`.
-                return Err(if contention {
-                    CommandError::Denied(msg)
-                } else {
-                    CommandError::Internal(msg)
-                });
+                return Err(CommandError::Internal(msg));
             }
         };
         // Ownership stands independently of provisioning. Return its outcome so the
@@ -210,8 +199,6 @@ impl ActionCommand for WorkClaim {
         let workspace =
             super::claim_workspace::for_claim(&airc, card_id, previous_claim == Some(claim_id))
                 .await;
-        // A claim is a hold boundary for the governor, whichever path took it.
-        crate::persona::work_burst::note_hold_boundary(airc.peer_id().as_uuid());
         Ok(WorkClaimResult {
             card_id: p.card_id,
             claim_id: claim_id.as_uuid().to_string(),

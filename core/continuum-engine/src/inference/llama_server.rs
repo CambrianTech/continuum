@@ -113,17 +113,16 @@ pub use external::{external_serving_pin, probe_external_serving};
 
 mod progress;
 pub(crate) use progress::{
-    engine_probe, engine_props, restore_probe, unmoved_window, wait_while_engine_progresses, EngineProbe,
-    WaitBounds, UNMOVED_CEILING,
+    engine_probe, engine_props, restore_probe, slots_probe, unmoved_window, wait_while_engine_progresses, EngineProbe,
+    EngineProgress, WaitBounds, UNMOVED_CEILING,
 };
 #[cfg(test)]
-pub(crate) use progress::{engine_probe_within, slots_progress, window_at_rate, window_rate, EngineProgress};
+pub(crate) use progress::{engine_probe_within, slots_progress, window_at_rate, window_rate};
 
 mod slot_work;
 pub use progress::{condemn, condemnations, engine_condemned, note_serving_ready, until_condemned};
 #[cfg(test)]
 pub(crate) use progress::Condemnations;
-#[cfg(test)]
 pub(crate) use progress::until_condemned_on;
 pub use slot_work::{in_flight_slot, slot_advanced, slot_work, InFlightSlot, SlotWork};
 pub(crate) use slot_work::InFlightSlotGuard;

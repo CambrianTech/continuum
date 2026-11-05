@@ -117,6 +117,14 @@ impl ContentHash {
     pub fn of(whole: &str) -> Self {
         Self(Sha256::digest(whole.as_bytes()).into())
     }
+
+    /// The address a stored whole is filed under: the hash's leading 64 bits as 16 hex digits,
+    /// the form a saved result's handle takes (and has always taken, so every handle already on
+    /// disk or in a checkpoint still names its file).
+    pub fn address(&self) -> String {
+        let [a, b, c, d, e, f, g, h, ..] = self.0;
+        format!("{:016x}", u64::from_be_bytes([a, b, c, d, e, f, g, h]))
+    }
 }
 
 #[cfg(test)]

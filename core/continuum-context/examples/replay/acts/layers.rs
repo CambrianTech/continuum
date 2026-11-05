@@ -86,7 +86,7 @@ impl Layer {
 }
 
 /// Tags that open a message, and the layer each opens.
-const TAGS: [(&str, Layer); 23] = [
+const TAGS: &[(&str, Layer)] = &[
     ("[result #", Layer::ResultWhole), // refined by its level below
     ("[occurred ", Layer::Conversation),
     ("[Room message received", Layer::Conversation),
@@ -98,7 +98,8 @@ const TAGS: [(&str, Layer); 23] = [
     ("[room-wall]", Layer::Walls),
     ("[room-kanban]", Layer::Walls),
     ("[roster]", Layer::Walls),
-    ("[active-work]", Layer::Walls),
+    ("[active-work]", Layer::Walls), // captures before her held work became keyed items
+    ("[my work]", Layer::Walls),
     ("[workspace-map]", Layer::Walls),
     ("[actions]", Layer::ResultCollapsed),
     ("Recent results of your own actions", Layer::ResultCollapsed),

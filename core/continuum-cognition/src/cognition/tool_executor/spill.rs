@@ -24,7 +24,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
-use sha2::{Digest, Sha256};
+use continuum_kernel::system_resources::disk_reporters::ClassWriter;
 use uuid::Uuid;
 
 use crate::ai::types::ResultCustody;
@@ -90,8 +90,8 @@ impl LivePin {
     /// (Astra on #4963). Saves are content-addressed, so a repeated read reuses its file, and
     /// the directory is evicted under disk pressure like every spill.
     pub fn whole_or_handle(&self, full: String, persona_id: Uuid) -> Fitted {
-        match spill_root() {
-            Ok(root) => whole_or_handle_in(&root, full, persona_id, self),
+        match store() {
+            Ok(store) => whole_or_handle_in(&store, full, persona_id, self),
             Err(e) => unsaved_whole(full, &e),
         }
     }
@@ -102,18 +102,18 @@ impl LivePin {
     /// pointer the ring leaves later resolves to what the mind saw, every call of the batch
     /// included (Astra on #4963).
     pub fn retain(&self, persona_id: Uuid, content: &str) -> ResultCustody {
-        match spill_root() {
-            Ok(root) => retain_in(&root, persona_id, content, self),
+        match store() {
+            Ok(store) => retain_in(&store, persona_id, content, self),
             Err(e) => unretained(content, &e),
         }
     }
 
     /// THE save: content-addressed, pinned before it is written, unpinned again if the write
     /// fails (only an entry this save added; an identical result this pin already holds stays).
-    fn save_in(&self, root: &Path, persona_id: Uuid, content: &str) -> std::io::Result<SpillRef> {
+    fn save_in(&self, store: &ClassWriter, persona_id: Uuid, content: &str) -> std::io::Result<SpillRef> {
         let handle = handle_of(content);
         let entered = self.hold(&handle);
-        match write_in(root, persona_id, &handle, content) {
+        match write_in(store, persona_id, &handle, content) {
             Ok(path) => Ok(SpillRef { bytes: content.len(), lines: content.lines().count(), handle, path }),
             Err(e) => {
                 if entered {
@@ -154,8 +154,8 @@ pub(crate) fn retain_handleless<'a>(
     results: impl IntoIterator<Item = (&'a str, &'a mut Option<String>)>,
 ) -> LivePin {
     let pin = LivePin::new();
-    match spill_root() {
-        Ok(root) => retain_handleless_with(|text| retain_in(&root, persona_id, text, &pin), results),
+    match store() {
+        Ok(store) => retain_handleless_with(|text| retain_in(&store, persona_id, text, &pin), results),
         Err(e) => retain_handleless_with(|text| unretained(text, &e), results),
     }
     pin
@@ -200,6 +200,13 @@ fn evict_unless_live_with(
     inside_the_section: impl FnOnce(),
 ) -> crate::paging::filesystem_tier_pool::Removal {
     use crate::paging::filesystem_tier_pool::Removal;
+    // A staging file is a save in flight (`ClassWriter::publish_new` stages beside its target),
+    // which no content address names yet, or one a crashed life left. Written in this life, it may
+    // be mid-save: protected. Older than this life's first save, it is a leftover: evicted.
+    if path.file_name().is_some_and(continuum_host::durable::is_staging_name) {
+        let this_life = LIFE_START.get().is_some_and(|start| fs::metadata(path).and_then(|meta| meta.modified()).is_ok_and(|written| written >= *start));
+        return if this_life { Removal::Protected } else { fs::remove_file(path).into() };
+    }
     let Some(handle) = path.file_stem().and_then(|s| s.to_str()) else {
         return fs::remove_file(path).into();
     };
@@ -258,22 +265,26 @@ pub struct SpillRef {
     pub lines: usize,
 }
 
-/// Root for all spilled tool output, under the established `~/.continuum`
-/// convention. Fails loud when there is no home directory — we genuinely cannot
-/// spill without one, and a silent fallback to `.` would scatter logs into the
-/// cwd (the repo) [[fallbacks-are-illegal-fail-loud]].
-///
-/// Public so the boot path can register this exact directory with the
-/// `PressureBroker` for space-pressure eviction (single source for the path — no
-/// re-typed string to drift against).
+/// The disk class every tool result is saved in (`standard_tracked_dirs`): a measured root with
+/// an eviction owner, resolved from the boot registry at each use.
+const CLASS: &str = "tool-output";
+
+/// The writer of the tool-output class. Refused before boot installs the registry: there is no
+/// directory to guess, and a result that cannot be saved is handed back whole as `Unsaved`.
+fn store() -> std::io::Result<ClassWriter> {
+    LIFE_START.get_or_init(std::time::SystemTime::now);
+    ClassWriter::of(CLASS)
+}
+
+/// When this life first reached the store: a staging file written since may be a save in flight.
+static LIFE_START: std::sync::OnceLock<std::time::SystemTime> = std::sync::OnceLock::new();
+
+/// The tool-output class's root, for the pressure pool that evicts it (`pressure_broker_wiring`):
+/// one source for the path, the class row's.
 pub fn spill_root() -> std::io::Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "no home directory — cannot spill flood-sized tool output",
-        )
-    })?;
-    Ok(home.join(".continuum").join("tool-output"))
+    continuum_kernel::system_resources::disk_reporters::tracked_dir(CLASS)
+        .map(|dir| dir.path().to_path_buf())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("disk class {CLASS} is not registered")))
 }
 
 /// How a tool result reached a mind: the two custody states, and the only text it is handed at
@@ -301,8 +312,8 @@ impl Fitted {
     }
 }
 
-fn retain_in(root: &Path, persona_id: Uuid, content: &str, pin: &LivePin) -> ResultCustody {
-    match pin.save_in(root, persona_id, content) {
+fn retain_in(store: &ClassWriter, persona_id: Uuid, content: &str, pin: &LivePin) -> ResultCustody {
+    match pin.save_in(store, persona_id, content) {
         Ok(r) => ResultCustody::Whole { handle: r.handle },
         Err(e) => unretained(content, &e),
     }
@@ -323,7 +334,7 @@ fn unretained(content: &str, error: &std::io::Error) -> ResultCustody {
 /// absolute path can survive the hex-only check), so we never canonicalize or
 /// touch a path outside the persona's own spill directory.
 pub fn resolve(persona_id: Uuid, handle: &str) -> std::io::Result<PathBuf> {
-    resolve_in(&spill_root()?, persona_id, handle)
+    resolve_in(&store()?, persona_id, handle)
 }
 
 /// THE read of a saved result as her view loads it back: the saved output, trimmed as the
@@ -341,76 +352,55 @@ pub fn reproduces(persona_id: Uuid, handle: &str, body: &str) -> std::io::Result
     Ok(saved_whole(persona_id, handle)? == body)
 }
 
-// ── root-injected cores (the filesystem seam; unit-tested against a tempdir so
-//    tests never pollute ~/.continuum — the isolation lesson of task #7) ──────
+// ── store-injected cores (the class seam; unit-tested against a class rooted in a tempdir
+//    so tests never pollute ~/.continuum — the isolation lesson of task #7) ──────
 
-fn persona_dir(root: &Path, persona_id: Uuid) -> PathBuf {
-    root.join(persona_id.to_string())
-}
-
-/// The content address a result is saved under: 16 hex chars of its SHA-256, known before any
+/// The content address a result is saved under ([`ContentHash::address`]), known before any
 /// write, which is what lets [`LivePin`] pin a file before it exists.
+///
+/// [`ContentHash::address`]: continuum_context::cause::ContentHash::address
 fn handle_of(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    format!("{:x}", hasher.finalize())[..16].to_string()
+    continuum_context::cause::ContentHash::of(content).address()
 }
 
-fn write_in(
-    root: &Path,
-    persona_id: Uuid,
-    handle: &str,
-    content: &str,
-) -> std::io::Result<PathBuf> {
-    let dir = persona_dir(root, persona_id);
-    fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{handle}.log"));
-    if existing_matches(&path, content.as_bytes())? {
+/// A result's file name in its persona's directory of the class.
+fn file_name(handle: &str) -> PathBuf {
+    PathBuf::from(format!("{handle}.log"))
+}
+
+/// Publish `content` under `handle` in `persona_id`'s directory of the class, once: an object
+/// already there is reused only after its bytes are verified and its fence completed, never
+/// replaced.
+fn write_in(store: &ClassWriter, persona_id: Uuid, handle: &str, content: &str) -> std::io::Result<PathBuf> {
+    let mine = store.owned_by(persona_id);
+    let name = file_name(handle);
+    let path = mine.path(&name)?;
+    if existing_matches(&name, &path, content.as_bytes())? {
         return Ok(path);
     }
-    use std::io::Write;
-    // The staging filename has the SAME stem as the final .log, so the
-    // existing content-address pin protects both throughout publication.
-    let staging = dir.join(format!("{handle}.{}", Uuid::new_v4()));
-    // Do not remove anything if create_new fails: that path is not ours.
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staging)?;
-    let publish = || -> std::io::Result<()> {
-        file.write_all(content.as_bytes())?;
-        file.sync_all()?;
-        drop(file);
-        continuum_host::durable::publish_new(&staging, &path)
-    };
-    if let Err(error) = publish() {
-        let _ = fs::remove_file(&staging);
-        // Another publisher may have installed the same immutable object.
-        // Verify bytes before reusing it; never treat a publication error alone
-        // as evidence that the output was retained.
-        if error.kind() != std::io::ErrorKind::AlreadyExists {
-            return Err(error);
-        }
-        return match existing_matches(&path, content.as_bytes()) {
+    match mine.publish_new(&name, content.as_bytes()) {
+        Ok(()) => Ok(path),
+        // Another publisher may have installed the same immutable object. Verify bytes before
+        // reusing it; never treat a publication error alone as evidence that the output was
+        // retained.
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => match existing_matches(&name, &path, content.as_bytes()) {
             Ok(true) => Ok(path),
             Ok(false) => Err(error),
             Err(verification) => Err(std::io::Error::new(
                 error.kind(),
-                format!(
-                    "publication failed: {error}; existing object verification: {verification}"
-                ),
+                format!("publication failed: {error}; existing object verification: {verification}"),
             )),
-        };
+        },
+        Err(error) => Err(error),
     }
-    let _ = fs::remove_file(&staging);
-    Ok(path)
 }
 
-/// Existing content addresses are immutable. Compare using the standard reader's
-/// bounded buffer; never duplicate a flood-sized result just to deduplicate it.
-fn existing_matches(path: &Path, expected: &[u8]) -> std::io::Result<bool> {
+/// Existing content addresses are immutable. Compare using the standard reader's bounded buffer;
+/// never duplicate a flood-sized result just to deduplicate it. A match is reused only once its
+/// durability fence is complete (#5036: visible bytes are not a durability receipt).
+fn existing_matches(name: &Path, path: &Path, expected: &[u8]) -> std::io::Result<bool> {
     use std::io::BufRead;
-    let file = match fs::OpenOptions::new().read(true).write(true).open(path) {
+    let file = match fs::File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e),
@@ -445,11 +435,15 @@ fn existing_matches(path: &Path, expected: &[u8]) -> std::io::Result<bool> {
     if offset != expected.len() {
         return Err(mismatch());
     }
-    continuum_host::durable::fence(reader.get_ref(), path)?;
+    // The fence of a name another publisher placed, completed in its own held directory (the
+    // durable owner's), before the bytes are trusted as retained.
+    let dir = path.parent().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} has no directory", path.display())))?;
+    continuum_host::durable::fence_existing(&continuum_host::confine::open_root(dir)?, name)?;
     Ok(true)
 }
-fn whole_or_handle_in(root: &Path, full: String, persona_id: Uuid, pin: &LivePin) -> Fitted {
-    match pin.save_in(root, persona_id, &full) {
+
+fn whole_or_handle_in(store: &ClassWriter, full: String, persona_id: Uuid, pin: &LivePin) -> Fitted {
+    match pin.save_in(store, persona_id, &full) {
         Ok(r) => Fitted::Complete { text: full, handle: r.handle },
         Err(e) => unsaved_whole(full, &e),
     }
@@ -458,30 +452,16 @@ fn whole_or_handle_in(root: &Path, full: String, persona_id: Uuid, pin: &LivePin
 /// The text a tool result goes on as. A result object whose bytes are mostly ONE string field
 /// (a file's `content`, a shell's `stdout`) is rendered as its scalar fields on one line, then
 /// that field's text raw, with its real newlines: what the mind reads, counts and pages by
-/// lines is the text itself, not its JSON escape. Any other shape goes on as compact JSON.
+/// lines is the text itself, not its JSON escape. A result that holds structure (a list of cards,
+/// of matches) goes on one field and one record per line ([`structured_lines`]). Anything else
+/// goes on as compact JSON.
 pub fn result_text(value: &serde_json::Value) -> String {
     let compact = value.to_string();
-    // A long result with no text body (an array of cards, of matches) goes on pretty-printed:
-    // one element per lines, so its head shows the first elements and the rest pages by line.
-    // Compact, a board of 776 cards was ONE 198k-char line (the M5, 2026-10-16).
-    let pretty_when_long = |v: &serde_json::Value, compact: String| {
-        if compact.len() > PRETTY_JSON_OVER_CHARS {
-            serde_json::to_string_pretty(v).unwrap_or(compact) // unwrap_or: a value that serialized compact serializes pretty; the compact form is the fallback
-        } else {
-            compact
-        }
+    let Some(object) = value.as_object() else { return structured_lines(value).unwrap_or(compact) }; // unwrap_or: a value with no structure is its own compact line
+    let body = object.iter().filter_map(|(k, v)| v.as_str().map(|s| (k, s))).max_by_key(|(_, s)| s.len());
+    let Some((body_key, body)) = body.filter(|(_, body)| body.len() * 2 >= compact.len() && body.contains('\n')) else {
+        return structured_lines(value).unwrap_or(compact); // unwrap_or: a value with no structure is its own compact line
     };
-    let Some(object) = value.as_object() else { return pretty_when_long(value, compact) };
-    let Some((body_key, body)) = object
-        .iter()
-        .filter_map(|(k, v)| v.as_str().map(|s| (k, s)))
-        .max_by_key(|(_, s)| s.len())
-    else {
-        return compact;
-    };
-    if body.len() * 2 < compact.len() || !body.contains('\n') {
-        return pretty_when_long(value, compact);
-    }
     let mut head = serde_json::Map::new();
     for (k, v) in object {
         if k != body_key {
@@ -494,11 +474,14 @@ pub fn result_text(value: &serde_json::Value) -> String {
 
 /// The scalar fields [`result_text`] put on a result's first line (a file read's
 /// `file_path`, `total_lines`, `start_line`…), read back from the text a mind was shown.
-/// A result is handed back whole, so the header is its first line; text shown before the
-/// head cut was removed opened with a one-line pointer, so the second line is read too. `None` for a result that went
-/// on as something other than one JSON object line (pretty-printed, or not an object).
+/// The header has two places, named, never a count of lines: a result handed back whole opens
+/// with it, and a stored head (`ResultCustody::Pointer`) opens with its one-line pointer and then
+/// the header. `None` for a result that went on as something other than one JSON object line
+/// (one record per line, or not an object).
 pub fn result_scalars(shown: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
-    shown.lines().take(2).find_map(|line| {
+    let (opening, rest) = shown.split_once('\n').unwrap_or((shown, "")); // unwrap_or: a one-line result is all opening
+    let after_pointer = rest.split('\n').next();
+    std::iter::once(opening).chain(after_pointer).find_map(|line| {
         let line = line.trim_start();
         if !line.starts_with('{') {
             return None;
@@ -510,10 +493,37 @@ pub fn result_scalars(shown: &str) -> Option<serde_json::Map<String, serde_json:
     })
 }
 
-/// A result with no text body longer than this goes on pretty-printed (see [`result_text`]).
-// context-budget-exempt: a readability threshold, not a window bound: compact JSON past a
-// couple of thousand chars is one unreadable line at any window
-const PRETTY_JSON_OVER_CHARS: usize = 2_000;
+/// A value that holds structure, one field and one element per line: an object's fields each on a
+/// line, an array's elements (records, or scalars such as paths and ids) one compact element per
+/// line. A SHAPE rule, never a size: a line is then one card, one match or one path, so a level of
+/// the result keeps whole elements and the rest pages by line (compact, a board of 776 cards was
+/// ONE 198k-char line she could read none of, the M5, 2026-10-16). `None` for a value with no
+/// structure inside (scalars only): its compact line is already its smallest legible form.
+fn structured_lines(value: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    let structured = |v: &Value| v.is_object() || v.is_array();
+    let records = |items: &[Value]| -> String {
+        let lines: Vec<String> = items.iter().map(Value::to_string).collect();
+        format!("[\n{}\n]", lines.join(",\n"))
+    };
+    match value {
+        Value::Array(items) if !items.is_empty() => Some(records(items)),
+        Value::Object(map) if map.values().any(structured) => {
+            let fields: Vec<String> = map
+                .iter()
+                .map(|(key, field)| {
+                    let rendered = match field {
+                        Value::Array(items) if !items.is_empty() => records(items),
+                        other => other.to_string(),
+                    };
+                    format!("{}:{rendered}", Value::String(key.clone()))
+                })
+                .collect();
+            Some(format!("{{\n{}\n}}", fields.join(",\n")))
+        }
+        _ => None,
+    }
+}
 
 /// [`Fitted::RetentionFailed`]: the failure said first, then the whole result.
 fn unsaved_whole(full: String, error: &std::io::Error) -> Fitted {
@@ -532,14 +542,14 @@ fn unsaved_whole(full: String, error: &std::io::Error) -> Fitted {
     }
 }
 
-fn resolve_in(root: &Path, persona_id: Uuid, handle: &str) -> std::io::Result<PathBuf> {
+fn resolve_in(store: &ClassWriter, persona_id: Uuid, handle: &str) -> std::io::Result<PathBuf> {
     if handle.is_empty() || !handle.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("invalid output handle '{handle}': expected a hex output id"),
         ));
     }
-    Ok(persona_dir(root, persona_id).join(format!("{handle}.log")))
+    store.owned_by(persona_id).path(&file_name(handle))
 }
 
 /// Outcome of investigating a spilled result — the bounded, line-numbered slice
@@ -563,9 +573,62 @@ pub struct Investigation {
     pub next_byte_offset: Option<u64>,
 }
 
-/// The default tail size (lines) when neither a pattern nor a range is given —
-/// build/test logs put the verdict at the END, so the tail is the useful default.
-const DEFAULT_TAIL_LINES: usize = 80;
+/// The tail a read with neither pattern nor range shows (build/test logs put the verdict at the
+/// END): the newest lines whose rows fit the read's budget, measured in the count pass as each
+/// line is counted, never a count of lines. Holds only the lines that could still fit, so its
+/// memory is the budget's, not the file's.
+#[derive(Default)]
+struct TailFit {
+    /// The newest lines that fit so far: each line's number and the bytes its row can take.
+    rows: std::collections::VecDeque<(usize, usize)>,
+    bytes: usize,
+    /// The newest line counted, by its byte offset: where she reads on when not even it fits.
+    newest_offset: Option<u64>,
+}
+
+/// Where a tail read starts.
+enum Tail {
+    /// From this line to the last.
+    From(usize),
+    /// Not even the newest line fits the budget: she reads it by bytes from its offset.
+    NewestTooLong { offset: u64 },
+}
+
+impl TailFit {
+    /// Count line `number` at byte `offset`, of `line_bytes` (its newline included), keeping the
+    /// newest run within `budget`. A row is the line's text, its gutter number (six columns or
+    /// more), a mark, a space and a newline: at most its bytes plus its number's width plus three.
+    fn push(&mut self, number: usize, offset: u64, line_bytes: usize, budget: usize) {
+        let row = line_bytes + number.to_string().len().max(6) + 3;
+        self.rows.push_back((number, row));
+        self.bytes += row;
+        self.newest_offset = Some(offset);
+        self.shed(budget);
+    }
+
+    fn shed(&mut self, room: usize) {
+        while self.bytes > room {
+            let Some((_, row)) = self.rows.pop_front() else { break };
+            self.bytes -= row;
+        }
+    }
+
+    fn lines(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Where the tail that fits `room` starts. When not even the newest line does, the read says
+    /// so with that line's offset: her newest end is never dropped silently. An empty output has
+    /// no line to start from, so its tail is past its end.
+    fn fit(&mut self, room: usize, total_lines: usize) -> Tail {
+        self.shed(room);
+        match (self.rows.front(), self.newest_offset) {
+            (Some(&(number, _)), _) => Tail::From(number),
+            (None, Some(offset)) => Tail::NewestTooLong { offset },
+            (None, None) => Tail::From(total_lines.saturating_add(1)),
+        }
+    }
+}
 
 /// Read a retained byte extent without consuming a shared cursor. `budget` bounds
 /// the encoded result, including base64 expansion if the extent is not UTF-8.
@@ -766,12 +829,17 @@ fn investigate_readers<R: std::io::BufRead>(
     let mut count = scan(count);
     let mut total_matches = 0;
     let mut first_unselected = None;
+    let tail = pattern.is_none() && range.is_none();
+    let mut tail_fit = TailFit::default();
     while let Some(line) = count.next(regex.is_some())? {
         if regex.as_ref().is_some_and(|r| r.is_match(&line.text)) {
             total_matches += 1;
             if total_matches == max_matches.saturating_add(1) {
                 first_unselected = Some(line.offset);
             }
+        }
+        if tail {
+            tail_fit.push(line.number, line.offset, (count.offset - line.offset) as usize, budget);
         }
     }
     let total_lines = count.line;
@@ -795,15 +863,31 @@ fn investigate_readers<R: std::io::BufRead>(
     let mut next = next_match(&mut lookahead)?;
     let mut previous = None::<usize>;
     let mut rendered = String::new();
-    if pattern.is_none() && range.is_none() {
-        rendered = format!("(no pattern or range given — showing the last {} lines; grep with a `pattern` like \"error\" or \"panic\" to find a specific failure)\n", total_lines.min(DEFAULT_TAIL_LINES));
+    // The tail: the newest lines this read's budget holds beside its header, never a count.
+    let mut next_byte_offset = first_unselected;
+    let mut result_truncated = first_unselected.is_some();
+    let tail_from = if tail {
+        let header = |lines: usize| format!("(no pattern or range given — showing the last {lines} lines, all this read's budget holds; grep with a `pattern` like \"error\" or \"panic\" to find a specific failure)\n");
+        let from = match tail_fit.fit(budget.saturating_sub(header(tail_fit.lines()).len()), total_lines) {
+            Tail::From(number) => {
+                rendered = header(tail_fit.lines());
+                number
+            }
+            Tail::NewestTooLong { offset } => {
+                rendered = format!("(no pattern or range given — the newest line alone is longer than this read's budget; read it by bytes from byteOffset {offset})\n");
+                result_truncated = true;
+                next_byte_offset = Some(offset);
+                total_lines.saturating_add(1)
+            }
+        };
         if rendered.len() > budget {
             rendered.clear();
         }
-    }
+        from
+    } else {
+        total_lines.saturating_add(1)
+    };
     let mut last_rendered = None::<usize>;
-    let mut next_byte_offset = first_unselected;
-    let mut result_truncated = first_unselected.is_some();
     loop {
         let number = render.line + 1;
         while next.is_some_and(|n| n < number) {
@@ -816,7 +900,7 @@ fn investigate_readers<R: std::io::BufRead>(
         } else if let Some((start, end)) = range {
             number >= start.max(1) && number <= end.max(start.max(1))
         } else {
-            number > total_lines.saturating_sub(DEFAULT_TAIL_LINES)
+            number >= tail_from
         };
         // A long unrelated line must not make a later short range/tail unreadable.
         // Counting and skipping use bounded chunks without materializing the line.
@@ -875,6 +959,23 @@ fn investigate(
         max_matches,
         budget,
     )
+}
+
+/// The store's class for a test that saves through the production path ([`LivePin`], working
+/// memory, the executor): the kernel's writer fixture, the real class layout rooted in the
+/// fixture's own temporary home, so no test writes into `~/.continuum`. Callable from a sync test
+/// or inside an async one: the fixture is prepared on its own thread, on a runtime that lives for
+/// the process (the fixture's store outlives the test that first asked for it).
+#[cfg(test)]
+pub(crate) fn prepare_store_fixture() {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    let runtime = RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().expect("test: the store fixture's runtime"));
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| runtime.block_on(continuum_kernel::system_resources::disk_reporters::prepare_writer_fixture()))
+            .join()
+            .expect("test: the store fixture prepares");
+    });
 }
 
 #[cfg(test)]

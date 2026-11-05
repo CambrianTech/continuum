@@ -10,6 +10,7 @@
 pub(crate) mod actions;
 pub(crate) mod blocks;
 pub(crate) mod conversation;
+pub(crate) mod held_work;
 pub(crate) mod notices;
 pub(crate) mod open_views;
 pub(crate) mod tasks;
@@ -33,6 +34,8 @@ pub(crate) enum Producer {
     Notice,
     Standing,
     Task,
+    /// Her held work (`held_work`): a card in a state, an ended claim, a rejected claim.
+    Work,
 }
 
 /// An occurrence's id from its producer's own stable identity: whose (`persona`), which producer,

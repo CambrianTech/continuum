@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use crate::ai::provenance::GenerationReceipt;
 use crate::ai::types::ToolCall;
-use crate::persona::active_work_source::AircWorkReader;
+use crate::persona::held_work::AircWorkReader;
 
 use super::{CapturedCredit, TurnCreditCapture};
 

@@ -403,12 +403,6 @@ fn stable_tier_bytes_are_identical_however_salience_ranks_them() {
     // nearest the write point). It re-prefills by construction, so canonical
     // ordering would buy no reuse and would cost that placement. Guard the
     // asymmetry, so a future "make it all deterministic" pass has to read this.
-    //
-    // NOT `active-work`: it is pinned FIRST by an explicit rule ABOVE salience
-    // (the ctx_floor reservation only holds if its claimant also leads the
-    // greedy walk). Probing the asymmetry with the one salience-immune faculty
-    // reports "salience does nothing" about a tier where it does plenty —
-    // which is exactly what the first draft of this assertion did.
     let volatile = |sal: (f32, f32)| {
         let mut ws = Workspace::new("teammate: what's the plan?");
         ws.broadcast.push(Contribution::context(

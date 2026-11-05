@@ -79,7 +79,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         ws.room_updates = Arc::new(vec![Arc::clone(&update)]);
         ws.broadcast.push(
             Contribution::context(
-                FacultyId::Custom(crate::cognition::faculty_ids::ACTIVE_WORK.into()),
+                FacultyId::Custom(crate::cognition::faculty_ids::WALL.into()),
                 format!(
                     "Held activity context: continue independent source review.{}",
                     "x".repeat(padding)
@@ -593,7 +593,7 @@ async fn a_refused_tail_rebuilds_her_request_without_it_once() {
         let rebuilt = &seen[1];
         assert!(rebuilt.tail_tools.is_none(), "the rebuilt request carries no tail");
         let offered: Vec<&str> = rebuilt.tools.iter().flatten().map(|tool| tool.name.as_str()).collect();
-        let activity = faculty.tool_surface().select_granted(&ws.room_affordances, faculty.prompt_view(&ws).tools_grant).expect("activity fits granted tools");
+        let activity = faculty.tool_surface().select_granted(&ws.room_affordances, &ws.held.move_commands(), faculty.prompt_view(&ws).tools_grant).expect("activity fits granted tools");
         let expected: Vec<&str> = activity.specs.iter().flat_map(|specs| specs.iter()).map(|tool| tool.name.as_str()).collect();
         assert!(!offered.is_empty() && offered == expected, "she is offered exactly her activity's surface: {offered:?}");
         if refusals == 1 {

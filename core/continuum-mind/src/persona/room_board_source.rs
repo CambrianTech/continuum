@@ -4,7 +4,7 @@
 //!
 //! ### Why this source exists (the Observer perceiving the board)
 //!
-//! [`ActiveWorkSource`](super::active_work_source) grounds a persona in ITS OWN
+//! Her held work ([`held_work`](super::held_work)) grounds a persona in ITS OWN
 //! claimed cards, across ALL rooms — "what am I holding." This source is the
 //! complementary perception: the WHOLE board of the room this turn is in — "what
 //! is on the board here, who holds what, what column is it in." A persona that
@@ -20,7 +20,7 @@
 //! (`ipc::positron_kanban_source`). This source does NOT read that
 //! projection — persona cognition grounds on the airc substrate ITSELF, exactly
 //! as [`WallSource`](super::wall_source) reads airc `wall_posts` directly and
-//! [`ActiveWorkSource`] reads airc `active_claims` directly. Two faces of one
+//! [`held_work`](super::held_work) reads airc `active_claims` directly. Two faces of one
 //! airc board (a renderer's ViewState and a persona's grounding), never reading
 //! through each other — cognition stays decoupled from the rendering layer. The
 //! authoritative board fold lives ONCE in airc (`work_board_complete`); this is
@@ -28,7 +28,7 @@
 //!
 //! The airc access lives behind [`RoomBoardReader`] (a one-method seam, same
 //! shape as [`WallReader`](super::wall_source::WallReader) /
-//! [`AircWorkReader`](super::active_work_source::AircWorkReader)): production
+//! [`AircWorkReader`](super::held_work::AircWorkReader)): production
 //! rides `airc_lib::Airc::work_board_complete`; tests stub it without a daemon.
 //! A distinct trait name (not the projector's `WorkBoardReader`) keeps this
 //! decoupled from `ipc/` and avoids any trait-coherence clash — each consumer
@@ -40,7 +40,7 @@
 //!   returns an empty delivery — cognition stays up; an empty board renders no
 //!   block.
 //! - Persona-scoped at construction (defense in depth, same as the roster +
-//!   wall + active-work sources).
+//!   wall sources).
 //! - Enriching framing, NOT a participation gate: the board shapes WHAT a
 //!   persona knows about the room's work, it does not decide WHETHER it speaks
 //!   (that is doctrine). Whole board = all owners, so the source imposes no

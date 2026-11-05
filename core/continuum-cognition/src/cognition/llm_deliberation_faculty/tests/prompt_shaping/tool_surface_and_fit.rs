@@ -446,7 +446,7 @@ fn an_epoch_sends_one_tool_set_whatever_its_acts_affordances() {
     let epoch = view_epoch(&faculty);
     let alone = faculty
         .tool_surface()
-        .select_granted(&declared.room_affordances, first.tools_grant)
+        .select_granted(&declared.room_affordances, &[], first.tools_grant)
         .expect("precondition: the declared verb's offer fits the epoch's grant");
     assert_ne!(wire(&alone), wire(&first.tools), "precondition: these affordances alone choose another set");
     let second = faculty.prompt_view_within(&declared, 200_000);
@@ -471,7 +471,7 @@ fn a_view_turnover_keeps_her_tool_set() {
     let grant = first.tools_grant;
     let alone = faculty
         .tool_surface()
-        .select_granted(&declared.room_affordances, grant)
+        .select_granted(&declared.room_affordances, &[], grant)
         .expect("precondition: the declared verb's offer fits the grant");
     assert_ne!(wire(&alone), wire(&first.tools), "precondition: these affordances alone choose another set");
     let (choice, refused) = faculty.granted_tools(&declared, faculty.tools_claim(&declared), grant);
