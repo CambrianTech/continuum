@@ -761,3 +761,13 @@ Serving integration still needs the pending wait path, known-refusal recovery
 and late completion recovery before enabling handoff. The scratch wake fix
 `f5bcda1dd5bf` has now published successfully on all three platforms in run
 `42078670563`; it has not been deployed by this takeover yet.
+
+At 19:17Z, local commit `cb16505bb1` closes the late-receipt continuation gap:
+the existing retained page owner returns custody only for a verified terminal
+reply; malformed replies quarantine before releasing custody. The retained
+handoff task resumes save/erase on that result, even if its caller leaves.
+Six unresolved-page tests, 42 admission tests (six ignored) and both physical
+handoff HTTP tests pass. Known-refusal recovery and serving integration remain.
+In particular, completion must bar reacquisition when another mind is owed
+capacity; polling for a brief idle interval is insufficient. No live deployment
+or end-to-end fairness claim follows from these component checks.
