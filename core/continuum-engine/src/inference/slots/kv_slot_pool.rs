@@ -282,14 +282,23 @@ impl KvSlotPool {
             .acquire_owned()
             .await
             .map_err(|_| "physical KV slot admission closed".to_string())?;
-        Ok(SlotPermit { _permit: permit, released: Arc::clone(&self.released) })
+        Ok(self.operation_permit(slot, permit))
     }
 
     /// The slot's permit when it is free right now, without queueing: a caller holding other
     /// gates checks first and, when the slot is busy, drops what it holds before it waits.
     pub(crate) fn try_acquire_slot(&self, slot: u32) -> Option<SlotPermit> {
         let permit = self.operations.get(slot as usize)?.clone().try_acquire_owned().ok()?;
-        Some(SlotPermit { _permit: permit, released: Arc::clone(&self.released) })
+        Some(self.operation_permit(slot, permit))
+    }
+
+    /// A scratch release wakes only its physical semaphore, never citizen admission:
+    /// scratch is excluded from the citizen free list and cannot satisfy those waiters.
+    fn operation_permit(&self, slot: u32, permit: tokio::sync::OwnedSemaphorePermit) -> SlotPermit {
+        SlotPermit {
+            _permit: permit,
+            released: (Some(slot) != self.scratch).then(|| Arc::clone(&self.released)),
+        }
     }
 
     /// The signal a slot release raises; see [`Self::released`] on the struct.
