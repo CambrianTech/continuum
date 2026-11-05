@@ -30,6 +30,9 @@
 //! The lease is identified by its grant REVISION ([`super::GrantRevision`]), its engine incarnation
 //! and its owner, never its size: a grant shrunk and regrown to the same size is a new revision.
 
+mod fair;
+pub use fair::{publish_fair_grants, FairGrantState};
+
 use std::collections::BTreeMap;
 
 use super::{Demand, GrantLease, WindowPolicy};
