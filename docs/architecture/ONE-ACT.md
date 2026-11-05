@@ -661,3 +661,25 @@ host's `2026-11-05-recovery` evidence directory and M5's
 `~/.continuum/evidence/2026-11-05-takeover/d04fe4594dbf` directory. Full resident
 logs are not published with this document. The dispatcher/validator is still
 unfinished; these live outcomes do not validate the proposed graphics-style scheduler.
+
+### Follow-up live receipt — 2026-11-05 16:41Z
+
+The complete M5 rollback window (15:48–16:03) contains 21 completed acts:
+Aris 5, Benchy 10, Atlas 4, Aiko 2. Current and rotated logs were combined and
+deduplicated; coverage is 15:48:00–16:02:59. The earlier 16-act figure was interim.
+The M5 remains on `2069cb248`; its bounded deployment hold now expires 17:50:51Z.
+
+Intel's attempted rollback to `147694174` did not pass acceptance. Its runtime
+replaced the engine and changed geometry from nine slots to two, then five.
+An `inference.slot_affinity.all_pinned` retry storm then rotated the entire log
+history rapidly. Missing historical completions therefore cannot be counted as
+zero. The notification source has not been isolated; no speculative sleep or
+logging-suppression patch has been applied.
+
+The supported reversal to the saved `d04fe4594` completed after a 302-second drain
+and 22-second startup, reporting all 66 modules durable. By 16:40Z, core ping
+verified d04 and the sampled last 10,000 log lines contained no all-pinned events.
+The runtime had relaunched a nine-slot engine (PID 25045, pool 294912). This is
+containment of the retry storm, not evidence that productive-act latency is fixed.
+Earlier claims that Intel's engine remained unchanged are explicitly withdrawn.
+The subsequent live observation remains open; no further rollout is accepted.
