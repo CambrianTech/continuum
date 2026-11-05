@@ -771,3 +771,12 @@ handoff HTTP tests pass. Known-refusal recovery and serving integration remain.
 In particular, completion must bar reacquisition when another mind is owed
 capacity; polling for a brief idle interval is insufficient. No live deployment
 or end-to-end fairness claim follows from these component checks.
+
+At 19:22Z, the reservation owner also implements the completion boundary:
+publication arms one holder when a waiter is owed capacity, and compare-and-reserve
+refuses reacquisition once that holder's terminal revision advances. The next
+publisher tick can therefore start reclamation without having to sample an idle
+gap. Capacity remains charged throughout. Twenty-three grant tests pass, including
+no intervening tick, unsent attempts, overlapping unresolved custody and withdrawal
+of the waiter. Known-refusal recovery and serving integration are still pending;
+this is local implementation evidence, not live acceptance.
