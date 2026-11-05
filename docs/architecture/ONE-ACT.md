@@ -631,3 +631,33 @@ Reproduction and copied evidence on the takeover host:
 `C:/Users/joelt/.continuum/evidence/2026-11-05-recovery/check-admission-evidence.py`.
 Its outputs are `admission-curve-validation.json` and `m5-chunk-validation.json`.
 No live setting was changed to obtain these results.
+
+## Live rollout and rollback receipt — 2026-11-05 16:00Z
+
+M5 installed `d04fe4594` through the supported graceful reboot at 15:28Z,
+with the existing engine process preserved. The 15:28–15:43 observation had
+7 completed acts (Aris 5, Benchy 2, Aiko 0, Atlas 0). The available baseline
+had 12 (Aris 4, Benchy 2, Aiko 3, Atlas 3), covering 15:10:14–15:22:38;
+log rotation shortened the requested baseline. This failed the live acceptance
+gate despite green CI. These unequal, uncontrolled windows do not isolate which
+change caused the regression, and cold-cache transition costs remain a confounder.
+
+The supported rollback restored core and CLI `2069cb248`, verified by ping and
+version, with the same engine PID 25678. All 66 modules reported durable shutdown.
+By 16:00Z, the still-open rollback window recorded 16 acts across all four minds
+(Aris 4, Benchy 9, Atlas 2, Aiko 1). This is evidence of resumed progress, not a
+speedup estimate or proof of productive writes. Keep completion, useful work,
+cache reuse and custody as separate outcome measurements. A bounded one-hour
+M5 deployment hold protects observation until 16:50:51Z; it must be reviewed.
+
+IntelMac independently auto-adopted `d04fe4594` around 15:31Z. Its 15:32–15:47
+window recorded no completed acts. At 15:58Z multiple advancing slots reached
+1500-second deadlines and received extensions. That is saturation evidence,
+not a dead-engine diagnosis or a reason to discard pages. Intel's baseline and
+rollback decision require separate evaluation; M5 recovery does not prove it.
+
+Private raw logs, comparison script and rollback receipts remain in the takeover
+host's `2026-11-05-recovery` evidence directory and M5's
+`~/.continuum/evidence/2026-11-05-takeover/d04fe4594dbf` directory. Full resident
+logs are not published with this document. The dispatcher/validator is still
+unfinished; these live outcomes do not validate the proposed graphics-style scheduler.
