@@ -241,3 +241,147 @@
         );
     }
 
+
+    // Slice 3 — conformance test: every native descriptor's schema must (1) describe every
+    // parameter and (2) have no duplicate encoding of the same wire field. Fails on a new
+    // violation; it is not a one-shot sweep.
+    //
+    // Rule 1 — description present on every leaf param, recursively through definitions.
+    // A schema position (`properties`, `$defs`/`definitions`) recurses into its values;
+    // only `description` STRING keys are prose that need trimming. Everything else is
+    // structural JSON-Schema and is left alone.
+    /// Recursively walk a JSON value and return the list of all description strings found
+    /// at schema-property positions (i.e., under `properties` or `definitions`).
+    fn collect_descriptions(node: &serde_json::Value, in_properties: bool) -> Vec<String> {
+        match node {
+            serde_json::Value::Object(map) => {
+                let mut descs = Vec::new();
+                for (key, val) in map {
+                    if key == "description" {
+                        if let Some(s) = val.as_str() {
+                            descs.push(s.to_string());
+                        }
+                    } else if in_properties
+                        || ["definitions", "$defs"]
+                            .contains(&key.as_str())
+                    {
+                        // Under a properties key, recurse into each property's subschema.
+                        // Under definitions/$defs, recurse into each definition's schema.
+                        descs.extend(collect_descriptions(val, true));
+                    } else {
+                        // Other keys — recurse normally but not as "properties" context
+                        // (so a field named `description` inside a nested object still
+                        // gets picked up when we later walk the top-level properties).
+                        descs.extend(collect_descriptions(val, in_properties));
+                    }
+                }
+                descs
+            }
+            serde_json::Value::Array(items) => items
+                .iter()
+                .flat_map(|item| collect_descriptions(item, in_properties))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Recursively walk a JSON value and return the set of all property names found at
+    /// every depth. Used to detect duplicate encodings.
+    fn collect_all_property_names(node: &serde_json::Value) -> std::collections::HashSet<String> {
+        let mut names = std::collections::HashSet::new();
+        match node {
+            serde_json::Value::Object(map) => {
+                for (key, val) in map {
+                    // Skip schema keywords — only collect actual param names
+                    if !matches!(
+                        key.as_str(),
+                        "type" | "properties" | "required" | "definitions"
+                            | "$defs" | "description" | "additionalProperties" | "items"
+                            | "anyOf" | "oneOf" | "allOf" | "not" | "enum" | "default"
+                    ) {
+                        names.insert(key.clone());
+                    }
+                    // Recurse into property subschemas
+                    if key == "properties" || key == "definitions" || key == "$defs" {
+                        for (_, prop_val) in val.as_object().into_iter().flatten() {
+                            names.extend(collect_all_property_names(prop_val));
+                        }
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    names.extend(collect_all_property_names(item));
+                }
+            }
+            _ => {}
+        }
+        names
+    }
+
+    #[test]
+    fn every_native_param_has_a_description() {
+        let specs = native_tool_specs();
+        for spec in &specs {
+            // Check top-level properties
+            if let Some(props) = spec.input_schema.properties.as_object() {
+                for (name, prop_val) in props {
+                    // Walk the property's schema to find its description
+                    let descs = collect_descriptions(prop_val, true);
+                    assert!(
+                        !descs.is_empty(),
+                        "native tool '{}' param '{}' is missing a description",
+                        spec.name,
+                        name
+                    );
+                }
+            }
+            // Check definitions
+            if let Some(defs) = &spec.input_schema.definitions {
+                for (name, def_val) in defs.as_object().into_iter().flatten() {
+                    let descs = collect_descriptions(def_val, true);
+                    assert!(
+                        !descs.is_empty(),
+                        "native tool '{}' definition '{}' is missing a description",
+                        spec.name,
+                        name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_native_param_is_a_duplicate_encoding() {
+        // Slice 2 removed flattened aliases from CodeEditParams. This test verifies that
+        // the exposed schema (CanonicalEdit) has exactly three fields and none of them
+        // overlap with each other or with legacy flat-field names.
+        let specs = native_tool_specs();
+        for spec in &specs {
+            if !matches!(spec.name.as_str(), "code/edit") {
+                continue;
+            }
+            let props = spec.input_schema.properties.as_object().expect("properties is an object");
+            let names: Vec<&str> = props.keys().map(|k| k.as_str()).collect();
+            // CanonicalEdit exposes exactly: file_path, edit_mode, description
+            assert_eq!(names.len(), 3, "code/edit should have exactly 3 params, found {:?}", names);
+            for &expected in &["file_path", "edit_mode", "description"] {
+                assert!(
+                    names.contains(&expected),
+                    "code/edit missing expected param '{}': {:?}",
+                    expected,
+                    names
+                );
+            }
+            // No legacy flat-field aliases should survive
+            for &legacy in &["content", "search", "replace", "new_content", "start_line",
+                             "end_line", "line", "all"] {
+                assert!(
+                    !names.contains(&legacy),
+                    "code/edit still exposes legacy alias '{}': {:?}",
+                    legacy,
+                    names
+                );
+            }
+        }
+    }

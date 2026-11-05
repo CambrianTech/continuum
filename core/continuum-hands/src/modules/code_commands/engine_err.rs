@@ -373,27 +373,23 @@ pub(super) const EDIT_MODE_HELP: &str = "edit_mode must be ONE of (preferred = a
 pub struct CodeEditParams {
     /// Path to the file, relative to the workspace (repo) root.
     pub file_path: String,
-    /// How to edit. Preferred: a tagged object like `{"type":"search_replace","search":"old","replace":"new"}`,
-    /// `{"type":"line_range","start_line":N,"end_line":M,"new_content":"..."}`,
-    /// `{"type":"insert_at","line":N,"content":"..."}`, or `{"type":"append","content":"..."}`.
-    /// Forgiving: a bare mode string (e.g. `"append"`) with the fields at top level also works.
+    /// How to edit. Must be a tagged object:
+    /// `{"type":"search_replace","search":"old text","replace":"new text"}` |
+    /// `{"type":"line_range","start_line":N,"end_line":M,"new_content":"..."}` |
+    /// `{"type":"insert_at","line":N,"content":"..."}` | or
+    /// `{"type":"append","content":"..."}`.
     #[serde(default)]
     #[ts(type = "any")]
     pub edit_mode: serde_json::Value,
     // Top-level convenience fields — accepted when edit_mode is given as a bare mode string
-    // (or when the mode is inferred from which of these are present). Forgives the common
-    // flat-call shape a model reaches for instead of the nested tagged object.
+    // (or when the mode is inferred from which of these are present). The runtime normalizes
+    // flat calls into the tagged-object form via normalize_edit_mode().
     #[serde(default)]
     pub content: Option<String>,
-    // `old_string`/`new_string` (Claude Code / most agents) and `old_str`/`new_str` are the
-    // UNIVERSAL edit idiom every citizen — persona, Claude, or human-over-Positron — reaches for
-    // first. Dogfooded 2026-08-09: a bare `code/edit old_string=… new_string=…` was refused
-    // ("could not determine the edit mode") because these weren't fields. Serde aliases map them
-    // straight onto search/replace at the shared handler, so search_replace is INFERRED and the
-    // edit lands first-try for everyone. [[dogfood-the-continuum-command-surface]]
-    #[serde(default, alias = "old_string", alias = "old_str")]
+    // `search` and `replace` are the canonical field names for search_replace edits.
+    #[serde(default)]
     pub search: Option<String>,
-    #[serde(default, alias = "new_string", alias = "new_str")]
+    #[serde(default)]
     pub replace: Option<String>,
     #[serde(default)]
     pub new_content: Option<String>,
