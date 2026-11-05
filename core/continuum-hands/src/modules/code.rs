@@ -125,14 +125,17 @@ impl CodeState {
         if sessions.is_empty() {
             return Err(ExecutionLookup::NoSession);
         }
-        let ids: Vec<uuid::Uuid> = sessions
+        // A stored key that is not an execution id is a corrupt store, said as one: it was
+        // silently skipped here, so a corrupt key read as "no such execution".
+        let ids = sessions
             .iter()
             .flat_map(|(_, ids)| ids.iter())
-            .filter_map(|id| uuid::Uuid::parse_str(id).ok())
-            .collect();
-        let id = continuum_base::id_resolve::resolve_handle(handle, &ids, "shell execution")
-            .map_err(ExecutionLookup::Unresolved)?
-            .to_string();
+            .map(|id| crate::code::shell_session::ExecutionId::parse_stored(id))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|corrupt| ExecutionLookup::Unresolved(corrupt.to_string()))?;
+        let id = crate::code::shell_session::execution_in(handle, ids)
+            .map_err(|refused| ExecutionLookup::Unresolved(refused.to_string()))?
+            .key();
         let holder = sessions
             .iter()
             .find(|(_, ids)| ids.iter().any(|e| *e == id))

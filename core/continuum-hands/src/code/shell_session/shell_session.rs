@@ -143,7 +143,8 @@ impl ShellSession {
         let target_env = target.to_str()
             .ok_or_else(|| "shell session environment requires a UTF-8 Cargo target; refusing to alter its native path".to_string())?.to_owned();
 
-        let execution_id = Uuid::new_v4().to_string();
+        let id = ExecutionId::new();
+        let execution_id = id.key();
         let now_ms = continuum_base::time::EpochMs::now().millis();
 
         let notify = Arc::new(Notify::new());
@@ -229,7 +230,7 @@ impl ShellSession {
             "code",
             "shell",
             "Execution {} started: {}",
-            &execution_id[..8],
+            id.shown(),
             command
         );
         Ok(execution_id)
@@ -298,15 +299,14 @@ impl ShellSession {
         if self.history.iter().any(|entry| entry.execution_id == execution_id) {
             return Err(format!("Output for completed shell execution '{execution_id}' was evicted by the session retention limit; exit/timing metadata remains in shell history"));
         }
-        let candidates: Vec<Uuid> = self
+        let candidates = self
             .executions
             .keys()
-            .map(|id| {
-                Uuid::parse_str(id).map_err(|e| format!("invalid stored execution handle: {e}"))
-            })
-            .collect::<Result<_, _>>()?;
-        let id = continuum_base::id_resolve::resolve_handle(execution_id, &candidates, "shell execution")?;
-        self.executions.get(&id.to_string()).cloned()
+            .map(|key| ExecutionId::parse_stored(key))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|corrupt| corrupt.to_string())?;
+        let id = execution_in(execution_id, candidates).map_err(|refused| refused.to_string())?;
+        self.executions.get(&id.key()).cloned()
             .ok_or_else(|| format!("No execution '{execution_id}' in this shell session"))
     }
 
@@ -365,7 +365,7 @@ impl ShellSession {
             "code",
             "shell",
             "Killed execution {}: {}",
-            &execution_id[..8.min(execution_id.len())],
+            ExecutionId::parse_stored(execution_id).map_or_else(|_| execution_id.to_owned(), ExecutionId::shown), // map_or_else: a key that is not an id is logged as given
             state.command
         );
         Ok(())
