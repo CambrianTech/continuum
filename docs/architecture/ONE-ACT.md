@@ -810,3 +810,12 @@ reclamation. On this integrated head, 25 grant tests pass (none ignored), 45
 admission tests pass (six existing ignored), 39 slot tests pass, and the serving
 crate check passes. Exact-head CI is running. The PR remains draft and undeployed;
 fork-page limitations and measured scheduling validation remain as stated above.
+
+At 20:06Z, CI's source-hygiene failure was corrected: standalone test modules
+now declare file-level `cfg(test)`, and the initial receipt baseline has its
+required inline justification. The full local base-versus-head hygiene run passes
+87 checks on each tree; CI hygiene also passed on `a9a12c613a`. Runtime CI is
+still pending. Review additionally pinned conservative erase-refusal behavior:
+the fork can reject an invalid slot before mutation, so rejection is not proof
+of warm residency. The saved page and charged claim remain, but attribution stays
+unconfirmed. A targeted regression passes; no production shortcut was introduced.
