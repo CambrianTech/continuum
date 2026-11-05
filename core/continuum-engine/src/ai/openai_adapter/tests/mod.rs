@@ -17,6 +17,7 @@ use super::embedding::{build_embedding_body, parse_embedding_response, parse_emb
 mod a_ready_burst_reaches_the_consumer_one_chunk_per_poll;
 mod lane_transport;
 mod lora_page_in;
+mod only_a_finish_frame_is_a_terminal_receipt;
 mod prefill_progress_is_liveness;
 mod request_shaping;
 mod tail_tools_reach_the_verified_lane_only;

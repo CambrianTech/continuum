@@ -475,7 +475,11 @@ impl OpenAICompatibleAdapter {
         }
         // Whose grant the request was rendered against: re-checked at dispatch, after the lane wait.
         let dispatch_admission = match (terms.admission, request.persona_id.as_deref().map(uuid::Uuid::parse_str)) {
-            (Some(admission), Some(Ok(persona))) => Some(crate::inference::lane_send::DispatchAdmission { persona, admission }),
+            (Some(admission), Some(Ok(persona))) => Some(crate::inference::lane_send::DispatchAdmission {
+                persona,
+                admission,
+                slot: _admission.as_ref().and_then(|admitted| admitted.slot()),
+            }),
             (Some(_), _) => {
                 return Err(crate::ai::inference_error::InferenceError::Protocol(
                     "a request carrying a grant admission must name its persona by id".into(),
@@ -535,6 +539,7 @@ impl OpenAICompatibleAdapter {
             stream_timings,
             resp_model,
             probe_persona,
+            terminal,
         } = crate::inference::sse_stream::consume_sse_stream(
             &self.config,
             &request,
@@ -543,9 +548,10 @@ impl OpenAICompatibleAdapter {
             &sink,
         )
         .await?;
-        // The engine's terminal receipt for this request: her reservation ends.
+        // Her reservation ends only on the engine's terminal receipt (its final frame's finish);
+        // a stream that ended without one leaves it held, unresolved.
         if let Some(reservation) = grant_reservation.take() {
-            reservation.complete();
+            crate::capacity::window_grant::settle(reservation, terminal.as_ref());
         }
         let response_time_ms = start.elapsed().as_millis() as u64;
 
