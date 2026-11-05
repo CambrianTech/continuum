@@ -25,12 +25,12 @@ pub enum ReserveRefused {
 }
 
 /// The reservations in flight, per mind: the largest leased grant and how many requests hold it.
-pub struct Reservations {
+pub(super) struct Reservations {
     held: std::sync::Mutex<BTreeMap<uuid::Uuid, (u32, usize)>>,
 }
 
 impl Reservations {
-    pub const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self { held: std::sync::Mutex::new(BTreeMap::new()) }
     }
 
@@ -63,7 +63,7 @@ impl Reservations {
 
     /// Run a regrant with every reservation held: the publisher computes and publishes under this
     /// lock, so a reserve either sees the new grant or the regrant sees the reservation.
-    pub fn honoring<R>(&self, regrant: impl FnOnce(&BTreeMap<uuid::Uuid, u32>) -> R) -> R {
+    fn honoring<R>(&self, regrant: impl FnOnce(&BTreeMap<uuid::Uuid, u32>) -> R) -> R {
         let held = self.lock();
         let reserved: BTreeMap<uuid::Uuid, u32> = held.iter().map(|(mind, (tokens, _))| (*mind, *tokens)).collect();
         regrant(&reserved)
@@ -91,7 +91,13 @@ impl Drop for GrantReservation {
 }
 
 /// The node's reservations, beside the grants they lease from.
-pub static RESERVATIONS: Reservations = Reservations::new();
+static RESERVATIONS: Reservations = Reservations::new();
+
+/// Run a regrant (compute and publish) with every reservation held: a reserve either sees the new
+/// grant or the regrant sees the reservation, and a reserved grant is never taken below it.
+pub fn honoring_reservations<R>(regrant: impl FnOnce(&BTreeMap<uuid::Uuid, u32>) -> R) -> R {
+    RESERVATIONS.honoring(regrant)
+}
 
 /// Reserve `persona`'s lease of `leased` tokens for a request that needs `needed` (the engine's
 /// exact prompt count plus its output reserve), against her grant as published now.

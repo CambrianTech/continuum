@@ -9,11 +9,11 @@ use crate::capacity::window_grant::{Demand, DemandFollowing, PoolGrants, WindowP
 
 impl ServingDaemonModule {
     /// The minds' grants on the running engine, published when one moves.
-    /// Computed and published under the requests' reservations (`window_grant::RESERVATIONS`): a
+    /// Computed and published under the requests' reservations (`window_grant::honoring_reservations`): a
     /// mind whose request holds a reserved lease is never regranted below it until that request's
     /// terminal receipt releases it; the shrink applies at the first publish after.
     pub(super) fn publish_grants(&self) {
-        let (next, changed) = crate::capacity::window_grant::RESERVATIONS.honoring(|reserved| {
+        let (next, changed) = crate::capacity::window_grant::honoring_reservations(|reserved| {
             let next = self.grants_now(reserved);
             let changed = self.grants_tx.send_if_modified(|current| {
                 if *current == next {

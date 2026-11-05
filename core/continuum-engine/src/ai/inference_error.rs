@@ -126,8 +126,7 @@ impl InferenceError {
     /// `{"error":{"code":400,"message":"…","type":"exceed_context_size"}}`;
     /// Current structured errors carry `n_prompt_tokens` and `n_ctx`. Their
     /// values are authoritative even when the diagnostic prose disagrees.
-    /// Legacy responses without a machine-readable type retain their old
-    /// compatibility decoder; a tagged response never falls back to prose.
+    /// An untagged response is never decoded from its prose: it stays unclassified.
     /// Cost note: an overflow is only ever a 400, so the JSON parse is gated on
     /// that status — every other failure classifies without touching the body.
     /// Nothing here runs on the success path.
@@ -171,33 +170,9 @@ impl InferenceError {
                 ),
             });
         }
-        // Older, untyped gateways provide no structured authority. Keep this
-        // compatibility path isolated from every tagged provider response.
-        let message = error.get("message")?.as_str()?;
-        if !message.contains("context size") {
-            return None;
-        }
-        let (requested, available) = Self::two_numbers(message)?;
-        Some(Self::ContextExceeded {
-            requested,
-            available,
-        })
-    }
-
-    /// Pull the two parenthesised token counts out of llama-server's message:
-    /// `request (16751 tokens) exceeds the available context size (16384 tokens)`.
-    ///
-    /// Used ONLY to recover the numbers once the body has already been
-    /// identified as a context error — never to decide *whether* it is one when
-    /// the backend tagged it.
-    fn two_numbers(message: &str) -> Option<(u32, u32)> {
-        let mut found = message
-            .split(|c: char| !c.is_ascii_digit())
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| s.parse::<u32>().ok());
-        let requested = found.next()?;
-        let available = found.next()?;
-        Some((requested, available))
+        // An untagged body carries no authority (our fork tags every overflow with its counts):
+        // never decoded from its prose, so it stays the unclassified fault it is.
+        None
     }
 }
 
@@ -306,18 +281,13 @@ mod tests {
         assert!(InferenceError::Transient("decode stalled".into()).is_retryable_unchanged());
     }
 
-    // what this catches: an UNTAGGED overflow (older llama-server builds) must
-    // still classify, or the fix silently stops working after a downgrade.
+    // what this catches: an overflow decided from prose. Our fork tags every overflow with its
+    // counts (`exceed_context_size`, `n_prompt_tokens`, `n_ctx`); an untagged body's wording is
+    // never matched, so it stays an unclassified fault rather than a guessed count.
     #[test]
-    fn untagged_overflow_still_classifies_from_the_message() {
+    fn an_untagged_overflow_is_never_read_from_its_prose() {
         let body = r#"{"error":{"code":400,"message":"request (15697 tokens) exceeds the available context size (15104 tokens)"}}"#;
-        assert_eq!(
-            InferenceError::from_http(400, body),
-            InferenceError::ContextExceeded {
-                requested: 15697,
-                available: 15104
-            }
-        );
+        assert!(matches!(InferenceError::from_http(400, body), InferenceError::Transient(_)));
     }
 
     // what this catches: over-eager classification. A 400 that is NOT a context
