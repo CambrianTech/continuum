@@ -780,3 +780,13 @@ gap. Capacity remains charged throughout. Twenty-three grant tests pass, includi
 no intervening tick, unsent attempts, overlapping unresolved custody and withdrawal
 of the waiter. Known-refusal recovery and serving integration are still pending;
 this is local implementation evidence, not live acceptance.
+
+At 19:35Z, known-refusal recovery returns an owned ticket to the reservation
+owner, then restores the holder's charged grant atomically at publication.
+It never supplies capacity to a waiter. Preparation now runs inside the retained
+task, so dropping the caller cannot abandon the ticket before page IO begins.
+Uncertainty still retains the claim; only a verified reclaim receipt frees it.
+Twenty-four grant tests pass, including restoration without immediate retry;
+three HTTP handoff tests cover successful save/erase and refusal of either action.
+Serving integration and its wait path remain unconnected. Resident-only reclaim
+still refuses existing fork pages, so this is not proof of fairness for that case.
