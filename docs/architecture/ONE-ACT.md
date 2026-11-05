@@ -819,3 +819,12 @@ still pending. Review additionally pinned conservative erase-refusal behavior:
 the fork can reject an invalid slot before mutation, so rejection is not proof
 of warm residency. The saved page and charged claim remain, but attribution stays
 unconfirmed. A targeted regression passes; no production shortcut was introduced.
+
+At 20:14Z, review reproduced a multi-holder fairness failure: with holders at
+20 and 60 tokens in a 100-token pool, a 90-token waiter lost the first reclaimed
+cells to the smaller holder's re-admission. Publication now withholds new queued
+admissions when the oldest eligible waiter still needs another holder reclaimed;
+existing held and unresolved claims stay protected. A waiter whose need no longer
+fits the pool/ceiling is removed from that priority queue. The new regression
+fails before the correction and passes after it; all 26 grant tests pass,
+including the combined HTTP proof test. CI must validate this newer PR head.
