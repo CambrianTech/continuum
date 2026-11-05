@@ -69,8 +69,7 @@ pub(super) struct SystemPromptParts<'a> {
     /// A self-initiated (never-stop heartbeat) turn carries the own-time framing.
     pub self_initiated: bool,
     /// This persona currently HOLDS a live in-progress work claim — a structural
-    /// claim-state fact (derived from the [active-work] grounding her own workspace
-    /// assembled, via `faculty_ids::renders_held_in_progress`; never a read of
+    /// claim-state fact (her typed held work, `Workspace::held`; never a read of
     /// her output). On an UNDIRECTED turn it swaps the conversational-presence block
     /// for the working-presence contract: a quiet room stops reading as "nothing to
     /// do" when her claimed card is sitting in her workspace. Directed turns are
@@ -149,7 +148,7 @@ pub(super) enum PromptChurn {
 pub(super) fn churn_of(faculty: &str) -> PromptChurn {
     use crate::cognition::workspace::FacultyId;
     use crate::cognition::faculty_ids::{
-        ACTIVE_WORK, AIRC, AWARENESS, ENGRAMS, MEDIA_PERCEPTION, MISSION, ROOM_BOARD,
+        AIRC, AWARENESS, ENGRAMS, MEDIA_PERCEPTION, MISSION, ROOM_BOARD,
         ROOM_DOCTRINE, ROOM_ROSTER, WALL, WORKSPACE_MAP,
     };
     match faculty {
@@ -162,8 +161,7 @@ pub(super) fn churn_of(faculty: &str) -> PromptChurn {
         // replaced reader's id), and fell to Unknown. Board, not Standing: resting and
         // waking change it within the hour, and Standing would put it in the system prefix.
         continuum_positron::RosterViewState::KIND
-        | WALL
-        | ACTIVE_WORK => PromptChurn::Board,
+        | WALL => PromptChurn::Board,
         ROOM_BOARD => PromptChurn::Claims,
         ENGRAMS | AIRC => PromptChurn::Turn,
         // The strip changes with every event in any of her rooms: turn churn, after the
@@ -204,7 +202,7 @@ pub(super) fn churn_of(faculty: &str) -> PromptChurn {
 /// The whole-prompt order this comparator is one key of, most stable first:
 /// tools (substrate) → identity + turn contract (persona) (system message ends) → her
 /// view: the conversation, her actions, the grounding blocks in churn order (standing:
-/// room-doctrine, workspace-map → board: active-work, room-wall, roster → claims:
+/// room-doctrine, workspace-map → board: her held work, room-wall, roster → claims:
 /// room-kanban → turn: recall), her thoughts
 /// → the fresh tail: any remaining assembled context, perception facts, the clock +
 /// presence framing, the ask, this turn's room updates, the pinned result. The clock
@@ -930,7 +928,6 @@ mod tests {
             "room-wall",
             "recall",
             "room-roster",
-            "active-work",
             "room-doctrine",
         ];
         names.sort_by(|a, b| stable_prefix_order(a, b));
@@ -940,7 +937,6 @@ mod tests {
                 "room-doctrine",
                 "room-roster",
                 "workspace-map",
-                "active-work",
                 "room-wall",
                 "room-kanban",
                 "recall",
@@ -950,9 +946,9 @@ mod tests {
         );
         // The live roster id is board churn (by name among the board), and the kanban
         // follows every board block.
-        let mut live = vec!["room-kanban", "room-wall", "roster", "active-work"];
+        let mut live = vec!["room-kanban", "room-wall", "roster"];
         live.sort_by(|a, b| stable_prefix_order(a, b));
-        assert_eq!(live, ["active-work", "room-wall", "roster", "room-kanban"]);
+        assert_eq!(live, ["room-wall", "roster", "room-kanban"]);
         assert_eq!(churn_of("engrams"), PromptChurn::Turn);
         assert_eq!(churn_of("media-perception"), PromptChurn::Standing);
     }

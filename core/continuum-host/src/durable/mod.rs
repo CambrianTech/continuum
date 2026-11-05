@@ -20,7 +20,7 @@ mod os;
 pub mod fault_injection;
 
 mod staging;
-pub use staging::{fence_existing, lock, lock_path, Lock, Staging};
+pub use staging::{fence_existing, is_staging_name, lock, lock_path, Lock, Staging};
 
 #[cfg(test)]
 mod tests;

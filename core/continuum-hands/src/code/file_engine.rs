@@ -135,12 +135,10 @@ mod apply;
 mod edit_checks;
 mod introspect;
 mod ops;
-mod page;
 mod suggest;
 use apply::*;
 use edit_checks::*;
 pub use edit_checks::{gutter_line_number, gutter_split};
-pub use page::PageBudget;
 use suggest::*;
 
 #[cfg(test)]

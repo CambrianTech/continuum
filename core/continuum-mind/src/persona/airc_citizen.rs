@@ -78,7 +78,7 @@ pub trait AircCitizen:
     AircTranscriptReader
     + crate::persona::room_roster_source::AircRosterReader
     + crate::persona::room_doctrine_source::AircDoctrineReader
-    + crate::persona::active_work_source::AircWorkReader
+    + crate::persona::held_work::AircWorkReader
     + crate::persona::wall_source::WallReader
     + crate::persona::room_board_source::RoomBoardReader
 {
@@ -201,19 +201,6 @@ pub trait AircCitizen:
         Err("this citizen has no work-board write capability".to_string())
     }
 
-    /// PULL a card off the shared team deck — claim it as this citizen so her
-    /// held-work loop then works it. Kanban pull (an idle member grabs the next
-    /// Open card) rather than push (a fixed pile pre-assigned at dispatch). The
-    /// claim is deterministic (the substrate pulls when she is free), NOT an LLM
-    /// tool call, so it can't be skipped. Default errors (no board-write
-    /// capability); the real runtime routes through airc's claim path. Returns
-    /// `Ok(false)` when the card was already taken by a teammate (a lost race is
-    /// normal on a shared deck — try the next one), `Ok(true)` when SHE now holds
-    /// it.
-    async fn claim_card(&self, _card_id: airc_lib::WorkCardId) -> Result<bool, String> {
-        Err("this citizen has no work-board write capability".to_string())
-    }
-
     /// Hand a held card back — the substrate's half of "write or release" (the
     /// governor in `act_question`). Rides `work/release` as this citizen, the same
     /// verb her own tool call would use. Default: no capability.
@@ -332,9 +319,6 @@ pub struct StubAircCitizen {
     /// WRITE half the read supertraits can't observe. Shared `Arc` so the test
     /// holds a clone and reads it after driving the turn.
     advanced: std::sync::Arc<std::sync::Mutex<Vec<(airc_lib::WorkCardId, airc_lib::CardState)>>>,
-    /// Records every `claim_card` (pull) call — the kanban-pull half, so a test
-    /// can assert an idle citizen pulled the right Open card off the deck.
-    claimed: std::sync::Arc<std::sync::Mutex<Vec<airc_lib::WorkCardId>>>,
 }
 
 impl StubAircCitizen {
@@ -348,7 +332,6 @@ impl StubAircCitizen {
             held: Vec::new(),
             boards: std::collections::HashMap::new(),
             advanced: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            claimed: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -433,7 +416,7 @@ impl crate::persona::room_doctrine_source::AircDoctrineReader for StubAircCitize
 }
 
 #[async_trait]
-impl crate::persona::active_work_source::AircWorkReader for StubAircCitizen {
+impl crate::persona::held_work::AircWorkReader for StubAircCitizen {
     async fn active_claims(&self) -> Result<Vec<airc_lib::WorkCard>, AircError> {
         // Default: no daemon → no claimed work. A test may seed `with_claims` to
         // exercise the held-work path.
@@ -536,14 +519,6 @@ impl AircCitizen for StubAircCitizen {
             .unwrap_or_else(|p| p.into_inner())
             .push((card_id, state));
         Ok(())
-    }
-
-    async fn claim_card(&self, card_id: airc_lib::WorkCardId) -> Result<bool, String> {
-        self.claimed
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(card_id);
-        Ok(true)
     }
 
     async fn subscribed_rooms(&self) -> Result<Vec<Uuid>, AircError> {

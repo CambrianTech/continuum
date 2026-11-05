@@ -614,32 +614,31 @@ fn the_product_limit_p90_is_the_landed_p90_without_cuts_and_only_rises_with_them
     assert_eq!(need::reasoning_at_least(&landed, &[1_100, 1_200], 1_200), None, "only where higher");
 }
 
-// what this catches (Aris on the M5, 2026-11-04 16:55-17:16Z): her need was measured only from
-// prompts her 55,672-token grant had already bounded, so it could never exceed the grant; her view
-// (26-37k) appended 5-12k an act and turned over on most acts while 474k of the pool sat free. An
-// overflow records what she would have held as a bound: her need, and her target with it, rise
-// to cover it, so the grant (`window_grant`, which grows every mind to her target when all fit)
-// can follow. Without the wish rising too, `LaneRequirement::held` clamps the bound back to the
-// censored target.
+// what this catches (the M5, 2026-11-04 20:15-20:35Z): #5773 raised her WISH and her residency
+// need to a censored overflow bound, and the grant gave the bound all one sequence holds, so one
+// mind took the pool (125,696 -> {Aiko: 114,592}) and three residents went dark for 20 min. An
+// overflow is first reducible (her view collapses older items to handles, ONE-ACT stage 3): the
+// bound stays the typed MEASUREMENT (`need_tokens`); her requirement is sized from what held.
 #[test]
-fn an_overflow_raises_her_need_and_target_to_what_she_would_have_held() {
+fn an_overflow_is_measured_as_a_bound_and_never_raises_her_residency() {
     use crate::inference::planning::window_allocator::Measure;
     let reg = WorkingSetRegistry::new();
-    let aris = Uuid::new_v4();
-    let would_have_held = 55_672 + 10_000;
+    let aiko = Uuid::new_v4();
+    let would_have_held = 114_592;
     for t in 0..9u64 {
-        reg.record_in_memory(aris, 48_000, t);
-        // Five of nine acts overflowed, as on the M5; the rest were held at her budgeter's floor.
+        reg.record_in_memory(aiko, 48_000, t);
+        // Five of nine acts overflowed; the rest were held at her budgeter's floor.
         let sample = if t % 2 == 0 { NeedSample::AtLeast { at_least: would_have_held } } else { NeedSample::Exact(30_000) };
-        reg.record_need_in_memory(aris, sample, t);
+        reg.record_need_in_memory(aiko, sample, t);
     }
-    let need = need_tokens(&reg.demand_of(aris).expect("recorded")).expect("need");
-    assert_eq!(need, NeedSample::AtLeast { at_least: would_have_held }, "the bound, typed as one");
-    let requirement = &requirements_for(&[aris], &reg)[0];
-    let Measure::Held { need, target } = requirement.measure else { panic!("a held need: {requirement:?}") };
-    assert!(need.is_bound(), "the requirement carries the bound as one, to the grant: {need:?}");
-    assert!(need.value().get() >= would_have_held, "her need covers what she would have held: {need:?}");
-    assert!(target >= need.value(), "the target rose with it, never clamped below the bound: {target:?}");
+    let demand = reg.demand_of(aiko).expect("recorded");
+    assert_eq!(need_tokens(&demand), Some(NeedSample::AtLeast { at_least: would_have_held }), "the measurement keeps the bound, typed as one");
+    assert_eq!(resident_need(&demand), Some(30_000), "residency reads only what held");
+    let requirement = &requirements_for(&[aiko], &reg)[0];
+    assert_eq!(requirement.wish.map(|w| w.get()), Some(48_000), "the bound raises no wish");
+    let Measure::Held { need, .. } = requirement.measure else { panic!("a held need: {requirement:?}") };
+    assert!(!need.is_bound(), "no bound reaches the grant, where `within` hands it a whole sequence: {need:?}");
+    assert_eq!(need.value().get(), 30_000);
 }
 
 // what this catches (the M5, 2026-11-04): a deliberate start or a turnover within the grant

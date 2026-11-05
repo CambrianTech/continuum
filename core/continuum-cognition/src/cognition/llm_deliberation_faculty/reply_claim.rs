@@ -1,7 +1,7 @@
 use super::*;
 
 /// THE REPLY'S CLAIM on her window: one claimant in the window's one allocation
-/// ([`crate::cognition::rag_budget::flex_allocate`]) beside framing, required input, tools,
+/// ([`continuum_context::allocation::allocate`]) beside framing, required input, tools,
 /// grounding and her view. Pure.
 ///
 /// A claim is what she is expected to write, measured; it is not a reservation for the worst
@@ -34,24 +34,6 @@ use super::*;
 /// The reply's top priority: an act on live held work or after a pending cut.
 pub const REPLY_TOP_PRIORITY: u8 = 10;
 
-/// `claims` with the reply seated at its want at [`REPLY_TOP_PRIORITY`]: the allocation her view's
-/// START is sized against, so the reply's priority (a pass or an act) never re-sizes her prefix.
-/// Only the start: seating the whole want in the grants she is SENT would pre-empt history and
-/// grounding, the case the doc above names.
-pub fn seated_at_want(claims: &[crate::cognition::rag_budget::RagSourceBudget]) -> Vec<crate::cognition::rag_budget::RagSourceBudget> {
-    claims
-        .iter()
-        .cloned()
-        .map(|mut claim| {
-            if claim.source_id == FLEX_REPLY {
-                claim.priority = REPLY_TOP_PRIORITY;
-                claim.min_tokens = claim.max_tokens;
-            }
-            claim
-        })
-        .collect()
-}
-
 pub fn reply_claim(
     kind: TurnKind,
     need: Option<super::super::working_set::OutputNeed>,
@@ -59,7 +41,7 @@ pub fn reply_claim(
     live_work: bool,
     directed: bool,
     time_term: Option<u32>,
-) -> crate::cognition::rag_budget::RagSourceBudget {
+) -> continuum_context::flex::FlexClaim {
     let floor = match (kind, need) {
         (TurnKind::Act, Some(n)) => n.answer.max(LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS),
         _ => LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS,
@@ -83,8 +65,8 @@ pub fn reply_claim(
         TurnKind::Pass if directed => 6,
         TurnKind::Pass => 4,
     };
-    crate::cognition::rag_budget::RagSourceBudget {
-        source_id: FLEX_REPLY.to_owned(),
+    continuum_context::flex::FlexClaim {
+        source_id: continuum_context::allocation::id::REPLY.to_owned(),
         priority,
         floor_tokens: floor,
         min_tokens: floor,

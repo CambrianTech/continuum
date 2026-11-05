@@ -71,6 +71,19 @@ impl LlmDeliberationFaculty {
                 }
             }
         }
+        // Her held work is input like her standing grounding: a transition is a new input.
+        input.update(b"held");
+        input.update((ws.held.holds.len() as u64).to_le_bytes());
+        for held in &ws.held.holds {
+            field(&mut input, held.card.card_id.as_uuid().as_bytes());
+            field(&mut input, crate::cognition::card_facts::state_str(&held.card.state).as_bytes());
+        }
+        for ended in &ws.held.ended {
+            field(&mut input, ended.card.as_uuid().as_bytes());
+        }
+        for line in &ws.held.rejections {
+            field(&mut input, line.as_bytes());
+        }
         input.update(b"room_updates");
         input.update((ws.room_updates.len() as u64).to_le_bytes());
         for update in ws.room_updates.iter() {
@@ -422,6 +435,7 @@ impl LlmDeliberationFaculty {
             streams: super::types::Streams {
                 conversation: crate::cognition::context_streams::conversation::Conversation { persona: self.persona_id, turns },
                 blocks,
+                held: crate::cognition::context_streams::held_work::HeldWorkStream { persona: self.persona_id, work: std::sync::Arc::clone(&ws.held) },
             },
             result_pointers,
             grounding_tokens: 0,

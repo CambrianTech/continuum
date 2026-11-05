@@ -8,7 +8,7 @@ use super::*;
 
 /// What her core hands cost on the wire: the whole of what an ordinary room claims for tools.
 fn core_tokens(faculty: &LlmDeliberationFaculty) -> usize {
-    faculty.tool_surface().claim_tokens(&[]).0
+    faculty.tool_surface().claim_tokens(&[], &[]).0
 }
 
 /// The first aligned window whose shared allocation admits her core hands, and its predecessor.

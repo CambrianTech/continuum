@@ -147,6 +147,8 @@ fn an_unsaved_result_never_collapses_to_a_line_nothing_reopens() {
 // whole when the allocation grants it, labelled exactly as it read resident.
 #[test]
 fn an_evicted_result_is_still_seen_whole_through_its_stored_level() {
+    // It saves through the production store: the class is the test fixture's, never ~/.continuum.
+    crate::cognition::tool_executor::spill::prepare_store_fixture();
     let persona = uuid::Uuid::new_v4();
     let memory = WorkingMemory::new(8);
     let body = "a line of the evicted result\n".repeat(400);
@@ -242,6 +244,85 @@ fn her_folded_acts_name_their_range_and_count_in_one_line() {
     let Some(block) = actions.fold(&run) else { panic!("a run with acts folds") };
     assert_eq!(block.text, "[actions #3200-#3330: 131 earlier acts folded; reopen one with tool/output act=<n>]");
     assert!(actions.fold(&[item("banner")]).is_none(), "a run that is not acts names nothing");
+}
+
+// what this catches: her newest thought dropped or cut when her thoughts outgrow their grant, or
+// a level chosen by the source instead of the allocation. Each thought is its own item with its
+// levels: a start that grants less than all of them shows her newest whole and the older ones at
+// the level the grant affords (their summary or pointer), and a start that grants every whole
+// shows every one whole.
+#[test]
+fn her_newest_thought_is_whole_and_the_allocation_levels_the_older_ones() {
+    use continuum_context::view::{Claim, Level, View};
+    let memory = WorkingMemory::new(2);
+    for n in 0..12 {
+        memory.record(&format!("thought {n}: {}", "weighing the parser branch and its index. ".repeat(30)));
+    }
+    let newest = "thought 12: so the fix is at checks.py:118, include the index in the label";
+    memory.record(newest);
+    let thoughts = super::thoughts::Thoughts { memory: &memory, persona: uuid::Uuid::nil() };
+    let levels = |grant: &dyn Fn(&[Claim]) -> Vec<usize>| {
+        let (view, _) = View::start(Vec::new(), &[&thoughts as &dyn Source<_>], grant).unwrap(); // unwrap: one grant per claim cannot mismatch
+        let text = view.render().map(|m: &super::ContextMessage| m.text.clone()).collect::<Vec<_>>().join("\n");
+        (text, view.receipt().items.into_iter().map(|item| item.level).collect::<Vec<Level>>())
+    };
+    let (text, tight) = levels(&|claims: &[Claim]| claims.iter().map(|claim| claim.newest_chars + claim.floor_chars).collect());
+    assert!(text.contains(newest), "her newest thought is whole: {text}");
+    assert!(tight.iter().any(|level| *level != Level::Full), "a tight grant shows older thoughts smaller: {tight:?}");
+    let (_, roomy) = levels(&|claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect());
+    assert!(roomy.iter().all(|level| *level == Level::Full), "a grant of every whole shows every one whole: {roomy:?}");
+}
+
+// what this catches (Cormac on #5782): a restore reordering her interior chain. Her thoughts kept
+// their occurrences while ring entries were renumbered after them, so after a restart she read
+// "so the fix is X" before the "failed" settlement that preceded it. One checkpointed sequence:
+// the restored chain has the same items, keys, ids and order.
+#[test]
+fn a_restore_keeps_her_thoughts_and_settlements_in_order_under_the_same_keys() {
+    use super::thoughts::Thoughts;
+    let memory = WorkingMemory::new(8);
+    memory.record("checking the parser branch");
+    memory.record_settlement("the regression tests failed", None);
+    memory.record("so the fix is at checks.py:118");
+    memory.record_settlement("the regression tests passed", None);
+    let chain = |memory: &WorkingMemory| {
+        Thoughts { memory, persona: uuid::Uuid::nil() }.items().into_iter().map(|item| (item.key().to_owned(), item.id(), item.full().text.clone())).collect::<Vec<_>>()
+    };
+    let before = chain(&memory);
+    let restored = WorkingMemory::new(8);
+    restored.restore(memory.snapshot());
+    assert_eq!(chain(&restored), before, "same items, keys, ids and order after the restore");
+    let order: Vec<String> = before.into_iter().map(|(_, _, text)| text).collect();
+    let at = |needle: &str| order.iter().position(|text| text.contains(needle));
+    assert!(at("failed") < at("so the fix") && at("so the fix") < at("passed"), "{order:?}");
+}
+
+// what this catches (Cormac on #5782): a thought log that never sheds, growing her RAM and her
+// checkpoint for her whole life. Her older thoughts are saved and shed to their handles by the
+// one shed verb her results take; her newest stays resident; a shed thought is still seen whole
+// (loaded through its handle) and her checkpoint carries its handle, not its body.
+#[test]
+fn an_older_thought_sheds_to_its_handle_and_is_still_seen_whole() {
+    use super::thoughts::Thoughts;
+    crate::cognition::tool_executor::spill::prepare_store_fixture();
+    let persona = uuid::Uuid::new_v4();
+    let memory = WorkingMemory::new(8);
+    let older = format!("weighing the parser branch {}", "and its index ".repeat(200));
+    memory.record(&older);
+    memory.record("so the fix is at checks.py:118");
+    let whole = |memory: &WorkingMemory| {
+        let thoughts = Thoughts { memory, persona };
+        thoughts.items().into_iter().map(|item| continuum_context::source::whole(&thoughts, item).text).collect::<Vec<_>>()
+    };
+    let resident = whole(&memory);
+    memory.save_unsaved_thoughts(persona);
+    memory.evict_resident_results_over(0, &|_, _| true);
+    let records = memory.thoughts();
+    assert!(records[0].text.is_none() && records[0].handle.is_some(), "the older thought is shed to its handle");
+    assert!(records[1].text.is_some(), "her newest thought stays resident");
+    assert_eq!(whole(&memory), resident, "she sees it whole exactly as before the shed");
+    let snapshot = memory.snapshot();
+    assert!(snapshot.thoughts[0].text.is_none() && snapshot.thoughts[0].handle.is_some(), "the checkpoint carries its handle, not its body");
 }
 
 // what this catches: a repeated settlement collapsing into the earlier one because thoughts were

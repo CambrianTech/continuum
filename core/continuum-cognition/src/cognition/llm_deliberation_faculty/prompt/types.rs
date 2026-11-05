@@ -22,14 +22,20 @@ impl Default for PromptCalibration {
 }
 
 impl PromptCalibration {
+    /// A REFUSAL's price (or a refit's): the engine's count of a prompt it refused, over its
+    /// estimate. Never below the estimate: a refusal proves the prompt was at least this dense,
+    /// never that it was lighter, so it only raises the price.
     pub(in super::super) fn observed(
         estimated: usize,
         measured: u32,
         input_identity: Option<[u8; 32]>,
     ) -> Option<Self> {
+        let estimated = std::num::NonZeroUsize::new(estimated)?;
+        // An estimate past u32 is priced at the most a count can say.
+        let at_least_estimate = estimated.get().min(u32::MAX as usize) as u32;
         Some(Self {
-            estimated: std::num::NonZeroUsize::new(estimated)?,
-            measured: std::num::NonZeroU32::new(measured)?,
+            estimated,
+            measured: std::num::NonZeroU32::new(measured.max(at_least_estimate))?,
             input_identity,
         })
     }
@@ -54,18 +60,105 @@ impl PromptCalibration {
         }
     }
 
+    /// `estimate` in the engine's tokens, at this calibration's ratio: above the estimate for a
+    /// refusal's price, below it for a measured density whose bound is lighter ([`Density`]).
+    /// u128 keeps this portable even for a full usize-sized estimate multiplied by a u32 count.
     pub fn charge(self, estimate: usize) -> usize {
         let tokens =
             (estimate as u128 * self.measured.get() as u128).div_ceil(self.estimated.get() as u128);
-        // Never underprice the existing estimate. u128 keeps this portable even
-        // for a full usize-sized prompt estimate multiplied by a u32 count.
-        estimate.max(tokens.min(usize::MAX as u128) as usize)
+        tokens.min(usize::MAX as u128) as usize
     }
 
+    /// The estimate that fits `measured_budget` engine tokens: the inverse of [`Self::charge`].
     pub(in super::super) fn prompt_budget(self, measured_budget: usize) -> usize {
         let tokens =
             measured_budget as u128 * self.estimated.get() as u128 / self.measured.get() as u128;
-        measured_budget.min(tokens.min(usize::MAX as u128) as usize)
+        tokens.min(usize::MAX as u128) as usize
+    }
+}
+
+/// One reply's measurement: the estimate a prompt was fitted with, and the engine's own count of it.
+type DensitySample = (std::num::NonZeroUsize, std::num::NonZeroU32);
+
+/// Her prompts' measured TEXT density on one binding: PROMPT bytes per prompt token, the unit her
+/// text is sized in, and nothing else. It is never KV bytes per token: the physical rate a pool,
+/// grant or footprint is sized by belongs to the engine's capacity layer (`capacity`,
+/// `serving_plan::ModelFootprint`), and this type cannot reach it: it is private to the
+/// deliberation faculty (`pub(in llm_deliberation_faculty)`), so no crate that plans memory can
+/// name it. What the fit counts in prompt tokens may be recorded as her need IN TOKENS; it never
+/// converts a token to a byte.
+///
+/// `Measured` is the engine's own count of each recent prompt against the estimate it was fitted
+/// with (`delib.prompt.density`), newest last, at most one ring of recent turns
+/// ([`crate::cognition::working_set::RECENT_TURNS`], the window every per-mind measurement is read
+/// over), under the model the engine reported serving them (`served`). A reply from a different
+/// served model starts a fresh ring: a ring is never carried across a model change.
+/// (Limitation, named: no engine-reported tokenizer or chat-template revision reaches this seam
+/// today; when the fork reports one, it joins `served` as the ring's key. A binding change, a new
+/// adapter or window, already drops the ring with its feedback, `PromptFeedback::applies_to`.)
+///
+/// The fit is priced at the ring's BOUND, its densest ratio, never at a constant: on the M5
+/// (2026-11-04, n=131) the bytes/3 guard read above the engine's count by 14% on average and by
+/// up to 22% (Aris 13,449 estimated against 11,111 counted), and its densest ratio was 0.99. The
+/// bound is an observed envelope, not a proof about the next prompt: the SAFETY authority is the
+/// engine's exact count of the finalized request before generation (`/input_tokens`, checked as
+/// `PromptCount::Measured { prompt, reply }`), whose `ContextExceeded` refits her at the refusal's
+/// price before anything is generated. A denser reply enters the ring at once, so the next prompt
+/// is priced at it. `Unmeasured` (no reply on this binding and model yet) prices at the estimate
+/// itself, `PromptCalibration::default()` (follow-up: one `/tokenize` count, or the model's
+/// measured density on this node, for the first act).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(in super::super) enum Density {
+    #[default]
+    Unmeasured,
+    Measured { served: String, samples: std::collections::VecDeque<DensitySample> },
+}
+
+/// What a density reads once a reply is measured: the bound the next prompt is priced at, and the
+/// ring's mean beside it, each in engine tokens per estimated token, thousandths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in super::super) struct DensityReading {
+    pub(in super::super) mean_milli: u64,
+    pub(in super::super) bound_milli: u64,
+}
+
+impl Density {
+    /// This density with one more reply measured under the model the engine reported serving it,
+    /// the price its bound sets (the densest ratio in the ring, compared exactly in u128) and its
+    /// reading. A reply from another served model starts a fresh ring. `None` when either count
+    /// is zero: nothing was measured.
+    pub(in super::super) fn observe(&self, estimated: usize, engine: u32, served: &str) -> Option<(Self, PromptCalibration, DensityReading)> {
+        let sample = (std::num::NonZeroUsize::new(estimated)?, std::num::NonZeroU32::new(engine)?);
+        let mut samples = match self {
+            Self::Measured { served: ring_model, samples } if ring_model == served => samples.clone(),
+            _ => std::collections::VecDeque::new(),
+        };
+        if samples.len() == crate::cognition::working_set::RECENT_TURNS {
+            samples.pop_front();
+        }
+        samples.push_back(sample);
+        let denser = |(ea, ma): DensitySample, (eb, mb): DensitySample| {
+            u128::from(ma.get()) * eb.get() as u128 > u128::from(mb.get()) * ea.get() as u128
+        };
+        let (bound_estimated, bound_measured) = samples.iter().copied().fold(sample, |worst, s| if denser(s, worst) { s } else { worst });
+        let estimated_sum: u128 = samples.iter().map(|(e, _)| e.get() as u128).sum();
+        let engine_sum: u128 = samples.iter().map(|(_, m)| u128::from(m.get())).sum();
+        let milli = |engine: u128, estimated: u128| (engine * 1_000 / estimated).min(u128::from(u64::MAX)) as u64;
+        let reading = DensityReading {
+            mean_milli: milli(engine_sum, estimated_sum),
+            bound_milli: milli(u128::from(bound_measured.get()), bound_estimated.get() as u128),
+        };
+        let price = PromptCalibration { estimated: bound_estimated, measured: bound_measured, input_identity: None };
+        Some((Self::Measured { served: served.to_owned(), samples }, price, reading))
+    }
+
+    /// How many replies the ring holds (0 unmeasured). Only the ring's own tests read it.
+    #[cfg(test)]
+    pub(in super::super) fn samples(&self) -> usize {
+        match self {
+            Self::Unmeasured => 0,
+            Self::Measured { samples, .. } => samples.len(),
+        }
     }
 }
 
@@ -75,6 +168,8 @@ pub(in super::super) struct PromptFeedback {
     pub(in super::super) binding: Arc<ModelBinding>,
     pub(in super::super) calibration: PromptCalibration,
     pub(in super::super) available: u32,
+    /// Her replies' measured density on this binding; a refusal carries it through unchanged.
+    pub(in super::super) density: Density,
 }
 
 impl PromptFeedback {
@@ -91,6 +186,8 @@ impl PromptFeedback {
 pub(in super::super) struct Streams {
     pub(in super::super) conversation: crate::cognition::context_streams::conversation::Conversation,
     pub(in super::super) blocks: Vec<crate::cognition::context_streams::blocks::Grounding>,
+    /// Her held work: one keyed item per card she holds (STATE-DRIVEN-SURFACE.md).
+    pub(in super::super) held: crate::cognition::context_streams::held_work::HeldWorkStream,
 }
 
 /// Prompt roles are provider-facing; these slots retain the substrate's meaning
@@ -444,3 +541,100 @@ impl DeliberationPromptView {
             .join("\n")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The model the M5 served that day.
+    const SERVED: &str = "Qwen3.6-35B-A3B";
+    /// Aris on the M5 (2026-11-04, `delib.prompt.density`): 13,449 estimated, 11,111 counted.
+    const ARIS: (usize, u32) = (13_449, 11_111);
+    /// Two prompts at the fleet's measured mean density the same day (n=131: the guard read 14%
+    /// above the engine's count on average): illustrative samples AT that aggregate, not receipts.
+    const AT_THE_MEAN: [(usize, u32); 2] = [(12_000, 10_526), (9_000, 7_895)];
+    /// The densest prompt that day: ratio 0.99, the guard barely above the engine's count.
+    const DENSEST: (usize, u32) = (10_000, 9_900);
+
+    fn ring_on(served: &str, from: Density, samples: &[(usize, u32)]) -> (Density, PromptCalibration) {
+        samples.iter().fold((from, PromptCalibration::default()), |(density, _), &(estimated, engine)| {
+            let (next, price, _) = density.observe(estimated, engine, served).expect("test: positive counts"); // JUSTIFIED: test fixture
+            (next, price)
+        })
+    }
+
+    fn ring(samples: &[(usize, u32)]) -> (Density, PromptCalibration) {
+        ring_on(SERVED, Density::Unmeasured, samples)
+    }
+
+    // what this catches: the bytes/3 guard's estimate corrected only upward, so on the M5
+    // (2026-11-04, n=131) where it read above the engine's count by 14% on average, the fit priced
+    // every prompt as larger than the engine counted. At her measured density the same window
+    // holds that much more ESTIMATE (an estimate correction in this sample; what it buys in useful
+    // context or acts per hour is measured live, never claimed here).
+    #[test]
+    fn at_her_measured_density_the_window_holds_more_estimate_than_at_the_guard() {
+        let (_, price) = ring(&[ARIS, AT_THE_MEAN[0], AT_THE_MEAN[1]]);
+        let window = 100_000;
+        assert_eq!(PromptCalibration::default().prompt_budget(window), window, "unmeasured: the estimate itself");
+        let measured = price.prompt_budget(window);
+        assert!(measured * 100 >= window * 113, "{measured}");
+        let (_, _, reading) = Density::Unmeasured.observe(ARIS.0, ARIS.1, SERVED).expect("test: positive counts"); // JUSTIFIED: test fixture
+        assert_eq!(reading.bound_milli, 826, "Aris alone: 11,111 / 13,449");
+    }
+
+    // what this catches: a measured density that is not conservative. The densest prompt that day
+    // measured 0.99 of its estimate; priced at a mean, it would be undercharged. At the ring's
+    // bound every recorded prompt is charged at or above the engine's count.
+    #[test]
+    fn the_bound_covers_every_prompt_in_the_ring_including_the_densest() {
+        let samples = [ARIS, AT_THE_MEAN[0], DENSEST, AT_THE_MEAN[1]];
+        let (_, price) = ring(&samples);
+        for (estimated, engine) in samples {
+            assert!(price.charge(estimated) >= engine as usize, "{estimated} charged {} < engine {engine}", price.charge(estimated));
+        }
+        assert_eq!(price.charge(DENSEST.0), DENSEST.1 as usize, "the bound is the densest ratio");
+    }
+
+    // what this catches (Codex on #5779): drift upward left uncovered. After a ring of light
+    // replies, ONE denser reply moves the bound to it, so the very next prompt is priced at it.
+    #[test]
+    fn a_denser_reply_is_covered_within_one_reply() {
+        let (light, light_price) = ring(&[ARIS; 8]);
+        assert!(light_price.charge(DENSEST.0) < DENSEST.1 as usize, "precondition: the light ring underprices the dense prompt");
+        let (_, price) = ring_on(SERVED, light, &[DENSEST]);
+        assert!(price.charge(DENSEST.0) >= DENSEST.1 as usize, "covered after one reply");
+    }
+
+    // what this catches (Codex on #5779): a ring carried across a model change. A reply from
+    // another served model starts a fresh ring (its own first sample), never the old envelope.
+    #[test]
+    fn another_served_model_starts_a_fresh_ring() {
+        let (dense, _) = ring(&[DENSEST, DENSEST]);
+        let (fresh, price) = ring_on("another-model", dense, &[ARIS]);
+        assert_eq!(fresh.samples(), 1, "a fresh ring");
+        assert_eq!(price.charge(ARIS.0), ARIS.1 as usize, "priced by the new model's own count");
+        assert_eq!(Density::Unmeasured.samples(), 0);
+    }
+
+    // what this catches: a dense prompt pinning her price forever (both ways): once a ring of
+    // lighter replies follows it, it ages out and her bound falls with what she now sends.
+    #[test]
+    fn a_dense_prompt_ages_out_of_the_ring() {
+        let mut samples = vec![DENSEST];
+        samples.extend(std::iter::repeat(ARIS).take(crate::cognition::working_set::RECENT_TURNS));
+        let (density, price) = ring(&samples);
+        assert_eq!(density.samples(), crate::cognition::working_set::RECENT_TURNS);
+        assert_eq!(price.charge(ARIS.0), ARIS.1 as usize, "the densest aged out: Aris's own ratio");
+    }
+
+    // what this catches: a refusal's price lowering what a prompt costs. A refusal proves the
+    // prompt was at least as dense as counted, never lighter; and a zero count measures nothing.
+    #[test]
+    fn a_refusal_never_prices_below_the_estimate_and_a_zero_count_measures_nothing() {
+        let refused = PromptCalibration::observed(10_000, 8_000, None).expect("test: positive counts"); // JUSTIFIED: test fixture
+        assert_eq!(refused.charge(10_000), 10_000);
+        assert!(Density::Unmeasured.observe(10_000, 0, SERVED).is_none() && Density::Unmeasured.observe(0, 10, SERVED).is_none());
+    }
+}
+

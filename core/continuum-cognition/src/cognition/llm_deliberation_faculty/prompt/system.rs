@@ -96,17 +96,10 @@ impl LlmDeliberationFaculty {
             .iter()
             .filter(|c| c.decision.is_none() && !c.trailing)
             .collect();
-        ctx.sort_by(|a, b| {
-            // Retain the legacy enrichment ordering. Standing source units have
-            // already been reserved and cannot be spent by this optional walk.
-            let a_held = a.faculty.as_str() == crate::cognition::faculty_ids::ACTIVE_WORK;
-            let b_held = b.faculty.as_str() == crate::cognition::faculty_ids::ACTIVE_WORK;
-            b_held.cmp(&a_held).then(
-                b.salience
-                    .partial_cmp(&a.salience)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
-        });
+        // Highest salience first. Standing source units have already been reserved and cannot
+        // be spent by this optional walk; her held work is a source of her view
+        // (`context_streams::held_work`), never a contribution ranked here.
+        ctx.sort_by(|a, b| b.salience.partial_cmp(&a.salience).unwrap_or(std::cmp::Ordering::Equal)); // unwrap_or: an unordered (NaN) salience ties
         let received = ctx.len();
         // SELECTION (by salience): walk highest-salience-first and keep what fits.
         //

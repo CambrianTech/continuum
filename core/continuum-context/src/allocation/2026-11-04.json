@@ -1,0 +1,26 @@
+{
+  "aris_view": {
+    "value": { "view_tokens": 44000, "append_chars_per_act": [17000, 43000], "prompt_tokens": 89000, "aiko_prompt_tokens": 20000 },
+    "receipt": "Aris 18:49-19:22Z: per-act appends 17-43k chars on a ~44k-token view, ~89k-token prompts, 9 acts in 30 min; Aiko ~20k-token prompts, 28 acts in 20 min (the dyno's 2026-11-04.json, fable/dyno capacity/dyno)"
+  },
+  "aris_acts": {
+    "value": 9,
+    "receipt": "Aris 18:49-19:22Z: 9 acts in 30 min (ONE-ACT table, warm acts)"
+  },
+  "aris_window": {
+    "value": 55672,
+    "receipt": "Aris granted 55,672 of a 654,336-token pool, 2026-11-04 16:55-17:16Z (#5773's receipt)"
+  },
+  "head_chars": {
+    "value": 38800,
+    "receipt": "the shared head every resident sends identically, ~38.8k chars (MIND-CONTEXT revision 2026-10-25, invariant 5)"
+  },
+  "reply_tokens": {
+    "value": 1641,
+    "receipt": "act replies measured 809-1,641 tokens on the M5 (ONE-BUDGET slice 6, 2026-10-30); the larger end"
+  },
+  "m5_prefill_tok_per_s_large": {
+    "value": 148,
+    "receipt": "llama-server prompt eval on the M5: 141,739 tokens at 148 tok/s (a cold act: Atlas 76,114 tokens, 0 cached, 318 s, 21:37Z)"
+  }
+}

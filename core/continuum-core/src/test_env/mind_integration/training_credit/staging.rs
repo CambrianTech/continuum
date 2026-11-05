@@ -403,7 +403,7 @@ impl Holds {
 }
 
 #[async_trait::async_trait]
-impl crate::persona::active_work_source::AircWorkReader for Holds {
+impl crate::persona::held_work::AircWorkReader for Holds {
     async fn active_claims(&self) -> Result<Vec<airc_work::WorkCard>, airc_lib::AircError> {
         if self.1.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(airc_lib::AircError::Transport("the board is unreachable in this fixture".into()));
