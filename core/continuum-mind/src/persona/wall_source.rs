@@ -422,6 +422,8 @@ impl RagSource for WallSource {
             posts = items.len(),
             "wall_posts: deliver"
         );
+
+        RagDelivery::of(WALL, items, false)
     }
 
 }
