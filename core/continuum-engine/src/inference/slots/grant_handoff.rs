@@ -44,6 +44,7 @@ pub fn reclaim_grant(
     let endpoint = directory().endpoint(&root);
     let (tx, rx) = tokio::sync::oneshot::channel();
     endpoint.retain_paging(async move {
+        let persona = ticket.persona();
         let result = match prepare(&client, &root, &ticket).await {
             Ok((mut custody, pool, slot, key)) => {
                 custody.ticket = Some(ticket);
@@ -52,6 +53,9 @@ pub fn reclaim_grant(
             }
             Err(reason) => return_refused(ticket, reason),
         };
+        continuum_base::probe!(class = "inference.grant_handoff.finished", persona = %persona,
+            reclaimed = result.is_ok(), error = ?result.as_ref().err(),
+            "retained grant handoff finished; reservation owner keeps the publication authority");
         let _ = tx.send(result); // owner records the outcome even if caller leaves during preparation
     });
     rx
@@ -140,3 +144,21 @@ async fn resolve(outcome: PageOutcome, mut custody: Custody) -> Result<(Custody,
 
 #[cfg(test)]
 mod tests;
+
+/// Shared HTTP fixture exercises production preparation and IO, without a process-global
+/// grant owner that would make unrelated parallel tests fence one another's reservations.
+#[cfg(test)]
+pub(crate) async fn fixture_for_publication() -> (String, Arc<KvSlotPool>, PageKey, tokio::task::JoinHandle<()>) {
+    let (root, _, pool, key, custody, server) = tests::fixture(false).await;
+    drop(custody);
+    pool.mark_incarnation((7, 123));
+    (root, pool, key, server)
+}
+
+#[cfg(test)]
+pub(crate) async fn reclaim_for_publication(root: &str, ticket: GrantHandoff) -> Result<ReclaimedGrant, String> {
+    let client = reqwest::Client::new();
+    let (mut custody, pool, slot, key) = prepare(&client, root, &ticket).await?;
+    custody.ticket = Some(ticket);
+    reclaim(&client, root, pool, slot, key, custody).await
+}

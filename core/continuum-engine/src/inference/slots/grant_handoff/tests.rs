@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 #[derive(Default)]
-struct Engine {
+pub(super) struct Engine {
     actions: Mutex<Vec<String>>,
     saved: Mutex<Option<String>>,
     resident: Mutex<Option<String>>,
@@ -32,7 +32,7 @@ async fn action(State(engine): State<Arc<Engine>>, Path(slot): Path<u32>, Query(
     }
 }
 
-async fn fixture(reject_save: bool) -> (String, Arc<Engine>, Arc<KvSlotPool>, PageKey, Custody, tokio::task::JoinHandle<()>) {
+pub(super) async fn fixture(reject_save: bool) -> (String, Arc<Engine>, Arc<KvSlotPool>, PageKey, Custody, tokio::task::JoinHandle<()>) {
     let engine = Arc::new(Engine { reject_save, resident: Mutex::new(Some("resident-context".into())), ..Default::default() });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let root = format!("http://{}", listener.local_addr().expect("addr"));

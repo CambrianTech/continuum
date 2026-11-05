@@ -29,6 +29,45 @@ fn engine() -> Option<EngineIncarnation> {
     })
 }
 
+#[tokio::test]
+async fn http_reclamation_proof_publishes_the_waiter_without_freeing_early() {
+    use crate::inference::slots::grant_handoff::{fixture_for_publication, reclaim_for_publication};
+    let (root, pool, key, server) = fixture_for_publication().await;
+    let on = Some(EngineIncarnation { pid: 7, started_s: 123,
+        port: reqwest::Url::parse(&root).expect("fixture URL").port().expect("fixture port") });
+    let owner = Box::leak(Box::new(Reservations::new()));
+    let a = key.persona();
+    let b = uuid::Uuid::new_v4();
+    let demands = [a, b].map(|mind| Demand {
+        mind, need: t(60), target: t(60), wish: t(60), in_flight: false, ceiling: 100,
+    });
+    let mut fair = FairGrantState::default();
+    let mut current = None;
+    let publish = |fair: &mut FairGrantState, current: &mut Option<PoolGrants>| {
+        let before = current.clone();
+        owner.fair_publish(fair, &demands, 100, 100, on, || before, |next| *current = Some(next)).1
+    };
+    assert!(publish(&mut fair, &mut current).is_empty());
+    let lease = current.as_ref().expect("published").lease_for(a).expect("holder");
+    let turn = owner.reserve_against(a, lease, 50, || Some(lease)).expect("reserved");
+    settle(turn, Some(&TerminalReceipt { finish: "stop".into() }));
+    let ticket = publish(&mut fair, &mut current).pop().expect("handoff");
+    assert_eq!(owner.lock().retiring[&a].tokens, 60);
+    assert!(!current.as_ref().expect("published").by_mind.contains_key(&b));
+    let proof = tokio::time::timeout(std::time::Duration::from_secs(5), reclaim_for_publication(&root, ticket))
+        .await.expect("reclaim completes").expect("verified HTTP proof");
+    owner.record_reclaimed(proof).expect("retained proof");
+    assert_eq!(owner.lock().retiring[&a].tokens, 60, "proof alone has not published replacement authority");
+    assert!(pool.confirms(&key), "resident save remains available after erase");
+    assert!(publish(&mut fair, &mut current).is_empty());
+    let next = current.as_ref().expect("published");
+    assert_eq!(next.by_mind, BTreeMap::from([(b, 60)]));
+    assert!(owner.reserve_against(a, lease, 50, || next.lease_for(a)).is_err());
+    let lease_b = next.lease_for(b).expect("waiter granted");
+    owner.reserve_against(b, lease_b, 50, || Some(lease_b)).expect("waiter may dispatch").release_unsent();
+    server.abort();
+}
+
 fn tick(
     owner: &Reservations,
     fair: &mut FairGrantState,
