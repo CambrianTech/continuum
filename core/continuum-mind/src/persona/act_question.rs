@@ -200,8 +200,7 @@ pub(crate) async fn ask_the_act_question(
                             let about: Vec<String> = held
                                 .iter()
                                 .flat_map(|c| {
-                                    let id8: String =
-                                        c.card_id.as_uuid().to_string().chars().take(8).collect();
+                                    let id8 = airc_core::shown_id::shown_form(c.card_id.as_uuid());
                                     let inst =
                                         crate::recipe::bench_title::parse_card_title(&c.title)
                                             .map(|(_, i)| i)
@@ -228,14 +227,6 @@ pub(crate) async fn ask_the_act_question(
                         thoughts = last_state.len() as u64,
                         "her own newest thoughts lead the work turn"
                     );
-                    // No page = no note (a fresh card carries none); the absence is not a quantity.
-                    let progress = match &page {
-                        Ok(rows) => crate::persona::work_burst::card_progress(
-                            rows,
-                            ctx.identity.peer_id.as_uuid(),
-                        ),
-                        Err(_) => crate::persona::work_burst::CardProgress::default(),
-                    };
                     let acts_without_write = page
                         .as_ref()
                         .map(|rows| {
@@ -264,12 +255,7 @@ pub(crate) async fn ask_the_act_question(
                     // her edits uncommitted. The gate probe above records the stretch; a card leaves
                     // her only by her own release, an explicit reassignment, or an activity's
                     // declared policy (the benchmark round's idle reconciler is one).
-                    let burst_text = crate::persona::work_burst::held_work_burst_gated(
-                        &held,
-                        &last_state,
-                        acts_without_write,
-                        &progress,
-                    );
+                    let burst_text = crate::persona::work_burst::held_work_burst_gated(&last_state, acts_without_write);
                     // The producer's CONTEXT half, kept before the burst is
                     // moved into the driver — one construction, so the
                     // training example records the prompt she was actually

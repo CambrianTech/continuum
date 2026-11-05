@@ -190,7 +190,7 @@
     // help; never a release demand); an edit receipt resets the count and it stays away.
     #[test]
     pub(super) fn six_acts_without_a_write_gate_the_work_turn_and_an_edit_resets_it() {
-        use crate::persona::work_burst::{acts_since_last_write, held_work_burst_gated, CardProgress, WRITE_OR_RELEASE_AFTER_ACTS};
+        use crate::persona::work_burst::{acts_since_last_write, held_work_burst_gated, WRITE_OR_RELEASE_AFTER_ACTS};
         let me = Uuid::new_v4();
         let row = |ms, text: &str| crate::persona::durable_history::RoomRow {
             id: Uuid::new_v4(),
@@ -205,12 +205,7 @@
             row(3, "💭 more ⚙ code/read b.py ✓ ⚙ code/shell ls ✓"),
         ];
         assert_eq!(acts_since_last_write(&looping, me), 6);
-        let text = held_work_burst_gated(
-            &[],
-            &[],
-            acts_since_last_write(&looping, me),
-            &CardProgress::default(),
-        );
+        let text = held_work_burst_gated(&[], acts_since_last_write(&looping, me));
         assert!(text.contains("[progress checkpoint]"), "{text}");
         assert!(text.contains("PASS: blocked"), "{text}");
         // regression (Kimi, d33e928a, 2026-09-26): a citizen mid-diagnosis read past the
@@ -237,12 +232,7 @@
             1,
             "a claim is a hold boundary: only the act after it counts"
         );
-        let text = held_work_burst_gated(
-            &[],
-            &[],
-            acts_since_last_write(&edited, me),
-            &CardProgress::default(),
-        );
+        let text = held_work_burst_gated(&[], acts_since_last_write(&edited, me));
         assert!(
             !text.contains("[progress checkpoint]"),
             "no checkpoint after an edit: {text}"
@@ -250,83 +240,6 @@
         assert!(
             WRITE_OR_RELEASE_AFTER_ACTS >= 4,
             "the gate is not a hair trigger"
-        );
-    }
-
-    // what this catches (card 516738b4): a work turn that re-reads what it read.
-    // Her ⚙ receipts already say which files she read and what she ran; the block
-    // must lead with them, de-duplicated, newest last, and say nothing on a fresh card.
-    #[test]
-    pub(super) fn a_held_card_carries_what_she_already_read_and_ran() {
-        use crate::persona::work_burst::{card_progress, held_work_burst_gated, progress_line, CardProgress};
-        let me = Uuid::new_v4();
-        let row = |ms, text: &str| crate::persona::durable_history::RoomRow {
-            id: Uuid::new_v4(),
-            sender: me,
-            occurred_at_ms: ms,
-            media: Vec::new(),
-            text: text.to_string(),
-        };
-        let rows = vec![
-            row(2, "💭 looking ⚙ code/read django/forms/fields.py ✓ ⚙ code/search MultiValueField ✓"),
-            row(1, "💭 first ⚙ work/get de33e1d6 ✓"),
-            row(3, "💭 again ⚙ code/read django/forms/fields.py ✓ ⚙ code/run pytest tests/forms_tests -k Multi ✗"),
-            row(4, "💭 fix ⚙ code/edit django/forms/fields.py ✓ ⚙ code/run pytest tests/forms_tests -k Multi ✓"),
-        ];
-        let p = card_progress(&rows, me);
-        assert_eq!(p.acts, 7);
-        assert_eq!(p.writes, 1);
-        assert_eq!(
-            p.read,
-            vec!["django/forms/fields.py".to_string()],
-            "paths only, de-duplicated"
-        );
-        assert_eq!(
-            p.searched,
-            vec!["MultiValueField".to_string()],
-            "a search term is not a read"
-        );
-        // Successful writes survive as concrete receipts; failed edits and
-        // another citizen's writes must not become her accomplishments.
-        assert_eq!(p.wrote, vec!["code/edit django/forms/fields.py"]);
-        let mut write_rows = rows.clone();
-        write_rows.push(row(5, "⚙ code/write failed.rs ✗"));
-        write_rows.push(row(6, "⚙ code/edit django/forms/fields.py ✓"));
-        write_rows.push(row(7, "⚙ work/note de33e1d6 ✓"));
-        let mut others = row(8, "⚙ code/write someone-elses.rs ✓");
-        others.sender = Uuid::new_v4();
-        write_rows.push(others);
-        let writes = card_progress(&write_rows, me);
-        assert_eq!(writes.wrote, vec!["code/edit django/forms/fields.py", "work/note de33e1d6"]);
-        let receipt = progress_line(&writes);
-        assert!(receipt.contains("Successful write receipts: code/edit django/forms/fields.py; work/note de33e1d6."));
-        assert!(!receipt.contains("failed.rs"));
-        assert!(!receipt.contains("someone-elses.rs"));
-        assert_eq!(p.ran.len(), 2);
-        assert!(p.ran[1].ends_with('✓'), "{:?}", p.ran);
-        let block = held_work_burst_gated(&[], &[], 0, &p);
-        assert!(
-            block.contains("[progress] Recent work receipts:"),
-            "{block}"
-        );
-        assert!(
-            block.contains("Already read: django/forms/fields.py."),
-            "{block}"
-        );
-        assert!(
-            block.contains("Already searched: MultiValueField."),
-            "{block}"
-        );
-        assert!(
-            block.find("[progress]").unwrap() < block.find("Your workspace holds").unwrap(),
-            "the note leads"
-        );
-        assert!(
-            progress_line(&CardProgress::default()).is_empty(),
-            "a fresh card carries no note"
-        );
-        assert!(
-            !held_work_burst_gated(&[], &[], 0, &CardProgress::default()).contains("[progress]")
         );
     }
 
@@ -365,50 +278,20 @@
             state[1].starts_with('…') && state[1].ends_with("on this card now, really"),
             "newest keeps its conclusion: {state:?}"
         );
-        let text = held_work_burst(&[], &state);
+        let text = held_work_burst(&state);
         assert!(text.contains("resume from them"));
         assert!(text.contains("lines 107-152"));
     }
 
+    // what this catches: a work-turn stimulus that commands instead of offering (the pass and its
+    // three reasons are hers, and the settle edge reads them), or one that lists her cards again
+    // beside her held-work items (each card is its own item there, with what she can do on it).
     #[test]
-    pub(super) fn held_work_burst_names_cards_and_keeps_the_choice_hers() {
-        use airc_work::{CardState, Priority, RepoId, WorkCardId};
-        let card = airc_lib::WorkCard {
-            card_id: WorkCardId::new(),
-            repo: RepoId::new("acme/continuum").expect("valid repo id in fixture"),
-            title: "PROJECT [swe] psf__requests-2148".to_string(),
-            body: None,
-            priority: Priority::P1,
-            lane_id: None,
-            state: CardState::InProgress,
-            owner: None,
-            claim_provenance: None,
-            claim_id: None,
-            claim_expires_at_ms: None,
-            last_heartbeat_at_ms: None,
-            pull_request: None,
-            created_by: airc_core::PeerId::new(),
-            created_at_ms: 1_000_000,
-            updated_at_ms: 1_000_000,
-            reviews: None,
-            submissions: Vec::new(),
-            last_submission_rejection: None,
-        };
-        let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
-        let burst = held_work_burst(&[&card], &[]);
-        assert!(burst.contains(&id8), "short id must appear: {burst}");
-        assert!(
-            burst.contains("psf__requests-2148"),
-            "title must appear: {burst}"
-        );
-        // The choice stays hers — she PASSES to conclude, and the pass carries a
-        // reason (done/blocked/nothing) the deterministic settle edge reads. A
-        // burst that loses the pass-clause becomes a command; one that loses the
-        // reason words leaves the edge unable to tell done from blocked.
-        assert!(
-            burst.contains("PASS"),
-            "the pass choice stays hers: {burst}"
-        );
+    pub(super) fn the_work_turn_keeps_the_choice_hers_and_points_at_her_cards() {
+        let burst = held_work_burst(&[]);
+        assert!(burst.contains("[my work]"), "her cards are her held-work items: {burst}");
+        assert!(!burst.contains("- card "), "no card is listed again in the stimulus: {burst}");
+        assert!(burst.contains("PASS"), "the pass choice stays hers: {burst}");
         assert!(
             burst.contains("done") && burst.contains("blocked") && burst.contains("nothing"),
             "the pass must name its three reasons for the settle edge: {burst}"

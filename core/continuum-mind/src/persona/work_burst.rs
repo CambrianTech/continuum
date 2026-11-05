@@ -1,6 +1,8 @@
-//! What a work turn is handed to begin with: the held-card burst, her own last
-//! thoughts on the work (resume, never re-orient), and the board anchor the
-//! self-cycle speaks from. Pure text builders — no I/O, fully testable — carved
+//! What a work turn is handed to begin with: the fixed instructions of a work turn, her own last
+//! thoughts on the work (resume, never re-orient), and the advisory progress checkpoint. Which
+//! cards she holds and what she can do on each are her held-work items in her view
+//! (`context_streams::held_work`), and what she already did is her actions and open views there,
+//! so this text carries neither. Pure text builders — no I/O, fully testable — carved
 //! out of `service_loop` 2026-09-05.
 
 use continuum_base::time::EpochMs;
@@ -51,125 +53,8 @@ pub(crate) fn acts_since_last_write_since(
     n
 }
 
-/// What she has already done on this card, derived from her own ⚙ receipts in
-/// the room page (card 516738b4): the files she read, the commands she ran, the
-/// act/write tally. No new store — the transcript already holds every act; this
-/// is the projection the next turn resumes from so it stops re-reading what it
-/// read. Measured 2026-09-06 08:0xZ: every work turn opened with "let me parse
-/// where I am", re-read the same file region, and ended; 48 acts / 0 writes in a
-/// warm 80-minute window across ten holders.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct CardProgress {
-    pub acts: usize,
-    pub writes: usize,
-    /// Distinct objects of her read-shaped acts (code/read, code/list) — paths —
-    /// newest last, capped.
-    pub read: Vec<String>,
-    /// Successful write receipts, including the verb so a work note is not a file edit.
-    pub wrote: Vec<String>,
-    /// Distinct code/search terms, newest last, capped (review on #3793: a search
-    /// term is not something she "already read").
-    pub searched: Vec<String>,
-    /// Her newest run/shell commands with their outcome glyph, newest last, capped.
-    pub ran: Vec<String>,
-}
-
-const PROGRESS_READ_KEEP: usize = 6;
-const PROGRESS_RAN_KEEP: usize = 3;
-
-/// Fold her ⚙ receipts (oldest first) into a [`CardProgress`]. A receipt row is
-/// `⚙ verb object ✓` segments joined by the act glyph; the object is whatever the
-/// writer put there (a path, a command, a card id), clipped for the block.
-pub(crate) fn card_progress(rows: &[crate::persona::durable_history::RoomRow], me: Uuid) -> CardProgress {
-    use crate::cognition::presence_glyph::{ACT, FAIL, OK};
-    let mut mine: Vec<&crate::persona::durable_history::RoomRow> =
-        rows.iter().filter(|r| r.sender == me && r.text.contains(ACT)).collect();
-    mine.sort_by_key(|r| r.occurred_at_ms);
-    let mut p = CardProgress::default();
-    for row in mine {
-        for seg in row.text.split(ACT).skip(1) {
-            let seg = seg.trim();
-            if seg.is_empty() {
-                continue;
-            }
-            let ok = seg.ends_with(OK);
-            let seg = seg.trim_end_matches(OK).trim_end_matches(FAIL).trim();
-            let (verb, object) = match seg.split_once(' ') {
-                Some((v, o)) => (v, o.trim()),
-                None => (seg, ""),
-            };
-            p.acts += 1;
-            if is_write_verb(verb) {
-                p.writes += 1;
-            }
-            let obj: String = object.chars().take(72).collect();
-            if ok && is_write_verb(verb) {
-                push_distinct(&mut p.wrote, format!("{verb} {obj}"));
-            }
-            if verb.starts_with("code/read") || verb.starts_with("code/list") {
-                push_distinct(&mut p.read, obj);
-            } else if verb.starts_with("code/search") {
-                push_distinct(&mut p.searched, obj);
-            } else if verb.starts_with("code/run") || verb.starts_with("code/shell") {
-                let shown = if obj.is_empty() { verb.to_string() } else { obj };
-                p.ran.push(format!("{shown} {}", if ok { OK } else { FAIL }));
-                if p.ran.len() > PROGRESS_RAN_KEEP {
-                    p.ran.remove(0);
-                }
-            }
-        }
-    }
-    p
-}
-
-/// Keep `v` a distinct, newest-last list capped at [`PROGRESS_READ_KEEP`].
-fn push_distinct(v: &mut Vec<String>, obj: String) {
-    if obj.is_empty() {
-        return;
-    }
-    v.retain(|o| o != &obj);
-    v.push(obj);
-    if v.len() > PROGRESS_READ_KEEP {
-        v.remove(0);
-    }
-}
-
-/// One `[progress]` line for the head of the held-work block; empty when she has
-/// no acts yet (a fresh card carries no note).
-pub(crate) fn progress_line(p: &CardProgress) -> String {
-    if p.acts == 0 {
-        return String::new();
-    }
-    // Kimi read act/write totals as an allowance and stopped to seek help.
-    // Keep concrete receipts in her context; totals remain diagnostic data.
-    let mut s = String::from("[progress] Recent work receipts:");
-    if !p.read.is_empty() {
-        s.push_str(" Already read: ");
-        s.push_str(&p.read.join(", "));
-        s.push('.');
-    }
-    if !p.wrote.is_empty() {
-        s.push_str(" Successful write receipts: ");
-        s.push_str(&p.wrote.join("; "));
-        s.push('.');
-    }
-    if !p.searched.is_empty() {
-        s.push_str(" Already searched: ");
-        s.push_str(&p.searched.join(", "));
-        s.push('.');
-    }
-    if !p.ran.is_empty() {
-        s.push_str(" Last ran: ");
-        s.push_str(&p.ran.join("; "));
-        s.push('.');
-    }
-    s.push_str(" Use these receipts to resume; re-read when the file may have changed or you need to verify it.");
-    s
-}
-
-/// The one list of write-capable hands, shared by the write-or-release count and
-/// the progress note (review on #3790: `code/write` finished the only card
-/// completion that night and was not on the list).
+/// The one list of write-capable hands the write-or-release count reads (review on #3790:
+/// `code/write` finished the only card completion that night and was not on the list).
 /// A claim or a release starts or ends a hold; the write-or-release count is a
 /// per-hold number, so either verb restarts it. The pull rides `work/claim` (one
 /// claim path), so a governor release followed by a pull reads as a fresh hold.
@@ -188,37 +73,25 @@ fn is_write_verb(verb: &str) -> bool {
         || verb.starts_with("code/git/apply")
 }
 
-/// [`held_work_burst`] with an advisory progress checkpoint. Receipt counts do
+/// The work turn's stimulus, with an advisory progress checkpoint. Receipt counts do
 /// not establish that investigation is finished or that responsibility should
 /// transfer (card 3bd860ba: multi-day project work includes reading and review).
-pub(crate) fn held_work_burst_gated(
-    held: &[&airc_lib::WorkCard],
-    last_state: &[String],
-    acts_without_write: usize,
-    progress: &CardProgress,
-) -> String {
+/// The cards she holds and what she can do on each are her held-work items, and what she
+/// already did (the files she read, the commands she ran, her writes) is her actions and open
+/// views: each a keyed item her one allocation sizes, so the stimulus repeats none of them (it
+/// carried a `[progress]` receipt list with keep-counts and a 72-char cut, card 516738b4).
+pub(crate) fn held_work_burst_gated(last_state: &[String], acts_without_write: usize) -> String {
     use std::fmt::Write as _;
     let mut s = String::from(
         "[work turn] The room is quiet and your speak-turn is settled. This \
-         turn is for your claimed work:\n",
+         turn is for your claimed work (see [my work]):\n",
     );
-    for card in held {
-        let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
-        let _ = writeln!(s, "- card {id8} \"{}\"", card.title);
-    }
     // HER LAST STATE LEADS (2026-09-04, measured on Freya: at 11:01 she had the
     // bug located — "lines 107-152, I can see it clearly" — and at 11:16 the
     // next work turn opened with "let me recall what I know"; twelve checkouts,
     // zero diffs after fourteen hours). The turn resumes from her own newest
     // thoughts on this work, oldest first, instead of re-orienting from the
     // room. Her words, unedited: state, not steering.
-    // WHAT SHE ALREADY DID LEADS HER THOUGHTS (card 516738b4): the files read and
-    // commands run are facts the transcript holds; without them every turn re-read
-    // the same region before thinking.
-    let note = progress_line(progress);
-    if !note.is_empty() {
-        let _ = writeln!(s, "{note}");
-    }
     if !last_state.is_empty() {
         s.push_str(
             "Your own last thoughts on this work, oldest first — resume from them; \
@@ -342,7 +215,7 @@ mod tests {
     #[test]
     fn progress_checkpoint_preserves_investigation_and_explicit_handoff() {
         for acts in [WRITE_OR_RELEASE_AFTER_ACTS, 2 * WRITE_OR_RELEASE_AFTER_ACTS] {
-            let burst = held_work_burst_gated(&[], &[], acts, &CardProgress::default());
+            let burst = held_work_burst_gated(&[], acts);
             assert!(burst.contains("[progress checkpoint]"));
             assert!(burst.contains("specific blocker and who can help"));
             assert!(burst.contains("uncommitted changes explicitly"));
@@ -352,6 +225,21 @@ mod tests {
             assert!(!burst.contains("acts since"));
             assert!(!burst.contains("counter"));
         }
+    }
+
+    // what this catches: a stimulus that drops her newest entry, the step that ends the recursion
+    // (goal 7: cut it and her next input can equal her last, so she repeats the act). Her newest
+    // thought arrives whole and last of her thoughts, and the checkpoint line after it, however
+    // long the thoughts before it are.
+    #[test]
+    fn the_work_turn_never_drops_her_newest_entry() {
+        let older = format!("💭 orienting {}", "on the parser ".repeat(400));
+        let newest = format!("💭 so the fix is at checks.py:118, include the index {}", "in the label ".repeat(200));
+        let burst = held_work_burst_gated(&[older.clone(), newest.clone()], WRITE_OR_RELEASE_AFTER_ACTS);
+        assert!(burst.contains(&format!("  · {newest}\n")), "her newest thought is whole");
+        let (at_older, at_newest) = (burst.find(&older), burst.find(&newest));
+        assert!(at_older < at_newest, "oldest first, the newest last of her thoughts");
+        assert!(burst.contains("[progress checkpoint]"), "the checkpoint is kept with them");
     }
 }
 
@@ -364,8 +252,8 @@ pub(crate) fn acts_since_last_write(rows: &[crate::persona::durable_history::Roo
 }
 
 #[cfg(test)]
-pub(crate) fn held_work_burst(held: &[&airc_lib::WorkCard], last_state: &[String]) -> String {
-    held_work_burst_gated(held, last_state, 0, &CardProgress::default())
+pub(crate) fn held_work_burst(last_state: &[String]) -> String {
+    held_work_burst_gated(last_state, 0)
 }
 
 /// Her own newest thoughts in the room (💭 lines), oldest first, each clipped —

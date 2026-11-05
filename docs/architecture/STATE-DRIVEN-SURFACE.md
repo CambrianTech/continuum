@@ -146,17 +146,26 @@ e03c2aa0), and Shown ids plus their ratchet (card 484b000b). Codex owns engine s
 
 ## Receipts owed
 
-- Compiled and tested 2026-11-04 on the M5 (crate-scoped, low priority, serving up): lib tests
+- Compiled and tested 2026-11-04/05 on the M5 (crate-scoped, low priority, serving up): lib tests
   for continuum-rooms 27, -cognition 912, -mind 1111, -context 43, -prompt 63, all passing; `cargo
   check --tests` clean for -core, -academy, -dreaming, -gateway, -grid, -serving. The ts-rs run
   regenerated `SubmitOutcome` and `WorkSubmitResult` identical to the hand edit.
-- `self_sized` in two files this slice touches, owed by Fable as the next slice. Both need a size
-  from her grant, and no grant reaches a tool result or the work-turn block yet:
-  `work/list`'s `WORK_LIST_DEFAULT_LIMIT` (work_list.rs) and `work_burst`'s progress keeps
-  (`PROGRESS_READ_KEEP`, `PROGRESS_RAN_KEEP`) plus its two head cuts (the receipt object, the
-  older thoughts). The fix is the same seam for both: the result or block claims its size in the
-  turn's one allocation, or becomes keyed items of her view (as held work did), and the constants
-  go. Until then the source-hygiene ratchet job stays red on these two files.
+- Landed with this slice: `work/list` lists every match (no default count), and a structured
+  result goes on one record per line, so the one allocation shows a big board at a level (its
+  first and last cards, the counts, the handle). The tool-result store writes through its disk
+  class (`tool-output`), its handle is the content hash's address, and a read's default tail is
+  the newest lines its budget holds. The work turn's stimulus no longer lists her cards (her
+  held-work items do) or her progress receipts (her actions and open views carry every act across
+  turns and restarts, `a_restart_keeps_every_act_as_she_read_it`).
+- Still owed (Fable): her last thoughts. Her thoughts share working memory's capacity-bounded
+  `entries` ring with receipts (`ledger.rs::push_entry`), so the thoughts source does not carry them
+  across a turn of several acts, and the work turn still pages them off the room store
+  (`act_question.rs` `WORK_GATE_PAGE_ROWS`, and `own_recent_thoughts_about` with its 4/400 and
+  its head cut of older thoughts: the two `self_sized` sites left). The fix: her thoughts become a
+  log like her actions (one record each, checkpointed, levels from `levels::summarize`), so the
+  thoughts source carries them and her view sizes them; then the page, its constant, the scoped
+  resume block and its cut are deleted, and the write-less count reads her action log from the
+  hold boundary (stamped as an action seq, not a room-row time).
 - Command-boundary tests through the real handlers on an airc fixture. The decisions are tested at
   the boundary function (`decide`), not yet through `WorkSubmit::run`.
 - The live read after deploy (Fable, within the deploy's 15-minute window), on the M5, per
