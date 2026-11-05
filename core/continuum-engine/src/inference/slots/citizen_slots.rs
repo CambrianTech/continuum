@@ -177,7 +177,7 @@ pub struct KvSlotPool {
     pub(super) saved: Mutex<std::collections::HashSet<PageKey>>,
     /// Physical-slot admission also excludes concurrent requests for the same key.
     pub(super) operations: Vec<Arc<tokio::sync::Semaphore>>,
-    /// Signalled whenever a slot's operation permit is released: what a turn that found every
+    /// Signalled whenever a citizen slot's operation permit is released: what a turn that found every
     /// slot pinned waits on before it leases again (card ff9ecfd8), so it never runs unpinned
     /// over a resident's KV. A wake signal, not a queue: the order stays the server's own.
     pub(super) released: Arc<tokio::sync::Notify>,
@@ -194,17 +194,20 @@ pub struct KvSlotPool {
     pub(super) ledger_generation: AtomicU64,
 }
 
-/// A slot's operation permit. Dropping it wakes turns waiting for a slot
+/// A slot's operation permit. Dropping a citizen permit wakes turns waiting for a slot
 /// ([`KvSlotPool::released`]); the holder's pin was already dropped (field order in
 /// `TurnAdmission`), so a woken turn finds that lease evictable.
 pub struct SlotPermit {
     pub(super) _permit: tokio::sync::OwnedSemaphorePermit,
-    pub(super) released: Arc<tokio::sync::Notify>,
+    /// Scratch has its own semaphore waiters, but cannot satisfy citizen admission.
+    pub(super) released: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl Drop for SlotPermit {
     fn drop(&mut self) {
-        self.released.notify_waiters();
+        if let Some(released) = &self.released {
+            released.notify_waiters();
+        }
     }
 }
 
