@@ -177,6 +177,11 @@ pub struct KvSlotPool {
     /// Where [`Self::saved`] persists, set once when the engine is ready under a contract
     /// that has a page dir and a fingerprint ([`SavedLedger`]). Unset = in-memory only.
     pub(super) ledger: std::sync::OnceLock<SavedLedger>,
+    /// The engine process this pool belongs to (pid, OS start time), stamped when the owned
+    /// engine is verified ready (`stamp_engine_incarnation`) or when discovery adopts a running
+    /// one it verified (`slots/discover.rs`), with or without a page ledger: the identity every
+    /// endpoint admission on this pool is bound to (`EndpointAdmission::incarnation`).
+    pub(super) incarnation: std::sync::OnceLock<(u32, u64)>,
     /// Numbers each change of [`Self::saved`] for the ledger, so a write taken outside the
     /// lock never replaces a newer one ([`Self::ledger_snapshot`]).
     pub(super) ledger_generation: AtomicU64,
