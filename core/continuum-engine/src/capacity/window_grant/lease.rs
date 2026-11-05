@@ -30,6 +30,9 @@
 //! The lease is identified by its grant REVISION ([`super::GrantRevision`]), its engine incarnation
 //! and its owner, never its size: a grant shrunk and regrown to the same size is a new revision.
 
+mod fair;
+pub use fair::{publish_fair_grants, FairGrantState};
+
 use std::collections::BTreeMap;
 
 use super::{Demand, GrantLease, WindowPolicy};
@@ -42,6 +45,8 @@ pub enum ReserveRefused {
     Changed { leased: GrantLease, current: Option<GrantLease> },
     /// The engine's exact count plus the output reserve does not fit strictly inside the lease.
     Over { count: u32, grant: u32 },
+    /// A verified completion began custody transfer; the old holder cannot reacquire.
+    Retiring { leased: GrantLease },
 }
 
 /// One reservation's custody.
@@ -68,17 +73,65 @@ pub struct TerminalReceipt {
     pub finish: String,
 }
 
-/// The reservations, per mind.
+/// Owned authority to reclaim exactly one publication. Dropping it does not release the
+/// charged claim. Physical reclamation must carry it through endpoint and slot custody.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use = "a handoff ticket must remain owned until verified physical reclamation or fencing"]
+pub struct GrantHandoff {
+    persona: uuid::Uuid,
+    lease: GrantLease,
+    receipt: u64,
+}
+
+impl GrantHandoff {
+    #[cfg(test)]
+    pub(crate) fn for_test(persona: uuid::Uuid) -> Self {
+        Self { persona, lease: GrantLease { tokens: 60, revision: super::GrantRevision::test(1),
+            engine: None, owner: super::GrantOwner::this_process() }, receipt: 1 }
+    }
+    pub fn persona(&self) -> uuid::Uuid { self.persona }
+    pub fn lease(&self) -> GrantLease { self.lease }
+}
+
+/// Why a proposed transfer cannot begin. None authorizes freeing cached KV.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandoffRefused {
+    GrantChanged,
+    ReceiptChanged,
+    CustodyOutstanding,
+    AlreadyPending,
+}
+
+/// Engine-terminal progress survives a finish/restart between publisher ticks.
+/// A revision is issued only for a verified terminal receipt of an owned request.
+#[derive(Default)]
+struct ReservationState {
+    next_id: u64,
+    entries: BTreeMap<uuid::Uuid, Vec<Entry>>,
+    next_receipt: u64,
+    receipts: BTreeMap<uuid::Uuid, (Option<EngineIncarnation>, u64)>,
+    retiring: BTreeMap<uuid::Uuid, GrantLease>,
+    reclaimed: BTreeMap<uuid::Uuid, GrantLease>,
+    refused: BTreeMap<uuid::Uuid, GrantLease>,
+    /// A queued waiter is owed the holder's next completed turn. This blocks reserve at the
+    /// receipt boundary, rather than hoping the publisher catches an idle interval.
+    yield_after: BTreeMap<uuid::Uuid, (GrantLease, u64)>,
+}
+
+/// The reservations and terminal progress share one lock: a publisher cannot observe a
+/// completion without observing the reservation it released (or vice versa).
 pub(super) struct Reservations {
-    held: std::sync::Mutex<(u64, BTreeMap<uuid::Uuid, Vec<Entry>>)>,
+    held: std::sync::Mutex<ReservationState>,
 }
 
 impl Reservations {
     pub(super) const fn new() -> Self {
-        Self { held: std::sync::Mutex::new((0, BTreeMap::new())) }
+        Self { held: std::sync::Mutex::new(ReservationState {
+            next_id: 0, entries: BTreeMap::new(), next_receipt: 0, receipts: BTreeMap::new(), retiring: BTreeMap::new(), reclaimed: BTreeMap::new(), refused: BTreeMap::new(), yield_after: BTreeMap::new(),
+        }) }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, (u64, BTreeMap<uuid::Uuid, Vec<Entry>>)> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, ReservationState> {
         self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or_else: a poisoned map still holds every reservation; the data is plain values
     }
 
@@ -96,12 +149,21 @@ impl Reservations {
         if !current.is_some_and(|lease| lease.same_identity(&leased)) {
             return Err(ReserveRefused::Changed { leased, current });
         }
+        if held.retiring.get(&persona).is_some_and(|retired| retired.engine == leased.engine) {
+            return Err(ReserveRefused::Retiring { leased });
+        }
+        if held.yield_after.get(&persona).is_some_and(|(armed, baseline)| {
+            armed.same_identity(&leased) && held.receipts.get(&persona)
+                .is_some_and(|(engine, revision)| *engine == leased.engine && revision > baseline)
+        }) {
+            return Err(ReserveRefused::Retiring { leased });
+        }
         if needed >= leased.tokens {
             return Err(ReserveRefused::Over { count: needed, grant: leased.tokens });
         }
-        held.0 += 1;
-        let id = held.0;
-        held.1.entry(persona).or_default().push(Entry { id, tokens: leased.tokens, engine: leased.engine, custody: Custody::Live });
+        held.next_id += 1;
+        let id = held.next_id;
+        held.entries.entry(persona).or_default().push(Entry { id, tokens: leased.tokens, engine: leased.engine, custody: Custody::Live });
         Ok(GrantReservation { owner: self, persona, id })
     }
 
@@ -110,35 +172,82 @@ impl Reservations {
     /// reservation on another engine incarnation than `engine` is FENCED first: that engine is
     /// gone, so nothing of it can still be decoding into this pool.
     fn honoring<R>(&self, engine: Option<EngineIncarnation>, regrant: impl FnOnce(&BTreeMap<uuid::Uuid, u32>) -> R) -> R {
-        let mut held = self.lock();
-        for entries in held.1.values_mut() {
-            entries.retain(|entry| entry.engine == engine);
-        }
-        held.1.retain(|_, entries| !entries.is_empty());
-        let reserved = held
-            .1
-            .iter()
-            .map(|(mind, entries)| (*mind, entries.iter().map(|e| e.tokens).max().unwrap_or(0))) // unwrap_or: an empty list was just removed, so a mind here holds at least one entry
-            .collect();
-        regrant(&reserved)
+        self.honoring_with_receipts(engine, |reserved, _| regrant(reserved))
     }
 
-    /// Reservation `id` ends (its own terminal receipt, or an attempt never sent): its own entry
-    /// only. Another request's reservation, older or newer, ends on its own evidence.
-    fn release(&self, persona: uuid::Uuid, id: u64) {
+    fn honoring_with_receipts<R>(
+        &self,
+        engine: Option<EngineIncarnation>,
+        regrant: impl FnOnce(&BTreeMap<uuid::Uuid, u32>, &BTreeMap<uuid::Uuid, u64>) -> R,
+    ) -> R {
         let mut held = self.lock();
-        if let Some(entries) = held.1.get_mut(&persona) {
-            entries.retain(|e| e.id != id);
-            if entries.is_empty() {
-                held.1.remove(&persona);
-            }
+        for entries in held.entries.values_mut() {
+            entries.retain(|entry| entry.engine == engine);
+        }
+        held.entries.retain(|_, entries| !entries.is_empty());
+        held.receipts.retain(|_, (incarnation, _)| *incarnation == engine);
+        held.retiring.retain(|_, lease| lease.engine == engine);
+        held.reclaimed.retain(|_, lease| lease.engine == engine);
+        held.refused.retain(|_, lease| lease.engine == engine);
+        held.yield_after.retain(|_, (lease, _)| lease.engine == engine);
+        let mut reserved: BTreeMap<uuid::Uuid, u32> = held.entries.iter().map(|(mind, entries)| {
+            (*mind, entries.iter().map(|e| e.tokens).max().unwrap_or(0)) // unwrap_or: empty entries were removed above
+        }).collect();
+        for (mind, lease) in &held.retiring {
+            reserved.entry(*mind).and_modify(|tokens| *tokens = (*tokens).max(lease.tokens)).or_insert(lease.tokens);
+        }
+        let receipts = held.receipts.iter().map(|(mind, (_, revision))| (*mind, *revision)).collect();
+        regrant(&reserved, &receipts)
+    }
+
+    /// Start transfer only from the exact observed publication and terminal revision, with no
+    /// request still owning custody. The claim stays charged until physical reclamation or fence.
+    fn begin_handoff(
+        &self,
+        persona: uuid::Uuid,
+        leased: GrantLease,
+        receipt: u64,
+        current: impl FnOnce() -> Option<GrantLease>,
+    ) -> Result<GrantHandoff, HandoffRefused> {
+        let mut held = self.lock();
+        if leased.engine.is_none() || !current().is_some_and(|now| now.same_identity(&leased)) {
+            return Err(HandoffRefused::GrantChanged);
+        }
+        if held.receipts.get(&persona) != Some(&(leased.engine, receipt)) {
+            return Err(HandoffRefused::ReceiptChanged);
+        }
+        if held.entries.get(&persona).is_some_and(|entries| !entries.is_empty()) {
+            return Err(HandoffRefused::CustodyOutstanding);
+        }
+        if held.retiring.contains_key(&persona) {
+            return Err(HandoffRefused::AlreadyPending);
+        }
+        held.retiring.insert(persona, leased);
+        Ok(GrantHandoff { persona, lease: leased, receipt })
+    }
+
+    /// Release only this request. An unsent attempt is not completed service. A receipt from
+    /// an already-fenced request cannot create progress in the replacement engine.
+    fn release(&self, persona: uuid::Uuid, id: u64, terminal: bool) {
+        let mut held = self.lock();
+        let released = held.entries.get_mut(&persona).and_then(|entries| {
+            let index = entries.iter().position(|e| e.id == id)?;
+            Some(entries.remove(index))
+        });
+        if held.entries.get(&persona).is_some_and(Vec::is_empty) {
+            held.entries.remove(&persona);
+        }
+        if let (true, Some(entry)) = (terminal, released) {
+            held.next_receipt += 1;
+            let revision = held.next_receipt;
+            held.receipts.insert(persona, (entry.engine, revision));
         }
     }
 
     /// The caller let go of reservation `id` with no terminal receipt: it stays held, unresolved.
     fn abandon(&self, persona: uuid::Uuid, id: u64) {
         let mut held = self.lock();
-        if let Some(entry) = held.1.get_mut(&persona).and_then(|entries| entries.iter_mut().find(|e| e.id == id)) {
+        if let Some(entry) = held.entries.get_mut(&persona).and_then(|entries| entries.iter_mut().find(|e| e.id == id)) {
             entry.custody = Custody::Unresolved;
         }
     }
@@ -156,13 +265,13 @@ pub struct GrantReservation {
 impl GrantReservation {
     /// The engine's terminal receipt for this request: its own reservation ends.
     fn complete(self) {
-        self.owner.release(self.persona, self.id);
+        self.owner.release(self.persona, self.id, true);
         std::mem::forget(self);
     }
 
     /// The attempt was never sent (refused before any token): its own reservation ends.
     fn release_unsent(self) {
-        self.owner.release(self.persona, self.id);
+        self.owner.release(self.persona, self.id, false);
         std::mem::forget(self);
     }
 }
@@ -189,6 +298,61 @@ static RESERVATIONS: Reservations = Reservations::new();
 /// a reserve either sees the new grant or the regrant sees the reservation.
 pub fn honoring_reservations<R>(engine: Option<EngineIncarnation>, regrant: impl FnOnce(&BTreeMap<uuid::Uuid, u32>) -> R) -> R {
     RESERVATIONS.honoring(engine, regrant)
+}
+
+/// Read fixed claims and per-mind terminal receipt revisions in one publication transaction.
+/// Revisions remain visible across publisher ticks, including when another request has already
+/// started. They are scoped to the engine incarnation and are NOT proof that cached KV was
+/// saved or freed: physical custody must still be established before reallocating those cells.
+pub fn honoring_reservations_and_receipts<R>(
+    engine: Option<EngineIncarnation>,
+    regrant: impl FnOnce(&BTreeMap<uuid::Uuid, u32>, &BTreeMap<uuid::Uuid, u64>) -> R,
+) -> R {
+    RESERVATIONS.honoring_with_receipts(engine, regrant)
+}
+
+/// Fence the old holder's next dispatch while preserving its charged capacity. This is the
+/// first phase of handoff, NOT a grant to a waiter. There is deliberately no unverified
+/// "release retirement" API: the physical save-and-erase receipt integration is still required.
+pub fn begin_grant_handoff(persona: uuid::Uuid, leased: GrantLease, receipt: u64) -> Result<GrantHandoff, HandoffRefused> {
+    RESERVATIONS.begin_handoff(persona, leased, receipt, || super::current_lease(persona))
+}
+
+/// A physical proof is retained even if the operation's requester disappeared. The charged
+/// retirement is NOT released here: the publisher must consume it with the next grant update.
+pub(crate) fn record_reclaimed_grant(proof: crate::inference::slots::grant_handoff::ReclaimedGrant) -> Result<(), String> {
+    RESERVATIONS.record_reclaimed(proof)
+}
+
+impl Reservations {
+fn record_reclaimed(&self, proof: crate::inference::slots::grant_handoff::ReclaimedGrant) -> Result<(), String> {
+    let ticket = proof.into_ticket();
+    let mut state = self.lock();
+    if !state.retiring.get(&ticket.persona).is_some_and(|lease| lease.same_identity(&ticket.lease)) {
+        return Err("reclaimed grant was already fenced or replaced".into());
+    }
+    state.reclaimed.insert(ticket.persona, ticket.lease);
+    Ok(())
+}
+}
+
+pub(crate) fn is_grant_retiring(persona: uuid::Uuid) -> bool {
+    let state = RESERVATIONS.lock();
+    state.retiring.contains_key(&persona) || state.yield_after.get(&persona).is_some_and(|(lease, baseline)| {
+        state.receipts.get(&persona).is_some_and(|(engine, revision)| *engine == lease.engine && revision > baseline)
+    })
+}
+
+/// A refused transfer returns authority, never free capacity. The publisher must restore
+/// the charged holder atomically before allowing another dispatch.
+pub(crate) fn record_refused_grant(proof: crate::inference::slots::grant_handoff::RefusedGrant) -> Result<(), String> {
+    let ticket = proof.into_ticket();
+    let mut state = RESERVATIONS.lock();
+    if !state.retiring.get(&ticket.persona).is_some_and(|lease| lease.same_identity(&ticket.lease)) {
+        return Err("refused grant was already fenced or replaced".into());
+    }
+    state.refused.insert(ticket.persona, ticket.lease);
+    Ok(())
 }
 
 /// One dispatch ATTEMPT's reservation, re-made before every POST: the previous attempt's (never
@@ -320,6 +484,108 @@ mod tests {
         assert_eq!(after.get(&a), None, "released at its terminal receipt: the deferred change applies");
         assert_eq!(after.get(&b), Some(&100));
     }
+
+    #[test]
+    fn pending_handoff_blocks_reacquisition_but_keeps_physical_capacity_charged() {
+        let mind = uuid::Uuid::new_v4();
+        let owner = owner();
+        let lease = publish(None, mind, 60, engine(7)).lease_for(mind).expect("granted");
+        let active = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("reserved");
+        settle(active, Some(&TerminalReceipt { finish: "stop".into() }));
+        let revision = owner.honoring_with_receipts(engine(7), |_, receipts| receipts[&mind]);
+        let ticket = owner.begin_handoff(mind, lease, revision, || Some(lease)).expect("handoff starts");
+        assert_eq!(ticket.persona(), mind);
+        assert_eq!(ticket.lease(), lease);
+        assert_eq!(owner.begin_handoff(mind, lease, revision, || Some(lease)), Err(HandoffRefused::AlreadyPending));
+        drop(ticket); // cancellation must not return physically occupied cells
+
+        let again = owner.reserve_against(mind, lease, 50, || Some(lease));
+        assert_eq!(again.err(), Some(ReserveRefused::Retiring { leased: lease }));
+        owner.honoring_with_receipts(engine(7), |fixed, _| {
+            assert_eq!(fixed.get(&mind), Some(&60), "terminal receipt did not erase cached KV");
+        });
+        owner.honoring_with_receipts(engine(8), |fixed, receipts| {
+            assert!(fixed.is_empty(), "replacement engine fences physical custody");
+            assert!(receipts.is_empty());
+        });
+        let replacement = publish(None, mind, 60, engine(8)).lease_for(mind).expect("new engine grant");
+        owner.reserve_against(mind, replacement, 50, || Some(replacement)).expect("not blocked by old retirement").release_unsent();
+    }
+
+    #[test]
+    fn handoff_revalidates_receipt_publication_and_unresolved_custody() {
+        let mind = uuid::Uuid::new_v4();
+        let owner = owner();
+        let grant = publish(None, mind, 60, engine(7));
+        let lease = grant.lease_for(mind).expect("granted");
+        let finished = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("reserved");
+        settle(finished, Some(&TerminalReceipt { finish: "stop".into() }));
+        let revision = owner.honoring_with_receipts(engine(7), |_, receipts| receipts[&mind]);
+        assert_eq!(owner.begin_handoff(mind, lease, revision + 1, || Some(lease)), Err(HandoffRefused::ReceiptChanged));
+        let changed = publish(Some(&grant), mind, 70, engine(7)).lease_for(mind).expect("changed");
+        assert_eq!(owner.begin_handoff(mind, lease, revision, || Some(changed)), Err(HandoffRefused::GrantChanged));
+        let overlapping = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("second request");
+        assert_eq!(owner.begin_handoff(mind, lease, revision, || Some(lease)), Err(HandoffRefused::CustodyOutstanding));
+        drop(overlapping);
+        assert_eq!(owner.begin_handoff(mind, lease, revision, || Some(lease)), Err(HandoffRefused::CustodyOutstanding));
+        assert_eq!(reserved_now(owner, engine(7)).get(&mind), Some(&60));
+    }
+
+    #[test]
+    fn terminal_progress_survives_two_requests_between_publisher_ticks() {
+        let mind = uuid::Uuid::new_v4();
+        let owner = owner();
+        let lease = publish(None, mind, 60, engine(7)).lease_for(mind).expect("granted");
+        let first = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("reserved");
+        settle(first, Some(&TerminalReceipt { finish: "stop".into() }));
+        let first_revision = owner.honoring_with_receipts(engine(7), |fixed, receipts| {
+            assert!(fixed.is_empty());
+            *receipts.get(&mind).expect("terminal progress")
+        });
+        let second = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("reserved again");
+        settle(second, Some(&TerminalReceipt { finish: "stop".into() }));
+        let third = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("another active request");
+        let revision = owner.honoring_with_receipts(engine(7), |fixed, receipts| {
+            assert_eq!(fixed.get(&mind), Some(&60), "new request still owns capacity");
+            let revision = *receipts.get(&mind).expect("completion was not lost to restart");
+            assert!(revision > first_revision);
+            revision
+        });
+        drop(third);
+        owner.honoring_with_receipts(engine(7), |fixed, receipts| {
+            assert_eq!(fixed.get(&mind), Some(&60), "unresolved custody remains fixed");
+            assert_eq!(receipts.get(&mind), Some(&revision), "cancellation is not a completion");
+        });
+    }
+
+    #[test]
+    fn unsent_attempts_and_fenced_receipts_do_not_claim_completed_service() {
+        let mind = uuid::Uuid::new_v4();
+        let owner = owner();
+        let lease = publish(None, mind, 60, engine(7)).lease_for(mind).expect("granted");
+        let unsent = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("reserved");
+        unsent.release_unsent();
+        owner.honoring_with_receipts(engine(7), |fixed, receipts| {
+            assert!(fixed.is_empty());
+            assert!(receipts.is_empty(), "a refused attempt did not serve the mind");
+        });
+        let finished = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("reserved");
+        settle(finished, Some(&TerminalReceipt { finish: "stop".into() }));
+        let delayed = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("reserved");
+        owner.honoring_with_receipts(engine(8), |fixed, receipts| {
+            assert!(fixed.is_empty());
+            assert!(receipts.is_empty(), "old-engine progress cannot authorize new-engine handoff");
+        });
+        settle(delayed, Some(&TerminalReceipt { finish: "stop".into() }));
+        owner.honoring_with_receipts(engine(8), |fixed, receipts| {
+            assert!(fixed.is_empty());
+            assert!(receipts.is_empty(), "a late receipt cannot resurrect the fenced entry");
+        });
+    }
+
+    // The former terminal-only fairness gate is superseded by
+    // fair::tests::http_reclamation_proof_publishes_the_waiter_without_freeing_early:
+    // a terminal receipt alone cannot authorize reuse of resident KV.
 
     // what this catches: a cancellation, or a stream that ended without its finish, taken for a
     // terminal receipt. Either leaves the reservation held, unresolved; a fence (the engine

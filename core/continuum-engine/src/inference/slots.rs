@@ -47,6 +47,8 @@ mod page_key;
 pub use page_key::*;
 mod mind_gate;
 pub(crate) use mind_gate::MindTurn;
+pub(crate) mod grant_handoff;
+pub use grant_handoff::reclaim_grant;
 mod kv_slot_pool;
 pub use kv_slot_pool::*;
 mod saved_ledger;

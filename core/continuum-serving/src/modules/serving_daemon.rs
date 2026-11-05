@@ -357,6 +357,7 @@ pub struct ServingDaemonModule {
     /// Each local mind's grant on the engine's pool (`grants.rs`): what her binding follows.
     /// `None` until a ready engine has been granted from.
     grants_tx: watch::Sender<Option<crate::capacity::window_grant::PoolGrants>>,
+    fair_grants: Arc<parking_lot::Mutex<crate::capacity::window_grant::FairGrantState>>,
     /// Whether the engine process `pid` runs on the shared pool: read off its argv once per
     /// process, never every tick.
     shared_pool_of: Arc<parking_lot::Mutex<Option<(u32, bool)>>>,
@@ -555,6 +556,7 @@ impl ServingDaemonModule {
             shared_pool_move_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pool_growth_models: Arc::new(parking_lot::Mutex::new(std::collections::BTreeSet::new())),
             grants_tx: watch::channel(None).0,
+            fair_grants: Arc::new(parking_lot::Mutex::new(crate::capacity::window_grant::FairGrantState::default())),
             shared_pool_of: Arc::new(parking_lot::Mutex::new(None)),
             served_pool: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
