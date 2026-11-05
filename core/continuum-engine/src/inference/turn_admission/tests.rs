@@ -20,6 +20,7 @@
     mod stamped_admission;
     mod page_liveness;
     mod queued_dream;
+    mod contention;
     mod unresolved_page;
 
     // what this catches (M5, 2026-09-25 and 2026-09-26): a slow switch on a moving engine
