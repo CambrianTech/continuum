@@ -291,7 +291,7 @@ fn an_old_snapshot_without_acts_restores_without_panic() {
     // #147/#165: a restore IS an interruption, so she wakes oriented, never blank).
     let texts = fresh.recent();
     assert_eq!(
-        fresh.thoughts().into_iter().map(|record| record.text).collect::<Vec<_>>(),
+        fresh.thoughts().into_iter().filter_map(|record| record.text).collect::<Vec<_>>(),
         ["thinking about the tokenizer"],
         "the legacy ring thought restored into her thought log"
     );

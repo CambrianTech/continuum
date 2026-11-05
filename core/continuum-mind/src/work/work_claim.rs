@@ -219,8 +219,6 @@ impl ActionCommand for WorkClaim {
         let workspace =
             super::claim_workspace::for_claim(&airc, card_id, previous_claim == Some(claim_id))
                 .await;
-        // A claim is a hold boundary for the governor, whichever path took it.
-        crate::persona::work_burst::note_hold_boundary(airc.peer_id().as_uuid());
         Ok(WorkClaimResult {
             card_id: p.card_id,
             claim_id: claim_id.as_uuid().to_string(),

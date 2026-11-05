@@ -151,29 +151,21 @@
         );
     }
 
-    // what this catches (card 7e3e8070, reshaped by 3bd860ba): six acts on a held card
-    // with no file change surface the advisory checkpoint (a note, a blocker, who can
-    // help; never a release demand); an edit receipt resets the count and it stays away.
+    // what this catches (card 7e3e8070, reshaped by 3bd860ba): a write-less stretch on a held card
+    // surfaces the advisory checkpoint (a note, a blocker, who can help; never a release demand),
+    // and a hold whose start is unknown shows none rather than a guessed count. The count itself is
+    // her action log's (`working_memory::tests::action_log`).
     #[test]
     pub(super) fn six_acts_without_a_write_gate_the_work_turn_and_an_edit_resets_it() {
-        use crate::persona::work_burst::{acts_since_last_write, held_work_burst_gated, WRITE_OR_RELEASE_AFTER_ACTS};
-        // The commands she called since her hold boundary, as her action log names them.
-        let looping = ["code/read", "code/search", "code/run", "code/git/status", "code/read", "code/shell"];
-        assert_eq!(acts_since_last_write(looping), 6);
-        let text = held_work_burst_gated(acts_since_last_write(looping));
+        use crate::persona::work_burst::{held_work_burst_gated, WRITE_OR_RELEASE_AFTER_ACTS};
+        let text = held_work_burst_gated(Some(WRITE_OR_RELEASE_AFTER_ACTS));
         assert!(text.contains("[progress checkpoint]"), "{text}");
         assert!(text.contains("PASS: blocked"), "{text}");
         // regression (Kimi, d33e928a, 2026-09-26): a citizen mid-diagnosis read past the
         // one act that records progress, a note; the checkpoint names it.
         assert!(text.contains("work/note"), "{text}");
-        let edited = looping.iter().copied().chain(["code/write", "code/run"]);
-        assert_eq!(acts_since_last_write(edited.clone()), 1, "an edit resets the count");
-        // regression for the 2026-09-11 pull→release loop: a claim (the pull) after a
-        // release starts a fresh count, so the new hold opens without the checkpoint.
-        let reclaimed = looping.iter().copied().chain(["work/release", "work/claim", "code/read"]);
-        assert_eq!(acts_since_last_write(reclaimed), 1, "a claim is a hold boundary: only the act after it counts");
-        let text = held_work_burst_gated(acts_since_last_write(edited));
-        assert!(!text.contains("[progress checkpoint]"), "no checkpoint after an edit: {text}");
+        assert!(!held_work_burst_gated(Some(1)).contains("[progress checkpoint]"), "no checkpoint after an edit");
+        assert!(!held_work_burst_gated(None).contains("[progress checkpoint]"), "an unknown hold start shows none");
         assert!(WRITE_OR_RELEASE_AFTER_ACTS >= 4, "the gate is not a hair trigger");
     }
 
@@ -182,7 +174,7 @@
     // beside her held-work items (each card is its own item there, with what she can do on it).
     #[test]
     pub(super) fn the_work_turn_keeps_the_choice_hers_and_points_at_her_cards() {
-        let burst = crate::persona::work_burst::held_work_burst_gated(0);
+        let burst = crate::persona::work_burst::held_work_burst_gated(None);
         assert!(burst.contains("[my work]"), "her cards are her held-work items: {burst}");
         assert!(!burst.contains("- card "), "no card is listed again in the stimulus: {burst}");
         assert!(burst.contains("PASS"), "the pass choice stays hers: {burst}");

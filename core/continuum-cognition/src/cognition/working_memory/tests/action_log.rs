@@ -112,3 +112,38 @@ fn a_whole_single_line_argument_stays_in_the_memory_owners_account_after_a_shed(
     assert_eq!(restored.resident_results().resident_bytes, after.resident_bytes, "the charge survives a restart");
     assert!(restored.actions.lock().records().any(|r| r.handle.as_deref() == Some("write-handle")), "its handle is reachable");
 }
+
+// what this catches (Cormac on #5782): a write-less count over every room she acts in and over a
+// restored log from before this hold, so a reboot or another room's reading raised a spurious
+// checkpoint; and a count that read verbs out of a display label. It counts this room's acts since
+// the hold's start, reset by an act whose commands declare they change the world.
+#[test]
+fn the_write_less_stretch_counts_this_rooms_acts_since_the_hold_and_resets_on_a_declared_change() {
+    use continuum_base::tool_effect::ToolEffect;
+    let (room, other) = (Uuid::from_u128(1), Uuid::from_u128(2));
+    let act = |seq: u64, room: Uuid, at: u64, effect: ToolEffect| super::super::action_log::ActionRecord {
+        seq,
+        room: Some(room),
+        scope: None,
+        operation: "code/read, code/edit".into(),
+        head: None,
+        result: None,
+        handle: None,
+        summary: None,
+        stored_chars: None,
+        received_ms: Some(at),
+        act: Some(continuum_context::cause::Act { fingerprint: continuum_context::cause::Fingerprint::of([("x", seq.to_be_bytes().as_slice())]), effect }),
+    };
+    let log = super::super::action_log::ActionLog::from_records(vec![
+        act(1, room, 10, ToolEffect::Observes), // before the hold: a restored act, never counted
+        act(2, room, 100, ToolEffect::Observes),
+        act(3, other, 110, ToolEffect::Observes), // another room's act
+        act(4, room, 120, ToolEffect::Undeclared),
+        act(5, room, 130, ToolEffect::Observes),
+    ]);
+    assert_eq!(log.acts_since_change(room, 100), 3, "this room's acts since the hold, whatever their label");
+    let mut changed = log.records().cloned().collect::<Vec<_>>();
+    changed.push(act(6, room, 140, ToolEffect::Changes));
+    changed.push(act(7, room, 150, ToolEffect::Observes));
+    assert_eq!(super::super::action_log::ActionLog::from_records(changed).acts_since_change(room, 100), 1, "a declared change resets it");
+}

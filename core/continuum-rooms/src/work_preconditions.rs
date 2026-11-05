@@ -184,7 +184,16 @@ pub enum StateRoute {
     ThroughClaim,
     /// Her own live review returns to in_progress for a revision, under the same claim.
     ResumeReview,
+    /// Another's claim stands on the card (`from`). Anyone may take any card at any time (Joel,
+    /// 2026-10-06), and the takeover is on the record: her claim releases theirs, naming whom it was
+    /// taken from (airc's `ClaimReleased { taken_over_from }`), then the column moves.
+    Takeover { from: PeerId },
 }
+
+/// Every state `work/state` can be asked for, in canonical order: what the surface asks `state`
+/// about, so it offers the verb exactly when some request would execute.
+const STATE_TARGETS: &[CardState] =
+    &[CardState::Open, CardState::Claimed, CardState::InProgress, CardState::Blocked, CardState::Review, CardState::Merged, CardState::Closed];
 
 /// The claim a command acts under: hers as the board holds it, or one she names (a receipt).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -296,15 +305,22 @@ pub fn submission(card: &WorkCard) -> Result<(), Unmet> {
 }
 
 /// `work/state` to `requested`: a holder never opens her own card; a holder's column goes through
-/// the claim path, except her own live review returning to in_progress for a revision. `now_ms`
-/// is the time the transition's event will record.
+/// the claim path, except her own live review returning to in_progress for a revision; any other
+/// column on a card someone else holds is an attributed takeover. `now_ms` is the time the
+/// transition's event will record. THE one decision: execution routes by it and the surface offers
+/// the verb by it (`check`).
 pub fn state(card: &WorkCard, actor: PeerId, requested: CardState, now_ms: u64) -> Result<StateRoute, Unmet> {
     let holds = card.owner == Some(actor);
     match requested {
         CardState::Open if holds => Err(Unmet::OpenByHolder),
         CardState::InProgress if resumes_held_review(card, actor, now_ms) => Ok(StateRoute::ResumeReview),
         CardState::Claimed | CardState::InProgress => claim(card, actor, now_ms).map(|()| StateRoute::ThroughClaim),
-        CardState::Open | CardState::Blocked | CardState::Review | CardState::Merged | CardState::Closed => Ok(StateRoute::Direct),
+        CardState::Open | CardState::Blocked | CardState::Review | CardState::Merged | CardState::Closed => {
+            Ok(match holder_on_record(card, now_ms).filter(|holder| *holder != actor) {
+                Some(from) => StateRoute::Takeover { from },
+                None => StateRoute::Direct,
+            })
+        }
     }
 }
 
@@ -323,7 +339,13 @@ pub fn resumes_held_review(card: &WorkCard, actor: PeerId, now_ms: u64) -> bool 
 pub fn check(verb: WorkVerb, card: &WorkCard, actor: PeerId, now_ms: u64) -> Result<(), Unmet> {
     match verb {
         WorkVerb::Claim => claim(card, actor, now_ms),
-        WorkVerb::Heartbeat | WorkVerb::Release | WorkVerb::State => holder_claim(card, actor, &Request::any(now_ms)).map(|_| ()),
+        WorkVerb::Heartbeat | WorkVerb::Release => holder_claim(card, actor, &Request::any(now_ms)).map(|_| ()),
+        // Offered exactly when some requested state would execute: the same function decides.
+        WorkVerb::State => STATE_TARGETS
+            .iter()
+            .map(|requested| state(card, actor, *requested, now_ms).map(|_| ()))
+            .reduce(|first, next| first.or(next))
+            .unwrap_or(Err(Unmet::NotHeld)), // unwrap_or: STATE_TARGETS is never empty
         WorkVerb::Note => Ok(()), // any card on a board she stands in takes a ledger note
         WorkVerb::Review => review(card, actor, None, None).map(|_| ()),
         WorkVerb::Submission => submission(card),
@@ -518,7 +540,33 @@ mod tests {
         assert_eq!(state(&in_review, her(), S::InProgress, NOW), Ok(StateRoute::ResumeReview));
         assert_eq!(state(&in_review, other(), S::InProgress, NOW), Err(Unmet::Settled(S::Review)));
         let refusal = Refusal::at(Unmet::HeldBy(other()), &theirs, her(), NOW);
-        assert_eq!(refusal.next, vec![WorkVerb::Note], "on another's card she can still write its ledger");
+        assert_eq!(refusal.next, vec![WorkVerb::Note, WorkVerb::State], "on another's card she can still write its ledger, or take it over");
+    }
+
+    // what this catches (Cormac on #5782): work/state executing for a non-holder on another's card
+    // while the surface refused it, two owners of one decision. Anyone may take any card at any
+    // time (Joel, 2026-10-06), attributed: the route names whom it is taken from. The surface
+    // offers the verb exactly when some requested state routes, for every actor and card.
+    #[test]
+    fn work_state_is_offered_exactly_when_it_executes_and_a_takeover_names_the_holder() {
+        let theirs = fixture_card(S::InProgress, Some(other()), None, "x");
+        for requested in [S::Blocked, S::Review, S::Closed, S::Open] {
+            assert_eq!(state(&theirs, her(), requested, NOW), Ok(StateRoute::Takeover { from: other() }), "{requested:?}");
+        }
+        assert_eq!(state(&theirs, her(), S::InProgress, NOW), Err(Unmet::HeldBy(other())), "working it is a claim, and the claim path decides");
+        let cards = [
+            theirs.clone(),
+            fixture_card(S::InProgress, Some(her()), None, "x"),
+            fixture_card(S::Open, None, None, "x"),
+            fixture_card(S::Review, Some(other()), None, "x"),
+            fixture_card(S::Merged, None, None, "x"),
+        ];
+        for card in &cards {
+            for actor in [her(), other()] {
+                let executes = STATE_TARGETS.iter().any(|requested| state(card, actor, *requested, NOW).is_ok());
+                assert_eq!(check(WorkVerb::State, card, actor, NOW).is_ok(), executes, "{:?} by {actor:?}", card.state);
+            }
+        }
     }
 
     // what this catches: a decision taken on the snapshot she acted from instead of the card now

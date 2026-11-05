@@ -319,9 +319,17 @@
         let handle = "deadbeef";
         let pin = LivePin::new();
         pin.hold(handle);
-        let staging = parent.join(format!("{handle}.{}", Uuid::new_v4()));
+        // The class writer's staging file names no content address (Cormac on #5782): written in
+        // this life it may be a save in flight, so it is protected; one a crashed life left (older
+        // than this life's first save) is evicted.
+        let _ = store();
+        let staging = parent.join(format!(".{}-7.staging", std::process::id()));
         fs::write(&staging, "retained").unwrap();
-        assert!(matches!(evict_unless_live(&staging), Removal::Protected));
+        assert!(matches!(evict_unless_live(&staging), Removal::Protected), "a save in flight is protected");
+        let leftover = parent.join(".1-1.staging");
+        fs::write(&leftover, "a crashed life's").unwrap();
+        fs::File::options().write(true).open(&leftover).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+        assert!(matches!(evict_unless_live(&leftover), Removal::Removed) && !leftover.exists(), "a leftover is evicted");
         let published = parent.join(format!("{handle}.log"));
         continuum_host::durable::publish_new(&staging, &published).unwrap();
         let _ = fs::remove_file(&staging);
@@ -412,6 +420,13 @@
         // A result with no structure inside stays its one compact line.
         let flat = serde_json::json!({ "success": true, "id": "abc" });
         assert_eq!(result_text(&flat), flat.to_string());
+        // A list of scalars (paths) is a list too (Cormac on #5782): one per line, so a level keeps
+        // whole paths and the count after them.
+        let paths: Vec<String> = (0..400).map(|i| format!("src/module_{i}/mod.rs")).collect();
+        let listing = result_text(&serde_json::json!({ "paths": paths, "total": 400 }));
+        assert!(listing.lines().any(|line| line.trim_end_matches(',') == "\"src/module_399/mod.rs\""), "one path per line");
+        let level = crate::cognition::working_memory::operation_level(&listing, None).expect("a long listing has a smaller level");
+        assert!(level.contains("\"src/module_0/mod.rs\"") && level.contains("\"total\":400"), "{level}");
     }
 
     // what this catches: a result saved through the class writer that does not reopen by its
@@ -452,4 +467,12 @@
         let (small, large) = (shown(600), shown(6000));
         assert!(small > 0 && large > small * 5, "the tail follows the budget: {small} lines at 600, {large} at 6000");
         assert_eq!(shown(1 << 20), 500, "a budget that holds the whole output shows all of it");
+
+        // A one-line log longer than the budget (Cormac on #5782): her newest line never vanishes
+        // behind a complete-looking empty tail. The read says it is truncated and where she reads on.
+        let long = format!("{}\n", "x".repeat(5000));
+        let inv = investigate(&long, None, 0, None, 50, 600).expect("ok");
+        assert!(inv.result_truncated, "not complete: {}", inv.rendered);
+        assert_eq!(inv.next_byte_offset, Some(0), "she reads the newest line on from its offset");
+        assert!(inv.rendered.contains("byteOffset 0") && !inv.rendered.contains("last 0 lines"), "{}", inv.rendered);
     }

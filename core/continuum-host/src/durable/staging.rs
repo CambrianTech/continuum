@@ -16,6 +16,15 @@ use cap_std::fs::{Dir, File, OpenOptions};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// What ends every staging file's name (`.{pid}-{n}.staging`).
+const STAGING_SUFFIX: &str = ".staging";
+
+/// Whether `name` is a staging file's: a save in flight, or one a crashed writer left. A reaper of
+/// a directory a publisher writes into asks this, never the name's spelling.
+pub fn is_staging_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| name.starts_with('.') && name.ends_with(STAGING_SUFFIX))
+}
+
 /// The sequence number the next staging file tries first (tests plant a crash's leftovers there).
 #[cfg(test)]
 pub(super) fn peek_seq() -> u64 {
@@ -38,7 +47,7 @@ impl Staging {
     pub fn new(dir: &Dir) -> io::Result<Self> {
         let dir = dir.try_clone()?;
         loop {
-            let name = format!(".{}-{}.staging", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed));
+            let name = format!(".{}-{}{STAGING_SUFFIX}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed));
             match dir.open_with(&name, OpenOptions::new().write(true).create_new(true)) {
                 Ok(file) => return Ok(Staging { dir, name, file }),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,

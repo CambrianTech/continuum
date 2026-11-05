@@ -196,7 +196,7 @@ fn her_thoughts_are_a_log_and_the_ring_rolls_her_receipts() {
     }
     wm.record("second thought");
     wm.record("third thought");
-    let thoughts: Vec<String> = wm.thoughts().into_iter().map(|record| record.text).collect();
+    let thoughts: Vec<String> = wm.thoughts().into_iter().filter_map(|record| record.text).collect();
     assert_eq!(thoughts, ["first thought", "second thought", "third thought"], "every thought is kept");
     assert_eq!(wm.recent(), ["[action #2] ran act 2", "[action #3] ran act 3"], "the ring rolls at capacity 2");
 }

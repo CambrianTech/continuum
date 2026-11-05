@@ -147,7 +147,6 @@ impl ActionCommand for WorkRelease {
                 .await;
         }
         attempt.map_err(|e| CommandError::Internal(e.to_string()))?;
-        crate::persona::work_burst::note_hold_boundary(airc.peer_id().as_uuid()); // a release is a hold boundary too
         crate::persona::held_claims::forget(airc.peer_id().as_uuid(), airc.home(), card_id.as_uuid());
         Ok(WorkReleaseResult { released: true })
     }
@@ -208,15 +207,33 @@ impl ActionCommand for WorkState {
         // - Her own live review returns to in_progress for a revision under the same claim
         //   (re-claiming refuses Review as settled, so the owner could never leave it: Kimi,
         //   2026-09-30). It grants no ownership and does not mark the review passed.
+        // - ANOTHER'S CARD IS TAKEN OVER, ON THE RECORD (Joel, 2026-10-06: anyone may take any card at
+        //   any time). Her claim releases theirs naming whom it was taken from, then the column moves.
         // A card on no board she stands in is the board's to decide; her column still goes
         // through the claim path.
         let now_ms = EpochMs::now().millis();
-        let route = match card_in_subscribed_rooms(&airc, card_id).await {
-            Some((_, card)) => work_preconditions::decide(work_preconditions::state(&card, airc.peer_id(), state, now_ms), &card, airc.peer_id(), now_ms)
+        let board_card = card_in_subscribed_rooms(&airc, card_id).await;
+        let route = match &board_card {
+            Some((_, card)) => work_preconditions::decide(work_preconditions::state(card, airc.peer_id(), state, now_ms), card, airc.peer_id(), now_ms)
                 .map_err(super::refused)?,
             None if matches!(state, CardState::Claimed | CardState::InProgress) => work_preconditions::StateRoute::ThroughClaim,
             None => work_preconditions::StateRoute::Direct,
         };
+        if let (work_preconditions::StateRoute::Takeover { from }, Some((room, _))) = (route, &board_card) {
+            // airc's claim takes a held card over: `ClaimReleased { taken_over_from }` by her, then her claim.
+            let claim_id = airc
+                .claim_work_card_with_provenance_in(room, ClaimWorkCard { card_id, ttl_ms: DEFAULT_CLAIM_TTL_MS }, airc_work::ClaimOrigin::Explicit, None)
+                .await
+                .map_err(|e| CommandError::Internal(e.to_string()))?;
+            continuum_base::probe!(
+                class = "work.state.taken_over",
+                card_id = %card_id.as_uuid(),
+                from = %from.as_uuid(),
+                claim_id = %claim_id.as_uuid(),
+                state = state_str(&state),
+                "another's card taken over on the record before its column moved"
+            );
+        }
         if route == work_preconditions::StateRoute::ThroughClaim {
             let claim = WorkClaim {
                 registry: self.registry.clone(),

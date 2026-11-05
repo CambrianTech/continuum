@@ -184,11 +184,8 @@ impl WorkingMemory {
         if r.is_empty() {
             return;
         }
-        self.thoughts.lock().push(thought_log::ThoughtRecord {
-            occurrence: self.next_entry_seq.fetch_add(1, Ordering::Relaxed),
-            text: r.to_string(),
-            at_ms: continuum_base::time::EpochMs::now().millis(),
-        });
+        let occurrence = self.next_entry_seq.fetch_add(1, Ordering::Relaxed);
+        self.thoughts.lock().push(thought_log::ThoughtRecord::new(occurrence, r.to_string(), continuum_base::time::EpochMs::now().millis()));
     }
 
     /// Her thoughts, oldest first.

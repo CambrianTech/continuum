@@ -200,6 +200,13 @@ fn evict_unless_live_with(
     inside_the_section: impl FnOnce(),
 ) -> crate::paging::filesystem_tier_pool::Removal {
     use crate::paging::filesystem_tier_pool::Removal;
+    // A staging file is a save in flight (`ClassWriter::publish_new` stages beside its target),
+    // which no content address names yet, or one a crashed life left. Written in this life, it may
+    // be mid-save: protected. Older than this life's first save, it is a leftover: evicted.
+    if path.file_name().is_some_and(continuum_host::durable::is_staging_name) {
+        let this_life = LIFE_START.get().is_some_and(|start| fs::metadata(path).and_then(|meta| meta.modified()).is_ok_and(|written| written >= *start));
+        return if this_life { Removal::Protected } else { fs::remove_file(path).into() };
+    }
     let Some(handle) = path.file_stem().and_then(|s| s.to_str()) else {
         return fs::remove_file(path).into();
     };
@@ -265,8 +272,12 @@ const CLASS: &str = "tool-output";
 /// The writer of the tool-output class. Refused before boot installs the registry: there is no
 /// directory to guess, and a result that cannot be saved is handed back whole as `Unsaved`.
 fn store() -> std::io::Result<ClassWriter> {
+    LIFE_START.get_or_init(std::time::SystemTime::now);
     ClassWriter::of(CLASS)
 }
+
+/// When this life first reached the store: a staging file written since may be a save in flight.
+static LIFE_START: std::sync::OnceLock<std::time::SystemTime> = std::sync::OnceLock::new();
 
 /// The tool-output class's root, for the pressure pool that evicts it (`pressure_broker_wiring`):
 /// one source for the path, the class row's.
@@ -482,12 +493,12 @@ pub fn result_scalars(shown: &str) -> Option<serde_json::Map<String, serde_json:
     })
 }
 
-/// A value that holds structure, one field and one record per line: an object's fields each on a
-/// line, an array of records (objects or arrays) one compact record per line. A SHAPE rule, never
-/// a size: a line is then one card or one match, so a level of the result keeps whole records and
-/// the rest pages by line (compact, a board of 776 cards was ONE 198k-char line she could read none
-/// of, the M5, 2026-10-16). `None` for a value with no structure inside (scalars only): its compact
-/// line is already its smallest legible form.
+/// A value that holds structure, one field and one element per line: an object's fields each on a
+/// line, an array's elements (records, or scalars such as paths and ids) one compact element per
+/// line. A SHAPE rule, never a size: a line is then one card, one match or one path, so a level of
+/// the result keeps whole elements and the rest pages by line (compact, a board of 776 cards was
+/// ONE 198k-char line she could read none of, the M5, 2026-10-16). `None` for a value with no
+/// structure inside (scalars only): its compact line is already its smallest legible form.
 fn structured_lines(value: &serde_json::Value) -> Option<String> {
     use serde_json::Value;
     let structured = |v: &Value| v.is_object() || v.is_array();
@@ -496,13 +507,13 @@ fn structured_lines(value: &serde_json::Value) -> Option<String> {
         format!("[\n{}\n]", lines.join(",\n"))
     };
     match value {
-        Value::Array(items) if items.iter().any(structured) => Some(records(items)),
+        Value::Array(items) if !items.is_empty() => Some(records(items)),
         Value::Object(map) if map.values().any(structured) => {
             let fields: Vec<String> = map
                 .iter()
                 .map(|(key, field)| {
                     let rendered = match field {
-                        Value::Array(items) if items.iter().any(structured) => records(items),
+                        Value::Array(items) if !items.is_empty() => records(items),
                         other => other.to_string(),
                     };
                     format!("{}:{rendered}", Value::String(key.clone()))
@@ -571,16 +582,27 @@ struct TailFit {
     /// The newest lines that fit so far: each line's number and the bytes its row can take.
     rows: std::collections::VecDeque<(usize, usize)>,
     bytes: usize,
+    /// The newest line counted, by its byte offset: where she reads on when not even it fits.
+    newest_offset: Option<u64>,
+}
+
+/// Where a tail read starts.
+enum Tail {
+    /// From this line to the last.
+    From(usize),
+    /// Not even the newest line fits the budget: she reads it by bytes from its offset.
+    NewestTooLong { offset: u64 },
 }
 
 impl TailFit {
-    /// Count line `number` of `line_bytes` (its newline included), keeping the newest run within
-    /// `budget`. A row is the line's text, its gutter number (six columns or more), a mark, a
-    /// space and a newline: at most its bytes plus its number's width plus three.
-    fn push(&mut self, number: usize, line_bytes: usize, budget: usize) {
+    /// Count line `number` at byte `offset`, of `line_bytes` (its newline included), keeping the
+    /// newest run within `budget`. A row is the line's text, its gutter number (six columns or
+    /// more), a mark, a space and a newline: at most its bytes plus its number's width plus three.
+    fn push(&mut self, number: usize, offset: u64, line_bytes: usize, budget: usize) {
         let row = line_bytes + number.to_string().len().max(6) + 3;
         self.rows.push_back((number, row));
         self.bytes += row;
+        self.newest_offset = Some(offset);
         self.shed(budget);
     }
 
@@ -595,10 +617,16 @@ impl TailFit {
         self.rows.len()
     }
 
-    /// The first line of the tail that fits `room`; past the last line when none does.
-    fn fit(&mut self, room: usize, total_lines: usize) -> usize {
+    /// Where the tail that fits `room` starts. When not even the newest line does, the read says
+    /// so with that line's offset: her newest end is never dropped silently. An empty output has
+    /// no line to start from, so its tail is past its end.
+    fn fit(&mut self, room: usize, total_lines: usize) -> Tail {
         self.shed(room);
-        self.rows.front().map_or(total_lines.saturating_add(1), |&(number, _)| number) // map_or: nothing fits, nothing is selected
+        match (self.rows.front(), self.newest_offset) {
+            (Some(&(number, _)), _) => Tail::From(number),
+            (None, Some(offset)) => Tail::NewestTooLong { offset },
+            (None, None) => Tail::From(total_lines.saturating_add(1)),
+        }
     }
 }
 
@@ -811,7 +839,7 @@ fn investigate_readers<R: std::io::BufRead>(
             }
         }
         if tail {
-            tail_fit.push(line.number, (count.offset - line.offset) as usize, budget);
+            tail_fit.push(line.number, line.offset, (count.offset - line.offset) as usize, budget);
         }
     }
     let total_lines = count.line;
@@ -836,10 +864,22 @@ fn investigate_readers<R: std::io::BufRead>(
     let mut previous = None::<usize>;
     let mut rendered = String::new();
     // The tail: the newest lines this read's budget holds beside its header, never a count.
+    let mut next_byte_offset = first_unselected;
+    let mut result_truncated = first_unselected.is_some();
     let tail_from = if tail {
         let header = |lines: usize| format!("(no pattern or range given — showing the last {lines} lines, all this read's budget holds; grep with a `pattern` like \"error\" or \"panic\" to find a specific failure)\n");
-        let from = tail_fit.fit(budget.saturating_sub(header(tail_fit.lines()).len()), total_lines);
-        rendered = header(tail_fit.lines());
+        let from = match tail_fit.fit(budget.saturating_sub(header(tail_fit.lines()).len()), total_lines) {
+            Tail::From(number) => {
+                rendered = header(tail_fit.lines());
+                number
+            }
+            Tail::NewestTooLong { offset } => {
+                rendered = format!("(no pattern or range given — the newest line alone is longer than this read's budget; read it by bytes from byteOffset {offset})\n");
+                result_truncated = true;
+                next_byte_offset = Some(offset);
+                total_lines.saturating_add(1)
+            }
+        };
         if rendered.len() > budget {
             rendered.clear();
         }
@@ -848,8 +888,6 @@ fn investigate_readers<R: std::io::BufRead>(
         total_lines.saturating_add(1)
     };
     let mut last_rendered = None::<usize>;
-    let mut next_byte_offset = first_unselected;
-    let mut result_truncated = first_unselected.is_some();
     loop {
         let number = render.line + 1;
         while next.is_some_and(|n| n < number) {

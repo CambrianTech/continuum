@@ -183,17 +183,20 @@ pub(crate) async fn ask_the_act_question(
                     // record, across turns and restarts), never a page of room rows: a page sized
                     // by a count let a busy room scroll her write-less acts off it (2026-09-07). Her
                     // thoughts on this work are her view's thoughts source, her newest whole.
-                    let acts_without_write = cycle.acting().map_or(0, |body| { // map_or: no hands, no acts to count
-                        let since = crate::persona::work_burst::last_hold_boundary_ms(ctx.identity.peer_id.as_uuid());
-                        let operations = body.working_memory.operations_since(since);
-                        crate::persona::work_burst::acts_since_last_write(operations.iter().map(String::as_str))
-                    });
-                    if acts_without_write >= crate::persona::work_burst::WRITE_OR_RELEASE_AFTER_ACTS
+                    // This hold began when the board recorded her claim's decision (durable across a
+                    // reboot, preserved through lease recovery); her acts count in this turn's room
+                    // only. A claim with no recorded decision time has no known start: no count.
+                    let since = held.first().and_then(|card| card.claim_provenance.as_ref()).map(|provenance| provenance.selected_at_ms);
+                    let acts_without_write = cycle
+                        .acting()
+                        .zip(since)
+                        .map(|(body, since)| body.working_memory.acts_since_change(turn_room, since));
+                    if acts_without_write.is_some_and(|acts| acts >= crate::persona::work_burst::WRITE_OR_RELEASE_AFTER_ACTS)
                     {
                         continuum_base::probe!(
                             class = "persona.work.write_or_release_gate",
                             persona = %ctx.identity.agent_name,
-                            acts_without_write,
+                            acts_without_write = ?acts_without_write,
                             "a write-less stretch on a held card: the advisory checkpoint is shown (never a release)"
                         );
                     }

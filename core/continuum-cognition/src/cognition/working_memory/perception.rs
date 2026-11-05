@@ -415,8 +415,10 @@ impl WorkingMemory {
         // are neither retained nor indexed as a pointer.
         children.retain(|key, _| receipts.contains(key));
         let views = self.open_views.lock().saved();
-        let handles = reachable_handles(receipts, &children, &views);
+        let mut handles = reachable_handles(receipts, &children, &views);
         drop(children);
+        // A thought shed to its handle exists only on disk: live while her log names it.
+        handles.extend(self.thoughts.lock().handles().map(str::to_owned));
         crate::cognition::tool_executor::spill::publish_live_handles(self.instance, handles);
     }
 
@@ -467,10 +469,10 @@ impl WorkingMemory {
         }
     }
 
-    /// The commands she called since `since_ms`, one per call, oldest first: read off her action
-    /// log (every act's one record), so a count over them needs no room page.
-    pub fn operations_since(&self, since_ms: u64) -> Vec<String> {
-        self.actions.lock().operations_since(since_ms).map(str::to_owned).collect()
+    /// Her acts for `room` since `since_ms` after her latest that changed the world
+    /// ([`action_log::ActionLog::acts_since_change`]): read off her action log, never a room page.
+    pub fn acts_since_change(&self, room: Uuid, since_ms: u64) -> usize {
+        self.actions.lock().acts_since_change(room, since_ms)
     }
 
     /// Snapshot of the ring's recent entries (receipts, facts, settlements), oldest → newest.
