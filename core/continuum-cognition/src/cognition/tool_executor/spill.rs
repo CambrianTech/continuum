@@ -458,30 +458,16 @@ fn whole_or_handle_in(root: &Path, full: String, persona_id: Uuid, pin: &LivePin
 /// The text a tool result goes on as. A result object whose bytes are mostly ONE string field
 /// (a file's `content`, a shell's `stdout`) is rendered as its scalar fields on one line, then
 /// that field's text raw, with its real newlines: what the mind reads, counts and pages by
-/// lines is the text itself, not its JSON escape. Any other shape goes on as compact JSON.
+/// lines is the text itself, not its JSON escape. A result that holds structure (a list of cards,
+/// of matches) goes on one field and one record per line ([`structured_lines`]). Anything else
+/// goes on as compact JSON.
 pub fn result_text(value: &serde_json::Value) -> String {
     let compact = value.to_string();
-    // A long result with no text body (an array of cards, of matches) goes on pretty-printed:
-    // one element per lines, so its head shows the first elements and the rest pages by line.
-    // Compact, a board of 776 cards was ONE 198k-char line (the M5, 2026-10-16).
-    let pretty_when_long = |v: &serde_json::Value, compact: String| {
-        if compact.len() > PRETTY_JSON_OVER_CHARS {
-            serde_json::to_string_pretty(v).unwrap_or(compact) // unwrap_or: a value that serialized compact serializes pretty; the compact form is the fallback
-        } else {
-            compact
-        }
+    let Some(object) = value.as_object() else { return structured_lines(value).unwrap_or(compact) }; // unwrap_or: a value with no structure is its own compact line
+    let body = object.iter().filter_map(|(k, v)| v.as_str().map(|s| (k, s))).max_by_key(|(_, s)| s.len());
+    let Some((body_key, body)) = body.filter(|(_, body)| body.len() * 2 >= compact.len() && body.contains('\n')) else {
+        return structured_lines(value).unwrap_or(compact); // unwrap_or: a value with no structure is its own compact line
     };
-    let Some(object) = value.as_object() else { return pretty_when_long(value, compact) };
-    let Some((body_key, body)) = object
-        .iter()
-        .filter_map(|(k, v)| v.as_str().map(|s| (k, s)))
-        .max_by_key(|(_, s)| s.len())
-    else {
-        return compact;
-    };
-    if body.len() * 2 < compact.len() || !body.contains('\n') {
-        return pretty_when_long(value, compact);
-    }
     let mut head = serde_json::Map::new();
     for (k, v) in object {
         if k != body_key {
@@ -510,10 +496,37 @@ pub fn result_scalars(shown: &str) -> Option<serde_json::Map<String, serde_json:
     })
 }
 
-/// A result with no text body longer than this goes on pretty-printed (see [`result_text`]).
-// context-budget-exempt: a readability threshold, not a window bound: compact JSON past a
-// couple of thousand chars is one unreadable line at any window
-const PRETTY_JSON_OVER_CHARS: usize = 2_000;
+/// A value that holds structure, one field and one record per line: an object's fields each on a
+/// line, an array of records (objects or arrays) one compact record per line. A SHAPE rule, never
+/// a size: a line is then one card or one match, so a level of the result keeps whole records and
+/// the rest pages by line (compact, a board of 776 cards was ONE 198k-char line she could read none
+/// of, the M5, 2026-10-16). `None` for a value with no structure inside (scalars only): its compact
+/// line is already its smallest legible form.
+fn structured_lines(value: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    let structured = |v: &Value| v.is_object() || v.is_array();
+    let records = |items: &[Value]| -> String {
+        let lines: Vec<String> = items.iter().map(Value::to_string).collect();
+        format!("[\n{}\n]", lines.join(",\n"))
+    };
+    match value {
+        Value::Array(items) if items.iter().any(structured) => Some(records(items)),
+        Value::Object(map) if map.values().any(structured) => {
+            let fields: Vec<String> = map
+                .iter()
+                .map(|(key, field)| {
+                    let rendered = match field {
+                        Value::Array(items) if items.iter().any(structured) => records(items),
+                        other => other.to_string(),
+                    };
+                    format!("{}:{rendered}", Value::String(key.clone()))
+                })
+                .collect();
+            Some(format!("{{\n{}\n}}", fields.join(",\n")))
+        }
+        _ => None,
+    }
+}
 
 /// [`Fitted::RetentionFailed`]: the failure said first, then the whole result.
 fn unsaved_whole(full: String, error: &std::io::Error) -> Fitted {

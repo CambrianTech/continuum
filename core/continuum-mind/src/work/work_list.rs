@@ -86,17 +86,17 @@ pub struct WorkListParams {
     /// day reporting they had no work, and they were reading their tool correctly.
     #[serde(default)]
     pub claimable: Option<bool>,
-    /// At most this many cards (default 40): claimable first, then priority, then newest.
+    /// At most this many cards: claimable first, then priority, then newest.
     // Not a doc comment: this struct's docs are the tool surface a citizen pays tokens for.
-    // Measured 2026-10-16 on the M5: an unbounded list answered with all 776 cards as 198k
-    // chars of JSON, past her window's share, and she could read none of it (card ee003c55).
+    // No default count. Measured 2026-10-16 on the M5: 776 cards went on as ONE 198k-char
+    // JSON line she could read none of (card ee003c55). A long result now goes on one card per
+    // line (`spill::result_text`) and is saved, and how much of it she sees is her act's one
+    // allocation: whole when the window holds it, else the largest level that fits (its first
+    // and last cards, the counts, and the handle that reopens the rest).
     #[serde(default)]
     #[ts(optional)]
     pub limit: Option<usize>,
 }
-
-/// `work/list`'s default bound on listed cards (see [`WorkListParams::limit`]).
-pub const WORK_LIST_DEFAULT_LIMIT: usize = 40;
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct WorkListCard {
@@ -292,7 +292,9 @@ impl ActionCommand for WorkList {
                 .then_with(|| a.priority.cmp(&b.priority))
                 .then_with(|| a.age_hours.cmp(&b.age_hours))
         });
-        cards.truncate(p.limit.unwrap_or(WORK_LIST_DEFAULT_LIMIT).max(1));
+        if let Some(limit) = p.limit {
+            cards.truncate(limit.max(1));
+        }
 
         // A zero that explains itself. `{"cards":[]}` on a full board is the receipt
         // that cost the residents a day: it is indistinguishable from an empty board,
@@ -302,7 +304,7 @@ impl ActionCommand for WorkList {
         let note = if matched > cards.len() {
             Some(format!(
                 "{} of the {matched} matching cards are listed (claimable first, then priority, then \
-                 newest); pass limit for more, or narrow with state / claimable",
+                 newest) under the limit you passed; raise it or omit it for every match",
                 cards.len()
             ))
         } else if cards.is_empty() && total_on_board > 0 {

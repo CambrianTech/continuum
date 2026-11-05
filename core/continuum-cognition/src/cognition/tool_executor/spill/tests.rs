@@ -369,3 +369,36 @@
             assert_eq!(fs::read_dir(persona_dir(dir.path(), persona)).unwrap().count(), 1);
         }
     }
+
+    // what this catches: a board with no count cap reaching her as one line, or as a level that
+    // drops her first card or the board's counts. work/list lists every match (its default count
+    // is gone); the result goes on one card per line, and the level the one allocation shows when
+    // the board outgrows the window (`operation_level`, `prompt/newest_result.rs`) keeps the first
+    // card whole, the counts after the list, and the marker that reopens the rest.
+    #[test]
+    fn a_board_larger_than_the_window_shows_its_first_card_whole_and_the_rest_behind_a_handle() {
+        let card = |i: usize| {
+            serde_json::json!({
+                "id": format!("{i:08x}"),
+                "title": format!("card number {i} of the board"),
+                "claimable": i < 3,
+                "state": "open",
+                "priority": "p2",
+                "age_hours": i,
+            })
+        };
+        let cards: Vec<_> = (0..400).map(card).collect();
+        let board = serde_json::json!({ "cards": cards, "claimable_now": 3, "total_on_board": 400 });
+        let text = result_text(&board);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&text).ok(), Some(board.clone()), "still the same JSON");
+        assert!(text.lines().any(|line| line.trim_end_matches(',') == card(399).to_string()), "one card per line, never one 400-card line");
+        let level = crate::cognition::working_memory::operation_level(&text, None).expect("a long board has a smaller level");
+        assert!(level.chars().count() * 4 < text.chars().count(), "the level is a real reduction");
+        assert!(level.contains(&card(0).to_string()), "the first card is whole:\n{level}");
+        assert!(!level.contains("card number 200 of"), "a middle card is behind the handle");
+        assert!(level.contains("expand"), "the level says how to reopen the rest");
+        assert!(level.contains("\"total_on_board\":400"), "the counts after the list survive");
+        // A result with no structure inside stays its one compact line.
+        let flat = serde_json::json!({ "success": true, "id": "abc" });
+        assert_eq!(result_text(&flat), flat.to_string());
+    }
