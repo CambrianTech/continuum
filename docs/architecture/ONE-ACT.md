@@ -438,8 +438,7 @@ way around it:
    - Stage 2's one allocation reserves her measured think plus the measured payload of the call she
      is making (per tool, from her history), so the budget fits the call.
    - A `Length` finish inside a call continues the same generation from its warm prefix; it is not
-     discarded and re-thought. Whether our fork can continue through its chat endpoint is to be
-     verified in the fork.
+     discarded and re-thought. Not yet available in the fork: see the refinement below (research, Codex).
    - A call that still cannot fit is a typed `WindowTooSmall`, never a truncated call (stage 2, #5787).
 2. **An edit anchors on content.**
    - Line-range edit modes are deleted. A text edit requires a unique anchor; a whole-file write is
@@ -480,6 +479,25 @@ Refined with Cormac (2026-11-05):
   - In the fork, a raw `/completion` takes the rendered prompt plus the partial output, so a warm
     prefix costs about zero prefill.
   - The tool-call parser and grammar state resume mid-JSON instead of restarting.
+- **Continuation is research, not yet a guarantee** (Codex, fork source at 0d7dda6a). Today:
+  - `continue_final_message` exists (server-common.cpp:1356), but an assistant message containing
+    `tool_calls` is rejected (:1370).
+  - `init_sampler` resets the sampler and accepts prompt tokens with `grammar=false`
+    (server-context.cpp:394).
+
+  So a raw `/completion` with the prompt plus the partial output restores the warm KV, but not the
+  grammar, parser or RNG state. The seam the fork has to provide:
+  - the retained sequence, plus the exact generated token suffix, plus the parser, grammar and
+    sampler state;
+  - continuation bounded within the leased capacity;
+  - one logical call identity;
+  - execution only after the parse is complete and the schema validates, with receipts and effects
+    deduplicated.
+
+  Finite context can still end in a typed `WindowTooSmall`, so there is no absolute never-cut
+  guarantee. First tests cut inside an escaped string, inside UTF-8, in nested JSON, at a tool
+  delimiter, and at a boundary between multiple calls; each must prove exactly one complete effect,
+  and that the prefix is reused. Codex owns the fork investigation.
 - **Order:** (5) schema validation and (4) typed refusals need no fork work and land first, then (2)
   anchors, then (1) continuation once the fork is verified.
 - **Second gate number:** bytes re-sent per landed edit (the 35,796-byte write landed and still broke
