@@ -71,6 +71,25 @@ fn optional_claims_shed_before_her_newest_result_is_shown_smaller() {
     assert!(plan.irreducible_shortfall().is_none());
 }
 
+// what this catches (Cormac on #5779, capacity_and_wire's 8,192 case): a reply whose measured need
+// exceeds the window displacing her view, so her view was shed (or dropped from the prompt and
+// re-prefilled whole the act after, breaking append-only). On an act her view's floor is required:
+// it keeps at least its floor, the reply gets exactly what the required floors leave, and the
+// excess is the typed IrreducibleShortfall (needed, window) for admission, while this act proceeds.
+#[test]
+fn a_reply_need_past_the_window_keeps_her_view_floor_and_reports_the_shortfall() {
+    let mut view = view_source("conversation", 4, 600, 20_000);
+    view.required = true; // an act: her view at its collapsed minimum is required
+    let mut act = claims(Newest::default(), vec![view], 8);
+    act.reply = reply(9_000, 9_000, 8);
+    let window = 8_192;
+    let plan = allocate(window, act);
+    assert!(plan.view_granted() >= 600, "her view keeps its floor: {}", plan.view_granted());
+    // Required floors: framing 4,000 + required 500 + tools 1,000 + last move 200 + view 600 = 6,300.
+    assert_eq!(plan.granted(id::REPLY), window - 6_300, "the reply gets what the required floors leave");
+    assert_eq!(plan.irreducible_shortfall(), Some(IrreducibleShortfall { needed: 6_300 + 9_000, window }));
+}
+
 // what this catches (Codex on Cormac's finding, #5779, goal 7): an off-by-one at the exact
 // required-floor boundary. When the required floors, the reply's floor and the whole newest result
 // equal the window exactly, the whole is chosen; one token less and the next level is.

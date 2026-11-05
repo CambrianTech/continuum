@@ -88,11 +88,12 @@ pub struct ActClaims {
     pub view: Vec<FlexClaim>,
 }
 
-/// Required floors past the window: growth no collapse can make, typed apart from a view that
-/// outgrew its grant (reducible). Her need records it; admission decides (ONE-ACT stage 3/4).
+/// Required floors and her reply's measured need past the window: growth no collapse can make,
+/// typed apart from a view that outgrew its grant (reducible). Her need records it; admission
+/// decides (ONE-ACT stage 3/4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IrreducibleShortfall {
-    /// What the required floors sum to, charged.
+    /// What the required floors and her reply's measured need sum to, charged.
     pub needed: u32,
     pub window: u32,
 }
@@ -260,10 +261,16 @@ impl ActPlan {
             .fold(0, u32::saturating_add)
     }
 
-    /// `Some` when the required floors with the reply's floor exceed the window: irreducible
-    /// growth, never answered by collapsing history.
+    /// `Some` when the required floors with the reply's MEASURED need (uncapped) exceed the
+    /// window: irreducible growth, never answered by collapsing history or by shedding her view.
+    /// This act still proceeds, the reply at what the required floors leave (a cut answer is
+    /// continued and visible in its receipt); the consumer of the report is admission (ONE-ACT
+    /// stage 3/4: her need grows, admission places her on a larger window, or she waits).
     pub fn irreducible_shortfall(&self) -> Option<IrreducibleShortfall> {
-        let needed = turn_need(&self.claims.iter().filter(|claim| claim.required).cloned().collect::<Vec<_>>());
+        let required_floors = turn_need(
+            &self.claims.iter().filter(|claim| claim.required && claim.source_id != id::REPLY).cloned().collect::<Vec<_>>(),
+        );
+        let needed = required_floors.saturating_add(self.reply_need);
         (self.plan.escalation_needed || needed > self.window).then_some(IrreducibleShortfall { needed, window: self.window })
     }
 }

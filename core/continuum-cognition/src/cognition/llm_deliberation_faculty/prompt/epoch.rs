@@ -118,27 +118,6 @@ impl LlmDeliberationFaculty {
         // from the front with no turnover (Benchy, the M5, 2026-10-23: a head clip, goal 7).
         let view_tokens = calibration.charge(Self::messages_cost(&prompt.history[..view.len]));
         let granted = act.view_granted() as usize;
-        // GRANTED NOTHING: the act's one allocation gave her view's sources no tokens (her required
-        // floors and her reply's measured need took the window: optional claims shed first, ONE-ACT
-        // stage 2). Her held view stays as state (never started empty, `turnover_due`), but it is
-        // not SHOWN this act: kept in the prompt, it took the room the allocation had given her
-        // required input, and the fit refused required 275 of budget 0 (an 8,192 window, a 9,000
-        // measured answer, `an_8192_window_keeps_required_content_under_a_large_measured_need`).
-        if granted + room == 0 {
-            prompt.history.drain(..view.len);
-            prompt.grounding_at = 0;
-            prompt.result_pointers.retain(|(index, _)| *index >= view.len);
-            for (index, _) in &mut prompt.result_pointers {
-                *index -= view.len;
-            }
-            continuum_base::probe!(
-                class = "delib.view.unshown",
-                persona = %self.persona_name,
-                view_tokens,
-                "the one allocation granted her view nothing this act: held as state, not shown"
-            );
-            return Ok(None);
-        }
         // The epoch keeps appending into window no claim took: its rendering carries the
         // versions it superseded, which no claim counts, so measured against its grants alone
         // it read as over with 74k of the window unallocated (Atlas, the M5, 2026-10-22).

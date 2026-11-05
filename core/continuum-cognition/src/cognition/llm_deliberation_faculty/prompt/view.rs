@@ -272,10 +272,18 @@ impl LlmDeliberationFaculty {
         };
         let history_floor = evidence.tokens.max(quiet_minimum).min(optional_history);
         // Her view's sources, each its own claim (`epoch.rs`), priced in the allocation's unit.
+        // On an act her view's FLOOR (each source at its collapsed minimum: handles and fold blocks)
+        // is required: she acts on what she sees, and her view only appends (FIFO), so a view shed
+        // to make room for her reply's want would be re-prefilled whole the act after, worst on a
+        // tight window. The reply gets what the required floors leave; past the window that is the
+        // typed IrreducibleShortfall (Cormac on #5779). On a pass her view's optional sources shed
+        // first as before.
+        let acting = kind == TurnKind::Act;
         let view_claims: Vec<_> = self.view_claims(&all_messages.streams).into_iter().map(|mut source| {
             source.floor_tokens = claim(source.floor_tokens as usize);
             source.min_tokens = source.floor_tokens;
             source.max_tokens = claim(source.max_tokens as usize).max(source.floor_tokens);
+            source.required = source.required || acting;
             source
         }).collect();
         let reply_need = reply.floor_tokens;
