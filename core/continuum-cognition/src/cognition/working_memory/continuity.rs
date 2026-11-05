@@ -209,6 +209,7 @@ impl WorkingMemory {
                 .map(|d| d.label.clone())
                 .collect(),
             actions: records,
+            thoughts: self.thoughts(),
             context_view: self.view.lock().clone(),
             receipt_children: self.receipt_children.lock().clone(),
             open_views: self.open_views.lock().saved(),
@@ -226,12 +227,6 @@ impl WorkingMemory {
     /// Keep her context view as this act left it, for the checkpoint.
     pub(crate) fn keep_view(&self, view: Option<ContextView>) {
         *self.view.lock() = view;
-    }
-
-    /// Her view's measured per-act headroom: the median characters one act of its epoch
-    /// appended (`View::appended_per_act`). `None` until an act of the epoch is measured.
-    pub fn view_headroom(&self) -> Option<usize> {
-        self.view.lock().as_ref().and_then(|view| view.appended_per_act())
     }
 
     /// Her context view as a checkpoint restored it, taken once by the act that resumes it.
@@ -260,6 +255,25 @@ impl WorkingMemory {
                 snap.entries.insert(index.min(snap.entries.len()), entry);
             }
         }
+        // ONE sequence for her thoughts and her entries, kept across the restore: every checkpointed
+        // occurrence stays, so her view orders and names them as before. An entry from a
+        // checkpoint written before occurrences were kept (0) takes the next number, in ring
+        // order; a `Thought` entry from before her thought log moves into the log under it.
+        let mut thoughts = std::mem::take(&mut snap.thoughts);
+        let mut next = thoughts.iter().map(|record| record.occurrence).chain(snap.entries.iter().map(|entry| entry.occurrence)).max().unwrap_or(0) + 1; // unwrap_or: nothing checkpointed, the sequence starts at its first
+        for entry in snap.entries.iter_mut().filter(|entry| entry.occurrence == 0) {
+            entry.occurrence = next;
+            next += 1;
+        }
+        snap.entries.retain(|entry| {
+            if entry.kind != WmKind::Thought {
+                return true;
+            }
+            thoughts.push(super::thought_log::ThoughtRecord::new(entry.occurrence, entry.text.clone(), snap.saved_at_ms));
+            false
+        });
+        *self.thoughts.lock() = super::thought_log::ThoughtLog::from_records(thoughts);
+        self.next_entry_seq.fetch_max(next, Ordering::Relaxed);
         {
             let mut e = self.entries.lock();
             e.clear();
@@ -269,20 +283,10 @@ impl WorkingMemory {
             // "restored from a checkpoint saved under a minute ago … rebuilt 480243761 →
             // 374144c34" on every turn for five hours. The notices are pinned for two
             // turns below; any that a snapshot still carries are dropped here.
-            // Each restored entry takes its occurrence from the one counter as it arrives
-            // (`WmEntry::occurrence` is never checkpointed), so no two entries share one.
-            e.extend(
-                snap.entries
-                    .into_iter()
-                    .filter(|w| {
-                        !(w.kind == WmKind::Fact
-                            && (w.text.starts_with("[resumed]") || w.text.starts_with("[rebuilt]")))
-                    })
-                    .map(|mut w| {
-                        w.occurrence = self.next_entry_seq.fetch_add(1, Ordering::Relaxed);
-                        w
-                    }),
-            );
+            // Each restored entry keeps its checkpointed occurrence (numbered above when it had none).
+            e.extend(snap.entries.into_iter().filter(|w| {
+                !(w.kind == WmKind::Fact && (w.text.starts_with("[resumed]") || w.text.starts_with("[rebuilt]")))
+            }));
             while e.len() > self.capacity {
                 e.pop_front();
             }

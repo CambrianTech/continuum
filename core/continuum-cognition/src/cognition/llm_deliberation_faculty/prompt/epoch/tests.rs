@@ -26,6 +26,7 @@ fn streams(first_turn: usize, recall: &str) -> Streams {
             block("room-kanban", "BOARD: you hold 1 card; 3 claimable"),
             block("recall", recall),
         ],
+        ..Default::default()
     }
 }
 
@@ -102,8 +103,8 @@ fn consecutive_acts_share_the_whole_view_and_a_turnover_keeps_the_settled_front(
         LlmDeliberationFaculty::view_sources(&now, Some(&memory_streams)).iter().map(|s| s.name()).collect();
     assert_eq!(
         names,
-        ["workspace-map", "actions", "conversation", "room-kanban", "recall", "thoughts", "tasks", "open-views", "notices"],
-        "settled blocks, then her actions and conversation, then what counts or changes within an epoch"
+        ["workspace-map", "held-work", "actions", "conversation", "room-kanban", "recall", "thoughts", "tasks", "open-views", "notices"],
+        "settled blocks and her held work (it changes only on a card's transition), then her actions and conversation, then what counts or changes within an epoch"
     );
 
     let (kept, length, survived) = two_acts_and_a_turnover(true);

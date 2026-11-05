@@ -64,6 +64,8 @@ fn resident(memory: &WorkingMemory) -> Vec<String> {
 // length, and its saved copy loads back to exactly what she read.
 #[test]
 fn the_shed_moves_the_oldest_across_minds_down_to_the_allocation() {
+    // It saves through the production store: the class is the test fixture's, never ~/.continuum.
+    crate::cognition::tool_executor::spill::prepare_store_fixture();
     let (pa, pb) = (Uuid::new_v4(), Uuid::new_v4());
     let pin = LivePin::new();
     let (a, b) = (
@@ -126,6 +128,8 @@ fn the_shed_moves_the_oldest_across_minds_down_to_the_allocation() {
 // load would render a pointer. Real files through the spill owner, never an injected verdict.
 #[test]
 fn a_copy_that_cannot_reproduce_the_body_keeps_it_resident() {
+    // It saves through the production store: the class is the test fixture's, never ~/.continuum.
+    crate::cognition::tool_executor::spill::prepare_store_fixture();
     let persona = Uuid::new_v4();
     let pin = LivePin::new();
     let memory = Arc::new(WorkingMemory::new(8));
@@ -178,6 +182,8 @@ fn a_copy_that_cannot_reproduce_the_body_keeps_it_resident() {
 // answers the same from the cache, and an unproven body counts as pinned.
 #[test]
 fn budget_answers_from_the_proof_cache_without_the_filesystem() {
+    // It saves through the production store: the class is the test fixture's, never ~/.continuum.
+    crate::cognition::tool_executor::spill::prepare_store_fixture();
     let persona = Uuid::new_v4();
     let pin = LivePin::new();
     let memory = Arc::new(WorkingMemory::new(8));

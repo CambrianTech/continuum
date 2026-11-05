@@ -32,17 +32,21 @@ fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
 // what this catches: a restart changing what she reads of her own acts (Cormac on #5254: a
 // collapsed pointer re-rendered as "operation unrecorded" with no workspace, because the
 // checkpoint kept a pointer only as text). Every record is checkpointed whole, so her ring
-// and her ledger read the same after a restore as before it.
+// and her ledger read the same after a restore as before it. Her thoughts are records the same
+// way: a turn of more acts than the entry ring holds keeps every one, and a restart keeps them
+// under the same occurrences (an older checkpoint's ring thoughts: `provenance`).
 #[test]
 fn a_restart_keeps_every_act_as_she_read_it() {
     let wm = WorkingMemory::new(8);
     wm.set_scope(Some("/work/foo".into()));
     let room = Uuid::new_v4();
     let cap = 2 * BODY;
+    wm.record("the parser drops the index");
     wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), Some(room), saved("first-handle"));
-    for act in 2..=5 {
+    for act in 2..=12 {
         wm.record_receipt_typed(&[], &format!("act {act}\n{}", "s".repeat(cap / 2)), Some(room), saved("ring-test"));
     }
+    wm.record("so the fix is at checks.py:118");
     wm.record_settlement("done", None);
     shed(&wm, cap / 2);
     // The pointer index and the ledger. (Which act counts as in flight after a restore is
@@ -52,11 +56,16 @@ fn a_restart_keeps_every_act_as_she_read_it() {
     };
     let (index, lines) = (pointers(&wm), ledger(&wm));
     assert!(index.join("\n").contains("workspace foo — collapsed]"), "precondition: a collapsed pointer with its workspace: {index:?}");
+    let thoughts = wm.thoughts();
+    assert_eq!(thoughts.len(), 2, "a turn of twelve acts on an eight-entry ring keeps both thoughts");
     let restored = WorkingMemory::new(8);
     restored.set_scope(Some("/work/foo".into()));
     restored.restore(wm.snapshot());
     assert_eq!(pointers(&restored), index);
     assert_eq!(ledger(&restored), lines);
+    assert_eq!(restored.thoughts(), thoughts, "every thought, under its occurrence");
+    restored.record("next thought");
+    assert!(restored.thoughts().windows(2).all(|pair| pair[0].occurrence < pair[1].occurrence), "the sequence resumes past them");
 }
 
 // what this catches (card d624a9a1): an act's line cutting an argument mid-value. A cut path
@@ -102,4 +111,39 @@ fn a_whole_single_line_argument_stays_in_the_memory_owners_account_after_a_shed(
     restored.restore(wm.snapshot());
     assert_eq!(restored.resident_results().resident_bytes, after.resident_bytes, "the charge survives a restart");
     assert!(restored.actions.lock().records().any(|r| r.handle.as_deref() == Some("write-handle")), "its handle is reachable");
+}
+
+// what this catches (Cormac on #5782): a write-less count over every room she acts in and over a
+// restored log from before this hold, so a reboot or another room's reading raised a spurious
+// checkpoint; and a count that read verbs out of a display label. It counts this room's acts since
+// the hold's start, reset by an act whose commands declare they change the world.
+#[test]
+fn the_write_less_stretch_counts_this_rooms_acts_since_the_hold_and_resets_on_a_declared_change() {
+    use continuum_base::tool_effect::ToolEffect;
+    let (room, other) = (Uuid::from_u128(1), Uuid::from_u128(2));
+    let act = |seq: u64, room: Uuid, at: u64, effect: ToolEffect| super::super::action_log::ActionRecord {
+        seq,
+        room: Some(room),
+        scope: None,
+        operation: "code/read, code/edit".into(),
+        head: None,
+        result: None,
+        handle: None,
+        summary: None,
+        stored_chars: None,
+        received_ms: Some(at),
+        act: Some(continuum_context::cause::Act { fingerprint: continuum_context::cause::Fingerprint::of([("x", seq.to_be_bytes().as_slice())]), effect }),
+    };
+    let log = super::super::action_log::ActionLog::from_records(vec![
+        act(1, room, 10, ToolEffect::Observes), // before the hold: a restored act, never counted
+        act(2, room, 100, ToolEffect::Observes),
+        act(3, other, 110, ToolEffect::Observes), // another room's act
+        act(4, room, 120, ToolEffect::Undeclared),
+        act(5, room, 130, ToolEffect::Observes),
+    ]);
+    assert_eq!(log.acts_since_change(room, 100), 3, "this room's acts since the hold, whatever their label");
+    let mut changed = log.records().cloned().collect::<Vec<_>>();
+    changed.push(act(6, room, 140, ToolEffect::Changes));
+    changed.push(act(7, room, 150, ToolEffect::Observes));
+    assert_eq!(super::super::action_log::ActionLog::from_records(changed).acts_since_change(room, 100), 1, "a declared change resets it");
 }

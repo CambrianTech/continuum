@@ -22,7 +22,7 @@ use crate::cognition::context_streams::{ContextMessage, MemoryStreams};
 use crate::cognition::working_memory::WorkingMemory;
 
 /// The prefix of a view source's claim id in the window's one allocation.
-const VIEW_CLAIM: &str = "view/";
+const VIEW_CLAIM: &str = continuum_context::allocation::id::VIEW;
 
 /// Where her view sits in this act's history: its leading `len` messages, and whether this
 /// act started it.
@@ -55,7 +55,7 @@ impl LlmDeliberationFaculty {
     /// included): floor = the source folded or collapsed, want = the source whole, at the source's
     /// priority. There is no separate history claim for the view, so the allocation that
     /// weighs her reply also decides, once, how much of her context she reads.
-    pub(in super::super) fn view_claims(&self, streams: &Streams) -> Vec<crate::cognition::rag_budget::RagSourceBudget> {
+    pub(in super::super) fn view_claims(&self, streams: &Streams) -> Vec<continuum_context::flex::FlexClaim> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         Self::view_sources(streams, memory_streams.as_ref())
@@ -74,7 +74,7 @@ impl LlmDeliberationFaculty {
                     cost(item.full()) + extra / continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN
                 };
                 let want: usize = items.iter().map(whole).sum();
-                crate::cognition::rag_budget::RagSourceBudget {
+                continuum_context::flex::FlexClaim {
                     source_id: format!("{VIEW_CLAIM}{}", source.name()),
                     priority: source.priority(),
                     floor_tokens: Self::clamp_u32(floor),
@@ -105,25 +105,27 @@ impl LlmDeliberationFaculty {
         &self,
         prompt: &mut PromptMessages,
         view: ViewPlacement,
-        plan: &crate::cognition::rag_budget::FlexAllocation,
-        start_plan: &crate::cognition::rag_budget::FlexAllocation,
-        room: usize,
+        act: &continuum_context::allocation::ActPlan,
         calibration: super::types::PromptCalibration,
-    ) -> Result<Option<usize>, continuum_context::view::GrantMismatch> {
+    ) -> Result<Option<usize>, ViewSizing> {
         if view.len == 0 {
             return Ok(None);
         }
+        let room = act.room() as usize;
+        // A start the plan did not fund (`StartRefused`) is carried out typed: the view's closure
+        // contract answers grants only, so the cause is held here and returned in place of the
+        // mismatch the empty answer raises.
+        let refused: std::cell::Cell<Option<continuum_context::allocation::StartRefused>> = std::cell::Cell::new(None);
+        let typed = |mismatch: continuum_context::view::GrantMismatch| match refused.take() {
+            Some(start) => ViewSizing::Start(start),
+            None => ViewSizing::Mismatch(mismatch),
+        };
         // In the allocation's unit: grants and room are charged tokens (`calibration.charge`),
         // so the view is charged too. Compared raw, a view near its grant passed here and the
         // final fit, which converts its budget back to raw, cut 96-99 of its oldest messages
         // from the front with no turnover (Benchy, the M5, 2026-10-23: a head clip, goal 7).
         let view_tokens = calibration.charge(Self::messages_cost(&prompt.history[..view.len]));
-        let granted: usize = plan
-            .allocations
-            .iter()
-            .filter(|a| a.source_id.starts_with(VIEW_CLAIM))
-            .map(|a| a.allocated_tokens as usize)
-            .sum();
+        let granted = act.view_granted() as usize;
         // The epoch keeps appending into window no claim took: its rendering carries the
         // versions it superseded, which no claim counts, so measured against its grants alone
         // it read as over with 74k of the window unallocated (Atlas, the M5, 2026-10-22).
@@ -137,19 +139,19 @@ impl LlmDeliberationFaculty {
         let next_act_tokens = appended_per_act.map(|chars| (chars as u64 * view_tokens as u64).div_ceil(view_chars.max(1) as u64) as usize);
         // An allocator that answered for the wrong number of sources refuses the turn: the held
         // view stays as state, but a prompt built on a broken contract is never sent (Codex on #5564).
-        // A start sizes against `start_plan` (the reply seated at its want, `seated_at_want`), so a
-        // pass and the act after it start her view alike; whether this act keeps, restores or
-        // turns over is still judged against what this act was granted (`granted + room`).
-        let start_granted: usize = start_plan
-            .allocations
-            .iter()
-            .filter(|a| a.source_id.starts_with(VIEW_CLAIM))
-            .map(|a| a.allocated_tokens as usize)
-            .sum();
-        let start_room = start_granted + start_plan.unallocated as usize;
-        let due = turnover_due(view_tokens, granted + room, next_act_tokens, || {
-            self.view_would_restore(&prompt.streams, |claims: &[Claim]| start_grants(claims, start_plan, start_room, appended_per_act))
-        })?;
+        // A start is sized from the same one plan as if the reply held its whole want
+        // (`ActPlan::start_room`), so a pass and the act after it start her view alike; whether
+        // this act keeps, restores or turns over is judged against what this act was granted.
+        let start_room = act.start_room() as usize;
+        let sized = |claims: &[Claim]| match start_grants(claims, &act.plan, start_room, appended_per_act) {
+            Ok(grants) => grants,
+            Err(start) => {
+                refused.set(Some(start));
+                Vec::new()
+            }
+        };
+        let due = turnover_due(view_tokens, granted + room, next_act_tokens, || self.view_would_restore(&prompt.streams, &sized))
+            .map_err(&typed)?;
         if due == Turnover::Keep {
             return Ok(None);
         }
@@ -186,16 +188,8 @@ impl LlmDeliberationFaculty {
         // and kept anyway, so the view runs over its grant and the turn is refused
         // (`budget_fault` / `capacity_error`, view.rs), never sent without it.
         // (`escalation_needed` is only probed; it refuses nothing.)
-        let shed: Vec<&str> = start_plan
-            .allocations
-            .iter()
-            .filter(|a| a.allocated_tokens < a.requested_floor)
-            .filter(|a| a.state != crate::cognition::rag_budget::AllocationState::UnderProvisioned)
-            .filter_map(|a| a.source_id.strip_prefix(VIEW_CLAIM))
-            .collect();
-        let started = self.turn_over_view_with(&prompt.streams, &shed, |claims: &[Claim]| {
-            start_grants(claims, start_plan, start_room, appended_per_act)
-        })?;
+        let shed = act.shed_view_sources();
+        let started = self.turn_over_view_with(&prompt.streams, &shed, &sized).map_err(&typed)?;
         prompt.grounding_at = started.len();
         prompt.history.splice(0..view.len, started);
         continuum_base::probe!(
@@ -417,6 +411,9 @@ impl LlmDeliberationFaculty {
         };
         let mut sources: Vec<&dyn Source<ContextMessage>> =
             streams.blocks.iter().filter(settled).map(as_source).collect();
+        // Her held work changes only on a card's transition (board churn), so it rides with the
+        // settled blocks, where the active-work block it replaced sorted.
+        sources.push(&streams.held);
         sources.extend(memory.map(|m| &m.actions as &dyn Source<ContextMessage>));
         sources.push(&streams.conversation);
         sources.extend(streams.blocks.iter().filter(|block| !settled(block)).map(as_source));
@@ -435,6 +432,26 @@ impl LlmDeliberationFaculty {
 
     fn clamp_u32(chars: usize) -> u32 {
         u32::try_from(chars).unwrap_or(u32::MAX) // unwrap_or: a source past 4G chars is granted the most a claim can say
+    }
+}
+
+/// Why her view could not be sized this act: the turn is refused either way, typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in super::super) enum ViewSizing {
+    /// The allocator answered for a different number of sources than it was asked (a broken
+    /// contract: a budget fault).
+    Mismatch(continuum_context::view::GrantMismatch),
+    /// A start the plan did not fund: a required floor underfunded or past the room (a capacity
+    /// refusal, distinct from the reply-only `IrreducibleShortfall`, with which an act proceeds).
+    Start(continuum_context::allocation::StartRefused),
+}
+
+impl std::fmt::Display for ViewSizing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mismatch(mismatch) => write!(f, "{mismatch}"),
+            Self::Start(start) => write!(f, "her view's start was not funded: {start:?}"),
+        }
     }
 }
 
@@ -529,17 +546,17 @@ thread_local! {
 /// (a quarter, replayed on M5 captures, collapsed every read but her newest on 2026-10-30,
 /// ONE-BUDGET.md slice 6).
 ///
-/// The one allocator spends it: a higher-priority source asks for its whole grant as its
-/// minimum, which `flex_allocate` serves first in priority order, and the lowest priority
-/// shares what is left. The newest end is never cut: a source keeps its newest items whole
+/// The one plan's grants are shared by arithmetic, never a second allocation
+/// (`allocation::start_shares`): a higher-priority source starts at its whole grant, in priority
+/// order, and the lowest priority shares what is left in proportion to what each lacks. The newest end is never cut: a source keeps its newest items whole
 /// and collapses its oldest first, at the start only ([`View::turn_over`]).
 pub(in super::super) fn start_grants(
     claims: &[Claim],
-    plan: &crate::cognition::rag_budget::FlexAllocation,
+    plan: &continuum_context::flex::FlexAllocation,
     available: usize,
     appended_per_act: Option<usize>,
-) -> Vec<usize> {
-    let grants: Vec<Option<&crate::cognition::rag_budget::SourceAllocation>> = claims
+) -> Result<Vec<usize>, continuum_context::allocation::StartRefused> {
+    let grants: Vec<Option<&continuum_context::flex::SourceAllocation>> = claims
         .iter()
         .map(|claim| plan.allocations.iter().find(|a| a.source_id == format!("{VIEW_CLAIM}{}", claim.source)))
         .collect();
@@ -584,30 +601,43 @@ pub(in super::super) fn start_grants(
         })
         .sum();
     let growing = growing.max(newest.min(growable));
-    let start = grounding + growing;
-    let budgets: Vec<crate::cognition::rag_budget::RagSourceBudget> = claims
+    // Each source's share of the start: arithmetic on the one plan's grants, never a second
+    // allocation (`continuum_context::allocation::start_shares`). A REQUIRED floor (her view's
+    // collapsed minimum on an act) is never shared away: the start holds every one of them.
+    let sources: Vec<continuum_context::allocation::StartSource> = claims
         .iter()
         .zip(&grants)
         .map(|(claim, grant)| {
-            let (floor, max) = grant.map_or((0, 0), |a| (a.requested_floor, a.allocated_tokens)); // map_or: a source the window granted nothing starts collapsed
-            crate::cognition::rag_budget::RagSourceBudget {
-                source_id: claim.source.clone(),
-                priority: claim.priority,
-                floor_tokens: floor.min(max),
-                min_tokens: if claim.priority > lowest { max } else { floor.min(max) },
-                max_tokens: max,
-                required: false,
-            }
+            let (floor, max, required) = grant.map_or((0, 0, false), |a| (a.requested_floor, a.allocated_tokens, a.required)); // map_or: a source the window granted nothing starts collapsed
+            continuum_context::allocation::StartSource { priority: claim.priority, fixed: claim.priority > lowest, required, floor, grant: max }
         })
         .collect();
-    let sized = crate::cognition::rag_budget::flex_allocate(LlmDeliberationFaculty::clamp_u32(start), &budgets);
+    // The start holds the required floors when the room the plan gave it can (raised toward them,
+    // never past `available`: required means refuse if underfunded, never mint budget, Codex on
+    // #5779). An underfunded floor or required floors past the room are the typed `StartRefused`,
+    // carried to the turn's capacity refusal by the caller.
+    let required_floors: usize = sources.iter().filter(|s| s.required).map(|s| s.floor as usize).sum();
+    let start = (grounding + growing).max(required_floors).min(available);
+    let shares = match continuum_context::allocation::start_shares(LlmDeliberationFaculty::clamp_u32(start), &sources) {
+        Ok(shares) => shares,
+        Err(refused) => {
+            let (needed, had) = refused.needed_and_had();
+            continuum_base::probe!(
+                class = "delib.view.start_refused",
+                required_tokens = needed,
+                start_tokens = had,
+                "a view start whose required floors the plan did not fund: refused typed, never a floor dropped or budget minted"
+            );
+            return Err(refused);
+        }
+    };
     let grants: Vec<usize> = claims
         .iter()
         .zip(&grants)
-        .zip(&sized.allocations)
-        .map(|((claim, grant), sized)| match grant {
-            Some(a) if sized.allocated_tokens >= a.requested_max => claim.full_chars,
-            Some(a) => (u64::from(sized.allocated_tokens) * claim.full_chars as u64 / u64::from(a.requested_max.max(1))) as usize,
+        .zip(&shares)
+        .map(|((claim, grant), &share)| match grant {
+            Some(a) if share >= a.requested_max => claim.full_chars,
+            Some(a) => (u64::from(share) * claim.full_chars as u64 / u64::from(a.requested_max.max(1))) as usize,
             None => 0,
         })
         .collect();
@@ -621,7 +651,7 @@ pub(in super::super) fn start_grants(
         }
         grants
     };
-    grants
+    Ok(grants)
 }
 
 #[cfg(test)]

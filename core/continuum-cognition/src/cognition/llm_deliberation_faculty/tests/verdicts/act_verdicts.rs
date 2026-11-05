@@ -613,9 +613,9 @@ async fn verdict_records_reasoning_into_working_memory() {
     }
     // …and the reasoning was captured into working memory for next turn.
     assert_eq!(
-        wm.recent(),
+        wm.thoughts().into_iter().filter_map(|record| record.text).collect::<Vec<_>>(),
         vec!["Weighed the risk; the fix is small and tested."],
-        "the verdict's reasoning is recorded into working memory"
+        "the verdict's reasoning is recorded into her thought log"
     );
 }
 

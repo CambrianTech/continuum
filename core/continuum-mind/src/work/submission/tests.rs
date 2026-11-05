@@ -65,7 +65,7 @@
     // the SHA-256 of her patch; a benchmark checkout names its instance from its path
     // and a repo worktree names the card; a worktree with no base to diff against is a
     // named refusal, never a diff against HEAD.
-    use super::{artifact_of_patch, base_sha_of, holder_guard, instance_of_checkout, is_placeholder_hash, resolve_shown, room_label, short8};
+    use super::{artifact_of_patch, base_sha_of, instance_of_checkout, is_placeholder_hash, resolve_shown, room_label, short8};
 
     /// The seam's fixture: no datasets, no grader, and the candidate diff in the grader's form
     /// computed by plain `git diff`, so the derivation is exercised against a real repository.
@@ -626,40 +626,59 @@
         );
     }
 
-    // what this catches (Kimi, 2026-09-21): the two halves of the supplied-claim guard
-    // shared one sentence — "submission requires your matching claim on this card" — so a
-    // citizen who OWNED the card and HELD a live lease, but passed a STALE claim id from a
-    // re-claim, was told only that something did not match. `claim_id` is documented
-    // optional and therefore a fillable blank in her manual, and citizens fill those
-    // (ab76eb848). Each half must now name what it saw, and the stale half must name the
-    // way out that actually works — omitting claim_id, which makes the caller read the
-    // live claim off the board so this guard passes.
+    // what this catches (Kimi, 2026-09-21; Codex on the precondition redesign): work/submit's
+    // decision at its mutation boundary, through the command's own error mapping. Someone else's
+    // card names the holder; a stale claim id from a re-claim names the live claim and the way out
+    // that works (omit claim_id), with the card as it is NOW and her moves on it now; and a card
+    // that moved to Review since she acted still takes her revised submission.
     #[test]
-    fn each_half_of_the_holder_guard_names_what_it_saw() {
-        let me = airc_core::PeerId::new();
-        let peer = airc_core::PeerId::new();
-        let card = uuid::Uuid::new_v4();
-        let mine = super::ClaimId::from_uuid(uuid::Uuid::new_v4());
-        let stale = super::ClaimId::from_uuid(uuid::Uuid::new_v4());
-
-        // The holder's own live claim passes.
-        assert!(holder_guard(Some(me), me, Some(mine), mine, card).is_ok());
-
-        // Someone else holds it: say WHO, and reuse the holder sentence.
-        let held = holder_guard(Some(peer), me, Some(mine), mine, card).expect_err("not hers");
-        let held = held.to_string();
+    fn the_submit_decision_at_the_boundary_names_what_it_saw_and_her_moves_now() {
+        use crate::cognition::work_preconditions::{decide, fixture_card, submit, ClaimArg, Request, FIXTURE_NOW_MS};
+        use airc_work::CardState;
+        let me = airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(1));
+        let peer = airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(2));
+        let at = FIXTURE_NOW_MS;
+        let any = Request::any(at);
+        let theirs = fixture_card(CardState::InProgress, Some(peer), None, "x");
+        let held = crate::work::refused(decide(submit(&theirs, me, &any), &theirs, me, at).expect_err("not hers")).to_string();
         assert!(held.contains(&short8(peer.as_uuid())), "names the holder: {held}");
-        assert!(held.contains("only the holder submits"), "{held}");
+        // Since she read it, the card moved to Review and her claim was re-taken.
+        let now = fixture_card(CardState::Review, Some(me), None, "x");
+        let stale = super::ClaimId::from_uuid(uuid::Uuid::from_u128(0x57a1e));
+        let named = Request { at_ms: at, claim: ClaimArg::Named(stale), seen_revision: None };
+        let bad = crate::work::refused(decide(submit(&now, me, &named), &now, me, at).expect_err("stale id")).to_string();
+        let live = now.claim_id.expect("an owned fixture holds a claim"); // expect: fixture_card claims an owned card
+        assert!(bad.contains(&short8(live.as_uuid())) && bad.contains("omit claim_id"), "names the live claim and the way out: {bad}");
+        assert!(bad.contains("review") && bad.contains("work/submit"), "the card now, and her moves now: {bad}");
+        assert_eq!(decide(submit(&now, me, &any), &now, me, at), Ok(live), "a revised submission in Review is publishable");
+    }
 
-        // Hers, but the id she passed is stale: name BOTH ids and the way out.
-        let bad = holder_guard(Some(me), me, Some(mine), stale, card).expect_err("stale id");
-        let bad = bad.to_string();
-        assert!(bad.contains(&short8(stale.as_uuid())), "names what she passed: {bad}");
-        assert!(bad.contains(&short8(mine.as_uuid())), "names the live claim: {bad}");
-        assert!(bad.contains("omit claim_id"), "names the corrective that works: {bad}");
-        assert!(!bad.contains("only the holder submits"), "she IS the holder: {bad}");
-
-        // An unclaimed card names THAT absence rather than printing an empty slot.
-        let none = holder_guard(Some(me), me, None, stale, card).expect_err("no live claim");
-        assert!(none.to_string().contains("unclaimed"), "{}", none);
+    // what this catches: Benchy on the M5, 2026-11-04, five refused submits of the same patch.
+    // An identical submission (same publisher, patch hash, base and instance) answers as success
+    // naming the existing one; a changed patch is a new submission (the precondition above lets it
+    // publish in Review).
+    #[test]
+    fn an_identical_submission_is_answered_with_the_existing_one_and_a_changed_patch_is_new() {
+        let key = |hash: &str| super::SubmissionKey {
+            id: uuid::Uuid::from_u128(1),
+            publisher: uuid::Uuid::from_u128(2),
+            artifact_hash: hash.into(),
+            base_sha: "b4se".into(),
+            instance: "card".into(),
+        };
+        assert_eq!(super::same_submission([key("dc597e")], &key("dc597e")), Some(uuid::Uuid::from_u128(1)));
+        assert_eq!(super::same_submission([key("dc597e")], &key("ffff00")), None, "a changed patch submits");
+        let existing = airc_work::WorkSubmission {
+            submission_id: airc_work::SubmissionId::from_u128(1),
+            card_id: airc_work::WorkCardId::from_u128(3),
+            claim_id: super::ClaimId::from_uuid(uuid::Uuid::from_u128(4)),
+            instance: "card".into(),
+            base_sha: airc_work::GitObjectId::new("a".repeat(40)).expect("a full sha"), // expect: 40 hex is a valid sha
+            artifact: artifact_of_patch("diff --git a/x b/x\n").into_artifact().expect("a patch reference"), // expect: a sha-256 reference
+            publisher: airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(2)),
+            submitted_at_ms: 7,
+        };
+        let answer = super::already_submitted(&existing, uuid::Uuid::from_u128(5), &[], false);
+        assert_eq!((answer.outcome, answer.submission_id), (super::SubmitOutcome::AlreadySubmitted, uuid::Uuid::from_u128(1)));
+        assert!(answer.next.contains("already your submission"), "{}", answer.next);
     }

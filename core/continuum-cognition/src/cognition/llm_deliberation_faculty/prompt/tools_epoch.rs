@@ -24,6 +24,9 @@
 //! So the set is held across her view's turnovers ([`ToolsEpoch`]) and changes only:
 //! - down, when the window cannot hold it (`delib.tools.epoch_level_lost`), then re-selected and
 //!   held;
+//! - when the moves her held cards give her change (`delib.tools.epoch_moves_changed`): a card's
+//!   transition is a new epoch of her hands, one cached prefix, never churn every act
+//!   (STATE-DRIVEN-SURFACE.md);
 //! - when her surface is rebuilt (`rebuild_tool_surface` clears it).
 //!
 //! The trade, stated: a verb whose affordance appears later, or that her learned head would add,
@@ -43,6 +46,8 @@ pub(in super::super) struct ToolsEpoch {
     names: Vec<String>,
     reason: SurfaceReason,
     tokens: usize,
+    /// The held-card moves it was selected for (`HeldWork::move_commands`).
+    moves: Vec<String>,
 }
 
 /// This act's tools claim, in raw tokens.
@@ -65,6 +70,8 @@ pub(in super::super) struct ToolsChoice<'a> {
     pub(in super::super) sent: SelectedSurface<'a>,
     /// Whether `sent` is her held set.
     kept: bool,
+    /// The held-card moves this act selected for, kept with the set it holds.
+    moves: Vec<String>,
 }
 
 impl LlmDeliberationFaculty {
@@ -80,10 +87,21 @@ impl LlmDeliberationFaculty {
     /// floor (never a silent shrink below her hands).
     pub(in super::super) fn granted_tools(&self, ws: &Workspace, claim: ToolsClaim, grant: usize) -> (ToolsChoice<'_>, Option<PromptCapacityError>) {
         let held = self.tools_epoch.lock().clone();
+        let moves = ws.held.move_commands();
         // Selected every act, so her learned head computes and reserves the head a later set
         // would hold (`with_learned_head`) and its loaded verbs ride the tail.
         let fresh = self.select_tool_surface_granted(ws, grant);
         let kept = match held {
+            Some(held) if held.moves != moves => {
+                continuum_base::probe!(
+                    class = "delib.tools.epoch_moves_changed",
+                    persona = %self.persona_name,
+                    held_moves = %held.moves.join(","),
+                    moves = %moves.join(","),
+                    "a held card's transition changed the moves in her hands: her tool set is selected afresh, once"
+                );
+                None
+            }
             Some(held) if held.tokens <= grant => Some(self.surface.retained(&held.names, held.reason, held.tokens)),
             Some(held) => {
                 continuum_base::probe!(
@@ -104,11 +122,11 @@ impl LlmDeliberationFaculty {
                 if let Ok(fresh) = fresh.as_ref() {
                     sent.tail = fresh.tail.clone(); // the verbs she loaded ride the tail, outside the prefix
                 }
-                (ToolsChoice { sent: sent.with_demand(want), kept: true }, None)
+                (ToolsChoice { sent: sent.with_demand(want), kept: true, moves }, None)
             }
-            (None, Ok(selected)) => (ToolsChoice { sent: selected, kept: false }, None),
+            (None, Ok(selected)) => (ToolsChoice { sent: selected, kept: false, moves }, None),
             (None, Err(needed)) => (
-                ToolsChoice { sent: SelectedSurface::none(), kept: false },
+                ToolsChoice { sent: SelectedSurface::none(), kept: false, moves },
                 Some(PromptCapacityError { required_tokens: needed, budget_tokens: grant }),
             ),
         }
@@ -118,7 +136,7 @@ impl LlmDeliberationFaculty {
     /// whether or not her view turned over in this act; an act with no held set (the first or a
     /// lost level) holds what it sends.
     pub(in super::super) fn retain_tools<'a>(&'a self, choice: ToolsChoice<'a>, refused: bool) -> SelectedSurface<'a> {
-        let ToolsChoice { sent, kept } = choice;
+        let ToolsChoice { sent, kept, moves } = choice;
         if refused || kept {
             return sent; // a refused turn sent no surface; a held set stays held
         }
@@ -126,6 +144,7 @@ impl LlmDeliberationFaculty {
             names: self.surface.names_of(&sent),
             reason: sent.reason,
             tokens: sent.tokens,
+            moves,
         });
         sent
     }

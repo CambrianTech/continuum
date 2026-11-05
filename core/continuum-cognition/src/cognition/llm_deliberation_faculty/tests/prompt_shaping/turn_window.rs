@@ -627,61 +627,6 @@ fn prompt_view_stays_within_the_served_window() {
     );
 }
 
-// what this catches: the starved-claimant regression (card f6a9fe5c, live
-// specimen 2026-08-07) — under a squeezed window the grounding floor reserved
-// only the SMALLEST offered contribution, so a citizen HOLDING a work card got
-// a ~50-token status note while active-work (the card content itself) dropped;
-// her whole knowledge of her claim was a bare receipt and she yielded. The fix
-// is a priority ordering: the floor reserves the active-work contribution when
-// one is offered AND selection considers it first, so her held card survives
-// budget pressure that drops everything else.
-#[test]
-fn a_held_work_card_survives_budget_pressure_that_drops_everything_else() {
-    let persona = Uuid::new_v4();
-    let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let window: u32 = 1024;
-    let faculty = LlmDeliberationFaculty::new(
-        persona,
-        "Ivar",
-        "You are Ivar, a thoughtful engineer on the grid.",
-        adapter,
-    )
-    .with_context_window(window);
-
-    // A conversation big enough to absorb every token the floor doesn't hold.
-    let mut ws = history_with_stimulus("LATEST: how is the card going?");
-    // A recall bid that outranks active-work on salience and dwarfs the budget —
-    // without reserved-first selection it would spend the floor's reservation.
-    ws.broadcast.push(Contribution::context(
-        FacultyId::Recall,
-        &"deploy pipeline observation; ".repeat(2000),
-        1.0,
-        "recalled",
-    ));
-    // The tiny note the OLD floor would have sized the reservation to.
-    ws.broadcast.push(Contribution::context(
-        FacultyId::Custom("session-note".into()),
-        "note: room quiet",
-        0.95,
-        "noted",
-    ));
-    // Her held card — what a claim-holding citizen must never lose sight of.
-    ws.broadcast.push(Contribution::context(
-        FacultyId::Custom(crate::cognition::faculty_ids::ACTIVE_WORK.into()),
-        "[your work] psf__requests-2148 staged in workspace/swe — fix in place, tests are the grade",
-        0.9,
-        "held claims",
-    ));
-
-    let view = faculty.prompt_view(&ws);
-    // The room's context rides her messages (after her view), never the system message.
-    assert!(
-        view.messages.iter().any(|m| m.content_text().contains("psf__requests-2148")),
-        "the held card's content must survive budget pressure; messages were:\n{}",
-        view.user_text()
-    );
-}
-
 // what this catches: the reply's claim as one claimant in the allocation: its floor (an
 // act's measured answer channel), its want (her measured need, or the reply-sized prior),
 // its priority from the turn (ambient 4, directed 6, act 8, act on live work or after a
@@ -694,7 +639,7 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
     let floor = LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS;
     let prior = LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS;
     // (floor, wanted, priority)
-    let shape = |c: crate::cognition::rag_budget::RagSourceBudget| {
+    let shape = |c: continuum_context::flex::FlexClaim| {
         assert_eq!(c.min_tokens, c.floor_tokens, "above its floor the reply grows by priority");
         assert!(c.required, "the reply always gets its floor");
         (c.floor_tokens, c.max_tokens, c.priority)

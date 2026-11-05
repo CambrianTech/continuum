@@ -145,83 +145,6 @@ pub fn room_scope_allows(bound: Option<uuid::Uuid>, ctx: &RagContext, source_id:
 }
 
 //=============================================================================
-// CORE TYPES
-//=============================================================================
-/// One source's budget claim. Sent INTO the allocator as input.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RagSourceBudget {
-    /// Stable identifier (`"conversation"`, `"memories"`, …). Owned
-    /// String so the budget can be serialized into a capture trace
-    /// (per `rag_capture.rs`) and deserialized for replay. Sources
-    /// still expose `source_id()` as `&'static str` via the trait;
-    /// the budget claim is just the wire-shape envelope.
-    pub source_id: String,
-
-    /// Priority weight 1-10, higher = more important. Used as the
-    /// flex-grow share when distributing free tokens.
-    pub priority: u8,
-
-    /// UNCONDITIONAL minimum tokens. Even if other required sources
-    /// can't fit their minimums, this floor is honored first or the
-    /// source's allocation state escalates to `UnderProvisioned`.
-    /// The recent-universal floor (per the cognition-cache-hierarchy
-    /// doc) lives here on `ConversationSource`.
-    pub floor_tokens: u32,
-
-    /// Flex-basis target — desired baseline above the floor. The
-    /// allocator pulls down to `floor_tokens` before dropping a
-    /// required source; for required=false sources, falling below
-    /// `min_tokens` triggers `AllocationState::Dropped`.
-    pub min_tokens: u32,
-
-    /// Flex-cap — never allocate more than this regardless of
-    /// available budget. Stops a high-priority source from
-    /// consuming the entire context window when other sources
-    /// haven't asked for it.
-    pub max_tokens: u32,
-
-    /// If true, allocation FAILS when this source can't get
-    /// `floor_tokens`; if false, the source may be dropped silently
-    /// (its `AllocationState` shows `Dropped` for telemetry).
-    pub required: bool,
-}
-
-/// Per-source outcome. Reported back from the allocator.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SourceAllocation {
-    pub source_id: String,
-    pub allocated_tokens: u32,
-    pub requested_floor: u32,
-    pub requested_min: u32,
-    pub requested_max: u32,
-    pub state: AllocationState,
-}
-
-/// What happened to a source's allocation. Telemetry-honest per the
-/// substrate-is-a-good-citizen doctrine — the caller sees exactly
-/// where each source landed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AllocationState {
-    /// Got >= min_tokens. The source delivers its preferred content
-    /// at full resolution.
-    Satisfied,
-    /// Got >= floor_tokens but < min_tokens. The source delivers
-    /// at the floor — fewer items / compressed / pin-only — but
-    /// the floor is honored.
-    FloorOnly,
-    /// required=false source got 0 tokens. Caller skips it; no
-    /// content from this source enters the prompt this turn.
-    Dropped,
-    /// required=true source got < floor_tokens. Caller MUST
-    /// escalate — substrate-side warning, request smaller model,
-    /// or request lower-resolution content. The substrate never
-    /// silently clips, so this state surfaces the operator
-    /// decision.
-    UnderProvisioned,
-}
-
-//=============================================================================
 // SOURCE-OWNED DELIVERY (the no-clipping mechanism)
 //=============================================================================
 /// One delivered item — already a complete atomic unit by the
@@ -403,25 +326,4 @@ pub trait RagSource: Send + Sync {
     /// Sources MUST validate that `ctx.persona_id == self.persona_id` if they're bound to a
     /// specific persona at construction.
     async fn deliver(&self, ctx: &RagContext) -> RagDelivery;
-}
-
-/// What [`flex_allocate`] decided: every claim's grant in INPUT order, the tokens no
-/// claim could take, and the same escalation/warning receipts the adapter reports.
-#[derive(Debug, Clone, PartialEq)]
-pub struct FlexAllocation {
-    pub allocations: Vec<SourceAllocation>,
-    pub unallocated: u32,
-    /// A required claim got less than its floor.
-    pub escalation_needed: bool,
-    pub warnings: Vec<String>,
-}
-
-impl FlexAllocation {
-    /// The grant of the claim named `source_id`; 0 when no such claim was made.
-    pub fn granted(&self, source_id: &str) -> u32 {
-        self.allocations
-            .iter()
-            .find(|a| a.source_id == source_id)
-            .map_or(0, |a| a.allocated_tokens)
-    }
 }

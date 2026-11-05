@@ -256,7 +256,7 @@ impl LlmDeliberationFaculty {
                 // What her view's allocation bought; a server that refuses `tail_tools` gets the
                 // activity surface at the same grant, without her learned head.
                 let mut selected = if tail_refused {
-                    match self.surface.select_granted(&ws.room_affordances, view.tools_grant) {
+                    match self.surface.select_granted(&ws.room_affordances, &ws.held.move_commands(), view.tools_grant) {
                         Ok(activity) => activity.into_owned(),
                         Err(_) => view.tools.clone(), // unreachable in practice: the view ran this same activity selection at this grant and it succeeded
                     }
@@ -342,6 +342,8 @@ impl LlmDeliberationFaculty {
                         binding: Arc::clone(&binding),
                         calibration,
                         available: fit_window,
+                        // Her replies' density survives the refusal; the next reply prices at its bound again.
+                        density: self.density_on(&binding),
                     })));
                     continuum_base::probe!(
                         class = "delib.prompt.refit",
@@ -428,6 +430,7 @@ impl LlmDeliberationFaculty {
                         // No timing on the reply = nothing measured as reused = nothing rides free.
                         response.timing.as_ref().map_or(0, |t| t.cached_tokens),
                         fit_window,
+                        &response.model,
                     );
                     break (view, response);
                 }

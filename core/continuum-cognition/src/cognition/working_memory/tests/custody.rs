@@ -139,7 +139,7 @@ fn a_shed_moves_only_the_records_it_vouched_for() {
     wm.record_receipt_typed(&[], "newest", None, saved("vouched-c"));
     let seq_of = |h: &str| wm.snapshot().actions.iter().find(|r| r.handle.as_deref() == Some(h)).map(|r| r.seq).expect("test: seq");
     let (a, b) = (seq_of("vouched-a"), seq_of("vouched-b"));
-    wm.evict_resident_results_over(0, &|seq, handle| (seq == a && handle == "a-changed") || (seq == b && handle == "vouched-b"));
+    wm.evict_resident_results_over(0, &|id, handle| (id == RecordId::Act(a) && handle == "a-changed") || (id == RecordId::Act(b) && handle == "vouched-b"));
     let resident: Vec<_> = wm.snapshot().actions.into_iter().filter(|r| r.result.is_some()).filter_map(|r| r.handle).collect();
     assert_eq!(resident, ["vouched-a", "vouched-c"], "a changed since it was vouched for; only b moved");
 }
@@ -369,6 +369,8 @@ fn an_unsaved_result_keeps_its_bytes_through_a_shed_and_restore() {
 // saved output; one whose output can't be read stays a pointer, never a guessed size.
 #[test]
 fn a_restore_prices_a_legacy_evicted_result_from_its_saved_output() {
+    // It saves through the production store: the class is the test fixture's, never ~/.continuum.
+    crate::cognition::tool_executor::spill::prepare_store_fixture();
     let wm = WorkingMemory::new(8);
     let persona = Uuid::new_v4();
     let pin = crate::cognition::tool_executor::spill::LivePin::new();
@@ -395,18 +397,21 @@ fn a_restore_prices_a_legacy_evicted_result_from_its_saved_output() {
     assert_eq!(acts[1].stored, None, "an output that can't be read stays a pointer");
 }
 
-// what this catches: two entries sharing an occurrence after a restore (Codex on card 4ee623ad).
-// An occurrence is never checkpointed, so the checkpoint's shape is unchanged; restore numbers
-// every entry it brings back from the one counter, and the next append is distinct and newest.
+// what this catches: two entries sharing an occurrence after a restore (Codex on card 4ee623ad),
+// or a restore renumbering them (Cormac on #5782: renumbered after her thoughts, her settlements
+// moved after the thoughts that followed them). Occurrences are checkpointed and kept, one sequence
+// with her thoughts; the next append is distinct and newest.
 #[test]
 fn restored_and_appended_entries_never_share_an_occurrence() {
     let wm = WorkingMemory::new(8);
     wm.record_settlement("first", None);
     wm.record_settlement("second", None);
+    let kept: Vec<u64> = wm.recent_entries().iter().map(|entry| entry.occurrence).collect();
     let saved = serde_json::to_value(wm.snapshot()).expect("test: a snapshot serializes");
-    assert!(!saved.to_string().contains("occurrence"), "no occurrence in the checkpoint: {saved}");
     let restored = WorkingMemory::new(8);
     restored.restore(serde_json::from_value(saved).expect("test: the checkpoint loads"));
+    let restored_occurrences: Vec<u64> = restored.recent_entries().iter().map(|entry| entry.occurrence).collect();
+    assert_eq!(restored_occurrences, kept, "the restore keeps every occurrence");
     restored.record_settlement("after the restore", None);
     let occurrences: Vec<u64> = restored.recent_entries().iter().map(|entry| entry.occurrence).collect();
     let mut distinct = occurrences.clone();

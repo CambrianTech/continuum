@@ -3,7 +3,6 @@
     use super::*;
     use std::sync::Arc;
     use crate::ai::adapter::AIProviderAdapter;
-    use crate::persona::work_burst::{held_work_burst, own_recent_thoughts};
     use crate::ai::HeuristicInferenceAdapter;
     use crate::persona::instance_manager::PersonaInstanceInfo;
     use crate::persona::airc_citizen::StubAircCitizen;
@@ -152,263 +151,33 @@
         );
     }
 
-    // what this catches: the resume block carries HER newest thoughts only, oldest
-    // first, clipped — never another citizen's line, never a receipt.
-    // what this catches (glass-boxed 2026-09-06, Atlas on django-16899): the newest
-    // thought head-clipped to its orientation — "Let me carefully parse where I am…" —
-    // so every turn re-ran git status and the conclusion she had reached never
-    // reached her next turn. The newest thought's TAIL is the resume point.
-    #[test]
-    pub(super) fn the_newest_thought_resumes_from_its_conclusion_not_its_orientation() {
-        let me = Uuid::new_v4();
-        let row = |ms, text: &str| crate::persona::durable_history::RoomRow {
-            id: Uuid::new_v4(),
-            sender: me,
-            occurred_at_ms: ms,
-            media: Vec::new(),
-            text: text.to_string(),
-        };
-        let long = format!(
-            "💭 Let me carefully parse where I actually am right now. {} So the fix is: include the index in the label at checks.py:1040.",
-            "First, the ground truth from my own board and workspace. ".repeat(6)
-        );
-        let rows = vec![row(1, "💭 earlier orientation"), row(2, &long)];
-        let state = own_recent_thoughts(&rows, me, 2, 80);
-        assert_eq!(state.len(), 2);
-        assert!(
-            state[1].ends_with("include the index in the label at checks.py:1040."),
-            "{state:?}"
-        );
-        assert!(
-            !state[1].contains("carefully parse"),
-            "the orientation is what got dropped: {state:?}"
-        );
-    }
-
-    // what this catches (card 7e3e8070, reshaped by 3bd860ba): six acts on a held card
-    // with no file change surface the advisory checkpoint (a note, a blocker, who can
-    // help; never a release demand); an edit receipt resets the count and it stays away.
+    // what this catches (card 7e3e8070, reshaped by 3bd860ba): a write-less stretch on a held card
+    // surfaces the advisory checkpoint (a note, a blocker, who can help; never a release demand),
+    // and a hold whose start is unknown shows none rather than a guessed count. The count itself is
+    // her action log's (`working_memory::tests::action_log`).
     #[test]
     pub(super) fn six_acts_without_a_write_gate_the_work_turn_and_an_edit_resets_it() {
-        use crate::persona::work_burst::{acts_since_last_write, held_work_burst_gated, CardProgress, WRITE_OR_RELEASE_AFTER_ACTS};
-        let me = Uuid::new_v4();
-        let row = |ms, text: &str| crate::persona::durable_history::RoomRow {
-            id: Uuid::new_v4(),
-            sender: me,
-            occurred_at_ms: ms,
-            media: Vec::new(),
-            text: text.to_string(),
-        };
-        let looping = vec![
-            row(1, "💭 reading ⚙ code/read a.py ✓ ⚙ code/search x ✓"),
-            row(2, "💭 checking ⚙ code/run pytest ✓ ⚙ code/git/status ✓"),
-            row(3, "💭 more ⚙ code/read b.py ✓ ⚙ code/shell ls ✓"),
-        ];
-        assert_eq!(acts_since_last_write(&looping, me), 6);
-        let text = held_work_burst_gated(
-            &[],
-            &[],
-            acts_since_last_write(&looping, me),
-            &CardProgress::default(),
-        );
+        use crate::persona::work_burst::{held_work_burst_gated, WRITE_OR_RELEASE_AFTER_ACTS};
+        let text = held_work_burst_gated(Some(WRITE_OR_RELEASE_AFTER_ACTS));
         assert!(text.contains("[progress checkpoint]"), "{text}");
         assert!(text.contains("PASS: blocked"), "{text}");
         // regression (Kimi, d33e928a, 2026-09-26): a citizen mid-diagnosis read past the
         // one act that records progress, a note; the checkpoint names it.
         assert!(text.contains("work/note"), "{text}");
-
-        let mut edited = looping.clone();
-        edited.push(row(
-            4,
-            "💭 fixing ⚙ code/write witness_report.txt ✓ ⚙ code/run pytest ✓",
-        ));
-        assert_eq!(
-            acts_since_last_write(&edited, me),
-            1,
-            "an edit resets the count"
-        );
-        // regression for the 2026-09-11 pull→release loop: a claim (the pull) after a
-        // release starts a fresh count, so the new hold opens without the checkpoint.
-        let mut reclaimed = looping.clone();
-        reclaimed.push(row(4, "💭 next ⚙ work/release abcd ✓"));
-        reclaimed.push(row(5, "💭 pulled ⚙ work/claim ef01 ✓ ⚙ code/read c.py ✓"));
-        assert_eq!(
-            acts_since_last_write(&reclaimed, me),
-            1,
-            "a claim is a hold boundary: only the act after it counts"
-        );
-        let text = held_work_burst_gated(
-            &[],
-            &[],
-            acts_since_last_write(&edited, me),
-            &CardProgress::default(),
-        );
-        assert!(
-            !text.contains("[progress checkpoint]"),
-            "no checkpoint after an edit: {text}"
-        );
-        assert!(
-            WRITE_OR_RELEASE_AFTER_ACTS >= 4,
-            "the gate is not a hair trigger"
-        );
+        assert!(!held_work_burst_gated(Some(1)).contains("[progress checkpoint]"), "no checkpoint after an edit");
+        assert!(!held_work_burst_gated(None).contains("[progress checkpoint]"), "an unknown hold start shows none");
+        assert!(WRITE_OR_RELEASE_AFTER_ACTS >= 4, "the gate is not a hair trigger");
     }
 
-    // what this catches (card 516738b4): a work turn that re-reads what it read.
-    // Her ⚙ receipts already say which files she read and what she ran; the block
-    // must lead with them, de-duplicated, newest last, and say nothing on a fresh card.
+    // what this catches: a work-turn stimulus that commands instead of offering (the pass and its
+    // three reasons are hers, and the settle edge reads them), or one that lists her cards again
+    // beside her held-work items (each card is its own item there, with what she can do on it).
     #[test]
-    pub(super) fn a_held_card_carries_what_she_already_read_and_ran() {
-        use crate::persona::work_burst::{card_progress, held_work_burst_gated, progress_line, CardProgress};
-        let me = Uuid::new_v4();
-        let row = |ms, text: &str| crate::persona::durable_history::RoomRow {
-            id: Uuid::new_v4(),
-            sender: me,
-            occurred_at_ms: ms,
-            media: Vec::new(),
-            text: text.to_string(),
-        };
-        let rows = vec![
-            row(2, "💭 looking ⚙ code/read django/forms/fields.py ✓ ⚙ code/search MultiValueField ✓"),
-            row(1, "💭 first ⚙ work/get de33e1d6 ✓"),
-            row(3, "💭 again ⚙ code/read django/forms/fields.py ✓ ⚙ code/run pytest tests/forms_tests -k Multi ✗"),
-            row(4, "💭 fix ⚙ code/edit django/forms/fields.py ✓ ⚙ code/run pytest tests/forms_tests -k Multi ✓"),
-        ];
-        let p = card_progress(&rows, me);
-        assert_eq!(p.acts, 7);
-        assert_eq!(p.writes, 1);
-        assert_eq!(
-            p.read,
-            vec!["django/forms/fields.py".to_string()],
-            "paths only, de-duplicated"
-        );
-        assert_eq!(
-            p.searched,
-            vec!["MultiValueField".to_string()],
-            "a search term is not a read"
-        );
-        // Successful writes survive as concrete receipts; failed edits and
-        // another citizen's writes must not become her accomplishments.
-        assert_eq!(p.wrote, vec!["code/edit django/forms/fields.py"]);
-        let mut write_rows = rows.clone();
-        write_rows.push(row(5, "⚙ code/write failed.rs ✗"));
-        write_rows.push(row(6, "⚙ code/edit django/forms/fields.py ✓"));
-        write_rows.push(row(7, "⚙ work/note de33e1d6 ✓"));
-        let mut others = row(8, "⚙ code/write someone-elses.rs ✓");
-        others.sender = Uuid::new_v4();
-        write_rows.push(others);
-        let writes = card_progress(&write_rows, me);
-        assert_eq!(writes.wrote, vec!["code/edit django/forms/fields.py", "work/note de33e1d6"]);
-        let receipt = progress_line(&writes);
-        assert!(receipt.contains("Successful write receipts: code/edit django/forms/fields.py; work/note de33e1d6."));
-        assert!(!receipt.contains("failed.rs"));
-        assert!(!receipt.contains("someone-elses.rs"));
-        assert_eq!(p.ran.len(), 2);
-        assert!(p.ran[1].ends_with('✓'), "{:?}", p.ran);
-        let block = held_work_burst_gated(&[], &[], 0, &p);
-        assert!(
-            block.contains("[progress] Recent work receipts:"),
-            "{block}"
-        );
-        assert!(
-            block.contains("Already read: django/forms/fields.py."),
-            "{block}"
-        );
-        assert!(
-            block.contains("Already searched: MultiValueField."),
-            "{block}"
-        );
-        assert!(
-            block.find("[progress]").unwrap() < block.find("Your workspace holds").unwrap(),
-            "the note leads"
-        );
-        assert!(
-            progress_line(&CardProgress::default()).is_empty(),
-            "a fresh card carries no note"
-        );
-        assert!(
-            !held_work_burst_gated(&[], &[], 0, &CardProgress::default()).contains("[progress]")
-        );
-    }
-
-    #[test]
-    pub(super) fn her_last_thoughts_lead_the_work_turn_oldest_first() {
-        use crate::persona::durable_history::RoomRow;
-        let me = Uuid::new_v4();
-        let other = Uuid::new_v4();
-        let row = |sender, ms, text: &str| RoomRow {
-            id: Uuid::new_v4(),
-            sender,
-            occurred_at_ms: ms,
-            media: Vec::new(),
-            text: text.to_string(),
-        };
-        let rows = vec![
-            row(
-                me,
-                3,
-                "💭 lines 107-152: the bug is the total_degree branch",
-            ),
-            row(other, 4, "💭 not hers"),
-            row(me, 1, "💭 let me look at itermonomials"),
-            row(me, 2, "⚙ code/read ✓"),
-            row(
-                me,
-                5,
-                "💭 let me refocus and actually do work on this card now, really",
-            ),
-        ];
-        let state = own_recent_thoughts(&rows, me, 2, 40);
-        assert_eq!(state.len(), 2);
-        assert!(state[0].starts_with("💭 lines 107-152"), "{state:?}");
-        // The newest thought keeps its TAIL — the conclusion — not its opening.
-        assert!(
-            state[1].starts_with('…') && state[1].ends_with("on this card now, really"),
-            "newest keeps its conclusion: {state:?}"
-        );
-        let text = held_work_burst(&[], &state);
-        assert!(text.contains("resume from them"));
-        assert!(text.contains("lines 107-152"));
-    }
-
-    #[test]
-    pub(super) fn held_work_burst_names_cards_and_keeps_the_choice_hers() {
-        use airc_work::{CardState, Priority, RepoId, WorkCardId};
-        let card = airc_lib::WorkCard {
-            card_id: WorkCardId::new(),
-            repo: RepoId::new("acme/continuum").expect("valid repo id in fixture"),
-            title: "PROJECT [swe] psf__requests-2148".to_string(),
-            body: None,
-            priority: Priority::P1,
-            lane_id: None,
-            state: CardState::InProgress,
-            owner: None,
-            claim_provenance: None,
-            claim_id: None,
-            claim_expires_at_ms: None,
-            last_heartbeat_at_ms: None,
-            pull_request: None,
-            created_by: airc_core::PeerId::new(),
-            created_at_ms: 1_000_000,
-            updated_at_ms: 1_000_000,
-            reviews: None,
-            submissions: Vec::new(),
-            last_submission_rejection: None,
-        };
-        let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
-        let burst = held_work_burst(&[&card], &[]);
-        assert!(burst.contains(&id8), "short id must appear: {burst}");
-        assert!(
-            burst.contains("psf__requests-2148"),
-            "title must appear: {burst}"
-        );
-        // The choice stays hers — she PASSES to conclude, and the pass carries a
-        // reason (done/blocked/nothing) the deterministic settle edge reads. A
-        // burst that loses the pass-clause becomes a command; one that loses the
-        // reason words leaves the edge unable to tell done from blocked.
-        assert!(
-            burst.contains("PASS"),
-            "the pass choice stays hers: {burst}"
-        );
+    pub(super) fn the_work_turn_keeps_the_choice_hers_and_points_at_her_cards() {
+        let burst = crate::persona::work_burst::held_work_burst_gated(None);
+        assert!(burst.contains("[my work]"), "her cards are her held-work items: {burst}");
+        assert!(!burst.contains("- card "), "no card is listed again in the stimulus: {burst}");
+        assert!(burst.contains("PASS"), "the pass choice stays hers: {burst}");
         assert!(
             burst.contains("done") && burst.contains("blocked") && burst.contains("nothing"),
             "the pass must name its three reasons for the settle edge: {burst}"

@@ -52,7 +52,10 @@ pub(super) fn burst_fingerprint(
     }
     // The interior drive: her own claimed work. Cards, not chat — so this adds
     // self-origination without reopening the self-talk flood (see doc above). The
-    // source_id literal mirrors the "airc" literal above; `ActiveWorkSource` owns it.
+    // DEAD in production: `compose_for_turn` binds only the airc and roster sources, so no
+    // delivery here is `active-work` (and that source is gone: her held work is typed on the
+    // workspace, `persona::held_work`). Follow-up (Fable, STATE-DRIVEN-SURFACE.md): fold her held
+    // cards' states into this fingerprint from `persona::held_work` and delete this branch.
     for item in deliveries
         .iter()
         .filter(|d| d.source_id == "active-work")

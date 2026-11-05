@@ -35,6 +35,12 @@ impl WorkspaceCycle {
             None => burst.room.as_uuid(),
         };
         let room_affordances = self.room_affordances_for(activity_room_id);
+        // Her held work, read once for the tick: her surface and her view both follow it
+        // (STATE-DRIVEN-SURFACE.md). No body or a failed read carries none.
+        let held = match self.acting() {
+            Some(body) => crate::cognition::extensions::held_work(body.persona_id).await,
+            None => None,
+        };
         let mut ws = Workspace::from_burst(burst)
             .with_cycle(cycle)
             .with_attention(framing.attention)
@@ -42,6 +48,7 @@ impl WorkspaceCycle {
             .workspace_deliverable(framing.workspace_deliverable)
             .initiative(framing.initiative)
             .room_affordances(room_affordances)
+            .held_work(held.unwrap_or_default()) // unwrap_or_default: no read this tick carries no held work, never a fabricated board
             // #169: hand this turn the live streaming sink if the caller set one
             // (service_loop, just before a streamed Speak); `None` otherwise.
             .with_token_sink(self.current_token_sink());

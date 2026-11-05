@@ -114,6 +114,7 @@ impl ActionCommand for WorkSubmission {
         };
         Ok(WorkSubmissionResult {
             submission: WorkSubmitResult {
+                outcome: SubmitOutcome::Published,
                 submission_id: submission_uuid,
                 card_id: card_uuid,
                 room_id: room.channel.as_uuid(),

@@ -73,7 +73,7 @@ impl CitizenHealthModule {
         );
         for (id, hour) in candidates {
             let Some(rt) = registry.get(id) else { continue };
-            let holds_work = crate::persona::active_work_source::AircWorkReader::active_claims(rt.as_ref())
+            let holds_work = crate::persona::held_work::AircWorkReader::active_claims(rt.as_ref())
                 .await
                 .map_or(true, |cards| !cards.is_empty());
             if holds_work {
