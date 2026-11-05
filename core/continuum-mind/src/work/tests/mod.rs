@@ -522,31 +522,14 @@
             );
         }
 
-        /// what this catches: over-correcting into "self" and swallowing real
-        /// contention — the failure the #357 fix was careful to avoid. A DIFFERENT
-        /// live holder is a normal shared-board outcome and must still be named.
+        /// what this catches: another's card classified as a refusal reason. Anyone may take any
+        /// card (Joel, 2026-10-06), so a different holder, or a holder with no caller identity to
+        /// match, is never contention: a failed claim on it is a fault.
         #[test]
-        fn a_different_live_holder_is_still_reported_as_contention() {
-            let her = Uuid::new_v4();
-            let peer = Uuid::new_v4();
-            assert_eq!(
-                classify_refusal(Some(peer), Some(her)),
-                ClaimRefusal::HeldByPeer(peer),
-                "someone else's live claim is real contention and must name them"
-            );
-        }
-
-        /// what this catches: an unidentified caller silently classifying as
-        /// "yours". Identity absent is NOT identity matched — without a caller we
-        /// cannot claim the card is hers, so the holder is reported as a peer.
-        #[test]
-        fn an_unknown_caller_is_not_treated_as_the_holder() {
+        fn another_holder_is_never_a_refusal_reason() {
             let holder = Uuid::new_v4();
-            assert_eq!(
-                classify_refusal(Some(holder), None),
-                ClaimRefusal::HeldByPeer(holder),
-                "no caller identity means no self-match — never assume it is hers"
-            );
+            assert_eq!(classify_refusal(Some(holder), Some(Uuid::new_v4())), ClaimRefusal::Fault);
+            assert_eq!(classify_refusal(Some(holder), None), ClaimRefusal::Fault, "no caller identity is never hers");
         }
 
         /// what this catches: regression of the #357 rule through the new arm —

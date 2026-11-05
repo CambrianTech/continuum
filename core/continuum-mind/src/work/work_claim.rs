@@ -55,13 +55,23 @@ impl ActionCommand for WorkClaim {
                     )));
                 }
                 // THE PRECONDITION, at the mutation boundary, against the card as the board holds
-                // it now (`work_preconditions::claim`, the one owner the surface reads too): not a
-                // settled state, and nobody else's claim stands. Refused, she gets the card now and
+                // it now (`work_preconditions::claim`, the one owner the surface reads too): any card
+                // not in a settled state. Another's claim is taken over on the record by airc's
+                // claim (ClaimReleased naming them, then hers). Refused, she gets the card now and
                 // her moves on it, and the rejection stays in her perception past the receipt.
                 let now_ms = EpochMs::now().millis();
-                if let Err(refusal) = work_preconditions::decide(work_preconditions::claim(card, airc.peer_id(), now_ms), card, airc.peer_id(), now_ms) {
-                    crate::persona::claim_rejections::record(airc.peer_id().as_uuid(), &p.card_id, &refusal.to_string());
-                    return Err(super::refused(refusal));
+                match work_preconditions::decide(work_preconditions::claim(card, airc.peer_id(), now_ms), card, airc.peer_id(), now_ms) {
+                    Ok(work_preconditions::ClaimRoute::Takeover { from }) => continuum_base::probe!(
+                        class = "work.claim.taken_over",
+                        card_id = %card_id.as_uuid(),
+                        from = %from.as_uuid(),
+                        "a card someone else held is taken over on the record"
+                    ),
+                    Ok(work_preconditions::ClaimRoute::Fresh | work_preconditions::ClaimRoute::Resume) => {}
+                    Err(refusal) => {
+                        crate::persona::claim_rejections::record(airc.peer_id().as_uuid(), &p.card_id, &refusal.to_string());
+                        return Err(super::refused(refusal));
+                    }
                 }
             }
         }
@@ -93,19 +103,10 @@ impl ActionCommand for WorkClaim {
         let claim_id = match claim_attempt {
             Ok(id) => id,
             Err(e) => {
-                // Name the HOLDER, not just the fact (Joel, 2026-08-03, on
-                // Atlas's first live contention bounce: "It should tell you the
-                // peer"). A bare "already claimed" is a dead end; "claimed by
-                // <peer>" is a coordination move — ask them, watch their
-                // progress, or pick another card. Best-effort board read; the
-                // original error stands alone if the board is unreadable.
-                let mut msg = e.to_string();
-                // Whether the refusal is a CONTENTION (someone holds it) or a real
-                // fault decides the error CLASS below — a taken card is a normal
-                // outcome of a shared board, and telling a citizen "[internal]" for
-                // it teaches her the substrate is broken when the truth is "that one
-                // is Anwen's". Observed live 2026-08-06.
-                let mut contention = false;
+                // Another's card is never a refusal (it is taken over), so a failed claim is a fault,
+                // or a card she already holds. Best-effort board read; the original error stands
+                // alone if the board is unreadable.
+                let msg = e.to_string();
                 // Set when the live holder turns out to be the caller herself.
                 let mut already_yours = None;
                 let caller_short = ctx
@@ -149,22 +150,7 @@ impl ActionCommand for WorkClaim {
                         let holder = crate::cognition::work_preconditions::holder_on_record(card, now_ms).map(|o| o.as_uuid());
                         match classify_refusal(holder, caller_uuid) {
                             ClaimRefusal::AlreadyYours => already_yours = card.claim_id,
-                            ClaimRefusal::HeldByPeer(owner) => {
-                                contention = true;
-                                msg = format!(
-                                    "card {} (\"{}\") is held by peer {} [{}]. Coordinate with \
-                                     them in the room, or take another card — work/list with \
-                                     claimable=true lists every card you can pick up right now \
-                                     (most sit in the `claimed` column with a lapsed lease, so \
-                                     filtering by state=\"open\" will not show them). \
-                                     (claim error: {e})",
-                                    short8(card_id.as_uuid()),
-                                    card.title,
-                                    short8(owner),
-                                    state_str(&card.state),
-                                );
-                            }
-                            // Nobody is on it — the original error stands as written.
+                            // Not hers: the original error stands as written.
                             ClaimRefusal::Fault => {}
                         }
                     }
@@ -204,13 +190,7 @@ impl ActionCommand for WorkClaim {
                         &msg,
                     );
                 }
-                // A card someone else holds is a legitimate refusal, not a fault:
-                // `Denied` (the caller may not take THIS card), never `Internal`.
-                return Err(if contention {
-                    CommandError::Denied(msg)
-                } else {
-                    CommandError::Internal(msg)
-                });
+                return Err(CommandError::Internal(msg));
             }
         };
         // Ownership stands independently of provisioning. Return its outcome so the

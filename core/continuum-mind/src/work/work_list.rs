@@ -33,13 +33,12 @@ use super::*;
 /// where this went wrong, and an inline `if` is not something a test can reach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClaimRefusal {
-    /// The live holder IS the caller — she already owns this card. Not contention,
-    /// not a fault: the claim's goal ("this citizen holds this card") is already
-    /// true, so the verb is satisfied and must not manufacture a rival.
+    /// The live holder IS the caller — she already owns this card. Not a fault: the
+    /// claim's goal ("this citizen holds this card") is already true, so the verb is
+    /// satisfied and must not manufacture a rival.
     AlreadyYours,
-    /// A different peer genuinely holds it right now. A normal shared-board outcome.
-    HeldByPeer(Uuid),
-    /// Nobody holds it; whatever refused the claim was not a person.
+    /// Not hers: whatever refused the claim was not a person (another's card is taken over,
+    /// never refused, Joel 2026-10-06).
     Fault,
 }
 
@@ -49,8 +48,7 @@ pub(crate) fn classify_refusal(holder: Option<Uuid>, caller: Option<Uuid>) -> Cl
     match (holder, caller) {
         // Self-comparison FIRST: a caller who holds the card is never contention.
         (Some(h), Some(c)) if h == c => ClaimRefusal::AlreadyYours,
-        (Some(h), _) => ClaimRefusal::HeldByPeer(h),
-        (None, _) => ClaimRefusal::Fault,
+        _ => ClaimRefusal::Fault,
     }
 }
 

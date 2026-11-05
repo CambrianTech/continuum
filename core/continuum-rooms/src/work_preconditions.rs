@@ -190,6 +190,20 @@ pub enum StateRoute {
     Takeover { from: PeerId },
 }
 
+/// How `work/claim` executes on a card that is not settled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClaimRoute {
+    /// Nobody's claim stands: hers is the first.
+    Fresh,
+    /// Her own claim stands: it resumes.
+    Resume,
+    /// Another's claim stands (`from`). Anyone may take any card at any time (Joel, 2026-10-06:
+    /// default to more agency, pull back only on a demonstrated problem): airc records the takeover
+    /// (`ClaimReleased { taken_over_from }` by her, then her claim), and the previous holder learns
+    /// of it from that event.
+    Takeover { from: PeerId },
+}
+
 /// Every state `work/state` can be asked for, in canonical order: what the surface asks `state`
 /// about, so it offers the verb exactly when some request would execute.
 const STATE_TARGETS: &[CardState] =
@@ -250,17 +264,19 @@ pub fn holder_on_record(card: &WorkCard, now_ms: u64) -> Option<PeerId> {
     (live || on_record).then_some(owner)
 }
 
-/// `work/claim`: not a settled state, and nobody else's claim stands. Her own claim resumes (the
-/// verb answers with it). An unowned card in any working column is claimable end to end: the
-/// projection skips a claim only while a claim stands (apply.rs:285-300).
-pub fn claim(card: &WorkCard, actor: PeerId, now_ms: u64) -> Result<(), Unmet> {
+/// `work/claim`: any card not in a settled state, by anyone (Joel, 2026-10-06). Nobody's claim
+/// standing, hers is fresh; her own resumes (the verb answers with it); another's, live or on
+/// record, is taken over on the record (`ClaimRoute::Takeover`). An unowned card in any working
+/// column is claimable end to end (projection apply.rs:285-300).
+pub fn claim(card: &WorkCard, actor: PeerId, now_ms: u64) -> Result<ClaimRoute, Unmet> {
     if refused_by_claim(card.state) {
         return Err(Unmet::Settled(card.state));
     }
-    match holder_on_record(card, now_ms) {
-        Some(holder) if holder != actor => Err(Unmet::HeldBy(holder)),
-        Some(_) | None => Ok(()),
-    }
+    Ok(match holder_on_record(card, now_ms) {
+        Some(holder) if holder == actor => ClaimRoute::Resume,
+        Some(from) => ClaimRoute::Takeover { from },
+        None => ClaimRoute::Fresh,
+    })
 }
 
 /// `work/submit`: her own (not a review) card, not ended, under her claim. Review is allowed:
@@ -314,7 +330,7 @@ pub fn state(card: &WorkCard, actor: PeerId, requested: CardState, now_ms: u64) 
     match requested {
         CardState::Open if holds => Err(Unmet::OpenByHolder),
         CardState::InProgress if resumes_held_review(card, actor, now_ms) => Ok(StateRoute::ResumeReview),
-        CardState::Claimed | CardState::InProgress => claim(card, actor, now_ms).map(|()| StateRoute::ThroughClaim),
+        CardState::Claimed | CardState::InProgress => claim(card, actor, now_ms).map(|_| StateRoute::ThroughClaim),
         CardState::Open | CardState::Blocked | CardState::Review | CardState::Merged | CardState::Closed => {
             Ok(match holder_on_record(card, now_ms).filter(|holder| *holder != actor) {
                 Some(from) => StateRoute::Takeover { from },
@@ -338,7 +354,7 @@ pub fn resumes_held_review(card: &WorkCard, actor: PeerId, now_ms: u64) -> bool 
 /// `work/review`, the review is her own (no stated claim, no named parent).
 pub fn check(verb: WorkVerb, card: &WorkCard, actor: PeerId, now_ms: u64) -> Result<(), Unmet> {
     match verb {
-        WorkVerb::Claim => claim(card, actor, now_ms),
+        WorkVerb::Claim => claim(card, actor, now_ms).map(|_| ()),
         WorkVerb::Heartbeat | WorkVerb::Release => holder_claim(card, actor, &Request::any(now_ms)).map(|_| ()),
         // Offered exactly when some requested state would execute: the same function decides.
         WorkVerb::State => STATE_TARGETS
@@ -511,13 +527,13 @@ mod tests {
             assert_eq!(claim(&fixture_card(state, None, None, "x"), her(), NOW), Err(Unmet::Settled(state)));
         }
         let theirs = fixture_card(S::InProgress, Some(other()), None, "x");
-        assert_eq!(claim(&theirs, her(), NOW), Err(Unmet::HeldBy(other())));
+        assert_eq!(claim(&theirs, her(), NOW), Ok(ClaimRoute::Takeover { from: other() }));
         let mut lapsed = theirs.clone();
         lapsed.claim_expires_at_ms = Some(NOW - 1);
-        assert_eq!(claim(&lapsed, her(), NOW), Err(Unmet::HeldBy(other())), "on record: airc keeps it hers while she is away");
-        assert_eq!(claim(&fixture_card(S::InProgress, Some(her()), None, "x"), her(), NOW), Ok(()), "her own claim resumes");
+        assert_eq!(claim(&lapsed, her(), NOW), Ok(ClaimRoute::Takeover { from: other() }), "on record: taken over from its holder, named");
+        assert_eq!(claim(&fixture_card(S::InProgress, Some(her()), None, "x"), her(), NOW), Ok(ClaimRoute::Resume), "her own claim resumes");
         for state in [S::Open, S::Claimed, S::InProgress, S::Blocked] {
-            assert_eq!(claim(&fixture_card(state, None, None, "x"), her(), NOW), Ok(()), "{state:?} unowned");
+            assert_eq!(claim(&fixture_card(state, None, None, "x"), her(), NOW), Ok(ClaimRoute::Fresh), "{state:?} unowned");
         }
         let any = Request::any(NOW);
         assert_eq!(holder_claim(&theirs, her(), &any), Err(Unmet::HeldBy(other())));
@@ -540,7 +556,7 @@ mod tests {
         assert_eq!(state(&in_review, her(), S::InProgress, NOW), Ok(StateRoute::ResumeReview));
         assert_eq!(state(&in_review, other(), S::InProgress, NOW), Err(Unmet::Settled(S::Review)));
         let refusal = Refusal::at(Unmet::HeldBy(other()), &theirs, her(), NOW);
-        assert_eq!(refusal.next, vec![WorkVerb::Note, WorkVerb::State], "on another's card she can still write its ledger, or take it over");
+        assert_eq!(refusal.next, vec![WorkVerb::Claim, WorkVerb::Note, WorkVerb::State], "on another's card she can take it over, write its ledger, or move it");
     }
 
     // what this catches (Cormac on #5782): work/state executing for a non-holder on another's card
@@ -553,7 +569,13 @@ mod tests {
         for requested in [S::Blocked, S::Review, S::Closed, S::Open] {
             assert_eq!(state(&theirs, her(), requested, NOW), Ok(StateRoute::Takeover { from: other() }), "{requested:?}");
         }
-        assert_eq!(state(&theirs, her(), S::InProgress, NOW), Err(Unmet::HeldBy(other())), "working it is a claim, and the claim path decides");
+        assert_eq!(state(&theirs, her(), S::InProgress, NOW), Ok(StateRoute::ThroughClaim), "working it is a claim: the claim path takes it over");
+        // work/claim on another's held card: an attributed takeover, offered exactly as it executes.
+        for held in [S::Claimed, S::InProgress] {
+            let card = fixture_card(held, Some(other()), None, "x");
+            assert_eq!(claim(&card, her(), NOW), Ok(ClaimRoute::Takeover { from: other() }), "{held:?}");
+            assert!(available(&card, her(), NOW).contains(&WorkVerb::Claim), "the surface offers the takeover: {held:?}");
+        }
         let cards = [
             theirs.clone(),
             fixture_card(S::InProgress, Some(her()), None, "x"),
@@ -592,8 +614,8 @@ mod tests {
         let mut lapsing = fixture_card(S::InProgress, Some(other()), None, "x");
         lapsing.claim_id = None;
         lapsing.claim_expires_at_ms = Some(1_000);
-        assert_eq!(claim(&lapsing, her(), 999), Err(Unmet::HeldBy(other())), "live at the recorded time");
-        assert_eq!(claim(&lapsing, her(), 1_000), Ok(()), "expired at the recorded time, whatever the wall clock says");
+        assert_eq!(claim(&lapsing, her(), 999), Ok(ClaimRoute::Takeover { from: other() }), "live at the recorded time: taken over from its holder");
+        assert_eq!(claim(&lapsing, her(), 1_000), Ok(ClaimRoute::Fresh), "expired at the recorded time, whatever the wall clock says");
     }
 
     // what this catches: an unowned InProgress card advertised as unclaimable while airc claims it
@@ -624,7 +646,7 @@ mod tests {
         }
         let before = board.card(card_id).expect("created").clone(); // expect: created above
         assert_eq!((before.state, before.owner), (S::InProgress, None));
-        assert_eq!(claim(&before, her(), NOW + 2), Ok(()), "the precondition says claimable");
+        assert_eq!(claim(&before, her(), NOW + 2), Ok(ClaimRoute::Fresh), "the precondition says claimable");
         let claimed = WorkEvent::CardClaimed(WorkCardClaimed {
             selected_at_ms: None,
             card_id,
@@ -635,8 +657,37 @@ mod tests {
             origin: ClaimOrigin::Explicit,
         });
         board.apply(&claimed).expect("the projection accepts the claim"); // expect: test setup
-        let after = board.card(card_id).expect("still on the board"); // expect: claimed above
+        let after = board.card(card_id).expect("still on the board").clone(); // expect: claimed above
         assert_eq!((after.state, after.owner), (S::Claimed, Some(her())), "it lands Claimed under the new owner");
+
+        // A non-holder claims her held card (Joel, 2026-10-06): the precondition decides a takeover
+        // naming her, the surface offers it, and the events airc's claim publishes for it (the
+        // holder's claim released BY the taker, naming whom it was taken from, then the taker's
+        // claim) land under the new owner. She learns of it from that release.
+        assert_eq!(claim(&after, other(), NOW + 3), Ok(ClaimRoute::Takeover { from: her() }));
+        assert!(available(&after, other(), NOW + 3).contains(&WorkVerb::Claim), "surface and execution agree");
+        let released = WorkEvent::ClaimReleased(airc_work::ClaimReleased {
+            card_id,
+            claim_id: ClaimId::from_u128(0xc1),
+            owner: other(),
+            reason: Some("taken over".into()),
+            released_at_ms: NOW + 3,
+            taken_over_from: Some(her()),
+        });
+        let retaken = WorkEvent::CardClaimed(WorkCardClaimed {
+            selected_at_ms: None,
+            card_id,
+            claim_id: ClaimId::from_u128(0xc2),
+            owner: other(),
+            ttl_ms: 60_000,
+            claimed_at_ms: NOW + 3,
+            origin: ClaimOrigin::Explicit,
+        });
+        for event in [&released, &retaken] {
+            board.apply(event).expect("the projection accepts the takeover"); // expect: test setup
+        }
+        let taken = board.card(card_id).expect("still on the board"); // expect: claimed above
+        assert_eq!((taken.owner, taken.claim_id), (Some(other()), Some(ClaimId::from_u128(0xc2))), "taken over, on the record");
     }
 
     // what this catches: a verb or state the predicates do not answer (each `match` above has no
