@@ -838,3 +838,13 @@ publication was preserved. This is CI acceptance, not live acceptance. Deploy
 only the verified artifact through the supported lifecycle, with baseline,
 rollback and a 15-minute resident outcome gate. Fork-page reclaim and measured
 5c/5d scheduling validation remain unfinished.
+
+At 21:23Z, recovered slice-3 pool-growth regression was run explicitly and failed:
+a declined relaunch left both its request and admission hold live. PR #5794
+(`e5cd0745e7`) settles an equal/smaller target as a known refusal, allowing the
+existing post-ensure owner to reopen admission. Unknown readback remains pending.
+Both owner tests pass (none ignored), with shared-owner test isolation. CI and
+live validation remain pending. The M5's supported 584c deployment was deferred
+before stopping because its lifecycle gate is busy; the old 2069 slot was restored
+and verified. The code defect is reproduced; it is not yet proof of the complete
+live gate's cause. No forced restart or page deletion was performed.
