@@ -3,7 +3,8 @@
 
 use std::sync::Arc;
 
-use airc_lib::{Airc, WorkCardId};
+use airc_core::shown_id::ShownScope;
+use airc_lib::{Airc, ClaimId, WorkCardId};
 
 use crate::sdk_codegen::CommandError;
 
@@ -106,6 +107,21 @@ pub struct BoardHorizon {
     pub boards: Vec<(airc_lib::Room, airc_lib::WorkBoardProjection)>,
     /// `(room name, error)` for each subscribed room skipped this walk.
     pub unreadable: Vec<(String, String)>,
+}
+
+/// Every card her subscribed boards hold: where a card handle she was shown resolves
+/// (`Shown::resolve_in`). Each board names its own cards (airc-work's `BoardSnapshot` scope).
+impl ShownScope<WorkCardId> for BoardHorizon {
+    fn shown_ids(&self) -> Vec<WorkCardId> {
+        self.boards.iter().flat_map(|(_, board)| ShownScope::<WorkCardId>::shown_ids(&board.snapshot())).collect()
+    }
+}
+
+/// Every live claim on her subscribed boards: where a claim handle she was shown resolves.
+impl ShownScope<ClaimId> for BoardHorizon {
+    fn shown_ids(&self) -> Vec<ClaimId> {
+        self.boards.iter().flat_map(|(_, board)| ShownScope::<ClaimId>::shown_ids(&board.snapshot())).collect()
+    }
 }
 
 impl BoardHorizon {

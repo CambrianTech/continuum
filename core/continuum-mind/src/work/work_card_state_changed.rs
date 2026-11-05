@@ -19,17 +19,18 @@ pub(super) fn priority_str(p: Priority) -> &'static str {
 /// both bounced on "expected length 32". A handle a projection displays must
 /// be accepted by the verbs that consume it (positron consistency).
 ///
-/// The prefix/near-miss decision + candidate resolution now live in the shared
-/// [`continuum_base::id_resolve`] primitive (this was the proven outlier it was lifted
-/// from); here we supply the ONLY card-specific knowledge — the candidate set is
-/// the live board's card ids.
+/// The reading is airc's [`Shown`], the one owner of an id as it is typed back (ONE-ACT
+/// stage 6): a full UUID is exact, a prefix keeps every digit, a UUID one digit off reads
+/// as its short form. Where a card id lives is the horizon's [`airc_core::shown_id::ShownScope`]: the cards of
+/// her subscribed boards.
 pub(super) async fn resolve_card_id(
     airc: &std::sync::Arc<airc_lib::Airc>,
     s: &str,
 ) -> Result<WorkCardId, CommandError> {
-    // Fast path: a clean UUID needs no board read.
-    if let continuum_base::id_resolve::IdMatch::Full(id) = continuum_base::id_resolve::normalize(s) {
-        return Ok(WorkCardId::from_uuid(id));
+    // Fast path: a full id needs no board read.
+    let shown = shown::<WorkCardId>(s)?;
+    if let Some(id) = shown.full() {
+        return Ok(id);
     }
     let horizon = board_horizon(airc)
         .await
@@ -40,67 +41,44 @@ pub(super) async fn resolve_card_id(
 /// Resolve against an already-read view, so reading a card need not fold the
 /// subscribed boards again after expanding its short id.
 pub(super) fn resolve_card_id_in_boards(horizon: &BoardHorizon, s: &str) -> Result<WorkCardId, CommandError> {
-    if let continuum_base::id_resolve::IdMatch::Full(id) = continuum_base::id_resolve::normalize(s) {
-        return Ok(WorkCardId::from_uuid(id));
+    shown::<WorkCardId>(s)?.resolve_in(horizon).map_err(|e| refused::<WorkCardId>(horizon, s, e))
+}
+
+/// A typed-back id that named no candidate. An empty scope is the horizon's story to tell
+/// (outage, no rooms, or empty boards), not the resolver's "no cards exist".
+fn refused<T: ShownKind>(horizon: &BoardHorizon, s: &str, e: ShownIdError) -> CommandError {
+    match e {
+        ShownIdError::NoMatch { total: 0, .. } => horizon.not_found(T::LABEL, s),
+        e => CommandError::Invalid(e.to_string()),
     }
-    let candidates: Vec<Uuid> = horizon
-        .boards
-        .iter()
-        .flat_map(|(_, board)| {
-            board
-                .snapshot()
-                .cards
-                .into_iter()
-                .map(|c| c.card_id.as_uuid())
-        })
-        .collect();
-    // An empty candidate set is the horizon's story to tell (outage, no rooms, or
-    // empty boards), not the resolver's "no cards exist".
-    if candidates.is_empty() {
-        return Err(horizon.not_found("card", s));
-    }
-    continuum_base::id_resolve::resolve(s, &candidates, "card")
-        .map(WorkCardId::from_uuid)
-        .map_err(CommandError::Invalid)
+}
+
+/// `s` as an id typed back at a boundary, refused in the id type's own words.
+pub(super) fn shown<T: ShownKind>(s: &str) -> Result<Shown<T>, CommandError> {
+    Shown::try_from(s).map_err(|e| CommandError::Invalid(e.to_string()))
 }
 
 /// Resolve a claim id the same way [`resolve_card_id`] resolves cards (#164:
 /// short-form ids must resolve on EVERY id param, not just card_id). The board
 /// projection and the [work] grounding facts render claim ids in short form, so
 /// the lifecycle verbs (release/heartbeat) must accept the handle the persona
-/// was SHOWN. Candidates are the live board's claim ids; the prefix/near-miss
-/// decision is the shared `id_resolve` primitive — one resolution behavior for
-/// every id kind, no second copy of the rules.
+/// was SHOWN. Candidates are the horizon's live claims ([`airc_core::shown_id::ShownScope`]); the reading is
+/// [`Shown`] — one resolution behavior for every id kind, no second copy of the rules.
 pub(super) async fn resolve_claim_id(
     airc: &std::sync::Arc<airc_lib::Airc>,
     s: &str,
 ) -> Result<ClaimId, CommandError> {
-    if let continuum_base::id_resolve::IdMatch::Full(id) = continuum_base::id_resolve::normalize(s) {
-        return Ok(ClaimId::from_uuid(id));
+    let shown = shown::<ClaimId>(s)?;
+    if let Some(id) = shown.full() {
+        return Ok(id);
     }
     let horizon = board_horizon(airc)
         .await
         .map_err(|e| CommandError::Internal(format!("board read for claim resolution: {e}")))?;
-    let candidates: Vec<Uuid> = horizon
-        .boards
-        .iter()
-        .flat_map(|(_, board)| {
-            board
-                .snapshot()
-                .cards
-                .iter()
-                .filter_map(|c| c.claim_id.map(|id| id.as_uuid()))
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    // The identical outage shape as cards (Fable, #4299 review): an empty claim set
-    // during a failed walk is the horizon's story, never "no claims exist".
-    if candidates.is_empty() {
-        return Err(horizon.not_found("claim", s));
-    }
-    continuum_base::id_resolve::resolve(s, &candidates, "claim")
-        .map(ClaimId::from_uuid)
-        .map_err(|e| CommandError::Invalid(claim_gone_hint(e)))
+    shown.resolve_in(&horizon).map_err(|e| match refused::<ClaimId>(&horizon, s, e) {
+        CommandError::Invalid(why) => CommandError::Invalid(claim_gone_hint(why)),
+        other => other,
+    })
 }
 
 /// A claim id that resolves to nothing on a readable board has one dominant cause the
