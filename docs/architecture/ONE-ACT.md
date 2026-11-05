@@ -799,3 +799,14 @@ page custody. The serving crate passes `cargo check`; two mind-gate tests and
 verifies that the physical reclaimer can acquire custody while the mind waits.
 This is an integration checkpoint, not rollout acceptance: the combined HTTP
 handoff-to-publication test, current-canary integration and CI are still required.
+
+At 19:57Z, draft PR [#5793](https://github.com/CambrianTech/continuum/pull/5793)
+contains the connected implementation at `c3fb72c7e1`, merged with current canary
+`24e31fb919` including the scratch wake fix. A combined regression runs production
+preparation and HTTP save/erase, records the real validated proof with the owner,
+then publishes the waiter: no early free, saved page preserved, old lease refused.
+It replaces the ignored terminal-only gate, which incorrectly omitted physical
+reclamation. On this integrated head, 25 grant tests pass (none ignored), 45
+admission tests pass (six existing ignored), 39 slot tests pass, and the serving
+crate check passes. Exact-head CI is running. The PR remains draft and undeployed;
+fork-page limitations and measured scheduling validation remain as stated above.
