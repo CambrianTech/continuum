@@ -69,10 +69,21 @@ fn end(held: Option<(u32, crate::inference::resource_admission::Quiesced)>, reas
 
 /// Whether the running engine is due its one growth relaunch: the daemon asked for this process,
 /// and the target's pool is strictly larger than what the process reports holding. Unknown (no
-/// process, no reported pool) is never a growth.
+/// process, no reported pool) is never a growth. A known non-growing target settles
+/// the request so end_hold_if_decided reopens admission after ensure returns.
 pub(super) fn growth_due(running_pid: Option<u32>, running_pool: Option<u32>, target_pool: u64) -> bool {
     let (Some(pid), Some(running)) = (running_pid, running_pool) else { return false };
-    *REQUESTED.lock() == Some(pid) && target_pool > u64::from(running)
+    let mut requested = REQUESTED.lock();
+    if *requested != Some(pid) {
+        return false;
+    }
+    if target_pool <= u64::from(running) {
+        // A known refusal is terminal too. Otherwise the drained admission hold
+        // waits forever for a relaunch that this owner has decided not to perform.
+        *requested = None;
+        return false;
+    }
+    true
 }
 
 /// The growth was decided for `pid`: the request is spent, so a failed or partial relaunch never
@@ -87,20 +98,28 @@ pub(super) fn spend(pid: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Both tests drive the same process-global request and hold owner.
+    static OWNER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     // what this catches: the bridge relaunching more than once, downward, or for a process it
     // was not asked about. One request names one process; it acts only while the target is larger
     // and only until it is spent.
-    #[test]
-    fn an_engine_grows_once_upward_and_only_when_asked() {
+    #[tokio::test]
+    async fn an_engine_grows_once_upward_and_only_when_asked() {
+        let _owner = OWNER.lock().await;
         // A pid no other test in this binary uses.
         let pid = 4_000_000_001;
         assert!(!growth_due(Some(pid), Some(16_640), 257_536), "never asked: no growth");
         request(pid);
         assert!(!growth_due(Some(pid + 1), Some(16_640), 257_536), "asked for another process: stale");
         assert!(!growth_due(Some(pid), Some(257_536), 257_536), "not strictly larger: no relaunch");
+        assert!(!growth_requested(pid), "equal target settles the request");
+        request(pid);
         assert!(!growth_due(Some(pid), Some(300_000), 257_536), "downward never relaunches");
+        assert!(!growth_requested(pid), "smaller target settles the request");
+        request(pid);
         assert!(!growth_due(Some(pid), None, 257_536), "an unknown running pool is never a growth");
+        assert!(growth_requested(pid), "unknown readback is not a refusal");
         assert!(growth_due(Some(pid), Some(16_640), 257_536), "asked, and the target is larger: grow");
         spend(pid);
         assert!(!growth_due(Some(pid), Some(16_640), 257_536), "spent: once per engine");
@@ -113,8 +132,8 @@ mod tests {
     // spent, and `end_hold_if_decided` kept the hold for good. Driven through the reconcile's own
     // calls (llama_server/reconcile.rs: growth_due -> spend; serving launch.rs: end_hold_if_decided).
     #[tokio::test]
-    #[ignore = "ONE-ACT slice 3: no hold is taken whose release depends on an action the owner will refuse"]
     async fn a_hold_is_released_when_the_relaunch_it_waits_for_is_refused() {
+        let _owner = OWNER.lock().await;
         let hold = crate::capacity::dyno::recorded::Recorded::load()
             .expect("test: the recorded 2026-11-04 data parses")
             .unreleased_hold
