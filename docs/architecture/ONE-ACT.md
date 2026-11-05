@@ -376,6 +376,23 @@ memory and prediction error. Exercise duplicate delivery, cancellation, stale in
 network loss and restart: no double execution, no capacity double-spend, no premature source
 release and no loss of a valid page. A faster transfer alone is not a faster completed act.
 
+**Chunk evidence (M5, 2026-11-05 00:05Z; PAIRED `--batch-size` = `--ubatch-size`, not isolation of
+the physical chunk; Codex's warm_first trial: a primed 4,096 + 128-tail warm request, then a cold
+12,288-token prefill on the other slot 500 ms later; live flags incl. `--no-cache-idle-slots`;
+3 repeats each, within ms; cache 4,092/132 kept in all; raw
+`~/.continuum/evidence/codex-harness-20261104/chunk/`):**
+
+| paired batch | warm decode | warm WORST content gap | warm p95 gap | cold TTFT | cold wall | common wall |
+|---|---|---|---|---|---|---|
+| 512 | 41.8 tok/s | 0.75 s | 0.047 s | 20.1 s | 21.5 s | ~22.0 s |
+| 1024 | 44.9 | 1.21 | 0.047 | 17.6 | 19.0 | ~19.5 |
+| 2048 (live) | 32.7 | 2.23 | 0.047 | 16.9 | 18.4 | ~18.9 |
+
+The worst gap tracks the chunk (each prefill chunk is a decoder pause) and is invisible at p95.
+This supports measured-time chunking plus service-frequency control in the dispatcher, NOT a
+blanket setting: three points on one node and one workload. The eventual 5d gate keeps BOTH
+arrival orders (warm-first and cold-first) and the worst-gap metric.
+
 ### 5c. The operating point is measured, never a number
 
 No fixed count of residents, lanes, slots or sequences. RESIDENCY (which minds hold state on this
