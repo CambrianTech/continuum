@@ -5,9 +5,11 @@ use super::*;
 use crate::inference::sse_stream::warn_if_decode_collapsed;
 
 impl OpenAICompatibleAdapter {
+    /// Generate `request` under `terms` (`DispatchTerms::default()` = none beyond the lane's own).
     pub(super) async fn stream_checked(
         &self,
         request: TextGenerationRequest,
+        terms: crate::ai::types::DispatchTerms,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
         // Only require API key for providers that need auth
@@ -374,7 +376,7 @@ impl OpenAICompatibleAdapter {
         // ONE snapshot decides both where this request goes and whether it may carry its tail;
         // a tail the destination cannot take is refused, never dropped (Codex on #5491).
         let route = self.route_now(model, &endpoints);
-        crate::inference::request_body::finish_body(&self.config, &request, model, route.tail_tools, &mut body)?;
+        crate::inference::request_body::finish_body(&self.config, &request, model, route.tail_tools, terms.reasoning_budget, &mut body)?;
 
         // Make request — the endpoint base for THIS request's model. Normally the
         // runtime/config base; for the local serving gateway, a request for the
@@ -467,12 +469,12 @@ impl OpenAICompatibleAdapter {
 
         let exact_prompt_quote = self.exact_prompt_admission();
         // A request priced behind the engine's exact count is never sent without that count.
-        let priced_below_estimate = request.admission.is_some_and(|a| a.priced == crate::ai::types::PromptAdmission::EngineCounted);
+        let priced_below_estimate = terms.admission.is_some_and(|a| a.priced == crate::ai::types::PromptAdmission::EngineCounted);
         if priced_below_estimate && !exact_prompt_quote {
             return Err(crate::ai::inference_error::InferenceError::AdmissionUncounted { model: model.to_owned() });
         }
         // Whose grant the request was rendered against: re-checked at dispatch, after the lane wait.
-        let dispatch_admission = match (request.admission, request.persona_id.as_deref().map(uuid::Uuid::parse_str)) {
+        let dispatch_admission = match (terms.admission, request.persona_id.as_deref().map(uuid::Uuid::parse_str)) {
             (Some(admission), Some(Ok(persona))) => Some(crate::inference::lane_send::DispatchAdmission { persona, admission }),
             (Some(_), _) => {
                 return Err(crate::ai::inference_error::InferenceError::Protocol(

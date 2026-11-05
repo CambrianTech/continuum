@@ -336,7 +336,18 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
-        self.stream_checked(request, sink).await
+        self.stream_checked(request, crate::ai::types::DispatchTerms::default(), sink).await
+    }
+
+    /// The managed engine enforces a mind's dispatch terms itself: her think budget on the body,
+    /// her lease reserved at dispatch, a price below the estimate behind its exact count.
+    async fn generate_admitted(
+        &self,
+        request: TextGenerationRequest,
+        terms: crate::ai::types::DispatchTerms,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+        self.stream_checked(request, terms, sink).await
     }
 
     /// Create embeddings over the OpenAI-compatible `/v1/embeddings` endpoint.

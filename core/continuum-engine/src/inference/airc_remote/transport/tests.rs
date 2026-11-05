@@ -79,6 +79,7 @@ use crate::ai::types::{
     ChatMessage, FinishReason, MessageContent, TextGenerationRequest, TextGenerationResponse,
     UsageMetrics,
 };
+use uuid::Uuid;
 
 fn req(text: &str) -> RemoteInferenceRequest {
     RemoteInferenceRequest::new(TextGenerationRequest {
@@ -110,8 +111,6 @@ fn req(text: &str) -> RemoteInferenceRequest {
         purpose: None,
         persona_id: None,
         turn_bound: None,
-        admission: None,
-        reasoning_budget: None,
     })
 }
 

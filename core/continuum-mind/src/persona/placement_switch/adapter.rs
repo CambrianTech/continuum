@@ -560,6 +560,14 @@ impl AIProviderAdapter for PlacementSwitch {
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
         self.current().generate_stream_checked(request, sink).await
     }
+    async fn generate_admitted(
+        &self,
+        request: TextGenerationRequest,
+        terms: crate::ai::types::DispatchTerms,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+        self.current().generate_admitted(request, terms, sink).await
+    }
     async fn generate_text(
         &self,
         request: TextGenerationRequest,

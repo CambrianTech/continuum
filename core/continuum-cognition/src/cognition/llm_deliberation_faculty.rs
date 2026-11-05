@@ -767,6 +767,8 @@ pub mod test_support {
         pub live_window: Option<u32>,
         /// The adapter admits by the engine's exact prompt count (`counts_prompts_exactly`).
         pub counts_exactly: bool,
+        /// The dispatch terms of every request, in order (`generate_admitted`), aligned with `seen`.
+        pub terms_seen: Mutex<Vec<crate::ai::types::DispatchTerms>>,
         pub window_sequence: Mutex<VecDeque<u32>>,
         pub on_window_read: Mutex<Option<WindowReadHook>>,
         pub on_request: Mutex<Option<RequestHook>>,
@@ -780,6 +782,7 @@ pub mod test_support {
                 rejections: Mutex::new(VecDeque::new()),
                 live_window: None,
                 counts_exactly: false,
+                terms_seen: Mutex::new(Vec::new()),
                 window_sequence: Mutex::new(VecDeque::new()),
                 on_window_read: Mutex::new(None),
                 on_request: Mutex::new(None),
@@ -803,6 +806,16 @@ pub mod test_support {
         }
         fn counts_prompts_exactly(&self) -> bool {
             self.counts_exactly
+        }
+        /// Records the terms each request was dispatched under beside it (`terms_seen`).
+        async fn generate_admitted(
+            &self,
+            request: TextGenerationRequest,
+            terms: crate::ai::types::DispatchTerms,
+            sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
+        ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+            self.terms_seen.lock().expect("fixture terms log").push(terms); // JUSTIFIED: test fixture lock, never poisoned
+            self.generate_stream_checked(request, sink).await
         }
         fn live_served_window(&self) -> Option<u32> {
             // Inject the exact load → observation → publication interleaving

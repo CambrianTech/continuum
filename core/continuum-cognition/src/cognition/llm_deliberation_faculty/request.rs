@@ -132,6 +132,8 @@ impl LlmDeliberationFaculty {
         binding: &ModelBinding,
         context_window: u32,
         mut request: TextGenerationRequest,
+        // What the adapter enforces at dispatch (`DispatchTerms`): her think budget and admission.
+        terms: crate::ai::types::DispatchTerms,
         // The allocation her prompt was fitted under: the receipt carries it with the capture.
         allocation: Option<crate::ai::provenance::AllocationReceipt>,
         receipts: &mut Vec<crate::ai::provenance::GenerationReceipt>,
@@ -237,7 +239,7 @@ impl LlmDeliberationFaculty {
                     turn_bound,
                     None,
                 );
-                let result = adapter.generate_stream_checked(request, sink.clone()).await;
+                let result = adapter.generate_admitted(request, terms, sink.clone()).await;
                 witness.disarm();
                 result
             } else {
@@ -250,7 +252,7 @@ impl LlmDeliberationFaculty {
                     turn_bound,
                     Some(receiver),
                 );
-                let result = adapter.generate_stream_checked(request, sink).await;
+                let result = adapter.generate_admitted(request, terms, sink).await;
                 witness.disarm();
                 result
             }
@@ -397,8 +399,6 @@ impl LlmDeliberationFaculty {
             // The turn's bound on the wire: her measured expectation with headroom
             // (card ba82d0a0). Every waiting seam takes max(its floor, this).
             turn_bound: self.turn_bound(),
-            admission: None,
-            reasoning_budget: None,
         }
     }
 }

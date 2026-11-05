@@ -555,8 +555,9 @@ mod tests {
         assert_eq!(req.options.max_length, Some(120));
 
         // Regression: Kimi's 2026-09-30 capture succeeded but vision/look spent
-        // the entire completion allowance without description text. Exercise the
-        // actual dispatch payload through the shared gateway budget policy.
+        // the entire completion allowance without description text. A description is
+        // dispatched under its own purpose, whose body never thinks (`request_body::finish_body`),
+        // so its whole allowance is the description.
         for (max_length, allowance) in [(None, 500u64), (Some(120), 50), (Some(4000), 1000)] {
             let mut request = req.clone();
             request.options.max_length = max_length;
@@ -566,22 +567,12 @@ mod tests {
                 "aGVsbG8="
             );
             assert_eq!(params["maxTokens"], allowance);
-            let mut body = serde_json::json!({"max_tokens": params["maxTokens"]});
-            let budget = crate::inference::request_body::apply_reasoning_budget(
+            assert_eq!(
                 params["purpose"].as_str(),
-                None,
-                &mut body,
-            )
-            .expect("vision descriptions must reserve answer room");
-            assert_eq!(budget, allowance - allowance / 4);
-            assert_eq!(body["reasoning_budget_tokens"], budget);
+                Some(crate::inference::request_body::VISION_DESCRIPTION_PURPOSE),
+                "dispatched as a description: its body never thinks"
+            );
         }
-        let mut unrelated = serde_json::json!({"max_tokens": 500});
-        assert_eq!(
-            crate::inference::request_body::apply_reasoning_budget(None, None, &mut unrelated),
-            None
-        );
-        assert!(unrelated.get("reasoning_budget_tokens").is_none());
     }
 
     #[test]

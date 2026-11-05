@@ -144,8 +144,6 @@ async fn run_text_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, Op
         purpose: Some("models/try:text".to_string()),
         persona_id: None,
         turn_bound: None,
-        admission: None,
-        reasoning_budget: None,
     };
 
     let adapter = match registry.select(None, Some(model_id), InferenceDevice::default()) {
@@ -222,8 +220,6 @@ async fn run_vision_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, 
         purpose: Some("models/try:vision".to_string()),
         persona_id: None,
         turn_bound: None,
-        admission: None,
-        reasoning_budget: None,
     };
 
     let adapter = match registry.select(None, Some(model_id), InferenceDevice::default()) {

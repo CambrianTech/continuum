@@ -315,8 +315,8 @@ impl LlmDeliberationFaculty {
             // is built once, and a template's `max_tokens` from an earlier plan would
             // bound the reply to a window the prompt no longer leaves.
             request.max_tokens = Some(allowance);
-            let output_room = self.stamp_output_room(kind, &view, calibration, (fit_window, rendered_grant), &mut request);
-            sent_reasoning_budget = request.reasoning_budget;
+            let (terms, output_room) = self.dispatch_terms(kind, &view, calibration, (fit_window, rendered_grant), &request);
+            sent_reasoning_budget = terms.reasoning_budget;
             let allocation = view.allocation.clone().map(|allocation| crate::ai::provenance::AllocationReceipt { output_room, ..allocation });
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
             if rejected_prompt_tokens.is_some_and(|previous| estimated_prompt_tokens >= previous) {
@@ -333,7 +333,7 @@ impl LlmDeliberationFaculty {
             // previous value is also what keeps the initializer honest).
             sent_allowance = request.max_tokens.or(sent_allowance);
             let result = self
-                .generate_for_workspace(ws, &binding, fit_window, request, allocation, receipts)
+                .generate_for_workspace(ws, &binding, fit_window, request, terms, allocation, receipts)
                 .await?;
             gen_await_ms = gen_await_ms.saturating_add(started.elapsed().as_millis() as u64);
             match result {
@@ -519,13 +519,8 @@ impl LlmDeliberationFaculty {
         // (Cormac on #4409): the classifier records it at the allowance so the need ring
         // never learns the budget and contracts the next allowance geometrically.
         let allowance = sent_allowance.unwrap_or(view.completion_reserve); // unwrap_or: a request built with no max_tokens was bounded by the reserve alone
-        let reasoning_budget = match kind {
-            TurnKind::Pass => crate::inference::request_body::deliberation_reasoning_budget(
-                u64::from(allowance),
-            )
-            .map(|b| b as u32),
-            TurnKind::Act => sent_reasoning_budget,
-        };
+        // The think's bound the request carried (`act_room.rs`), for an act and a pass alike.
+        let reasoning_budget = sent_reasoning_budget;
         // The one classification, from what the response carries (an answer is text or a call;
         // a stream may not report usage), counted here before any await after the generation: a
         // cancellation at the read receipt below must not lose the stop of a generation that

@@ -144,8 +144,6 @@ pub async fn teacher_generate(
         purpose: Some("genome/teach".to_string()),
         persona_id: None,
         turn_bound: None,
-        admission: None,
-        reasoning_budget: None,
     };
 
     let response: TextGenerationResponse = adapter

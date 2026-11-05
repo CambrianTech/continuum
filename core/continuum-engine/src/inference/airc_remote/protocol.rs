@@ -194,8 +194,6 @@ mod tests {
             purpose: None,
             persona_id: None,
             turn_bound: None,
-            admission: None,
-            reasoning_budget: None,
         }
     }
 

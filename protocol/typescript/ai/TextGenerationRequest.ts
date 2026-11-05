@@ -2,7 +2,6 @@
 import type { ActiveAdapterRequest } from "./ActiveAdapterRequest";
 import type { ChatMessage } from "./ChatMessage";
 import type { NativeToolSpec } from "./NativeToolSpec";
-import type { RequestAdmission } from "./RequestAdmission";
 import type { ResponseFormat } from "./ResponseFormat";
 import type { ToolChoice } from "./ToolChoice";
 
@@ -75,17 +74,4 @@ personaId?: string,
  * floors govern alone. Serialized as serde's `{secs, nanos}` so the SERVING peer's
  * lane honours it too.
  */
-turnBound?: { secs: number, nanos: number }, 
-/**
- * THE STRICT ADMISSION GUARD this request was rendered under ([`RequestAdmission`]): the
- * window its prompt plus `max_tokens` must fit by the ENGINE'S exact count, the grant it was
- * rendered against (re-checked at dispatch, after any lane wait), and how its prompt was
- * priced. `None` = no guard beyond the lane's own window.
- */
-admission?: RequestAdmission, 
-/**
- * The think's bound for this request, sized by the caller from the mind's MEASURED output
- * need (an act: what her room holds past her measured answer), so the answer keeps its
- * room inside `max_tokens`. `None` = the purpose's own rule (`request_body::apply_reasoning_budget`).
- */
-reasoningBudget?: number, };
+turnBound?: { secs: number, nanos: number }, };

@@ -83,9 +83,10 @@ async fn an_act_carries_her_measured_room_the_guard_and_its_receipt() {
     let cap = request.max_tokens.expect("bounded");
     assert!(cap >= 434, "her measured think plus answer: {cap}");
     assert!(cap >= view.completion_reserve, "never below the reply's grant");
-    let budget = request.reasoning_budget.expect("an act's think is bounded by her need");
+    let terms = *adapter.terms_seen.lock().unwrap().last().expect("dispatched under terms"); // JUSTIFIED: test fixture lock, never poisoned
+    let budget = terms.reasoning_budget.expect("an act's think is bounded by her need");
     assert!(budget >= 338 && budget + 96 <= cap, "the answer keeps its room inside the cap: {budget} of {cap}");
-    let admission = request.admission.expect("every request carries the admission it was rendered under");
+    let admission = terms.admission.expect("every request carries the admission it was rendered under");
     assert_eq!((admission.window, admission.priced), (window, PromptAdmission::EngineCounted), "priced below the estimate only behind the engine's count");
     let allocation = receipts.last().and_then(|r| r.allocation.as_ref()).expect("the receipt names its allocation");
     assert_eq!(allocation.revision, env!("CONTINUUM_BUILD_GIT_SHA"), "the build that sized it");
@@ -166,7 +167,6 @@ async fn a_denser_prompt_than_her_samples_is_recapped_once_from_the_engines_coun
         let exact = (LlmDeliberationFaculty::framing_cost(request.system_prompt.as_deref().unwrap_or_default()) // unwrap_or_default: test fixture, no system prompt costs none
             + LlmDeliberationFaculty::messages_cost(&request.messages)
             + request.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of)) as u32; // map_or: no tools, no schemas
-        let window = request.admission?.window;
         (exact + request.max_tokens? >= window).then_some(InferenceError::ContextExceeded { requested: exact, available: window })
     }));
     let contribution = faculty.contribute(&ws).await.expect("a verdict");
@@ -225,9 +225,10 @@ async fn a_grant_that_shrinks_before_dispatch_re_renders_her_turn_against_it() {
     assert!(contribution.fault.is_none() && contribution.capacity_refusal.is_none(), "{:?}", contribution.fault);
     let seen = adapter.seen.lock().unwrap(); // JUSTIFIED: test fixture lock, never poisoned
     assert_eq!(seen.len(), 2, "the refused dispatch and one re-render");
-    let (stale, fresh) = (&seen[0], &seen[1]);
-    assert_eq!(stale.admission.map(|a| a.window), Some(rendered));
-    let admission = fresh.admission.expect("the re-render carries its admission");
+    let fresh = &seen[1];
+    let terms = adapter.terms_seen.lock().unwrap().clone(); // JUSTIFIED: test fixture lock, never poisoned
+    assert_eq!(terms[0].admission.map(|a| a.window), Some(rendered));
+    let admission = terms[1].admission.expect("the re-render carries its admission");
     assert_eq!((admission.window, admission.grant), (current, Some(current)), "rendered against the grant she has now");
     let prompt = LlmDeliberationFaculty::framing_cost(fresh.system_prompt.as_deref().unwrap_or_default()) // unwrap_or_default: test fixture
         + LlmDeliberationFaculty::messages_cost(&fresh.messages)

@@ -590,8 +590,6 @@ mod tests {
             purpose: None,
             persona_id: None,
             turn_bound: None,
-            admission: None,
-            reasoning_budget: None,
         }
     }
 
@@ -695,7 +693,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registers_and_round_trips_through_the_adapter_registry() {
+    async fn registers_and_round_trips_through_AdapterRegistry() {
         let mut registry = AdapterRegistry::new();
         registry.register(std::sync::Arc::new(HeuristicInferenceAdapter::new()), 99);
         assert!(registry.is_registered(HEURISTIC_PROVIDER_ID));

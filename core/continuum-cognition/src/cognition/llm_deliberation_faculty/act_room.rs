@@ -43,43 +43,44 @@ pub(super) fn request_allowance(kind: TurnKind, reserve: u32, window: u32, charg
     }
 }
 
-/// The think's bound inside an act's cap: the room her claim was granted past her MEASURED answer
-/// (the call and its serialization), so the answer always keeps its measured room; an unmeasured
-/// act keeps the answer's share of its grant, the rule every other turn has
-/// (`request_body::deliberation_reasoning_budget`). Never a fixed count. `None` when the grant
-/// leaves the think nothing.
+/// The think's bound inside a turn's cap: the room her reply claim was granted past her MEASURED
+/// answer (an act's call and its serialization, a pass's sentence), so the answer always keeps its
+/// measured room; unmeasured, past the smallest usable reply
+/// ([`LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS`], the reply claim's own floor). Never a
+/// fixed count or a share of the cap. `None` when the grant leaves the think nothing.
 pub(super) fn act_reasoning_budget(room: ActRoom, reserve: u32) -> Option<u32> {
-    match room {
-        ActRoom::Needs { answer, .. } => Some(reserve.saturating_sub(answer)).filter(|budget| *budget > 0),
-        ActRoom::Unmeasured => crate::inference::request_body::deliberation_reasoning_budget(u64::from(reserve))
-            .and_then(|budget| u32::try_from(budget).ok()),
-    }
+    let answer = match room {
+        ActRoom::Needs { answer, .. } => answer,
+        ActRoom::Unmeasured => LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS,
+    };
+    Some(reserve.saturating_sub(answer)).filter(|budget| *budget > 0)
 }
 
 impl LlmDeliberationFaculty {
-    /// Stamp a turn's request with the admission it was rendered under (its window, the grant it
-    /// was priced against, how its prompt was priced: the engine re-checks all three at dispatch,
-    /// after any lane wait), and an act's with its output room: the think's bound inside its cap.
-    /// Returns the receipt an act's allocation carries; a pass is left as its grant made it.
-    pub(super) fn stamp_output_room(
+    /// The terms a turn is dispatched under (`DispatchTerms`): the admission it was rendered under
+    /// (its window, the grant it was priced against, how its prompt was priced: the engine enforces
+    /// all three at dispatch, after any lane wait) and the think's bound inside its cap. With an
+    /// act's output-room receipt, which its allocation carries.
+    pub(super) fn dispatch_terms(
         &self,
         kind: TurnKind,
         view: &DeliberationPromptView,
         calibration: PromptCalibration,
         (window, grant): (u32, Option<u32>),
-        request: &mut TextGenerationRequest,
-    ) -> Option<crate::ai::provenance::OutputRoom> {
-        request.admission = Some(crate::ai::types::RequestAdmission { window, grant, priced: calibration.admission });
-        if kind != TurnKind::Act {
-            return None;
-        }
-        let cap = request.max_tokens?;
-        request.reasoning_budget = act_reasoning_budget(view.act_room, view.completion_reserve);
+        request: &TextGenerationRequest,
+    ) -> (crate::ai::types::DispatchTerms, Option<crate::ai::provenance::OutputRoom>) {
+        let terms = crate::ai::types::DispatchTerms {
+            admission: Some(crate::ai::types::RequestAdmission { window, grant, priced: calibration.admission }),
+            reasoning_budget: act_reasoning_budget(view.act_room, view.completion_reserve),
+        };
+        let Some(cap) = request.max_tokens.filter(|_| kind == TurnKind::Act) else {
+            return (terms, None);
+        };
         let (density_estimated, density_measured) = calibration.density();
         let room = crate::ai::provenance::OutputRoom {
             model: request.model.clone().unwrap_or_default(), // unwrap_or_default: a request naming no model is the adapter's default, said as empty
             cap,
-            reasoning_budget: request.reasoning_budget,
+            reasoning_budget: terms.reasoning_budget,
             need: view.act_room.needed(),
             density_estimated,
             density_measured,
@@ -92,14 +93,14 @@ impl LlmDeliberationFaculty {
             build = env!("CONTINUUM_BUILD_GIT_SHA"),
             window,
             cap,
-            reasoning_budget = room.reasoning_budget.map_or(0, u64::from), // map_or: 0 on the receipt = the purpose's share rule
+            reasoning_budget = room.reasoning_budget.map_or(0, u64::from), // map_or: 0 on the receipt = no bound on the think
             need = room.need.map_or(0, u64::from), // map_or: 0 on the receipt = unmeasured
             density_estimated,
             density_measured,
             admission = ?room.admission,
             "an act's output room as sent: think plus answer in one cap, priced at her measured density"
         );
-        Some(room)
+        (terms, Some(room))
     }
 
     /// An act refused because her measured output need does not fit her window: never sent, her

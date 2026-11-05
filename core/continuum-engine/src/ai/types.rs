@@ -329,25 +329,24 @@ pub struct TextGenerationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "{ secs: number, nanos: number }")]
     pub turn_bound: Option<std::time::Duration>,
-    /// THE STRICT ADMISSION GUARD this request was rendered under ([`RequestAdmission`]): the
-    /// window its prompt plus `max_tokens` must fit by the ENGINE'S exact count, the grant it was
-    /// rendered against (re-checked at dispatch, after any lane wait), and how its prompt was
-    /// priced. `None` = no guard beyond the lane's own window.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+}
+
+/// The terms a mind's turn is DISPATCHED under, beside its request: what the faculty decided when
+/// it rendered the request, which the adapter enforces at dispatch
+/// (`AIProviderAdapter::generate_admitted`). Not part of the wire request: an adapter that cannot
+/// enforce them refuses typed rather than sending without them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DispatchTerms {
+    /// The strict admission guard it was rendered under; `None` = the lane's own window only.
     pub admission: Option<RequestAdmission>,
-    /// The think's bound for this request, sized by the caller from the mind's MEASURED output
-    /// need (an act: what her room holds past her measured answer), so the answer keeps its
-    /// room inside `max_tokens`. `None` = the purpose's own rule (`request_body::apply_reasoning_budget`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    /// The think's bound inside `max_tokens`, sized from her MEASURED output need (her grant past
+    /// her measured answer), so the answer keeps its room. `None` = no bound on the think.
     pub reasoning_budget: Option<u32>,
 }
 
 /// How a prompt's price is admitted: whether a price below its estimate is backed by the engine's
 /// exact count of the finalized body.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/ai/PromptAdmission.ts")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptAdmission {
     /// No engine count: a prompt is never priced below its estimate.
@@ -363,17 +362,13 @@ pub enum PromptAdmission {
 /// against a 148,838 window, her grant shrank to 40,282 0.6 s later while she waited 26.3 s for a
 /// lane, and the engine counted 139,007 tokens and SENT it (3.45x her grant), because the only
 /// count check compared against the slot's window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/ai/RequestAdmission.ts")]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequestAdmission {
     /// The window prompt plus `max_tokens` must fit strictly, by the engine's exact count.
     pub window: u32,
     /// Her grant on the shared pool when the request was rendered; at dispatch her CURRENT grant
     /// must equal it, or the request is refused (`InferenceError::GrantChanged`) and re-rendered.
     /// `None` = not on the shared pool (no grant to re-check).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub grant: Option<u32>,
     /// How its prompt was priced: below the estimate only behind the engine's count.
     pub priced: PromptAdmission,
