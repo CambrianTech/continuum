@@ -16,7 +16,7 @@ async fn a_minds_concurrent_acts_run_one_after_another_in_order_and_none_is_drop
     let client = reqwest::Client::new();
     let (her, other) = (Uuid::new_v4(), Uuid::new_v4());
     let page = |persona| PageKey::mind(persona).expect("test: non-nil id");
-    let admit = |key: PageKey| admit_turn(&lanes, Some(key), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO);
+    let admit = |key: PageKey| admit_turn(&lanes, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO);
 
     // Each act completes its generation, so her slot stays attributed to her for the next.
     let mut first = admit(page(her)).await.expect("test: her first act is admitted");
@@ -25,7 +25,7 @@ async fn a_minds_concurrent_acts_run_one_after_another_in_order_and_none_is_drop
     let queued = |n: u32| {
         let (lanes, pool, client, finished) = (lanes.clone(), pool.clone(), client.clone(), finished.clone());
         tokio::spawn(async move {
-            let mut act = admit_turn(&lanes, Some(page(her)), Some(pool), &client, root, 100, std::time::Duration::ZERO)
+            let mut act = admit_turn(&lanes, crate::inference::slots::SlotClass::Turn, Some(page(her)), Some(pool), &client, root, 100, std::time::Duration::ZERO)
                 .await
                 .expect("test: a queued act is admitted, never dropped");
             finished.lock().push((n, act.slot(), act.page_in()));

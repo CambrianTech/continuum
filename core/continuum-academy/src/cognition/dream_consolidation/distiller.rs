@@ -349,35 +349,22 @@ impl SemanticDistiller {
             turn_bound: None,
         };
 
-        // Take a NON-directed serving lane before the dream's model call. Dream
-        // distillation is InferenceHeavy background work, but UNGUARDED it called
-        // the adapter directly and grabbed a physical llama decode lane WITHOUT
-        // counting against the non-directed budget — silently bypassing the #139
-        // reservation that always holds one lane for a directed chat turn. A
-        // directed reply then queued INSIDE llama behind the dream, so an idle
-        // persona looked comatose and unresponsive (glass-boxed live 2026-07-26:
-        // 4 personas dreamed continuously 00:00→05:03, no reply to direct chat).
-        // Acquiring the permit here caps ALL dream inference at MAX_LANES-1 and
-        // guarantees a waiting chat turn wins the lane — the same guarantee the
-        // turn path already relies on (llm_deliberation_faculty acquires it too).
-        // Held across the generate call, released on drop.
+        // A DREAM YIELDS TO RESIDENTS, and engine admission owns how (`SlotClass::Dream`,
+        // `turn_admission::admit`, card 920c43bc). Unguarded, a dream once took any decode
+        // lane and a directed reply queued inside llama behind it (2026-07-26: 4 personas
+        // dreamed 00:00->05:03, no reply to direct chat). Now a dream is pinned to the
+        // scratch slot, one at a time and never a resident's; where no scratch slot exists
+        // it borrows a citizen slot and admission takes an ambient lane first, so a waiting
+        // turn still wins. This call took that lane itself, before generate, and so held a
+        // resident's lane while queued on the scratch slot (M5 0b2854327, 01:24-01:50Z:
+        // Aiko waited 1,141 s behind queued dreams with two slots idle).
         //
-        // DEFER BEFORE THE LANE (2026-08-29, the leaked-permit ledger): this call
-        // acquired the lane and THEN parked at the adapter's measured-hold defer —
-        // holding the very permit the held solve's next generation needed. Two
-        // such dreams drained the whole pool; the solve starved at every tick-2
-        // (grants=3/releases=1, both leaks timestamp-paired to dream defers).
-        // The rule every path owes: hold-defer FIRST holding NOTHING, gates second.
+        // DEFER BEFORE ANY GATE (2026-08-29, the leaked-permit ledger): hold-defer first,
+        // holding nothing; every gate after it is admission's.
         crate::inference::measured_hold::defer_while_held(
             crate::inference::slots::class_for(request.purpose.as_deref()),
             persona_id,
             request.purpose.as_deref(),
-        )
-        .await;
-        let _lane = crate::inference::resource_admission::acquire_serving_lane(
-            persona_id,
-            crate::inference::resource_admission::LanePriority::Ambient,
-            None,
         )
         .await;
         let response = self
