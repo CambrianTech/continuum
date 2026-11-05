@@ -588,3 +588,46 @@ PHASE3B-WORKING-MEMORY-PLAN's RAG token budget.
 - Fable: (pending)
 - Codex: direction agreed (2026-11-04); signature pending these corrections, now folded in
 - Cormac: stages 6 and 7 and the cancellation ruling agreed (2026-11-04), with his two receipt corrections applied; rest pending
+
+## Takeover evidence receipt — 2026-11-05 15:15Z
+
+The shared implementation status is now: slice 2 (#5779) merged as `631502fcf6`,
+lease/output admission (#5787) as `d04fe4594d`, and typed tool calls (#5790) as
+`9a0f610d5b`. All checks passed on #5790's integrated head `9ef326dda9` before merge.
+Binary publication is still running; this is CI evidence, not installed or live proof.
+IntelMac directly answered `ping` with `147694174`; M5 with `2069cb248`.
+
+The admission validator itself has not been recovered or completed. Before constructing it,
+Codex recovered the full [IntelMac evidence](https://gist.github.com/joelteply/90f98f20980705433573ad32d68aad1c)
+and the M5 SSE arrival records, and executed an independent arithmetic check:
+
+| IntelMac active cold requests | Aggregate prompt tokens | Wall seconds | Aggregate tokens/s |
+|---|---:|---:|---:|
+| 1 | 4,641 | 67.946 | 68.304 |
+| 2 | 9,282 | 136.450 | 68.025 |
+| 4 | 18,564 | 293.819 | 63.182 |
+| 9 | 41,769 | 681.234 | 61.314 |
+
+Every rate reproduced `sum(prompt_n) / wall_s`; every trial had the expected request
+count and no recorded request error. One is the maximum observed throughput concurrency;
+these single trials do not establish a statistical knee. Keep this CPU curve node-specific.
+
+For the M5 warm-first pair, three trials per chunk size reproduced these measurements:
+
+| Prefill chunk tokens | Largest observed SSE content gap, seconds | Median warm decode tokens/s | Median cold completion, seconds |
+|---|---:|---:|---:|
+| 512 | 0.756 | 41.828 | 21.713 |
+| 1,024 | 1.212 | 44.859 | 19.036 |
+| 2,048 | 2.236 | 32.710 | 18.362 |
+
+Raw M5 source: `~/.continuum/evidence/codex-harness-20261104/chunk/b{512,1024,2048}`.
+These are SSE content gaps, not measured engine scheduling boundaries or proven upper
+bounds. A content chunk can contain several tokens. They do not validate cold-first or
+four/nine cold-arrival traces. The simulator must keep those missing cases explicit,
+separate the cold-concurrency policy invariant from latency/fairness/completion gates,
+and validate against the recorded hour before predicting other workloads.
+
+Reproduction and copied evidence on the takeover host:
+`C:/Users/joelt/.continuum/evidence/2026-11-05-recovery/check-admission-evidence.py`.
+Its outputs are `admission-curve-validation.json` and `m5-chunk-validation.json`.
+No live setting was changed to obtain these results.
