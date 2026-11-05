@@ -17,6 +17,7 @@
 
     mod one_act_per_mind;
     mod lifecycle;
+    mod restore_refusal;
     mod stamped_admission;
     mod page_liveness;
     mod queued_dream;

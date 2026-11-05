@@ -88,6 +88,14 @@ impl Quiescer {
     }
 }
 
+/// A real hold on a gate of its own, so a test can take one without holding the process's
+/// admission (every other test in the binary admits through the global gate).
+#[cfg(any(test, feature = "test-fixtures"))]
+pub async fn quiesced_fixture() -> Option<Quiesced> {
+    let gate: &'static Quiescer = Box::leak(Box::new(Quiescer::new()));
+    gate.quiesce().await
+}
+
 /// One request's place in admission, from entry until its permit (or its cancelled wait) drops.
 #[derive(Debug)]
 pub struct AdmissionEntry(&'static Quiescer);

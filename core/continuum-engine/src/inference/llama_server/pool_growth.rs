@@ -105,4 +105,42 @@ mod tests {
         spend(pid);
         assert!(!growth_due(Some(pid), Some(16_640), 257_536), "spent: once per engine");
     }
+
+    // what this catches (the M5, 2026-11-04 18:00:46-18:16Z: admission held 15 min 14 s, zero
+    // generations): a hold whose release depends on an action its owner refuses. The daemon
+    // quiesced admission and asked engine `pid` to grow; the ensure's launch planner then carried
+    // a target no larger than the running pool, so `growth_due` was false, the request was never
+    // spent, and `end_hold_if_decided` kept the hold for good. Driven through the reconcile's own
+    // calls (llama_server/reconcile.rs: growth_due -> spend; serving launch.rs: end_hold_if_decided).
+    #[tokio::test]
+    #[ignore = "ONE-ACT slice 3: no hold is taken whose release depends on an action the owner will refuse"]
+    async fn a_hold_is_released_when_the_relaunch_it_waits_for_is_refused() {
+        let hold = crate::capacity::dyno::recorded::Recorded::load()
+            .expect("test: the recorded 2026-11-04 data parses")
+            .unreleased_hold
+            .value;
+        let pid = 4_000_000_006; // a pid no other test in this binary uses
+        let held = crate::inference::resource_admission::quiesced_fixture()
+            .await
+            .expect("test: a fresh gate quiesces");
+        request_pool_growth(pid, held);
+        // The ensure: the planner's target is not larger than the running pool, so no relaunch.
+        let relaunch = growth_due(Some(pid), Some(hold.running_pool), hold.target_pool);
+        if relaunch {
+            spend(pid);
+        }
+        end_hold_if_decided();
+        let still_held = HELD.lock().as_ref().is_some_and(|(held_for, _)| *held_for == pid);
+        let still_requested = growth_requested(pid);
+        // Leave nothing behind for another test, whatever the verdict.
+        spend(pid);
+        end_hold_if_decided();
+        assert!(!relaunch, "test: the recorded ensure refused the relaunch");
+        assert!(
+            !still_held && !still_requested,
+            "admission stays held (held {still_held}, requested {still_requested}) for a relaunch the planner refused \
+             (the M5 held it {} ms with zero generations)",
+            hold.held_ms
+        );
+    }
 }

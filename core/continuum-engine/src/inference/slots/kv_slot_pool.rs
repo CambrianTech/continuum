@@ -365,6 +365,19 @@ impl KvSlotPool {
         Some(dir.join(page_filename(key)).is_file())
     }
 
+    /// Whether `key`'s page is confirmed (restorable) in this pool now: what a test outside the
+    /// slots module asserts a refusal kept or removed.
+    #[cfg(test)]
+    pub(crate) fn confirms(&self, key: &PageKey) -> bool {
+        self.saved.lock().contains(key)
+    }
+
+    /// The confirmed-save ledger file beside this pool's pages, when it has one.
+    #[cfg(test)]
+    pub(crate) fn ledger_path(&self) -> Option<std::path::PathBuf> {
+        Some(self.ledger.get()?.path.clone())
+    }
+
     /// Record that `key`'s page was successfully written to disk — it becomes
     /// restorable. Called by the adapter AFTER the save HTTP call succeeds.
     pub fn note_saved(&self, key: PageKey) {

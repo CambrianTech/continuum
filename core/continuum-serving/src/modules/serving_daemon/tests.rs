@@ -551,4 +551,6 @@ mod publication;
 use publication::test_pin_store;
 mod reconciliation;
 mod one_launch;
+/// The ONE-ACT dyno's launch reproductions (`continuum_engine::capacity::dyno`).
+mod dyno;
 mod teacher;

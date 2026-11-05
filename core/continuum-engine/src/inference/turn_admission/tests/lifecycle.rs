@@ -16,19 +16,49 @@ use axum::{
 use std::collections::HashMap;
 
 /// What each slot of the fake engine holds: `Some("mind:tokens")` or empty.
-type Slots = Arc<std::sync::Mutex<HashMap<u32, String>>>;
+pub(super) type Slots = Arc<std::sync::Mutex<HashMap<u32, String>>>;
 
-/// Holds the fake engine's saves while `held`: `arrived` fires when a save reaches the
-/// engine, and the save answers once `release` is notified. A save in flight, on demand.
+/// The fake engine's controls. Holds its saves while `held`: `arrived` fires when a save
+/// reaches the engine, and the save answers once `release` is notified (a save in flight, on
+/// demand). With `cells`, restores obey a unified pool of that many cells the way the engine
+/// does (the dyno, `capacity::dyno`): a page larger than the pool, or one that does not fit
+/// beside what the other slots hold, is refused 400 in the engine's own words; a scripted
+/// refusal answers the next restore first. Without either, every restore succeeds.
 #[derive(Default)]
-struct SaveHold {
+pub(super) struct SaveHold {
     held: std::sync::atomic::AtomicBool,
     arrived: tokio::sync::Notify,
     release: tokio::sync::Notify,
+    pub(super) cells: std::sync::Mutex<Option<u64>>,
+    pub(super) scripted: std::sync::Mutex<std::collections::VecDeque<String>>,
+    /// Restores that reached the engine, and how many it refused.
+    pub(super) restores: std::sync::atomic::AtomicUsize,
+    pub(super) refused: std::sync::atomic::AtomicUsize,
+}
+
+/// The tokens a slot's or page's "mind:tokens" holds.
+fn held_tokens(held: &str) -> u64 {
+    held.rsplit(':').next().and_then(|t| t.parse().ok()).unwrap_or(0) // unwrap_or: an empty slot holds no cells
+}
+
+impl SaveHold {
+    /// Why the engine refuses restoring `page` into `slot` now, if it does.
+    fn refusal(&self, slots: &HashMap<u32, String>, slot: u32, page: &str) -> Option<String> {
+        if let Some(scripted) = self.scripted.lock().expect("test: fixture mutex").pop_front() {
+            return Some(scripted);
+        }
+        let cells = (*self.cells.lock().expect("test: fixture mutex"))?;
+        let tokens = held_tokens(page);
+        if tokens > cells {
+            return Some(crate::capacity::dyno::recorded::exceeds_pool_refusal(tokens, cells));
+        }
+        let beside: u64 = slots.iter().filter(|(s, _)| **s != slot).map(|(_, held)| held_tokens(held)).sum();
+        (beside + tokens > cells).then(|| crate::capacity::dyno::recorded::free_cells_refusal(tokens))
+    }
 }
 
 /// A fake engine whose saves and restores move slot contents through `dir`.
-async fn fake_engine(dir: std::path::PathBuf) -> (String, Slots, Arc<SaveHold>, tokio::task::JoinHandle<()>) {
+pub(super) async fn fake_engine(dir: std::path::PathBuf) -> (String, Slots, Arc<SaveHold>, tokio::task::JoinHandle<()>) {
     let slots: Slots = Arc::default();
     let hold: Arc<SaveHold> = Arc::default();
     async fn page(
@@ -36,7 +66,8 @@ async fn fake_engine(dir: std::path::PathBuf) -> (String, Slots, Arc<SaveHold>, 
         Path(slot): Path<u32>,
         Query(query): Query<HashMap<String, String>>,
         Json(body): Json<serde_json::Value>,
-    ) -> Json<serde_json::Value> {
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
         let file = dir.join(body["filename"].as_str().expect("test: a page names its file"));
         let action = query.get("action").map(String::as_str).unwrap_or("restore"); // unwrap_or: the fixture reads a bare request as a restore
         if action == "save" && hold.held.load(std::sync::atomic::Ordering::Acquire) {
@@ -45,16 +76,23 @@ async fn fake_engine(dir: std::path::PathBuf) -> (String, Slots, Arc<SaveHold>, 
         }
         let mut slots = slots.lock().expect("test: fixture mutex");
         match action {
-            "save-size" => Json(json!({"id_slot": slot, "filename": body["filename"], "projected_bytes": 100})),
+            "save-size" => Json(json!({"id_slot": slot, "filename": body["filename"], "projected_bytes": 100})).into_response(),
             "save" => {
                 let held = slots.get(&slot).cloned().unwrap_or_default(); // unwrap_or_default: an empty slot saves an empty page
                 std::fs::write(&file, held).expect("test: page write");
-                Json(json!({"id_slot": slot, "filename": body["filename"], "n_saved": 10}))
+                Json(json!({"id_slot": slot, "filename": body["filename"], "n_saved": 10})).into_response()
             }
             _ => {
+                hold.restores.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let page = std::fs::read_to_string(&file).expect("test: a restore reads a saved page");
+                if let Some(message) = hold.refusal(&slots, slot, &page) {
+                    hold.refused.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    // The engine's 400 shape (`kv_page_action` classifies it as a terminal refusal).
+                    let error = json!({"error": {"code": 400, "type": "invalid_request_error", "message": message}});
+                    return (axum::http::StatusCode::BAD_REQUEST, Json(error)).into_response();
+                }
                 slots.insert(slot, page);
-                Json(json!({"id_slot": slot, "filename": body["filename"], "n_restored": 10}))
+                Json(json!({"id_slot": slot, "filename": body["filename"], "n_restored": 10})).into_response()
             }
         }
     }
@@ -101,7 +139,7 @@ pub(super) async fn boot(root: &str, dir: &std::path::Path) -> (Arc<crate::infer
 }
 
 /// One act of `mind`: admitted (paging as the pool decides), then her slot holds `tokens`.
-async fn act(lanes: &Arc<Semaphore>, pool: &Arc<KvSlotPool>, client: &reqwest::Client, root: &str, slots: &Slots, mind: u128, tokens: u64) -> PageIn {
+pub(super) async fn act(lanes: &Arc<Semaphore>, pool: &Arc<KvSlotPool>, client: &reqwest::Client, root: &str, slots: &Slots, mind: u128, tokens: u64) -> PageIn {
     let key = PageKey::mind(Uuid::from_u128(mind)).expect("test: non-nil id");
     let mut turn = admit_turn(lanes, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()), client, root, tokens, std::time::Duration::ZERO)
         .await
