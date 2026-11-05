@@ -585,7 +585,7 @@ impl AvatarCatalog {
                     style: AvatarStyle::Anime,
                     voice_profile: VoiceProfile {
                         pitch: PitchRange::Mid,
-                        gender,
+                        gender: infer_gender_from_stem(stem),
                         energy: EnergyLevel::Moderate,
                     },
                     tags: vec!["discovered".to_string()],
