@@ -297,6 +297,7 @@ impl Faculty for VaryingAct {
                     input: serde_json::json!({ "path": format!("src/file_{n}.rs") }),
                 }],
                 intent: "keep reading".into(),
+                origin: crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
             },
             0.9,
             "reads forever, never writes",
@@ -525,7 +526,7 @@ async fn fixed_point_requires_available_finished_result_evidence() {
         .with_acting(body(exec, admission()));
     let mut call = tool_call();
     let mut acts = acts_of(apply_act(
-        &cycle, &[call.clone()], "inspect", Uuid::new_v4(), &ActChain::new(),
+        &cycle, &[call.clone()], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished), "inspect", Uuid::new_v4(), &ActChain::new(),
         None,
         None,
         )

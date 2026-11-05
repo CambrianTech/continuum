@@ -709,11 +709,11 @@ pub(super) async fn settle_to_outcome<'c>(
             // hands / exec error). Either way she did not settle in the observer's
             // window — return the un-driven Act so the grader scores it as unfinished,
             // never a fabricated answer.
-            SettleStep::WouldAct { calls, intent }
-            | SettleStep::ActUnfulfilled { calls, intent } => {
+            SettleStep::WouldAct { calls, intent, origin }
+            | SettleStep::ActUnfulfilled { calls, intent, origin } => {
                 return SettleOutcome {
                     room: room_id,
-                    decision: Decision::Act { calls, intent },
+                    decision: Decision::Act { calls, intent, origin },
                     spoken: None,
                     acts,
                     world_state: burst.rendered.clone(),

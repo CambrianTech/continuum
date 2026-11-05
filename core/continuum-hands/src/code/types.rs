@@ -99,10 +99,15 @@ pub enum EditMode {
         new_content: String,
     },
     /// Find text and replace it.
+    // The names other agents emit are aliases here, on the type her call decodes into
+    // (Claude Code's Edit tool: `old_string`/`new_string`/`replace_all`); the schema publishes
+    // the canonical names.
     SearchReplace {
+        #[serde(alias = "old_string", alias = "old_str")]
         search: String,
+        #[serde(alias = "new_string", alias = "new_str")]
         replace: String,
-        #[serde(default)]
+        #[serde(default, alias = "replace_all")]
         all: bool,
     },
     /// Insert content at a specific line (pushes existing lines down).
@@ -357,33 +362,10 @@ pub struct GlobResult {
     /// Workspace-relative paths of matching entries, sorted.
     pub matches: Vec<String>,
     pub total_matches: u32,
-    /// True when the result was truncated to `GLOB_MAX_MATCHES`. The
-    /// substrate caps glob output so a runaway recursive pattern
-    /// (double-star slash star) doesn't OOM the caller — partial
-    /// results are still useful.
-    ///
-    /// Pattern is intentionally spelled in words rather than glyphs:
-    /// the literal sequence round-trips through ts-rs into a JSDoc
-    /// block on the TS side, where the comment-close glyph
-    /// prematurely terminates the doc comment and breaks the
-    /// TypeScript build. See task #62 ("ts-rs binding drift CI
-    /// guard") for the proper substrate-level fix.
-    pub truncated: bool,
     #[ts(optional)]
     pub error: Option<String>,
 }
 
-/// Maximum number of paths a single `code/glob` response returns.
-/// Beyond this, the result is truncated with `truncated: true`. Set
-/// generously enough to cover typical "find all rust files in a
-/// module tree" use cases without enabling unbounded memory on a
-/// recursive everything pattern.
-pub const GLOB_MAX_MATCHES: usize = 5_000;
-
-/// Allowed file extensions for write operations.
-
-/// Maximum file size for write operations (1MB).
-pub const MAX_WRITE_SIZE: u64 = 1_048_576;
 
 // NOTE: `code/*` commands are deliberately NOT registered via `CommandSpec` yet.
 // There is no Rust `code` ServiceModule — `code/read` et al. are served today by

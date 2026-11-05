@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::arguments::ArgumentsRefusal;
 
 /// The capability a command declares.
 ///
@@ -110,6 +111,9 @@ pub trait CommandSpec {
     /// Defaults `false` (catalog-only): the native set stays the small core agentic
     /// working set so the schema payload never floods the window — the ~150-tool dump
     /// muted personas (see [`native_tool_specs`](crate::cognition::persona_tools::native_tool_specs)).
+    ///
+    /// A native tool says what its own result means (`register_outcome!`; ONE-ACT 6b: a refused
+    /// edit renders as a failure because the edit said so, never because a reader guessed).
     const NATIVE: bool = false;
     /// The trained/former/expected tool-call names this command ANSWERS TO (see
     /// [`ActionCommand::ALIASES`](crate::sdk_codegen::command::ActionCommand)). Declared
@@ -133,8 +137,9 @@ pub trait CommandSpec {
     const WIRE: WireShape;
     /// The command-specific params payload (the INNER `P`). When
     /// [`WIRE`](CommandSpec::WIRE) is `Enveloped` the generated surface wraps this
-    /// in `CommandRequest<P>`; otherwise it's used directly.
-    type Params: TS + 'static;
+    /// in `CommandRequest<P>`; otherwise it's used directly. Decodable, because the
+    /// command's descriptor carries the check of a call's arguments against it.
+    type Params: TS + serde::de::DeserializeOwned + 'static;
     /// The command-specific result payload (the INNER `T`). When
     /// [`WIRE`](CommandSpec::WIRE) is `Enveloped` the generated surface wraps this
     /// in `CommandResponse<T>`; otherwise it's used directly.
@@ -258,6 +263,8 @@ pub struct CommandDescriptor {
     /// [`CommandSpec::NATIVE`]). The projection [`native_tool_specs`] filters the
     /// registry on this — so the native set is derived, never a hand-kept list.
     pub native: bool,
+    /// How a call's arguments are checked before it runs.
+    pub arguments: ArgumentsContract,
     /// The trained/former/expected tool-call names this command answers to (from
     /// [`CommandSpec::ALIASES`]). Aggregated into the one generated inverse index
     /// (`ai::tool_dialect`) that maps a model's reflex name back to this
@@ -313,6 +320,7 @@ impl CommandDescriptor {
             description: C::DESCRIPTION,
             wire: C::WIRE,
             native: C::NATIVE,
+            arguments: ArgumentsContract::Typed(check_arguments::<C::Params>),
             aliases: C::ALIASES,
             effect: C::EFFECT,
             disclosure: C::DISCLOSURE,
@@ -322,6 +330,30 @@ impl CommandDescriptor {
             type_refs,
         }
     }
+}
+
+/// How a command's arguments are checked before it runs.
+#[derive(Debug, Clone, Copy)]
+pub enum ArgumentsContract {
+    /// Decoded into the command's own `Params`, through the same decoder its dispatch uses.
+    Typed(fn(&serde_json::Value) -> Result<(), ArgumentsRefusal>),
+    /// A command whose params no Rust type owns (an authored process command): the process
+    /// decodes its own input.
+    External,
+}
+
+impl ArgumentsContract {
+    /// Check a call's arguments, or refuse them typed.
+    pub fn check(self, arguments: &serde_json::Value) -> Result<(), ArgumentsRefusal> {
+        match self {
+            ArgumentsContract::Typed(check) => check(arguments),
+            ArgumentsContract::External => Ok(()),
+        }
+    }
+}
+
+fn check_arguments<P: serde::de::DeserializeOwned>(arguments: &serde_json::Value) -> Result<(), ArgumentsRefusal> {
+    crate::runtime::CommandRequest::<P>::decode(arguments).map(drop)
 }
 
 impl CommandDescriptor {
@@ -553,6 +585,17 @@ inventory::collect!(CommandRegistration);
 /// (a cheap `Vec`/`Value` clone vs. re-reflecting every command). The duplicate-
 /// name check + sort happen once, inside the init.
 pub fn command_registry() -> Vec<CommandDescriptor> {
+    registry().to_vec()
+}
+
+/// One command's descriptor, borrowed from the built registry (no clone of the whole list):
+/// what a per-call reader (her executor's argument check, the outcome projection) looks up.
+pub fn command_descriptor(name: &str) -> Option<&'static CommandDescriptor> {
+    let all = registry();
+    all.binary_search_by(|d| d.name.cmp(name)).ok().map(|at| &all[at])
+}
+
+fn registry() -> &'static [CommandDescriptor] {
     static REGISTRY: std::sync::OnceLock<Vec<CommandDescriptor>> = std::sync::OnceLock::new();
     REGISTRY
         .get_or_init(|| {
@@ -574,7 +617,6 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
             }
             descriptors
         })
-        .clone()
 }
 
 /// Is `name` declared in the descriptor registry?
@@ -588,7 +630,5 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
 /// exact — and it reads the SAME list every other consumer reads, which is the point:
 /// this must never become a second opinion about what commands exist.
 pub fn descriptor_exists(name: &str) -> bool {
-    command_registry()
-        .binary_search_by(|d| d.name.cmp(name))
-        .is_ok()
+    command_descriptor(name).is_some()
 }

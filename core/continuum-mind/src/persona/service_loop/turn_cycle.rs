@@ -275,7 +275,7 @@ pub(super) async fn run_turn_cycle(
                     outcome.turns_acted += 1;
                     return CycleVerdict::Skip;
                 }
-                crate::cognition::act_observe::SettleStep::ActUnfulfilled { calls, intent } => {
+                crate::cognition::act_observe::SettleStep::ActUnfulfilled { calls, intent, .. } => {
                     // No hands or the executor errored. Abstain — never a
                     // fabricated result, never a raw call envelope to the room.
                     // Every turn ends on a probe (Kimi, 5090, 2026-10-04: a turn on an

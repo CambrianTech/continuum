@@ -482,6 +482,7 @@
         let act = Decision::Act {
             calls: vec![call.clone()],
             intent: "run my solution to see what it actually prints".to_string(),
+            origin: crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
         };
         let faculties: Vec<Arc<dyn Faculty>> = vec![Arc::new(FixedFaculty(Contribution::verdict(
             act,
@@ -490,7 +491,7 @@
         )))];
         let ws = cycle(faculties).run("peer: does your sum work?").await;
         match ws.decision() {
-            Some(Decision::Act { calls, intent }) => {
+            Some(Decision::Act { calls, intent, .. }) => {
                 assert_eq!(calls.as_slice(), std::slice::from_ref(&call));
                 assert!(
                     intent.contains("run my solution"),

@@ -200,6 +200,32 @@ struct Prepared {
     call: PromptCall,
     original: Option<ReplayOutcome>,
     original_max_tokens: Option<u32>,
+    /// The provider and model the replay runs on, decided by `prepare` (explicit provider, the
+    /// captured or terminally served model): required by type, never re-read off the request.
+    provider: String,
+    model: String,
+    /// What the replay reproduces, for its result; the call's capture records the same facts.
+    provenance: Provenance,
+}
+
+/// The source a replay reproduces.
+struct Provenance {
+    input_comparison: InputComparison,
+    model_from_response: bool,
+    persona: Uuid,
+    cursor: String,
+}
+
+impl Provenance {
+    /// The capture's record of it.
+    fn source(&self) -> ReplaySource {
+        ReplaySource {
+            input_comparison: self.input_comparison.clone(),
+            model_from_response: self.model_from_response,
+            persona_id: self.persona,
+            cursor: self.cursor.clone(),
+        }
+    }
 }
 
 fn prepare(
@@ -227,22 +253,20 @@ fn prepare(
     let original = response.as_ref().map(ReplayOutcome::from);
     // An implicit provider default is only reproducible when the terminal receipt
     // identifies what actually served it. Never substitute today's default.
-    let model_from_response = request.model.as_deref().is_none_or(|m| m.trim().is_empty());
-    if model_from_response {
-        request.model = Some(
-            original
-                .as_ref()
-                .filter(|r| !r.model.trim().is_empty())
-                .ok_or_else(|| {
-                    CommandError::Invalid(
-                        "capture has no request or response model; replay cannot substitute one"
-                            .into(),
-                    )
-                })?
-                .model
-                .clone(),
-        );
-    }
+    let requested = request.model.clone().filter(|m| !m.trim().is_empty());
+    let model_from_response = requested.is_none();
+    let model = match requested {
+        Some(model) => model,
+        None => original
+            .as_ref()
+            .filter(|r| !r.model.trim().is_empty())
+            .ok_or_else(|| {
+                CommandError::Invalid("capture has no request or response model; replay cannot substitute one".into())
+            })?
+            .model
+            .clone(),
+    };
+    request.model = Some(model.clone());
     let original_max_tokens = request.max_tokens;
     if let Some(tokens) = p.max_tokens {
         request.max_tokens = Some(tokens);
@@ -256,6 +280,7 @@ fn prepare(
     request.request_id = Some(request_id.clone());
     request.provider = Some(p.provider.clone());
     request.purpose = Some("cognition/replay-request".into());
+    let provenance = Provenance { input_comparison, model_from_response, persona, cursor: p.selected.clone() };
     Ok(Prepared {
         request,
         call: PromptCall {
@@ -266,15 +291,13 @@ fn prepare(
             context_window,
             cause: "captured-request-replay",
             cause_root: None,
-            replay_of: Some(ReplaySource {
-                input_comparison,
-                model_from_response,
-                persona_id: persona,
-                cursor: p.selected.clone(),
-            }),
+            replay_of: Some(provenance.source()),
         },
         original,
         original_max_tokens,
+        provider: p.provider.clone(),
+        model,
+        provenance,
     })
 }
 
@@ -288,7 +311,7 @@ impl ActionCommand for CognitionReplayRequest {
 
     async fn run(&self, _ctx: &Ctx, p: Self::Params) -> Result<Self::Output, CommandError> {
         let persona = Uuid::parse_str(p.persona_id.as_str())
-            .map_err(|e| CommandError::Arguments(format!("persona_id: {e}")))?;
+            .map_err(|_| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::not_an_id("persona_id", p.persona_id.as_str(), "persona")))?;
         let selected = p.selected.clone();
         let prepared = tokio::task::spawn_blocking(move || {
             let dir = crate::cognition::capture::fixture_dir(prompt_capture::FIXTURE_DIR)
@@ -299,47 +322,24 @@ impl ActionCommand for CognitionReplayRequest {
         })
         .await
         .map_err(|e| CommandError::Internal(e.to_string()))??;
-        let Prepared {
-            request,
-            call,
-            original,
-            original_max_tokens,
-        } = prepared;
-        let provider = request
-            .provider
-            .as_deref()
-            .ok_or_else(|| CommandError::Internal("replay provider missing".into()))?;
         let registry = crate::ai::adapter::global_registry();
+        let (provider, model) = (prepared.provider.as_str(), prepared.model.as_str());
         let adapter = registry.read().await.get_arc(provider).ok_or_else(|| {
             CommandError::Invalid(format!("provider '{provider}' is not registered"))
         })?;
-        let model = request
-            .model
-            .as_deref()
-            .ok_or_else(|| CommandError::Internal("replay model missing".into()))?;
         if !adapter.supports_model(model) {
             return Err(CommandError::Invalid(format!(
                 "provider '{provider}' does not serve captured model '{model}'"
             )));
         }
-        let replay_persona = call.persona_id;
+        let replay_persona = prepared.call.persona_id;
         let sink = tokio::task::spawn_blocking(move || {
             JsonlPromptCaptureSink::open_for_persona(replay_persona)
         })
         .await
         .map_err(|e| CommandError::Internal(e.to_string()))?
         .map_err(|e| CommandError::Internal(format!("replay capture: {e}")))?;
-        execute(
-            Prepared {
-                request,
-                call,
-                original,
-                original_max_tokens,
-            },
-            adapter,
-            sink,
-        )
-        .await
+        execute(prepared, adapter, sink).await
     }
 }
 
@@ -353,6 +353,8 @@ async fn execute(
         mut call,
         original,
         original_max_tokens,
+        provenance,
+        ..
     } = prepared;
     call.context_window = adapter.live_served_window();
     let replay_persona = call.persona_id;
@@ -369,21 +371,18 @@ async fn execute(
     match response {
         Ok(response) => {
             capture.finish(Some(&response), None);
-            let source = call
-                .replay_of
-                .ok_or_else(|| CommandError::Internal("replay provenance missing".into()))?;
             Ok(ReplayRequestResult {
                 replay_persona_id: replay_persona.to_string(),
                 selected,
-                source_persona_id: source.persona_id.to_string(),
-                source_selected: source.cursor,
-                model_from_response: source.model_from_response,
+                source_persona_id: provenance.persona.to_string(),
+                source_selected: provenance.cursor,
+                model_from_response: provenance.model_from_response,
                 original_max_tokens,
                 replay_max_tokens,
                 original,
                 replay: ReplayOutcome::from(&response),
                 tools_executed: false,
-                input_comparison: source.input_comparison,
+                input_comparison: provenance.input_comparison,
             })
         }
         Err(error) => {

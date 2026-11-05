@@ -69,10 +69,13 @@ use crate::code::hands::ReleaseHandsResult;
 
 mod engine_err;
 pub use engine_err::*;
-mod normalize_edit_mode;
-pub use normalize_edit_mode::*;
+mod code_verbs;
+pub use code_verbs::*;
 mod code_shell_kill_result;
 pub use code_shell_kill_result::*;
+mod outcomes;
+mod edit_params;
+pub use edit_params::CodeEditParams;
 
 #[cfg(test)]
 mod tests;

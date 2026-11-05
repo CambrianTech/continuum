@@ -756,8 +756,12 @@ impl LlmDeliberationFaculty {
         // measurement above already recorded it as `CutMidAnswer` (a call is an answer), so
         // her next claim holds the cut's peak; here she is told what was cut, as the cut-act
         // record below tells it, never that her thought was cut (it was not).
-        if matches!(resp.finish_reason, FinishReason::Length) && !self.tools.is_empty() {
-            if let Some(calls) = resp.tool_calls.as_deref().filter(|calls| !calls.is_empty()) {
+        // The fate of each call is the engine boundary's one classifier (`ToolCall::ending`): complete
+        // JSON at the limit is still a cut, since nothing proves its framing closed.
+        if !self.tools.is_empty() {
+            let end = resp.finish_reason.generation_end();
+            let cut = |calls: &&[crate::ai::types::ToolCall]| calls.iter().any(|call| call.ending(end) == crate::ai::types::CallEnding::Cut);
+            if let Some(calls) = resp.tool_calls.as_deref().filter(cut) {
                 let composing: String = calls.iter().map(|call| format!("{}({})", call.name, call.input)).collect();
                 continuum_base::probe!(
                     class = "delib.emission.cut_tool_call",

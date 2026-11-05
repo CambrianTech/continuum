@@ -128,7 +128,7 @@ impl ActionCommand for CodeUndo {
         match p.change_id {
             Some(id) => {
                 let change_uuid = uuid::Uuid::parse_str(&id)
-                    .map_err(|e| CommandError::Arguments(format!("invalid change_id: {e}")))?;
+                    .map_err(|_| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::not_an_id("change_id", &id, "change")))?;
                 let reverted = engine
                     .undo(&change_uuid)
                     .map_err(engine_err)?;
@@ -591,8 +591,6 @@ crate::register_command!(CodeReleaseHands);
 
 crate::register_command!(CodeCreateWorkspace);
 
-// Opt-in outcome projection: ONLY these two commands pay the `DeserializeOwned`
-// bound, and only they change how the executor flags their results.
 crate::register_outcome!(CodeShell);
 
 crate::register_outcome!(CodeShellPoll);

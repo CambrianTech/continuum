@@ -675,7 +675,6 @@ use super::*;
         let mut sorted = r.matches.clone();
         sorted.sort();
         assert_eq!(r.matches, sorted, "matches must be sorted alphabetically");
-        assert!(!r.truncated);
     }
 
     #[test]
@@ -702,7 +701,6 @@ use super::*;
         assert!(r.success);
         assert!(r.matches.is_empty());
         assert_eq!(r.total_matches, 0);
-        assert!(!r.truncated);
     }
 
     #[test]

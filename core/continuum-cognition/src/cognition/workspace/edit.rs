@@ -78,9 +78,14 @@ pub enum Decision {
     /// to see the traceback"). It is captured into the observation engram so next
     /// tick she remembers the *reason*, not just the *result*. See
     /// `docs/cognition/ACTING-ORGANISM.md`.
+    ///
+    /// `origin` is where the calls came from (her generation, and why the engine says it
+    /// stopped): it travels with them to the act seam, which disposes each call once by it
+    /// (`CallBatch::classify`), so a call her generation never committed never runs.
     Act {
         calls: Vec<ToolCall>,
         intent: String,
+        origin: crate::ai::types::CallOrigin,
     },
     /// Nothing worth adding this turn (the persona's own judgment, not a gate).
     /// Together with `Speak`/`RaiseUnprompted`, this is how the organism SETTLES:

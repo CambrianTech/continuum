@@ -224,7 +224,7 @@ crate::action_command! {
         // #164: accept the short-form persona id rosters display, not just a full UUID —
         // the same Shown reading persona/* and work/* use.
         let persona_uuid = crate::persona::persona_scope::persona_in(p.persona_id.as_str(), &crate::persona::persona_scope::PersonaCards)
-            .map_err(|e| CommandError::Invalid(e.to_string()))?;
+            .map_err(|e| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::id("persona_id", e)))?;
         let canonical_persona: crate::identity::PersonaRef = persona_uuid.to_string().into();
         let persona_name = p.persona_name.clone().unwrap_or_else(|| persona_uuid.to_string());
 

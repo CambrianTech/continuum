@@ -3,25 +3,18 @@ use super::*;
 mod contribute;
 mod newest_refit;
 
-/// The working-memory record of a cut act: that it did not land, how long it ran, and
-/// how it began and ended, so the next generation starts from what she was composing
-/// rather than re-deriving it. Head and tail only: the whole payload is what was too
-/// large to land, and repeating it would crowd the retry the same way. Pure.
+/// The working-memory record of a cut act: that it did not land, how long it ran, and what
+/// she was composing, so the next generation starts from it rather than re-deriving it. The
+/// payload's level of detail is the one codec's (`continuum_context::levels`, its head and tail
+/// with the count between when that is at most a quarter of it), never a cut chosen here: the
+/// record and her view decide together what of it she reads. Pure.
 pub(super) fn cut_act_fact(text: &str) -> String {
-    const EDGE: usize = 240;
     let chars = text.chars().count();
-    let head: String = text.chars().take(EDGE).collect();
-    let tail: String = if chars > 2 * EDGE {
-        let skip = chars - EDGE;
-        text.chars().skip(skip).collect()
-    } else {
-        String::new()
-    };
-    if tail.is_empty() {
-        format!("my last act was CUT at the output limit after {chars} chars before a tool call was committed — it did not land, nothing ran. I was composing: {head}")
-    } else {
-        format!("my last act was CUT at the output limit after {chars} chars before a tool call was committed — it did not land, nothing ran. I was composing: {head} … and it ended: {tail}")
-    }
+    let composing = continuum_context::levels::summarize(text, continuum_context::levels::Shape::Output);
+    format!(
+        "my last act was CUT at the output limit after {chars} chars before a tool call was committed — it did not land, nothing ran. I was composing: {}",
+        composing.as_deref().unwrap_or(text) // unwrap_or: no summary of its shape is smaller, so the payload is its own level
+    )
 }
 
 /// Apportion the server's output count between the reasoning channel and the answer
@@ -91,7 +84,7 @@ impl LlmDeliberationFaculty {
             .map(str::to_string)
             .unwrap_or_default();
         Contribution::verdict(
-            Decision::Act { calls, intent },
+            Decision::Act { calls, intent, origin: crate::ai::types::CallOrigin::Generated(resp.finish_reason.generation_end()) },
             0.9,
             format!("{} chose to act", self.persona_name),
         )
@@ -167,7 +160,7 @@ impl LlmDeliberationFaculty {
         continuum_base::probe!(
             class = "persona.speech.parroted_perception",
             persona = %self.persona_name,
-            echoed_fact = %echoed.chars().take(120).collect::<String>(),
+            echoed_fact = %echoed,
             draft_len = text.len(),
             "draft reproduced a perception fact she was handed — settling to silence instead \
              of speaking the prompt back into the room (#158)"

@@ -192,7 +192,7 @@
             input: json!({ "path": "deploy.md" }),
         }];
         let out = exec
-            .execute_native_batch(&calls, &ctx())
+            .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx())
             .await
             .unwrap();
         assert_eq!(out.results.len(), 1);
@@ -216,7 +216,7 @@
             input: json!({ "ok": true }),
         }];
         let out = exec
-            .execute_native_batch(&calls, &ctx())
+            .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx())
             .await
             .unwrap();
         assert!(
@@ -238,7 +238,7 @@
             input: json!({}),
         }];
         let out = exec
-            .execute_native_batch(&calls, &ctx())
+            .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx())
             .await
             .expect("batch itself succeeds");
         assert_eq!(
@@ -301,7 +301,8 @@
         registry.register(Arc::new(ToolsTrap(reached.clone())));
         let exec = exec_over(registry, Uuid::new_v4());
         let calls = vec![NativeToolCall { id: "cut".into(), name: THOUGHT_CUT_SENTINEL.into(), input: json!({}) }];
-        let out = exec.execute_native_batch(&calls, &ctx()).await.expect("batch itself succeeds");
+        let batch = crate::ai::types::CallBatch::classify(calls, crate::ai::types::CallOrigin::Substrate);
+        let out = exec.execute_native_batch(&batch, &ctx()).await.expect("batch itself succeeds");
         assert_eq!(reached.load(std::sync::atomic::Ordering::SeqCst), 0, "the router never saw the note");
         assert!(out.results[0].content.contains("NOT run for you"), "her teacher text, whole: {}", out.results[0].content);
     }
@@ -403,7 +404,7 @@
 
             let out = tokio::time::timeout(
                 Duration::from_secs(5),
-                exec.execute_native_batch(&load_calls(N), &ctx()),
+                exec.execute_native_batch(&crate::ai::types::CallBatch::classify(load_calls(N), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx()),
             )
             .await
             .expect("batch must finish — a timeout means the batch serialized")
@@ -433,7 +434,7 @@
                 .map(|_| {
                     let exec = persona_over(executor.clone());
                     tokio::spawn(async move {
-                        exec.execute_native_batch(&load_calls(1), &ctx())
+                        exec.execute_native_batch(&crate::ai::types::CallBatch::classify(load_calls(1), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx())
                             .await
                     })
                 })
@@ -490,7 +491,7 @@
                             let c = ctx();
                             let t0 = Instant::now();
                             let out = exec
-                                .execute_native_batch(&calls, &c)
+                                .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &c)
                                 .await
                                 .expect("batch ok");
                             stats.record(t0.elapsed().as_micros() as u64);

@@ -103,10 +103,10 @@ crate::action_command! {
         // verbs must accept.
         let persona_id =
             crate::persona::persona_scope::persona_in(p.persona_id.as_str(), &crate::persona::persona_scope::PersonaCards)
-                .map_err(|e| CommandError::Invalid(e.to_string()))?;
+                .map_err(|e| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::id("persona_id", e)))?;
         let supersedes = match p.supersedes.as_deref() {
-            Some(s) => Some(Uuid::parse_str(s).map_err(|e| {
-                CommandError::Arguments(format!("supersedes '{s}' is not a valid post_id uuid: {e}"))
+            Some(s) => Some(Uuid::parse_str(s).map_err(|_| {
+                CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::not_an_id("supersedes", s, "post"))
             })?),
             None => None,
         };
@@ -163,7 +163,16 @@ mod tests {
             )
             .await
             .expect_err("malformed id must fail loud");
-        assert!(matches!(err, CommandError::Invalid(_)), "got {err:?}");
+        assert!(
+            matches!(
+                err,
+                CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::Field(crate::sdk_codegen::FieldRefusal {
+                    problem: crate::sdk_codegen::FieldProblem::Id(airc_core::shown_id::ShownIdError::NotAnId { .. }),
+                    ..
+                }))
+            ),
+            "airc's typed id refusal, kept whole: {err:?}"
+        );
     }
 
     // what this catches: a mal-formed supersedes id is rejected as Arguments even

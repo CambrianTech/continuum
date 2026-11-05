@@ -468,7 +468,7 @@ async fn tool_use_response_becomes_an_act_verdict() {
     let c = faculty.contribute(&ws).await.expect("verdict");
 
     match c.decision {
-        Some(Decision::Act { calls, intent }) => {
+        Some(Decision::Act { calls, intent, .. }) => {
             assert_eq!(calls.len(), 1, "the one requested call rides the verdict");
             assert_eq!(calls[0].name, "code/read");
             assert_eq!(calls[0].input, json!({ "path": "deploy.md" }));
@@ -734,10 +734,10 @@ async fn a_tool_call_cut_at_the_limit_is_an_answer_cut_held_for_the_retry() {
     let write = ToolCall {
         id: "call-write".into(),
         name: "code/write".into(),
-        input: json!({ "__malformed_tool_arguments": {
-            "error": "EOF while parsing a string",
-            "raw": "{\"path\":\"src/accounts.rs\",\"content\":\"pub fn create_accounts(",
-        } }),
+        input: crate::ai::types::UnparsedArguments::Cut {
+            raw: "{\"path\":\"src/accounts.rs\",\"content\":\"pub fn create_accounts(".into(),
+        }
+        .into_input(),
     };
     let mut cut = make_response(FinishReason::Length, "", Some(vec![write]));
     cut.usage.output_tokens = 900;

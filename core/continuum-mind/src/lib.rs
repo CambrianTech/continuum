@@ -17,6 +17,7 @@ pub mod chat;
 pub mod commands;
 pub mod context;
 pub mod modules;
+mod native_outcomes;
 pub mod persona;
 pub mod room;
 pub mod vdd;

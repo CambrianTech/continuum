@@ -304,7 +304,7 @@ async fn think_only_turn_routes_the_teacher_sentinel_not_empty_speak() {
         .await
         .expect("verdict");
     match c.decision {
-        Some(Decision::Act { calls, intent }) => {
+        Some(Decision::Act { calls, intent, .. }) => {
             assert_eq!(calls.len(), 1);
             assert_eq!(
                 calls[0].name,
