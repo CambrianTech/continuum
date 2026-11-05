@@ -107,11 +107,19 @@ impl LlmDeliberationFaculty {
         view: ViewPlacement,
         act: &continuum_context::allocation::ActPlan,
         calibration: super::types::PromptCalibration,
-    ) -> Result<Option<usize>, continuum_context::view::GrantMismatch> {
+    ) -> Result<Option<usize>, ViewSizing> {
         if view.len == 0 {
             return Ok(None);
         }
         let room = act.room() as usize;
+        // A start the plan did not fund (`StartRefused`) is carried out typed: the view's closure
+        // contract answers grants only, so the cause is held here and returned in place of the
+        // mismatch the empty answer raises.
+        let refused: std::cell::Cell<Option<continuum_context::allocation::StartRefused>> = std::cell::Cell::new(None);
+        let typed = |mismatch: continuum_context::view::GrantMismatch| match refused.take() {
+            Some(start) => ViewSizing::Start(start),
+            None => ViewSizing::Mismatch(mismatch),
+        };
         // In the allocation's unit: grants and room are charged tokens (`calibration.charge`),
         // so the view is charged too. Compared raw, a view near its grant passed here and the
         // final fit, which converts its budget back to raw, cut 96-99 of its oldest messages
@@ -135,9 +143,15 @@ impl LlmDeliberationFaculty {
         // (`ActPlan::start_room`), so a pass and the act after it start her view alike; whether
         // this act keeps, restores or turns over is judged against what this act was granted.
         let start_room = act.start_room() as usize;
-        let due = turnover_due(view_tokens, granted + room, next_act_tokens, || {
-            self.view_would_restore(&prompt.streams, |claims: &[Claim]| start_grants(claims, &act.plan, start_room, appended_per_act))
-        })?;
+        let sized = |claims: &[Claim]| match start_grants(claims, &act.plan, start_room, appended_per_act) {
+            Ok(grants) => grants,
+            Err(start) => {
+                refused.set(Some(start));
+                Vec::new()
+            }
+        };
+        let due = turnover_due(view_tokens, granted + room, next_act_tokens, || self.view_would_restore(&prompt.streams, &sized))
+            .map_err(&typed)?;
         if due == Turnover::Keep {
             return Ok(None);
         }
@@ -175,9 +189,7 @@ impl LlmDeliberationFaculty {
         // (`budget_fault` / `capacity_error`, view.rs), never sent without it.
         // (`escalation_needed` is only probed; it refuses nothing.)
         let shed = act.shed_view_sources();
-        let started = self.turn_over_view_with(&prompt.streams, &shed, |claims: &[Claim]| {
-            start_grants(claims, &act.plan, start_room, appended_per_act)
-        })?;
+        let started = self.turn_over_view_with(&prompt.streams, &shed, &sized).map_err(&typed)?;
         prompt.grounding_at = started.len();
         prompt.history.splice(0..view.len, started);
         continuum_base::probe!(
@@ -420,6 +432,26 @@ impl LlmDeliberationFaculty {
     }
 }
 
+/// Why her view could not be sized this act: the turn is refused either way, typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in super::super) enum ViewSizing {
+    /// The allocator answered for a different number of sources than it was asked (a broken
+    /// contract: a budget fault).
+    Mismatch(continuum_context::view::GrantMismatch),
+    /// A start the plan did not fund: a required floor underfunded or past the room (a capacity
+    /// refusal, distinct from the reply-only `IrreducibleShortfall`, with which an act proceeds).
+    Start(continuum_context::allocation::StartRefused),
+}
+
+impl std::fmt::Display for ViewSizing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mismatch(mismatch) => write!(f, "{mismatch}"),
+            Self::Start(start) => write!(f, "her view's start was not funded: {start:?}"),
+        }
+    }
+}
+
 /// What her view does this act.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in super::super) enum Turnover {
@@ -520,7 +552,7 @@ pub(in super::super) fn start_grants(
     plan: &continuum_context::flex::FlexAllocation,
     available: usize,
     appended_per_act: Option<usize>,
-) -> Vec<usize> {
+) -> Result<Vec<usize>, continuum_context::allocation::StartRefused> {
     let grants: Vec<Option<&continuum_context::flex::SourceAllocation>> = claims
         .iter()
         .map(|claim| plan.allocations.iter().find(|a| a.source_id == format!("{VIEW_CLAIM}{}", claim.source)))
@@ -577,21 +609,23 @@ pub(in super::super) fn start_grants(
             continuum_context::allocation::StartSource { priority: claim.priority, fixed: claim.priority > lowest, required, floor, grant: max }
         })
         .collect();
+    // The start holds the required floors when the room the plan gave it can (raised toward them,
+    // never past `available`: required means refuse if underfunded, never mint budget, Codex on
+    // #5779). An underfunded floor or required floors past the room are the typed `StartRefused`,
+    // carried to the turn's capacity refusal by the caller.
     let required_floors: usize = sources.iter().filter(|s| s.required).map(|s| s.floor as usize).sum();
-    let start = (grounding + growing).max(required_floors);
+    let start = (grounding + growing).max(required_floors).min(available);
     let shares = match continuum_context::allocation::start_shares(LlmDeliberationFaculty::clamp_u32(start), &sources) {
         Ok(shares) => shares,
-        // A start too small for its required floors: refused typed, never a floor dropped. An
-        // empty answer is the view's own typed refusal (`GrantMismatch`): the turn is refused, the
-        // held view stays as state.
         Err(refused) => {
+            let (needed, had) = refused.needed_and_had();
             continuum_base::probe!(
                 class = "delib.view.start_refused",
-                required_tokens = refused.required,
-                start_tokens = refused.start,
-                "a view start could not hold its required floors: refused, never a floor dropped"
+                required_tokens = needed,
+                start_tokens = had,
+                "a view start whose required floors the plan did not fund: refused typed, never a floor dropped or budget minted"
             );
-            return Vec::new();
+            return Err(refused);
         }
     };
     let grants: Vec<usize> = claims
@@ -614,7 +648,7 @@ pub(in super::super) fn start_grants(
         }
         grants
     };
-    grants
+    Ok(grants)
 }
 
 #[cfg(test)]

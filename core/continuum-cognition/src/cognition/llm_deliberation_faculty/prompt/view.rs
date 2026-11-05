@@ -426,10 +426,17 @@ impl LlmDeliberationFaculty {
         // it is ever collapsed. A broken allocator contract refuses the turn (`budget_fault`),
         // never a prompt sent anyway. An overflow also says how far beyond its grant her view would
         // have held: a reducible overflow, recorded as her censored need, never a grant.
-        let (view_beyond, view_fault) =
+        // A start the plan did not fund (a required floor underfunded or past the room) is this
+        // turn's CAPACITY refusal, typed, never a sent prompt and never budget minted; distinct
+        // from the reply-only IrreducibleShortfall, with which an act proceeds at what is left.
+        let (view_beyond, view_fault, start_refusal) =
             match self.fit_view(&mut all_messages, view, &act, calibration) {
-                Ok(beyond) => (beyond, None),
-                Err(mismatch) => (None, Some(format!("her view could not be sized: {mismatch}"))),
+                Ok(beyond) => (beyond, None, None),
+                Err(super::epoch::ViewSizing::Start(start)) => {
+                    let (needed, had) = start.needed_and_had();
+                    (None, None, Some(crate::cognition::workspace::PromptCapacityError { required_tokens: needed as usize, budget_tokens: had as usize }))
+                }
+                Err(mismatch) => (None, Some(format!("her view could not be sized: {mismatch}")), None),
             };
         self.view_sent();
         // The surface this act sends: the epoch's set, or this act's own when it turned the view over.
@@ -511,7 +518,7 @@ impl LlmDeliberationFaculty {
             Err(error) => (FittedMessages::default(), Some(error)),
         };
         // Her hands not granted even their floor refuse the turn as loudly as her input would.
-        let capacity_error = tools_refusal.or(capacity_error);
+        let capacity_error = start_refusal.or(tools_refusal).or(capacity_error);
         // THE FIT'S RECEIPT (card d33e928a, Kimi's finding): whenever the fit dropped
         // history, say what it dropped and from what budget, and say it loudly when
         // nothing optional survived — that turn composes with no room at all, operator

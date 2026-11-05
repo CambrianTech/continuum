@@ -259,6 +259,33 @@ async fn an_8192_window_keeps_required_content_under_a_large_measured_need() {
     assert!(wire_tokens <= window as usize, "prompt + reply {wire_tokens} > window {window}");
 }
 
+// what this catches (Codex on #5779: required means refuse if underfunded, never mint budget):
+// the cognition refusal boundary. A window that holds exactly her act's input floors (framing,
+// required input, her hands, her last move, her view at its collapsed minimum) proceeds, the reply
+// at what is left (the reply-only shortfall, which does not refuse); one token less underfunds a
+// required floor and refuses the turn typed (`capacity_error`), never a raised start.
+#[test]
+fn a_turn_whose_input_floors_exactly_fit_proceeds_and_one_token_short_is_refused_typed() {
+    let build = |window: u32| {
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Benchy", "You are Benchy.", Arc::new(ScriptedAdapter::new(vec![])))
+            .with_context_window(window)
+            .with_tools(vec![read_tool()])
+    };
+    let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 40, true);
+    let roomy = build(65_536).prompt_view(&ws);
+    let receipt = roomy.allocation.as_ref().expect("test: the view names its allocation"); // JUSTIFIED: test fixture
+    let input = |source: &str| {
+        ["framing", "required_input", "newest_result", "tools", "last_move"].contains(&source) || source.starts_with("view/")
+    };
+    let floors: u32 = receipt.claims.iter().filter(|claim| input(&claim.source)).map(|claim| claim.floor).sum();
+    let fits = build(floors).prompt_view(&ws);
+    assert!(fits.capacity_error.is_none(), "exactly her input floors: the turn proceeds: {:?}", fits.capacity_error);
+    assert!(fits.budget_fault.is_none(), "{:?}", fits.budget_fault);
+    let short = build(floors - 1).prompt_view(&ws);
+    assert!(short.capacity_error.is_some(), "one token short of her input floors: refused typed for capacity");
+    assert!(short.budget_fault.is_none(), "a capacity refusal, never a broken-contract fault: {:?}", short.budget_fault);
+}
+
 // what this catches: an indivisible oversized stimulus, room update or active
 // result must fault before inference, including self-ticks with no chat turns.
 // It must still publish demand, so refusal cannot freeze a small window.

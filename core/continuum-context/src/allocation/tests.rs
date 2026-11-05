@@ -106,10 +106,22 @@ fn a_start_too_small_for_a_required_floor_is_refused_typed() {
         StartSource { priority: 4, fixed: false, required: true, floor: 600, grant: 600 },
         StartSource { priority: 6, fixed: true, required: false, floor: 50, grant: 400 },
     ];
-    assert_eq!(start_shares(500, &sources), Err(StartRefused { required: 600, start: 500 }));
+    assert_eq!(start_shares(500, &sources), Err(StartRefused::OverRoom { required: 600, start: 500 }));
     let shares = start_shares(700, &sources).expect("test: the required floor fits"); // JUSTIFIED: test fixture
     assert_eq!(shares[0], 600, "the required floor first");
     assert!(shares[1] <= 100, "the optional source shares what is left: {shares:?}");
+}
+
+// what this catches (Codex on #5779: "required means refuse if underfunded, not mint budget"): a
+// required floor its grant did not cover being started anyway, at more than the plan gave it. A
+// floor of 600 granted 500 is refused typed even when the start itself could hold 600.
+#[test]
+fn an_underfunded_required_floor_is_refused_never_minted() {
+    let sources = [StartSource { priority: 4, fixed: false, required: true, floor: 600, grant: 500 }];
+    assert_eq!(start_shares(600, &sources), Err(StartRefused::Underfunded { floor: 600, grant: 500 }));
+    let funded = [StartSource { grant: 600, ..sources[0] }];
+    let shares = start_shares(600, &funded).expect("test: a funded floor starts"); // JUSTIFIED: test fixture
+    assert!(shares.iter().zip(&funded).all(|(share, s)| *share <= s.grant), "no share past its grant: {shares:?}");
 }
 
 // what this catches (Codex on Cormac's finding, #5779, goal 7): an off-by-one at the exact

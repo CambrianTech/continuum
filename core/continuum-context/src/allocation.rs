@@ -230,21 +230,26 @@ impl ActPlan {
     /// Never below her view's REQUIRED floors: the reply's want beyond its grant is taken from what
     /// her view could grow into, never from the collapsed minimum she acts on (Codex on #5779: an
     /// 8,192 window with a 9,000 reply need left a start room of 0 beside a required 600).
+    ///
+    /// Never MORE than the plan has (Codex: required means refuse if underfunded, never mint
+    /// budget): the protected part is what the plan actually granted her required view sources, up
+    /// to their floors; only the rest is reduced by the reply's want.
     pub fn start_room(&self) -> u32 {
         let reply_short = self
             .reply()
             .map_or(0, |reply| reply.max_tokens.saturating_sub(self.granted(id::REPLY))); // map_or: no reply claimed wants nothing more
-        let grown = self.view_granted().saturating_add(self.room()).saturating_sub(reply_short);
-        grown.max(self.required_view_floors())
+        let protected = self.granted_required_view_floors();
+        let growth = self.view_granted().saturating_add(self.room()).saturating_sub(protected);
+        protected.saturating_add(growth.saturating_sub(reply_short))
     }
 
-    /// The sum of her view's REQUIRED sources' floors: what a start must hold.
-    pub fn required_view_floors(&self) -> u32 {
+    /// What the plan granted her REQUIRED view sources, each counted up to its floor.
+    fn granted_required_view_floors(&self) -> u32 {
         self.plan
             .allocations
             .iter()
             .filter(|a| a.required && a.source_id.starts_with(id::VIEW))
-            .map(|a| a.requested_floor)
+            .map(|a| a.allocated_tokens.min(a.requested_floor))
             .fold(0, u32::saturating_add)
     }
 
@@ -304,26 +309,41 @@ pub struct StartSource {
     pub grant: u32,
 }
 
-/// A start too small for its sources' REQUIRED floors: a typed refusal, never a silent drop of a
-/// floor she acts on. Admission's to answer (ONE-ACT stage 3/4); the view refuses the start.
+/// A view start whose REQUIRED floors the plan did not fund: a typed refusal, never a silent drop
+/// of a floor she acts on and never budget minted to cover it (Codex on #5779: "required means
+/// refuse if underfunded, not mint budget"). It refuses the turn for capacity; it is distinct from
+/// the reply-only [`IrreducibleShortfall`], with which an act still proceeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StartRefused {
-    /// The required floors' sum.
-    pub required: u32,
-    pub start: u32,
+pub enum StartRefused {
+    /// A required source the plan granted less than its floor.
+    Underfunded { floor: u32, grant: u32 },
+    /// Required floors that together exceed the room the start has.
+    OverRoom { required: u32, start: u32 },
+}
+
+impl StartRefused {
+    /// What the start needed and what it had, for the turn's capacity refusal.
+    pub fn needed_and_had(self) -> (u32, u32) {
+        match self {
+            Self::Underfunded { floor, grant } => (floor, grant),
+            Self::OverRoom { required, start } => (required, start),
+        }
+    }
 }
 
 /// Each view source's share of a start of `start` tokens, arithmetic on the one plan's grants
-/// (never a second allocation): every REQUIRED floor first (all of them, or the typed
-/// [`StartRefused`]); then every optional floor, in priority order, while the start holds it (an
-/// optional floor that does not fit starts that source empty); then the fixed sources up to their
-/// grant, in priority order; then what is left shared among the growing sources in proportion to
-/// what each lacks of its grant. No source exceeds its grant, except a required floor its grant
-/// did not cover.
+/// (never a second allocation): every REQUIRED floor first (each funded by its grant and all within
+/// the start, or the typed [`StartRefused`]); then every optional floor, in priority order, while
+/// the start holds it (an optional floor that does not fit starts that source empty); then the
+/// fixed sources up to their grant, in priority order; then what is left shared among the growing
+/// sources in proportion to what each lacks of its grant. No source ever exceeds its grant.
 pub fn start_shares(start: u32, sources: &[StartSource]) -> Result<Vec<u32>, StartRefused> {
+    if let Some(s) = sources.iter().find(|s| s.required && s.grant < s.floor) {
+        return Err(StartRefused::Underfunded { floor: s.floor, grant: s.grant });
+    }
     let required: u32 = sources.iter().filter(|s| s.required).map(|s| s.floor).fold(0, u32::saturating_add);
     if required > start {
-        return Err(StartRefused { required, start });
+        return Err(StartRefused::OverRoom { required, start });
     }
     let mut order: Vec<usize> = (0..sources.len()).collect();
     order.sort_by(|&a, &b| sources[b].priority.cmp(&sources[a].priority));

@@ -118,7 +118,9 @@ fn a_sliding_room_appends_for_many_acts_after_a_turnover() {
     let (turnovers, longest) = slide(window, 30, restart_whole);
     assert_eq!((turnovers, longest), (30, 0), "precondition: restarting whole turns over every act of a sliding room");
 
-    let (turnovers, longest) = slide(window, 30, start_grants);
+    let (turnovers, longest) = slide(window, 30, |claims, plan, available, per_act| {
+        start_grants(claims, plan, available, per_act).expect("test: no required floor in this start") // JUSTIFIED: test fixture
+    });
     assert!(turnovers <= 2, "a reserved start lives many acts: {turnovers} turnovers in 30 acts");
     assert!(longest >= 15, "the acts after a turnover only append: longest run {longest}");
 }
@@ -137,7 +139,7 @@ fn a_turnover_keeps_grounding_whole_and_takes_the_reserve_from_the_conversation(
     let available = 6_000 + TURNS_SHOWN * turn_chars();
     let plan = window_plan(&claimed, available as u32);
 
-    let grants = start_grants(&claimed, &plan, available, None);
+    let grants = start_grants(&claimed, &plan, available, None).expect("test: no required floor in this start"); // JUSTIFIED: test fixture
     assert_eq!(grants[0], 6_000, "grounding starts whole");
     assert!(grants[1] <= (available - 6_000) / 2, "the conversation leaves a reserve as large as its start: {grants:?}");
     let (view, _) = View::start(Vec::new(), &sources, |_: &[Claim]| grants.clone()).expect("one grant per source");
@@ -148,7 +150,7 @@ fn a_turnover_keeps_grounding_whole_and_takes_the_reserve_from_the_conversation(
     // An act that appends more than half of what the conversation may hold: the reserve
     // still holds one act.
     let per_act = (available - 6_000) * 3 / 4;
-    let grants = start_grants(&claimed, &plan, available, Some(per_act));
+    let grants = start_grants(&claimed, &plan, available, Some(per_act)).expect("test: no required floor in this start"); // JUSTIFIED: test fixture
     assert!(grants[1] <= (available - 6_000).saturating_sub(per_act), "the reserve holds one act's appends: {grants:?}");
 }
 
@@ -168,10 +170,10 @@ fn a_start_keeps_the_derived_half_of_what_she_read() {
     let plan = window_plan(&claimed, available as u32);
     let growable = available - 6_000;
 
-    let grants = start_grants(&claimed, &plan, available, None);
+    let grants = start_grants(&claimed, &plan, available, None).expect("test: no required floor in this start"); // JUSTIFIED: test fixture
     assert!(grants[1] + turn_chars() >= growable / 2, "unmeasured, the start is the half bound: {grants:?}");
 
     let per_act = growable / 8;
-    let grants = start_grants(&claimed, &plan, available, Some(per_act));
+    let grants = start_grants(&claimed, &plan, available, Some(per_act)).expect("test: no required floor in this start"); // JUSTIFIED: test fixture
     assert!(grants[1] + turn_chars() >= growable / 2, "a small append leaves the half bound standing: {grants:?}");
 }
