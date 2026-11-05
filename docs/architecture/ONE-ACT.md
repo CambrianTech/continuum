@@ -454,6 +454,18 @@ way around it:
 5. **Arguments are validated against the schema before execution**, typed per field, so a malformed
    or partial call never reaches a tool.
 
+**The next tool gets all of it for free** (Joel, 2026-11-05: "So the next new one you write gets it for
+free. Never allow breaks like this."). This is the substrate's for-free triplet (CBAR) applied to tools:
+- a base trait;
+- a `#[derive(Tool)]` on the tool's argument struct, which generates the schema, the payload
+  declaration (`#[payload]` on content fields), validation, and the typed refusal enum with next moves;
+- a scaffold generator.
+
+A tool author writes the argument struct and the body, nothing else. Continuation, payload-sized room,
+content anchoring (through a shared `Anchor` argument type), and results as codec items all come from
+the contract. The ratchet `tools_outside_the_contract` = 0 means a tool defined any other way does not
+build.
+
 Ratchets: `line_number_edit_modes` = 0; `tools_without_declared_payload` = 0;
 `untyped_tool_errors` falls; `truncation_outside_the_view` = 0.
 
