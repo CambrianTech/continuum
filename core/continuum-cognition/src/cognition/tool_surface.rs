@@ -600,4 +600,58 @@ mod tests {
         let edit = vocab.id("code/edit").expect("canonical names key the vocabulary");
         assert_eq!(vocab.tokens(edit) as usize, tool_surface_tokens_of(&[spec("code/edit")]));
     }
+    /// Profile tool surface token costs on canary — measure actual numbers before fixing.
+    ///
+    /// Serializes all native tool specs (discovery pair + authorized tools), measures their JSON sizes,
+    /// estimates token costs using continuum_base's functions, and prints a per-tool breakdown with totals.
+    #[test]
+    fn profile_tool_surface_token_costs() {
+        use crate::cognition::persona_tools::{authorized_tool_specs, native_offers};
+        use crate::routing::trust_level::TrustLevel;
+
+        let offers = native_offers();
+        let authorized = authorized_tool_specs(TrustLevel::Owner);
+
+        println!("\n=== Tool Surface Token Cost Profile ===\n");
+
+        // --- Native tools (discovery pair + native commands) ---
+        println!("--- Native Tools ({}) ---", offers.len());
+        let mut total_native_tokens: usize = 0;
+        let mut total_native_chars: usize = 0;
+        for offer in &offers {
+            let serialized = serde_json::to_string(&offer.spec).unwrap_or_default();
+            let chars = serialized.chars().count();
+            let tokens = continuum_base::token_estimate::estimate_tool_schema_tokens(&serialized);
+            total_native_chars += chars;
+            total_native_tokens += tokens;
+            println!("  {:40} {} chars, {} tokens", offer.spec.name, chars, tokens);
+        }
+        println!("  TOTAL: {} tools, {} chars, {} tokens\n", offers.len(), total_native_chars, total_native_tokens);
+
+        // --- Authorized tools at TrustLevel::Owner ---
+        println!("--- Authorized Tools (TrustLevel::Owner) ({}) ---", authorized.len());
+        let mut total_auth_tokens: usize = 0;
+        let mut total_auth_chars: usize = 0;
+        for spec in &authorized {
+            let serialized = serde_json::to_string(spec).unwrap_or_default();
+            let chars = serialized.chars().count();
+            let tokens = continuum_base::token_estimate::estimate_tool_schema_tokens(&serialized);
+            total_auth_chars += chars;
+            total_auth_tokens += tokens;
+            println!("  {:40} {} chars, {} tokens", spec.name, chars, tokens);
+        }
+        println!("  TOTAL: {} tools, {} chars, {} tokens\n", authorized.len(), total_auth_chars, total_auth_tokens);
+
+        // --- Combined (ToolSurface registry = native offers) ---
+        let combined_specs: Vec<_> = offers.into_iter().map(|o| o.spec).collect();
+        let combined_tokens = super::tool_surface_tokens_of(&combined_specs);
+        let combined_chars: usize = combined_specs.iter()
+            .map(|s| serde_json::to_string(s).unwrap_or_default().chars().count())
+            .sum();
+
+        println!("--- Combined (registry as sent in prompt) ---");
+        println!("  {} tools, {} chars total serialized", combined_specs.len(), combined_chars);
+        println!("  {} tokens via estimate_tool_schema_tokens", combined_tokens);
+        println!("\n═══════════════════════════════════════════════════════════════\n");
+    }
 }
