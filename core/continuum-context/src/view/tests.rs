@@ -507,13 +507,15 @@ fn a_source_without_a_fold_floors_at_the_sum_of_its_pointers() -> Result<(), Gra
 fn only_a_rise_past_the_pointer_restores_what_a_squeezed_start_folded() -> Result<(), GrantMismatch> {
     let actions = Folding::new(20, 100_000);
     let floor = claims(&[&actions])[0].floor_chars;
-    let (view, start) = View::start(Vec::new(), &[&actions], |_| vec![floor])?;
+    let (mut view, start) = View::start(Vec::new(), &[&actions], |_| vec![floor])?;
     assert_eq!(start.folded, 20, "a floor grant folds the whole run");
     let pointers = actions.pointers();
     let (pointed, _) = View::start(Vec::new(), &[&actions], |_| vec![pointers])?;
     assert_eq!(fold_blocks(&pointed), 0, "precondition: the pointer grant raises every item to its pointer");
     assert!(!view.start_would_restore(&[&actions], |_| vec![pointers])?, "pointers only: no turnover");
     assert!(view.start_would_restore(&[&actions], all_full)?, "room for them whole: a start gives them back");
+    let raised = view.turn_over(Vec::new(), &[&actions], |_| vec![pointers])?;
+    assert_eq!((raised.restored_items, raised.restored_chars), (0, 0), "pointers are not restored content");
     Ok(())
 }
 
@@ -747,10 +749,31 @@ fn wall_append_preserves_prefix_until_restore_recovers_collapsed_content() -> Re
     assert!(appended.starts_with(&before), "the wall advance must preserve the held prefix");
     assert!(view.start_would_restore(&sources, all_full)?);
     assert_eq!(rendered(&view), appended, "the restore probe cannot mutate the view");
-    view.turn_over(vec!["identity".into()], &sources, all_full)?;
+    let restored = view.turn_over(vec!["identity".into()], &sources, all_full)?;
+    assert_eq!(restored.restored_items, 1, "the changed wall is not restored content");
+    assert_eq!(restored.restored_chars, 9_000);
     assert!(view.renders("actions", "old-result"), "restore must actually recover the old result");
     assert!(view.renders("room-wall", "wall"));
     assert!(!rendered(&view).starts_with(&appended), "restoring content changes the prior prefix");
     assert!(!view.start_would_restore(&sources, all_full)?, "unchanged full grants must not restore twice");
+    let repeated = view.turn_over(vec!["identity".into()], &sources, all_full)?;
+    assert_eq!(repeated.restored_items, 0);
+    assert_eq!(repeated.restored_chars, 0);
+    Ok(())
+}
+
+#[test]
+fn turnover_receipt_counts_promotions_but_not_new_items() -> Result<(), GrantMismatch> {
+    let mut reads = Leveled(vec![("old", "x".repeat(1000), Some("outline".into()))]);
+    let (mut view, start) = View::start(Vec::new(), &[&reads], |_| vec![0])?;
+    assert_eq!((start.restored_items, start.restored_chars), (0, 0));
+    let summary = view.turn_over(Vec::new(), &[&reads], |_| vec![7])?;
+    assert_eq!((summary.restored_items, summary.restored_chars), (1, 7));
+    reads.0.push(("new", "newly arrived".into(), None));
+    let before = rendered(&view);
+    assert!(view.turn_over(Vec::new(), &[&reads], |_| vec![]).is_err());
+    assert_eq!(rendered(&view), before, "a refused turnover retains the old owner");
+    let full = view.turn_over(Vec::new(), &[&reads], all_full)?;
+    assert_eq!((full.restored_items, full.restored_chars), (1, 1000));
     Ok(())
 }

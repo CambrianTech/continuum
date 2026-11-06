@@ -78,6 +78,10 @@ pub struct Start {
     pub summarized: usize,
     /// Items the grants folded into their source's one block for this epoch.
     pub folded: usize,
+    /// Previously held items promoted above their old level to summary or full.
+    pub restored_items: usize,
+    /// Rendered characters in those promoted items, not a measure of useful learning.
+    pub restored_chars: usize,
 }
 
 /// One block she was shown, as the view rendered it (`View::receipt`).
@@ -189,13 +193,19 @@ impl<T: Block> View<T> {
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
     ) -> Result<Start, GrantMismatch> {
         let motion = std::mem::take(&mut self.motion);
-        let (next, start) = match Self::begin(self.epoch.id() + 1, head, sources, allocate, motion) {
+        let (next, mut start) = match Self::begin(self.epoch.id() + 1, head, sources, allocate, motion) {
             Ok(begun) => begun,
             Err((mismatch, motion)) => {
                 self.motion = motion;
                 return Err(mismatch);
             }
         };
+        for event in next.epoch.events() {
+            if !event.retired && event.element.is_some() && self.restores(&event.source, &event.level) {
+                start.restored_items += 1;
+                start.restored_chars += event.text.chars();
+            }
+        }
         *self = next;
         Ok(start)
     }
@@ -222,10 +232,15 @@ impl<T: Block> View<T> {
         Ok(sources.iter().zip(&offered).zip(&grants).any(|((source, items), grant)| {
             allot(&**source, items, *grant).levels.iter().zip(items).any(|(level, item)| {
                 let id = key(source.name(), &item.key);
-                let held = self.epoch.holds(&id) || self.folded.contains(&id);
-                held && rank(level) > rank(&self.held_level(&id)) && rank(level) > rank(&Level::Pointer)
+                self.restores(&id, level)
             })
         }))
+    }
+
+    fn restores(&self, id: &SourceId, level: &Level) -> bool {
+        (self.epoch.holds(id) || self.folded.contains(id))
+            && rank(level) > rank(&self.held_level(id))
+            && rank(level) > rank(&Level::Pointer)
     }
 
     fn held_level(&self, id: &SourceId) -> Level {
@@ -311,6 +326,8 @@ impl<T: Block> View<T> {
             collapsed: view.collapsed.len(),
             summarized: view.summarized.len(),
             folded: view.folded.len(),
+            restored_items: 0,
+            restored_chars: 0,
         };
         Ok((view, start))
     }
