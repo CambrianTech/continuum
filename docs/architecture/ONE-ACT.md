@@ -1435,7 +1435,7 @@ Kimi's oversized reply cap is reproducible without weakening capacity: prior den
 
 Intel completed its ed142 gate13:47:33–14:02:33 with full rotated coverage: one model-reached Eitan turn (441seconds), three unconfirmed attempts at the automatic engine transition, and no confirmed useful write. Eitan used0cached/16,479fresh tokens,413,342ms prefill,26,903ms decode and531ms residue. Other residents waited for pinned slots; queue estimates expired without removing their requests. All three current-code deployment gates are now complete, but productive recovery remains unproven. Preserve current code; these receipts drive fixes, not rollback or repeated gates.
 
-### 2026-11-06 18:44Z: incoming collaborator handoff
+### 2026-11-06 18:44Z: shared collaboration state
 
 The first exact-output dispatch slice is committed and pushed as `eb59f22a9f`
 on `origin/codex/quoted-act-room` (worktree `continuum-dyno-recovery`). It carries
@@ -1476,3 +1476,15 @@ Joel's development priority is fast evidence-driven iteration using available
 compute and supported local builds/restarts. Uptime is not an acceptance gate.
 Preserve durable state and others' unfinished work; routine deployment holds have
 been removed. Live outcomes, not a green simulation alone, decide acceptance.
+
+Live follow-up at18:52Z: Windows runs eb59f22a9f/build611 under the scheduled
+supervisor (core41564; automatic engine868). Supported deployment saved66modules
+and reported172seconds dark window. The first live defect is historical training
+records failing with missing `dispatch`; parked examples remain on disk. The
+correction belongs at persisted response decoding, shared by capture and LivedCall,
+not a serde default on live responses. Explicit LegacyUnrecorded history must never
+satisfy admitted-result validation. A deterministic parked-example reproduction and
+strict-wire/preserved-receipt tests accompany this correction. Implementation and
+consumer validation are in progress; it is not deployed yet. We remain collaborators:
+primary continues deployment/live proof and this newly observed regression; other
+workstreams can proceed independently within the contracts above.
