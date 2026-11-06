@@ -115,6 +115,7 @@ async fn reclaim(
     // No checkpoint or returner may call this erased/uncertain slot warm. The confirmed file
     // remains valid throughout erase and is never overwritten by a later empty-slot save.
     pool.forget_resident(slot, key);
+    pool.note_overwritten(slot);
     custody.pending = true;
     let (mut custody, erased) = resolve(kv_page_action(client, root, slot, &key, "erase").await, custody).await?;
     if !erased {

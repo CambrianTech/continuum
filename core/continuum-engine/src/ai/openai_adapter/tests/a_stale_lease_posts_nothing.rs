@@ -42,6 +42,7 @@ async fn a_stale_lease_posts_nothing() {
         (None, "no engine the admission can name"),
     ] {
         let mut reservation = None;
+        let mut dispatched = 0;
         let sent = crate::inference::lane_send::send_with_lane_retry(
             &adapter.config,
             adapter.client.post(format!("http://{address}/v1/chat/completions")).header("Content-Type", "application/json"),
@@ -54,10 +55,13 @@ async fn a_stale_lease_posts_nothing() {
                 admission: Some(crate::inference::lane_send::DispatchAdmission { persona: uuid::Uuid::new_v4(), admission, engine: bound_to }),
             },
             &mut reservation,
+            || dispatched += 1,
         )
         .await;
         assert!(matches!(sent, Err(InferenceError::GrantChanged { rendered: 148_838, .. })), "{why}: refused typed");
         assert!(reservation.is_none(), "{why}: nothing reserved");
+        // Her turn admission is never told it sent, so it keeps her residency (Benchy, M5 ed142f14c).
+        assert_eq!(dispatched, 0, "{why}: a request refused before its POST is never reported dispatched");
     }
     assert_eq!(posts.load(Ordering::SeqCst), 0, "zero POSTs under a stale lease");
 }
@@ -107,6 +111,7 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
     let admission = crate::ai::types::RequestAdmission { window: 148_838, lease: Some(lease), priced: crate::ai::types::PromptAdmission::Estimated };
     let adapter = test_adapter();
     let mut reservation = None;
+    let mut dispatched = 0;
     let sent = crate::inference::lane_send::send_with_lane_retry(
         &adapter.config,
         adapter.client.post(format!("{root}/v1/chat/completions")).header("Content-Type", "application/json"),
@@ -123,10 +128,12 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
             }),
         },
         &mut reservation,
+        || dispatched += 1,
     )
     .await;
     assert!(sent.is_ok(), "a normal act dispatches: {:?}", sent.err());
     assert_eq!(posts.load(Ordering::SeqCst), 1, "exactly one POST");
+    assert_eq!(dispatched, 1, "the POST is reported dispatched, once");
     let reservation = reservation.expect("her lease is reserved for the request"); // JUSTIFIED: the invariant under test
     crate::capacity::window_grant::settle(reservation, Some(&crate::capacity::window_grant::TerminalReceipt { finish: "stop".into() }));
 }

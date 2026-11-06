@@ -192,6 +192,9 @@ pub struct KvSlotPool {
     /// Numbers each change of [`Self::saved`] for the ledger, so a write taken outside the
     /// lock never replaces a newer one ([`Self::ledger_snapshot`]).
     pub(super) ledger_generation: AtomicU64,
+    /// What each slot physically holds and how new, against each confirmed page
+    /// ([`LiveSequences`]): a restore never regresses a newer live sequence.
+    pub(super) sequences: Mutex<LiveSequences>,
 }
 
 /// A slot's operation permit. Dropping a citizen permit wakes turns waiting for a slot
@@ -226,6 +229,22 @@ pub struct SlotPaging {
     pub restore: bool,
     /// The physical slot already contains this page, rather than a new lease.
     pub already_resident: bool,
+    /// Why: her live sequence against her page. `restore` and `already_resident` are derived
+    /// from it in [`SlotPaging::judged`], the one constructor.
+    pub basis: super::SequenceBasis,
+}
+
+impl SlotPaging {
+    pub(super) fn judged(slot: u32, save_first: Option<PageKey>, basis: super::SequenceBasis) -> Self {
+        use super::SequenceBasis::*;
+        Self {
+            slot,
+            save_first,
+            restore: matches!(basis, PageCurrent | PageBehindLive),
+            already_resident: matches!(basis, Attributed | LiveKept),
+            basis,
+        }
+    }
 }
 
 /// The KV page store is VIRTUAL-MEMORY PAGING ON CHEAP DISK — one page (+ its
