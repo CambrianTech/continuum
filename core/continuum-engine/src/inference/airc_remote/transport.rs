@@ -182,14 +182,18 @@ impl AircInferenceTransport for LocalAdapterTransport {
         &self,
         request: RemoteInferenceRequest,
     ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
-        // The seat honours the requester's think budget exactly as `ai/generate` does.
-        let terms = crate::ai::types::DispatchTerms::fixed(&request.text_request, request.think)
-            .map_err(|e| RemoteInferenceError::PeerAdapterFailed { message: e.to_string() })?;
-        let text_response = crate::ai::stream_sinks::drain_generation(|sink| async move {
-            self.adapter.generate_admitted(request.text_request, terms, sink).await.map_err(|e| e.to_string())
-        })
-        .await
-        .map_err(|e| RemoteInferenceError::PeerAdapterFailed { message: e })?;
+        // Mirror the destination ai/generate boundary: only an explicit think
+        // budget enters admitted dispatch. Plain remote generation stays general.
+        let text_response = match request.think {
+            Some(think) => {
+                let terms = crate::ai::types::DispatchTerms::fixed(&request.text_request, Some(think))
+                    .map_err(|e| RemoteInferenceError::PeerAdapterFailed { message: e.to_string() })?;
+                crate::ai::stream_sinks::drain_generation(|sink| async move {
+                    self.adapter.generate_admitted(request.text_request, terms, sink).await.map_err(|e| e.to_string())
+                }).await
+            }
+            None => self.adapter.generate_text(request.text_request).await,
+        }.map_err(|e| RemoteInferenceError::PeerAdapterFailed { message: e })?;
         Ok(RemoteInferenceResponse {
             correlation_id: request.correlation_id,
             served_by: self.fake_peer_id.clone(),
