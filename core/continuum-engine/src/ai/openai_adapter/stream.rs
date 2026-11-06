@@ -523,13 +523,13 @@ impl OpenAICompatibleAdapter {
             request.turn_bound,
             crate::inference::lane_send::FillReceipt {
                 model,
+                output: terms.output,
                 prompt_tokens,
                 prompt_quote: exact_prompt_quote
                     .then_some(crate::inference::lane_send::PromptQuote {
                         client: &self.client,
                         dedicated_lane: self.dedicated_lane,
                         caller: request.persona_id.as_deref().unwrap_or("non-persona"), // no persona: label the non-persona caller in a refusal; not a budget default
-                        reply: request.max_tokens.unwrap_or(0), // absent max_tokens reserves no explicit output allowance
                         request_id: &request_id,
                     }),
                 admission: dispatch_admission,
@@ -538,6 +538,11 @@ impl OpenAICompatibleAdapter {
         )
         .await?;
 
+        let quoted_reply_room = match response.output {
+            crate::inference::lane_send::SentOutput::Counted(room) => Some(room),
+            crate::inference::lane_send::SentOutput::ProviderFixed(_) => None,
+        };
+        let response = response.response;
         // Consume the SSE stream — `inference::sse_stream` (watchdogs, prefill liveness,
         // token/tool accumulation). The locals below are what the inline loop bound.
         let local_lane = self.targets_local_serving_lane();
@@ -828,7 +833,7 @@ impl OpenAICompatibleAdapter {
         }
 
         Ok(TextGenerationResponse {
-            quoted_reply_room: None,
+            quoted_reply_room,
             text,
             finish_reason,
             model: resp_model.unwrap_or_else(|| model.to_string()),

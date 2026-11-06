@@ -56,8 +56,9 @@ async fn replay_reply_resize(estimate: usize, prompt: u32, window: u32, predicte
             adapter.client.post(format!("http://{address}/v1/chat/completions")).header("Content-Type", "application/json"),
             body, None,
             FillReceipt {
+                output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(reply).expect("positive fixture")),
                 model: "fixture", prompt_tokens: estimate,
-                prompt_quote: Some(PromptQuote { client: &adapter.client, dedicated_lane: true, caller: "recorded room fixture", reply, request_id: "recorded-room" }),
+                prompt_quote: Some(PromptQuote { client: &adapter.client, dedicated_lane: true, caller: "recorded room fixture", request_id: "recorded-room" }),
                 admission: Some(DispatchAdmission {
                     persona: uuid::Uuid::nil(), endpoint: None,
                     admission: RequestAdmission { window, lease: None, priced: PromptAdmission::EngineCounted },
@@ -68,7 +69,7 @@ async fn replay_reply_resize(estimate: usize, prompt: u32, window: u32, predicte
             assert!(matches!(result, Err(crate::ai::inference_error::InferenceError::ContextExceeded { requested, available } ) if requested == prompt && available == window));
             assert!(generations.lock().expect("fixture generations").is_empty());
         } else {
-            assert!(result.expect("resized room fits").status().is_success());
+            assert!(result.expect("resized room fits").response.status().is_success());
         }
     }
     let counted = quotes.lock().expect("fixture quotes");
@@ -320,7 +321,7 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
     ));
 
     let body =
-        br#"{"messages":[{"role":"user","content":"prepared request"}],"tools":[]}"#.to_vec();
+        br#"{"messages":[{"role":"user","content":"prepared request"}],"tools":[],"max_tokens":1}"#.to_vec();
     adapter.config.single_resident_model = true;
     let retry = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -336,13 +337,13 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
             // existing wire floor; no readiness-patience value enters this API.
             Some(std::time::Duration::ZERO),
             crate::inference::lane_send::FillReceipt {
+                output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(1).expect("positive fixture")),
                 model: "fixture",
                 prompt_tokens: 4,
                 prompt_quote: Some(crate::inference::lane_send::PromptQuote {
                     client: &adapter.client,
                     dedicated_lane: true,
                     caller: "fixture",
-                    reply: 0,
                     request_id: "fixture",
                 }),
                 admission: None,

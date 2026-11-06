@@ -61,6 +61,7 @@ async fn a_stale_lease_posts_nothing() {
             br#"{"messages":[{"role":"user","content":"act"}]}"#.to_vec(),
             Some(std::time::Duration::from_secs(5)),
             crate::inference::lane_send::FillReceipt {
+                output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(1).expect("positive fixture")),
                 model: "fixture",
                 prompt_tokens: 4,
                 prompt_quote: None,
@@ -83,11 +84,28 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
     use axum::{routing::post, Router};
     let posts = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&posts);
-    let app = Router::new().route("/v1/chat/completions", post(move || {
+    let prompt = Arc::new(AtomicUsize::new(27221));
+    let quote_prompt = prompt.clone();
+    let quotes = Arc::new(AtomicUsize::new(0));
+    let quote_counter = quotes.clone();
+    let quoted_bodies = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+    let quoted_capture = quoted_bodies.clone();
+    let sent_bodies = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+    let sent_capture = sent_bodies.clone();
+    let app = Router::new().route("/v1/chat/completions", post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+        let sent_capture = sent_capture.clone();
         let counted = Arc::clone(&counted);
         async move {
+            sent_capture.lock().expect("sent capture").push(body);
             counted.fetch_add(1, Ordering::SeqCst);
             "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+        }
+    })).route("/v1/chat/completions/input_tokens", post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+        let quote_prompt = quote_prompt.clone(); let quote_counter = quote_counter.clone(); let quoted_capture = quoted_capture.clone();
+        async move {
+            quoted_capture.lock().expect("quote capture").push(body);
+            quote_counter.fetch_add(1, Ordering::SeqCst);
+            axum::Json(serde_json::json!({"input_tokens": quote_prompt.load(Ordering::SeqCst)}))
         }
     }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("isolated HTTP fixture"); // JUSTIFIED: test fixture
@@ -95,7 +113,16 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
     let _server = tokio::spawn(async move { axum::serve(listener, app).await });
     let root = format!("http://{address}");
     // The owned engine verified ready on this endpoint: its pool is stamped.
-    let pool = crate::inference::slots::directory().ensure_pool(&root, 2);
+    let endpoint = crate::inference::slots::directory().endpoint(&root);
+    let transition = endpoint.transition().await;
+    let generation = transition.start_generation().expect("fixture generation");
+    transition.ready(&root, &generation, crate::inference::slots::KvPageContract {
+        model_id: "fixture".into(), model: "fixture.gguf".into(), adapters: vec![],
+        page_dir: None, context: 32512, slots: 1, cache_type: None,
+        flash_attn: None, revisions: None,
+    }).expect("fixture owned geometry");
+    drop(transition);
+    let pool = endpoint.admit().await.expect("fixture reader").pool.expect("fixture pool");
     crate::inference::slots::stamp_engine_incarnation(&root, 4_242, 1_800_000_000);
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let client = reqwest::Client::new();
@@ -117,31 +144,38 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
     let (_publisher, receiver) = tokio::sync::watch::channel(Some(grants));
     assert!(crate::capacity::window_grant::install_grants(receiver), "test: the only grants watch in this binary");
     let lease = crate::capacity::window_grant::current_lease(persona).expect("her published lease"); // JUSTIFIED: the invariant under test
-    let admission = crate::ai::types::RequestAdmission { window: 148_838, lease: Some(lease), priced: crate::ai::types::PromptAdmission::Estimated };
     let adapter = test_adapter();
-    let mut reservation = None;
-    let sent = crate::inference::lane_send::send_with_lane_retry(
-        &adapter.config,
-        adapter.client.post(format!("{root}/v1/chat/completions")).header("Content-Type", "application/json"),
-        br#"{"messages":[{"role":"user","content":"act"}]}"#.to_vec(),
-        Some(std::time::Duration::from_secs(5)),
-        crate::inference::lane_send::FillReceipt {
-            model: "fixture",
-            prompt_tokens: 4,
-            prompt_quote: None,
-            admission: Some(crate::inference::lane_send::DispatchAdmission {
-                persona,
-                admission,
-                endpoint: Some(&admitted),
-            }),
-        },
-        &mut reservation,
-    )
-    .await;
-    assert!(sent.is_ok(), "a normal act dispatches: {:?}", sent.err());
-    assert_eq!(posts.load(Ordering::SeqCst), 1, "exactly one POST");
-    let reservation = reservation.expect("her lease is reserved for the request"); // JUSTIFIED: the invariant under test
-    crate::capacity::window_grant::settle(reservation, Some(&crate::capacity::window_grant::TerminalReceipt { finish: "stop".into() }));
+    for (index, (count, window, required, reply)) in [(27221, 32512, 4534, 5290), (18702, 22435, 3558, 3732)].into_iter().enumerate() {
+        prompt.store(count, Ordering::SeqCst);
+        let admission = crate::ai::types::RequestAdmission { window, lease: Some(lease), priced: crate::ai::types::PromptAdmission::EngineCounted };
+        let mut reservation = None;
+        let sent = crate::inference::lane_send::send_with_lane_retry(
+            &adapter.config,
+            adapter.client.post(format!("{root}/v1/chat/completions")).header("Content-Type", "application/json"),
+            br#"{"messages":[{"role":"user","content":"act"}],"max_tokens":999999,"tools":[]}"#.to_vec(),
+            Some(std::time::Duration::from_secs(5)),
+            crate::inference::lane_send::FillReceipt {
+                output: crate::ai::reply_room::OutputIntent::UseAdmittedRoom { required_reply: std::num::NonZeroU32::new(required).expect("positive fixture") },
+                model: "fixture", prompt_tokens: 4,
+                prompt_quote: Some(crate::inference::lane_send::PromptQuote { client: &adapter.client, dedicated_lane: true, caller: "fixture", request_id: "owned-recorded-room" }),
+                admission: Some(crate::inference::lane_send::DispatchAdmission { persona, admission, endpoint: Some(&admitted) }),
+            },
+            &mut reservation,
+        ).await.expect("owned exact dispatch");
+        assert!(sent.response.status().is_success());
+        let crate::inference::lane_send::SentOutput::Counted(room) = sent.output else { panic!("counted receipt required") };
+        assert_eq!((room.prompt, room.window, room.reply), (count as u32, window, reply));
+        assert_eq!(quotes.load(Ordering::SeqCst), index + 1, "one quote per actual attempt");
+        assert_eq!(posts.load(Ordering::SeqCst), index + 1, "one generation per actual attempt");
+        let mut quoted = quoted_bodies.lock().expect("quoted")[index].clone();
+        let mut wire = sent_bodies.lock().expect("sent")[index].clone();
+        assert_eq!(wire["max_tokens"], reply);
+        quoted.as_object_mut().expect("quote object").remove("max_tokens");
+        wire.as_object_mut().expect("wire object").remove("max_tokens");
+        assert_eq!(quoted, wire, "all prompt-affecting fields remain identical");
+        let reservation = reservation.expect("actual lease reservation");
+        crate::capacity::window_grant::settle(reservation, Some(&crate::capacity::window_grant::TerminalReceipt { finish: "stop".into() }));
+    }
 }
 
 // The actual endpoint owner closes during an HTTP quote. A valid count alone
@@ -204,8 +238,9 @@ async fn owned_quote_refusal(quarantine: bool, prompt: u32, admitted_window: u32
         br#"{"messages":[{"role":"user","content":"act"}],"max_tokens":1}"#.to_vec(),
         None,
         FillReceipt {
+                output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(1).expect("positive fixture")),
             model: "fixture", prompt_tokens: 4,
-            prompt_quote: Some(PromptQuote { client: &adapter.client, dedicated_lane: true, caller: "fixture", reply: 1, request_id: "quarantined-quote" }),
+            prompt_quote: Some(PromptQuote { client: &adapter.client, dedicated_lane: true, caller: "fixture", request_id: "quarantined-quote" }),
             admission: Some(DispatchAdmission {
                 persona, endpoint: Some(&owned),
                 admission: crate::ai::types::RequestAdmission { window: admitted_window, lease: None, priced: crate::ai::types::PromptAdmission::EngineCounted },
