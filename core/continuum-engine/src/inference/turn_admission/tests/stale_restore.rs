@@ -75,23 +75,43 @@ async fn an_admission_that_never_sent_keeps_her_residency_and_her_retry_resumes_
     rig.server.abort();
 }
 
-// what this catches: the pool's own guard, beneath the admission. A request that WAS sent and then
-// failed forgets her attribution (it proves nothing about the slot's tail), but her slot still holds
-// her sequence, newer than her page: `plan_paging` resumes it in place, never restores over it.
+// what this catches: the pool's own guard, beneath the admission. A slot that lost her attribution
+// while still holding her CONFIRMED sequence, newer than her page (her save left it there and no
+// restore started), is resumed in place, never restored over.
 #[tokio::test]
-async fn a_restore_never_lands_over_her_newer_live_sequence() {
+async fn a_restore_never_lands_over_her_newer_confirmed_sequence() {
+    let dir = tempfile::tempdir().expect("test: page dir");
+    let rig = resident_ahead_of_her_page(dir.path()).await;
+    let restores = rig.hold.restores.load(SeqCst);
+    rig.pool.forget_resident(1, key(1)); // attribution lost; the slot untouched
+
+    let retry = rig.admit(1, 160).await;
+    assert_eq!(retry.page_in(), PageIn::Resident, "her newer confirmed sequence wins over her older page");
+    assert_eq!(rig.hold.restores.load(SeqCst), restores, "no restore reached the engine");
+    assert_eq!(rig.held(&retry).as_deref(), Some("1:150"));
+    drop(retry);
+    rig.server.abort();
+}
+
+// what this catches (Codex on #5804 at 541919d6f): a SENT request (a changed prompt on the same page)
+// that failed without a terminal receipt may have truncated or replaced her slot; its old completed
+// revision must not claim a live hit. She falls back to her confirmed page.
+#[tokio::test]
+async fn a_sent_request_that_failed_never_claims_her_live_sequence() {
     let dir = tempfile::tempdir().expect("test: page dir");
     let rig = resident_ahead_of_her_page(dir.path()).await;
     let restores = rig.hold.restores.load(SeqCst);
 
     let mut failed = rig.admit(1, 160).await;
-    failed.dispatching(); // the POST went out; no successful generation came back
-    drop(failed);
+    failed.dispatching(); // the POST went out
+    let slot = failed.slot().expect("test: a slot");
+    rig.slots.lock().expect("test: fixture mutex").insert(slot, "1:40".into()); // the changed prompt truncated her slot
+    drop(failed); // no terminal receipt
 
     let retry = rig.admit(1, 160).await;
-    assert_eq!(retry.page_in(), PageIn::Resident, "her newer live sequence wins over her older page");
-    assert_eq!(rig.hold.restores.load(SeqCst), restores, "no restore reached the engine");
-    assert_eq!(rig.held(&retry).as_deref(), Some("1:150"));
+    assert_ne!(retry.page_in(), PageIn::Resident, "an unconfirmed slot proves no live hit");
+    assert_eq!(rig.hold.restores.load(SeqCst), restores + 1, "her confirmed page is restored");
+    assert_eq!(rig.held(&retry).as_deref(), Some("1:100"), "her page, never the truncated slot");
     drop(retry);
     rig.server.abort();
 }
