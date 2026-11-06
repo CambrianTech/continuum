@@ -162,6 +162,24 @@ fn next_arrival(hour: &Hour, queue: &[usize], k: usize, released_s: f64) -> f64 
     }
 }
 
+/// A speculative bet: prefill a predicted turnover's next epoch (`tokens`) on a shadow sequence
+/// in otherwise-idle device time, armed at the release of the act before `task`. Made from history
+/// only; a wrong bet costs only idle device time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Bet {
+    pub task: usize,
+    pub tokens: u32,
+}
+
+/// What the bets did.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct BetScore {
+    pub prefetched_tokens: u64,
+    pub used_tokens: u64,
+    pub wasted_s: f64,
+    pub spent_s: f64,
+}
+
 /// Today's replay: outcomes only.
 pub(crate) fn replay(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchScheduler) -> Vec<TaskOutcome> {
     run(hour, costs, scheduler, Pipeline::TODAY).outcomes
@@ -169,6 +187,12 @@ pub(crate) fn replay(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchSchedu
 
 /// Replay the hour's tasks, slot by slot, under `scheduler` and `pipeline`.
 pub(crate) fn run(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchScheduler, pipeline: Pipeline) -> Run {
+    run_with_bets(hour, costs, scheduler, pipeline, &[]).0
+}
+
+/// As [`run`], with speculative bets executed in otherwise-idle device time.
+pub(crate) fn run_with_bets(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchScheduler, pipeline: Pipeline, bets: &[Bet]) -> (Run, BetScore) {
+    let mut score = BetScore::default();
     let slots = hour.tasks.iter().map(|t| t.slot).max().map_or(0, |m| m + 1);
     let queues: Vec<Vec<usize>> = (0..slots).map(|s| (0..hour.tasks.len()).filter(|i| hour.tasks[*i].slot == s).collect()).collect();
     let mut next = vec![0usize; slots];
@@ -181,6 +205,8 @@ pub(crate) fn run(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchScheduler
     let mut run = Run { outcomes: Vec::new(), busy_s: 0.0, span_s: 0.0, idle_while_ready_s: 0.0, device_blocked_on_host_s: 0.0, host_blocked_on_device_s: 0.0, gap_prefill_s: 0.0, act_prefill_s: 0.0, shadow_prefill_s: 0.0 };
     // Per slot: the turnover task a shadow epoch is being built for, its tokens and those done.
     let mut shadow: Vec<Option<(usize, u32, u32)>> = vec![None; slots];
+    // Device seconds a slot's current shadow has spent.
+    let mut shadow_s = vec![0.0f64; slots];
     let arm = |queue: &[usize], from: usize, acts: usize| -> Option<(usize, u32, u32)> {
         (from..queue.len()).take(acts).map(|k| queue[k]).find(|i| hour.tasks[*i].turnover > 0 && hour.tasks[*i].class == TaskClass::Resident)
             .map(|i| (i, hour.tasks[i].turnover, 0))
@@ -207,7 +233,17 @@ pub(crate) fn run(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchScheduler
                     let shadowed = match shadow[s] {
                         Some((target, _, d)) if target == i => {
                             shadow[s] = None;
-                            d.min(fresh)
+                            let used = d.min(hour.tasks[i].turnover).min(fresh);
+                            if bets.iter().any(|b| b.task == i) {
+                                score.prefetched_tokens += u64::from(d);
+                                score.used_tokens += u64::from(used);
+                                score.spent_s += shadow_s[s];
+                                if d > 0 {
+                                    score.wasted_s += shadow_s[s] * f64::from(d - used) / f64::from(d);
+                                }
+                            }
+                            shadow_s[s] = 0.0;
+                            used
                         }
                         _ => 0,
                     };
@@ -266,6 +302,7 @@ pub(crate) fn run(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchScheduler
                     let n = (total - d).min(hour.n_batch);
                     let cost = costs.prompt_s(n, u64::from(d));
                     shadow[s] = Some((target, total, d + n));
+                    shadow_s[s] += cost;
                     run.busy_s += cost;
                     run.shadow_prefill_s += cost;
                     now += cost;
@@ -356,6 +393,12 @@ pub(crate) fn run(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchScheduler
                     if let (Shadow::Ahead { acts }, None) = (pipeline.shadow, shadow[s]) {
                         shadow[s] = arm(&queues[s], next[s], acts);
                     }
+                    if let (Some(&n), None) = (queues[s].get(next[s]), shadow[s]) {
+                        if let Some(b) = bets.iter().find(|b| b.task == n) {
+                            shadow[s] = Some((n, b.tokens, 0));
+                            shadow_s[s] = 0.0;
+                        }
+                    }
                     if next[s] < queues[s].len() {
                         arrival[s] = next_arrival(hour, &queues[s], next[s], now);
                         gap_s[s] = arrival[s] - now;
@@ -372,9 +415,16 @@ pub(crate) fn run(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchScheduler
             }
         }
     }
+    // Bets armed but never reached (the window ended) spent their device time for nothing.
+    for s in 0..slots {
+        if shadow[s].is_some_and(|(t, _, _)| bets.iter().any(|b| b.task == t)) {
+            score.spent_s += shadow_s[s];
+            score.wasted_s += shadow_s[s];
+        }
+    }
     run.span_s = now;
     run.outcomes = outcomes.into_iter().map(|o| o.unwrap_or_else(TaskOutcome::unfinished)).collect(); // unwrap_or_else: a stalled policy leaves tasks unfinished, reported as NaN
-    run
+    (run, score)
 }
 
 /// A streamed slot's available tokens form a full ubatch, or its gap is over (the rest of it).

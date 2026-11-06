@@ -353,3 +353,129 @@ mod shadow {
         }
     }
 }
+
+mod speculative {
+    use super::*;
+
+    /// A mind's resident acts in recorded order.
+    fn acts_by_mind(hour: &Hour) -> BTreeMap<String, Vec<usize>> {
+        let mut by: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (i, t) in hour.tasks.iter().enumerate().filter(|(_, t)| t.class == TaskClass::Resident) {
+            by.entry(t.mind.clone()).or_default().push(i);
+        }
+        for v in by.values_mut() {
+            v.sort_by(|a, b| hour.tasks[*a].launch_s.total_cmp(&hour.tasks[*b].launch_s));
+        }
+        by
+    }
+
+    fn prompt(t: &HourTask) -> u64 {
+        u64::from(t.cached) + u64::from(t.fresh)
+    }
+
+    /// What the predictor learned from the training half, per mind.
+    #[derive(Debug, Default)]
+    struct Learned {
+        gap_s: f64,
+        growth: f64,
+        /// The smallest prompt after which a turnover followed, and the median turnover size.
+        turnover_at: Option<(u64, u32)>,
+        append: f64,
+    }
+
+    fn learn(hour: &Hour, acts: &[usize], split_s: f64) -> Learned {
+        let train: Vec<usize> = acts.iter().copied().filter(|i| hour.tasks[*i].launch_s < split_s).collect();
+        let t = |i: usize| &hour.tasks[i];
+        let pairs: Vec<(usize, usize)> = train.windows(2).map(|w| (w[0], w[1])).collect();
+        let gap_s = median(pairs.iter().map(|(a, b)| t(*b).launch_s - (t(*a).launch_s + t(*a).recorded_act_s)).collect());
+        let growth = median(pairs.iter().filter(|(_, b)| t(*b).turnover == 0).map(|(a, b)| prompt(t(*b)) as f64 - prompt(t(*a)) as f64).collect());
+        let before: Vec<(u64, u32)> = pairs.iter().filter(|(_, b)| t(*b).turnover > 0).map(|(a, b)| (prompt(t(*a)), t(*b).turnover)).collect();
+        let turnover_at = before.iter().map(|(d, _)| *d).min()
+            .map(|d| (d, median(before.iter().map(|(_, n)| f64::from(*n)).collect()) as u32));
+        let append = median(train.iter().map(|i| f64::from(t(*i).stream)).collect());
+        Learned { gap_s, growth, turnover_at, append }
+    }
+
+    // what this catches: nothing by itself; it scores SPECULATIVE PREFETCH (Joel: "your algorithms
+    // can bet on the ones they expect") with a predictor fitted on the first half of the window and
+    // scored on the held-out second half, from history only: (1) the next mind to act, (2) her next
+    // act's append size, (3) her next turnover (measured growth crossing the depth her past
+    // turnovers followed). Only (3) has a device action in this model: its next epoch prefilled on
+    // a shadow sequence in otherwise-idle device time ((1) and (2) inform page I/O and reservations,
+    // which the pipeline scopes already overlap, and not-yet-emitted tokens cannot be prefilled).
+    // Bets run on (e), where turnovers still cost a re-prefill (e-ready removes them by assumption).
+    #[test]
+    fn speculative_prefetch_on_the_held_out_half() {
+        let e = evidence();
+        let hour = &e.m5_hour.value;
+        let costs = Costs::of(&e);
+        let rows = calibration(hour, &costs);
+        print_calibration(&rows, &costs);
+        let span = hour.tasks.iter().map(|t| t.launch_s + t.recorded_act_s).fold(0.0, f64::max);
+        let split_s = span / 2.0;
+        let minds = acts_by_mind(hour);
+        let learned: BTreeMap<&str, Learned> = minds.iter().map(|(m, a)| (m.as_str(), learn(hour, a, split_s))).collect();
+        let held = |i: usize| hour.tasks[i].launch_s >= split_s;
+
+        // (3) turnover bets: at the release of act j-1, bet when her prompt plus her median growth
+        // reaches the depth her training turnovers followed.
+        let mut bets = Vec::new();
+        for (m, acts) in &minds {
+            let Some((at, tokens)) = learned[m.as_str()].turnover_at else { continue };
+            for w in acts.windows(2).filter(|w| held(w[1])) {
+                if prompt(&hour.tasks[w[0]]) as f64 + learned[m.as_str()].growth >= at as f64 {
+                    bets.push(Bet { task: w[1], tokens });
+                }
+            }
+        }
+        let actual: Vec<usize> = minds.values().flatten().copied().filter(|i| held(*i) && hour.tasks[*i].turnover > 0).collect();
+        let hits = bets.iter().filter(|b| hour.tasks[b.task].turnover > 0).count();
+
+        // (1) next mind: at each held-out go, the mind whose last release plus her median gap is soonest.
+        let mut goes: Vec<usize> = minds.values().flatten().copied().collect();
+        goes.sort_by(|a, b| hour.tasks[*a].launch_s.total_cmp(&hour.tasks[*b].launch_s));
+        let (mut right, mut asked) = (0usize, 0usize);
+        for w in goes.windows(2).filter(|w| held(w[1])) {
+            let now = hour.tasks[w[0]].launch_s;
+            let predicted = minds.iter().filter_map(|(m, acts)| {
+                let last = acts.iter().filter(|i| hour.tasks[**i].launch_s + hour.tasks[**i].recorded_act_s <= now).last()?;
+                Some((m, hour.tasks[*last].launch_s + hour.tasks[*last].recorded_act_s + learned[m.as_str()].gap_s))
+            }).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(m, _)| m.clone());
+            asked += 1;
+            right += usize::from(predicted.as_deref() == Some(hour.tasks[w[1]].mind.as_str()));
+        }
+        // (2) append size: the median ratio min/max of predicted to actual.
+        let append_ratio = median(minds.iter().flat_map(|(m, acts)| acts.iter().filter(|i| held(**i)).map(|i| {
+            let (p, a) = (learned[m.as_str()].append, f64::from(hour.tasks[*i].stream));
+            if p.max(a) > 0.0 { p.min(a) / p.max(a) } else { 1.0 }
+        }).collect::<Vec<_>>()).collect());
+        eprintln!("held-out split at {split_s:.0} s: next-mind accuracy {right}/{asked} ({:.0}%); append-size accuracy (median min/max) {:.0}%; turnover bets {} (precision {}/{} , recall {}/{})",
+            right as f64 * 100.0 / asked.max(1) as f64, append_ratio * 100.0, bets.len(), hits, bets.len(), hits, actual.len());
+
+        let knee = match costs.knee() {
+            Knee::Derived(k) => k as usize,
+            Knee::NeedsNoiseBand { below, .. } => below as usize,
+        };
+        let held_acts: Vec<usize> = minds.values().flatten().copied().filter(|i| held(*i)).collect();
+        let report = |name: &str, r: &Run, score: Option<BetScore>| {
+            let out = &r.outcomes;
+            let acts: Vec<f64> = held_acts.iter().map(|i| out[*i].act_s()).collect();
+            let (hit, total) = held_acts.iter().fold((0u64, 0u64), |(h, t), i| {
+                let task = &hour.tasks[*i];
+                (h + u64::from(task.cached) + u64::from(out[*i].before_go + out[*i].shadowed) + u64::from(task.fresh - out[*i].fresh), t + prompt(task))
+            });
+            let inside = median(held_acts.iter().map(|i| f64::from(out[*i].fresh.saturating_sub(out[*i].before_go + out[*i].shadowed))).collect());
+            eprintln!("{name}: held-out median act {:.0} s, p90 {:.0} s; token hit rate {:.1}%; prefill tokens per act (median) {inside:.0}; device idle while ready {:.1}%{}",
+                median(acts.clone()), quantile(acts, 0.9), hit as f64 * 100.0 / total.max(1) as f64, r.idle_while_ready_s / r.span_s * 100.0,
+                score.map_or(String::new(), |s| format!("; prefetched {} tokens, used {} ({:.0}%), device-s spent {:.0}, wasted {:.0}",
+                    s.prefetched_tokens, s.used_tokens, s.used_tokens as f64 * 100.0 / s.prefetched_tokens.max(1) as f64, s.spent_s, s.wasted_s)));
+            assert!(out.iter().all(|o| o.release_s.is_finite()), "{name} left tasks unfinished");
+        };
+        let base = run(hour, &costs, &mut SortKey::new(knee), Pipeline::scope(Scope::AppendOnly));
+        report("(e)", &base, None);
+        let (with, score) = run_with_bets(hour, &costs, &mut SortKey::new(knee), Pipeline::scope(Scope::AppendOnly), &bets);
+        report("(e) + speculative prefetch", &with, Some(score));
+        let ready = run(hour, &costs, &mut SortKey::new(knee), Pipeline::scope(Scope::ReadyBeforeGo));
+        report("(e-ready), for reference", &ready, None);
+    }
+}
