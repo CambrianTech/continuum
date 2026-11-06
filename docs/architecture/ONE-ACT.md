@@ -1505,3 +1505,20 @@ warm-decode results test a different objective. The existing5c work must reconci
 these measurements through the shared operating-point owner and deterministic
 mixed-load traces, not a new hardcoded launch flag or per-leaf policy. The exact
 reply-room change does not claim to solve cold-prefill admission or fairness.
+
+### General generation is not admitted output authority (CI reproduction, November6)
+
+The real shared-teacher HTTP/custody validator found an omitted caller in the first
+migration: teacher_generate intentionally omits max_tokens, but generic OpenAI
+streaming was routed through Fixed. This refused before HTTP and produced an empty
+teacher corpus. Local reproduction matches CI. Do not invent a teacher cap.
+
+The centralized output intent must therefore also name ProviderControlled for
+general generation. It preserves the original omitted-limit body through quote and
+POST, checks prompt feasibility under the existing serving path, and returns
+Unadmitted—not Counted or ProviderFixed. It cannot carry admission, a grant lease,
+a think bound or a contradictory max_tokens, and generate_admitted must reject it
+before invoking the provider. Fixed and UseAdmittedRoom keep their existing strict
+contracts. A missing caller cap selects this explicit general case only at the
+generic adapter entry point; it is never an admitted fallback. The actual teacher
+validator must retain all existing shared-custody and cancellation assertions.
