@@ -780,6 +780,20 @@ compressor across minds:
 
 Target: per act, the bitrate is only the genuinely new information.
 
+**Bet on what is coming (Joel: "your algorithms can bet on the ones they expect").** Beyond keeping
+what recurred, the policy predicts and prefetches, the way a CPU uses branch prediction and
+speculative execution. It bets on:
+- which mind acts next, and pages her in before admission;
+- which segments her next prompt will hold;
+- when her next turnover lands (the shadow epoch);
+- the stable part of her next act's prompt.
+
+Bets run only in idle device time, at the lowest sort key, preemptible at the next frame. A wrong bet
+therefore costs only idle time and never delays ready work. The scorecard adds prediction accuracy,
+the useful-prefetch rate, and device-seconds spent on bets that did not pay. The predictor starts
+from measured frequencies and recency; the learned optimizer may replace it behind the same policy
+boundary.
+
 ### 5f. Extend the pipeline to the grid: place work near warm state
 
 Joel requested this direction be recorded on 2026-11-04. This is the extension of stages
