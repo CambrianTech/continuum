@@ -442,6 +442,41 @@ an owner, and a ratchet or validator that only lets the old shape fall.
 | SLEEP IS AS IMPORTANT AS RESPONSIVENESS (Joel, CBAR's signal-mutex-sleep): one wait primitive; a stage waits on a typed signal, drains, sleeps; backoff, coalescing and "unreachable until re-announce" are properties of the primitive, never consumer code; health reads owner-published snapshots, never probes; a suppressed send does no encode, seal or network work and nothing runs periodically while idle (returning its typed result is the only cost); a NoReceiver is definitive only for that recipient/host incarnation and owner generation, a NoHandshakeReply is uncertainty; a receiver reattach on the same daemon wakes suppressed work, and a lost ready announcement is bounded by the backstop, never asleep forever (Phase A, shared suspect plus backstop: Cormac on #1649; Phase B, authenticated refusal and the ready protocol: under Codex's boundary review) | airc backfill and forwards storming a retired peer (2M refusals per daemon); polled health; interval ticks with no work | Codex (airc reachability owner); Fable (the primitive is `continuum-kernel` `Stage` + `StageRunner`, already signal-woken with a `floor` backstop and one adopter, the deferred faculty: every loop migrates onto it; the runner itself records the wait ledger and wakes-without-work, so every stage reports them free; the idle-core gate: a 10 s idle sample near zero) |
 | the WAIT LEDGER (§6b) | 300 s of non-model time per act inferred, not reported | Fable (with P2) |
 
+## 6e. A mind's window follows what she reads, as events (Joel, 2026-11-02)
+
+Joel: "Ideally it finds who needs it too", "Based really on what they're reading yeah just need
+the data flow model to send events as these things happen up or down." Measured the same day: four
+M5 residents at 58,112 tokens each (from 78k) because the plan split one fixed 290,560-token pool
+into five equal slots, one of them a scratch slot serving a 432-token prompt; six answers were cut
+at the output limit that hour (Aris at 465 tokens against a measured peak of 799).
+
+The shape:
+- **Demand is what she holds in view.** The view codec (`continuum-context`) admits and collapses
+  her items; each change in her UNTRIMMED required demand plus her completion reserve (never only
+  the admitted, already-collapsed view, which would hide need by shrinking) publishes one typed
+  `DemandChanged { mind, required_tokens, completion_reserve, input_revision }` on her watch
+  channel, only on change (no tick, no re-measure). (Codex's review of #5709.)
+- **One allocator grants every mind's window from those events.** The serving plan's allocator
+  (`window_allocator`) holds each mind's requirement as a claim in one flex allocation over one
+  shared pool; it sleeps on the demand channels and regrants only when one moves. Priority follows
+  activity temperature (goal 9); scratch and background traffic claim what they use; every
+  downward grant has a scheduled upward test. A grant carries its generation; a grant in use by
+  an in-flight turn never shrinks under it: down-grants apply at an acknowledged safe boundary,
+  and every reader of one turn uses the same captured grant. A measured answer peak is evidence
+  for the reserve, not a guarantee that no answer exceeds it. Today the allocator takes per-mind
+  requirements but emits ONE window; uneven grants are new allocator work.
+- **The engine honours uneven grants.** Slots share one KV pool (the fork's `--kv-unified`), so a
+  grant is a live budget, not a relaunch. `--kv-unified` alone does not prove mutable per-slot
+  caps: a fork capability test on the serving revision proves it before any no-relaunch claim.
+- **One window owner per turn.** The view, `CapacityReadiness` and the span read her grant through
+  the one function (card 1c508526), so no reader holds a stale window.
+
+Order: the validator first (it needs no engine change): the simulator runs four minds reading
+unevenly and asserts each grant follows its demand within one event, no in-flight grant shrinks,
+and the pool is never exceeded. Then, in parallel, the fork capability proof for per-slot caps
+over a unified pool and the allocator's uneven-grant contract (Codex owns the engine and capacity
+seam); then the codec's demand events (Fable); then the one-window read (card 1c508526).
+
 ## 6a. The dyno and the simulator: how to use them (both proved their worth on 2026-10-28)
 
 Answer "will this be faster?" here before touching the live node. Live reads under load are road
