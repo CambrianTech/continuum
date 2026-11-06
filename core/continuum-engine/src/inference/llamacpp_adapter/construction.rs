@@ -75,7 +75,7 @@ impl LlamaCppAdapter {
             model_path,
             last_throughput_tok_s: Arc::new(RwLock::new(0.0)),
             default_model: model.id.clone(),
-            context_length_override: None,
+            generation: GenerationSupport::EmbeddingOnly,
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
             n_seq_max_override: None,
             n_ubatch_override: None,
@@ -106,7 +106,7 @@ impl LlamaCppAdapter {
             model_path,
             last_throughput_tok_s: Arc::new(RwLock::new(0.0)),
             default_model: model_id,
-            context_length_override: None,
+            generation: GenerationSupport::EmbeddingOnly,
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
             n_seq_max_override: None,
             n_ubatch_override: None,
@@ -130,7 +130,7 @@ impl LlamaCppAdapter {
             model_path: launch.gguf_path.clone(),
             last_throughput_tok_s: Arc::new(RwLock::new(0.0)),
             default_model: launch.model_id.clone(),
-            context_length_override: Some(launch.context_length),
+            generation: GenerationSupport::Enabled { context: launch.context_length },
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
             n_seq_max_override: Some(launch.n_seq_max),
             n_ubatch_override: Some(launch.n_ubatch),
@@ -144,7 +144,7 @@ impl LlamaCppAdapter {
     /// avoid leaving 24GB processes lingering when llama.cpp's Metal
     /// cleanup SIGABRTs prevent clean exit (see PR #17869).
     pub fn with_context_length(mut self, n: u32) -> Self {
-        self.context_length_override = Some(n);
+        self.generation = GenerationSupport::Enabled { context: n };
         self
     }
 
@@ -203,12 +203,7 @@ impl LlamaCppAdapter {
         budget: &crate::inference::recipe_budget::RecipeBudget,
     ) -> Self {
         let seed_sum = budget.sum_of_seed_tokens();
-        // Floor of 1024 — even an empty recipe needs SOME context for
-        // ad-hoc inference. The budget is a sizing hint; the policy
-        // grows it later from observed demand. Above the floor,
-        // honor the recipe sum.
-        let computed = seed_sum.max(1024);
-        self.context_length_override = Some(computed);
+        self.generation = GenerationSupport::Enabled { context: seed_sum };
         self
     }
 
@@ -336,10 +331,6 @@ impl LlamaCppAdapter {
             model_path: self.model_path.clone(),
             mmproj_path,
             n_gpu_layers,
-            // None = honor model's n_ctx_train. Adapter caller can shrink
-            // this via with_context_length() to bound the KV cache (24GB
-            // at 262K → 500MB at 16K).
-            context_length: self.context_length_override,
             // n_seq_max comes from the adapter's override clamped by
             // the model-arch probe above. Standard transformers
             // (Llama, Qwen-2.5, Gemma-2, ...) pass through; recurrent

@@ -75,22 +75,24 @@ pub(super) fn embed_model(model: &Model, texts: &[String]) -> Result<Vec<Vec<f32
     Ok(out)
 }
 
+/// A caller-issued nonzero generation window; model metadata cannot create one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenerationAllocation(std::num::NonZeroU32);
+
+impl GenerationAllocation {
+    pub fn new(tokens: std::num::NonZeroU32) -> Self {
+        Self(tokens)
+    }
+    pub fn tokens(self) -> u32 {
+        self.0.get()
+    }
+}
+
 /// Configuration for loading a model.
 #[derive(Debug, Clone)]
 pub struct LlamaCppConfig {
     /// Path to the GGUF model file
     pub model_path: PathBuf,
-    /// Per-sequence context budget (tokens). `None` = use the model's
-    /// trained `n_ctx_train` from GGUF metadata (the model's own ceiling).
-    /// Override only when memory pressure forces a smaller window than the
-    /// model natively supports — and pass it explicitly so the choice is
-    /// visible. Hardcoded defaults like 8192 cap a 262144-context model
-    /// at 3% of its real capability.
-    ///
-    /// The actual `n_ctx` passed to llama.cpp is `context_length * n_seq_max`
-    /// because llama.cpp's KV cache is a single shared pool across sequences
-    /// — if N seqs each hold P tokens, total KV needed is N*P.
-    pub context_length: Option<u32>,
     /// Batch size for prefill / per-decode token cap. Larger = faster
     /// prefill but more Metal compute buffer.
     pub n_batch: u32,
@@ -128,12 +130,6 @@ impl Default for LlamaCppConfig {
     fn default() -> Self {
         Self {
             model_path: PathBuf::new(),
-            // None = derive from the model's GGUF metadata at load time
-            // via `Model::n_ctx_train()`. The model is the source of truth
-            // for its own context. Setting Some(N) here overrides only when
-            // a hardware tier can't allocate KV for the model's native
-            // window (rare on M5+/RTX class).
-            context_length: None,
             n_batch: 512,
             n_ubatch: 512,
             n_gpu_layers: -1,
@@ -151,26 +147,6 @@ impl Default for LlamaCppConfig {
             mmproj_path: None,
         }
     }
-}
-
-/// Currently-available system memory in bytes, read live via sysinfo. Used at
-/// model-load / scheduler-spawn time (not the hot path) to size the KV cache
-/// against the REAL machine rather than a guessed per-tier budget. On unified-
-/// memory Macs this is the same pool the GPU allocates from; on discrete-VRAM
-/// boxes it's a conservative proxy (the real fix there is a VRAM probe — see
-/// task #46 follow-up). Returns 0 on read failure, which floors the KV budget
-/// to MIN_CTX rather than over-allocating.
-pub(super) fn available_memory_bytes() -> u64 {
-    use sysinfo::System;
-    let mut sys = System::new();
-    sys.refresh_memory();
-    // NOT `available_memory()`: it returns 0 on macOS while total/used are correct
-    // (`system_resources::memory_pressure::available_from`, which exists to be the one
-    // derivation every reader shares). The doc above says a 0 here "floors the KV budget
-    // to MIN_CTX rather than over-allocating" — on a unified-memory Mac, which is the
-    // platform this comment is about, that floor was unconditional rather than a
-    // read-failure fallback.
-    crate::system_resources::memory_pressure::available_from(&sys)
 }
 
 /// Rich, model-derived capability facts — read ONCE from the loaded GGUF at
@@ -311,7 +287,7 @@ pub struct LlamaCppBackend {
     pub(super) caps: ModelCapabilities,
     /// Lazy-spawned scheduler. Lives behind OnceLock because spawning
     /// touches the Model Arc and we want a single instance per backend.
-    pub(super) scheduler: OnceLock<Scheduler>,
+    pub(super) scheduler: OnceLock<(GenerationAllocation, Scheduler)>,
     /// Lazy-loaded multimodal projector. Built on first `generate_with_image`
     /// call from `config.mmproj_path` (so text-only backends pay zero cost).
     /// Sits behind a Mutex<Option<...>> so concurrent first-call requests

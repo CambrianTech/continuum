@@ -55,88 +55,29 @@ impl LlamaCppBackend {
         &self.caps
     }
 
-    /// The per-sequence context window to actually allocate, derived from the
-    /// model's REAL ceiling bounded by REAL available memory — never a
-    /// hardcoded per-tier integer, and never a silent fall to the full
-    /// `n_ctx_train` (which OOMed Metal at 262144 → the 12-tok/s bug, 2026-04).
-    ///
-    /// Policy:
-    /// - Ceiling = `caps.n_ctx_train` (the model's own limit).
-    /// - `config.context_length`, when set, is an OPTIONAL further cap — an
-    ///   operator/recipe asking for a smaller window. It can only shrink, never
-    ///   exceed what the model + memory allow.
-    /// - Memory bound = `KV_BUDGET_FRACTION` of currently-available RAM (read
-    ///   live; weights are already resident at this point) divided across
-    ///   `n_seq_max` sequences and the model's real KV-bytes-per-token. This is
-    ///   a headroom RESERVATION that scales with the real machine, NOT a
-    ///   context value — it cannot, by construction, allocate more KV than the
-    ///   budget it was computed from, so it can't reintroduce the OOM.
-    /// - Floored at `MIN_CTX` so a model always has a usable working window.
-    pub fn effective_context_length(&self) -> u32 {
-        /// Fraction of currently-available memory to reserve for the KV cache.
-        /// The rest is left for compute graphs, other backends, and the OS.
-        /// Scales with the real machine — not a fixed token count.
-        const KV_BUDGET_FRACTION: f64 = 0.6;
-        /// A model needs at least this many tokens to hold a RAG-built prompt
-        /// and reply. Below this it can't function; if even this doesn't fit,
-        /// we still allocate it (it eats headroom, not nonexistent memory) and
-        /// log loudly rather than silently degrade.
-        // context-budget-exempt: a FLOOR below which a lane cannot usefully run — it only ever raises
-        const MIN_CTX: u32 = 1024;
-
-        let log = runtime::logger("llamacpp");
-        let ceiling = if self.caps.n_ctx_train > 0 {
-            self.caps.n_ctx_train
-        } else {
-            // GGUF lacked context_length metadata — unusual. Fall to the floor
-            // and name it, rather than guessing a large window.
-            log.warn(&format!(
-                "{}: GGUF reports n_ctx_train=0 — using MIN_CTX={MIN_CTX}",
-                self.model_id
+    /// Generation consumes its caller's explicit context allocation. The backend
+    /// validates against model capability; it never invents a memory grant.
+    pub fn effective_context_length(
+        &self,
+        allocation: GenerationAllocation,
+    ) -> Result<u32, String> {
+        let granted = allocation.tokens();
+        if granted == 0 || self.caps.n_ctx_train == 0 || granted > self.caps.n_ctx_train {
+            return Err(format!(
+                "context allocation {granted} outside model capacity {}",
+                self.caps.n_ctx_train
             ));
-            MIN_CTX
-        };
-
-        let kv_per_token = self
-            .caps
-            .kv_bytes_per_token(self.config.type_k, self.config.type_v);
-        let n_seq = self.config.n_seq_max.max(1) as u64;
-
-        // Memory-bounded ceiling.
-        let mem_bound = if kv_per_token == 0 {
-            ceiling // can't size KV from dims (shouldn't happen) — trust ceiling
-        } else {
-            let available = available_memory_bytes();
-            let budget = (available as f64 * KV_BUDGET_FRACTION) as u64;
-            let tokens = budget / (n_seq * kv_per_token);
-            (tokens.min(ceiling as u64) as u32).max(MIN_CTX)
-        };
-
-        // Operator/recipe hint can only shrink the window further.
-        let chosen = match self.config.context_length {
-            Some(hint) => hint.min(mem_bound),
-            None => mem_bound,
-        };
-        let chosen = chosen.max(MIN_CTX);
-
-        log.info(&format!(
-            "{}: context={} (ceiling={}, mem_bound={}, hint={:?}, n_seq={}, kv={}B/tok)",
-            self.model_id,
-            chosen,
-            ceiling,
-            mem_bound,
-            self.config.context_length,
-            n_seq,
-            kv_per_token,
-        ));
-        chosen
+        }
+        Ok(granted)
     }
 
     /// Admit one embedding context on this backend before claiming its memory.
     /// The returned call binds the model to its permit and retains both through
     /// blocking execution, even if its async caller disappears. Generation uses
     /// its separate scheduler context; embeddings clear KV between input texts.
-    pub(crate) async fn admit_embedding(&self) -> Result<super::embedding_lane::EmbeddingCall, String> {
+    pub(crate) async fn admit_embedding(
+        &self,
+    ) -> Result<super::embedding_lane::EmbeddingCall, String> {
         let permit = self.embedding_lane.acquire().await?;
         Ok(super::embedding_lane::EmbeddingCall {
             model: Arc::clone(&self.model),
@@ -198,6 +139,7 @@ impl LlamaCppBackend {
     /// an error and we surface it.
     pub fn generate_with_image(
         &self,
+        allocation: GenerationAllocation,
         prompt_with_marker: &str,
         image_bytes: &[u8],
         max_tokens: usize,
@@ -205,6 +147,7 @@ impl LlamaCppBackend {
         stop_sequences: &[&str],
     ) -> Result<(String, usize), String> {
         self.generate_with_media(
+            allocation,
             prompt_with_marker,
             image_bytes,
             max_tokens,
@@ -229,6 +172,7 @@ impl LlamaCppBackend {
     /// sensory-bridge concern, not the backend's.
     pub fn generate_with_audio(
         &self,
+        allocation: GenerationAllocation,
         prompt_with_marker: &str,
         audio_bytes: &[u8],
         max_tokens: usize,
@@ -236,6 +180,7 @@ impl LlamaCppBackend {
         stop_sequences: &[&str],
     ) -> Result<(String, usize), String> {
         self.generate_with_media(
+            allocation,
             prompt_with_marker,
             audio_bytes,
             max_tokens,
@@ -253,6 +198,7 @@ impl LlamaCppBackend {
     /// if image and audio paths were copy-pasted.
     pub(super) fn generate_with_media(
         &self,
+        allocation: GenerationAllocation,
         prompt_with_marker: &str,
         media_bytes: &[u8],
         max_tokens: usize,
@@ -287,14 +233,8 @@ impl LlamaCppBackend {
         // Per-call context — see method-level docstring on why we don't
         // share the scheduler's context.
         //
-        // The window comes from the model's REAL ceiling bounded by REAL
-        // available memory (`effective_context_length`), NOT a hand-set
-        // the Rust catalog (catalog.rs) value and NOT a blind fall to n_ctx_train. The old
-        // blind fallback allocated a 262144-token KV cache for qwen3.5
-        // (~38GB/seq) and crushed Metal to 12 tok/s (2026-04); the memory
-        // bound makes that impossible by construction while still honoring
-        // models that genuinely fit a large window. Task #46.
-        let per_seq = self.effective_context_length();
+        // Consume the caller's allocation after validating model capability.
+        let per_seq = self.effective_context_length(allocation)?;
         let mut ctx = self
             .model
             .new_context(llama::ContextParams {
@@ -362,26 +302,6 @@ impl LlamaCppBackend {
             };
             chain.temp(temp).dist(42).build()
         };
-
-        // Diagnostic: dump top-10 logits at the post-image position when
-        // MTMD_DEBUG_LOGITS is set. Used during the 2026-04-21 hunt for
-        // why our logits diverged from brew's mtmd-cli on the same
-        // model+image+prompt; kept env-gated so future bug hunts have a
-        // ready-to-fire probe instead of needing to re-derive it.
-        if std::env::var_os("MTMD_DEBUG_LOGITS").is_some() {
-            let logits = ctx.logits_ith(-1);
-            if logits.is_empty() {
-                eprintln!("[gen-with-img] WARN: logits_ith(-1) returned empty");
-            } else {
-                let mut indexed: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
-                indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                eprintln!("[gen-with-img] top-10 logits at post-image position:");
-                for (id, score) in indexed.iter().take(10) {
-                    let piece = self.model.token_to_piece(*id as i32);
-                    eprintln!("  id={:>6} score={:.4} piece={:?}", id, score, piece);
-                }
-            }
-        }
 
         let mut output = String::new();
         let mut pos = n_past;
@@ -462,36 +382,39 @@ impl LlamaCppBackend {
 
     /// Lazily spawn (or get) the scheduler. Single instance per backend —
     /// owns the shared Context and the OS-thread driver loop.
-    pub(super) fn scheduler(&self) -> &Scheduler {
-        self.scheduler.get_or_init(|| {
-            // Per-sequence window from the model's REAL ceiling bounded by
-            // REAL available memory (task #46), not a hand-set the Rust catalog (catalog.rs)
-            // value. `effective_context_length` already divides the memory
-            // budget by n_seq_max, so the total below stays within budget —
-            // this is what makes the 2026-04 262144-token Metal OOM
-            // impossible by construction rather than by a panic.
-            let per_seq = self.effective_context_length();
-            // n_ctx is the SHARED KV pool across all sequences. Scale by
-            // n_seq_max so each seq has `per_seq` tokens of KV headroom
-            // even when all slots are occupied with RAG-heavy prompts.
-            // saturating_mul because 262144 × 3 overflows u32 (would be
-            // 786432, fine, but n_seq_max could grow).
-            let total_n_ctx = per_seq.saturating_mul(self.config.n_seq_max.max(1));
-            Scheduler::spawn(
-                self.model.clone(),
-                SchedulerConfig {
-                    n_ctx: total_n_ctx,
-                    n_batch: self.config.n_batch,
-                    n_ubatch: self.config.n_ubatch,
-                    n_seq_max: self.config.n_seq_max,
-                    flash_attn: self.config.flash_attn,
-                    fused_gdn_ar: self.config.fused_gdn_ar,
-                    fused_gdn_ch: self.config.fused_gdn_ch,
-                    type_k: self.config.type_k,
-                    type_v: self.config.type_v,
-                },
+    pub(super) fn scheduler(&self, allocation: GenerationAllocation) -> Result<&Scheduler, String> {
+        let per_seq = self.effective_context_length(allocation)?;
+        if self.config.n_seq_max == 0 {
+            return Err("generation requires a nonzero sequence allocation".into());
+        }
+        let total_n_ctx = per_seq
+            .checked_mul(self.config.n_seq_max)
+            .ok_or("context allocation exceeds native representation")?;
+        let (bound, scheduler) = self.scheduler.get_or_init(|| {
+            (
+                allocation,
+                Scheduler::spawn(
+                    self.model.clone(),
+                    SchedulerConfig {
+                        n_ctx: total_n_ctx,
+                        n_batch: self.config.n_batch,
+                        n_ubatch: self.config.n_ubatch,
+                        n_seq_max: self.config.n_seq_max,
+                        flash_attn: self.config.flash_attn,
+                        fused_gdn_ar: self.config.fused_gdn_ar,
+                        fused_gdn_ch: self.config.fused_gdn_ch,
+                        type_k: self.config.type_k,
+                        type_v: self.config.type_v,
+                    },
+                ),
             )
-        })
+        });
+        if *bound != allocation {
+            return Err(
+                "scheduler allocation changed; release the existing backend before resizing".into(),
+            );
+        }
+        Ok(scheduler)
     }
 
     /// Generate text. Routes through the continuous-batching scheduler:
@@ -507,6 +430,7 @@ impl LlamaCppBackend {
     /// error — never a silent base-model run (Rule 2: fail loud).
     pub fn generate(
         &self,
+        allocation: GenerationAllocation,
         prompt: &str,
         max_tokens: usize,
         sampling: SamplingConfig,
@@ -518,6 +442,7 @@ impl LlamaCppBackend {
         // adapter calls go through generate_for_persona() so the registry
         // can attribute KV bytes per-persona.
         self.generate_for_persona(
+            allocation,
             None,
             prompt,
             max_tokens,
@@ -538,6 +463,7 @@ impl LlamaCppBackend {
     /// only job here is to deliver the value.
     pub fn generate_for_persona(
         &self,
+        allocation: GenerationAllocation,
         persona_id: Option<uuid::Uuid>,
         prompt: &str,
         max_tokens: usize,
@@ -596,7 +522,7 @@ impl LlamaCppBackend {
             persona_id,
         };
 
-        self.scheduler().enqueue(req)?;
+        self.scheduler(allocation)?.enqueue(req)?;
 
         // Collect tokens from the channel until Done/Error. We're called
         // synchronously from spawn_blocking by CandleAdapter — block_in_place
