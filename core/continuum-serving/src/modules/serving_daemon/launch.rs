@@ -23,24 +23,20 @@ impl ServingDaemonModule {
     /// window is her grant from her measured requirement (`grants.rs`), and under `--kv-unified`
     /// any one sequence may grow into the whole pool. The sequences are every seated mind, the
     /// minds leased in at the last plan, and the scratch traffic, so seating never relaunches.
-    /// The size is [`launch_pool`] at the published plan's LIVE budget: what memory holds now, beside
-    /// everything else on the node. Never the host's physical total (590df4bc3 sized the M5 at
-    /// 5 x 262,144 from it: memory pressure 91%, 5.6 GB available, no resident hosted; rolled back)
-    /// and never a cold boot's first-tick fallback plan, which planning no longer publishes.
-    pub(super) fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> (u32, u32) {
+    /// The size is [`launch_pool::launch_pool`] at the last plan's SETTLED reading (`BudgetReading`):
+    /// the shared physical pool once every engine of ours is observed gone or verified ours. Never the host's physical total (590df4bc3 sized the M5 at 5 x 262,144 from it: memory
+    /// pressure 91%, 5.6 GB available, no resident hosted; rolled back), and never a transient (the
+    /// M5, 20:15Z on 2026-11-04: `-c 125640` from a 22.8 GB first reading, kept for its life). No
+    /// plan yet is no reading, so transient too.
+    pub(super) fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> LaunchPool {
         let leased_in = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed);
         let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes).max(1);
-        let pool = launch_pool(
-            footprint_for(model).as_ref(),
-            self.plan_budget_bytes.load(Ordering::Relaxed),
-            served_ctx,
-            lanes,
-            sequences,
-            model.context_window,
-        );
-        // `-c` is the CLI's `slots x per-slot`: the pool carried in that shape, not anyone's window.
-        let per_slot = u32::try_from(pool / u64::from(sequences)).unwrap_or(u32::MAX); // unwrap_or: a pool over u32 x sequences is no real engine; the CLI caps it
-        (per_slot, sequences)
+        let reading = self.planned_budget.lock().map_or(BudgetReading::Transient, |b| b.launch); // map_or: no plan computed yet is no reading at all
+        // The footprint the published plan sized this model with (weights, KV per token, the
+        // per-sequence compute/staging buffer): one owner of the model's cost, looked up, never
+        // re-derived beside it. No plan for this model is no footprint, so no fit beyond the plan.
+        let planned = self.plan_tx.borrow().plan.as_ref().map(|p| p.base_model.clone()).filter(|fp| fp.model_id == model.id);
+        LaunchPool::from_reading(reading, planned.as_ref(), served_ctx, lanes, sequences, model.context_window)
     }
 
     pub(super) fn launch_reconciled_plan(&self, launch: ReconcileLaunch) -> Option<JoinHandle<()>> {
@@ -145,21 +141,8 @@ impl ServingDaemonModule {
         // separates "a bit small" from "structurally cannot cache anything".
         let one_conversation_mib = prompt_cache.one_conversation_mib;
         let host_prompt_cache_mib = prompt_cache.mib;
-        let (per_sequence, sequences) = self.engine_pool(&model, served_ctx, lanes);
-        let target = ServingTarget {
-            host_prompt_cache_mib,
-            model,
-            context_window: per_sequence,
-            lanes: sequences,
-            adapters: desired_adapters,
-            // The living persona lane: GPU-resident for throughput (every
-            // offloadable layer). [[LanePlacement]].
-            placement: crate::inference::llama_server::main_lane_placement(),
-            expert_placement,
-            resident_override,
-            // The MAIN persona lane — the withhold rule's actual subject.
-            vision_sidecar: false,
-        };
+        // Sized from a settled reading, or not yet: the task below commits it (`launch_pool`).
+        let pool = self.engine_pool(&model, served_ctx, lanes);
 
         // One reconcile at a time. If the swap finds `true`, another is already
         // running; skip rather than stack relaunches.
@@ -214,6 +197,42 @@ impl ServingDaemonModule {
             if !current() {
                 return;
             }
+            // THE POOL IS COMMITTED FROM A SETTLED READING ONLY. A transient one (an old engine of
+            // ours not yet observed gone nor verified ours) keeps the pool of an engine already
+            // serving this model, or launches nothing this tick: the M5's 20:15Z boot launched
+            // `-c 125640` two seconds in, from a 22.8 GB reading on the 64 GB M5 Pro taken before
+            // the old engine's bytes were credited or released, and kept it for the engine's life.
+            let running = match pool {
+                LaunchPool::Sized { .. } => None,
+                LaunchPool::AwaitSettled { .. } => super::launch_pool::running_pool_of(server.as_ref(), &model.id).await,
+            };
+            static LAST_AWAITED: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+            let Some((per_sequence, sequences)) = pool.commit(running) else {
+                if say_on_change(&mut *LAST_AWAITED.lock(), Some(desired.clone())).is_some() {
+                    continuum_base::probe!(
+                        target: "continuum_core::modules::serving_daemon", class = "serving.launch.awaiting_settled",
+                        model = desired.as_str(),
+                        "the budget reading is transient (an old engine of ours is not yet observed gone or verified ours) \
+                         and no engine of this model runs: the one launch waits for a settled reading instead of fixing its pool from this one"
+                    );
+                }
+                return;
+            };
+            *LAST_AWAITED.lock() = None;
+            let target = ServingTarget {
+                host_prompt_cache_mib,
+                model,
+                context_window: per_sequence,
+                lanes: sequences,
+                adapters: desired_adapters,
+                // The living persona lane: GPU-resident for throughput (every
+                // offloadable layer). [[LanePlacement]].
+                placement: crate::inference::llama_server::main_lane_placement(),
+                expert_placement,
+                resident_override,
+                // The MAIN persona lane — the withhold rule's actual subject.
+                vision_sidecar: false,
+            };
             let physical_artifact = match target.model.gguf_local_path.as_deref() {
                 Some(path) => crate::system_resources::ActiveArtifactSet::resolve(path).await,
                 None => None,
@@ -706,29 +725,4 @@ impl ServingDaemonModule {
             // The operation permit clears the gate on success, cancellation, or panic.
         }))
     }
-}
-
-/// The pool an engine launches with: the most memory the host's measured capacity proves fits.
-/// That is the fit at `sequences` (a window within `budget_bytes` for each, capped at the trained
-/// window) or the plan's own window x its lanes, whichever is larger.
-///
-/// `budget_bytes` is the published plan's live budget. `--kv-unified` allocates the whole pool up
-/// front and one launch keeps it, so the budget must be what memory holds now: the host's physical
-/// total ignores everything else resident (590df4bc3: 5 x 262,144 on the M5, memory pressure 91%,
-/// rolled back), and a cold boot's first-tick plan is a transient (b4be7bc59: 5 x 2,048, rolled
-/// back), which planning no longer publishes. On the M5 (plan 2 x 128,768) the result is 257,536 for
-/// 5; on the IntelMac (plan 2 x 32,768, fit 9 x 32,768) 294,912 for 9, its healthy geometry.
-pub(super) fn launch_pool(
-    footprint: Option<&crate::inference::planning::serving_plan::ModelFootprint>,
-    budget_bytes: u64,
-    plan_window: u32,
-    lanes: u32,
-    sequences: u32,
-    trained_window: u32,
-) -> u64 {
-    let plan_pool = u64::from(plan_window) * u64::from(lanes);
-    let fit_pool = footprint.map_or(0, |fp| {
-        u64::from(fp.window_within(budget_bytes, sequences).min(trained_window)) * u64::from(sequences)
-    }); // map_or: no footprint proves no fit beyond the plan's own pool
-    plan_pool.max(fit_pool)
 }

@@ -73,9 +73,7 @@ impl ServingDaemonModule {
     /// (it read 2, 3 and 4 of four residents on the M5 2026-11-03), so a mind's share moves
     /// when the population does and not when a registry read races a respawn.
     pub(super) fn seated(&self) -> u32 {
-        let live = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
-            .map(|r| r.live_personas().len())
-            .unwrap_or(0); // JUSTIFIED unwrap_or: no registry yet (boot) = no live roster; the floor stands
+        let live = (self.live_residents)().len();
         self.lane_demand().max(u32::try_from(live).unwrap_or(u32::MAX)) // unwrap_or: a roster past u32 is seated at the most a u32 counts
     }
 
@@ -85,10 +83,9 @@ impl ServingDaemonModule {
     /// assembled yet on this host, and [`ServingDemand::new`] names the cold-start
     /// decision in one place.
     pub(super) fn serving_demand(&self) -> ServingDemand {
-        let live_count =
-            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
-                .map(|r| r.live_personas().len())
-                .unwrap_or(0); // JUSTIFIED unwrap_or: no registry yet (boot) = no residents = the floor stands
+        // The residents, read once: the lane count and the requirements below are one roster.
+        let live: Vec<uuid::Uuid> = (self.live_residents)();
+        let live_count = live.len();
         let residents =
             resident_lane_demand(self.lane_demand(), live_count, lane_demand_overridden());
         // THE DECODE KNEE (2026-09-16): the roster is the demand, the measured decode
@@ -178,15 +175,12 @@ impl ServingDaemonModule {
         let lanes = clamped;
         // Both ceilings are over the RESIDENTS, never the whole persisted registry
         // (490 entries: every test fixture and departed mind); the sent ceiling is what
-        // the window follows, the untrimmed one only bounds it.
-        let live: Vec<uuid::Uuid> =
-            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
-                .map(|r| r.live_personas())
-                .unwrap_or_default(); // JUSTIFIED unwrap_or_default: no registry yet (boot) = no residents measured = cold-start prior
-                                      // The prompt sizes of the generates this seat served for OTHER nodes join the
-                                      // typical-prompt pool (c84d885a): a seat that plans lanes for leased-in minds must
-                                      // size them to the prompts those minds send, not to one local resident's. A seat
-                                      // with no residents of its own but leased-in minds still gets a floor from them.
+        // the window follows, the untrimmed one only bounds it. No residents (boot, no registry
+        // yet) is the cold-start prior below.
+        // The prompt sizes of the generates this seat served for OTHER nodes join the
+        // typical-prompt pool (c84d885a): a seat that plans lanes for leased-in minds must
+        // size them to the prompts those minds send, not to one local resident's. A seat
+        // with no residents of its own but leased-in minds still gets a floor from them.
         let leased_samples = (self.leased_in_sent)();
         let leased_sent: Vec<u32> = leased_samples
             .iter()
@@ -248,5 +242,17 @@ impl ServingDaemonModule {
     #[cfg(test)]
     pub(super) fn set_leased_in_sent_source(&mut self, source: LeasedInSentSource) {
         self.leased_in_sent = source;
+    }
+
+    /// Tests: the local residents, in place of the process-global runtime registry.
+    #[cfg(test)]
+    pub(super) fn set_live_residents(&mut self, source: LiveResidentsSource) {
+        self.live_residents = source;
+    }
+
+    /// Tests: the serving engine's pid, in place of the operator's lane pidfile.
+    #[cfg(test)]
+    pub(super) fn set_engine_pid(&mut self, source: EnginePidSource) {
+        self.engine_pid = source;
     }
 }

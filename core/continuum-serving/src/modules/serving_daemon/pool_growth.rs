@@ -11,17 +11,6 @@
 use super::*;
 
 impl ServingDaemonModule {
-    /// Whether serving has reported its own footprint to the board: the plan's budget is then the
-    /// ledger's replace-myself budget, sampled with this engine up and credited back exactly once.
-    /// The ONE reading of "steady" (planning's `at_rest` arm reads it too).
-    pub(super) fn serving_footprint_reported(&self) -> bool {
-        self.resource_daemon
-            .board()
-            .attributions
-            .iter()
-            .any(|a| a.consumer_id == SERVING_CONSUMER_ID && a.kind == serving_pool_kind() && a.bytes > 0)
-    }
-
     /// Whether the running engine is due its one upward pool relaunch now. Read on the ready tick,
     /// beside the shared-pool move.
     ///
@@ -43,10 +32,16 @@ impl ServingDaemonModule {
         }
         let Some(model) = (self.model_resolver)(desired) else { return false };
         let running = self.served_pool.load(Ordering::Relaxed);
-        let (per_slot, sequences) = self.engine_pool(&model, served_ctx, lanes);
+        // Growth commits a pool too: only from a settled reading.
+        let LaunchPool::Sized { per_sequence: per_slot, sequences } = self.engine_pool(&model, served_ctx, lanes) else {
+            return false;
+        };
         let wanted = u64::from(per_slot) * u64::from(sequences);
-        let budget = self.plan_budget_bytes.load(Ordering::Relaxed);
-        if !grows(self.serving_footprint_reported(), budget, running, wanted) {
+        // The last plan's budget and its credit fact, read together: "steady" is the budget
+        // having held this engine's own bytes, never a board read at another moment.
+        let Some(planned) = *self.planned_budget.lock() else { return false };
+        let budget = planned.usable_bytes;
+        if !grows(planned.credit, budget, running, wanted) {
             return false;
         }
         if !first_try(&mut self.pool_growth_models.lock(), desired) {
@@ -89,28 +84,34 @@ pub(super) fn first_try(tried: &mut std::collections::BTreeSet<String>, model: &
     tried.insert(model.to_owned())
 }
 
-/// PURE: whether a steady plan proves the pool should grow. Steady (serving's footprint reported,
-/// so the budget was sampled with the engine up), a sampled budget, a known running pool, and a
-/// wanted pool strictly larger. Equal or smaller never relaunches.
-pub(super) fn grows(steady: bool, budget_bytes: u64, running_tokens: u32, wanted_tokens: u64) -> bool {
-    steady && budget_bytes > 0 && running_tokens > 0 && wanted_tokens > u64::from(running_tokens)
+/// PURE: whether a steady plan proves the pool should grow. Steady (the budget already held
+/// serving's own bytes, so it was sampled with the engine up), a sampled budget, a known running
+/// pool, and a wanted pool strictly larger. Equal or smaller never relaunches.
+pub(super) fn grows(credit: OwnCredit, budget_bytes: u64, running_tokens: u32, wanted_tokens: u64) -> bool {
+    match credit {
+        OwnCredit::Included { .. } => {
+            budget_bytes > 0 && running_tokens > 0 && wanted_tokens > u64::from(running_tokens)
+        }
+        OwnCredit::ToApply => false,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{first_try, grows};
+    use super::{first_try, grows, OwnCredit};
 
     // what this catches (the M5 2026-11-03, 81aef1844: a 16,640 pool launched from a boot-time
     // transient and kept): a pool that never grows from a bad launch, or a bridge that relaunches
     // when it should not. Only a steady plan with a sampled budget grows it, only upward.
     #[test]
     fn only_a_steady_plan_grows_the_pool_and_only_upward() {
-        assert!(grows(true, 23_000_000_000, 16_640, 257_536), "the 81aef1844 case: steady, larger -> grow");
-        assert!(!grows(false, 23_000_000_000, 16_640, 257_536), "not steady (the boot ticks): never");
-        assert!(!grows(true, 0, 16_640, 257_536), "no sampled budget: never");
-        assert!(!grows(true, 23_000_000_000, 0, 257_536), "the running pool unknown: never");
-        assert!(!grows(true, 23_000_000_000, 257_536, 257_536), "equal: no relaunch");
-        assert!(!grows(true, 23_000_000_000, 1_310_720, 257_536), "downward never relaunches (590df4bc3's pool stays)");
+        let steady = OwnCredit::Included { own_bytes: 20_000_000_000 };
+        assert!(grows(steady, 23_000_000_000, 16_640, 257_536), "the 81aef1844 case: steady, larger -> grow");
+        assert!(!grows(OwnCredit::ToApply, 23_000_000_000, 16_640, 257_536), "not steady (the boot ticks): never");
+        assert!(!grows(steady, 0, 16_640, 257_536), "no sampled budget: never");
+        assert!(!grows(steady, 23_000_000_000, 0, 257_536), "the running pool unknown: never");
+        assert!(!grows(steady, 23_000_000_000, 257_536, 257_536), "equal: no relaunch");
+        assert!(!grows(steady, 23_000_000_000, 1_310_720, 257_536), "downward never relaunches (590df4bc3's pool stays)");
     }
 
     // what this catches (the M5, 2026-11-03, b7c815484): the bridge chaining. It grew 104,960 to

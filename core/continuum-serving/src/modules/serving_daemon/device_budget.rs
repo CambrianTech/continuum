@@ -336,7 +336,7 @@ impl ServingDaemonModule {
             self.engine_device_credit.record_not_discrete();
             return;
         }
-        let pid = crate::inference::lane_pidfile::read();
+        let pid = (self.engine_pid)();
         let bytes = match pid {
             Some(_) => engine_device_bytes().await,
             None => None,

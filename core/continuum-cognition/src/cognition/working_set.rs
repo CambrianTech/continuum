@@ -553,7 +553,10 @@ impl WorkingSetRegistry {
         self.save(persona, &updated);
     }
 
-    pub(crate) fn record_need_in_memory(&self, persona: Uuid, sample: NeedSample, now_ms: u64) -> PersonaDemand {
+    /// The in-memory half of [`Self::record_need`], without the disk write: the sibling of
+    /// [`Self::record_in_memory`], so another crate's test stands up a measured (or censored)
+    /// need without writing into the operator's `~/.continuum/personas`.
+    pub fn record_need_in_memory(&self, persona: Uuid, sample: NeedSample, now_ms: u64) -> PersonaDemand {
         *self
             .observed
             .entry(persona)

@@ -46,7 +46,7 @@ impl ServingDaemonModule {
         let Some(active) = live.active_model.clone() else {
             return;
         };
-        let Some(pid) = crate::inference::lane_pidfile::read() else {
+        let Some(pid) = (self.engine_pid)() else {
             return;
         };
         let Some(model) = (self.model_resolver)(&active) else {

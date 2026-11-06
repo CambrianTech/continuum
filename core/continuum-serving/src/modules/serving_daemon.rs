@@ -124,6 +124,14 @@ type InheritedLaneSource = Arc<dyn Fn() -> Option<LaneRecord> + Send + Sync>;
 type DecodeAgeSource = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
 type LeasedInSentSource =
     Arc<dyn Fn() -> Vec<crate::inference::resource_admission::PromptSample> + Send + Sync>;
+/// The local residents: the runtime registry's live personas in production. A process global
+/// read inside the plan and the grants made every harness daemon's demand whatever registry the
+/// binary held; tests own it (`set_live_residents`).
+type LiveResidentsSource = Arc<dyn Fn() -> Vec<uuid::Uuid> + Send + Sync>;
+/// The serving engine's pid: the operator's lane pidfile in production, which a harness daemon
+/// must never read (the grants asked the real M5's engine whether it was on the shared pool);
+/// tests own it (`set_engine_pid`).
+type EnginePidSource = Arc<dyn Fn() -> Option<u32> + Send + Sync>;
 
 /// Where the heartbeat reads "consecutive REAL generations that failed on the live lane
 /// since the last success" (#363). Defaults to the llama-server process-global stamped by
@@ -150,8 +158,12 @@ pub struct ServingDaemonModule {
     resource_daemon: Arc<ResourceDaemon>,
     /// The plan's memory budget, SUSTAINED: every instantaneous reading of the last
     /// `READY_TIMEOUT`, so the plan grows only into headroom that has outlived one relaunch
-    /// and shrinks the moment pressure arrives (`system_resources::sustained`).
-    budget_readings: parking_lot::Mutex<crate::system_resources::sustained::Sustained>,
+    /// and shrinks the moment pressure arrives (`system_resources::sustained`), within one
+    /// credit view (`own_credit::CreditedReadings`).
+    budget_readings: parking_lot::Mutex<own_credit::CreditedReadings>,
+    /// What the authority has seen of an engine of ours this daemon does not serve: whether a
+    /// reading may commit the launch pool (`engine_release`).
+    engine_release: parking_lot::Mutex<engine_release::EngineRelease>,
     /// The published decision. `None` until the first successful plan. Held as
     /// the module's only shared state; `send` takes `&self` so `tick()` can
     /// publish without interior-mutability gymnastics.
@@ -226,6 +238,10 @@ pub struct ServingDaemonModule {
     /// tests own it ([`Self::set_leased_in_sent_source`]): a ring shared by every test in
     /// the binary made one test's 56k samples another test's requirement (CI, 2026-09-20).
     leased_in_sent: LeasedInSentSource,
+    /// The local residents ([`LiveResidentsSource`]).
+    live_residents: LiveResidentsSource,
+    /// The serving engine's pid ([`EnginePidSource`]).
+    engine_pid: EnginePidSource,
     /// The `/slots` activity fingerprint observed at the LAST missed smoke probe (L11).
     /// A changed fingerprint at the next miss proves the serve loop advanced between the
     /// two looks — work the adapter stamps can't see (ghost turns from a dead core's
@@ -345,9 +361,10 @@ pub struct ServingDaemonModule {
     /// asked for divides every mind's window for nothing (the 4-slots-for-2-
     /// personas starvation, 2026-07-10). Default 1 — window-first.
     lane_demand: Arc<std::sync::atomic::AtomicU32>,
-    /// The usable bytes the last plan sized against: the budget the one launch lays its pool
-    /// out on, so the engine holds the memory the planner just proved it may.
-    plan_budget_bytes: Arc<std::sync::atomic::AtomicU64>,
+    /// The budget the last plan sized against and whether it already held serving's own bytes:
+    /// the one launch lays its pool out on it, so the engine holds the memory the planner just
+    /// proved it may. `None` until a plan has been computed.
+    planned_budget: Arc<parking_lot::Mutex<Option<PlannedBudget>>>,
     /// The engine process this core last asked to move onto the shared pool: one try per
     /// engine, so a refused move is never retried every tick.
     shared_pool_move_tried: Arc<std::sync::atomic::AtomicU64>,
@@ -509,11 +526,10 @@ impl ServingDaemonModule {
             gpu,
             system,
             resource_daemon,
-            budget_readings: parking_lot::Mutex::new(
-                crate::system_resources::sustained::Sustained::new(
-                    crate::inference::llama_server::READY_TIMEOUT,
-                ),
-            ),
+            budget_readings: parking_lot::Mutex::new(own_credit::CreditedReadings::new(
+                crate::inference::llama_server::READY_TIMEOUT,
+            )),
+            engine_release: parking_lot::Mutex::new(engine_release::EngineRelease::default()),
             plan_tx,
             plan_view_tx,
             server,
@@ -538,6 +554,12 @@ impl ServingDaemonModule {
             }),
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_work),
             leased_in_sent: Arc::new(crate::inference::resource_admission::leased_in_sent_samples),
+            live_residents: Arc::new(|| {
+                crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                    .map(|r| r.live_personas())
+                    .unwrap_or_default() // unwrap_or_default: no registry yet (boot) = no residents
+            }),
+            engine_pid: Arc::new(crate::inference::lane_pidfile::read),
             last_miss_slots_fp: Arc::new(std::sync::Mutex::new(None)),
             frozen_slots: Arc::new(parking_lot::Mutex::new(None)),
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
@@ -552,7 +574,7 @@ impl ServingDaemonModule {
             pin_store,
             intent,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
-            plan_budget_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            planned_budget: Arc::new(parking_lot::Mutex::new(None)),
             shared_pool_move_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pool_growth_models: Arc::new(parking_lot::Mutex::new(std::collections::BTreeSet::new())),
             grants_tx: watch::channel(None).0,
@@ -681,9 +703,15 @@ use launch_window::adopted_prompt_cache_mib;
 #[cfg(test)]
 use launch_window::{sticky_served_window, wedge_heal_floor};
 mod launch;
+mod launch_pool;
+use launch_pool::LaunchPool;
 mod planning;
 mod grants;
 mod hold;
+mod own_credit;
+use own_credit::{OwnCredit, PlanBudget, PlannedBudget};
+mod engine_release;
+use engine_release::BudgetReading;
 mod pool_growth;
 mod reconcile;
 mod tick;

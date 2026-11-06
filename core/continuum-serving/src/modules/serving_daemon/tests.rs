@@ -58,6 +58,11 @@ pub(super) struct FakeServer {
     /// `/slots` reads served ([`LlamaServerControl::slots_body`]): the prefill knee's.
     slots_reads: Arc<AtomicUsize>,
     slots_reply: Option<Arc<dyn Fn() -> serde_json::Value + Send + Sync>>,
+    /// Each launch's `(per-sequence, sequences)`: `-c` is their product, `--parallel` the second.
+    launched: Arc<parking_lot::Mutex<Vec<(u32, u32)>>>,
+    /// Launched on the shared pool (`--kv-unified`): `pool_launch` says so and `served_pool_tokens`
+    /// reports the last launch's pool. Off, the fake reports neither, as before.
+    shared_pool: bool,
 }
 
 impl FakeServer {
@@ -78,6 +83,8 @@ impl FakeServer {
             probe_started: None,
             slots_reads: Arc::new(AtomicUsize::new(0)),
             slots_reply: None,
+            launched: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            shared_pool: false,
         }
     }
 }
@@ -118,8 +125,9 @@ impl LlamaServerControl for FakeServer {
         self.idles.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-    async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
+    async fn serve(&self, target: &ServingTarget) -> Result<(), LlamaServerError> {
         self.serves.fetch_add(1, Ordering::SeqCst);
+        self.launched.lock().push((target.context_window, target.lanes));
         if let Some(started) = &self.serve_started {
             started.notify_one();
             std::future::pending::<()>().await;
@@ -137,8 +145,16 @@ impl LlamaServerControl for FakeServer {
         Ok(11008)
     }
     async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError> {
-        // One sequence's worth of the fixed window above: the share these tests publish.
-        Ok(11008)
+        // On the shared pool: the pool the last launch asked for. Otherwise one sequence's worth
+        // of the fixed window above: the share these tests publish.
+        let launched = self.launched.lock().last().copied();
+        match (self.shared_pool, launched) {
+            (true, Some((per_sequence, sequences))) => Ok(per_sequence.saturating_mul(sequences)),
+            _ => Ok(11008),
+        }
+    }
+    fn pool_launch(&self) -> Option<crate::inference::llama_server::PoolLaunch> {
+        self.shared_pool.then_some(crate::inference::llama_server::PoolLaunch::Shared)
     }
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
         // 0 = "this fake's /props names no slot count", i.e. nothing to compare
@@ -225,6 +241,26 @@ pub(super) fn test_resource_daemon() -> Arc<ResourceDaemon> {
         ))],
         vec![],
         DaemonConfig::default(),
+    )
+}
+
+/// A memory authority over one test-driven capacity source that ticks fast enough for a
+/// test to wait on its board (the shape the floor and placement tests already build inline).
+pub(super) fn ticking_resource_daemon(
+    source: Arc<crate::resources::MockCapacitySource>,
+) -> Arc<ResourceDaemon> {
+    use crate::resources::{DaemonConfig, GovernorConfig};
+    ResourceDaemon::start(
+        vec![source],
+        vec![],
+        DaemonConfig {
+            tick_interval: Duration::from_millis(20),
+            min_reclaim_budget: Duration::from_millis(100),
+            governor: GovernorConfig {
+                min_dwell_ms: 0,
+                graceful_grace_ms: 50,
+            },
+        },
     )
 }
 
@@ -411,12 +447,23 @@ pub(super) fn daemon_on_card(
     server: Arc<dyn LlamaServerControl>,
     vram_bytes: u64,
 ) -> ServingDaemonModule {
+    daemon_on_authority(server, vram_bytes, test_resource_daemon())
+}
+
+/// The harness daemon over a memory authority the test drives (its capacity source, its
+/// leases, its consumers): the owner-to-planner boundary (`host_budget_snapshot`) then reads a
+/// board the test controls.
+pub(super) fn daemon_on_authority(
+    server: Arc<dyn LlamaServerControl>,
+    vram_bytes: u64,
+    resource_daemon: Arc<ResourceDaemon>,
+) -> ServingDaemonModule {
     let gpu = Arc::new(GpuMemoryManager::simulated("test card", vram_bytes));
     let system = Arc::new(SystemResourceMonitor::new());
     let mut daemon = ServingDaemonModule::with_control(
         gpu,
         system,
-        test_resource_daemon(),
+        resource_daemon,
         server,
         test_catalog(),
         test_pin_store(),
@@ -441,6 +488,10 @@ pub(super) fn daemon_on_card(
     // Same class of leak as the decode-age global above; caught by measurement in
     // `serving_consumer` before it could ever be caught by a red.
     daemon.set_inherited_lane(Arc::new(|| None));
+    // NO residents and NO engine pid of the operator's: the runtime registry and the lane
+    // pidfile are process globals and the operator's file, the same leak as the two above.
+    daemon.set_live_residents(Arc::new(Vec::new));
+    daemon.set_engine_pid(Arc::new(|| None));
     daemon
 }
 
@@ -530,6 +581,7 @@ pub(super) fn production_source() -> &'static str {
                 include_str!("planning.rs"),
                 include_str!("reconcile.rs"),
                 include_str!("launch.rs"),
+                include_str!("launch_pool.rs"),
             ]
             .join("\n")
         })
@@ -544,6 +596,7 @@ mod engine_admission;
 
 mod budget;
 mod catalog;
+mod credit;
 mod demand;
 mod health;
 mod prompt_cache;
