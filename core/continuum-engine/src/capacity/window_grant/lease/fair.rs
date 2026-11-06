@@ -44,7 +44,7 @@ pub fn publish_fair_grants<R>(
 }
 
 impl Reservations {
-    fn fair_publish<R>(
+    pub(super) fn fair_publish<R>(
         &self,
         fair: &mut FairGrantState,
         demands: &[Demand<uuid::Uuid>],
