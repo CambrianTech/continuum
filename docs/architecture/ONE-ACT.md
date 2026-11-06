@@ -136,6 +136,46 @@ Required consolidation: remove the competing estimate-derived final-cap decision
 
 Proof obligations before deployment: boundary/property tests establish feasibility, maximality within authority, monotonic capacity behavior and arithmetic safety; actual HTTP tests establish one quote and one generation for the measured Kimi case, unchanged prompt, and identical wire/receipt R. State-transition tests exercise engine replacement during quote, grant revocation, cancellation before and after reservation, quote failure, insufficient minimum, fixed requests, and ambiguous send failure. Every invalid transition must prevent unauthorized POST and release or retain custody according to the existing terminal contract. Then verify the live elimination of resize-only retries and measure useful completed work, queue time, prefill and cache reuse separately. Compilation, deployment and model-reached counts alone do not satisfy acceptance.
 
+#### Contract review against the current implementation
+
+Inspection at local `f420b8a490` identifies the following consolidation boundaries. These are
+design requirements for the coherent replacement, not instructions to add another parallel path.
+
+| Current location | Conflict / missing boundary | Required replacement |
+|---|---|---|
+| Cognition `act_room::request_allowance` | Predicts final act cap from calibrated prompt density | Keep prediction for rendering/feasibility planning; submit the reply claim as intent, not a supposedly sent cap |
+| `contribute` assigns `sent_allowance` before generation | Planned value becomes outcome evidence | Obtain sent allowance from the successful dispatch result; failed attempts cannot manufacture a sent receipt |
+| `lane_send` checks physical and admitted windows separately | The exact facts are available but no single executable decision owns them | One feasibility result over their intersection, then reserve through the existing grant authority |
+| `lane_send` prepares immutable wire bytes before exact resolution | Output intent is already flattened into a guessed `max_tokens` | Separate immutable prompt identity from output controls; serialize the resolved executable request once per authorized attempt |
+| `window_grant::reserve_attempt` | Already owns replacement of an unsent reservation | Preserve this owner; prove its release-unsent precondition at every transport retry, do not add another reservation layer |
+| Prototype optional `quoted_reply_room` | `None` can conceal a missing receipt on a path that promised counted admission | A successful counted dispatch must contain its sent receipt; provider-enforced fixed dispatch is a distinct explicit result/capability, not absence interpreted as fallback |
+
+**Resolve the intent before implementation.** Current act-room documentation authorizes an act to
+use the room left in its admitted window; the minimum protects the combined think/answer claim.
+Thus the predicted 5857 is not an independently authorized maximum. The public contract should
+express `Fixed(reply)` versus `UseAdmittedRoom(required_reply)`. The latter resolves
+`R=W-P-1` and refuses if `R<required_reply`; the grant supplies the finite upper bound. If a real
+caller needs a smaller maximum, it must declare that distinct restriction explicitly and justify
+the additional variant. Do not retain the prototype's ceiling merely because it is already coded.
+The earlier general bounded formulation still applies when such a genuine restriction exists.
+
+**Prompt identity must be enforceable.** The quote and POST must share model/template, adapters,
+messages, tools, media and every other input affecting tokenization. Output controls may change
+only if the backend contract proves they cannot alter the finalized prompt. A backend whose template
+depends on those controls must quote the final form or refuse the capability; a token count alone
+does not certify identity. Engine incarnation changes invalidate the quote even when URL/model match.
+
+**Completion is not submission.** The prepared command, accepted send and terminal generation have
+different types/states. The sent receipt accompanies the selected attempt; the terminal result links
+to it. Serialization and observer consumers do not own a second arithmetic implementation. Capture
+must preserve requested intent separately from actual sent controls so training and diagnostics can
+reconstruct both without guessing from a nullable field.
+
+Review gates before runtime editing: agree these public types and backend capability semantics;
+identify all counted/fixed callers and consumers; specify which resize-only retry branch disappears;
+and record how the engine incarnation is fenced across quote, reserve and send. The mock-HTTP
+baseline and pure arithmetic tests do not prove those concurrency boundaries.
+
 ### 5. Engine memory (where her KV lives)
 
 - **Owner:** the serving daemon over ONE separate llama-server process (SERVING-ENGINE §6 wins over
