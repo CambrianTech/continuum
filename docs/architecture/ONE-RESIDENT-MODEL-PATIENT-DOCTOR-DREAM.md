@@ -257,6 +257,103 @@ Engine surface (fork): load or save a mind's session state into the lane's step 
 3. A snapshot opens a gene trial with no relaunch, and her next cards draw arms.
 4. A deploy seam: checkpoints are written, the next core resumes them at their step counts, and a format mismatch opens from the stable gene.
 
+### 9.6 The dream as a stage (M0, owner Cormac, 2026-11-01)
+
+The dream consumer is one stage on the stage contract (STAGE-CONTRACT.md, #5692/#5693), per mind. It is not a loop, a job or a tick: the substrate gives it delivery, scheduling, interruption and capture once, as it does every stage. Joel: "dreaming must be in place, not batch". The tick passes of #5676 are what this replaces.
+
+**Inputs.**
+- Her **settled-experience topic** is replayable: each settled turn, with a durable experience id. She reads it through perception's cursor MECHANISM (#5691's drain: fenced by incarnation, `Rows | Gap | Empty`, the store's sequence revision as the wake), keyed by `(mind, topic)`. That means one entity, one drain and one fencing rule, with a position per topic. Perception's position over her room lines and the dream's position over her settled experiences never share a value, or acknowledging a perceived line would acknowledge an unconsumed example (Fable on #5695).
+- Her **dream share** is a replaceable snapshot: the scheduler's setpoint from sleep pressure and opportunity (SLEEP-AND-WAKE-AT-EVERY-SCALE).
+
+**Triggers.** Either input moved, or a step she dispatched completed. There is no cadence floor: a mind with nothing settled does not dream.
+
+**Cost.**
+- Execution is a **learning share**: a grant from the one resource authority {grant, engine incarnation, period, share}, debited on the engine's ledger (fork #87). It is not a model tier.
+- Residency is her shadow adapter plus its optimizer moments, in bytes.
+- An uncontended step is free but still held custody, the ledger's outstanding reservation.
+
+**A run.**
+1. With no grant, or a share of zero, the run is `Idle`.
+2. Otherwise it takes the next settled example after her cursor and dispatches ONE learn step to the engine through the task owner: `/learn` on her own shadow, under her grant. The run returns `Dispatched`.
+3. The completion carries `{step, loss, n_labels}` (fork #86: the shadow's committed step) and re-triggers the stage.
+4. One step at a time per mind: no queue in front of the engine.
+
+**Commit and acknowledgement.**
+- The cursor advances through an example only when the step that consumed it reports a committed step. Admission is not acknowledgement.
+- A step that failed or was refused leaves the cursor where it was. Only a typed-retryable failure is retried (Slice A's rule): `budget_exhausted` after its `retry_after_ms`, or a busy slot.
+- A typed final refusal (`unsupported_backward`, `never_fits`) is surfaced as refused.
+- Any other failure that repeats on the same example is non-progress evidence: she perceives a stuck example. It is neither retried forever nor skipped silently (Fable on #5695).
+
+**A lost reply (Codex on #5695).** An engine step can commit while its reply, or the task's terminal write, is lost. A missing completion is not proof the step never ran, and dispatching the example again would apply the update twice. Every step is therefore bound to an identity, and reconciled before any redispatch.
+
+- **Binding.** Each dispatched step carries its **execution id**: the task id that Codex's task ledger records durably before dispatch.
+  - The engine's receipt for it is `{execution, engine incarnation, shadow (its file), input revision (the experience id and cursor), step, loss}`.
+  - Within one engine incarnation, the engine keeps receipts by execution id. A `/learn` naming an execution that already committed is answered with that receipt and steps nothing.
+  - The receipt table is bounded: an entry stays until the core acknowledges it.
+- **Reconciliation.** A new run that finds an open task for an example asks, in order:
+  1. Does the task owner hold its terminal? Adopt it.
+  2. Otherwise, does the engine hold a receipt for the execution, and is it the same incarnation? Adopt it exactly once: the cursor accepts the example, and the provenance records the step.
+  3. Same incarnation, no receipt, and no live execution with that id? It never committed: dispatch again.
+  4. The engine incarnation changed? Its receipts are gone, and so are the shadow's in-memory steps since her last durable snapshot or checkpoint. The shadow reloads from it, and the cursor rewinds to its provenance, so the examples after it are learned again. That is correct, not a duplicate, because the restored weights do not contain them.
+  5. If no durable state binds (no snapshot, or provenance that disagrees with the cursor), the outcome is explicit `unresolved`. She perceives a stuck dream; it is never a silent retry.
+- **Crash boundaries.**
+  - Core dies after dispatch, before the engine commits: case 2 or 3.
+  - Engine commits, the reply is lost, the core restarts: case 2, adopted once.
+  - Engine restarts after a commit and before a snapshot: case 4.
+  - Core dies after the cursor accepts and before the task's terminal write: acceptance is idempotent (the cursor only rises), and the task owner adopts.
+- **Validator case (shared validator).** The engine commits, the reply is lost, and the core restarts. The original commit is adopted exactly once, and the next useful step runs. An engine restart with its receipt unavailable surfaces `unresolved` (or rewinds to a binding snapshot); it never silently retries.
+
+**Yield points and stops.**
+- The chunk is ONE engine step. It is non-preemptible: 962 ms median measured on CPU, Qwen2.5-0.5B, fork 832d78cb1, 2026-11-01. That is measured on this hardware, not a bound elsewhere. Pause, yield and cancel land at the step boundary, after the in-flight step's outcome arrives (quiescence).
+- `Paused`: shadow and moments resident, charged.
+- `Yielded`: execution released. Residency drops to zero only after a durable snapshot AND the engine's release receipt (unload releases her optimizer, fork #85); the snapshot file stays in custody.
+- `Cancelled.committed_effects`: the steps this run committed.
+- A reflex trip is a stimulus during work. The dream yields within one step, with a receipt (§4 of the contract's shared validator).
+
+**Snapshots.**
+- At a yield, and every N committed steps, her shadow is written as an immutable gene candidate (fork #86's `/lora-adapters/snapshot`).
+- Its provenance is the experience-cursor range it consumed, so a card that judges snapshot *k* was never consumed by it (§9.3).
+- The candidate goes to the gene trial (S5). Nothing is promoted automatically.
+
+**Her shadow is her file.** The engine deduplicates adapter loads by path, so two minds loading one shadow file share one adapter. Before her first step, the dream gives each mind her own copy of her stable gene.
+- That copy is disk with an owner. It is written through a disk class (`ClassWriter`) with an eviction decision: a `TrackedDir` row and a `disk_eviction` owner.
+- So N minds times the adapter size is measured and bounded, and `every_cache_class_has_a_decided_eviction_story` holds (Fable on #5695).
+- Where they live: the engine loads only bare names inside its `--train-dir` (`engine-train`), so her shadow and her snapshots are files there. Their names are for people reading the directory; they carry no meaning.
+- What decides is a REGISTRY, never a filename's shape (Fable on #5695: a kind encoded in a name is the banned composite-string id).
+  - The dream keeps a shadow registry, an ORM entity with one row per mind's shadow and per snapshot: mind, path, step, provenance, and whether a gene trial holds it.
+  - `engine-train`'s eviction owner keeps every file the TrainingJobBoard (live jobs) or the shadow registry names, and evicts only files that neither owns. No name pattern can delete her learning.
+  - The decided-but-unimplemented rule "delete every `<uuid>.gguf` whose job is not live" is replaced by this registry rule.
+- The dream owns its registry rows: each mind's live shadow, every snapshot a trial holds, and her last K snapshots, bounded by bytes.
+
+**Engine verbs (fork):**
+
+| Verb | State |
+|---|---|
+| `/learn` on any loaded shadow, one optimizer per shadow | #85 |
+| snapshot plus committed step | #86 |
+| the grant ledger | #87, draft |
+
+Still open:
+- the execution id on `/learn`, the receipt table keyed by it, and the duplicate-execution answer (the lost-reply binding above);
+- the checkpoint (moments plus cursor, for resume across a restart);
+- learning a past example on an idle slot (S4 (f): the served prompt prefilled through the ordinary serving path, `n_predict` 0);
+- a step shorter than ~1 s, which needs splitting the graph across layers (deferred until the M5 measures its own step).
+
+**Depends on:**
+- Codex's task owner (typed `Dispatched` registration and completion);
+- #5691/#5694's drain;
+- the authority's grant issuance.
+
+**What retires.** The genome trainer's batch dispatch from the trigger bucket, the tick passes, and `LEARN_DUTY` / `/train`'s `share_ppm` (replaced by the one ledger).
+
+**The dream leg of the shared validator.**
+- Recall, reflex and dream run under contention on one replayed engine.
+- A stimulus during a dream gets a yield within one step, with a receipt.
+- A late or duplicate completion commits once.
+- A restart mid-step adopts the completion.
+- A revoked grant stops new steps; started ones still settle.
+- Useful work follows each case: her next turn, and the next dream step.
+
 ## 10. Coursework is a room, not a runner (mapped 2026-09-28)
 
 Joel, relayed by Codex on 2026-09-28: academy, benchmarks, simulations and learning follow the same runtime and room state, with as few differences from inference as possible.
