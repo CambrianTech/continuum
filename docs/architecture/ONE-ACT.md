@@ -1434,3 +1434,45 @@ Completed ed142 live windows remain insufficient for productive acceptance: M5 h
 Kimi's oversized reply cap is reproducible without weakening capacity: prior density30846/31801 prices the next estimated27479tokens at26654, leaving5857reply tokens under32512. The selected engine counts27221, leaving5290. Existing guards correctly refuse the larger sum and the caller retries. Local actual-HTTP validator3383da2c51 passes1test: the oversized request never generates, the resized request is quoted again, and one unchanged prompt is sent. It is a baseline reproduction, not an adaptive-room fix, lease proof, or live performance claim. Any optimization must carry explicit act reply-room authority and minimum, update the wire and receipts together, and retain per-attempt engine/lease validation. Kimi's existing4b1e245c work owns remembered steady boot geometry, a separate scope.
 
 Intel completed its ed142 gate13:47:33–14:02:33 with full rotated coverage: one model-reached Eitan turn (441seconds), three unconfirmed attempts at the automatic engine transition, and no confirmed useful write. Eitan used0cached/16,479fresh tokens,413,342ms prefill,26,903ms decode and531ms residue. Other residents waited for pinned slots; queue estimates expired without removing their requests. All three current-code deployment gates are now complete, but productive recovery remains unproven. Preserve current code; these receipts drive fixes, not rollback or repeated gates.
+
+### 2026-11-06 18:44Z: incoming collaborator handoff
+
+The first exact-output dispatch slice is committed and pushed as `eb59f22a9f`
+on `origin/codex/quoted-act-room` (worktree `continuum-dyno-recovery`). It carries
+explicit Fixed/UseAdmittedRoom intent, borrows the actual TurnAdmission, resolves
+against owned physical/admitted geometry, and derives reservation, canonical wire
+cap and mandatory sent receipt from one resolved value. Cognition consumes that
+receipt and no longer retries an unchanged view merely to resize reply room.
+Required-content refits remain. Canonical TypeScript and SDK wire copies are updated.
+
+Evidence: 43 cognition and 57 engine integration tests pass, plus three schema
+exports. Recorded Kimi/Sahar counts reproduce one quote and one generation with
+matching cap and receipt through actual HTTP and real admission/grant owners;
+the backend/prompt fixtures are synthetic. Windows development release preparation
+passed and supported ResumePrepared is in flight. This is not yet live speed or
+useful-action proof. Core/CLI/native CUDA builds are complete. An inactive engine
+slot containing old TLS DLLs was archived intact after owner/receipt checks; the
+supported staging retry passed. No live state or receipt was rewritten manually.
+
+Work boundaries for incoming collaborators:
+
+| Workstream | Deliverable and boundary |
+| --- | --- |
+| Dispatch review | Independently audit eb59f22a9f against sections 4a/5e; review immutable prompt, owned admission, canonical cap, result validation and removed retry. Do not implement a competing leaf resize policy. |
+| Fair service simulation | Compose actual grant/paging owners with deterministic event interleavings. Reproduce the two existing unserved-waiter traces; define feasible service opportunities before changing fairness assertions. Preserve known failures as evidence. |
+| Cold-prefill investigation | Capture live cache/paging and prompt-prefix evidence and reproduce the observed cold turns. Separate engine restart, changed grounding and restoration effects; no blanket cache or pool-growth changes. |
+| Learned optimizer | Use the existing work package and policy boundary: reproducible baseline/corpus, held-out evaluation and shadow proposals. No alternate scheduler or ownership authority. |
+
+The primary deployment owner continues the Windows handoff and measures actual
+persona actions, quote/refit counts, queue time, cache reuse and useful outcomes.
+Coordinate ownership before editing shared interfaces. Existing ambiguous-503 retry
+and cancellation custody defects remain explicitly open; this slice does not claim
+to repair them. Ratchet results also remain qualified: a substring scanner counts
+PreparedCommand::new as a subprocess, and mechanical response migration touches
+pre-existing heuristic-size and dreaming-required-input findings. Do not report
+those checks as passing or expand unrelated cleanup into an iteration blockade.
+
+Joel's development priority is fast evidence-driven iteration using available
+compute and supported local builds/restarts. Uptime is not an acceptance gate.
+Preserve durable state and others' unfinished work; routine deployment holds have
+been removed. Live outcomes, not a green simulation alone, decide acceptance.
