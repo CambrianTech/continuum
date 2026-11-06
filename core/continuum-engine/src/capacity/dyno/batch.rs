@@ -63,6 +63,10 @@ pub(crate) struct HourTask {
     pub class: TaskClass,
     /// Mean accepted tokens per decode step (the task's MTP draft acceptance).
     pub mean_len: f64,
+    /// Fresh tokens that are her previous reply and the tool results appended after it.
+    pub stream: u32,
+    /// Fresh tokens changed inside the previous prompt, view turnover, checkpoint granularity.
+    pub unstable: u32,
     pub launch_s: f64,
     pub restore_s: f64,
     pub cached: u32,
@@ -100,6 +104,8 @@ pub(crate) struct SlotView {
     /// The task's prompt was not restored from a checkpoint (a cold prefill).
     pub cold: bool,
     pub generating: bool,
+    /// The prompt tokens are her gap's streamed append-only output (ahead of the go).
+    pub streamed: bool,
     /// When this slot's prompt became ready to prefill.
     pub ready_s: f64,
 }
@@ -313,153 +319,58 @@ impl BatchScheduler for KneeAdmitted {
     }
 }
 
-/// One task's outcome.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct TaskOutcome {
-    pub arrival_s: f64,
-    pub prefill_s: f64,
-    pub first_service_wait_s: f64,
-    pub decode_s: f64,
-    pub longest_gap_s: f64,
-    pub release_s: f64,
+/// (e) Frame contents by sort key (ONE-ACT 5e): streamed append-only tails first, then warm
+/// tails (whole when they fit, (b): a checkpoint only where a resume uses it), then cold prompts,
+/// at most `knee` of them per frame; decode rides every frame and is owed prompt time, as in (b).
+#[derive(Debug)]
+pub(crate) struct SortKey {
+    pub knee: usize,
+    owed: Owed,
 }
 
-impl TaskOutcome {
-    pub fn act_s(&self) -> f64 {
-        self.release_s - self.arrival_s
-    }
-
-    fn unfinished() -> Self {
-        Self { arrival_s: f64::NAN, prefill_s: f64::NAN, first_service_wait_s: f64::NAN, decode_s: f64::NAN, longest_gap_s: f64::NAN, release_s: f64::NAN }
+impl SortKey {
+    pub(crate) fn new(knee: usize) -> Self {
+        Self { knee, owed: Owed::default() }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Phase {
-    Waiting,
-    Restoring { until_s: f64 },
-    Prefill { left: u32, depth: u64, ready_s: f64, served: bool },
-    Generating { left: f64, depth: u64, since_s: f64, last_s: f64 },
-}
-
-/// When a slot's next task arrives: a resident's after her recorded think gap from the release of
-/// her previous one (closed loop); dream traffic at its recorded launch, never before the slot frees.
-fn next_arrival(hour: &Hour, queue: &[usize], k: usize, released_s: f64) -> f64 {
-    let t = &hour.tasks[queue[k]];
-    match (t.class, k) {
-        (TaskClass::Dream, _) | (_, 0) => t.launch_s.max(released_s),
-        (TaskClass::Resident, _) => {
-            let p = &hour.tasks[queue[k - 1]];
-            released_s + (t.launch_s - (p.launch_s + p.recorded_act_s)).max(0.0)
-        }
+impl BatchScheduler for SortKey {
+    fn name(&self) -> &'static str {
+        "(e) sort key: streamed tails, warm tails, cold at the knee"
     }
-}
-
-/// Replay the hour's tasks, slot by slot, under `scheduler`.
-pub(crate) fn replay(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchScheduler) -> Vec<TaskOutcome> {
-    let slots = hour.tasks.iter().map(|t| t.slot).max().map_or(0, |m| m + 1);
-    let queues: Vec<Vec<usize>> = (0..slots).map(|s| (0..hour.tasks.len()).filter(|i| hour.tasks[*i].slot == s).collect()).collect();
-    let mut next = vec![0usize; slots];
-    let mut phase: Vec<Phase> = vec![Phase::Waiting; slots];
-    let mut arrival: Vec<f64> = (0..slots).map(|s| if queues[s].is_empty() { f64::INFINITY } else { next_arrival(hour, &queues[s], 0, 0.0) }).collect();
-    let mut outcomes: Vec<Option<TaskOutcome>> = vec![None; hour.tasks.len()];
-    let mut current: Vec<Option<(usize, TaskOutcome)>> = vec![None; slots];
-    let mut now = 0.0f64;
-    let mut done = 0usize;
-    while done < hour.tasks.len() {
-        for s in 0..slots {
-            if let Phase::Waiting = phase[s] {
-                if next[s] < queues[s].len() && arrival[s] <= now {
-                    let i = queues[s][next[s]];
-                    let o = TaskOutcome { arrival_s: arrival[s], prefill_s: 0.0, first_service_wait_s: 0.0, decode_s: 0.0, longest_gap_s: 0.0, release_s: f64::NAN };
-                    current[s] = Some((i, o));
-                    phase[s] = Phase::Restoring { until_s: arrival[s] + hour.tasks[i].restore_s };
-                }
-            }
-            if let Phase::Restoring { until_s } = phase[s] {
-                if until_s <= now {
-                    let (i, _) = current[s].expect("model: a restoring slot has a task");
-                    let t = &hour.tasks[i];
-                    phase[s] = Phase::Prefill { left: t.fresh.max(1), depth: u64::from(t.cached), ready_s: until_s, served: false };
-                }
-            }
+    fn plan(&mut self, view: &View<'_>) -> Plan {
+        if self.owed.decode_owed(view) {
+            return Plan::default();
         }
-        let views: Vec<SlotView> = (0..slots).map(|s| {
-            let (prompt_left, depth, ready_s) = match phase[s] {
-                Phase::Prefill { left, depth, ready_s, .. } => (left, depth, ready_s),
-                Phase::Generating { depth, .. } => (0, depth, 0.0),
-                _ => (0, 0, 0.0),
-            };
-            let cold = current[s].is_some_and(|(i, _)| hour.tasks[i].cached == 0);
-            SlotView { slot: s, prompt_left, depth, cold, generating: matches!(phase[s], Phase::Generating { .. }), ready_s }
-        }).collect();
-        if !views.iter().any(|v| v.prompt_left > 0 || v.generating) {
-            let wake = (0..slots).map(|s| match phase[s] {
-                Phase::Waiting if next[s] < queues[s].len() => arrival[s],
-                Phase::Restoring { until_s } => until_s,
-                _ => f64::INFINITY,
-            }).fold(f64::INFINITY, f64::min);
-            if !wake.is_finite() {
-                break;
-            }
-            now = wake.max(now);
-            continue;
-        }
-        let view = View { slots: &views, n_batch: hour.n_batch, offsets: &hour.checkpoint_offsets };
-        let plan = scheduler.plan(&view);
-        let decoders: Vec<&SlotView> = views.iter().filter(|v| v.generating).collect();
-        let decode_depth: u64 = decoders.iter().map(|v| v.depth).sum();
-        let prompt_s: f64 = plan.prompt.iter().map(|(s, n)| costs.prompt_s(*n, views[*s].depth)).sum();
-        let step = prompt_s + costs.decode_s(decoders.len(), decode_depth);
-        if step <= 0.0 {
-            break; // a policy that serves nothing while work waits stalls the engine (reported as unfinished)
-        }
-        now += step;
-        scheduler.served(&plan, step);
-        for &(s, n) in &plan.prompt {
-            if let Phase::Prefill { left, depth, ready_s, served } = phase[s] {
-                let (i, o) = current[s].as_mut().expect("model: a prefilling slot has a task");
-                if !served {
-                    o.first_service_wait_s = now - step - ready_s;
-                }
-                let (left, depth) = (left.saturating_sub(n), depth + u64::from(n));
-                phase[s] = match left {
-                    0 => {
-                        o.prefill_s = now - ready_s;
-                        Phase::Generating { left: f64::from(hour.tasks[*i].decode.max(1)), depth, since_s: now, last_s: now }
-                    }
-                    _ => Phase::Prefill { left, depth, ready_s, served: true },
-                };
-            }
-        }
-        for s in 0..slots {
-            if !views[s].generating {
+        let mut order = slot_order(view);
+        order.sort_by_key(|i| {
+            let v = view.slots[*i];
+            (v.prompt_left == 0, if v.streamed { 0 } else if v.cold { 2 } else { 1 }, *i)
+        });
+        let mut budget = view.n_batch.saturating_sub(view.generating() as u32);
+        let (mut plan, mut colds) = (Plan::default(), 0usize);
+        for i in order {
+            let v = view.slots[i];
+            if budget == 0 || v.prompt_left == 0 || (v.cold && colds >= self.knee) {
                 continue;
             }
-            if let Phase::Generating { left, depth, since_s, last_s } = phase[s] {
-                let (i, mut o) = current[s].expect("model: a generating slot has a task");
-                let accepted = hour.tasks[i].mean_len;
-                o.longest_gap_s = o.longest_gap_s.max(now - last_s);
-                if left <= accepted {
-                    o.release_s = now;
-                    o.decode_s = now - since_s;
-                    outcomes[i] = Some(o);
-                    done += 1;
-                    current[s] = None;
-                    phase[s] = Phase::Waiting;
-                    next[s] += 1;
-                    if next[s] < queues[s].len() {
-                        arrival[s] = next_arrival(hour, &queues[s], next[s], now);
-                    }
-                } else {
-                    current[s] = Some((i, o));
-                    phase[s] = Phase::Generating { left: left - accepted, depth: depth + accepted as u64, since_s, last_s: now };
-                }
-            }
+            let take = match v.prompt_left <= budget {
+                true => v.prompt_left,
+                false => fork_fill(v.prompt_left, budget, view.offsets),
+            };
+            colds += usize::from(v.cold);
+            plan.prompt.push((v.slot, take));
+            budget -= take;
         }
+        plan
     }
-    outcomes.into_iter().map(|o| o.unwrap_or_else(TaskOutcome::unfinished)).collect() // unwrap_or_else: a stalled policy leaves tasks unfinished, reported as NaN
+    fn served(&mut self, plan: &Plan, step_s: f64) {
+        self.owed.served(plan, step_s);
+    }
 }
+
+mod replay;
+pub(crate) use replay::{replay, run, Pipeline, Scope, TaskOutcome};
 
 #[cfg(test)]
 mod tests;
