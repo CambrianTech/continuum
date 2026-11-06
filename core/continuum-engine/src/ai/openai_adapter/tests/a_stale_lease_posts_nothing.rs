@@ -143,3 +143,58 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
     let reservation = reservation.expect("her lease is reserved for the request"); // JUSTIFIED: the invariant under test
     crate::capacity::window_grant::settle(reservation, Some(&crate::capacity::window_grant::TerminalReceipt { finish: "stop".into() }));
 }
+
+// The actual endpoint owner closes during an HTTP quote. A valid count alone
+// must not authorize generation; no global readiness watch substitutes for it.
+#[tokio::test]
+async fn quarantine_during_quote_posts_nothing() {
+    use axum::{routing::post, Router};
+    use crate::inference::lane_send::{DispatchAdmission, FillReceipt, PromptQuote};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture bind");
+    let address = listener.local_addr().expect("fixture address");
+    let root = format!("http://{address}");
+    let pool = crate::inference::slots::directory().ensure_pool(&root, 1);
+    let endpoint = crate::inference::slots::directory().endpoint(&root);
+    let posts = Arc::new(AtomicUsize::new(0));
+    let posted = posts.clone();
+    let app = Router::new()
+        .route("/v1/chat/completions/input_tokens", post(move || {
+            let endpoint = endpoint.clone();
+            async move {
+                endpoint.quarantine_paging();
+                axum::Json(serde_json::json!({"input_tokens":4}))
+            }
+        }))
+        .route("/v1/chat/completions", post(move || {
+            let posted = posted.clone();
+            async move { posted.fetch_add(1, Ordering::SeqCst); "unexpected generation" }
+        }));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let adapter = test_adapter();
+    let sem = Arc::new(tokio::sync::Semaphore::new(1));
+    let persona = uuid::Uuid::new_v4();
+    let key = crate::inference::slots::PageKey::mind(persona).expect("fixture persona");
+    let owned = crate::inference::turn_admission::admit_turn(
+        &sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool),
+        &adapter.client, &root, 4, std::time::Duration::ZERO,
+    ).await.expect("fixture admission");
+    let mut reservation = None;
+    let result = crate::inference::lane_send::send_with_lane_retry(
+        &adapter.config,
+        adapter.client.post(format!("{root}/v1/chat/completions")).header("Content-Type", "application/json"),
+        br#"{"messages":[{"role":"user","content":"act"}],"max_tokens":1}"#.to_vec(),
+        None,
+        FillReceipt {
+            model: "fixture", prompt_tokens: 4,
+            prompt_quote: Some(PromptQuote { client: &adapter.client, dedicated_lane: true, caller: "fixture", reply: 1, request_id: "quarantined-quote" }),
+            admission: Some(DispatchAdmission {
+                persona, endpoint: Some(&owned),
+                admission: crate::ai::types::RequestAdmission { window: 100, lease: None, priced: crate::ai::types::PromptAdmission::EngineCounted },
+            }),
+        }, &mut reservation,
+    ).await;
+    assert!(matches!(result, Err(InferenceError::Unavailable(_))));
+    assert_eq!(posts.load(Ordering::SeqCst), 0);
+    assert!(reservation.is_none());
+    server.abort();
+}

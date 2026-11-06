@@ -145,6 +145,9 @@ pub(crate) async fn send_with_lane_retry(
     // rearm a fresh quote allowance for each replacement engine.
     let quote_started = Instant::now();
     let response = loop {
+        if let Some(endpoint) = fill.admission.and_then(|admission| admission.endpoint) {
+            endpoint.check_dispatch_ready().map_err(InferenceError::Unavailable)?;
+        }
         if let Some(quote) = fill.prompt_quote {
             // A transport retry may reach a replacement engine. Re-count the
             // same prepared body on EVERY attempt; never reuse its predecessor's
@@ -175,6 +178,11 @@ pub(crate) async fn send_with_lane_retry(
                 attempt = relaunch_retries,
                 "selected engine counted the finalized prompt"
             );
+        }
+        // Counting awaits the backend. An endpoint quarantined during that await
+        // cannot authorize reservation or generation even if its old count fits.
+        if let Some(endpoint) = fill.admission.and_then(|admission| admission.endpoint) {
+            endpoint.check_dispatch_ready().map_err(InferenceError::Unavailable)?;
         }
         // Her lease on her grant, re-reserved before EVERY attempt's POST (after the lane wait, with
         // the count just taken on this attempt's engine): a grant that moved since render, a

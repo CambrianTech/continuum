@@ -116,6 +116,12 @@ impl TurnAdmission {
         self._endpoint.incarnation()
     }
 
+    /// Revalidate this owned endpoint after asynchronous work. Quarantine can
+    /// close readiness without waiting for this generation's read admission.
+    pub(crate) fn check_dispatch_ready(&self) -> Result<(), String> {
+        self._endpoint.check_ready()
+    }
+
     /// How this turn's KV reached its slot ([`PageIn`]).
     pub(crate) fn page_in(&self) -> PageIn {
         self.page_in
