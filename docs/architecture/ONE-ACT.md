@@ -890,3 +890,20 @@ Windows library/tests compilation and binding drift. It merged as
 `5d5985c1c209de99791400cd029d4286a11b8ecb`. Supported binary publication
 `42149032888` targets that exact merge. This is CI acceptance only; no repair
 artifact has been deployed and Windows recovery is not yet established.
+
+### 2026-11-06 03:15Z: repair rollout, live gate still open
+
+M5 core and CLI now identify `5d5985c1c` (build 6817), deployed through the
+supported reboot at 03:06:32Z after exact archive/manifest/checksum and validate-only
+checks. All 66 modules saved; the dark window was 22 seconds. The engine was
+unchanged at immediate verification, but runtime pool growth relaunched it at
+03:06:44Z as PID 6967 with five lanes and requested context 547340. Therefore this
+is not an unchanged-engine comparison. Early evidence through 03:13 contains one
+model-reached Aiko act and three aborted attempts during that transition. The full
+03:06:32–03:21:32 gate is pending; this is not productive acceptance.
+
+Intel's matching artifact passed verification and validation; a supported reboot
+is draining in-flight work as of 03:15. Windows publication is still building and
+the crashed Windows core has not been restarted. Neither CI nor partial publication
+satisfies the three-machine goal. Baselines, rollback binaries and hashes are kept
+in each Mac's `~/.continuum/evidence/2026-11-05-takeover/5d5985c1c209` directory.
