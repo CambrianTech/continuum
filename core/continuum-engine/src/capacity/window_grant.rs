@@ -20,6 +20,8 @@ use crate::inference::planning::window_allocator::Tokens;
 
 mod lease;
 pub(crate) use lease::{record_reclaimed_grant, record_refused_grant, is_grant_retiring};
+#[cfg(test)]
+pub(crate) use lease::dyno_seam;
 pub use lease::{publish_fair_grants, FairGrantState, begin_grant_handoff, GrantHandoff, HandoffRefused, grant_with_reservations, honoring_reservations, honoring_reservations_and_receipts, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
 
 /// One publication of one mind's grant: monotonic and never reused in this process. A grant that

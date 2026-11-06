@@ -11,6 +11,18 @@ impl ReclaimedGrant {
     pub(crate) fn into_ticket(self) -> GrantHandoff { self.0 }
 }
 
+/// The dyno's scripted actuator delivers its physical receipts through these same sealed proofs.
+/// The HTTP save-then-erase ordering that constructs them in production is pinned by this
+/// module's tests; a virtual-clock scenario scripts only when, and whether, a receipt arrives.
+#[cfg(test)]
+impl ReclaimedGrant {
+    pub(crate) fn scripted(ticket: GrantHandoff) -> Self { Self(ticket) }
+}
+#[cfg(test)]
+impl RefusedGrant {
+    pub(crate) fn scripted(ticket: GrantHandoff) -> Self { Self(ticket) }
+}
+
 /// No save/erase was submitted, or the engine positively refused the action. This returns
 /// the original charged claim to its holder; it is never a reclamation proof.
 pub(crate) struct RefusedGrant(GrantHandoff);

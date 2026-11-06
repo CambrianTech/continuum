@@ -32,6 +32,8 @@
 
 mod fair;
 pub use fair::{publish_fair_grants, FairGrantState};
+/// The dyno's handle on one test-owned grant owner (`capacity::dyno::service`); test-only (`#![cfg(test)]`).
+pub(crate) mod dyno_seam;
 
 use std::collections::BTreeMap;
 
@@ -346,13 +348,19 @@ pub(crate) fn is_grant_retiring(persona: uuid::Uuid) -> bool {
 /// A refused transfer returns authority, never free capacity. The publisher must restore
 /// the charged holder atomically before allowing another dispatch.
 pub(crate) fn record_refused_grant(proof: crate::inference::slots::grant_handoff::RefusedGrant) -> Result<(), String> {
+    RESERVATIONS.record_refused(proof)
+}
+
+impl Reservations {
+fn record_refused(&self, proof: crate::inference::slots::grant_handoff::RefusedGrant) -> Result<(), String> {
     let ticket = proof.into_ticket();
-    let mut state = RESERVATIONS.lock();
+    let mut state = self.lock();
     if !state.retiring.get(&ticket.persona).is_some_and(|lease| lease.same_identity(&ticket.lease)) {
         return Err("refused grant was already fenced or replaced".into());
     }
     state.refused.insert(ticket.persona, ticket.lease);
     Ok(())
+}
 }
 
 /// One dispatch ATTEMPT's reservation, re-made before every POST: the previous attempt's (never
