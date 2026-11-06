@@ -372,7 +372,7 @@ impl BatchScheduler for SortKey {
 }
 
 mod replay;
-pub(crate) use replay::{replay, run, Pipeline, Scope, Shadow, TaskOutcome};
+pub(crate) use replay::{replay, run, run_with_bets, Bet, BetScore, Pipeline, Run, Scope, Shadow, TaskOutcome};
 
 #[cfg(test)]
 mod tests;
