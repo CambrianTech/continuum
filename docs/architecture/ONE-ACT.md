@@ -941,3 +941,21 @@ seven and no Atlas completion on5d. This remains below the predeployment17.
 The larger engine geometry survived restoration, so none of these windows isolates
 an embedding-code effect. No further rollback cycle is the engineering solution.
 Stable summaries and rotated logs are retained in the recovery evidence directory.
+
+### 2026-11-06: caller lane custody reaches physical admission
+
+Local branch `codex/outer-lane-custody` consolidates cognition's serving-lane
+permit into `TurnAdmission`. A request parked on all-pinned KV relinquishes the
+caller lane and endpoint, then reacquires through the same scheduling authority,
+persona, priority and occupancy estimate. The queued mind acquisition is preserved
+when it waits, while its caller lane is released. Review reproduced that second
+retention defect before correcting it; neither fix discards page custody.
+
+The actual `generate_admitted` HTTP test demonstrates lane lending during a
+physical wait, no dispatch while another owner holds the lane, one dispatch after
+reacquisition, and release on the fixture's terminal refusal. Local validation is
+47 admission tests passed (six existing ignored), three scope-ownership tests,
+and the HTTP integration. Current canary 5d is merged into the branch. Final
+hygiene/cognition check and exact-head CI precede acceptance. No live deployment
+or complete Intel root-cause proof is claimed. Task-local custody scopes the
+directly awaited provider future; detached work receives no implicit authority.
