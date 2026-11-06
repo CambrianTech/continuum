@@ -686,6 +686,20 @@ agree the shared types before parallel edits. Integrate one complete vertical co
 each slice deletes its superseded paths and leaves the architecture runnable. The unpushed
 quoted-room prototypes are evidence for design review, not a mandate to preserve their API.
 
+#### An act is ready before it is given the go (Joel, 2026-11-06)
+
+"One act is ready before it's given the go. So you've got many cores and processes that are not
+waiting on one another." Her slot is kept current continuously. Every stimulus, fact, tool chunk
+and her own reply is appended and prefilled as it arrives, in dependency order, sort-keyed like any
+other frame work. When she decides to act, the only device work left is the delta that arrived
+after the last appended item, plus decode. Each mind's host encoders (render, tool execution, page
+I/O) run on their own cores, so no mind's host work waits behind another's. The device queue is the
+only shared stage.
+
+The gate is the share of an act's fresh tokens prefilled before its go, together with act latency
+split into queue, final-delta prefill and decode. The dyno's pipeline scenario (#5801, "e-ready")
+scores this against today's recorded hour before the dispatcher is built.
+
 ### 5f. Extend the pipeline to the grid: place work near warm state
 
 Joel requested this direction be recorded on 2026-11-04. This is the extension of stages
