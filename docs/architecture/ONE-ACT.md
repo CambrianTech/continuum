@@ -1081,6 +1081,19 @@ errors, causality... chained and mapped without an ability to go haywire").
    allocation chose. A producer adds one enum variant with typed fields; the derive (6b's
    `#[derive(Tool)]` family) generates the rest.
 
+**A formula, so a rename or a move can't break anything (Joel: "That's why a formula is necessary
+all the time. Prevents errors. What if you relocate the tool and its uri or renamed it?").**
+- **A reference is a type, never a name.** `VerbRef` points at the command's type. Rename the
+  command and every reference renders the new name; move it and a stale path fails to compile.
+- **Persisted text stores identity, not names.** Act logs, handles in checkpoints and collapsed
+  items store a stable typed identity and render the current name when read.
+- **A rename keeps the old name as a declared alias,** so her trained calls still parse to the same
+  typed command.
+- **Wire names and URIs are derived from the declaration at render time,** never written anywhere.
+- **Tests:**
+  - renaming a command changes every rendered reference and still parses the old name;
+  - a stored act from before a rename renders the new name.
+
 **Enforcement:**
 - **Ratchets:** prose literals reaching her context (outside the renderer) fall to zero; verb
   literals (slash names in strings) = 0; hand-kept name lists = 0.
