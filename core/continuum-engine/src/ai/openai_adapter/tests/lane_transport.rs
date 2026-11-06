@@ -2,6 +2,73 @@
 
 use super::*;
 
+// Kimi's ed142 trace: the prior prompt's density priced the new prompt at 26,654,
+// but the selected engine counted 27,221. Prove the real HTTP seam refuses before
+// generation, then accepts the unchanged prompt with its explicitly resized room.
+#[tokio::test]
+async fn kimi_reply_resize_requires_a_second_quote_before_one_generation() {
+    use axum::{routing::post, Router};
+    use std::sync::{Arc, Mutex};
+    use crate::inference::lane_send::{DispatchAdmission, FillReceipt, PromptQuote};
+    use crate::ai::types::{PromptAdmission, RequestAdmission};
+
+    let quotes = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let generations = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let quote_log = quotes.clone();
+    let generation_log = generations.clone();
+    let app = Router::new()
+        .route("/v1/chat/completions/input_tokens", post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let log = quote_log.clone();
+            async move {
+                log.lock().expect("fixture quote log").push(body);
+                axum::Json(serde_json::json!({"input_tokens": 27221}))
+            }
+        }))
+        .route("/v1/chat/completions", post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let log = generation_log.clone();
+            async move {
+                log.lock().expect("fixture generation log").push(body);
+                axum::Json(serde_json::json!({"ok": true}))
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture bind");
+    let address = listener.local_addr().expect("fixture address");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let adapter = test_adapter();
+    for reply in [5857, 5290] {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "messages": [{"role": "user", "content": "same finalized prompt"}], "max_tokens": reply
+        })).expect("fixture body");
+        let result = crate::inference::lane_send::send_with_lane_retry(
+            &adapter.config,
+            adapter.client.post(format!("http://{address}/v1/chat/completions")).header("Content-Type", "application/json"),
+            body, None,
+            FillReceipt {
+                model: "fixture", prompt_tokens: 26654,
+                prompt_quote: Some(PromptQuote { client: &adapter.client, dedicated_lane: true, caller: "Kimi fixture", reply, request_id: "kimi-room" }),
+                admission: Some(DispatchAdmission {
+                    persona: uuid::Uuid::nil(), engine: None,
+                    admission: RequestAdmission { window: 32512, lease: None, priced: PromptAdmission::EngineCounted },
+                }),
+            }, &mut None,
+        ).await;
+        if reply == 5857 {
+            assert!(matches!(result, Err(crate::ai::inference_error::InferenceError::ContextExceeded { requested: 27221, available: 32512 })));
+            assert!(generations.lock().expect("fixture generations").is_empty());
+        } else {
+            assert!(result.expect("resized room fits").status().is_success());
+        }
+    }
+    let counted = quotes.lock().expect("fixture quotes");
+    let sent = generations.lock().expect("fixture generations");
+    assert_eq!(counted.len(), 2);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(counted[0]["messages"], counted[1]["messages"]);
+    assert_eq!(sent[0], counted[1]);
+    assert_eq!(sent[0]["max_tokens"], 5290);
+    server.abort();
+}
+
 // what this catches: the engine reading a cut as bad JSON (or the reverse), or a finish the
 // backend never reported as finished. Only `length` is the output limit, and an absent marker is
 // Unreported; a call whose arguments do not parse under a reported finish is hers to retry.
