@@ -336,7 +336,8 @@ fn stable_blocks<'a>(
         // Tools + acting — the SUBSTRATE's block: byte-identical for every persona with
         tools_block(p.tools, p.expanded, p.disclosure_level).map(|b| (PromptScope::Substrate, Cow::Owned(b))),
     ]
-    .flatten()
+        .into_iter()
+        .flatten()
 }
 
 /// The PER-TURN situational FRAMING — the own-time affordance and the conversational-
@@ -872,6 +873,7 @@ mod tests {
             holds_live_work: false,
         });
         let id_at = c.stable.find("IDENTITY").expect("identity present");
+        let tools_at = c.stable.find("[Your tools]").expect("tools block present");
         assert!(tools_at < id_at, "substrate before persona: {}", &c.stable[..80]);
         assert!(!c.stable.contains("[now "), "the clock is a Turn block, never in the prefix");
         assert!(c.trailing.contains("[now "));

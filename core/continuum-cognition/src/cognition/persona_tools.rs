@@ -40,9 +40,15 @@ pub enum DisclosureLevel {
     Expanded,
     Schema,
 }
+use crate::ai::types::{NativeToolSpec, ToolInputSchema};
+use crate::cognition::tool_embedding::extract_category;
+use crate::routing::command_acl::is_command_authorized;
+use crate::routing::trust_level::TrustLevel;
+use crate::sdk_codegen::{AccessLevel, CommandDescriptor};
+use crate::sdk_codegen::ext::command_registry_live;
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-
 
 /// The persona's tool surface: every command it is AUTHORIZED to run at `trust`,
 /// projected to a tool spec. **Offer == authorized, by construction** — a persona
@@ -284,7 +290,10 @@ pub(super) fn render_tool_menu_inner(
             for (cat, mut entries) in by_cat {
                 let verbs: Vec<&str> = entries.iter().map(|(v, _)| *v).collect();
                 if expanded.contains(cat) {
-                    let _ = writeln!(out, "{cat}: {}", verbs.join(", "));
+                    // Expanded SPINE: show sorted verb list inline.
+                    entries.sort_by(|a, b| a.0.cmp(b.0));
+                    let verbs_sorted: Vec<&str> = entries.iter().map(|(v, _)| *v).collect();
+                    let _ = writeln!(out, "{cat}: {}", verbs_sorted.join(", "));
                 } else if verbs.len() == 1 {
                     // Singleton categories aren't worth collapsing.
                     let _ = writeln!(out, "{cat}: {} (+ commands/list --filter {cat})", verbs[0]);

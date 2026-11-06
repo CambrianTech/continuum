@@ -93,10 +93,12 @@ pub async fn git_status(workspace_root: &Path) -> GitStatusInfo {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/code/DiffScope.ts")]
 pub enum DiffScope {
-    // All her work since her branch started, checkpoints included.
+    /// All her work since her branch started, checkpoints included.
     #[default]
     YourWork,
+    /// Changes that have been staged (`git add`) but not yet committed.
     Unstaged,
+    /// Changes in the most recent commit, compared to its parent.
     Staged,
 }
 
