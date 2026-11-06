@@ -1032,6 +1032,73 @@ Gate, live: the share of a mind's tool calls that land, from her prompt captures
 edits and landed calls per mind), together with bytes written per landed change against the change's
 own size.
 
+### 6c. One protocol, rendered from types: no prose reaches her (Joel, 2026-11-06)
+
+"These inconsistencies should be impossible. Stop just writing text into tools and prompts. The
+system ought to be more formulaic... We need a system not a bunch of prose." Also: foolproof, done
+at the schema level, little burden on producers, concerns separated, and two-way ("results,
+errors, causality... chained and mapped without an ability to go haywire").
+
+**Evidence** (inventory on canary a745106a3, `~/.continuum/evidence/prose-inventory-20261106/`):
+- **The root defect:** her tools go out under each command's first alias (`read_file`, `help`,
+  `read_output`), but nearly all prose names the slash form. So the verbs in her text almost never
+  match her function list.
+- **Non-native verbs named in prose:** ten, including `tool/output` at about 11 sites, and one
+  command that is an erroring stub.
+- **One concept, many protocols:** four ways to end a turn, three review-verdict protocols, and
+  reopening a saved result as 7 verbs in 5 call forms, whose pointer and its recogniser disagree.
+- **Wrong or stale facts in prose:** wrong parameter names, constants restated, and hand-kept name
+  lists naming commands that don't exist.
+- **Volume:** about 125k chars of tool descriptions and about 570 error sites, with no rendering
+  layer at all.
+
+**Design: producers emit typed values, and one renderer owns presentation.**
+1. **Verb references are types.** A `VerbRef` is constructible only from a native `ActionCommand`.
+   It renders through the one wire-name function, so she always sees the name she can call. A
+   non-native verb cannot be named, or is named with its typed discovery path.
+2. **Affordances are typed values, rendered once.** "Reopen this saved result" is one variant (one
+   verb, one call form, its parameter names taken from the schema), and the same holds for every
+   handle, pointer and fold marker. The pointer and its recogniser are the same type, so there is no
+   string parser.
+3. **Each protocol exists once.** Ending a turn is `yield_turn`; the PASS forms are deleted. A review
+   verdict is `work/review`. An instruction block that describes a protocol is rendered from the
+   protocol's type.
+4. **Outcomes are typed and causal (the two-way loop).**
+   - A call parses into its verb's typed parameters (6b).
+   - Every outcome (result, refusal, error) is typed, correlated to the exact call that caused it,
+     and carries its cause chain: errors wrap typed sources instead of strings.
+   - Every refusal carries typed next moves that are themselves valid `VerbRef` calls (Cormac's
+     `<Tool>Refusal`).
+   - Call → outcome → next move → next call forms a causal graph keyed by typed ids. Everything she
+     perceives about her history is rendered from that graph.
+5. **Descriptions come from the declaration.** A tool's text comes from structured fields (purpose,
+   and parameters from its schema with real names, defaults and enums). Constants are interpolated
+   from their measured or declared values, and cross-references are `VerbRef`s. No maintainer
+   rationale ships.
+6. **Headers and facts come from registries.** Block labels come from source ids; nudges are
+   `PerceptionFact` values with interpolated measurements, in one voice.
+7. **The renderer is separate from producers.** It owns vocabulary, voice and the level the
+   allocation chose. A producer adds one enum variant with typed fields; the derive (6b's
+   `#[derive(Tool)]` family) generates the rest.
+
+**Enforcement:**
+- **Ratchets:** prose literals reaching her context (outside the renderer) fall to zero; verb
+  literals (slash names in strings) = 0; hand-kept name lists = 0.
+- **Compile-fail tests:** a marker naming a non-native verb, and a parameter name absent from its
+  schema.
+- **Gate:** an audit replay over recorded prompts. Every verb named is in her function list, every
+  call form is valid, and each protocol has exactly one form.
+
+**Order, by the inventory's worst offenders:**
+1. `VerbRef` plus wire names, with the `tool/output` reopen affordance (in flight).
+2. One silence protocol.
+3. One review protocol.
+4. `TOOLS_INTRO` and the system blocks rendered from `native_offers()`.
+5. The facts registry.
+6. Headers.
+7. Descriptions via the derive.
+8. `CommandError` typed with cause chains (Cormac's refusal shape).
+
 ### 7. Around the act
 
 - **Learning** is a low-duty dream stage between decode steps under the governor, with its slowdown
@@ -1151,6 +1218,7 @@ state and separate measured safety failures from low activity or slow execution.
 | 5 | Admission: one decision over residency, prefill, decode; fairness by completion identity; rotation THROUGH the proven custodian | Codex | dyno 2, 3 green |
 | 6 | Her state: command preconditions, results with next moves, Shown ids, one repeat owner | Fable + Cormac | precondition tests; live: no verb hunted (`commands/help` loops) |
 | 6b | The tool contract: payload-sized output room + continuation of a cut call; content-anchored edits with read hashes (line modes deleted); results only through the codec; typed refusals; schema validation before execution | Fable (contract, cognition) + Codex (fork continuation) + Cormac (typed refusals) | live: landed calls per attempted call per mind; ratchets at 0 |
+| 6c | One protocol rendered from types: VerbRef + wire names, typed affordances, one silence/review protocol, typed causal outcomes, descriptions from declarations, prose ratcheted to 0 | Fable (renderer, VerbRef, affordances, facts, headers, descriptions) + Cormac (typed refusals, CommandError causes) + Codex (review) | audit replay: every verb named is in her function list; prose-literal ratchet at 0 |
 | 7 | Learning as a dream stage; persistence on change; deploy custody | Cormac | slowdown measured within its bound |
 
 ## Open branches, fitted
