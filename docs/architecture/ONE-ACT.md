@@ -236,6 +236,60 @@ the same operation/receipt interfaces later; it is not permission to stack anoth
 inside this slice. These contracts are now the implementation target, with distributed adaptive
 dispatch explicitly unsupported until its complete owner contract exists.
 
+#### Owned-attempt API and settlement boundary
+
+The implementation belongs to the existing engine dispatch module. Its private stages are
+`PreparedPrompt -> QuotedAttempt -> ExecutableAttempt -> InFlightGeneration -> TerminalOutcome`.
+These are ownership transitions, not five new daemons or registries. Only immutable observations
+are serializable; guards, executable authority and terminal proof cannot be reconstructed from JSON.
+
+| Stage | Owns or borrows | Consuming transition / refusal |
+|---|---|---|
+| PreparedPrompt | Finalized prompt encoding and explicit output/reasoning intent | Quote only after borrowing the actual `TurnAdmission`; no capacity decision from estimated tokens |
+| QuotedAttempt | Prepared prompt, exact count, owner-bound engine/model/template identity, physical capacity, current grant lease | Resolve once; required-content shortfall returns a typed refit requirement; identity/readiness mismatch invalidates the attempt |
+| ExecutableAttempt | Same endpoint/page capability plus the grant owner's successful reservation; resolved controls and immutable prompt | `send(self)` is the only POST entry; generates wire and receipt together, so neither caller nor transport can substitute a cap |
+| InFlightGeneration | Response/stream handle, endpoint/page admission and reservation, selected attempt identity | Terminal receipt settles through the existing grant owner; cancellation or ambiguous transport failure transfers unresolved custody to the existing endpoint owner |
+| TerminalOutcome | Verified terminal identity and immutable sent controls/usage | Releases or retains physical resources according to their own completion domains; wakes dependent work |
+
+API implementation constraints:
+
+- Pass a borrow of the actual `TurnAdmission` during preparation/quote/reservation and retain the
+  owned admission in the generation lifetime. Do not add a publicly constructible certificate
+  containing only `(pid, started_s)`. An exact-count capability also names its template and proves
+  that changing output controls does not change the quoted prompt.
+- Expose the grant owner's reservation as the existing non-cloneable capability. Introduce only
+  the narrow consuming unsent/terminal settlement operations required by this transition; the
+  dispatcher does not inspect or maintain a duplicate reservation map.
+- A successful HTTP header is not a terminal receipt. “No token received” is not proof that a
+  generation was never accepted. Release an unsent reservation and retry only for an outcome
+  whose transport/backend contract proves non-acceptance (for example, connection establishment
+  refused). A 503 requires that explicit backend guarantee; status alone cannot license replay.
+- Dropping a future after sending can occur before headers arrive. The retained operation must
+  still own its reservation and endpoint/page custody. It cannot disappear with the waiting
+  caller. Reuse the existing unresolved-operation owner, with a typed completion or incarnation
+  fence to settle it; no leaf cancellation cleanup that declares the resource free.
+- If recovery requires a lifecycle writer, do not await that writer while retaining its read
+  admission. Transfer uncertain work to custody, release only what is proven releasable, and
+  re-enter admission on a fresh attempt. Reuse the operation's queue entitlement, never its quote.
+
+Focused validator matrix for this interface:
+
+| Scenario | Required observation |
+|---|---|
+| Recorded Kimi and Sahar feasible prediction errors | One exact quote, one generation, same prompt, maximal authorized reply and identical sent receipt; no cognition resize retry |
+| Fixed request and insufficient adaptive minimum | Fixed cap unchanged or typed refusal; insufficient minimum sends nothing and requests genuine content refit |
+| Controlled lifecycle writer during quote | Existing read admission prevents replacement until the operation releases or transfers ownership; no new lock |
+| External crash / same-URL replacement / stale grant | Old executable attempt cannot POST to the new incarnation; new attempt re-admits and re-quotes |
+| Cancellation before reservation / before POST / after possible acceptance | Respectively no reservation, proven-unsent release, or retained unresolved custody; never double settlement |
+| Late response / duplicate terminal / connection refusal / ambiguous disconnect | Identity checked, exactly one terminal settlement, retry only with non-acceptance proof |
+| Backend output controls alter tokenization | Capability refuses the one-quote optimization unless the backend can certify the final prompt identity |
+
+Implementation order: first replace the provisional arithmetic authority and prove its properties;
+then implement these private ownership transitions and adversarial transport tests; then migrate
+all caller/result contracts and delete the resize branch in the same integration slice. Publish
+that coherent slice only after compiler-enforced caller coverage and validators pass. Observe the
+real same-prompt retry count and useful completed work afterwards. Cold-prefill, physical paging
+and fairness work remain separate measured causes and use the same ownership/receipt interfaces.
 ### 5. Engine memory (where her KV lives)
 
 - **Owner:** the serving daemon over ONE separate llama-server process (SERVING-ENGINE §6 wins over
