@@ -760,6 +760,22 @@ own size.
 
 ## Proof: the dyno, before anything goes live
 
+### Core architectural method
+
+**Observe the real system → capture the failure → reproduce it deterministically →
+correct the owning algorithm → validate in simulation → verify on the real system.**
+
+This cycle is required architectural work, not an optional testing phase. Preserve
+revision, inputs, ownership identities, event ordering and measured costs with each
+failure. The deterministic reproduction must exercise the production owner and fail
+on the captured invariant before a correction can count as a repair. Correct that
+owner's algorithm and delete superseded decisions at callers; do not duplicate the
+algorithm in a simulator or add a leaf workaround. Validate safety, progress and
+relevant event interleavings, retaining the reproducer as a regression test. Finally,
+verify the same invariant and useful-work performance in the real system. Simulation
+predictions and live measurements remain distinct evidence. Any new discrepancy
+starts the cycle again; a green test or successful deployment does not close it.
+
 ### Coverage audit and deterministic execution
 
 Joel asked on 2026-11-06 whether the prior failures can be simulated. Yes: extend the existing
@@ -783,6 +799,18 @@ retirement, terminal receipts, dropped streams and replacement-engine reservatio
 those tested owner transitions, not end-to-end fairness. Log: `grant-owner-tests-1526.log` in the
 same evidence directory. This distinction is why the next validator must compose actual owners.
 
+Live-to-reproduction loop (2026-11-06 15:35Z): the fresh Windows capture
+`windows-live-1535.log` records Sahar's unchanged-prompt resize at 15:28:56Z.
+Exact prompt 18,702 plus predicted reply 3,769 exceeds admitted window 22,435;
+reply 3,732 fits the strict boundary. The logged common prefix is 100%, and the
+second exact quote takes 49 ms. Outer lane wait is zero; the approximately twelve
+seconds before that quote cannot be attributed to outer queueing without tracing
+paging and inner admission. A test-only extension of the existing Kimi HTTP fixture
+uses these recorded counts with a synthetic prompt/backend. It is a reproduction
+of the transport refusal/retry seam, not a full prompt, custody or latency replay.
+Its compile/test result must be recorded separately before counting it as coverage.
+This is the required iteration: observe real work, isolate the causal transition,
+reproduce it through the production owner, change the algorithm, and verify real work.
 Build deterministic scenarios by advancing a virtual clock to the next event, not sleeping.
 Feed the production decision code recorded demands, service curves and completion identities.
 Control the actuator with scripted quote/save/restore/send completions; enumerate bounded event
