@@ -305,13 +305,13 @@ pub(super) fn render_tool_menu_inner(
             for (cat, mut entries) in by_cat {
                 let is_expanded = expanded.contains(cat);
                 if is_expanded {
-                    // Expanded: show each verb with its param hint.
+                    // Sort FIRST so lines render in deterministic verb order.
+                    entries.sort_by(|a, b| a.0.cmp(b.0));
                     let mut lines: Vec<String> = Vec::new();
                     for (verb, tool) in &entries {
                         let hints = render_param_hint(&tool.input_schema);
                         lines.push(format!("  {verb}{hints}"));
                     }
-                    entries.sort_by(|a, b| a.0.cmp(b.0));
                     let _ = writeln!(out, "{cat}:");
                     for line in &lines {
                         out.push_str(line);

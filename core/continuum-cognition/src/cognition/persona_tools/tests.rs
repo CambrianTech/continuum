@@ -108,27 +108,21 @@
             ["code".to_string()].into_iter().collect();
         let out = render_tool_menu(&tools, &expanded);
 
-        // Spine: both categories present every turn.
+        // Spine: every category lists ALL its verb names inline (Rung 0).
         assert!(out.contains("code"), "code header missing: {out}");
-        assert!(
-            out.contains("gpu"),
-            "gpu header missing (spine broken): {out}"
-        );
-        // Expanded code lists its verbs inline.
+        assert!(out.contains("gpu"), "gpu header missing: {out}");
+        // Expanded code lists its verbs sorted.
         assert!(
             out.contains("code: edit, read, run"),
             "code not expanded: {out}"
         );
-        // Collapsed gpu shows depth + how to open, NOT its verbs.
+        // Collapsed gpu also lists its verbs (Spine shows all names).
         assert!(
-            out.contains("gpu (2 — commands/list --filter gpu)"),
-            "gpu not collapsed: {out}"
+            out.contains("gpu: pressure, stats"),
+            "gpu verbs missing in spine mode: {out}"
         );
-        assert!(!out.contains("stats"), "collapsed gpu leaked verbs: {out}");
     }
 
-    // Build a spec whose schema declares required + optional fields, so the
-    // catalog's param-name rendering can be asserted.
     fn spec_with(name: &str, required: &[&str], optional: &[&str]) -> NativeToolSpec {
         let mut props = serde_json::Map::new();
         for f in required.iter().chain(optional.iter()) {
