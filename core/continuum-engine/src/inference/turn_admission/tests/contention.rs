@@ -87,7 +87,6 @@ impl Wake for WakeCount {
 // surrounds adapter admission. This is a custody reproduction, not an HTTP or
 // full cognition integration test. An inner permit drop cannot release it.
 #[tokio::test]
-#[ignore = "known red: outer serving lane remains owned during all-pinned wait"]
 async fn all_pinned_wait_releases_the_outer_serving_lane() -> Result<(), Box<dyn std::error::Error>>
 {
     use crate::inference::resource_admission::{LaneAdmission, LanePriority};
@@ -113,20 +112,22 @@ async fn all_pinned_wait_releases_the_outer_serving_lane() -> Result<(), Box<dyn
         .acquire_serving_lane(None, LanePriority::Directed, None)
         .await;
     let key = PageKey::mind(Uuid::new_v4()).ok_or("waiting key")?;
-    let mut waiting = Box::pin(async {
-        let _outer = outer;
-        admit_turn(
-            &sem,
-            crate::inference::slots::SlotClass::Turn,
-            Some(key),
-            Some(pool.clone()),
-            &client,
-            &root,
-            100,
-            std::time::Duration::ZERO,
-        )
-        .await
-    });
+    let mut waiting = Box::pin(crate::inference::resource_admission::with_serving_lane(
+        outer,
+        async {
+            admit_turn(
+                &sem,
+                crate::inference::slots::SlotClass::Turn,
+                Some(key),
+                Some(pool.clone()),
+                &client,
+                &root,
+                100,
+                std::time::Duration::ZERO,
+            )
+            .await
+        },
+    ));
     assert!(futures::poll!(&mut waiting).is_pending());
     assert_eq!(
         sem.available_permits(),
@@ -134,17 +135,24 @@ async fn all_pinned_wait_releases_the_outer_serving_lane() -> Result<(), Box<dyn
         "inner adapter permit was released"
     );
     let mut next = Box::pin(lanes.acquire_serving_lane(None, LanePriority::Directed, None));
-    let released_while_parked = futures::poll!(&mut next).is_ready();
-    drop(waiting);
-    if !released_while_parked {
-        let recovered = tokio::time::timeout(std::time::Duration::from_secs(2), next).await?;
-        drop(recovered);
-    }
+    let std::task::Poll::Ready(other_lane) = futures::poll!(&mut next) else {
+        return Err("all-pinned wait retained the outer serving lane".into());
+    };
     drop(held);
     assert!(
-        released_while_parked,
-        "all-pinned wait retained the outer serving lane until cancellation"
+        futures::poll!(&mut waiting).is_pending(),
+        "slot release cannot bypass lane authority"
     );
+    drop(other_lane);
+    let admitted = tokio::time::timeout(std::time::Duration::from_secs(2), waiting).await??;
+    assert_eq!(admitted.slot(), Some(0));
+    let mut following = Box::pin(lanes.acquire_serving_lane(None, LanePriority::Directed, None));
+    assert!(
+        futures::poll!(&mut following).is_pending(),
+        "physical owner retains reacquired lane"
+    );
+    drop(admitted);
+    drop(tokio::time::timeout(std::time::Duration::from_secs(2), following).await?);
     Ok(())
 }
 

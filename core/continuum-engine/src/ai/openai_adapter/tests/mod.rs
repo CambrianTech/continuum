@@ -19,6 +19,7 @@ mod a_stale_lease_posts_nothing;
 mod lane_transport;
 mod lora_page_in;
 mod only_a_finish_frame_is_a_terminal_receipt;
+mod outer_lane_custody;
 mod prefill_progress_is_liveness;
 mod request_shaping;
 mod tail_tools_reach_the_verified_lane_only;

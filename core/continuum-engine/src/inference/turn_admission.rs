@@ -330,15 +330,27 @@ async fn admit(
     };
     // A dream's ambient serving lane, held only while it must borrow a citizen slot.
     let mut lane: Option<ServingLanePermit> = None;
+    let mut caller_lane = if warm_only {
+        None
+    } else {
+        crate::inference::resource_admission::take_serving_lane()?
+    };
+    let reacquire = caller_lane.as_ref().map(ServingLanePermit::reacquisition);
     'admit: loop {
+        if caller_lane.is_none() {
+            if let Some(authority) = &reacquire {
+                caller_lane = Some(authority.acquire().await);
+            }
+        }
         // 1. PERMIT FIRST — event-driven wait for a free lane. Cannot fail: the
         //    semaphore is never closed over the adapter's lifetime. A dream holding its lane
         //    only TRIES: when the adapter is full it lets the lane go, waits for a permit
         //    holding nothing, and takes both again (Codex on #5786).
-        let _permit = match lane.as_ref().map(|_| concurrency.clone().try_acquire_owned()) {
+        let _permit = match lane.as_ref().or(caller_lane.as_ref()).map(|_| concurrency.clone().try_acquire_owned()) {
             Some(Ok(permit)) => permit,
             Some(Err(_)) => {
                 lane = None;
+                caller_lane = None;
                 drop(concurrency.clone().acquire_owned().await.expect("adapter semaphore never closed")); // expect: the semaphore lives as long as the adapter, never closed
                 continue 'admit;
             }
@@ -376,7 +388,7 @@ async fn admit(
             scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
             _endpoint: endpoint,
             _mind: None,
-            _lane: None,
+            _lane: caller_lane.take(),
         };
 
         // A DREAM YIELDS TO RESIDENTS (Fable, M5 0b2854327 01:24-01:50Z: a dream parked on scratch
@@ -596,7 +608,9 @@ async fn admit(
         if admission._mind.is_none() {
             admission._mind = mind.take();
         }
-        admission._lane = lane.take();
+        if admission._lane.is_none() {
+            admission._lane = lane.take();
+        }
         return Ok(admission);
     }
 }
