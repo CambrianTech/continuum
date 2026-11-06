@@ -62,6 +62,11 @@ pub(super) struct Arranged<'a, T> {
     pub logged_chars: Vec<usize>,
     /// How many sources stand ahead of the log.
     pub log_at: usize,
+    /// For each entry of her log, whether this start charges it: only an entry whose source this
+    /// start supplies. A source can be absent from a start (shed for want of its floor, a stream
+    /// that ended, a room she left: `fit_view`'s `shed_view_sources`), and its entries are then
+    /// dropped with it, never laid down uncharged (Codex on #5805).
+    pub retained: Vec<bool>,
 }
 
 /// One source as a start takes it: the source, its items, its claim and its logged characters.
@@ -69,9 +74,11 @@ type Slot<'a, T> = (&'a dyn Source<T>, Vec<Item<T>>, Claim, usize);
 
 /// Order `sources` and her `log` for a start ([`Motion::rank`]).
 pub(super) fn arrange<'a, T: Block>(motion: &Motion, sources: &[&'a dyn Source<T>], log: &[Logged<T>]) -> Arranged<'a, T> {
-    let ids = logged_ids(log);
+    let retained: Vec<bool> = log.iter().map(|entry| sources.iter().any(|source| source.name() == entry.source)).collect();
+    let charged: Vec<Logged<T>> = log.iter().zip(&retained).filter(|(_, kept)| **kept).map(|(entry, _)| entry.clone()).collect();
+    let ids = logged_ids(&charged);
     let mut logged: HashMap<&str, usize> = HashMap::new();
-    for entry in log {
+    for entry in &charged {
         *logged.entry(entry.source.as_str()).or_default() += entry.text.chars();
     }
     let items: Vec<Vec<Item<T>>> = sources.iter().map(|source| source.items()).collect();
@@ -101,7 +108,7 @@ pub(super) fn arrange<'a, T: Block>(motion: &Motion, sources: &[&'a dyn Source<T
     let order: Vec<usize> = order.into_iter().filter(|&index| index < sources.len()).collect();
     let mut slots: Vec<Option<Slot<'a, T>>> =
         sources.iter().zip(items).zip(claims).zip(logged_chars).map(|(((s, f), c), l)| Some((*s, f, c, l))).collect();
-    let mut arranged = Arranged { sources: Vec::new(), items: Vec::new(), claims: Vec::new(), logged_chars: Vec::new(), log_at };
+    let mut arranged = Arranged { sources: Vec::new(), items: Vec::new(), claims: Vec::new(), logged_chars: Vec::new(), log_at, retained };
     for index in order {
         if let Some((source, items, claim, logged)) = slots[index].take() {
             arranged.sources.push(source);

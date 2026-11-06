@@ -428,6 +428,7 @@ impl LlmDeliberationFaculty {
                     restored_chars = start.restored_chars,
                     log_kept_chars = start.log_kept_chars,
                     log_folded = start.log_folded,
+                    log_dropped_chars = start.log_dropped_chars,
                     "her view started a new epoch: the one re-prefill an epoch costs, collapsed \
                      by the flexbox at its start"
                 );

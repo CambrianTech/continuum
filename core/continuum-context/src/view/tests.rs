@@ -957,3 +957,6 @@ fn a_source_that_turns_volatile_drifts_tailward_and_the_shared_prefix_recovers()
     assert!(rendered(&view).starts_with("map"), "the stable block leads");
     Ok(())
 }
+
+/// A source absent from a start takes its logged history with it.
+mod absent_source;

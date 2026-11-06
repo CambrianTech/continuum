@@ -88,6 +88,9 @@ pub struct Start {
     /// The log folded at this start: a source's logged history alone outgrew its grant, so every
     /// item was re-decided from scratch (the one full re-prefill the log costs).
     pub log_folded: bool,
+    /// Characters of her log this start dropped because their source was absent from it: charged
+    /// to no one, so never laid down.
+    pub log_dropped_chars: usize,
 }
 
 /// One block she was shown, as the view rendered it (`View::receipt`).
@@ -298,6 +301,18 @@ impl<T: Block> View<T> {
         // The log folds when a source's logged history alone outgrows what this start grants it:
         // everything is re-decided from scratch once, and the log starts again from what this
         // start collapses.
+        // Her log as this start charged it: an absent source's entries leave with it.
+        let mut log_dropped_chars = 0;
+        let log: Vec<log::Logged<T>> = log
+            .into_iter()
+            .zip(&arranged.retained)
+            .filter_map(|(entry, kept)| {
+                if !kept {
+                    log_dropped_chars += entry.text.chars();
+                }
+                kept.then_some(entry)
+            })
+            .collect();
         let folds = arranged.logged_chars.iter().zip(&grants).any(|(logged, grant)| logged > grant);
         let (log, arranged) = if folds { (Vec::new(), log::arrange(&motion, sources, &[])) } else { (log, arranged) };
         let mut view = Self {
@@ -451,6 +466,7 @@ impl<T: Block> View<T> {
             restored_chars: 0,
             log_kept_chars,
             log_folded: folds,
+            log_dropped_chars,
         };
         Ok((view, start))
     }
