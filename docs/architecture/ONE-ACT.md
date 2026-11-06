@@ -907,3 +907,20 @@ is draining in-flight work as of 03:15. Windows publication is still building an
 the crashed Windows core has not been restarted. Neither CI nor partial publication
 satisfies the three-machine goal. Baselines, rollback binaries and hashes are kept
 in each Mac's `~/.continuum/evidence/2026-11-05-takeover/5d5985c1c209` directory.
+
+### 2026-11-06 03:26Z: M5 gate failed; Windows repair activation underway
+
+Full rotated-log coverage for 03:06:32–03:21:32 contains seven model-reached acts
+(Aiko four, Aris two, Benchy one, Atlas zero) and three aborted engine-transition
+attempts. The immediately preceding 02:50–03:05 window contains 17 model-reached
+acts across all four minds. This fails the rollout's productive gate; automatic
+engine growth/relaunch confounds attribution, so it does not establish that the
+embedding custody fix alone caused the decline. A supported restoration of the
+saved 8b core/CLI is draining on M5; this is containment, not completion of the
+current-code goal. Evidence: m5-5d-summary.json and m5-5d-baseline-summary.json.
+
+Intel core and CLI verified 5d at 03:20:13Z after a 320-second dark window. Runtime
+relaunched engine PID36340 (five lanes, context163840); its live gate ends03:35:13.
+Windows publication is complete. PrepareOnly verified exact5d and staged service-b;
+ResumePrepared activation is in progress. No Windows recovery claim precedes its
+live resident evidence.
