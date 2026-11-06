@@ -136,7 +136,7 @@ impl LlmDeliberationFaculty {
         // What the adapter enforces at dispatch (`DispatchTerms`): her think budget and admission.
         terms: crate::ai::types::DispatchTerms,
         // The allocation her prompt was fitted under: the receipt carries it with the capture.
-        allocation: Option<crate::ai::provenance::AllocationReceipt>,
+        mut allocation: Option<crate::ai::provenance::AllocationReceipt>,
         receipts: &mut Vec<crate::ai::provenance::GenerationReceipt>,
     ) -> Option<Result<TextGenerationResponse, crate::ai::inference_error::InferenceError>> {
         // Identity belongs to the submitted adapter request. Provider response IDs
@@ -295,6 +295,13 @@ impl LlmDeliberationFaculty {
             crate::ai::provenance::GenerationOutcome::Served { .. }
         ) {
             crate::cognition::resident_service::note_generation(self.persona_id);
+        }
+        if let Ok(response) = &gen_result {
+            if let Some(room) = response.quoted_reply_room {
+                if let Some(output) = allocation.as_mut().and_then(|a| a.output_room.as_mut()) {
+                    output.cap = room.reply;
+                }
+            }
         }
         receipts.push(
             receipt

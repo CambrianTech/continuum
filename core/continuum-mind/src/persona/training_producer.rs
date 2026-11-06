@@ -111,6 +111,7 @@ pub mod test_support {
                 ..Default::default()
             },
             response: TextGenerationResponse {
+                quoted_reply_room: None,
                 text: format!("read the source before answering ({})", receipt.submitted_request_id),
                 finish_reason: crate::ai::FinishReason::ToolUse,
                 model: "fixture-model".into(),

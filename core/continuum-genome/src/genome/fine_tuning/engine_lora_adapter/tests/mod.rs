@@ -558,6 +558,7 @@
             ..Default::default()
         };
         let response = TextGenerationResponse {
+            quoted_reply_room: None,
             text: "reading it".into(),
             finish_reason: crate::ai::FinishReason::ToolUse,
             model: "m".into(),

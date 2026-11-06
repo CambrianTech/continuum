@@ -717,6 +717,7 @@ pub mod test_support {
         tool_calls: Option<Vec<ToolCall>>,
     ) -> TextGenerationResponse {
         TextGenerationResponse {
+            quoted_reply_room: None,
             text: text.to_string(),
             finish_reason: finish,
             model: "scripted".to_string(),

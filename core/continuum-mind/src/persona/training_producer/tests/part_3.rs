@@ -21,6 +21,7 @@ use super::*;
             ..Default::default()
         };
         let response = TextGenerationResponse {
+            quoted_reply_room: None,
             text: "reading the failing test first".into(),
             finish_reason: crate::ai::FinishReason::ToolUse,
             model: "served-model".into(),

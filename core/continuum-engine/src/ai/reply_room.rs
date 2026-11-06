@@ -32,7 +32,7 @@ impl ActReplyRoom {
 }
 
 /// A receipt of this resolution, not a grant reservation or terminal generation receipt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 pub struct QuotedReplyRoom {
     pub prompt: u32,
     pub window: u32,

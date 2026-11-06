@@ -866,6 +866,7 @@ mod tests {
 
     fn canned_adapter_response() -> TextGenerationResponse {
         TextGenerationResponse {
+            quoted_reply_room: None,
             text: "stub adapter completion".to_string(),
             finish_reason: AdapterFinishReason::Stop,
             model: "stub-model".to_string(),

@@ -13,6 +13,7 @@ async fn a_transport_without_a_wire_emits_the_whole_answer_as_one_trailing_chunk
             correlation_id: req.correlation_id,
             served_by: "stub".into(),
             text_response: crate::ai::types::TextGenerationResponse {
+                quoted_reply_room: None,
                 text: "whole answer".into(),
                 finish_reason: crate::ai::types::FinishReason::Stop,
                 model: "stub".into(),
@@ -115,6 +116,7 @@ fn req(text: &str) -> RemoteInferenceRequest {
 
 fn canned_text_response(text: &str) -> TextGenerationResponse {
     TextGenerationResponse {
+        quoted_reply_room: None,
         text: text.to_string(),
         finish_reason: FinishReason::Stop,
         model: "stub".to_string(),

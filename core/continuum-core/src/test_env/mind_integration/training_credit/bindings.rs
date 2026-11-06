@@ -191,6 +191,7 @@ use super::*;
             capture: Uuid::new_v4().to_string(),
             request: TextGenerationRequest::default(),
             response: TextGenerationResponse {
+                quoted_reply_room: None,
                 text: "read it before guessing".into(),
                 finish_reason: crate::ai::FinishReason::Stop,
                 model: "m".into(),

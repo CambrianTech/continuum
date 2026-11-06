@@ -570,6 +570,7 @@ mod tests {
         drop(workspace);
 
         let response = TextGenerationResponse {
+            quoted_reply_room: None,
             text: "The source review is complete.".into(),
             finish_reason: FinishReason::Stop,
             model: "fixture-model".into(),

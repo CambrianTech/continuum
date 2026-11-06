@@ -465,6 +465,7 @@ impl AIProviderAdapter for AnthropicAdapter {
             .unwrap_or_default();
 
         Ok(TextGenerationResponse {
+            quoted_reply_room: None,
             text,
             finish_reason,
             model: response_json.model,

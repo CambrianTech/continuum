@@ -820,6 +820,7 @@ impl OpenAICompatibleAdapter {
         }
 
         Ok(TextGenerationResponse {
+            quoted_reply_room: None,
             text,
             finish_reason,
             model: resp_model.unwrap_or_else(|| model.to_string()),

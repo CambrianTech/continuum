@@ -616,6 +616,7 @@ fn fake_response(
     output: u32,
 ) -> TextGenerationResponse {
     TextGenerationResponse {
+        quoted_reply_room: None,
         text: text.to_string(),
         finish_reason: crate::ai::types::FinishReason::Stop,
         model: "ignored".to_string(),

@@ -512,6 +512,7 @@ mod tests {
         let adapter: Arc<dyn AIProviderAdapter> = Arc::new(
             HeuristicInferenceAdapter::new()
                 .with_responses(vec![TextGenerationResponse {
+                    quoted_reply_room: None,
                     text: "fn add(a:i32,b:i32)->i32 {a+b}".into(),
                     finish_reason: FinishReason::Stop,
                     model: "actual-teacher".into(),

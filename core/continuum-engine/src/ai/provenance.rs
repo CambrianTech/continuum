@@ -248,6 +248,7 @@ mod tests {
 
     fn response(finish: FinishReason, request_id: &str) -> TextGenerationResponse {
         TextGenerationResponse {
+            quoted_reply_room: None,
             text: "partial output before the adapter gave up".to_string(),
             finish_reason: finish,
             model: "qwen3.8-27b".to_string(),

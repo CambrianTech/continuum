@@ -456,6 +456,7 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
             .unwrap_or_else(|| format!("heuristic-{}", Self::determinism_prefix(&request)));
 
         Ok(TextGenerationResponse {
+            quoted_reply_room: None,
             text,
             finish_reason: FinishReason::Stop,
             model,

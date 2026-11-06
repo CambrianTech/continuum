@@ -488,6 +488,10 @@ impl LlmDeliberationFaculty {
                     if let Some(error) = response.generation_error() {
                         return Some(Contribution::deliberation_fault(error));
                     }
+                    if let Some(room) = response.quoted_reply_room {
+                        // Classify the cap actually sent, not the render-time prediction.
+                        sent_allowance = Some(room.reply);
+                    }
                     self.learn_prompt_density(
                         &binding,
                         &view,

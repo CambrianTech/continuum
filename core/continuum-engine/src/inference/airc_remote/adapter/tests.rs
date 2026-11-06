@@ -291,6 +291,7 @@ async fn the_adapter_stamps_its_model_on_a_request_that_names_none() {
             correlation_id: req.correlation_id,
             served_by: "peer".to_string(),
             text_response: crate::ai::types::TextGenerationResponse {
+                quoted_reply_room: None,
                 text: "ok".to_string(),
                 finish_reason: FinishReason::Stop,
                 model: req
@@ -343,6 +344,7 @@ async fn with_target_peer_threads_through_to_transport_envelope() {
                 .clone()
                 .unwrap_or_else(|| "no-peer-pinned".to_string()),
             text_response: crate::ai::types::TextGenerationResponse {
+                quoted_reply_room: None,
                 text: "ok".to_string(),
                 finish_reason: FinishReason::Stop,
                 model: "stub".to_string(),
@@ -382,6 +384,7 @@ async fn without_target_peer_sends_envelope_with_none() {
             correlation_id: req.correlation_id,
             served_by: "any".to_string(),
             text_response: crate::ai::types::TextGenerationResponse {
+                quoted_reply_room: None,
                 text: "ok".to_string(),
                 finish_reason: FinishReason::Stop,
                 model: "stub".to_string(),
@@ -465,6 +468,7 @@ async fn the_served_window_on_an_answer_reaches_the_sink() {
             correlation_id: req.correlation_id,
             served_by: "peer".to_string(),
             text_response: crate::ai::types::TextGenerationResponse {
+                quoted_reply_room: None,
                 text: "ok".to_string(),
                 finish_reason: FinishReason::Stop,
                 model: "qwen3.8-27b".to_string(),

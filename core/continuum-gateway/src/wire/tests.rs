@@ -16,6 +16,7 @@ impl Frame {
 /// An answer that says a word and calls one tool.
 fn tool_answer() -> TextGenerationResponse {
     TextGenerationResponse {
+        quoted_reply_room: None,
         text: "Reading it.".into(),
         finish_reason: FinishReason::ToolUse,
         model: "qwen".into(),

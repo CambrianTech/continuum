@@ -76,6 +76,7 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
         let mut responses = Vec::new();
         for step in 0..3 {
             responses.push(TextGenerationResponse {
+                quoted_reply_room: None,
                 text: if step == 2 {
                     "PASS".into()
                 } else {
