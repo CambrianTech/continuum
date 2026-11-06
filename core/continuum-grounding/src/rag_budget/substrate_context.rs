@@ -177,6 +177,10 @@ pub struct RagItem {
     pub pointer: Option<String>,
 }
 
+/// The metadata field a TALLY unit is marked by ([`RagItem::as_tally`]); read only through
+/// [`RagItem::tally`].
+const TALLY: &str = "tally";
+
 impl RagItem {
     /// An item at its whole level, priced by the one estimator, with no coarser levels yet.
     pub fn whole(key: impl Into<String>, content: impl Into<String>, metadata: serde_json::Value) -> Self {
@@ -195,6 +199,26 @@ impl RagItem {
     pub fn with_pointer(mut self, pointer: impl Into<String>) -> Self {
         self.pointer = Some(pointer.into());
         self
+    }
+
+    /// This unit as a TALLY: it states counts or times that move as its subject does ("192
+    /// claimable", "263 merged"), not the subject itself. Her view holds a block's tally units
+    /// apart from its stable body and after it, so a count that moves never rewrites the body in
+    /// front of it (the M5, 2026-11-06: the kanban's count in its first line put every epoch
+    /// start's shared prefix at the system head). Marked in its provenance metadata, the same
+    /// record a producer states its unit's kind in.
+    pub fn as_tally(mut self) -> Self {
+        if let Some(fields) = self.metadata.as_object_mut() {
+            fields.insert(TALLY.to_owned(), serde_json::Value::Bool(true));
+        } else {
+            self.metadata = serde_json::json!({ TALLY: true });
+        }
+        self
+    }
+
+    /// Whether this unit is a tally ([`RagItem::as_tally`]).
+    pub fn tally(&self) -> bool {
+        self.metadata.get(TALLY).and_then(serde_json::Value::as_bool).unwrap_or(false) // unwrap_or: a unit never marked is not a tally
     }
 }
 

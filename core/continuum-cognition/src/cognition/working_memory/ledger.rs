@@ -184,7 +184,7 @@ impl WorkingMemory {
             .map(|(name, count)| format!("{name} ×{count}"))
             .collect::<Vec<_>>()
             .join(", ");
-        self.pin_fact("recent-action-distribution", &format!(
+        self.pin_tally("recent-action-distribution", &format!(
             "[investigation] Among my {retained} most recent retained calls: {distribution}. Older calls may have aged out."
         ));
     }

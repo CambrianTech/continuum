@@ -113,3 +113,16 @@ fn a_pinned_fact_survives_the_window_and_is_replaced_by_key() {
     assert!(wm.pinned_facts().is_empty(), "and leaves after it");
     assert!(!wm.notices().iter().any(|text| text.contains("[released]")));
 }
+
+// what this catches: a count that moves every act sitting ahead of notices that hold. Her
+// [investigation] distribution changed on every act and stood before her workspace notice, so an
+// epoch start's reuse ended there (Aris on the M5, 2026-11-06 19:05Z). A tally lists last, after
+// every pin and fact, wherever it was pinned.
+#[test]
+fn a_tally_lists_after_every_notice_that_holds() {
+    let wm = WorkingMemory::new(3);
+    wm.pin_tally("recent-action-distribution", "[investigation] code/read ×3");
+    wm.pin_fact("hands", "[hands] rooted at /c");
+    wm.record_fact("a fact");
+    assert_eq!(wm.notices(), vec!["[hands] rooted at /c", "a fact", "[investigation] code/read ×3"]);
+}

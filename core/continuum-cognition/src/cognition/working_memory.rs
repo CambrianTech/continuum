@@ -176,6 +176,8 @@ struct TurnPinnedFact {
     text: String,
     turns_left: u8,
     detail: Option<String>,
+    /// A tally (a count that moves every act): listed after every other notice (`notice_items`).
+    tally: bool,
 }
 
 /// A bounded, rolling buffer of the persona's recent reasoning. Cheap to clone the `Arc`;

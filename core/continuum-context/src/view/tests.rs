@@ -830,3 +830,54 @@ fn a_state_the_source_no_longer_offers_is_ended_once_and_returns_at_the_newest_e
     assert!(!rendered(&view).contains("[#1 ended]"), "an event source keeps what happened");
     Ok(())
 }
+
+// what this catches: an epoch start that shares only the system head with the prompt before it
+// (the M5, 2026-11-06: 13 turnovers, every one resumed at 11,198 / 9,078 tokens) because its
+// order moved (two blocks traded places) or a count in a block's first line changed. A start
+// lays down the previous epoch's blocks first, in that epoch's order, for as long as each is
+// unchanged; a changed block ends the reuse; a source's items never pass one another.
+#[test]
+fn a_start_leads_with_every_unchanged_block_the_epoch_before_it_led_with() -> Result<(), GrantMismatch> {
+    let mut work = Fake::new("my-work", 6);
+    let mut kanban = Fake::new("kanban", 6);
+    let mut log = Fake::new("log", 5);
+    work.push("card", "card 1b23 in progress");
+    kanban.push("body", &"card line\n".repeat(50));
+    log.push("#1", "result 1");
+    log.push("#2", "result 2");
+    let (mut view, _) = View::start(Vec::new(), &[&work, &kanban, &log], all_full)?;
+    let before = rendered(&view);
+    // The caller now offers the sources in another order (a measured re-rank, a new block):
+    // every block is unchanged, so the start is the epoch it replaces, byte for byte.
+    view.turn_over(Vec::new(), &[&kanban, &log, &work], all_full)?;
+    assert_eq!(rendered(&view), before, "an unchanged view starts as the prompt before it");
+    // A changed block ends the reuse where it stood; everything before it is kept in place.
+    log.push("#2", "result 2, rewritten");
+    log.push("#3", "result 3");
+    view.turn_over(Vec::new(), &[&log, &kanban, &work], all_full)?;
+    let after = rendered(&view);
+    let kept = ["card 1b23 in progress", &"card line\n".repeat(50), "result 1", "result 2, rewritten"].join("\n");
+    assert!(after.starts_with(&kept), "the unchanged lead is reused in its old order, the changed block where it stood:\n{after}");
+    assert!(after.find("result 2, rewritten") < after.find("result 3"), "a source's items keep their order:\n{after}");
+    Ok(())
+}
+
+// what this catches: the start's lay-down rule itself, whatever the measured order. The previous
+// epoch's unchanged blocks lead in its order even when the start ranks their sources the other
+// way; the first changed block ends the reuse; and an item never passes an earlier item of its
+// own source to be reused (her conversation and her acts stay in their order).
+#[test]
+fn lead_with_what_held_reuses_the_previous_order_until_the_first_change() {
+    let block = |source: usize, id: &str, text: &str| Planned { source, id: SourceId(id.into()), element: None, level: Level::Full, text: text.to_owned() };
+    let ids = |laid: &[Planned<String>]| laid.iter().map(|b| b.id.0.clone()).collect::<Vec<_>>();
+    let mut previous = Epoch::new(1, Vec::new());
+    for (id, text) in [("wall/b", "W"), ("kanban/b", "K"), ("log/1", "one")] {
+        previous.observe(SourceId(id.into()), None, Level::Full, text.to_owned());
+    }
+    let ranked_otherwise = vec![block(0, "log/1", "one"), block(1, "kanban/b", "K"), block(2, "wall/b", "W")];
+    assert_eq!(ids(&lead_with_what_held(ranked_otherwise, Some(&previous))), ["wall/b", "kanban/b", "log/1"], "the old order leads");
+    let changed = vec![block(0, "log/1", "one"), block(1, "kanban/b", "K2"), block(2, "wall/b", "W")];
+    assert_eq!(ids(&lead_with_what_held(changed, Some(&previous))), ["wall/b", "kanban/b", "log/1"], "reuse ends at the change, the changed block laid where it stood");
+    let earlier_first = vec![block(0, "log/0", "zero"), block(0, "log/1", "one"), block(1, "wall/b", "W"), block(2, "kanban/b", "K")];
+    assert_eq!(ids(&lead_with_what_held(earlier_first, Some(&previous))), ["wall/b", "kanban/b", "log/0", "log/1"], "log/1 never passes log/0");
+}
