@@ -765,6 +765,21 @@ growth and turnover cost. The next epoch is prefilled on a shadow sequence in id
 measured growth predicts the overflow. A learned policy may later replace the value function behind
 the same boundary.
 
+**A continuous compression algorithm (Joel).** The context codec (MIND-CONTEXT) is a streaming
+compressor across minds:
+
+| Compressor | Our system |
+|---|---|
+| Keyframe | Epoch start or turnover: rare, and mostly references to the last keyframe |
+| P-frames | Appended deltas |
+| Dictionary and back-references | The ledger and cache hits; a prefix copy between slots is a long back-reference |
+| Adaptive model | Per-source change-rate and sharing measurements |
+| Rate control | The one allocation choosing each item's level |
+| Bitrate | Prefill tokens per act |
+| Compression ratio | Token hit rate |
+
+Target: per act, the bitrate is only the genuinely new information.
+
 ### 5f. Extend the pipeline to the grid: place work near warm state
 
 Joel requested this direction be recorded on 2026-11-04. This is the extension of stages
