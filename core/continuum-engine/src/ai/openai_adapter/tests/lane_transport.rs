@@ -63,7 +63,7 @@ async fn replay_reply_resize(estimate: usize, prompt: u32, window: u32, predicte
                     persona: uuid::Uuid::nil(), endpoint: None,
                     admission: RequestAdmission { window, lease: None, priced: PromptAdmission::EngineCounted },
                 }),
-            }, &mut None,
+            }, &mut None, || {},
         ).await;
         if reply == predicted {
             assert!(matches!(result, Err(crate::ai::inference_error::InferenceError::ContextExceeded { requested, available } ) if requested == prompt && available == window));
@@ -349,6 +349,7 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
                 admission: None,
             },
             &mut None,
+            || {},
         ),
     )
     .await

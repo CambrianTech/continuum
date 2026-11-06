@@ -63,6 +63,7 @@ impl KvSlotPool {
             ledger: std::sync::OnceLock::new(),
             incarnation: std::sync::OnceLock::new(),
             ledger_generation: AtomicU64::new(0),
+            sequences: Mutex::new(LiveSequences::default()),
         }
     }
 
@@ -307,20 +308,38 @@ impl KvSlotPool {
     }
 
     /// Caller holds the physical-slot permit and page pin before changing attribution.
+    /// A page is restored only when no newer live sequence of hers is in the slot
+    /// ([`SequenceBasis`]): a slot that lost her attribution but still holds her newer
+    /// sequence is resumed in place (the M5, ed142f14c: 7 restores of Benchy's older page
+    /// over her live sequence, 4,420 prefill-seconds).
     pub(crate) fn plan_paging(&self, slot: u32, key: PageKey) -> SlotPaging {
         let prev = self.holders.lock().insert(slot, key);
         if prev != Some(key) {
             self.persist_ledger(self.current_snapshot());
         }
-        let save_first = prev.filter(|p| *p != key);
-        let slot_holds_ours = prev == Some(key);
-        let restore = !slot_holds_ours && self.saved.lock().contains(&key);
-        SlotPaging {
-            slot,
-            save_first,
-            restore,
-            already_resident: slot_holds_ours,
-        }
+        let page_saved = self.saved.lock().contains(&key);
+        let basis = self.sequences.lock().judge(slot, key, prev, page_saved);
+        SlotPaging::judged(slot, prev.filter(|p| *p != key), basis)
+    }
+
+    /// `key`'s generation completed in `slot`: the slot holds her newest sequence.
+    pub(crate) fn note_generated(&self, slot: u32, key: PageKey) {
+        self.sequences.lock().completed(slot, key);
+    }
+
+    /// A generation of `key` was sent to `slot` (the engine may now change it).
+    pub(crate) fn note_dispatched(&self, slot: u32, key: PageKey) {
+        self.sequences.lock().dispatched(slot, key);
+    }
+
+    /// The engine is replacing `slot`'s content (a restore, an erase, transient traffic).
+    pub(crate) fn note_overwritten(&self, slot: u32) {
+        self.sequences.lock().overwritten(slot);
+    }
+
+    /// `key`'s page was restored into `slot`, verified by the engine's receipt.
+    pub(crate) fn note_restored(&self, slot: u32, key: PageKey) {
+        self.sequences.lock().restored(slot, key);
     }
 
     /// Pin this page's slot for the duration of a turn. While the returned
@@ -339,6 +358,7 @@ impl KvSlotPool {
     /// transient KV for its own warm state or save it under its own filename.
     pub(crate) fn take_resident(&self, slot: u32) -> (Option<PageKey>, Option<SlotPin>) {
         let previous = self.holders.lock().remove(&slot);
+        self.sequences.lock().detached(slot);
         if previous.is_some() {
             self.persist_ledger(self.current_snapshot());
         }
@@ -381,6 +401,7 @@ impl KvSlotPool {
     /// Record that `key`'s page was successfully written to disk — it becomes
     /// restorable. Called by the adapter AFTER the save HTTP call succeeds.
     pub fn note_saved(&self, key: PageKey) {
+        self.sequences.lock().saved(key);
         let snapshot = {
             let mut saved = self.saved.lock();
             saved.insert(key);

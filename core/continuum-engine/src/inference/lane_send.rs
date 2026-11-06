@@ -127,6 +127,8 @@ pub(crate) async fn send_with_lane_retry(
     // Where the request's reservation of her grant is kept until its terminal receipt (the caller
     // drops it when the stream ends).
     reservation: &mut Option<crate::capacity::window_grant::GrantReservation>,
+    // Mark the owned admission only at the POST boundary, after quote and grant checks.
+    mut dispatching: impl FnMut() + Send,
 ) -> Result<SentResponse, InferenceError> {
     // The header wait in force for THIS turn: the floor, or the request's measured bound
     // above it. Computed once — the relaunch retries below re-arm the same wait.
@@ -274,6 +276,7 @@ pub(crate) async fn send_with_lane_retry(
         // engine that stops moving, stays quiet past one checkpoint, or stops answering
         // ends the wait. A remote endpoint has no `/slots` to read: elapsed, as before.
         let send_started = Instant::now();
+        dispatching();
         let sent = match engine_root(cfg) {
             Some(root) => crate::inference::llama_server::wait_while_engine_progresses(
                 attempt_builder.send(),

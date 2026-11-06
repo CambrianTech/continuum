@@ -25,19 +25,9 @@ impl Drop for Interest {
 }
 
 /// If the waiter vanishes before accepting the result, a verified restore still
-/// belongs to its activity. No generation has run, so preserve that physical fact.
-/// Once taken, ordinary TurnAdmission cancellation rules apply again.
+/// belongs to its activity: nothing was sent, so the admission's own drop keeps it
+/// (`Dispatch::Unsent`).
 struct Handoff(Option<TurnAdmission>);
-
-impl Drop for Handoff {
-    fn drop(&mut self) {
-        if let Some(admission) = &mut self.0 {
-            if admission.page_confirmed {
-                admission.uncommitted = None;
-            }
-        }
-    }
-}
 
 impl TurnAdmission {
     pub(super) async fn retain_paging<F, Fut>(

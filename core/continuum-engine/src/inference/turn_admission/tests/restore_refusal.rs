@@ -81,7 +81,7 @@ impl Rig {
             return Attempt::Deferred;
         };
         match turn.page_in() {
-            PageIn::Restored | PageIn::Resident => {
+            PageIn::Restored | PageIn::RestoredBehindLive | PageIn::Resident => {
                 let slot = turn.slot().expect("test: a mind's turn holds a slot");
                 self.slots.lock().expect("test: fixture mutex").insert(slot, format!("{mind}:{tokens}"));
                 turn.generation_completed();

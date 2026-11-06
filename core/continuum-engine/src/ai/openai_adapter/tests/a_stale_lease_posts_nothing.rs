@@ -55,6 +55,7 @@ async fn a_stale_lease_posts_nothing() {
             &client, &endpoint_root, 4, std::time::Duration::ZERO,
         ).await.expect("test endpoint admission");
         let mut reservation = None;
+        let mut dispatched = 0;
         let sent = crate::inference::lane_send::send_with_lane_retry(
             &adapter.config,
             adapter.client.post(format!("http://{address}/v1/chat/completions")).header("Content-Type", "application/json"),
@@ -68,10 +69,13 @@ async fn a_stale_lease_posts_nothing() {
                 admission: Some(crate::inference::lane_send::DispatchAdmission { persona: uuid::Uuid::new_v4(), admission, endpoint: Some(&owned) }),
             },
             &mut reservation,
+            || dispatched += 1,
         )
         .await;
         assert!(matches!(sent, Err(InferenceError::GrantChanged { rendered: 148_838, .. })), "{why}: refused typed");
         assert!(reservation.is_none(), "{why}: nothing reserved");
+        // Her turn admission is never told it sent, so it keeps her residency (Benchy, M5 ed142f14c).
+        assert_eq!(dispatched, 0, "{why}: a request refused before its POST is never reported dispatched");
     }
     assert_eq!(posts.load(Ordering::SeqCst), 0, "zero POSTs under a stale lease");
 }
@@ -161,6 +165,7 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
                 admission: Some(crate::inference::lane_send::DispatchAdmission { persona, admission, endpoint: Some(&admitted) }),
             },
             &mut reservation,
+            || admitted.dispatching(),
         ).await.expect("owned exact dispatch");
         assert!(sent.response.status().is_success());
         let crate::inference::lane_send::SentOutput::Counted(room) = sent.output else { panic!("counted receipt required") };
@@ -232,6 +237,7 @@ async fn owned_quote_refusal(quarantine: bool, prompt: u32, admitted_window: u32
     assert_eq!(owned.dispatch_geometry("fixture").expect("owned model").per_slot_window, 100);
     assert!(matches!(owned.dispatch_geometry("other-model"), Err(InferenceError::AdmissionUncounted { .. })));
     let mut reservation = None;
+    let mut dispatched = 0;
     let result = crate::inference::lane_send::send_with_lane_retry(
         &adapter.config,
         adapter.client.post(format!("{root}/v1/chat/completions")).header("Content-Type", "application/json"),
@@ -245,7 +251,7 @@ async fn owned_quote_refusal(quarantine: bool, prompt: u32, admitted_window: u32
                 persona, endpoint: Some(&owned),
                 admission: crate::ai::types::RequestAdmission { window: admitted_window, lease: None, priced: crate::ai::types::PromptAdmission::EngineCounted },
             }),
-        }, &mut reservation,
+        }, &mut reservation, || dispatched += 1,
     ).await;
     if quarantine {
         assert!(matches!(result, Err(InferenceError::Unavailable(_))));
@@ -254,5 +260,7 @@ async fn owned_quote_refusal(quarantine: bool, prompt: u32, admitted_window: u32
     }
     assert_eq!(posts.load(Ordering::SeqCst), 0);
     assert!(reservation.is_none());
+    assert_eq!(dispatched, 0, "refused quote never marks dispatch");
     server.abort();
+
 }

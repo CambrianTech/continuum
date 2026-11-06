@@ -155,9 +155,13 @@ async fn abandoned_context_switch_finishes_save_without_starting_restore() {
         .expect("test: abandoned switch released after save")
         .expect("test: physical slot");
     assert_eq!(calls.lock().expect("test: calls").as_slice(), &["save"]);
-    assert!(
-        pool.plan_paging(0, old).restore,
-        "completed save remains eligible for its owner"
+    assert!(pool.confirms(&old), "completed save remains eligible for its owner");
+    // The save left her KV in the slot and no restore started: she resumes it in place,
+    // never restoring her page over it (Benchy, M5 ed142f14c).
+    assert_eq!(
+        pool.plan_paging(0, old).basis,
+        crate::inference::slots::SequenceBasis::LiveKept,
+        "her sequence is still in the slot"
     );
     assert!(!directory.endpoint(&root).paging_recovery_required());
     drop(permit);

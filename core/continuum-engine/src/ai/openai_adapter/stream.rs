@@ -538,6 +538,12 @@ impl OpenAICompatibleAdapter {
                 admission: dispatch_admission,
             },
             &mut grant_reservation,
+            // Only a POST touches her slot: an admission refused before it keeps her residency.
+            || {
+                if let Some(admission) = _admission.as_ref() {
+                    admission.dispatching();
+                }
+            },
         )
         .await?;
 
@@ -819,12 +825,19 @@ impl OpenAICompatibleAdapter {
                 use crate::inference::turn_admission::PageIn;
                 if let Some(t) = &timing {
                     match admission.page_in() {
-                        PageIn::Restored => continuum_base::probe!(
+                        // Judged against what she should have resumed, never `cached > 0` alone:
+                        // an older page than her newest sequence reuses tokens and is still a
+                        // regression (Benchy, M5 ed142f14c: 7 "warm" restores, 4,420 prefill-seconds).
+                        PageIn::Restored | PageIn::RestoredBehindLive => continuum_base::probe!(
                             class = "inference.restored_turn",
                             cached = t.cached_tokens,
                             prompt = t.prefill_tokens,
-                            outcome = if t.cached_tokens > 0 { "warm" } else { "cold" },
-                            "a turn restored from a KV page completed — did the engine reuse it"
+                            outcome = match (admission.page_in(), t.cached_tokens > 0) {
+                                (PageIn::RestoredBehindLive, _) => "behind_live",
+                                (_, true) => "warm",
+                                (_, false) => "cold",
+                            },
+                            "a turn restored from a KV page completed — did the engine reuse it, and was the page her newest"
                         ),
                         PageIn::Resident if t.cached_tokens == 0 => continuum_base::probe!(
                             class = "inference.resident_prefix_lost",
