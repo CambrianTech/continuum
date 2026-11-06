@@ -29,13 +29,34 @@ pub(crate) enum Scope {
     ReadyBeforeGo,
 }
 
+/// Turnovers (a new epoch's collapsed re-prefill) prepared ahead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Shadow {
+    Off,
+    /// Her next epoch is rendered and prefilled on a shadow sequence in otherwise-idle device time
+    /// (the lowest sort key, preempted at every frame boundary by any other work), from the
+    /// release of the act `acts` before the turnover (the predictor's lead: the recorded turnovers
+    /// were predictable, 8 grant overflows and 5 measured growth), then switched at the fence;
+    /// the turnover act pays only what the shadow did not cover.
+    Ahead { acts: usize },
+    /// Append-only collapse: a turnover re-prefills only the new collapsed slice. Its size is not
+    /// in the recording (the turnover probe carries start chars and item counts, not slice
+    /// tokens), so this scores the bound where the slice costs nothing.
+    CollapseSliceBound,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Pipeline {
     pub scope: Scope,
+    pub shadow: Shadow,
 }
 
 impl Pipeline {
-    pub(crate) const TODAY: Self = Self { scope: Scope::AtGo };
+    pub(crate) const TODAY: Self = Self { scope: Scope::AtGo, shadow: Shadow::Off };
+
+    pub(crate) const fn scope(scope: Scope) -> Self {
+        Self { scope, shadow: Shadow::Off }
+    }
 
     /// The act's fresh tokens under this scope.
     fn fresh(&self, hour: &Hour, i: usize, first: bool) -> u32 {
@@ -43,6 +64,7 @@ impl Pipeline {
         match (self.scope, t.class, first) {
             (Scope::StablePrompts, TaskClass::Resident, _) => t.fresh - t.unstable.min(t.fresh),
             (Scope::ReadyBeforeGo, TaskClass::Resident, false) => t.stream.min(t.fresh),
+            _ if self.shadow == Shadow::CollapseSliceBound && t.class == TaskClass::Resident => t.fresh - t.turnover.min(t.fresh),
             _ => t.fresh,
         }
     }
@@ -79,6 +101,8 @@ pub(crate) struct TaskOutcome {
     /// Fresh tokens prefilled before the go (streamed during the gap).
     pub before_go: u32,
     pub fresh: u32,
+    /// Turnover tokens prefilled on a shadow sequence before the act.
+    pub shadowed: u32,
 }
 
 impl TaskOutcome {
@@ -87,7 +111,7 @@ impl TaskOutcome {
     }
 
     fn unfinished() -> Self {
-        Self { arrival_s: f64::NAN, prefill_s: f64::NAN, first_service_wait_s: f64::NAN, decode_s: f64::NAN, longest_gap_s: f64::NAN, release_s: f64::NAN, before_go: 0, fresh: 0 }
+        Self { arrival_s: f64::NAN, prefill_s: f64::NAN, first_service_wait_s: f64::NAN, decode_s: f64::NAN, longest_gap_s: f64::NAN, release_s: f64::NAN, before_go: 0, fresh: 0, shadowed: 0 }
     }
 }
 
@@ -106,6 +130,8 @@ pub(crate) struct Run {
     pub host_blocked_on_device_s: f64,
     pub gap_prefill_s: f64,
     pub act_prefill_s: f64,
+    /// Device seconds spent prefilling shadow epochs in otherwise-idle time.
+    pub shadow_prefill_s: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -152,7 +178,18 @@ pub(crate) fn run(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchScheduler
     let mut streamed = vec![0u32; slots];
     let mut outcomes: Vec<Option<TaskOutcome>> = vec![None; hour.tasks.len()];
     let mut current: Vec<Option<(usize, TaskOutcome)>> = vec![None; slots];
-    let mut run = Run { outcomes: Vec::new(), busy_s: 0.0, span_s: 0.0, idle_while_ready_s: 0.0, device_blocked_on_host_s: 0.0, host_blocked_on_device_s: 0.0, gap_prefill_s: 0.0, act_prefill_s: 0.0 };
+    let mut run = Run { outcomes: Vec::new(), busy_s: 0.0, span_s: 0.0, idle_while_ready_s: 0.0, device_blocked_on_host_s: 0.0, host_blocked_on_device_s: 0.0, gap_prefill_s: 0.0, act_prefill_s: 0.0, shadow_prefill_s: 0.0 };
+    // Per slot: the turnover task a shadow epoch is being built for, its tokens and those done.
+    let mut shadow: Vec<Option<(usize, u32, u32)>> = vec![None; slots];
+    let arm = |queue: &[usize], from: usize, acts: usize| -> Option<(usize, u32, u32)> {
+        (from..queue.len()).take(acts).map(|k| queue[k]).find(|i| hour.tasks[*i].turnover > 0 && hour.tasks[*i].class == TaskClass::Resident)
+            .map(|i| (i, hour.tasks[i].turnover, 0))
+    };
+    if let Shadow::Ahead { acts } = pipeline.shadow {
+        for s in 0..slots {
+            shadow[s] = arm(&queues[s], 0, acts);
+        }
+    }
     let mut now = 0.0f64;
     let mut done = 0usize;
     while done < hour.tasks.len() {
@@ -167,7 +204,14 @@ pub(crate) fn run(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchScheduler
                 if next[s] < queues[s].len() && arrival[s] <= now {
                     let i = queues[s][next[s]];
                     let fresh = pipeline.fresh(hour, i, next[s] == 0);
-                    let o = TaskOutcome { arrival_s: arrival[s], prefill_s: 0.0, first_service_wait_s: 0.0, decode_s: 0.0, longest_gap_s: 0.0, release_s: f64::NAN, before_go: streamed[s].min(fresh), fresh };
+                    let shadowed = match shadow[s] {
+                        Some((target, _, d)) if target == i => {
+                            shadow[s] = None;
+                            d.min(fresh)
+                        }
+                        _ => 0,
+                    };
+                    let o = TaskOutcome { arrival_s: arrival[s], prefill_s: 0.0, first_service_wait_s: 0.0, decode_s: 0.0, longest_gap_s: 0.0, release_s: f64::NAN, before_go: streamed[s].min(fresh - shadowed), fresh, shadowed };
                     current[s] = Some((i, o));
                     phase[s] = Phase::Restoring { until_s: arrival[s] + pipeline.restore_s(hour.tasks[i].restore_s, gap_s[s]) };
                 }
@@ -176,7 +220,7 @@ pub(crate) fn run(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchScheduler
                 if until_s <= now {
                     let (i, o) = current[s].expect("model: a restoring slot has a task");
                     let t = &hour.tasks[i];
-                    let left = o.fresh.saturating_sub(o.before_go).max(1);
+                    let left = o.fresh.saturating_sub(o.before_go + o.shadowed).max(1);
                     phase[s] = Phase::Prefill { left, depth: u64::from(t.cached) + u64::from(o.before_go), ready_s: until_s, served: false };
                     streamed[s] = 0;
                 }
@@ -216,6 +260,18 @@ pub(crate) fn run(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchScheduler
         }
         let step = gap_part + act_part + costs.decode_s(decoders, decode_depth);
         if step <= 0.0 {
+            // Otherwise-idle device time builds a shadow epoch, one frame at a time.
+            if let Some(s) = (0..slots).find(|s| shadow[*s].is_some_and(|(_, total, d)| d < total)) {
+                if let Some((target, total, d)) = shadow[s] {
+                    let n = (total - d).min(hour.n_batch);
+                    let cost = costs.prompt_s(n, u64::from(d));
+                    shadow[s] = Some((target, total, d + n));
+                    run.busy_s += cost;
+                    run.shadow_prefill_s += cost;
+                    now += cost;
+                    continue;
+                }
+            }
             // Idle: wake at the next arrival, restore end, gap end, or the next streamed token.
             let wake = (0..slots).map(|s| match phase[s] {
                 Phase::Waiting if next[s] < queues[s].len() => arrival[s],
@@ -297,6 +353,9 @@ pub(crate) fn run(hour: &Hour, costs: &Costs, scheduler: &mut dyn BatchScheduler
                     current[s] = None;
                     next[s] += 1;
                     phase[s] = Phase::Waiting;
+                    if let (Shadow::Ahead { acts }, None) = (pipeline.shadow, shadow[s]) {
+                        shadow[s] = arm(&queues[s], next[s], acts);
+                    }
                     if next[s] < queues[s].len() {
                         arrival[s] = next_arrival(hour, &queues[s], next[s], now);
                         gap_s[s] = arrival[s] - now;
