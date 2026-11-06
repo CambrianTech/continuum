@@ -3,6 +3,12 @@
 **Status:** draft for agreement by Fable, Codex and Cormac (2026-11-04). Nothing new merges until
 the three sign the "Agreed" line at the bottom; every open branch is then fit to this or closed.
 
+**Revision 2026-11-06:** Joel directs refinement of this existing design before further runtime
+implementation: centralized algorithms, explicit interfaces, and fewer decisions at the leaves.
+Sections 4, 5e and Proof describe the target, not a claim that it is implemented. Historical
+receipts below remain evidence, not current operating instructions. Current code is the engineering
+baseline; deployment/version checks are not productive acceptance. No activity-based rollback.
+
 **Why this exists.** Joel, 2026-11-04: "There is no coherent design anymore." On that day the M5's
 four residents went from writing to dark and back four times, every part green. The docs disagree
 with each other and the code follows a third version neither describes (inventory below). This
@@ -95,9 +101,12 @@ Each stage: the ONE owner, its invariant, and what wins where docs or code disag
 - **Three resources, decided together (Codex, Cormac's bench):** (a) sequence RESIDENCY in bytes
   (her KV), (b) PREFILL work (serial on this hardware: 68 tok/s at 1 or 2 streams), (c) DECODE work
   (scales with streams). A lane count is none of these; the semaphores sized from `--parallel` go.
-- **Fairness (goal 9):** consumes COMPLETION identities (the turn ledger's ended-turn count), never a
-  polled in_flight; a waiter owed service is admitted at the next completed turn of a served holder;
-  a running turn is never cut. Bound stated and tested.
+- **Fairness (goal 9):** consumes identified completion and verified release events, never a polled
+  in_flight count. An eligible waiter owed service gets the next *feasible* opportunity; release of
+  one turn does not imply that sufficient compatible residency was released. State the service
+  bound in opportunities and measured non-preemptible work. Eventual service assumes finite
+  preceding work, feasible demand, and a functioning backend; an infeasible request gets an explicit
+  placement/shortfall outcome, not a promise of a universal wall-clock deadline.
 - **A grant is permission, not bytes (Codex):** rotating a seat asks the page custodian to surrender
   the holder's KV; her residency stays charged until the page-out (or erase, or incarnation fence)
   is verified; only then is the capacity published.
@@ -106,6 +115,26 @@ Each stage: the ONE owner, its invariant, and what wins where docs or code disag
 - **Rules:** INFERENCE-LANES-REALISTIC, INFERENCE-SCHEDULING-AND-SCARCITY's slot pools,
   KV-CACHE-ECONOMY's `-c = window x lanes`, MINDS-SEATS "a seat is a lane", CONTEXT-IS-A-CAPABILITY-AXIS's
   lane count: SUPERSEDED (marked so, removed from CLAUDE.md's "read first").
+
+### 4a. One exact dispatch decision
+
+Joel's direction: use evidence to correct the current architecture with formal, robust algorithms and centralized logic. Deployment/version activity is not progress toward useful work. Do not stack independent retry patches. This section supersedes any interpretation of the provisional reply-room code as an accepted design or performance fix.
+
+Evidence: Kimi's identical prompt was rejected at predicted cap 5857, then accepted at 5290 after another admission wait. Exact prompt P=27221, physical window W=32512, required reply minimum m=4534. The quote took 67ms; corrective admission waits took 156.5s and 24.6s. This demonstrates disagreement between a predictive render decision and exact dispatch, not a defect in the safety inequality. Cold prefill and pinned-page waits are separate measured costs; this correction makes no claim to solve them.
+
+Owner: continuum-engine's existing dispatch path owns final feasibility and the executable request. The existing window_grant owner retains atomic reservation and lifetime; the existing scheduler retains fairness and queue custody. Do not introduce another scheduler, reservation registry, or retry coordinator. Cognition supplies intent and required reply room, and may estimate prompt size for rendering. Estimates never authorize dispatch or masquerade as the sent cap.
+
+Contract and algorithm:
+1. Submit an immutable prompt plus explicit output intent: Fixed(r), or Act(required minimum, explicitly authorized ceiling). A predicted cap is not automatically an authority ceiling. Audit that distinction before adopting the provisional ActReplyRoom API. Reasoning allowance remains an explicit component of the required reply claim.
+2. After existing endpoint/page admission, bind the attempt to the selected engine incarnation, model/template and current grant lease. Obtain the physical sequence capacity from that same owner-bound context. A missing capacity or mismatched incarnation is a typed refusal, never a guessed window.
+3. Count that finalized prompt on that engine. Let W be the intersection of physical sequence capacity and admitted lease capacity. For Fixed, choose R=r. For Act, maximize R subject to m<=R<=authorized ceiling and P+R<W. Equivalently R=min(ceiling,W-P-1), using checked arithmetic; refuse if R<m. There is no tuning constant or relaxed floor.
+4. The grant owner atomically validates/reserves the exact attempt. Only a successful reservation constructs a private executable dispatch value containing prompt identity, engine identity, lease identity, P, W and R. Invalidation before reservation requires a new attempt and quote; it cannot reuse the predecessor's count. Preserve cancellation and terminal settlement in the existing owner.
+5. Build the wire request and its sent receipt from that executable value. Transport cannot independently recalculate its cap. Cognition classification, allocation accounting and capture consume that same receipt. A resolution receipt alone is not proof that a request was sent or completed.
+6. Re-render only when the required claim is actually infeasible. Prediction error that leaves the required claim feasible resolves inside the admitted attempt, without a capacity-repair round trip through cognition. Transport recovery after a proven pre-acceptance failure re-enters this same algorithm; ambiguous post-acceptance outcomes do not authorize duplicate generation.
+
+Required consolidation: remove the competing estimate-derived final-cap decision for adaptive acts and its resize-only retry path; retain estimation only for prompt preparation. Combine physical/admitted capacity checks into the dispatch decision rather than adding an extra clamp beside existing checks. Unsupported providers must explicitly reject this authority or implement the same contract. Fixed-call intent is a real distinct contract, not a compatibility fallback. The optional response receipt in local f420b8a490 is provisional plumbing; review it against explicit provider capability and actual sent-state semantics before integration.
+
+Proof obligations before deployment: boundary/property tests establish feasibility, maximality within authority, monotonic capacity behavior and arithmetic safety; actual HTTP tests establish one quote and one generation for the measured Kimi case, unchanged prompt, and identical wire/receipt R. State-transition tests exercise engine replacement during quote, grant revocation, cancellation before and after reservation, quote failure, insufficient minimum, fixed requests, and ambiguous send failure. Every invalid transition must prevent unauthorized POST and release or retain custody according to the existing terminal contract. Then verify the live elimination of resize-only retries and measure useful completed work, queue time, prefill and cache reuse separately. Compilation, deployment and model-reached counts alone do not satisfy acceptance.
 
 ### 5. Engine memory (where her KV lives)
 
@@ -149,11 +178,15 @@ shift, `seq_rm` of a span) do not apply to this model. A mind's state is a SNAPS
 - **Write-back at turn boundaries**, while she is in a tool call, never in the GPU's way.
 - **Prefetch:** the next mind's line warms while another decodes; a tool's result prefills as it
   streams in (plan line 13).
-- **Coherence:** a line is tagged model + geometry and is valid wherever the tag matches; the
-  refused restores and `page_on_disk_unconfirmed` turns are coherence bugs.
-- **The metric is hit rate**, every miss classified (3C: compulsory, capacity, conflict). On
-  2026-11-04 nearly every miss was a CONFLICT miss (prefix divergence, geometry change, ledger
-  forgetting), i.e. design defects, not too little memory.
+- **Coherence:** eligibility requires the full compatibility/provenance contract in 5b, plus
+  a matching immutable prefix/checkpoint revision. A compatible artifact can still be deferred
+  for capacity; a successful restore can still be followed by a prompt rebuild. Neither HTTP
+  status nor cache-hit count alone identifies the cause.
+- **The metric includes hit rate and avoided work.** Classify compulsory, capacity and conflict
+  misses with evidence; retain Unknown where the causal receipt is missing. On 2026-11-06 all four
+  M5 pages restored successfully, while Atlas rebuilt its view and Aris later had a cold turn
+  without a restoration event after engine relaunch. Do not generalize the earlier conflict
+  diagnosis to every cold prefill or disable restoration/growth on that basis.
 
 ### 5a.1 The cache, measured on one node (M5, 2026-11-04 23:29-23:40Z)
 
@@ -286,15 +319,16 @@ first-token and inter-token latency within their bound, and every prefill comple
 
 ### 5e. A continuous pipeline, shaped like bgfx (Joel: "just like a graphics pipeline. How I did bgfx")
 
-The engine is a render thread that never waits for a mind to ask; the core is the encoders.
+The engine executes dependency-ready work; the core encodes intent. It can overlap stages only
+when dependencies and resource reservations permit. A pipeline does not create extra prefill
+throughput or justify speculative work while useful work waits.
 - **Encoders record, the device executes.** Every mind's work (her appended tail, a tool result as
   it streams in, a page-in, a write-back, a view rebuild) is recorded as commands the moment it
-  happens, by whoever produces it, without waiting.
+  happens, by whoever produces it, subject to bounded submission admission.
 - **Double-buffered frames.** An engine step is the frame: commands recorded during step N execute
   in N+1. Submission never blocks on execution.
-- **Sort keys.** Work in a frame is ordered by a key: latency class (a warm decode first), then
-  activity temperature (goal 9), then bounded cold-prefill chunks (5d), then prefetch and
-  write-back. The key's fields are measured, never fixed weights.
+- **Scheduling.** Dependency readiness and feasibility precede priority. Use the algorithm below;
+  a lexical warm-decode-first sort alone cannot establish fairness or reclamation progress.
 - **Handles and deferred destruction.** Sequences, pages and snapshots are handles; a release
   takes effect only after the engine's receipt for the frame that used it (the custody of 5 and
   5b.1 is the frame fence).
@@ -318,6 +352,112 @@ built in a shadow sequence and swapped in at a turnover (a fresh sequence, valid
 model); CPU cores rendering, tokenizing and embedding in parallel with the GPU.
 **Gate:** GPU idle fraction while any mind waits on work the GPU could already be doing, measured
 before and after; and per-act wall time split into tool, wait, prefill and decode.
+
+#### Interfaces and ownership inside the existing pipeline
+
+**bgfx reference, inspected 2026-11-06.** Its [internals](https://bkaradzic.github.io/bgfx/internals.html)
+separate encoder recording from render-thread execution. Submit/render frames exchange ownership;
+frame advancement synchronizes, so double buffering does not mean unlimited nonblocking submission.
+View modes explicitly distinguish reorderable work from sequential work. Resource commands are
+deferred behind handles rather than executed by each caller.
+The [source](https://github.com/bkaradzic/bgfx/blob/master/src/bgfx_p.h) makes the boundaries concrete:
+`EncoderImpl`, `Frame`, `m_cmdPre`/`m_cmdPost`, per-frame free-handle collections and transient storage.
+
+**Application here (our design inference):** keep encoder state private; seal immutable command
+batches; distinguish reorderable independent work from per-sequence causal work; and make lifetime
+transitions the execution owner's responsibility. Retain backend-specific completion domains.
+Unlike graphics frames, a mind's operation can span minutes and durable I/O: do not impose a global
+frame barrier that waits for every mind or confuse submission-buffer reuse with GPU/disk completion.
+The transferable abstraction is ownership transfer through a narrow interface, not the literal
+frame cadence or draw-call sort key. Existing long-lived owners provide it; leaves only encode intent.
+
+The names below describe contracts to implement through the existing owners, not new daemons
+or a parallel framework. Encapsulation means a caller cannot reconstruct policy from public
+counters. Composition connects owners; backend implementations supply capabilities and execution,
+not their own queues, fairness rules, cancellation loops or accounting.
+
+| Owner | Input / output | Sole responsibility | Leaves must stop doing |
+|---|---|---|---|
+| Context codec / encoder | Activity state + committed results -> immutable prompt revision and required working set | Rendering, disclosure, stable prefix/checkpoint identity | Ad-hoc truncation, separate token budgets, mutable streaming-prefix guesses |
+| Existing engine dispatcher | Typed work intent -> operation handle, deferred reason or terminal result | Dependency graph, bounded queues, fairness, exact dispatch decision | Readiness polling, local queue retries, final-cap calculation |
+| Existing grant/page authorities behind the dispatcher | Attempt identity + resource claim -> reservation / typed refusal / release receipt | Physical conservation and verified custody transitions | Treating free snapshots, cancel acknowledgement or save acknowledgement as released memory |
+| Existing serving daemon | Lifecycle intent + observed engine identity -> verified engine capabilities/incarnation | Launch, adoption, reconciliation and fencing | Spawning/reconfiguring engines from generation or tool handlers |
+| Backend executor | Executable command + reserved handles -> domain-specific completion | Token counting, prefill/decode/copy/save mechanics and progress | Inventing caller policy or weakening admission |
+| Outcome consumer | Sent/terminal receipt -> captured result, allocation and learning observation | Interpret the authoritative result | Recalculate what was sent from render-time estimates |
+
+Submission returns a durable-in-owner operation identity and a completion subscription. Queue
+admission accounts command metadata and staging bytes as well as device resources. If full, return
+typed backpressure with an owner-driven readiness notification; producers do not busy-poll or
+allocate an unbounded deferred list. Existing daemon wakeups consume receipts and dependency changes.
+Persistence is required for state/custody that must survive restart, not for every transient frame.
+
+#### State machine and scheduling algorithm
+
+One operation moves through `Submitted -> Waiting(dependencies/resources) -> Reserved -> Running
+-> Settling -> Terminal`. `Deferred` and `Refused` identify whether the same operation can be
+awakened by a named event or requires changed caller input. Cancellation before execution retires
+the queued operation and releases its reservations. After execution begins it requests cancellation
+and remains in Settling until matching terminal completion or verified incarnation fencing. Duplicate
+receipts are idempotent by operation and attempt identity; stale receipts cannot settle another attempt.
+
+At a submission, completion, verified release, or relevant lifecycle event, the dispatcher:
+
+1. Applies the identified event once, updates custody, and wakes newly dependency-ready commands.
+   Per-sequence commands retain causal order; independent CPU/I/O work can proceed concurrently.
+2. Forms the feasible set under conserved residency, staging, and backend execution capacity.
+   A blocked command names its dependency or shortfall. Capacity-releasing prerequisite work
+   inherits the urgency of the admitted work it blocks; background write-back cannot be starved
+   while all demand waits for its release.
+3. Selects among feasible commands using a work-conserving fair service policy. Track per-mind
+   virtual service in measured execution time, charge actual completed work, and retain debt across
+   requests; request splitting must not buy priority. Activity temperature selects documented
+   service weights. An explicit aging/service guarantee overrides opportunistic warm preference.
+   Calibration and weights remain an open measured policy parameter, not invented constants here.
+4. At a backend-safe chunk boundary, services due decode and aged prefill/reclamation work. Choose
+   prefill chunk size from the measured service curve and allowed additional decode delay; if the
+   smallest legal chunk exceeds that delay, report the physical limitation. No strict decode-first
+   rule that can starve prefill, and no universal cold-prefill concurrency of one.
+5. Reserves through the existing authorities, emits executable commands, and waits asynchronously
+   on their domain receipts. No device-thread wait on durable I/O. Recomputes feasibility on the
+   next event; it does not infer freed capacity from an elapsed estimate.
+
+The pure scheduling policy is separate from asynchronous actuators but is used by the real dispatcher
+and validator. Before selecting a concrete fair-queue implementation, replay both arrival orders,
+heterogeneous chunk durations, dependencies and saturated demand against the service guarantees.
+Do not implement a sort-key heuristic and label it a proven bound.
+
+#### Exact dispatch is a refinement of an admitted operation
+
+The exact decision specified in section 4a belongs inside `Reserved`, after endpoint/page custody,
+before generation. A feasible output-room correction keeps the same operation and queue entitlement;
+it does not create another cognition retry. The executable value alone builds wire fields and the
+sent receipt. Engine/grant invalidation requires a fresh attempt and quote under the same owner.
+The context encoder only re-renders when its required working set actually cannot fit.
+
+#### What overlap is permitted
+
+CPU rendering may overlap another mind's decode; verified page write-back may overlap compute in
+its own completion domain; committed append-only tool output may prefill behind a stable prefix.
+Each overlap reserves its staging and destination first. Mutable tool arguments, incompatible
+checkpoints and view rebuilds cannot be appended to a live recurrent sequence. A rebuilt view uses
+an admitted shadow sequence and an atomic ownership switch at its dependency fence. Measure whether
+restoring/promoting context saves useful work enough to pay its rebuild; do not assume either that
+all restoration is beneficial or that all cold prefill is a restoration defect.
+
+#### Work boundaries for incoming collaborators
+
+| Workstream | Interface to agree first | Deliverable / deletion requirement |
+|---|---|---|
+| Context encoder | Immutable revision, required claim, committed append boundary | One renderer/allocation path; remove leaf sizing and duplicate final-cap decisions |
+| Dispatch/admission | Operation/attempt identity, output intent, executable command, sent receipt | One exact admission algorithm; remove resize-only requeue and competing guard policy |
+| Page/lifecycle | Reservation and typed domain completion/fencing | Conservation/restart tests; remove inferred release and independent cancellation custody |
+| Backend scheduling | Capability and measured chunk/service observations | Shared policy validator plus executor integration; remove independent priority/retry rules |
+| Independent validation | Same production policies, recorded inputs and adversarial event schedules | Reproductions, interleaving/property tests and live end-to-end measurements |
+
+These are proposed boundaries, not claims on other agents' active cards. Recover current work and
+agree the shared types before parallel edits. Integrate one complete vertical contract at a time;
+each slice deletes its superseded paths and leaves the architecture runnable. The unpushed
+quoted-room prototypes are evidence for design review, not a mandate to preserve their API.
 
 ### 5f. Extend the pipeline to the grid: place work near warm state
 
@@ -513,8 +653,8 @@ own size.
 ### 7. Around the act
 
 - **Learning** is a low-duty dream stage between decode steps under the governor, with its slowdown
-  measured and enforced (ONE-RESIDENT-MODEL). A batch genome job that holds the engine for hours is
-  forbidden on a serving node (IntelMac 2026-11-04, job 2f1bbe9d: resident prefill 8-13.6 -> 3.2-5.2 tok/s, about 2.5x slower, for 2 h with 0.0% progress).
+  measured and enforced (ONE-RESIDENT-MODEL). Unbounded interference from training is
+  forbidden on a serving node (IntelMac 2026-11-04, job 2f1bbe9d: resident prefill 8-13.6 -> 3.2-5.2 tok/s, about 2.5x slower, for 2 h with 0.0% reported progress). The later 9e0106d6 job completed three epochs and saved its adapter while retaining custody; elapsed job lifetime or a stale progress field alone is not proof of a deadlock. Learning shares the existing governor, with measured service interference and terminal ownership, not a separate permissive scheduler.
 - **Persistence** on change, never per tick: both the volatile checkpoint (JSON, written every tick) and the per-resident airc store writes (`airc/events.sqlite` sqlx pools, which with rayon spin carry the IntelMac core's 134% CPU; card 9cf6b487).
 - **Deploy custody:** a deferral is not a failure (card 90ce8f6a).
 
@@ -534,20 +674,23 @@ It must first REPRODUCE each 2026-11-04 failure (red), then show the design remo
 4. cancellation during prefill -> custody held until the engine's completion or a fenced exit;
 5. a delayed page receipt -> no slot reuse until verified;
 6. a restart -> pages restored, no five-minute cold re-prefill for a warm mind;
-7. an overflowing view -> older items collapse to handles; prompt tokens per act stay at the
-   working set; no grant growth.
+7. a reducible overflowing view -> older items collapse to handles while required/newest content
+   remains whole; an irreducible shortfall requests admitted capacity/placement or explicitly waits.
+   Neither blanket growth nor a blanket ban on growth satisfies the contract.
 
 Asserted every run: physical bytes conserved (weights + resident KV + staging <= pool); no hold
 without a releaser; eventual service for every mind; predicted acts/hour per resident from the
 measured prefill rate. The dyno proves state and accounting (conservation, custody, service, ordering) and compares
 PREDICTED performance; live hardware validates actual performance. A live change ships only when the dyno is green for it, then one change per
-deploy with the 15-minute read and immediate rollback if worse (rule 3).
+deploy with a 15-minute read of useful work and latency components. Joel's 2026-11-06 direction
+supersedes activity-based rollback: use failures to correct the current architecture. Preserve
+state and separate measured safety failures from low activity or slow execution.
 
 ## Order of execution
 
 | # | Slice | Owner | Gate |
 |---|---|---|---|
-| 0 | Freeze: M5 stays on its current build; this doc agreed; superseded docs marked; CLAUDE.md corrected | Fable | three signatures |
+| 0 | Reconcile this design and shared interfaces against current evidence and active work; current architecture is the baseline | Fable + Codex + Cormac | recorded review of owners, invariants and deletion plan; no claim of signatures not received |
 | 1 | The dyno with the seven reproductions (red) | Fable + Codex | each 11-04 failure reproduced from recorded inputs |
 | 1b | The fast path audit: every cold turn classified 3C (refused restores, unconfirmed pages, scratch-slot churn) (page refused, page unconfirmed, prefix lost); geometry stable across restarts; pages eligible by full compatibility and complete-save provenance | Codex + Fable | dyno 6 green; live: cold turns after a restart = 0 for a warm mind |
 | 2 | The view: reads by region, side budgets into the one allocation run once, history to handles; revert the wish raise of #5773 | Fable | dyno 7 green; prompt tokens per act at the working set |
@@ -996,23 +1139,3 @@ Completed ed142 live windows remain insufficient for productive acceptance: M5 h
 Kimi's oversized reply cap is reproducible without weakening capacity: prior density30846/31801 prices the next estimated27479tokens at26654, leaving5857reply tokens under32512. The selected engine counts27221, leaving5290. Existing guards correctly refuse the larger sum and the caller retries. Local actual-HTTP validator3383da2c51 passes1test: the oversized request never generates, the resized request is quoted again, and one unchanged prompt is sent. It is a baseline reproduction, not an adaptive-room fix, lease proof, or live performance claim. Any optimization must carry explicit act reply-room authority and minimum, update the wire and receipts together, and retain per-attempt engine/lease validation. Kimi's existing4b1e245c work owns remembered steady boot geometry, a separate scope.
 
 Intel completed its ed142 gate13:47:33–14:02:33 with full rotated coverage: one model-reached Eitan turn (441seconds), three unconfirmed attempts at the automatic engine transition, and no confirmed useful write. Eitan used0cached/16,479fresh tokens,413,342ms prefill,26,903ms decode and531ms residue. Other residents waited for pinned slots; queue estimates expired without removing their requests. All three current-code deployment gates are now complete, but productive recovery remains unproven. Preserve current code; these receipts drive fixes, not rollback or repeated gates.
-
-## Architectural correction: one exact dispatch decision (2026-11-06)
-
-Joel's direction: use evidence to correct the current architecture with formal, robust algorithms and centralized logic. Deployment/version activity is not progress toward useful work. Do not stack independent retry patches. This section supersedes any interpretation of the provisional reply-room code as an accepted design or performance fix.
-
-Evidence: Kimi's identical prompt was rejected at predicted cap 5857, then accepted at 5290 after another admission wait. Exact prompt P=27221, physical window W=32512, required reply minimum m=4534. The quote took 67ms; corrective admission waits took 156.5s and 24.6s. This demonstrates disagreement between a predictive render decision and exact dispatch, not a defect in the safety inequality. Cold prefill and pinned-page waits are separate measured costs; this correction makes no claim to solve them.
-
-Owner: continuum-engine's existing dispatch path owns final feasibility and the executable request. The existing window_grant owner retains atomic reservation and lifetime; the existing scheduler retains fairness and queue custody. Do not introduce another scheduler, reservation registry, or retry coordinator. Cognition supplies intent and required reply room, and may estimate prompt size for rendering. Estimates never authorize dispatch or masquerade as the sent cap.
-
-Contract and algorithm:
-1. Submit an immutable prompt plus explicit output intent: Fixed(r), or Act(required minimum, explicitly authorized ceiling). A predicted cap is not automatically an authority ceiling. Audit that distinction before adopting the provisional ActReplyRoom API. Reasoning allowance remains an explicit component of the required reply claim.
-2. After existing endpoint/page admission, bind the attempt to the selected engine incarnation, model/template and current grant lease. Obtain the physical sequence capacity from that same owner-bound context. A missing capacity or mismatched incarnation is a typed refusal, never a guessed window.
-3. Count that finalized prompt on that engine. Let W be the intersection of physical sequence capacity and admitted lease capacity. For Fixed, choose R=r. For Act, maximize R subject to m<=R<=authorized ceiling and P+R<W. Equivalently R=min(ceiling,W-P-1), using checked arithmetic; refuse if R<m. There is no tuning constant or relaxed floor.
-4. The grant owner atomically validates/reserves the exact attempt. Only a successful reservation constructs a private executable dispatch value containing prompt identity, engine identity, lease identity, P, W and R. Invalidation before reservation requires a new attempt and quote; it cannot reuse the predecessor's count. Preserve cancellation and terminal settlement in the existing owner.
-5. Build the wire request and its sent receipt from that executable value. Transport cannot independently recalculate its cap. Cognition classification, allocation accounting and capture consume that same receipt. A resolution receipt alone is not proof that a request was sent or completed.
-6. Re-render only when the required claim is actually infeasible. Prediction error that leaves the required claim feasible resolves inside the admitted attempt, without a capacity-repair round trip through cognition. Transport recovery after a proven pre-acceptance failure re-enters this same algorithm; ambiguous post-acceptance outcomes do not authorize duplicate generation.
-
-Required consolidation: remove the competing estimate-derived final-cap decision for adaptive acts and its resize-only retry path; retain estimation only for prompt preparation. Combine physical/admitted capacity checks into the dispatch decision rather than adding an extra clamp beside existing checks. Unsupported providers must explicitly reject this authority or implement the same contract. Fixed-call intent is a real distinct contract, not a compatibility fallback. The optional response receipt in local f420b8a490 is provisional plumbing; review it against explicit provider capability and actual sent-state semantics before integration.
-
-Proof obligations before deployment: boundary/property tests establish feasibility, maximality within authority, monotonic capacity behavior and arithmetic safety; actual HTTP tests establish one quote and one generation for the measured Kimi case, unchanged prompt, and identical wire/receipt R. State-transition tests exercise engine replacement during quote, grant revocation, cancellation before and after reservation, quote failure, insufficient minimum, fixed requests, and ambiguous send failure. Every invalid transition must prevent unauthorized POST and release or retain custody according to the existing terminal contract. Then verify the live elimination of resize-only retries and measure useful completed work, queue time, prefill and cache reuse separately. Compilation, deployment and model-reached counts alone do not satisfy acceptance.
