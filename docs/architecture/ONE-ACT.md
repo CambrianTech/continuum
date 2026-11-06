@@ -748,6 +748,23 @@ cache's contents when lines are shared.
 - **The one metric is token hit rate,** with prefill seconds as the miss penalty, per mind and
   across minds.
 
+**Automatic, never static (Joel: "make it automatic and not static so it can be efficient even with
+dynamic data").** Placement, collapse depth, eviction value and prefetch horizon come from
+measurements the ledger keeps continuously, never from a hand-written class list. Per source:
+- change rate between acts, decayed so it tracks recent behaviour;
+- sharing count across minds;
+- miss cost, the tokens after its position.
+
+The order is a value function of these, recomputed at each epoch start with hysteresis so it does
+not flap. A source that turns volatile drifts tailward on its own, and one that settles drifts back.
+A new source is typed `Unmeasured` and starts at the tail until measured.
+
+Turnovers make the collapse append-only: an item collapses once, content-addressed, and successive
+epochs share the collapsed log as a prefix. The collapse depth is chosen per mind from measured
+growth and turnover cost. The next epoch is prefilled on a shadow sequence in idle device time once
+measured growth predicts the overflow. A learned policy may later replace the value function behind
+the same boundary.
+
 ### 5f. Extend the pipeline to the grid: place work near warm state
 
 Joel requested this direction be recorded on 2026-11-04. This is the extension of stages
