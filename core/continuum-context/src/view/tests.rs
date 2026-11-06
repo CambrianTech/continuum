@@ -767,7 +767,10 @@ fn turnover_receipt_counts_promotions_but_not_new_items() -> Result<(), GrantMis
     let mut reads = Leveled(vec![("old", "x".repeat(1000), Some("outline".into()))]);
     let (mut view, start) = View::start(Vec::new(), &[&reads], |_| vec![0])?;
     assert_eq!((start.restored_items, start.restored_chars), (0, 0));
-    let summary = view.turn_over(Vec::new(), &[&reads], |_| vec![7])?;
+    // Logged as its pointer at the squeezed start, it rises with room for its summary beside the
+    // pointer her log keeps (5 + 7 chars).
+    assert!(view.turn_over(Vec::new(), &[&reads], |_| vec![7])?.restored_items == 0, "no room beside its log entry");
+    let summary = view.turn_over(Vec::new(), &[&reads], |_| vec![12])?;
     assert_eq!((summary.restored_items, summary.restored_chars), (1, 7));
     reads.0.push(("new", "newly arrived".into(), None));
     let before = rendered(&view);
@@ -877,7 +880,80 @@ fn lead_with_what_held_reuses_the_previous_order_until_the_first_change() {
     let ranked_otherwise = vec![block(0, "log/1", "one"), block(1, "kanban/b", "K"), block(2, "wall/b", "W")];
     assert_eq!(ids(&lead_with_what_held(ranked_otherwise, Some(&previous))), ["wall/b", "kanban/b", "log/1"], "the old order leads");
     let changed = vec![block(0, "log/1", "one"), block(1, "kanban/b", "K2"), block(2, "wall/b", "W")];
-    assert_eq!(ids(&lead_with_what_held(changed, Some(&previous))), ["wall/b", "kanban/b", "log/1"], "reuse ends at the change, the changed block laid where it stood");
+    assert_eq!(ids(&lead_with_what_held(changed, Some(&previous))), ["wall/b", "log/1", "kanban/b"], "reuse ends at the change; a changed block the order moved back stays back");
+    let next_anyway = vec![block(0, "wall/b", "W"), block(1, "kanban/b", "K2"), block(2, "log/1", "one")];
+    assert_eq!(ids(&lead_with_what_held(next_anyway, Some(&previous))), ["wall/b", "kanban/b", "log/1"], "laid where it stood when the order puts it next");
     let earlier_first = vec![block(0, "log/0", "zero"), block(0, "log/1", "one"), block(1, "wall/b", "W"), block(2, "kanban/b", "K")];
     assert_eq!(ids(&lead_with_what_held(earlier_first, Some(&previous))), ["wall/b", "kanban/b", "log/0", "log/1"], "log/1 never passes log/0");
+}
+
+/// Characters two renders share from the start.
+fn shared(before: &str, after: &str) -> usize {
+    before.chars().zip(after.chars()).take_while(|(a, b)| a == b).count()
+}
+
+// what this catches: a start re-deciding her collapsed history, so a handle or a fold block
+// re-renders differently and the turnover misses everything after it (the M5, 2026-11-06: all 13
+// turnovers resumed from the system head). Collapsed once, an item's handle is laid down byte for
+// byte at every later start; the next start appends what collapses then, after it.
+#[test]
+fn a_collapsed_item_is_laid_down_again_byte_for_byte_at_every_later_start() -> Result<(), GrantMismatch> {
+    let mut actions = Fake::new("actions", 5);
+    for n in 1..=6 {
+        actions.push(&format!("#{n}"), &format!("result {n} {}", "x".repeat(400)));
+    }
+    // A squeezed start: the oldest results collapse to their handles.
+    let squeeze = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars / 2).collect::<Vec<_>>();
+    let (mut view, _) = View::start(Vec::new(), &[&actions], squeeze)?;
+    let handles: Vec<String> = view.render().filter(|block| block.starts_with("[#")).cloned().collect();
+    assert!(!handles.is_empty(), "precondition: the squeezed start collapsed her oldest results");
+    for n in 7..=12 {
+        actions.push(&format!("#{n}"), &format!("result {n} {}", "x".repeat(400)));
+        view.advance(&[&actions]);
+    }
+    let start = view.turn_over(Vec::new(), &[&actions], squeeze)?;
+    let now: Vec<String> = view.render().cloned().collect();
+    assert_eq!(now[..handles.len()], handles[..], "the old log leads the new start as it was");
+    assert!(now.len() > handles.len() && now[handles.len()].starts_with("[#"), "what collapsed now appends after it: {now:?}");
+    assert_eq!(start.log_kept_chars, handles.iter().map(String::len).sum::<usize>());
+    assert!(!start.log_folded);
+    Ok(())
+}
+
+// what this catches (the adversarial check): an order that never learns. A block that held
+// stable for epochs then changes at every act must drift behind a block that still holds, within
+// a bounded number of starts, and the prefix each start shares with the epoch before must recover
+// past the stable block; an order that keeps the volatile block in front loses it at every start.
+#[test]
+fn a_source_that_turns_volatile_drifts_tailward_and_the_shared_prefix_recovers() -> Result<(), GrantMismatch> {
+    let mut wall = Fake::new("wall", 6);
+    let mut map = Fake::new("map", 6);
+    wall.push("w", &"wall ".repeat(200));
+    map.push("m", &"map ".repeat(400));
+    let (mut view, _) = View::start(Vec::new(), &[&wall, &map], all_full)?;
+    // Stable epochs: both hold; the caller's order (wall first) stands.
+    for _ in 0..3 {
+        for _ in 0..4 {
+            view.advance(&[&wall, &map]);
+        }
+        view.turn_over(Vec::new(), &[&wall, &map], all_full)?;
+    }
+    assert!(rendered(&view).starts_with("wall"), "precondition: stable, it keeps its place");
+    // The wall turns volatile: it changes at every act from now on.
+    let mut recovered = None;
+    for epoch in 1..=4 {
+        for act in 0..4 {
+            wall.push("w", &format!("wall v{epoch}.{act} {}", "wall ".repeat(200)));
+            view.advance(&[&wall, &map]);
+        }
+        let before = rendered(&view);
+        view.turn_over(Vec::new(), &[&wall, &map], all_full)?;
+        if shared(&before, &rendered(&view)) >= map.items[0].1.len() {
+            recovered.get_or_insert(epoch);
+        }
+    }
+    let recovered = recovered.expect("the shared prefix never recovered past the stable block"); // JUSTIFIED: test assertion
+    assert!(recovered <= 2, "it recovered only at start {recovered}");
+    assert!(rendered(&view).starts_with("map"), "the stable block leads");
+    Ok(())
 }

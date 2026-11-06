@@ -209,14 +209,26 @@ impl ToolSurface {
         Activity::Owned(Offer::of(specs), reason)
     }
 
-    /// Build every surface from the native registry, sorted by command name so the bytes
-    /// on the wire never depend on registration order, then renamed into the model's dialect.
+    /// Build every surface from the native registry in ONE canonical order, so the bytes on the
+    /// wire never depend on registration order, then renamed into the model's dialect. The order is
+    /// by how widely a verb is held, then by name: the verbs in every surface, then her core hands,
+    /// then the on-demand verbs, then the withheld. Every selection lists its verbs in this order,
+    /// so a smaller set is a PREFIX of a larger one and every mind's tool list shares its head with
+    /// every other mind's (the M5, 2026-11-06: Benchy's 30 verbs and the others' 39 diverged at verb
+    /// 18, where name order put the on-demand `focus/*` between the core hands, so the tools head
+    /// four minds send was shared only through 12,969 of 33,340 chars).
     pub fn build(
         mut offers: Vec<OfferedTool>,
         mut authorized: Vec<NativeToolSpec>,
         to_wire: impl Fn(NativeToolSpec) -> NativeToolSpec,
     ) -> Self {
-        offers.sort_by(|a, b| a.spec.name.cmp(&b.spec.name));
+        let held_by = |disclosure: Disclosure| match disclosure {
+            Disclosure::Always => 0,
+            Disclosure::Core => 1,
+            Disclosure::OnDemand => 2,
+            Disclosure::Withheld => 3,
+        };
+        offers.sort_by(|a, b| held_by(a.disclosure).cmp(&held_by(b.disclosure)).then_with(|| a.spec.name.cmp(&b.spec.name)));
         let raw: Vec<NativeToolSpec> = offers.iter().map(|offer| offer.spec.clone()).collect();
         // Her natives are always callable, whatever list `with_tools` was given: the authorized
         // set is her natives plus every other authorized verb, and where both name one verb the
@@ -570,7 +582,7 @@ mod tests {
         let core: Vec<&str> = surface.core.specs.iter().map(|s| s.name.as_str()).collect();
         let hands: Vec<&str> = surface.hands().iter().map(|s| s.name.as_str()).collect();
         assert_eq!(core, ["code/read", "mail/send"]);
-        assert_eq!(hands, ["code/rare", "code/read", "mail/send"]);
+        assert_eq!(hands, ["code/read", "mail/send", "code/rare"], "her core hands lead, the on-demand verbs follow");
         assert!(surface.vocabulary().expect("vocabulary").id("code/peer").is_some(), "withheld stays callable by name");
         let (floor, want) = surface.claim_with_head(&[], &[], &[]);
         assert_eq!((floor, want), (surface.core.tokens, surface.core.tokens), "an unlearned on-demand verb is not claimed");
@@ -597,9 +609,7 @@ mod tests {
             }
         }
         let names: Vec<&str> = forward.hands().iter().map(|s| s.name.as_str()).collect();
-        let mut sorted = names.clone();
-        sorted.sort_unstable();
-        assert_eq!(names, sorted, "canonical order");
+        assert!(in_canonical_order(&forward, &names), "canonical order: {names:?}");
         assert!(names.contains(&"work/review"), "the reviewer verbs are part of work/**: {names:?}");
         assert!(!names.contains(&"code/git/apply") && !names.contains(&"activity/archive"), "{names:?}");
     }
@@ -616,7 +626,7 @@ mod tests {
         let names: Vec<&str> = selected.specs.as_deref().into_iter().flatten().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
-            ["code/edit", "code/git/apply", "code/read", "code/write", "commands/help", "commands/list"]
+            ["commands/help", "commands/list", "code/edit", "code/read", "code/write", "code/git/apply"]
         );
         let unmatched = surface.select_granted(&["mail/send".to_string()], &[], 87_296).expect("hands fit");
         assert_eq!(unmatched.reason, SurfaceReason::Hands, "a rule binding nothing offers her hands, never nothing");
@@ -672,6 +682,25 @@ mod tests {
         in_hand(&fixture_card(state, Some(her), reviews, "card"), her, FIXTURE_NOW_MS).into_iter().map(str::to_owned).collect()
     }
 
+    /// Whether `names` stand in the surface's one canonical order (how widely held, then by name).
+    fn in_canonical_order(surface: &ToolSurface, names: &[&str]) -> bool {
+        let at = |name: &&str| surface.names().iter().position(|known| known == name);
+        names.windows(2).all(|pair| at(&pair[0]) < at(&pair[1]))
+    }
+
+    // what this catches: two minds whose tool sets differ (Benchy's 30 verbs, the others' 39 on the
+    // M5, 2026-11-06) diverging inside the shared part of their tool list. Her core hands are a
+    // PREFIX of her whole hands, so the smaller list is the head of the larger one.
+    #[test]
+    fn a_smaller_tool_set_is_the_head_of_a_larger_one() {
+        let surface = built(REGISTRY.iter());
+        let core = surface.select_granted(&[], &[], surface.hands_tokens()).expect("core fits"); // JUSTIFIED: test fixture
+        let core = sent_names(&core);
+        let hands: Vec<&str> = surface.hands().iter().map(|s| s.name.as_str()).collect();
+        assert!(core.len() < hands.len(), "precondition: her hands hold more than her core");
+        assert_eq!(hands[..core.len()], core[..], "her core is the head of her hands");
+    }
+
     fn sent_names<'a>(selected: &'a SelectedSurface<'_>) -> Vec<&'a str> {
         selected.specs.as_deref().into_iter().flatten().map(|s| s.name.as_str()).collect()
     }
@@ -693,9 +722,7 @@ mod tests {
             let held = surface.select_granted(&declared, &review, usize::MAX).expect("fits");
             let names = sent_names(&held);
             assert!(names.contains(&"work/review"), "declared {declared:?}: {names:?}");
-            let mut sorted = names.clone();
-            sorted.sort_unstable();
-            assert_eq!(names, sorted, "canonical order");
+            assert!(in_canonical_order(&surface, &names), "canonical order: {names:?}");
             assert_eq!(surface.claim_tokens(&declared, &review), (held.tokens, held.tokens), "her claim prices what she is sent");
             assert_eq!(held.reason, plain.reason, "the room still decides why; her card adds to it");
         }

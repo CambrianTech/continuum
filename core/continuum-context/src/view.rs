@@ -19,6 +19,7 @@ use crate::motion::{fingerprint, Motion};
 use crate::source::{Item, Source};
 
 mod allot;
+mod log;
 mod repeat;
 
 use allot::{allot, rank};
@@ -82,6 +83,11 @@ pub struct Start {
     pub restored_items: usize,
     /// Rendered characters in those promoted items, not a measure of useful learning.
     pub restored_chars: usize,
+    /// Characters of her collapsed log this start laid down again as they were.
+    pub log_kept_chars: usize,
+    /// The log folded at this start: a source's logged history alone outgrew its grant, so every
+    /// item was re-decided from scratch (the one full re-prefill the log costs).
+    pub log_folded: bool,
 }
 
 /// One block she was shown, as the view rendered it (`View::receipt`).
@@ -129,6 +135,11 @@ pub struct View<T: Block> {
     /// joined the view, which covered nothing.
     #[serde(default)]
     covered: HashSet<SourceId>,
+    /// Her collapsed history, in the order it collapsed, each block as first rendered: laid down
+    /// again byte for byte at every start (`view/log.rs`). Absent in a view saved before it, which
+    /// starts its log at its next start.
+    #[serde(default = "Vec::new")]
+    log: Vec<log::Logged<T>>,
     /// Characters each act of this epoch appended, in order.
     appended: Vec<usize>,
     /// How each source moved across this view's starts; carried over every turnover and
@@ -187,7 +198,7 @@ impl<T: Block> View<T> {
         sources: &[&dyn Source<T>],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
     ) -> Result<(Self, Start), GrantMismatch> {
-        Self::begin(1, head, sources, allocate, Motion::default(), None).map_err(|(mismatch, _)| mismatch)
+        Self::begin(1, head, sources, allocate, Motion::default(), None, Vec::new()).map_err(|(mismatch, _, _)| mismatch)
     }
 
     /// Replace this epoch with a fresh one rendered from the sources' current state at the
@@ -199,10 +210,12 @@ impl<T: Block> View<T> {
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
     ) -> Result<Start, GrantMismatch> {
         let motion = std::mem::take(&mut self.motion);
-        let (next, mut start) = match Self::begin(self.epoch.id() + 1, head, sources, allocate, motion, Some(&self.epoch)) {
+        let log = std::mem::take(&mut self.log);
+        let (next, mut start) = match Self::begin(self.epoch.id() + 1, head, sources, allocate, motion, Some(&self.epoch), log) {
             Ok(begun) => begun,
-            Err((mismatch, motion)) => {
+            Err((mismatch, motion, log)) => {
                 self.motion = motion;
+                self.log = log;
                 return Err(mismatch);
             }
         };
@@ -227,16 +240,16 @@ impl<T: Block> View<T> {
     /// view over and lose the prefix for a line the fold block already covers (Cormac).
     /// An allocator that answers for a different number of sources is the same refusal a start
     /// gives ([`GrantMismatch`]), never a quiet "nothing to restore" (Codex on #5564).
+    /// An item her collapsed log holds rises too: whole at the front of its source's items, its log
+    /// entry kept where it was (`view/log.rs`).
     pub fn start_would_restore(&self, sources: &[&dyn Source<T>], allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Result<bool, GrantMismatch> {
-        let sources = self.motion.order(sources);
-        let offered: Vec<Vec<Item<T>>> = sources.iter().map(|source| source.items()).collect();
-        let claims: Vec<Claim> = sources.iter().zip(&offered).map(|(source, items)| claim(*source, items)).collect();
-        let grants = allocate(&claims);
-        if grants.len() != claims.len() {
-            return Err(GrantMismatch { claims: claims.len(), grants: grants.len() });
+        let arranged = log::arrange(&self.motion, sources, &self.log);
+        let grants = allocate(&arranged.claims);
+        if grants.len() != arranged.claims.len() {
+            return Err(GrantMismatch { claims: arranged.claims.len(), grants: grants.len() });
         }
-        Ok(sources.iter().zip(&offered).zip(&grants).any(|((source, items), grant)| {
-            allot(&**source, items, *grant).levels.iter().zip(items).any(|(level, item)| {
+        Ok(arranged.sources.iter().zip(&arranged.items).zip(grants.iter().zip(&arranged.logged_chars)).any(|((source, items), (grant, logged))| {
+            allot(&**source, items, grant.saturating_sub(*logged)).levels.iter().zip(items).any(|(level, item)| {
                 let id = key(source.name(), &item.key);
                 self.restores(&id, level)
             })
@@ -261,10 +274,11 @@ impl<T: Block> View<T> {
         }
     }
 
-    /// Render a start with `sources` in the order `motion` measured as most stable first, and
-    /// record what each rendered. The blocks are laid down so the start shares the longest prefix
-    /// with the epoch it replaces (`previous`): [`lead_with_what_held`]. A refusal hands `motion`
-    /// back.
+    /// Render a start: her sources in the order `motion` measured (`Motion::rank`), her collapsed
+    /// log laid down again as it was with what collapses now appended to it (`view/log.rs`), and
+    /// every block placed so the start shares the longest prefix with the epoch it replaces
+    /// (`previous`, [`lead_with_what_held`]). A refusal hands `motion` and the log back.
+    #[allow(clippy::type_complexity)] // the refusal returns what it was handed: the mismatch, the measurements and the log
     fn begin(
         id: u64,
         head: Vec<T>,
@@ -272,14 +286,20 @@ impl<T: Block> View<T> {
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
         mut motion: Motion,
         previous: Option<&Epoch<T>>,
-    ) -> Result<(Self, Start), (GrantMismatch, Motion)> {
-        let sources = motion.order(sources);
-        let offered: Vec<Vec<Item<T>>> = sources.iter().map(|source| source.items()).collect();
-        let claims: Vec<Claim> = sources.iter().zip(&offered).map(|(source, items)| claim(*source, items)).collect();
-        let grants = allocate(&claims);
-        if grants.len() != claims.len() {
-            return Err((GrantMismatch { claims: claims.len(), grants: grants.len() }, motion));
+        log: Vec<log::Logged<T>>,
+    ) -> Result<(Self, Start), (GrantMismatch, Motion, Vec<log::Logged<T>>)> {
+        motion.close_epoch();
+        let arranged = log::arrange(&motion, sources, &log);
+        let grants = allocate(&arranged.claims);
+        if grants.len() != arranged.claims.len() {
+            return Err((GrantMismatch { claims: arranged.claims.len(), grants: grants.len() }, motion, log));
         }
+        let granted: std::collections::HashMap<&str, usize> = arranged.sources.iter().zip(&grants).map(|(source, grant)| (source.name(), *grant)).collect();
+        // The log folds when a source's logged history alone outgrows what this start grants it:
+        // everything is re-decided from scratch once, and the log starts again from what this
+        // start collapses.
+        let folds = arranged.logged_chars.iter().zip(&grants).any(|(logged, grant)| logged > grant);
+        let (log, arranged) = if folds { (Vec::new(), log::arrange(&motion, sources, &[])) } else { (log, arranged) };
         let mut view = Self {
             epoch: Epoch::new(id, head),
             collapsed: HashSet::new(),
@@ -287,38 +307,92 @@ impl<T: Block> View<T> {
             folded: HashSet::new(),
             repeats: HashSet::new(),
             covered: HashSet::new(),
+            log: Vec::new(),
             appended: Vec::new(),
             motion: Motion::default(),
             act: None,
             submitted: None,
             last_by_source: Vec::new(),
         };
-        let mut planned: Vec<Planned<T>> = Vec::new();
-        for (index, ((source, items), grant)) in sources.iter().zip(offered).zip(grants).enumerate() {
+        for entry in &log {
+            match entry.level {
+                Level::Summary => view.summarized.insert(entry.id.clone()),
+                Level::Folded => {
+                    view.folded.extend(entry.covers.iter().cloned());
+                    true
+                }
+                _ => view.collapsed.insert(entry.id.clone()),
+            };
+        }
+        let sources_n = arranged.sources.len();
+        let logged_level: std::collections::HashMap<SourceId, Level> =
+            log.iter().flat_map(|entry| std::iter::once((entry.id.clone(), entry.level)).chain(entry.covers.iter().map(|id| (id.clone(), Level::Folded)))).collect();
+        let mut fresh_log: Vec<log::Logged<T>> = Vec::new();
+        let mut planned_by_source: Vec<Vec<Planned<T>>> = Vec::with_capacity(sources_n);
+        for (index, (source, items)) in arranged.sources.iter().zip(arranged.items).enumerate() {
+            let name = source.name();
+            let grant = granted.get(name).copied().unwrap_or(0).saturating_sub(arranged.logged_chars[index]); // unwrap_or: every arranged source was granted (the allocator answered for each)
             let allot::Allotment { levels, mut fold } = allot(&**source, &items, grant);
-            let mut rendered = Vec::with_capacity(items.len());
+            let fold_run: Vec<String> = items.iter().zip(&levels).filter(|(_, level)| **level == Level::Folded).map(|(item, _)| item.key.clone()).collect();
+            let mut rendered: Vec<(u64, usize)> = log.iter().filter(|entry| entry.source == name).map(|entry| (fingerprint(&entry.id.0, &entry.text), entry.text.chars())).collect();
+            let mut planned = Vec::new();
+            // Her oldest collapsed run is logged, up to the first item this start keeps whole.
+            let mut oldest = true;
+            let mut fold_at: Option<(bool, usize)> = None;
             for (item, level) in items.into_iter().zip(levels) {
-                let id = key(source.name(), &item.key);
+                let id = key(name, &item.key);
                 let element = item.id();
                 let item_key = item.key.clone(); // its fingerprint after the level consumed it; once per item per start
+                if let Some(held) = logged_level.get(&id) {
+                    // Logged: it stands in her log; only a rise past what it holds there renders it
+                    // again, at that level, its log entry kept.
+                    if !(rank(&level) > rank(held) && rank(&level) > rank(&Level::Pointer)) {
+                        continue;
+                    }
+                    view.collapsed.remove(&id);
+                    view.folded.remove(&id);
+                    view.summarized.remove(&id);
+                }
                 let text = match level {
                     // A start re-renders every item as itself: no repeat is allotted here.
-                    Level::Full | Level::Repeat { .. } => Some(crate::source::whole(&**source, item)),
-                    Level::Summary => {
-                        view.summarized.insert(id.clone());
-                        item.summary
+                    Level::Full | Level::Repeat { .. } => {
+                        oldest = false;
+                        Some(crate::source::whole(&**source, item))
                     }
-                    Level::Pointer => {
-                        view.collapsed.insert(id.clone());
-                        item.pointer
+                    Level::Summary | Level::Pointer => {
+                        if level == Level::Summary { view.summarized.insert(id.clone()) } else { view.collapsed.insert(id.clone()) };
+                        let text = if level == Level::Summary { item.summary } else { item.pointer };
+                        match text {
+                            // Written to the log once, as rendered now.
+                            Some(text) if oldest && !logged_level.contains_key(&id) => {
+                                rendered.push((fingerprint(&item_key, &text), text.chars()));
+                                fresh_log.push(log::Logged { source: name.to_owned(), id: id.clone(), element: Some(element), level, text, covers: Vec::new() });
+                                None
+                            }
+                            text => text,
+                        }
                     }
                     // The run is the contiguous oldest: its block renders once, where its oldest
-                    // item stood, naming the range it held at this start for the whole epoch.
+                    // item stood, naming the range it held at this start; logged when it is her
+                    // oldest history and holds an item her log did not.
                     Level::Folded => {
-                        view.folded.insert(id);
-                        if let Some(block) = fold.take() {
-                            rendered.push((fingerprint(FOLD_KEY, &block), block.chars()));
-                            planned.push(Planned { source: index, id: key(source.name(), FOLD_KEY), element: None, level: Level::Folded, text: block });
+                        view.folded.insert(id.clone());
+                        match fold_at {
+                            Some((true, at)) => fresh_log[at].covers.push(id),
+                            Some((false, _)) => {}
+                            None => {
+                                if let Some(block) = fold.take() {
+                                    rendered.push((fingerprint(FOLD_KEY, &block), block.chars()));
+                                    let block_id = log::fold_id(name, fold_run.first().map_or("", String::as_str), fold_run.last().map_or("", String::as_str)); // map_or: a fold block always has a run
+                                    if oldest {
+                                        fold_at = Some((true, fresh_log.len()));
+                                        fresh_log.push(log::Logged { source: name.to_owned(), id: block_id, element: None, level, text: block, covers: vec![id] });
+                                    } else {
+                                        fold_at = Some((false, 0));
+                                        planned.push(Planned { source: index, id: block_id, element: None, level, text: block });
+                                    }
+                                }
+                            }
                         }
                         continue;
                     }
@@ -328,25 +402,45 @@ impl<T: Block> View<T> {
                     planned.push(Planned { source: index, id, element: Some(element), level, text });
                 }
             }
-            motion.record(source.name(), rendered);
+            motion.record(name, rendered);
+            planned_by_source.push(planned);
         }
+        let log_kept_chars: usize = log.iter().map(|entry| entry.text.chars()).sum();
+        let mut all_log = log;
+        all_log.extend(fresh_log);
+        // The log stands where the measured order put it: as one unit, its blocks in the order
+        // they collapsed.
+        let log_blocks: Vec<Planned<T>> = all_log
+            .iter()
+            .map(|entry| Planned { source: sources_n, id: entry.id.clone(), element: entry.element, level: entry.level, text: entry.text.clone() })
+            .collect();
+        let mut planned: Vec<Planned<T>> = Vec::new();
+        let mut log_blocks = Some(log_blocks);
+        for (index, blocks) in planned_by_source.into_iter().enumerate() {
+            if index == arranged.log_at {
+                planned.extend(log_blocks.take().unwrap_or_default()); // unwrap_or_default: laid once
+            }
+            planned.extend(blocks);
+        }
+        planned.extend(log_blocks.take().unwrap_or_default()); // unwrap_or_default: the log stands last when no source follows it
         let laid = lead_with_what_held(planned, previous);
-        let mut order: Vec<String> = Vec::with_capacity(sources.len());
+        let mut order: Vec<String> = Vec::with_capacity(sources_n + 1);
         for block in laid {
-            let name = sources[block.source].name();
+            let name = arranged.sources.get(block.source).map_or(log::LOG, |source| source.name()); // map_or: the index past the sources is her log
             if !order.iter().any(|seen| seen == name) {
                 order.push(name.to_owned());
             }
             view.epoch.observe(block.id, block.element, block.level, block.text);
         }
         // Sources that rendered nothing keep their place after the ones that did.
-        for source in &sources {
-            if !order.iter().any(|seen| seen == source.name()) {
-                order.push(source.name().to_owned());
+        for name in arranged.sources.iter().map(|source| source.name()).chain([log::LOG]) {
+            if !order.iter().any(|seen| seen == name) {
+                order.push(name.to_owned());
             }
         }
         motion.started_in(order);
         view.motion = motion;
+        view.log = all_log;
         let start = Start {
             epoch: id,
             chars: view.epoch.chars(),
@@ -355,6 +449,8 @@ impl<T: Block> View<T> {
             folded: view.folded.len(),
             restored_items: 0,
             restored_chars: 0,
+            log_kept_chars,
+            log_folded: folds,
         };
         Ok((view, start))
     }
@@ -428,6 +524,7 @@ impl<T: Block> View<T> {
 
     pub fn advance(&mut self, sources: &[&dyn Source<T>]) -> Advance {
         self.act = Some(self.epoch.mark());
+        self.motion.act();
         self.append(sources, None)
     }
 
@@ -542,6 +639,10 @@ impl<T: Block> View<T> {
                     advance.chars += chars;
                 }
             }
+            // Her per-act change rate, what the next start ranks by (an act's redo is not an act).
+            if limit.is_none() {
+                self.motion.act_saw(name, advance.items > before.0);
+            }
             if advance.items > before.0 {
                 self.last_by_source.push(SourceAdvance {
                     source: name.to_owned(),
@@ -569,7 +670,7 @@ impl<T: Block> View<T> {
             .filter(|(id, retired)| !retired && !self.covered.contains(*id))
             .filter_map(|(id, _)| {
                 let item = &id.0[prefix.len()..];
-                (item != FOLD_KEY && !offered.contains(item)).then(|| source.ended(item).map(|notice| (id.clone(), notice)))?
+                (!item.starts_with(FOLD_KEY) && !offered.contains(item)).then(|| source.ended(item).map(|notice| (id.clone(), notice)))?
             })
             .collect()
     }
@@ -674,14 +775,18 @@ fn lead_with_what_held<T: Block>(planned: Vec<Planned<T>>, previous: Option<&Epo
         if next.get(&block.source) != Some(&index) {
             break;
         }
-        lead.push(index);
-        next.insert(block.source, index + 1);
-        // The same block in new bytes ends the reuse, laid right where it stood: the engine still
-        // reuses its bytes up to their first difference (a card appended at a list's end keeps
-        // the whole list before it).
+        // The same block in new bytes ends the reuse. It is laid right where it stood when the
+        // measured order puts it next anyway: the engine still reuses its bytes up to their first
+        // difference (a card appended at a list's end keeps the whole list before it). A block
+        // the order has moved behind others is not pulled back to the front.
         if block.text != event.text {
+            if (0..index).all(|earlier| lead.contains(&earlier)) {
+                lead.push(index);
+            }
             break;
         }
+        lead.push(index);
+        next.insert(block.source, index + 1);
     }
     let led: HashSet<usize> = lead.iter().copied().collect();
     let mut slots: Vec<Option<Planned<T>>> = planned.into_iter().map(Some).collect();
