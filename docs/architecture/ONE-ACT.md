@@ -757,6 +757,31 @@ line.
 - **So the ledger orders segments by how widely they are shared and how stable they are.** Most
   shared and most stable go nearest the root, so the trunk is long and branches split late.
 
+**Engine boundary audit (Codex, 2026-11-06; source, not live proof).** At fork
+`0d7dda6ae`, `server-context.cpp::get_available_slot` restricts its LCP search to
+`task.id_slot` when the core specifies a slot. Core `KvSlotPool::lease` prefers the
+same `PageKey` holder, then a free index; it has no canonical token-prefix directory.
+Consequently a core-chosen slot cannot rely on the fork to search other holders.
+`copy_state_to` copies the complete sequence only at `SLOT_STATE_DONE_PROMPT`, including
+prompt bookkeeping, and is used for child tasks. The HTTP slot API exposes save,
+save-size, restore and erase, not cross-slot sequence copy. Existing `seq_cp` is not
+an executable cross-mind cache-hit contract.
+
+The first engine interface must therefore carry an **exact prefix path**, model/template/
+adapter fingerprint, engine incarnation, sequence revision and recoverable token boundary.
+A content segment hash alone proves neither token identity nor recurrent-state compatibility.
+An engine-owned operation must validate and retain both source and destination custody,
+preserve a displaced destination through the existing page custodian, then copy state and
+publish the destination revision together. Acquire physical slots in a consistent order;
+never retain one while waiting indefinitely for the other. Invalidated source, engine change,
+unsupported recurrent boundary and unavailable custody return typed outcomes without a copy
+receipt. General allocation continues through the existing owner; no second slot allocator.
+The initial actual-owner reproductions are: an explicit wrong-slot assignment cannot mask a
+longer compatible prefix elsewhere; a source mutation between lookup and execution invalidates
+the hit; a failed copy cannot publish destination residency. Only confirmed engine receipts
+advance the directory. Coordinate this with Fable's stale-restore repair and canonical ledger
+interface before overlapping edits. This specifies the next slice; it is not implemented yet.
+
 **It is a cache (Joel: "It's more about reuse like a cache, no?").** The tree is just the shape of the
 cache's contents when lines are shared.
 - Each segment's KV state, reached by an exact prefix path, is a cache line. Its key is the hash of
