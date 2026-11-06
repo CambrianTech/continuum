@@ -39,6 +39,7 @@ pub mod embedding;
 pub mod heuristic_adapter;
 pub mod inference_error;
 pub mod reply_room;
+pub mod recorded_response;
 pub mod json_in_prompt_tools;
 pub mod openai_adapter;
 pub mod openai_endpoints;

@@ -5,4 +5,4 @@ import type { QuotedReplyRoom } from "./QuotedReplyRoom";
  * Serializable observations, never executable custody. General generation is
  * explicitly outside admission; a successful admitted call cannot return it.
  */
-export type DispatchReceipt = { "kind": "unadmitted" } | { "kind": "counted", room: QuotedReplyRoom, } | { "kind": "provider_fixed", reply: number, };
+export type DispatchReceipt = { "kind": "legacy_unrecorded" } | { "kind": "unadmitted" } | { "kind": "counted", room: QuotedReplyRoom, } | { "kind": "provider_fixed", reply: number, };

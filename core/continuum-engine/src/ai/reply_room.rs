@@ -25,6 +25,8 @@ pub struct QuotedReplyRoom {
 #[ts(export, export_to = "../../../protocol/typescript/ai/DispatchReceipt.ts")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DispatchReceipt {
+    /// Historical storage predates dispatch receipts. Never admission evidence.
+    LegacyUnrecorded,
     Unadmitted,
     Counted { room: QuotedReplyRoom },
     ProviderFixed { reply: u32 },
@@ -35,7 +37,7 @@ impl DispatchReceipt {
         let reply = match self {
             Self::Counted { room } => room.reply,
             Self::ProviderFixed { reply } => reply,
-            Self::Unadmitted => return Err(crate::ai::inference_error::InferenceError::Protocol("admitted generation returned no dispatch receipt".into())),
+            Self::Unadmitted | Self::LegacyUnrecorded => return Err(crate::ai::inference_error::InferenceError::Protocol("admitted generation returned no dispatch receipt".into())),
         };
         if reply == 0 { return Err(crate::ai::inference_error::InferenceError::Protocol("sent reply must be positive".into())); }
         Ok(reply)
@@ -56,7 +58,7 @@ impl DispatchReceipt {
                     return Err(invalid());
                 }
             }
-            Self::Unadmitted => return Err(invalid()),
+            Self::Unadmitted | Self::LegacyUnrecorded => return Err(invalid()),
         }
         Ok(())
     }

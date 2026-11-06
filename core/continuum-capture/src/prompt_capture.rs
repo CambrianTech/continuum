@@ -476,7 +476,7 @@ pub fn decode(mut detail: PlaybackDetail) -> Result<CapturedCall, String> {
         .map_err(|e| format!("captured request: {e}"))?;
     let response = match detail.terminal.as_mut().and_then(|v| v.get_mut("response")) {
         Some(value) if !value.is_null() => Some(
-            serde_json::from_value::<TextGenerationResponse>(value.take()) // BOUNDARY: the persisted terminal response.
+            continuum_engine::ai::recorded_response::decode(value.take()) // BOUNDARY: the persisted terminal response, including pre-receipt history.
                 .map_err(|e| format!("captured response: {e}"))?,
         ),
         _ => None,
