@@ -735,6 +735,19 @@ line.
 - **So the ledger orders segments by how widely they are shared and how stable they are.** Most
   shared and most stable go nearest the root, so the trunk is long and branches split late.
 
+**It is a cache (Joel: "It's more about reuse like a cache, no?").** The tree is just the shape of the
+cache's contents when lines are shared.
+- Each segment's KV state, reached by an exact prefix path, is a cache line. Its key is the hash of
+  the path, not the segment alone, because state is order-dependent on this model.
+- The ledger is the tag directory. The hierarchy is section 5a's: L1 live slot, L2 RAM snapshot,
+  L3 disk page.
+- **Hit:** any level holds the path, so it is reached by sequence copy or restore. **Miss:** prefill.
+- **Policy:** maximise token hit rate by putting stable, widely shared segments first so paths
+  repeat; evict by value (sharing count × rebuild cost), never recency alone; prefetch the lines a
+  mind will need next.
+- **The one metric is token hit rate,** with prefill seconds as the miss penalty, per mind and
+  across minds.
+
 ### 5f. Extend the pipeline to the grid: place work near warm state
 
 Joel requested this direction be recorded on 2026-11-04. This is the extension of stages
