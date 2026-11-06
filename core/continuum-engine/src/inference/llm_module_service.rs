@@ -866,7 +866,7 @@ mod tests {
 
     fn canned_adapter_response() -> TextGenerationResponse {
         TextGenerationResponse {
-            quoted_reply_room: None,
+            dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
             text: "stub adapter completion".to_string(),
             finish_reason: AdapterFinishReason::Stop,
             model: "stub-model".to_string(),

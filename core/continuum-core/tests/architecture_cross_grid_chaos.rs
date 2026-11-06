@@ -315,7 +315,7 @@ async fn transport_remains_callable_after_peer_timeout() {
 
     // ------ SECOND request: real reply, expect Ok ------
     let canned = TextGenerationResponse {
-        quoted_reply_room: None,
+        dispatch: continuum_engine::ai::reply_room::DispatchReceipt::Unadmitted,
         text: "pong after the silence".to_string(),
         finish_reason: FinishReason::Stop,
         model: "test-model".to_string(),

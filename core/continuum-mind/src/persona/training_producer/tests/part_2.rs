@@ -367,7 +367,7 @@ use super::*;
             capture: uuid::Uuid::new_v4().to_string(),
             request: TextGenerationRequest::default(),
             response: TextGenerationResponse {
-                quoted_reply_room: None,
+                dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
                 text: "thinking it over".into(),
                 finish_reason: crate::ai::FinishReason::Stop,
                 model: "m".into(),
@@ -427,7 +427,7 @@ use super::*;
             capture: uuid::Uuid::new_v4().to_string(),
             request: TextGenerationRequest::default(),
             response: TextGenerationResponse {
-                quoted_reply_room: None,
+                dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
                 text: text.into(),
                 finish_reason: crate::ai::FinishReason::Stop,
                 model: "m".into(),

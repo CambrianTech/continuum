@@ -443,7 +443,7 @@ impl AIProviderAdapter for NoSeat {
 /// The adapter her request goes to now honours her dispatch terms, like every capability here.
 #[async_trait]
 impl crate::ai::adapter::DispatchTermsPolicy for PlacementSwitch {
-    async fn generate_admitted(
+    async fn generate_with_terms(
         &self,
         request: TextGenerationRequest,
         terms: crate::ai::types::DispatchTerms,

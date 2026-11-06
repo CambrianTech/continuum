@@ -588,7 +588,7 @@ fn takes_think(offer: Option<&crate::capacity::gossip::CapacityOffer>) -> bool {
 /// seat that advertises it, and a seat that does not is refused typed (never sent unbounded).
 #[async_trait]
 impl crate::ai::adapter::DispatchTermsPolicy for AircRemoteInferenceAdapter {
-    async fn generate_admitted(
+    async fn generate_with_terms(
         &self,
         request: TextGenerationRequest,
         terms: crate::ai::types::DispatchTerms,
@@ -601,7 +601,12 @@ impl crate::ai::adapter::DispatchTermsPolicy for AircRemoteInferenceAdapter {
                 model: model.unwrap_or_default().to_owned(), // unwrap_or_default: no lane model and none requested is said as empty
             });
         }
-        self.generate_with(request, terms.think, sink).await.map_err(Into::into)
+        let crate::ai::reply_room::OutputIntent::Fixed(reply) = terms.output else {
+            return Err(crate::ai::inference_error::InferenceError::AdmissionUncounted { model: model.unwrap_or_default().to_owned() }); // Diagnostic label only: no requested model is represented by an empty name.
+        };
+        let mut response = self.generate_with(request, terms.think, sink).await.map_err(crate::ai::inference_error::InferenceError::from)?;
+        response.dispatch = crate::ai::reply_room::DispatchReceipt::ProviderFixed { reply: reply.get() };
+        Ok(response)
     }
 }
 

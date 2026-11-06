@@ -717,7 +717,7 @@ pub mod test_support {
         tool_calls: Option<Vec<ToolCall>>,
     ) -> TextGenerationResponse {
         TextGenerationResponse {
-            quoted_reply_room: None,
+            dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
             text: text.to_string(),
             finish_reason: finish,
             model: "scripted".to_string(),
@@ -779,6 +779,16 @@ pub mod test_support {
                 on_request: Mutex::new(None),
             }
         }
+        fn check_fixture_dispatch(&self, request: &TextGenerationRequest) -> Result<(), crate::ai::inference_error::InferenceError> {
+            let injected = self.on_request.lock().expect("fixture request hook")
+                .as_mut().and_then(|hook| hook(request));
+            let rejection = injected.or_else(|| self.rejections.lock().expect("fixture rejection queue").pop_front());
+            if let Some(error) = rejection {
+                self.seen.lock().expect("fixture request log").push(request.clone());
+                return Err(error);
+            }
+            Ok(())
+        }
         pub fn call_count(&self) -> usize {
             self.seen.lock().unwrap().len()
         }
@@ -787,14 +797,34 @@ pub mod test_support {
     /// Records the terms each request was dispatched under beside it (`terms_seen`).
     #[async_trait]
     impl crate::ai::adapter::DispatchTermsPolicy for ScriptedAdapter {
-        async fn generate_admitted(
+        async fn generate_with_terms(
             &self,
             request: TextGenerationRequest,
             terms: crate::ai::types::DispatchTerms,
             sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
         ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
             self.terms_seen.lock().expect("fixture terms log").push(terms); // JUSTIFIED: test fixture lock, never poisoned
-            self.generate_stream_checked(request, sink).await
+            self.check_fixture_dispatch(&request)?;
+            // Canned backend: the scripted usage is its independent counter oracle,
+            // including explicit zero. This models consumer contracts, not a real tokenizer.
+            let dispatch = match terms.output {
+                crate::ai::reply_room::OutputIntent::Fixed(reply)
+                    if !terms.admission.is_some_and(|a| a.lease.is_some() || a.priced == crate::ai::types::PromptAdmission::EngineCounted) =>
+                    crate::ai::reply_room::DispatchReceipt::ProviderFixed { reply: reply.get() },
+                _ => {
+                    let prompt = self.responses.lock().expect("fixture response script").front()
+                        .ok_or_else(|| crate::ai::inference_error::InferenceError::Protocol("scripted counter exhausted".into()))?.usage.input_tokens;
+                    let admission = terms.admission.ok_or_else(|| crate::ai::inference_error::InferenceError::Protocol("scripted adaptive admission missing".into()))?;
+                    let room = terms.output.resolve(prompt, admission.window, admission.window)
+                        .map_err(|short| crate::ai::inference_error::InferenceError::ContextExceeded { requested: short.prompt, available: short.window })?;
+                    crate::ai::reply_room::DispatchReceipt::Counted { room }
+                }
+            };
+            let mut request = request;
+            request.max_tokens = Some(dispatch.admitted_reply()?);
+            let mut response = self.generate_stream(request, sink).await.map_err(crate::ai::inference_error::InferenceError::from)?;
+            response.dispatch = dispatch;
+            Ok(response)
         }
     }
 
@@ -834,21 +864,7 @@ pub mod test_support {
             sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
         ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError>
         {
-            let injected = self.on_request.lock().expect("fixture request hook")
-                .as_mut().and_then(|hook| hook(&request));
-            if let Some(error) = injected {
-                self.seen.lock().expect("fixture request log").push(request);
-                return Err(error);
-            }
-            let rejection = self
-                .rejections
-                .lock()
-                .expect("fixture rejection queue")
-                .pop_front();
-            if let Some(error) = rejection {
-                self.seen.lock().expect("fixture request log").push(request);
-                return Err(error);
-            }
+            self.check_fixture_dispatch(&request)?;
             self.generate_stream(request, sink)
                 .await
                 .map_err(Into::into)

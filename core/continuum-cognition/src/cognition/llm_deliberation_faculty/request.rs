@@ -297,10 +297,12 @@ impl LlmDeliberationFaculty {
             crate::cognition::resident_service::note_generation(self.persona_id);
         }
         if let Ok(response) = &gen_result {
-            if let Some(room) = response.quoted_reply_room {
-                if let Some(output) = allocation.as_mut().and_then(|a| a.output_room.as_mut()) {
-                    output.cap = room.reply;
-                }
+            let reply = match response.dispatch.admitted_reply() {
+                Ok(reply) => reply,
+                Err(error) => return Some(Err(error)),
+            };
+            if let Some(output) = allocation.as_mut().and_then(|a| a.output_room.as_mut()) {
+                output.cap = reply;
             }
         }
         receipts.push(

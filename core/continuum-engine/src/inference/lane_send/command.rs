@@ -83,7 +83,7 @@ impl PreparedCommand {
         if let Some(body) = &self.fixed_body { return Ok(body.clone()); }
         let mut body = self.prompt.clone();
         body.insert("max_tokens".into(), serde_json::json!(reply));
-        let body = serde_json::to_vec(&body)
+        let body = serde_json::to_vec(&body) // wire boundary: immutable generation request sent to the model HTTP endpoint
             .map_err(|e| InferenceError::Protocol(format!("generation serialization failed: {e}")))?;
         Ok(body)
     }

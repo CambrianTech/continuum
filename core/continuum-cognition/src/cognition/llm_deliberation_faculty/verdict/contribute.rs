@@ -155,7 +155,7 @@ impl LlmDeliberationFaculty {
         );
         let visual = match self.active_visual_feedback(&binding).await {
             Ok(visual) => visual,
-            Err(error) => return Some(Contribution::deliberation_fault(error)),
+            Err(error) => return Some(Contribution::deliberation_fault(error.to_string())),
         };
         let mut rejected_prompt_tokens = None;
         let mut rejected_measured_tokens = None;
@@ -174,9 +174,6 @@ impl LlmDeliberationFaculty {
         // The think's bound the act request carried (`act_room.rs`): the classifier reads the same one.
         let mut sent_reasoning_budget: Option<u32>;
         let kind = self.turn_kind(ws);
-        // An act's cap follows its prompt's room, so a refusal its reserve would have passed is
-        // re-sent once at the engine's measured prompt, with the same view (never a refit of her view).
-        let mut room_resized = false;
         // Re-rendered once against a grant that moved between render and dispatch.
         let mut grant_rerendered = false;
         // Correct only frozen admitted input, consuming a finite optional unit on
@@ -389,17 +386,6 @@ impl LlmDeliberationFaculty {
                         corrective_replay_used = rejected_prompt_tokens.is_some(),
                         "provider capacity refusal: retained measured token density for prompt fitting"
                     );
-                    // The act's cap was the room past an estimated prompt; the engine counted more.
-                    // When her reserve still fits beside the measured prompt, the cap shrinks to
-                    // the measured room (the calibration above now prices this prompt at the
-                    // engine's count) and her view is sent unchanged.
-                    if kind == TurnKind::Act
-                        && !room_resized
-                        && requested.saturating_add(view.completion_reserve) < available
-                    {
-                        room_resized = true;
-                        continue;
-                    }
                     if newest_refit_sent {
                         let error = self.newest_refit_refused(requested, available, view.completion_reserve);
                         return Some(
@@ -491,10 +477,10 @@ impl LlmDeliberationFaculty {
                     if let Some(error) = response.generation_error() {
                         return Some(Contribution::deliberation_fault(error));
                     }
-                    if let Some(room) = response.quoted_reply_room {
-                        // Classify the cap actually sent, not the render-time prediction.
-                        sent_allowance = Some(room.reply);
-                    }
+                    sent_allowance = match response.dispatch.admitted_reply() {
+                        Ok(reply) => Some(reply),
+                        Err(error) => return Some(Contribution::deliberation_fault(error.to_string())),
+                    };
                     self.learn_prompt_density(
                         &binding,
                         &view,

@@ -155,7 +155,7 @@ async fn round_trip() {
         .expect("fixture setup should succeed");
 
     let canned = TextGenerationResponse {
-        quoted_reply_room: None,
+        dispatch: continuum_engine::ai::reply_room::DispatchReceipt::Unadmitted,
         text: "pong from the remote peer".to_string(),
         finish_reason: FinishReason::Stop,
         model: "test-model".to_string(),

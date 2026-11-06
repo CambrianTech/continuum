@@ -698,7 +698,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // scheduler via `is_eog_token`) and don't leak as text.
 
         Ok(TextGenerationResponse {
-            quoted_reply_room: None,
+            dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
             text,
             finish_reason: FinishReason::Stop,
             model: backend.model_id().to_string(),

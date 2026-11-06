@@ -600,7 +600,7 @@ mod tests {
         let sink = JsonlPromptCaptureSink::open(dir.path(), replay_id).expect("execution sink");
         let target = dir.path().join("must-not-be-written.txt");
         let response = TextGenerationResponse {
-            quoted_reply_room: None,
+            dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
             text: String::new(),
             finish_reason: crate::ai::FinishReason::ToolUse,
             model: "captured-model".into(),

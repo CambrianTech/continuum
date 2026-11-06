@@ -12,10 +12,54 @@ pub enum OutputIntent {
 
 /// Resolution evidence; the executable attempt must bind it to owned custody.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/QuotedReplyRoom.ts")]
 pub struct QuotedReplyRoom {
     pub prompt: u32,
     pub window: u32,
     pub reply: u32,
+}
+
+/// Serializable observations, never executable custody. General generation is
+/// explicitly outside admission; a successful admitted call cannot return it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/DispatchReceipt.ts")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DispatchReceipt {
+    Unadmitted,
+    Counted { room: QuotedReplyRoom },
+    ProviderFixed { reply: u32 },
+}
+
+impl DispatchReceipt {
+    pub fn admitted_reply(self) -> Result<u32, crate::ai::inference_error::InferenceError> {
+        let reply = match self {
+            Self::Counted { room } => room.reply,
+            Self::ProviderFixed { reply } => reply,
+            Self::Unadmitted => return Err(crate::ai::inference_error::InferenceError::Protocol("admitted generation returned no dispatch receipt".into())),
+        };
+        if reply == 0 { return Err(crate::ai::inference_error::InferenceError::Protocol("sent reply must be positive".into())); }
+        Ok(reply)
+    }
+
+    pub fn verify(self, terms: crate::ai::types::DispatchTerms) -> Result<(), crate::ai::inference_error::InferenceError> {
+        use crate::ai::inference_error::InferenceError;
+        let reply = self.admitted_reply()?;
+        let invalid = || InferenceError::Protocol("sent dispatch receipt contradicts requested authority".into());
+        match self {
+            Self::Counted { room } => {
+                if terms.admission.is_some_and(|a| room.window > a.window) { return Err(invalid()); }
+                if terms.output.resolve(room.prompt, room.window, room.window).ok() != Some(room) { return Err(invalid()); }
+            }
+            Self::ProviderFixed { .. } => {
+                if !matches!(terms.output, OutputIntent::Fixed(cap) if cap.get() == reply)
+                    || terms.admission.is_some_and(|a| a.lease.is_some() || a.priced == crate::ai::types::PromptAdmission::EngineCounted) {
+                    return Err(invalid());
+                }
+            }
+            Self::Unadmitted => return Err(invalid()),
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +98,26 @@ mod tests {
 
     fn positive(n: u32) -> NonZeroU32 {
         NonZeroU32::new(n).expect("positive fixture")
+    }
+
+    #[test]
+    fn admitted_results_reject_missing_or_substituted_authority() {
+        let mut terms = crate::ai::types::DispatchTerms {
+            output: OutputIntent::Fixed(positive(32)), admission: None, think: None,
+        };
+        assert!(DispatchReceipt::Unadmitted.verify(terms).is_err());
+        assert!(DispatchReceipt::ProviderFixed { reply: 31 }.verify(terms).is_err());
+        assert!(DispatchReceipt::ProviderFixed { reply: 32 }.verify(terms).is_ok());
+        terms.output = OutputIntent::UseAdmittedRoom { required_reply: positive(4534) };
+        terms.admission = Some(crate::ai::types::RequestAdmission {
+            window: 32512, lease: None, priced: crate::ai::types::PromptAdmission::EngineCounted,
+        });
+        assert!(DispatchReceipt::ProviderFixed { reply: 5290 }.verify(terms).is_err());
+        let room = QuotedReplyRoom { prompt: 27221, window: 32512, reply: 5290 };
+        assert!(DispatchReceipt::Counted { room }.verify(terms).is_ok());
+        assert!(DispatchReceipt::Counted { room: QuotedReplyRoom { reply: 5857, ..room } }.verify(terms).is_err());
+        assert!(DispatchReceipt::Counted { room: QuotedReplyRoom { window: 32513, reply: 5291, ..room } }.verify(terms).is_err());
+        assert!(serde_json::from_str::<DispatchReceipt>("{}").is_err(), "wire receipt has no compatibility default");
     }
 
     #[test]

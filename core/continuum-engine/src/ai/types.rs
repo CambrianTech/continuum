@@ -433,11 +433,8 @@ pub enum ResponseFormat {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct TextGenerationResponse {
-    /// The exact prompt/window/reply sent by a managed engine after room resolution.
-    /// Absent for providers that do not produce an exact-count dispatch receipt.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub quoted_reply_room: Option<crate::ai::reply_room::QuotedReplyRoom>,
+    /// Mandatory dispatch observation; unadmitted generation is explicitly distinct.
+    pub dispatch: crate::ai::reply_room::DispatchReceipt,
     pub text: String,
     pub finish_reason: FinishReason,
     pub model: String,

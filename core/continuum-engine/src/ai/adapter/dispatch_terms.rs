@@ -24,6 +24,16 @@ use crate::ai::types::{DispatchTerms, PromptAdmission, TextGenerationRequest, Te
 #[async_trait::async_trait]
 pub trait DispatchTermsPolicy: Send + Sync {
     async fn generate_admitted(
+        &self, request: TextGenerationRequest, terms: DispatchTerms,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, InferenceError> {
+        terms.validate_request(&request)?;
+        let response = self.generate_with_terms(request, terms, sink).await?;
+        response.dispatch.verify(terms)?;
+        Ok(response)
+    }
+
+    async fn generate_with_terms(
         &self,
         request: TextGenerationRequest,
         terms: DispatchTerms,
@@ -56,7 +66,12 @@ pub async fn generate_without_thinking<A: super::AIProviderAdapter + ?Sized>(
     sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
 ) -> Result<TextGenerationResponse, InferenceError> {
     refuse_unenforceable_admission(&request, &terms)?;
-    adapter.generate_stream_checked(request, sink).await
+    let crate::ai::reply_room::OutputIntent::Fixed(reply) = terms.output else {
+        return Err(InferenceError::AdmissionUncounted { model: model_of(&request) });
+    };
+    let mut response = adapter.generate_stream_checked(request, sink).await?;
+    response.dispatch = crate::ai::reply_room::DispatchReceipt::ProviderFixed { reply: reply.get() };
+    Ok(response)
 }
 
 /// The refusal of a think budget an adapter cannot carry, when the terms carry one.
@@ -74,7 +89,7 @@ macro_rules! dispatch_without_thinking {
     ($adapter:ty) => {
         #[async_trait::async_trait]
         impl $crate::ai::adapter::DispatchTermsPolicy for $adapter {
-            async fn generate_admitted(
+            async fn generate_with_terms(
                 &self,
                 request: $crate::ai::types::TextGenerationRequest,
                 terms: $crate::ai::types::DispatchTerms,
@@ -97,7 +112,7 @@ dispatch_without_thinking!(crate::ai::anthropic_adapter::AnthropicAdapter);
 /// budget is refused typed (the turn is never sent unbounded); an admission likewise.
 #[async_trait::async_trait]
 impl DispatchTermsPolicy for crate::inference::llamacpp_adapter::LlamaCppAdapter {
-    async fn generate_admitted(
+    async fn generate_with_terms(
         &self,
         request: TextGenerationRequest,
         terms: DispatchTerms,
