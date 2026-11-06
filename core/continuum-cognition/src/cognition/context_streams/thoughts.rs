@@ -8,6 +8,7 @@ use continuum_context::source::{Item, Source, StoredWhole};
 
 use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::working_memory::{ThoughtRecord, WmKind, WorkingMemory};
+use crate::commands::tool_output::Reopen;
 
 /// One entry of her interior chain.
 enum Entry {
@@ -71,7 +72,7 @@ impl Source<ContextMessage> for Thoughts<'_> {
                 }
                 Entry::Thought(record) => {
                     let summary = record.summary.as_ref().map(|summary| ContextMessage::user(format!("- {summary}")));
-                    let pointer = record.handle.as_ref().map(|handle| ContextMessage::user(format!("- (thought #{occurrence}, saved: tool/output {handle})")));
+                    let pointer = record.handle.as_ref().map(|handle| ContextMessage::user(format!("- (thought #{occurrence}, saved: {})", Reopen::Output(handle))));
                     match (record.text, record.handle, record.stored_chars) {
                         // Resident: her whole thought.
                         (Some(text), _, _) => Item::whole(id, cause, key, ContextMessage::user(format!("- {text}"))).with_summary(summary).with_pointer(pointer),

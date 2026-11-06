@@ -41,7 +41,7 @@ impl Source<ContextMessage> for OpenViews<'_> {
         if lines.is_empty() {
             return Vec::new();
         }
-        let mut items = vec![self.standing("banner", Views::BANNER.to_owned())];
+        let mut items = vec![self.standing("banner", Views::banner())];
         // A view follows from the act that last read it.
         items.extend(lines.into_iter().map(|line| {
             let id = element(self.persona, Producer::OpenView, format!("{}#{}", line.key, line.touched_seq).as_bytes());

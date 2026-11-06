@@ -232,6 +232,8 @@ fn a_thought_renders_the_same_whatever_the_served_window() {
 // names the first and last #n, how many, and how one reopens (tool/output act=<n>), never a list
 // of ids. The banner stands ahead of the run (the view never folds a standing head), so the
 // run is acts alone; a run whose keys are not act numbers names nothing rather than a guess.
+// The verb is the command's real NAME, rendered from its typed `TOOL_OUTPUT` (the literal here
+// pins what she reads; the type pins that she holds it).
 #[test]
 fn her_folded_acts_name_their_range_and_count_in_one_line() {
     let memory = WorkingMemory::new(2);
@@ -242,7 +244,7 @@ fn her_folded_acts_name_their_range_and_count_in_one_line() {
     };
     let run: Vec<_> = (3200..=3330).map(|seq: u64| item(&seq.to_string())).collect();
     let Some(block) = actions.fold(&run) else { panic!("a run with acts folds") };
-    assert_eq!(block.text, "[actions #3200-#3330: 131 earlier acts folded; reopen one with tool/output act=<n>]");
+    assert_eq!(block.text, "[actions #3200-#3330: 131 earlier acts folded; reopen one by its #n, e.g. read_output({\"act\":3200})]");
     assert!(actions.fold(&[item("banner")]).is_none(), "a run that is not acts names nothing");
 }
 
@@ -371,7 +373,7 @@ fn her_unchanged_reread_reaches_her_view_as_a_repeat_and_an_undeclared_act_never
     assert_eq!(view.advance(&[&actions as &dyn Source<_>]).repeats, 1);
     let text = view.render().map(|m: &super::ContextMessage| m.text.clone()).collect::<Vec<_>>().join("\n");
     assert_eq!(text.matches(body.as_str()).count(), 1, "the whole arrives once");
-    assert!(text.contains("repeat of #1, outcome unchanged; reopen with tool/output act=1]"), "{text}");
+    assert!(text.contains(r#"repeat of #1, outcome unchanged; reopen with read_output({"act":1})]"#), "{text}");
 
     let memory = WorkingMemory::new(8);
     let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };

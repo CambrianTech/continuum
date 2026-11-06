@@ -1,6 +1,7 @@
 #![cfg(test)]
     use super::*;
     use super::test_support::*;
+    use crate::ai::types::ToolCall as NativeToolCall;
     use crate::runtime::{
         CommandExecutor, CommandResult, ModuleConfig, ModuleContext, ModulePriority,
         ModuleRegistry, ServiceModule,

@@ -12,6 +12,7 @@ use continuum_context::source::{Item, Source, StoredWhole};
 
 use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::working_memory::WorkingMemory;
+use crate::commands::tool_output::Reopen;
 
 pub(crate) struct Actions<'a> {
     pub memory: &'a WorkingMemory,
@@ -111,7 +112,8 @@ impl Source<ContextMessage> for Actions<'_> {
         let last: u64 = folded.last()?.key().parse().ok()?;
         let count = folded.len();
         Some(ContextMessage::user(format!(
-            "[actions #{first}-#{last}: {count} earlier acts folded; reopen one with tool/output act=<n>]"
+            "[actions #{first}-#{last}: {count} earlier acts folded; reopen one by its #n, e.g. {}]",
+            Reopen::Act(first)
         )))
     }
 
@@ -119,11 +121,11 @@ impl Source<ContextMessage> for Actions<'_> {
     /// request to a command that only observes, the same outcome): one line naming it and how to
     /// reopen it, never a second copy of the whole (MIND-CONTEXT invariant 4).
     fn repeat(&self, item: &Item<ContextMessage>, ancestor: &Item<ContextMessage>) -> Option<ContextMessage> {
+        let earlier: u64 = ancestor.key().parse().ok()?;
         Some(ContextMessage::user(format!(
-            "[result #{}: repeat of #{}, outcome unchanged; reopen with tool/output act={}]",
+            "[result #{}: repeat of #{earlier}, outcome unchanged; reopen with {}]",
             item.key(),
-            ancestor.key(),
-            ancestor.key()
+            Reopen::Act(earlier)
         )))
     }
 

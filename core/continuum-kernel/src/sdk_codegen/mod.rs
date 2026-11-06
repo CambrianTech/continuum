@@ -63,6 +63,8 @@ pub mod conformance;
 pub mod emit;
 pub mod events;
 pub mod handler;
+mod verb_ref;
+pub use verb_ref::{offer_style_for, primary_alias, wire_name, OfferStyle, VerbRef};
 pub use command::{
     natives_without_an_outcome, outcome_projector, project_result, read_outcome, read_refusals_only, stateless_command_objects,
     ActVerdict, ActionCommand, DynCommand, OutcomeProjector, ProjectsOutcome, StatelessCommand, ToolVerdict,

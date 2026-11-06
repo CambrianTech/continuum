@@ -741,7 +741,12 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // tokens of a 187,136 slot, 0 acts for a day). The docs were cut to a few words each (it
     // measured 17650 first); the 151 left are the three fields themselves, the same trade as
     // #5112's work/list limit. Measured locally at 17486.
-    const AGENTIC_SURFACE_CEILING: u32 = 17486;
+    // 17486 -> 17935 (2026-11-06, the M5: no act could call tool/output while every folded act,
+    // saved result and thought named it): tool/output joined her hands as `Always`, the verb every
+    // handle names. Its description was cut to one line, its param docs to a few words each and
+    // its filter enum's docs removed (it measured 18757 first); the 449 left are its ten params,
+    // the reach itself. Measured locally at 17935.
+    const AGENTIC_SURFACE_CEILING: u32 = 17935;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(

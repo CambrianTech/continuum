@@ -82,6 +82,7 @@ pub const WM_SETTLEMENT_PREFIX: &str = "[answered]";
 // behavior on a small machine is unchanged while a big window finally gets a big budget).
 // [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
 use crate::cognition::act_observe::Observation;
+use crate::commands::tool_output::Reopen;
 
 /// Her context view, the type her working memory checkpoints.
 pub(crate) type ContextView =
@@ -110,7 +111,7 @@ impl std::fmt::Display for ResultAttribution<'_> {
             None => f.write_str("; operation unrecorded")?,
         }
         if let Some(handle) = self.spill_handle {
-            write!(f, "; output handle: tool/output {handle}")?;
+            write!(f, "; saved: {}", Reopen::Output(handle))?;
         }
         Ok(())
     }
@@ -127,23 +128,6 @@ impl<'a> ResultAttribution<'a> {
     }
 }
 
-/// The line a collapsed result leaves: what it was, and the handle that reopens it.
-fn collapsed_pointer(record: &action_log::ActionRecord) -> String {
-    format!("[result {}{} — collapsed]", ResultAttribution::of(record), workspace_label(record.scope.as_deref()))
-}
-
-/// Recognize ONLY the standalone pointer representation emitted by this owner.
-/// Diagnostic replay uses this to refuse removal of source bodies or native protocol.
-pub(super) fn is_collapsed_result_pointer(text: &str) -> bool {
-    let Some(body) = text.strip_prefix("[result #").and_then(|s| s.strip_suffix(" — collapsed; query tool/output to expand]")) else { return false };
-    let Some((seq, rest)) = body.split_once("; room ") else { return false };
-    if seq.parse::<u64>().is_err() { return false; }
-    let Some((room, rest)) = rest.split_once("; operation ") else { return false };
-    if room != "unrecorded" && Uuid::parse_str(room).is_err() { return false; }
-    let Some((operation, handle)) = rest.rsplit_once("; output handle: tool/output ") else { return false };
-    !operation.is_empty() && !handle.is_empty()
-        && !text.contains(['\n', '\r']) && !handle.chars().any(char::is_whitespace)
-}
 
 /// Lifecycle of a dispatched (background) command the persona sent away — a sentinel,
 /// a compile, a debugger. Streams continuously: `Running` updates arrive in place, then a
@@ -532,7 +516,12 @@ impl VolatileSnapshot {
 
 /// "; workspace <dir>" for a result recorded under a root; empty for one recorded before.
 fn workspace_label(root: Option<&str>) -> String {
-    root.and_then(|r| std::path::Path::new(r).file_name()).map_or(String::new(), |n| format!("; workspace {}", n.to_string_lossy()))
+    workspace_name(root).map_or(String::new(), |name| format!("; workspace {name}"))
+}
+
+/// The name a workspace root is shown by: its last path component.
+fn workspace_name(root: Option<&str>) -> Option<String> {
+    root.and_then(|r| std::path::Path::new(r).file_name()).map(|n| n.to_string_lossy().into_owned())
 }
 
 /// Unknown provenance remains visible, matching the existing entry projection.
@@ -615,6 +604,8 @@ pub struct WmEntry {
 
 mod derived;
 mod action_log;
+mod collapsed_receipt;
+pub(crate) use collapsed_receipt::CollapsedReceipt;
 mod continuity;
 mod ledger;
 mod perception;

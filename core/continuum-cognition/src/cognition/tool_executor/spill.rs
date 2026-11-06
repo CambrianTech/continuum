@@ -769,7 +769,7 @@ impl<R: std::io::BufRead> Scan<R> {
             let n = newline.map_or(chunk.len(), |i| i + 1);
             if retain {
                 if n > self.allowance.saturating_sub(bytes.len()) {
-                    return Err(format!("line {} at byteOffset {offset} exceeds scan allowance {} bytes; use tool/output with byteOffset {offset} for exact byte pages (regex was not evaluated on a partial line)", self.line + 1, self.allowance));
+                    return Err(format!("line {} at byteOffset {offset} exceeds scan allowance {} bytes; use {} with byteOffset {offset} for exact byte pages (regex was not evaluated on a partial line)", self.line + 1, self.allowance, crate::commands::tool_output::TOOL_OUTPUT));
                 }
                 bytes.extend_from_slice(&chunk[..n]);
             }

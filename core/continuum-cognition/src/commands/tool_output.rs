@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::cognition::tool_executor::spill;
-use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
+use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, ProjectsOutcome, ToolVerdict, VerbRef};
 
 /// Default context lines around each grep match (like `grep -C2`).
 // context-budget-exempt: grep-style -C lines around a match — a display shape; the rendered slice's total size is window-derived (render_slice_chars)
@@ -30,11 +30,11 @@ const DEFAULT_MAX_MATCHES: usize = 50;
 // [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
 use crate::cognition::context_budget::ContextBudget;
 
-/// Prebuilt failure-hunting filters, so a persona navigates a flood WITHOUT having to
-/// know regex — the PX "hit the ground running" affordance for the overwhelming case
-/// (a build/test/launch log torrent). Each maps to a battle-tested pattern covering the
-/// common toolchains (rustc/cargo, node, python, clang, generic). Discoverable: the enum
-/// values show up in `commands/help`, so the persona sees the menu of filters.
+// Prebuilt failure-hunting filters, so a persona navigates a flood WITHOUT having to
+// know regex — the PX "hit the ground running" affordance for the overwhelming case
+// (a build/test/launch log torrent). Each maps to a battle-tested pattern covering the
+// common toolchains (rustc/cargo, node, python, clang, generic). The doc below rides her
+// schema every act, so it has none (the field that holds it says what it is).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 #[ts(
@@ -42,13 +42,11 @@ use crate::cognition::context_budget::ContextBudget;
     export_to = "../../../protocol/typescript/tool/OutputFilter.ts"
 )]
 pub enum OutputFilter {
-    /// Everything that looks like a hard failure — the default "what broke?" filter.
+    // No variant docs: they would turn her schema's plain enum into a `oneOf` of described
+    // constants on an `Always` verb. The names say what each greps (the pattern is below).
     Errors,
-    /// Compiler/linter warnings.
     Warnings,
-    /// Test failures + assertion/panic sites.
     Failures,
-    /// Build/test verdict + progress lines (the "how did it end?" skim).
     Summary,
 }
 
@@ -80,54 +78,56 @@ impl OutputFilter {
     export_to = "../../../protocol/typescript/tool/ToolOutputParams.ts"
 )]
 pub struct ToolOutputParams {
-    /// The output id from the elision marker (e.g. `"deadbeefcafe0001"`). This is
-    /// the spill the preview told you was saved.
+    /// The saved output's id.
     // `outputId` on the wire, NOT `handle`: every dispatch crosses
     // `CommandRequest::from_value`, whose own `handle: Option<HandleRef>` claims that
     // name and refuses a string for it (`expected struct HandleRef`) — so the call the
     // spill-recovery hint told every citizen to make could not be made (card ea28d2f6).
     #[serde(rename = "outputId")]
     #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub handle: Option<String>,
-    /// One of your act numbers (the `#n` your actions name, folded ones included), in
-    /// place of `outputId`: reopens that act's saved output. Give exactly one of the two.
+    /// Or an act number (#n): its saved output.
     #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(type = "number")]
     pub act: Option<u64>,
-    /// A PREBUILT filter — the easy path, no regex needed: `errors` (what broke?),
-    /// `warnings`, `failures` (which tests failed?), or `summary` (how did it end?).
-    /// Start here on a flooded build/test log. Overridden by an explicit `pattern`.
+    /// A preset grep, no regex needed.
     #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub filter: Option<OutputFilter>,
-    /// A regex to grep for — the power-user path when a preset isn't specific enough.
-    /// e.g. `"error\\[E0308\\]"` for one exact error. Omit to use `filter`, a range,
-    /// or the tail.
+    /// A regex to grep for (overrides filter).
     #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
-    /// Lines of context to keep around each grep match (default 2, like `grep -C`).
+    /// Context lines per match (default 2).
     #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(type = "number")]
     pub context_lines: Option<usize>,
-    /// Read an explicit 1-based line range instead of grepping: the first line.
+    /// First line of a range (1-based).
     #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(type = "number")]
     pub start_line: Option<usize>,
-    /// Read an explicit 1-based line range instead of grepping: the last line.
+    /// Last line of the range.
     #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(type = "number")]
     pub end_line: Option<usize>,
-    /// Cap on the number of grep match windows returned (default 50).
+    /// Most matches shown (default 50).
     #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(type = "number")]
     pub max_matches: Option<usize>,
-    /// Absolute byte position for exact, non-consuming retrieval. Mutually exclusive
-    /// with line/regex queries. Follow nextByteOffset to recover the remaining bytes.
+    /// Exact bytes from here (alone); continue at nextByteOffset.
     #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(type = "number")]
     pub byte_offset: Option<u64>,
-    /// Requested byte count; a page fits the live render allowance. No bytes are
-    /// discarded when this request spans multiple pages: nextByteOffset continues it.
+    /// Bytes wanted from byteOffset.
     #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(type = "number")]
     pub byte_length: Option<usize>,
 }
@@ -191,20 +191,24 @@ impl ActionCommand for ToolOutput {
     //
     // Inbound resolution accepts every style (`from_wire_name`), so adding
     // aliases can only widen what she can say, never narrow it.
+    //
+    // Aliases were not enough: it was not NATIVE, so a native-call model could not emit it at
+    // all (measured 2026-11-06 on the M5: no act called it, while every folded act, saved result
+    // and thought handle named it). It is the verb every handle names, and a handle can appear in
+    // any surface she is offered, a room's narrowed one included, so it declares `Always`: the
+    // only tier the tool surface keeps whatever a recipe declares (`ToolSurface::declared`).
+    // Every handle names it through `TOOL_OUTPUT`, which only compiles while that holds.
+    const NATIVE: bool = true;
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure =
+        continuum_base::tool_disclosure::Disclosure::Always;
+    const EFFECT: continuum_base::tool_effect::ToolEffect =
+        continuum_base::tool_effect::ToolEffect::Reopens;
     const ALIASES: &'static [&'static str] =
         &["read_output", "grep_output", "tail_output", "search_output"];
+    // In every surface (`Always`), so every word here rides every act: the how lives on the
+    // params, each a few words.
     const DESCRIPTION: &'static str =
-        "Page or grep a large tool result that was saved to disk because it was too big \
-         to show in full. Pass the `outputId` from the elision marker, OR `act` with one of \
-         your act numbers (the #n your actions name, folded ones included). EASIEST: set \
-         `filter` to a prebuilt preset — `errors` (what broke?), `warnings`, `failures` \
-         (which tests failed?), or `summary` (how did it end?) — no regex needed. For a \
-         specific hunt use `pattern` (a regex, e.g. \"error\\[E0308\\]\"). Or read an \
-         exact slice with `startLine`/`endLine`. With none of these, you get the tail \
-         (where build verdicts live). Exact byte pages use byteOffset and optional byteLength; \
-         follow nextByteOffset. Check encoding (utf8 or base64). Line/regex scans examine \
-         the whole file with bounded memory; an oversized line is refused with its byte \
-         offset, never partially searched.";
+        "Reopen a saved result by outputId or act: grep it, read lines or bytes, or its tail.";
     type Params = ToolOutputParams;
     type Output = ToolOutputResult;
 
@@ -220,9 +224,9 @@ impl ActionCommand for ToolOutput {
             .as_ref()
             .map(|c| c.peer_id.as_uuid())
             .ok_or_else(|| {
-                CommandError::Invalid(
-                    "tool/output needs an authenticated caller to scope the output to".into(),
-                )
+                CommandError::Invalid(format!(
+                    "{TOOL_OUTPUT} needs an authenticated caller to scope the output to"
+                ))
             })?;
 
         let act_handle =
@@ -267,6 +271,51 @@ impl ActionCommand for ToolOutput {
     }
 }
 crate::register_stateless_command!(ToolOutput);
+continuum_kernel::register_outcome!(ToolOutput);
+
+/// The verb every handle she is shown names: it renders as her tool list offers it (today
+/// `read_output`, its first alias), and it only builds while `tool/output` is native and in every
+/// surface. Text that reopens something renders a [`Reopen`], which carries it.
+pub const TOOL_OUTPUT: VerbRef<ToolOutput> = VerbRef::always();
+
+/// THE reopen affordance: one verb, one call form, its real parameter names (the command's own
+/// params, serialized), rendered once. Every handle she is shown (a folded act, a repeat, a saved
+/// result, a shed thought, a collapsed receipt, a too-large result) names its way back with this,
+/// so there is one form to learn and it is always a call she can make as written:
+/// `read_output({"act":3})`, `read_output({"outputId":"deadbeef"})`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reopen<'a> {
+    /// One of her act numbers.
+    Act(u64),
+    /// A saved output, by the id its preview named.
+    Output(&'a str),
+}
+
+impl Reopen<'_> {
+    fn params(self) -> ToolOutputParams {
+        match self {
+            Reopen::Act(act) => ToolOutputParams { act: Some(act), ..Default::default() },
+            Reopen::Output(handle) => ToolOutputParams { handle: Some(handle.to_owned()), ..Default::default() },
+        }
+    }
+}
+
+impl std::fmt::Display for Reopen<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A params struct of strings and numbers always serializes; an error is a formatter error.
+        let args = serde_json::to_string(&self.params()).map_err(|_| std::fmt::Error)?;
+        write!(f, "{TOOL_OUTPUT}({args})")
+    }
+}
+
+/// A read that brought nothing back is a failure she sees as one, like `grep` exiting 1: a
+/// pattern with no match, a range past the end, an empty page. A refusal (no such output, a bad
+/// selector) is already an `Err`.
+impl ProjectsOutcome for ToolOutput {
+    fn outcome(output: &ToolOutputResult) -> ToolVerdict {
+        ToolVerdict::of_success(!output.content.is_empty())
+    }
+}
 
 /// The saved output a call names: its `outputId`, or her act number resolved by `act_handle`
 /// (her working memory's record). Exactly one; an act that does not resolve is its typed
@@ -341,11 +390,82 @@ fn read_saved(
 mod tests {
     use super::*;
 
-    // what this catches: name mirrors path so the persona reaches it by the name
-    // she'd guess from the elision marker.
+    // what this catches: the recovery verb every handle names off her native surface or out of a
+    // room's narrowed one (2026-11-06, the M5: not native, so no act could call it), and a read
+    // that brought nothing back rendering as a success.
     #[test]
-    fn name_is_tool_output() {
-        assert_eq!(ToolOutput::NAME, "tool/output");
+    fn the_verb_every_handle_names_is_native_in_every_surface_and_an_empty_read_fails() {
+        use crate::sdk_codegen::CommandSpec;
+        assert!(<ToolOutput as CommandSpec>::NATIVE);
+        assert!(TOOL_OUTPUT.disclosure().in_every_surface());
+        assert_eq!(TOOL_OUTPUT.canonical(), <ToolOutput as CommandSpec>::NAME);
+        assert!(
+            crate::sdk_codegen::outcome_projector(TOOL_OUTPUT.canonical()).is_some(),
+            "a native tool projects its outcome (ONE-ACT 6b)"
+        );
+        let read = |content: &str| ToolOutputResult {
+            handle: "h".into(),
+            total_lines: Some(3),
+            total_bytes: 30,
+            total_matches: Some(0),
+            content: content.into(),
+            truncated: false,
+            encoding: "utf8".into(),
+            byte_start: None,
+            byte_end: None,
+            next_byte_offset: None,
+        };
+        assert_eq!(ToolOutput::outcome(&read("     2 error here\n")), ToolVerdict::Succeeded);
+        assert_eq!(ToolOutput::outcome(&read("")), ToolVerdict::Failed);
+    }
+
+    // what this catches: a reopen line she cannot make as written. It names the verb her tool
+    // list offers (the wire name, never the slash name, which matches nothing she holds), and
+    // its arguments are the command's own params, so they parse back to the same target.
+    #[test]
+    fn a_reopen_is_one_call_she_can_make_as_written() {
+        use crate::sdk_codegen::wire_name;
+        let offered = wire_name(
+            <ToolOutput as ActionCommand>::NAME,
+            crate::sdk_codegen::primary_alias(<ToolOutput as ActionCommand>::ALIASES),
+            crate::sdk_codegen::offer_style_for(None),
+        );
+        assert_eq!(offered, "read_output", "her list offers the trained reflex, its first alias");
+        assert_eq!(Reopen::Act(3).to_string(), r#"read_output({"act":3})"#);
+        assert_eq!(Reopen::Output("deadbeef").to_string(), r#"read_output({"outputId":"deadbeef"})"#);
+        for reopen in [Reopen::Act(3), Reopen::Output("deadbeef")] {
+            let shown = reopen.to_string();
+            let Some(args) = shown.strip_prefix(&format!("{offered}(")).and_then(|s| s.strip_suffix(')')) else {
+                panic!("{shown} is not a call of {offered}")
+            };
+            let Ok(parsed) = serde_json::from_str::<ToolOutputParams>(args) else {
+                panic!("{args} does not parse as the command's params")
+            };
+            assert_eq!((parsed.act, parsed.handle.as_deref()), match reopen {
+                Reopen::Act(n) => (Some(n), None),
+                Reopen::Output(h) => (None, Some(h)),
+            });
+        }
+    }
+
+    // what this catches: a handle shown in a surface that does not carry its verb. Built from the
+    // REAL native registry: her core hands, a room that narrows her hands to one subtree, and a
+    // room that declares a single verb each offer `tool/output`, because a folded act or a saved
+    // result can appear in any of them.
+    #[test]
+    fn every_surface_she_is_offered_holds_the_verb_her_handles_name() {
+        use crate::cognition::tool_surface::ToolSurface;
+        let surface = ToolSurface::build(crate::cognition::persona_tools::native_offers(), Vec::new(), |s| s);
+        for declared in [vec![], vec!["code/git/**".to_string()], vec!["code/read".to_string()]] {
+            let Ok(selected) = surface.select_granted(&declared, &[], usize::MAX) else {
+                panic!("an unbounded grant selects her surface for {declared:?}")
+            };
+            let names = surface.names_of(&selected);
+            assert!(
+                names.iter().any(|name| name == TOOL_OUTPUT.canonical()),
+                "{declared:?} drops the verb her handles name: {names:?}"
+            );
+        }
     }
 
     // what this catches: every prebuilt filter must be a VALID regex (a typo would

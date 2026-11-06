@@ -169,7 +169,7 @@ fn compare_input(request: &mut TextGenerationRequest, p: &ReplayRequestParams) -
             .ok_or_else(|| CommandError::Invalid(format!("omitted message index {index} is out of range")))?;
         let allowed = message.role == "user" && message.name.is_none()
             && matches!(&message.content, crate::ai::MessageContent::Text(text)
-                if crate::cognition::working_memory::is_collapsed_result_pointer(text));
+                if crate::cognition::working_memory::CollapsedReceipt::read(text).is_some());
         if !allowed {
             return Err(CommandError::Invalid(format!("message {index} is not a standalone collapsed historical receipt")));
         }

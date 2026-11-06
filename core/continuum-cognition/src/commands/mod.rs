@@ -9,4 +9,5 @@ pub mod plan_turn_batch;
 pub mod rate_proposals;
 pub mod semantic_search_tools;
 pub mod should_respond;
+pub mod tool_output;
 pub mod validate_response_decision;

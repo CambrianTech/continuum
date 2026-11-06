@@ -62,6 +62,7 @@ continuum-kernel = { path = "../continuum-kernel" }
 continuum-perception = { path = "../continuum-perception" }
 continuum-sentinel = { path = "../continuum-sentinel" }
 continuum-mind = { path = "../continuum-mind" }
+continuum-cognition = { path = "../continuum-cognition" }  # tool/output lives beside its spill; core text names it through its typed TOOL_OUTPUT
 continuum-memory = { path = "../continuum-memory" }
 continuum-academy = { path = "../continuum-academy" }  # commands::hf re-exports its hf/* (#5452): a normal dependency, not only a test one
 continuum-dreaming = { path = "../continuum-dreaming" }
