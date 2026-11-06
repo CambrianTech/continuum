@@ -125,9 +125,9 @@ Evidence: Kimi's identical prompt was rejected at predicted cap 5857, then accep
 Owner: continuum-engine's existing dispatch path owns final feasibility and the executable request. The existing window_grant owner retains atomic reservation and lifetime; the existing scheduler retains fairness and queue custody. Do not introduce another scheduler, reservation registry, or retry coordinator. Cognition supplies intent and required reply room, and may estimate prompt size for rendering. Estimates never authorize dispatch or masquerade as the sent cap.
 
 Contract and algorithm:
-1. Submit an immutable prompt plus explicit output intent: Fixed(r), or Act(required minimum, explicitly authorized ceiling). A predicted cap is not automatically an authority ceiling. Audit that distinction before adopting the provisional ActReplyRoom API. Reasoning allowance remains an explicit component of the required reply claim.
+1. Submit an immutable prompt plus explicit output intent: Fixed(r), or UseAdmittedRoom(required minimum). The admitted window supplies the finite upper bound; a predicted cap is not an authority ceiling. Reasoning allowance remains an explicit component of the required reply claim.
 2. After existing endpoint/page admission, bind the attempt to the selected engine incarnation, model/template and current grant lease. Obtain the physical sequence capacity from that same owner-bound context. A missing capacity or mismatched incarnation is a typed refusal, never a guessed window.
-3. Count that finalized prompt on that engine. Let W be the intersection of physical sequence capacity and admitted lease capacity. For Fixed, choose R=r. For Act, maximize R subject to m<=R<=authorized ceiling and P+R<W. Equivalently R=min(ceiling,W-P-1), using checked arithmetic; refuse if R<m. There is no tuning constant or relaxed floor.
+3. Count that finalized prompt on that engine. Let W be the intersection of physical sequence capacity and admitted lease capacity. For Fixed, choose R=r and refuse unless P+R<W. For UseAdmittedRoom, maximize R subject to m<=R and P+R<W. Equivalently R=W-P-1, using checked arithmetic; refuse if R<m. There is no tuning constant or relaxed floor.
 4. The grant owner atomically validates/reserves the exact attempt. Only a successful reservation constructs a private executable dispatch value containing prompt identity, engine identity, lease identity, P, W and R. Invalidation before reservation requires a new attempt and quote; it cannot reuse the predecessor's count. Preserve cancellation and terminal settlement in the existing owner.
 5. Build the wire request and its sent receipt from that executable value. Transport cannot independently recalculate its cap. Cognition classification, allocation accounting and capture consume that same receipt. A resolution receipt alone is not proof that a request was sent or completed.
 6. Re-render only when the required claim is actually infeasible. Prediction error that leaves the required claim feasible resolves inside the admitted attempt, without a capacity-repair round trip through cognition. Transport recovery after a proven pre-acceptance failure re-enters this same algorithm; ambiguous post-acceptance outcomes do not authorize duplicate generation.
@@ -157,7 +157,7 @@ express `Fixed(reply)` versus `UseAdmittedRoom(required_reply)`. The latter reso
 `R=W-P-1` and refuses if `R<required_reply`; the grant supplies the finite upper bound. If a real
 caller needs a smaller maximum, it must declare that distinct restriction explicitly and justify
 the additional variant. Do not retain the prototype's ceiling merely because it is already coded.
-The earlier general bounded formulation still applies when such a genuine restriction exists.
+For a genuinely bounded variant, the same solver adds R<=declared maximum; it does not substitute an estimate for that authority.
 
 **Prompt identity must be enforceable.** The quote and POST must share model/template, adapters,
 messages, tools, media and every other input affecting tokenization. Output controls may change
