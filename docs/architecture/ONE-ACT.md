@@ -609,6 +609,23 @@ an admitted shadow sequence and an atomic ownership switch at its dependency fen
 restoring/promoting context saves useful work enough to pay its rebuild; do not assume either that
 all restoration is beneficial or that all cold prefill is a restoration defect.
 
+#### Learned optimization uses the same policy boundary
+
+Joel's 2026-11-06 direction extends the observe/reproduce/correct/validate/verify cycle to
+networks: train an initial optimizer in deterministic simulation, then refine it with real
+execution evidence. This is a future implementation option behind the existing scheduling and
+placement policy interface, not another owner, scheduler or training subsystem.
+
+A learned policy may propose service order, placement and cache retention from observed state.
+The deterministic resource owners validate feasibility, conservation, custody, cancellation and
+legal transitions; learned scores cannot relax those invariants or manufacture terminal proof.
+Record observation, candidate action, admitted action, policy identity and measured outcome so
+training does not confuse a rejected proposal with executed work. Reward must account for useful
+completed work, latency, fairness and resource cost, not raw activity or token volume. Evaluate on
+held-out recorded scenarios and adversarial interleavings, then compare shadow decisions against
+real outcomes before adopting through the existing stable/shadow learning lifecycle. Simulation
+is an initial environment model; live discrepancies become new reproductions and training cases.
+No learned optimizer is required to complete the current deterministic dispatch correction.
 #### Work boundaries for incoming collaborators
 
 | Workstream | Interface to agree first | Deliverable / deletion requirement |
