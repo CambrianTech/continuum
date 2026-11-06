@@ -322,20 +322,32 @@ async fn admit(
     let started = tokio::time::Instant::now();
     let mut readiness_left = patience;
     let mut waited = false;
-    // 0. ONE ACT AT A TIME PER MIND — queued here, before the lane, holding nothing
-    //    (`slots::mind_gate`). Warm-ahead took its gate itself, without waiting.
-    let mut mind = match key {
-        Some(k) if !warm_only => Some(MindTurn::begin(k).await?),
-        _ => None,
-    };
-    // A dream's ambient serving lane, held only while it must borrow a citizen slot.
-    let mut lane: Option<ServingLanePermit> = None;
     let mut caller_lane = if warm_only {
         None
     } else {
         crate::inference::resource_admission::take_serving_lane()?
     };
     let reacquire = caller_lane.as_ref().map(ServingLanePermit::reacquisition);
+    // 0. ONE ACT AT A TIME PER MIND — queued here, before the lane, holding nothing
+    //    (`slots::mind_gate`). Warm-ahead took its gate itself, without waiting.
+    let mut mind = match key {
+        Some(k) if !warm_only => {
+            let begin = MindTurn::begin(k);
+            tokio::pin!(begin);
+            Some(match futures::poll!(&mut begin) {
+                std::task::Poll::Ready(result) => result?,
+                std::task::Poll::Pending => {
+                    // Keep this exact queued mind acquisition, but lend its
+                    // caller lane while it waits for page custody or a prior act.
+                    drop(caller_lane.take());
+                    begin.await?
+                }
+            })
+        }
+        _ => None,
+    };
+    // A dream's ambient serving lane, held only while it must borrow a citizen slot.
+    let mut lane: Option<ServingLanePermit> = None;
     'admit: loop {
         if caller_lane.is_none() {
             if let Some(authority) = &reacquire {
