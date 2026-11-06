@@ -166,6 +166,17 @@ only if the backend contract proves they cannot alter the finalized prompt. A ba
 depends on those controls must quote the final form or refuse the capability; a token count alone
 does not certify identity. Engine incarnation changes invalidate the quote even when URL/model match.
 
+Backend source audit (`core/vendor/llama.cpp` at `0d7dda6aea3531f79adcb22bc35c8a2bb3f514d7`):
+`handle_count_tokens` runs `oaicompat_chat_params_parse`, then tokenizes its rendered prompt
+(including the multimodal path). The parser constructs template inputs before copying remaining
+sampling properties. `max_tokens` is not a template input in this path, while messages, tools,
+tool choice, schema/grammar, continuation, reasoning effort and template kwargs are. Freeze those
+prompt inputs; resolve only the output limit. The parser explicitly lets `n_predict` override
+`max_tokens`, so the executable serializer must own a single canonical output limit and reject
+conflicting aliases rather than report a receipt for a cap the backend will override. This source
+audit narrows the supported capability; it is not a backend execution test or proof for arbitrary
+OpenAI endpoints. Validate the canonical-limit and prompt-identity contracts in the actual backend
+adapter before enabling adaptive dispatch.
 **Completion is not submission.** The prepared command, accepted send and terminal generation have
 different types/states. The sent receipt accompanies the selected attempt; the terminal result links
 to it. Serialization and observer consumers do not own a second arithmetic implementation. Capture
