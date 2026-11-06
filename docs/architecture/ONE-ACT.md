@@ -192,6 +192,50 @@ re-establish current endpoint identity and the matching lease before a new quote
 replacement and late responses explicitly. This audit identifies the existing mechanisms and the
 proof needed; it does not claim that the current transport already proves the entire contract.
 
+#### First execution slice: public contract and caller coverage
+
+The first slice implements section 4a inside existing dispatch; it does not simultaneously replace
+the scheduling algorithm or alter view-restoration policy. It must replace the competing cap
+decision end to end, not land an optional adaptive branch alongside it.
+
+Conceptual public contract (names may follow crate conventions):
+
+- `OutputIntent = Fixed(positive_reply) | UseAdmittedRoom(positive_required_reply)`.
+- `GenerationIntent` carries immutable prompt content, output intent and explicit reasoning terms.
+  Prompt estimates belong to planning data, not this contract's final sent controls.
+- `DispatchSupport` states which intent and admission guarantees a selected provider can enforce.
+  Capability is checked before work is submitted and revalidated at the executing owner.
+- `AdmittedAttempt` is private, owns/borrows the existing endpoint and reservation capabilities,
+  and has a single consuming operation that sends its executable request. It cannot be constructed
+  by cognition or deserialized as proof of local custody.
+- A successful result carries either `CountedDispatch(sent_receipt)` or an explicitly supported
+  `ProviderEnforcedFixed(sent_controls)` result. A requested counted contract can never return the
+  latter. Requested intent, actual send and terminal outcome are distinct records tied by identity.
+
+| Caller/provider path audited | First-slice obligation |
+|---|---|
+| Cognition act through managed local OpenAI adapter | Submit UseAdmittedRoom; exact dispatch resolves and reports cap; no predicted final cap |
+| Pass / ordinary fixed generation | Submit Fixed explicitly; retain exact cap or refuse, never silently adapt |
+| Managed exact-count endpoint | Implement through the common dispatch owner, including physical/admitted intersection and existing lifetime guards |
+| Other OpenAI-compatible endpoint | Do not infer exact-count support from protocol or URL shape; unsupported intent is a typed refusal |
+| Anthropic / in-process llama / heuristic fixtures | Explicitly implement supported fixed semantics or refuse unsupported terms; tests declare their capabilities honestly |
+| Placement-switch adapter | Resolve target once for admission and dispatch; forward the same intent and support contract |
+| AIRC remote adapter and LocalAdapterTransport | Current path forwards think but refuses leases/exact admission. Refuse UseAdmittedRoom until destination capability, wire intent and returned sent receipt are implemented together; never strip terms or claim the test transport proves distributed custody |
+| Capture, replay, allocation, stop classification, training observations | Consume actual sent controls and preserve requested intent separately; no render-cap substitution when counted evidence is required |
+
+Concrete deletion: `contribute::room_resized` and its identical-view resize/retry branch disappear
+when UseAdmittedRoom is resolved by dispatch. Its `newest_refit_sent`/required-content refit handles
+a different condition and remains until that condition is consolidated with the context owner.
+The prototype's optional receipt and estimate-derived ceiling are replaced, not maintained as a
+compatibility route. Update old tests that assert the deleted retry; keep the baseline reproduction
+as recorded evidence and replace its success expectation with one authorized dispatch.
+
+First-slice readiness is a reviewable inventory of those callers, the concrete owned-attempt API,
+and validators for the invalidation cases above. Broader fair scheduling work can proceed against
+the same operation/receipt interfaces later; it is not permission to stack another priority policy
+inside this slice. These contracts are now the implementation target, with distributed adaptive
+dispatch explicitly unsupported until its complete owner contract exists.
+
 ### 5. Engine memory (where her KV lives)
 
 - **Owner:** the serving daemon over ONE separate llama-server process (SERVING-ENGINE §6 wins over
