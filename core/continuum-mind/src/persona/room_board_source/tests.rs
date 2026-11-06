@@ -59,7 +59,8 @@
     // what this catches: a card dispatched MINUTES AGO being structurally unshowable.
     // Taken in board order a fresh card landed at the end and never appeared (five
     // titles were rendered), so the citizen read an honest "N claimable" above titles
-    // that were all old. Every live card is now delivered, newest claimable first. Measured live 2026-08-07: three freshly dispatched bench
+    // that were all old. Every live card is now delivered, oldest claimable first so a new card
+    // appends to the block (2026-11-06) and the newest stands last. Measured live 2026-08-07: three freshly dispatched bench
     // cards sat in every citizen's board cache and in NONE of their prompt windows while
     // the count was correct throughout — the count was never the lie, the sample was.
     #[tokio::test]
@@ -89,15 +90,15 @@
             .find(|i| i.metadata["kind"] == "available-work-lead")
             .expect("available-work lead");
 
-        let first_card = delivery
+        let last_card = delivery
             .items
             .iter()
-            .find(|i| i.key.starts_with("card:"))
+            .rfind(|i| i.key.starts_with("card:"))
             .expect("the live cards are delivered");
         assert!(
-            first_card.content.contains("bench coder-write-eval"),
-            "the just-dispatched card must be the first card she reads, not just counted:\n{}",
-            first_card.content
+            last_card.content.contains("bench coder-write-eval"),
+            "the just-dispatched card is delivered whole, the newest last, not just counted:\n{}",
+            last_card.content
         );
         // The count stays honest — it always was.
         assert_eq!(lead.metadata["open_count"], 9);

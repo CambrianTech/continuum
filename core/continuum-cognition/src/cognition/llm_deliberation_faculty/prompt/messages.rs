@@ -328,7 +328,11 @@ impl LlmDeliberationFaculty {
             .filter(|c| c.decision.is_none() && c.fault.is_none() && c.trailing && c.content.trim().is_empty())
             .map(|c| c.faculty.as_str())
             .collect();
-        let blocks = self.carry_held_blocks(ws.activity_room_id, blocks, &ended);
+        let blocks: Vec<_> = self
+            .carry_held_blocks(ws.activity_room_id, blocks, &ended)
+            .into_iter()
+            .flat_map(crate::cognition::context_streams::blocks::Grounding::split_tally)
+            .collect();
         let result_pointers = Vec::new();
         let grounding_at = 0;
 

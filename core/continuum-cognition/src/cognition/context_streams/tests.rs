@@ -423,3 +423,37 @@ fn her_facts_append_once_end_when_they_stop_and_her_perceived_events_stay() -> R
     assert_eq!(later.matches("[context] 3").count(), 1, "{later}");
     Ok(())
 }
+
+// what this catches: a count in a block's first line (the kanban's "192 claimable", the M5,
+// 2026-11-06) rewriting the whole block, 30k chars of cards, every time anyone files a card, and
+// breaking every epoch start's shared prefix at message 2-4. Split, the cards stay put and only
+// the tally appends.
+#[test]
+fn a_blocks_tally_moves_without_rewriting_its_body() -> Result<(), continuum_context::view::GrantMismatch> {
+    use super::blocks::Grounding;
+    use crate::cognition::rag_budget::RagItem;
+    use continuum_context::view::{Claim, View};
+
+    let board = |claimable: usize| {
+        let units: Vec<RagItem> = std::iter::once(RagItem::whole("headline", format!("[board] {claimable} claimable here."), serde_json::json!({})).as_tally())
+            .chain((0..30).map(|n| RagItem::whole(format!("card:{n}"), format!("card {n:04} [Open] \"a card\""), serde_json::json!({}))))
+            .collect();
+        let mut block = Grounding::atomic(uuid::Uuid::nil(), "room-kanban", "");
+        block.units = units.into();
+        block.split_tally()
+    };
+    let first = board(192);
+    assert_eq!(first.iter().map(|b| b.faculty.as_str()).collect::<Vec<_>>(), ["room-kanban", "room-kanban counts"]);
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    fn sources(blocks: &[Grounding]) -> Vec<&dyn Source<super::ContextMessage>> {
+        blocks.iter().map(|b| b as &dyn Source<super::ContextMessage>).collect()
+    }
+    let (mut view, _) = View::start(Vec::new(), &sources(&first), whole)?;
+    let before: Vec<String> = view.render().map(|m| m.text.clone()).collect();
+    assert!(before[0].starts_with("[room-kanban]\ncard 0000"), "the body leads with its cards: {}", before[0]);
+    let next = board(195);
+    let advance = view.advance(&sources(&next));
+    assert_eq!(advance.items, 1, "only the tally appends");
+    assert!(advance.chars < 60, "a few chars, never the cards again: {}", advance.chars);
+    Ok(())
+}

@@ -187,7 +187,7 @@ impl<T: Block> View<T> {
         sources: &[&dyn Source<T>],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
     ) -> Result<(Self, Start), GrantMismatch> {
-        Self::begin(1, head, sources, allocate, Motion::default()).map_err(|(mismatch, _)| mismatch)
+        Self::begin(1, head, sources, allocate, Motion::default(), None).map_err(|(mismatch, _)| mismatch)
     }
 
     /// Replace this epoch with a fresh one rendered from the sources' current state at the
@@ -199,7 +199,7 @@ impl<T: Block> View<T> {
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
     ) -> Result<Start, GrantMismatch> {
         let motion = std::mem::take(&mut self.motion);
-        let (next, mut start) = match Self::begin(self.epoch.id() + 1, head, sources, allocate, motion) {
+        let (next, mut start) = match Self::begin(self.epoch.id() + 1, head, sources, allocate, motion, Some(&self.epoch)) {
             Ok(begun) => begun,
             Err((mismatch, motion)) => {
                 self.motion = motion;
@@ -261,14 +261,17 @@ impl<T: Block> View<T> {
         }
     }
 
-    /// Render a start with `sources` in the order `motion` measured to keep the most of the
-    /// previous start, and record what each rendered. A refusal hands `motion` back.
+    /// Render a start with `sources` in the order `motion` measured as most stable first, and
+    /// record what each rendered. The blocks are laid down so the start shares the longest prefix
+    /// with the epoch it replaces (`previous`): [`lead_with_what_held`]. A refusal hands `motion`
+    /// back.
     fn begin(
         id: u64,
         head: Vec<T>,
         sources: &[&dyn Source<T>],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
         mut motion: Motion,
+        previous: Option<&Epoch<T>>,
     ) -> Result<(Self, Start), (GrantMismatch, Motion)> {
         let sources = motion.order(sources);
         let offered: Vec<Vec<Item<T>>> = sources.iter().map(|source| source.items()).collect();
@@ -290,7 +293,8 @@ impl<T: Block> View<T> {
             submitted: None,
             last_by_source: Vec::new(),
         };
-        for ((source, items), grant) in sources.iter().zip(offered).zip(grants) {
+        let mut planned: Vec<Planned<T>> = Vec::new();
+        for (index, ((source, items), grant)) in sources.iter().zip(offered).zip(grants).enumerate() {
             let allot::Allotment { levels, mut fold } = allot(&**source, &items, grant);
             let mut rendered = Vec::with_capacity(items.len());
             for (item, level) in items.into_iter().zip(levels) {
@@ -314,18 +318,34 @@ impl<T: Block> View<T> {
                         view.folded.insert(id);
                         if let Some(block) = fold.take() {
                             rendered.push((fingerprint(FOLD_KEY, &block), block.chars()));
-                            view.epoch.observe(key(source.name(), FOLD_KEY), None, Level::Folded, block);
+                            planned.push(Planned { source: index, id: key(source.name(), FOLD_KEY), element: None, level: Level::Folded, text: block });
                         }
                         continue;
                     }
                 };
                 if let Some(text) = text {
                     rendered.push((fingerprint(&item_key, &text), text.chars()));
-                    view.epoch.observe(id, Some(element), level, text);
+                    planned.push(Planned { source: index, id, element: Some(element), level, text });
                 }
             }
             motion.record(source.name(), rendered);
         }
+        let laid = lead_with_what_held(planned, previous);
+        let mut order: Vec<String> = Vec::with_capacity(sources.len());
+        for block in laid {
+            let name = sources[block.source].name();
+            if !order.iter().any(|seen| seen == name) {
+                order.push(name.to_owned());
+            }
+            view.epoch.observe(block.id, block.element, block.level, block.text);
+        }
+        // Sources that rendered nothing keep their place after the ones that did.
+        for source in &sources {
+            if !order.iter().any(|seen| seen == source.name()) {
+                order.push(source.name().to_owned());
+            }
+        }
+        motion.started_in(order);
         view.motion = motion;
         let start = Start {
             epoch: id,
@@ -613,6 +633,61 @@ impl<T: Block> View<T> {
         acts.sort_unstable();
         acts.get(acts.len() / 2).copied()
     }
+}
+
+/// One block a start renders: which source (its index in the start's order), its id, its level
+/// and its bytes.
+struct Planned<T> {
+    source: usize,
+    id: SourceId,
+    element: Option<crate::cause::ElementId>,
+    level: Level,
+    text: T,
+}
+
+/// A start's blocks in the order that shares the most with the epoch it replaces: the previous
+/// epoch's blocks, in its order, for as long as this start renders each of them byte for byte,
+/// then every other block in the start's order (its sources most stable first, each source's
+/// items in their own order). The engine reuses a prompt only up to its first difference, so
+/// every unchanged block the previous prompt led with is reused in place, however the measured
+/// order would have ranked it, and the first block it holds in new bytes follows them, so its
+/// unchanged front is reused too (the M5, 2026-11-06: 13 turnovers, every one resumed from the
+/// system head alone because the start's front moved). A source's items never pass one another:
+/// a block of the previous epoch is reused only when everything its source lays down before it
+/// already was. `previous` is `None` at a view's first start.
+fn lead_with_what_held<T: Block>(planned: Vec<Planned<T>>, previous: Option<&Epoch<T>>) -> Vec<Planned<T>> {
+    let Some(previous) = previous else {
+        return planned;
+    };
+    let at: std::collections::HashMap<&SourceId, usize> = planned.iter().enumerate().map(|(index, block)| (&block.id, index)).collect();
+    // The next block each source may lay down: its blocks are contiguous in `planned`, in order.
+    let mut next: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for (index, block) in planned.iter().enumerate() {
+        next.entry(block.source).or_insert(index);
+    }
+    let mut lead = Vec::new();
+    for event in previous.events() {
+        let Some(&index) = at.get(&event.source) else {
+            break; // the previous prompt held a block this start does not render: the prefix ends
+        };
+        let block = &planned[index];
+        if next.get(&block.source) != Some(&index) {
+            break;
+        }
+        lead.push(index);
+        next.insert(block.source, index + 1);
+        // The same block in new bytes ends the reuse, laid right where it stood: the engine still
+        // reuses its bytes up to their first difference (a card appended at a list's end keeps
+        // the whole list before it).
+        if block.text != event.text {
+            break;
+        }
+    }
+    let led: HashSet<usize> = lead.iter().copied().collect();
+    let mut slots: Vec<Option<Planned<T>>> = planned.into_iter().map(Some).collect();
+    let mut laid: Vec<Planned<T>> = lead.iter().filter_map(|&index| slots[index].take()).collect();
+    laid.extend(slots.into_iter().enumerate().filter(|(index, _)| !led.contains(index)).filter_map(|(_, block)| block));
+    laid
 }
 
 #[cfg(test)]

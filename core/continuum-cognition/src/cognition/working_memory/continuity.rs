@@ -25,16 +25,24 @@ impl WorkingMemory {
     /// takes one, the next turn's end takes the last (IntelMac's review of #3848:
     /// pin and unpin in the same restore block is a no-op).
     pub fn pin_fact_for_turns(&self, key: &str, text: &str, turns: u8) {
-        self.pin_notice(key, text, turns, None);
+        self.pin_notice(key, text, turns, None, false);
+    }
+
+    /// Pin a TALLY (counts that move as she acts, `[investigation]`'s distribution of her calls):
+    /// her notices list it after every other one, so its moving counts never sit ahead of the
+    /// notices that hold and an epoch start keeps those (the M5, 2026-11-06: Aris's turnover at
+    /// 19:05Z broke at it, ahead of her workspace notice).
+    pub fn pin_tally(&self, key: &str, text: &str) {
+        self.pin_notice(key, text, 1, None, true);
     }
 
     /// A source-owned expansion reference remains required while its full detail
     /// competes with history. Both share the same key and turn lifetime.
     pub fn pin_expandable_fact(&self, key: &str, reference: &str, detail: Option<String>) {
-        self.pin_notice(key, reference, 1, detail);
+        self.pin_notice(key, reference, 1, detail, false);
     }
 
-    fn pin_notice(&self, key: &str, text: &str, turns: u8, detail: Option<String>) {
+    fn pin_notice(&self, key: &str, text: &str, turns: u8, detail: Option<String>, tally: bool) {
         let t = text.trim();
         if t.is_empty() {
             return;
@@ -46,12 +54,14 @@ impl WorkingMemory {
             slot.text = t.to_string();
             slot.turns_left = turns;
             slot.detail = detail;
+            slot.tally = tally;
         } else {
             p.push(TurnPinnedFact {
                 key: key.to_string(),
                 text: t.to_string(),
                 turns_left: turns,
                 detail,
+                tally,
             });
         }
     }
@@ -89,12 +99,15 @@ impl WorkingMemory {
     /// observation (it never changes once recorded).
     pub(crate) fn notice_items(&self) -> Vec<(String, String)> {
         let scope = self.scope.lock().clone();
-        let mut notices: Vec<(String, String)> =
-            self.pinned.lock().iter().map(|f| (format!("pin/{}", f.key), f.text.clone())).collect();
+        let pinned = self.pinned.lock();
+        let pins = |tally: bool| pinned.iter().filter(move |f| f.tally == tally).map(|f| (format!("pin/{}", f.key), f.text.clone()));
+        let mut notices: Vec<(String, String)> = pins(false).collect();
         notices.extend(self.entries.lock().iter()
             .filter(|entry| matches!(entry.kind, WmKind::Fact)
                 && (entry.scope.is_none() || entry.scope == scope))
             .map(|entry| (format!("fact/{}", entry.text), entry.text.clone())));
+        // Tallies last: their counts move every act, the notices before them hold.
+        notices.extend(pins(true));
         notices
     }
 

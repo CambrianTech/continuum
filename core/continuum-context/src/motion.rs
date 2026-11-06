@@ -9,13 +9,18 @@
 //!
 //! For each source the view records, at every start, the fingerprints of the items it
 //! rendered, and compares them with the previous start's: whether the source rendered
-//! identically (`p`, the chance the prefix continues past it) and how many leading characters
-//! it kept (`kept`, what it saves even when it changed: a growing log keeps its old front).
-//! Placing a source with an intact prefix saves its `kept` and passes the prefix on with
-//! chance `p`, so an exchange argument orders sources by `kept / (1 - p)`, largest first; a
-//! source that never changed is infinite and leads. A source not yet measured counts as
-//! changing every start and keeping nothing: it ties with measured sources that keep nothing,
-//! and ties keep the caller's order.
+//! identically (`p`, how often its content held from one start to the next) and how many
+//! leading characters it kept. Sources order by `p`, most stable first, and a tie keeps the
+//! order the previous start laid them in, then the caller's. A source not yet measured counts
+//! as changing every start.
+//!
+//! Before 2026-11-06 the order was `kept / (1 - p)`, an exchange argument over the characters a
+//! changed source still keeps at its front. On the M5 that ratio moved with every start's sizes,
+//! so adjacent blocks swapped places between starts (`[my work]` and `[room-kanban]`, the notices
+//! and `[tasks]`) and each swap ended the shared prefix where it happened; and on the hybrid
+//! model a changed source's kept front is reused only up to a checkpoint. A stable order, with
+//! the start reusing every unchanged block the previous epoch led with
+//! (`view::lead_with_what_held`), keeps more.
 
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
@@ -41,6 +46,10 @@ struct Track {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Motion {
     sources: BTreeMap<String, Track>,
+    /// The order the last start laid its sources down in (first block of each): what a tie keeps.
+    /// Absent in a view saved before it, which breaks ties by the caller's order.
+    #[serde(default)]
+    last_order: Vec<String>,
 }
 
 /// One source's measured movement, for a probe or a caller's policy.
@@ -85,29 +94,27 @@ impl Motion {
             })
     }
 
-    /// `sources` in the order that keeps the most of a turnover's prefix: by `kept / (1 - p)`,
-    /// largest first, ties and unmeasured sources in the caller's order.
+    /// The order a start laid its sources down in: what the next start's ties keep.
+    pub(crate) fn started_in(&mut self, order: Vec<String>) {
+        self.last_order = order;
+    }
+
+    /// `sources` most stable first (`p`, how often each rendered as at the start before), a tie in
+    /// the order the last start laid them in, then in the caller's.
     pub(crate) fn order<'a, T: Block>(
         &self,
         sources: &[&'a dyn Source<T>],
     ) -> Vec<&'a dyn Source<T>> {
         let mut ordered = sources.to_vec();
-        // As a fraction kept_chars / (compared - unchanged); a source that never changed has a
-        // zero denominator and leads. Compared by cross-multiplying, so no float rounds a tie.
-        let score = |source: &&dyn Source<T>| -> (u64, u64) {
-            match self.of(source.name()) {
-                None => (0, 1),
-                Some(m) => (m.kept_chars, u64::from(m.compared - m.unchanged)),
-            }
+        // As the fraction unchanged / compared, compared by cross-multiplying so no float rounds a
+        // tie; a source not yet measured is 0 of 1.
+        let stability = |source: &&dyn Source<T>| -> (u64, u64) {
+            self.of(source.name()).map_or((0, 1), |m| (u64::from(m.unchanged), u64::from(m.compared))) // map_or: unmeasured counts as changing every start
         };
+        let place = |source: &&dyn Source<T>| self.last_order.iter().position(|name| name == source.name()).unwrap_or(usize::MAX); // unwrap_or: a source the last start did not lay down ties after those it did
         ordered.sort_by(|a, b| {
-            let ((ka, da), (kb, db)) = (score(a), score(b));
-            match (da, db) {
-                (0, 0) => std::cmp::Ordering::Equal,
-                (0, _) => std::cmp::Ordering::Less,
-                (_, 0) => std::cmp::Ordering::Greater,
-                _ => (u128::from(kb) * u128::from(da)).cmp(&(u128::from(ka) * u128::from(db))),
-            }
+            let ((ua, ca), (ub, cb)) = (stability(a), stability(b));
+            (u128::from(ub) * u128::from(ca)).cmp(&(u128::from(ua) * u128::from(cb))).then_with(|| place(a).cmp(&place(b)))
         });
         ordered
     }
@@ -138,29 +145,27 @@ mod tests {
             .collect()
     }
 
-    // what this catches: a hand label instead of the measurement. A roster that changes at most
-    // starts must ride behind a log whose front holds, and a block that never changes leads
-    // (Aiko, the M5, 2026-10-25: the roster led and 5 of 12 turnovers kept 3-6%).
+    // what this catches: a hand label instead of the measurement, and an order that swaps
+    // neighbours between starts. A block that never changes leads, one that held half the time
+    // follows, and the ones that change every start keep the order the last start laid them in,
+    // never re-ranked by their sizes (the M5, 2026-11-06: `[my work]`/`[room-kanban]` and the
+    // notices/`[tasks]` traded places between turnovers, and the prefix ended at each swap).
     #[test]
-    fn sources_order_by_what_a_turnover_keeps() {
+    fn sources_order_most_stable_first_and_ties_keep_the_last_starts_order() {
         let mut motion = Motion::default();
-        let starts: [(&str, &[&str]); 3] =
-            [("room-a", &["a"]), ("room-b", &["b"]), ("room-a", &["a"])];
-        for (n, (_, roster)) in starts.iter().enumerate() {
+        let rosters: [&[&str]; 3] = [&["a"], &["a"], &["b"]];
+        for (n, roster) in rosters.iter().enumerate() {
             motion.record("roster", items(roster));
             let log: Vec<&str> = ["one", "two", "three", "four"][..n + 2].to_vec();
             motion.record("actions", items(&log));
             motion.record("doctrine", items(&["rules"]));
+            motion.record("tasks", items(&[["t1", "t2", "t3"][n]]));
         }
-        let (roster, actions, doctrine, fresh) = (
-            Named("roster"),
-            Named("actions"),
-            Named("doctrine"),
-            Named("fresh"),
-        );
-        let caller: Vec<&dyn Source<String>> = vec![&fresh, &roster, &actions, &doctrine];
+        motion.started_in(["doctrine", "tasks", "roster", "actions"].map(String::from).to_vec());
+        let (roster, actions, doctrine, tasks, fresh) = (Named("roster"), Named("actions"), Named("doctrine"), Named("tasks"), Named("fresh"));
+        let caller: Vec<&dyn Source<String>> = vec![&fresh, &roster, &actions, &tasks, &doctrine];
         let names: Vec<&str> = motion.order(&caller).iter().map(|s| s.name()).collect();
-        assert_eq!(names, ["doctrine", "actions", "fresh", "roster"]);
+        assert_eq!(names, ["doctrine", "roster", "tasks", "actions", "fresh"]);
     }
 
     // what this catches: a view restored after a restart losing what it measured.
