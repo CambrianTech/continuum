@@ -537,6 +537,27 @@ fn wire_audio(audio: &crate::ai::types::AudioInput, native: bool) -> Value {
     json!({"type": "input_audio", "input_audio": {"data": data, "format": format}})
 }
 
+/// Estimate token count from wire-format messages (~4 chars per token).
+fn estimate_message_tokens(messages: &[Value]) -> usize {
+    messages.iter().map(|m| {
+        if let Some(content) = m.get("content") {
+            match content {
+                Value::String(s) => s.len() / 4,
+                Value::Array(parts) => parts
+                    .iter()
+                    .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                    .map(|s| s.len())
+                    .sum::<usize>()
+                    / 4,
+                _ => 0,
+            }
+        } else {
+            0
+        }
+    })
+    .sum()
+}
+
 /// Build the base chat body: the wire messages (vision-gated, thinking-switched, tool
 /// prompt appended for JsonInPrompt gateways, trailing assistant closed), then model /
 /// temperature / stream / max_tokens / stop. `finish_body` completes it after admission.
@@ -563,7 +584,19 @@ pub(crate) fn build_base_body(
     // happens on the response below. Native providers skip this (tool_prompt →
     // None) and use the `tools` param instead.
     if let Some(tools) = request.tools.as_ref() {
-        if let Some(block) = cfg.tool_protocol.tool_prompt(tools) {
+        // Token-aware tool disclosure: as conversation grows, reduce schema share.
+        let msg_chars = estimate_message_tokens(&messages);
+        let max_schema_tokens = if msg_chars < 500 {
+            None  // Short conversation: full disclosure
+        } else if let Some(max) = request.max_tokens {
+            // Proportional budget: ~3% of remaining context, capped at 1000 tokens
+            let remaining = max.saturating_sub((msg_chars / 4) as u32);
+            Some(std::cmp::min(remaining as usize / 33, 1000))
+        } else {
+            // No explicit token cap — use a fixed budget scaled by message size
+            Some(std::cmp::max(50u32 as usize, 2000 - msg_chars / 4))
+        };
+        if let Some(block) = cfg.tool_protocol.tool_prompt(tools, max_schema_tokens) {
             messages.push(json!({ "role": "system", "content": block }));
         }
     }

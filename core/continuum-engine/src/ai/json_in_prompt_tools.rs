@@ -3,7 +3,7 @@ use super::types::{NativeToolSpec, ToolCall};
 use continuum_tool_protocol::parser as syntax;
 pub use syntax::{
     claims_past_tool_run, has_fenced_block, narrates_fenced_action, narrates_stage_direction,
-    paren_call_args, render_tool_instructions,
+    paren_call_args, render_tool_instructions, render_tool_instructions_with_budget,
 };
 pub fn parse_tool_call(text: &str) -> Option<ToolCall> {
     syntax::parse_tool_call(text, crate::ai::tool_dialect::resolve_wire_name)
@@ -28,12 +28,20 @@ use crate::model_registry::ToolProtocol;
 impl ToolProtocol {
     /// The prompt block to inject when offering `tools`, or `None` when tools are
     /// offered via the API `tools` param (native) or not at all. Empty `tools`
-    /// → `None`.
-    pub fn tool_prompt(self, tools: &[NativeToolSpec]) -> Option<String> {
+    /// → `None`. When `max_schema_tokens` is set, only the first N tools receive
+    /// their full argument schemas; remaining tools are listed with minimal hints.
+    pub fn tool_prompt(
+        self,
+        tools: &[NativeToolSpec],
+        max_schema_tokens: Option<usize>,
+    ) -> Option<String> {
         match self {
             ToolProtocol::NativeFunctionCalling | ToolProtocol::None => None,
             ToolProtocol::JsonInPrompt if tools.is_empty() => None,
-            ToolProtocol::JsonInPrompt => Some(render_tool_instructions(tools)),
+            ToolProtocol::JsonInPrompt => Some(render_tool_instructions_with_budget(
+                tools,
+                max_schema_tokens,
+            )),
         }
     }
 

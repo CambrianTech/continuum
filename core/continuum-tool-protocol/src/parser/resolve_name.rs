@@ -129,7 +129,36 @@ impl From<ToolCallJson> for ToolCall {
 /// when a JsonInPrompt model is offered tools. Lists each tool + its description
 /// and states the EXACT JSON contract to emit. Kept terse — small models follow a
 /// short, explicit contract far better than a verbose schema.
+///
+/// `max_schema_tokens` controls how many tokens of argument schemas are included:
+/// - `None`: full schemas for all tools (default, backward compatible)
+/// - `Some(n)`: argument fields are omitted once the cumulative rendered size
+///   would exceed `n` tokens; tools beyond the budget show only name + description.
+///
+/// Token estimation: ~4 characters ≈ 1 token. The function tracks accumulated
+/// character length and switches to "compact mode" when the budget is exceeded,
+/// omitting the argument line for remaining tools.
 pub fn render_tool_instructions(tools: &[NativeToolSpec]) -> String {
+    render_tool_instructions_with_budget(tools, None)
+}
+
+/// Budget-aware variant of [`render_tool_instructions`].
+///
+/// When `max_schema_tokens` is set, only the first N tools (by iteration order)
+/// receive their argument schemas; remaining tools are listed as "name — description"
+/// only. This implements token-aware situational disclosure: the system prompt
+/// carries full context for likely-relevant tools and minimal hints for the rest,
+/// keeping total tool-instruction size proportional to conversation length rather
+/// than growing linearly with tool count.
+pub fn render_tool_instructions_with_budget(
+    tools: &[NativeToolSpec],
+    max_schema_tokens: Option<usize>,
+) -> String {
+    // Character budget: rough estimate, ~4 chars per token.
+    let char_budget = max_schema_tokens
+        .map(|t| t.saturating_mul(4))
+        .unwrap_or(usize::MAX);
+
     let mut s = String::with_capacity(256 + tools.len() * 160);
     s.push_str(
         "You can use tools. To call ONE tool, reply with ONLY this JSON object and \
@@ -140,36 +169,74 @@ pub fn render_tool_instructions(tools: &[NativeToolSpec]) -> String {
          normally. If no tool is needed, just answer normally (no JSON).\n\n\
          Available tools (name — description — arguments):\n",
     );
+
+    let mut accumulated_chars: usize = 0;
     for t in tools {
         s.push_str("- ");
         s.push_str(&t.name);
         s.push_str(": ");
         s.push_str(&t.description);
-        // Render the argument FIELD NAMES + types so the model passes the right keys
-        // instead of guessing — the deaf-hands fix. Without this the model only sees
-        // an empty `arguments: { ... }` placeholder and invents fields.
-        let req = t.input_schema.required.clone().unwrap_or_default();
-        match t.input_schema.properties.as_object() {
-            Some(props) if !props.is_empty() => {
-                s.push_str("\n    arguments: ");
-                let mut first = true;
-                for (field, spec) in props {
-                    if !first {
-                        s.push_str(", ");
-                    }
-                    first = false;
-                    let ty = spec.get("type").and_then(|v| v.as_str()).unwrap_or("any");
-                    s.push_str(&format!("{field}: {ty}"));
-                    if req.iter().any(|r| r == field) {
-                        s.push_str(" (required)");
-                    }
-                }
-            }
-            _ => s.push_str("\n    arguments: {} (no arguments)"),
+
+        // Decide whether to include argument schemas for this tool.
+        let args_len = estimate_args_size(t);
+        if accumulated_chars + args_len <= char_budget {
+            render_argument_line(&mut s, t);
+            accumulated_chars += args_len;
+        } else {
+            // Omit argument details — the model can still attempt a call by name.
+            s.push_str("\n    arguments: (see full docs or try calling with no args)");
         }
         s.push('\n');
     }
     s
+}
+
+/// Estimate character length of the argument schema for one tool.
+pub(super) fn estimate_args_size(tool: &NativeToolSpec) -> usize {
+    let req = tool.input_schema.required.clone().unwrap_or_default();
+    match tool.input_schema.properties.as_object() {
+        Some(props) if !props.is_empty() => {
+            // Base overhead for "arguments:" prefix + newline
+            let mut size: usize = 14;
+            let mut first = true;
+            for (field, spec) in props {
+                if !first {
+                    size += 2; // ", "
+                }
+                first = false;
+                let ty = spec.get("type").and_then(|v| v.as_str()).unwrap_or("any");
+                size += field.len() + 1 + ty.len(); // "{field}: {ty}"
+                if req.iter().any(|r| r == field) {
+                    size += 10; // " (required)"
+                }
+            }
+            size
+        }
+        _ => 23, // "arguments: {} (no arguments)" + newline
+    }
+}
+
+/// Append the argument schema line for a single tool.
+pub(super) fn render_argument_line(s: &mut String, t: &NativeToolSpec) {
+    let req = t.input_schema.required.clone().unwrap_or_default();
+    match t.input_schema.properties.as_object() {
+        Some(props) if !props.is_empty() => {
+            s.push_str("\n    arguments: ");
+            let mut first = true;
+            for (field, spec) in props {
+                if !first {
+                    s.push_str(", ");
+                }
+                first = false;
+                let ty = spec.get("type").and_then(|v| v.as_str()).unwrap_or("any");
+                s.push_str(&format!("{field}: {ty}"));
+                if req.iter().any(|r| r == field) {
+                    s.push_str(" (required)");
+                }
+            }
+        }
+        _ => s.push_str("\n    arguments: {} (no arguments)"),
+    }
 }
 
 /// Parse a model response for a JsonInPrompt tool call. Robust to the mess real
