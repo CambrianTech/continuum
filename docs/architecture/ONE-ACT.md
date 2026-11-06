@@ -723,6 +723,28 @@ every mind is a consumer of it.
 - **Gate:** tokens prefilled per act that some slot already held (shared-prefix waste), and the
   segment-reference share of each mind's prompt.
 
+**Measured, 2026-11-06 (M5, ed142f14c, 16:13–19:17Z, 162 prompts, engine-counted): the prize is
+per mind, not across minds.** Fresh tokens split as follows:
+
+| Class | Share | Seconds |
+|---|---:|---:|
+| Already in another mind's prefix (copyable) | 1.9% | 651 |
+| Carried by another mind, at a different position | 4.6% | 1,372 |
+| She had already sent it herself (results, thoughts, wall, awareness) | 53.2% | 11,808 |
+| Genuinely new | 40.3% | 12,767 |
+
+- Token hit rate: 85.1% today, 87.8% with perfect per-mind custody and an append-only sequence,
+  88.0% with cross-mind trunks added, and a 92.7% bound.
+- Reordering by sharing or stability every act drops the hit rate to 54%, because it breaks each
+  mind's own append order. So placement changes only at an epoch start and never reshuffles an
+  epoch in progress.
+- The cross-mind work is limited to two cheap changes: put the tools all minds share first, in one
+  fixed order, and place the identity line after the shared head. Together they give a 4-mind trunk
+  of 6.8–10.7k tokens.
+- The engine copy (`seq_cp`) and residency books stay worthwhile for per-mind custody and placement
+  (Benchy and Atlas's cold acts), not for cross-mind sharing.
+- Evidence: Fable's scratchpad `xshare/`.
+
 **It does not have to be sequential (Joel).** Across minds the engine's sequences form a tree, not a
 line.
 - Shared segments sit near the root and are prefilled once. Each mind is a branch, forked by
