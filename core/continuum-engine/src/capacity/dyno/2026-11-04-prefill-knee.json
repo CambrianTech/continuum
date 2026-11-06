@@ -1,0 +1,252 @@
+{
+ "intelmac_prefill_only": {
+  "value": {
+   "prompt_tokens": 4641,
+   "ubatch": 2048,
+   "served_slots": 9,
+   "trials": [
+    {
+     "concurrency": 1,
+     "wall_s": 67.946,
+     "aggregate_tok_per_s": 68.304,
+     "completions_s": [
+      67.9
+     ]
+    },
+    {
+     "concurrency": 2,
+     "wall_s": 136.45,
+     "aggregate_tok_per_s": 68.025,
+     "completions_s": [
+      85.9,
+      136.4
+     ]
+    },
+    {
+     "concurrency": 4,
+     "wall_s": 293.819,
+     "aggregate_tok_per_s": 63.182,
+     "completions_s": [
+      89.8,
+      151.7,
+      219.5,
+      293.8
+     ]
+    },
+    {
+     "concurrency": 9,
+     "wall_s": 681.234,
+     "aggregate_tok_per_s": 61.314,
+     "completions_s": [
+      99.3,
+      164.3,
+      228.0,
+      320.7,
+      388.6,
+      458.3,
+      527.2,
+      628.3,
+      681.2
+     ]
+    }
+   ]
+  },
+  "receipt": "Cormac's IntelMac bench, 2026-11-04 (secret gist 90f98f20980705433573ad32d68aad1c, bench-records-prefill-mixed.json, trial prefill-only): build 5944051ce engine pid 99727, Qwen2.5-Coder-1.5B-Instruct Q4_K_M on CPU (--n-gpu-layers 0), --parallel 9 --ubatch-size 2048 --kv-unified (bench-server.cmd); n requests of one 4,641-token cold prompt submitted at once; completions_s is each request's latency_s"
+ },
+ "intelmac_decode_only": {
+  "value": {
+   "decode_tokens": 128,
+   "trials": [
+    {
+     "concurrency": 1,
+     "aggregate_tok_per_s": 19.909
+    },
+    {
+     "concurrency": 2,
+     "aggregate_tok_per_s": 32.82
+    },
+    {
+     "concurrency": 4,
+     "aggregate_tok_per_s": 43.559
+    },
+    {
+     "concurrency": 9,
+     "aggregate_tok_per_s": 51.1
+    }
+   ]
+  },
+  "receipt": "same gist, bench-records-decode.json, trial decode-only: n streams of 128 decoded tokens on 1-token prompts; aggregate_tok_per_s as recorded (agg_decode_tps)"
+ },
+ "intelmac_mixed": {
+  "value": {
+   "cold_prompt_tokens": 4641,
+   "warm_prompt_tokens": 19,
+   "decode_tokens": 128,
+   "trials": [
+    {
+     "cold": 1,
+     "warm": 1,
+     "wall_s": 88.433,
+     "cold_completions_s": [
+      81.3
+     ],
+     "warm_completions_s": [
+      88.4
+     ]
+    },
+    {
+     "cold": 2,
+     "warm": 2,
+     "wall_s": 171.239,
+     "cold_completions_s": [
+      105.5,
+      162.2
+     ],
+     "warm_completions_s": [
+      171.2,
+      171.2
+     ]
+    },
+    {
+     "cold": 4,
+     "warm": 5,
+     "wall_s": 335.631,
+     "cold_completions_s": [
+      102.3,
+      173.1,
+      243.3,
+      319.3
+     ],
+     "warm_completions_s": [
+      335.6,
+      335.6,
+      335.6,
+      335.6,
+      335.6
+     ]
+    }
+   ]
+  },
+  "receipt": "same gist, bench-records-prefill-mixed.json, trial mixed: the cold requests listed first, all submitted at once (cold-first order); a warm request is a 19-token prompt then 128 decoded tokens. ONE-ACT 5d cites the n=9 row (prefills at 102/173/243/319 s, all five decoders at 335.6 s)"
+ },
+ "intelmac_live_hour": {
+  "value": {
+   "served_lanes": 9,
+   "lane_grants_s": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    7.0,
+    17.0,
+    26.0,
+    27.0
+   ],
+   "first_completion": {
+    "cached_tokens": 9836,
+    "prefill_tokens": 11959,
+    "prefill_ms": 557954,
+    "decode_tokens": 39,
+    "decode_ms": 37184
+   },
+   "regrant_s": 2462.0
+  },
+  "receipt": "same gist, per-request-rows.log, 2026-11-05 05:41:30-06:22:32Z: eight residents (Eitan, Delia, SmokeProbe, Sigurd, Iris, Saoirse, Soren, Paige) each granted a serving lane at 05:41:30/30/30/30/37/47/56/57Z (admission.lane.granted, no queue: engine-argv.txt --parallel 9, props.json total_slots 9); only Eitan's turn completed (delib.generate.cache: cached 9,836, prefill 11,959 tokens in 557,954 ms, decode 39 tokens in 37,184 ms); the other seven were granted again at 06:22:32Z (2,462 s later) without a completion between"
+ },
+ "m5_chunk_sweep": {
+  "value": {
+   "warm_prompt_tokens": 4224,
+   "warm_cached_tokens": 4092,
+   "cold_prompt_tokens": 12288,
+   "decode_tokens": 128,
+   "cold_starts_after_s": 0.5,
+   "points": [
+    {
+     "ubatch": 512,
+     "solo_prefill_tok_per_s": [
+      745.8,
+      748.5,
+      725.9
+     ],
+     "solo_decode_tok_per_s": [
+      95.45,
+      94.64,
+      95.16
+     ],
+     "warm_decode_tok_per_s": [
+      42.0,
+      41.83,
+      41.58
+     ],
+     "warm_max_gap_s": [
+      0.741,
+      0.746,
+      0.756
+     ],
+     "cold_wall_s": [
+      21.159,
+      21.743,
+      21.713
+     ]
+    },
+    {
+     "ubatch": 1024,
+     "solo_prefill_tok_per_s": [
+      852.8,
+      855.9,
+      855.1
+     ],
+     "solo_decode_tok_per_s": [
+      95.03,
+      95.54,
+      95.44
+     ],
+     "warm_decode_tok_per_s": [
+      44.86,
+      44.87,
+      44.85
+     ],
+     "warm_max_gap_s": [
+      1.212,
+      1.211,
+      1.21
+     ],
+     "cold_wall_s": [
+      19.036,
+      19.043,
+      19.031
+     ]
+    },
+    {
+     "ubatch": 2048,
+     "solo_prefill_tok_per_s": [
+      894.8,
+      899.3,
+      897.8
+     ],
+     "solo_decode_tok_per_s": [
+      95.37,
+      95.5,
+      95.47
+     ],
+     "warm_decode_tok_per_s": [
+      32.71,
+      32.66,
+      32.71
+     ],
+     "warm_max_gap_s": [
+      2.234,
+      2.236,
+      2.234
+     ],
+     "cold_wall_s": [
+      18.362,
+      18.372,
+      18.359
+     ]
+    }
+   ]
+  },
+  "receipt": "Codex's paired chunk sweep on the M5, 2026-11-04 ~00:01-00:06Z (~/.continuum/evidence/codex-harness-20261104/chunk/b{512,1024,2048}/warmfirst-{prime,warm,cold}-{0,1,2}.json, run2.log; warm_first_bundled.py): batch = ubatch per point; per repeat a solo cold 4,096-token prime (solo rates), then a warm 4,224-token request (4,092 cached) and, 0.5 s later, a cold 12,288-token request on another slot; warm_max_gap_s is the longest gap between two content chunks of the warm stream"
+ }
+}
