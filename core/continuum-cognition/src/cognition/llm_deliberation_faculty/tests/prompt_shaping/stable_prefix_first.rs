@@ -198,3 +198,89 @@ fn the_next_act_holds_the_whole_previous_view_as_its_head() {
     );
     assert!(second.refit.grounding_at > head, "the act appended to her view");
 }
+
+/// One act of hers as the act seam records it: her words and her native call, then its result.
+fn acted(wm: &crate::cognition::working_memory::WorkingMemory, room: Uuid, seq: u64) {
+    use crate::ai::types::{ResultCustody, ToolResult};
+    use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
+    let id = format!("call-{seq}");
+    let call = ToolCall { id: id.clone(), name: "code/read".into(), input: json!({ "file_path": format!("src/f{seq}.rs") }) };
+    wm.record_native_action_statement(&format!("Reading f{seq}.rs next."), room, std::slice::from_ref(&call));
+    let content = format!("fn f{seq}() -> u32 {{ {seq} }}\n").repeat(40);
+    let output = ToolOutput {
+        image: None,
+        additional_images: None,
+        result: ToolResult { tool_use_id: id, content, is_error: None, custody: Default::default() },
+        verb: ToolVerb::classify("code/read"),
+        paths: Vec::new(),
+        verdict: Default::default(),
+    };
+    let observation = Observation { call, output, status: ActStatus::Executed };
+    let rendered = observation.render_recency();
+    wm.record_receipt_typed(&[observation], &rendered, Some(room), ResultCustody::Whole { handle: format!("f{seq}-output") });
+}
+
+/// Each message as the wire carries it: role and content, byte for byte.
+fn wire_of(messages: &[ChatMessage]) -> Vec<String> {
+    messages.iter().map(|message| serde_json::to_string(message).expect("test: a message encodes")).collect() // JUSTIFIED: test fixture
+}
+
+// what this catches: the M5's re-prefill of every act's tail (core ed142f14c, 2026-11-06
+// 16:13-19:17Z, 124 acts: 2,822 s over 78 acts in "changed inside her previous prompt", 2,101,494
+// unshared chars in 117 of 158 recorded pairs). Her prompt ended with the facts, the clock, her
+// words and her native call and result; the next act dropped the facts and re-rendered that result
+// as a `[result #n]` item of her actions, so no prompt was ever the next one's prefix past her view.
+// Served, a prompt is now the whole head of the next one: every message byte for byte, her result
+// never rendered a second time, an unchanged fact never appended again, her words and her call one
+// assistant turn as she wrote them.
+#[test]
+fn a_served_prompt_is_the_whole_head_of_her_next_act() {
+    use crate::ai::types::{ContentPart, MessageContent};
+    use crate::cognition::working_memory::WorkingMemory;
+
+    let wm = Arc::new(WorkingMemory::new(8));
+    let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", adapter)
+        .with_context_window(65_536)
+        .with_working_memory(Arc::clone(&wm));
+    let room = crate::identity::ActivityRoom::from_uuid(Uuid::new_v4()).expect("test: a room id");
+    let ws = |minute: u64| {
+        let turns = vec![
+            BurstTurn::attributed(false, "Operator", "the parser test fails on main", Some(1_700_000_000_000)),
+            BurstTurn::attributed(true, "Aris", "Looking at it.", Some(1_700_000_060_000)),
+            BurstTurn::attributed(false, "Operator", "start with f1.rs", Some(1_700_000_120_000)),
+        ];
+        let mut ws = Workspace::new(Burst::from_turns(room, turns));
+        ws.now_ms = Some(1_700_000_180_000 + 60_000 * minute);
+        ws
+    };
+    let mut previous: Option<DeliberationPromptView> = None;
+    for seq in 1..=3u64 {
+        let workspace = ws(seq);
+        acted(&wm, workspace.activity_room_id, seq);
+        let now = faculty.prompt_view(&workspace);
+        assert!(now.capacity_error.is_none() && now.budget_fault.is_none(), "{:?} {:?}", now.capacity_error, now.budget_fault);
+        if let Some(before) = &previous {
+            let (sent, next) = (wire_of(&before.messages), wire_of(&now.messages));
+            let shared = sent.iter().zip(&next).take_while(|(a, b)| a == b).count();
+            assert_eq!(shared, sent.len(), "act {seq}: the served prompt is not the next one's head (diverged at {shared} of {})", sent.len());
+            assert_eq!(now.system, before.system, "the system message is the same bytes");
+        }
+        let bodies: Vec<String> = now.messages.iter().map(ChatMessage::content_text).collect();
+        assert_eq!(bodies.iter().filter(|body| body.starts_with("[context]")).count(), 1, "an unchanged fact appends once:\n{bodies:#?}");
+        assert_eq!(bodies.iter().filter(|body| body.ends_with("start with f1.rs")).count(), 1, "the ask is sent once:\n{bodies:#?}");
+        let ring = |message: &&ChatMessage| matches!(&message.content, MessageContent::Text(text) if text.starts_with("[result #"));
+        assert!(!now.messages.iter().any(|message| ring(&message)), "a served result arrived again as an item of her actions:\n{bodies:#?}");
+        let turn = now.messages.iter().rev().find(|message| message.role == "assistant").expect("her newest turn");
+        match &turn.content {
+            MessageContent::Parts(parts) => {
+                assert!(matches!(&parts[0], ContentPart::Text { text } if *text == format!("Reading f{seq}.rs next.")), "her words lead her turn: {parts:?}");
+                assert!(matches!(&parts[1], ContentPart::ToolUse { id, .. } if *id == format!("call-{seq}")), "then her call: {parts:?}");
+            }
+            MessageContent::Text(text) => panic!("her call is native protocol, not text: {text}"),
+        }
+        assert_eq!(now.resumes_at(), Some(now.messages.len() as u32), "the engine checkpoints her prompt's end");
+        faculty.view_served(&now);
+        previous = Some(now);
+    }
+}

@@ -396,3 +396,30 @@ fn her_unchanged_reread_reaches_her_view_as_a_repeat_and_an_undeclared_act_never
     }
     assert_eq!(repeats, 1, "an unchanged status, asked again, arrives as a repeat");
 }
+
+// what this catches: the facts that re-prefilled her tail every act (the M5, 2026-11-06), and a
+// fact kept as if it still held. As items of her view a fact that holds unchanged appends nothing,
+// one that stops holding is ended once, and a perception the system spoke into her room is an
+// event: it stays what happened.
+#[test]
+fn her_facts_append_once_end_when_they_stop_and_her_perceived_events_stay() -> Result<(), continuum_context::view::GrantMismatch> {
+    use super::facts::{Fact, Facts};
+    use continuum_context::view::{Claim, View};
+
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    let bounds = || Fact::state("context_bounds", "[context] 3 input turns were available".to_owned());
+    let mut facts = Facts { persona: uuid::Uuid::nil(), facts: vec![bounds(), Fact::state("own_repetition", "[pattern] I said that twice".to_owned())] };
+    let (mut view, _) = View::start(Vec::new(), &[&facts as &dyn Source<_>], whole)?;
+    let text = |view: &View<super::ContextMessage>| view.render().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n");
+    assert_eq!(view.advance(&[&facts as &dyn Source<_>]).items, 0, "unchanged facts append nothing");
+    facts.facts = vec![bounds(), Fact::event("e1", "[board] card 1b23 moved to review".to_owned())];
+    view.advance(&[&facts as &dyn Source<_>]);
+    let now = text(&view);
+    assert!(now.ends_with("[board] card 1b23 moved to review\n[own repetition: no longer observed]"), "the event, then the fact that stopped:\n{now}");
+    facts.facts = vec![bounds()];
+    view.advance(&[&facts as &dyn Source<_>]);
+    let later = text(&view);
+    assert_eq!(later.matches("no longer observed").count(), 1, "ended once, and the event is never ended:\n{later}");
+    assert_eq!(later.matches("[context] 3").count(), 1, "{later}");
+    Ok(())
+}

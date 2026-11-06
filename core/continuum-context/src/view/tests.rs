@@ -777,3 +777,56 @@ fn turnover_receipt_counts_promotions_but_not_new_items() -> Result<(), GrantMis
     assert_eq!((full.restored_items, full.restored_chars), (1, 1000));
     Ok(())
 }
+
+// what this catches: the M5's tail re-prefill (2026-11-06, 2,822 s over 78 acts). Her act's tail
+// (the clock, her call, its result) was sent once as native protocol and re-rendered the next act
+// as a `[result #n]` item of her actions, so the previous prompt was never the next one's prefix.
+// Appended as sent, the tail is the next prompt's prefix; the act it showed never arrives a second
+// time from its source; a start re-renders it from the source and drops the tail.
+#[test]
+fn a_sent_tail_is_the_next_acts_prefix_and_what_it_showed_never_arrives_twice() -> Result<(), GrantMismatch> {
+    let mut actions = Fake::new("actions", 5);
+    actions.push("#1", "result 1");
+    let (mut view, _) = View::start(vec!["identity".into()], &[&actions], all_full)?;
+    view.advance(&[&actions]);
+    let sent = [rendered(&view), "[now 12:00]".into(), "call #2".into(), "result 2 as sent".into()].join("\n");
+    view.append_sent("tail", vec!["[now 12:00]".into(), "call #2".into(), "result 2 as sent".into()], &[("actions", "#2")]);
+    assert_eq!(rendered(&view), sent, "the view now ends with the tail exactly as it was sent");
+    assert!(view.covers("actions", "#2") && view.renders("actions", "#2"), "she read #2 whole, in the tail");
+    assert!(view.holds_sent("tail", &"[now 12:00]".to_string()), "a piece already sent is known");
+    actions.push("#2", "result 2 as the actions source renders it");
+    actions.push("#3", "result 3");
+    view.advance(&[&actions]);
+    let next = rendered(&view);
+    assert!(next.starts_with(&sent), "the next act's prompt extends the sent one");
+    assert!(!next.contains("as the actions source renders it"), "#2 arrived twice:\n{next}");
+    assert!(next.ends_with("result 3"), "{next}");
+    view.turn_over(vec!["identity".into()], &[&actions], all_full)?;
+    let started = rendered(&view);
+    assert!(started.contains("as the actions source renders it") && !started.contains("as sent"), "a start renders from the source:\n{started}");
+    assert!(!view.covers("actions", "#2"), "a start covers nothing");
+    Ok(())
+}
+
+// what this catches: a state kept as if it still held. A perception fact ("my last two acts
+// repeated") that stopped holding stayed in her view as its last word, and when it fired again
+// with the same bytes it read as unchanged at the place it first fired, never at the newest end.
+#[test]
+fn a_state_the_source_no_longer_offers_is_ended_once_and_returns_at_the_newest_end() -> Result<(), GrantMismatch> {
+    let mut facts = Fake::states("facts", 5);
+    let mut actions = Fake::new("actions", 5);
+    facts.push("repetition", "[repetition] the same call twice");
+    let (mut view, _) = View::start(vec![], &[&facts, &actions], all_full)?;
+    facts.drop_item("repetition");
+    actions.push("#1", "result 1");
+    view.advance(&[&facts, &actions]);
+    view.advance(&[&facts, &actions]);
+    assert_eq!(rendered(&view).matches("[repetition ended]").count(), 1, "ended once:\n{}", rendered(&view));
+    facts.push("repetition", "[repetition] the same call twice");
+    view.advance(&[&facts, &actions]);
+    assert!(rendered(&view).ends_with("[repetition] the same call twice"), "it returns at the newest end:\n{}", rendered(&view));
+    actions.drop_item("#1");
+    view.advance(&[&facts, &actions]);
+    assert!(!rendered(&view).contains("[#1 ended]"), "an event source keeps what happened");
+    Ok(())
+}

@@ -24,6 +24,9 @@ use crate::cognition::working_memory::WorkingMemory;
 /// The prefix of a view source's claim id in the window's one allocation.
 const VIEW_CLAIM: &str = continuum_context::allocation::id::VIEW;
 
+/// The source a sent prompt's tail joins her view under (`view_served`).
+const SENT_TAIL: &str = "sent";
+
 /// Where her view sits in this act's history: its leading `len` messages, and whether this
 /// act started it.
 #[derive(Clone, Copy, Debug)]
@@ -36,6 +39,11 @@ impl ViewPlacement {
     /// How many leading messages of the history are her view.
     pub(in super::super) fn len(&self) -> usize {
         self.len
+    }
+
+    /// Whether this act started her view (no view was held).
+    pub(in super::super) fn started(&self) -> bool {
+        self.started
     }
 }
 
@@ -292,6 +300,89 @@ impl LlmDeliberationFaculty {
         }
     }
 
+    /// Which epoch her view is in: a change across an act means it started a new one.
+    pub(in super::super) fn view_epoch(&self) -> Option<u64> {
+        self.context_view.lock().as_ref().map(View::epoch_id)
+    }
+
+    /// Whether her view already shows `source`'s item `item`, in the bytes a sent tail showed it.
+    pub(in super::super) fn view_covers(&self, source: &str, item: &str) -> bool {
+        self.context_view.lock().as_ref().is_some_and(|view| view.covers(source, item))
+    }
+
+    /// Whether a sent tail already showed her `message`, byte for byte: not sent again.
+    pub(in super::super) fn view_holds_sent(&self, message: &ChatMessage) -> bool {
+        let Ok(held) = ContextMessage::from_chat(message) else {
+            return false; // a message her view cannot hold as sent was never held
+        };
+        self.context_view.lock().as_ref().is_some_and(|view| view.holds_sent(SENT_TAIL, &held))
+    }
+
+    /// Drop from this act's tail what a sent tail already showed her (the same ask, the same clock
+    /// line, her same statement): it is in her view, byte for byte, where it was sent. Asked after
+    /// her view is sized: a start covers nothing, so after a turnover everything is sent again.
+    pub(in super::super) fn drop_what_she_was_sent(&self, prompt: &mut PromptMessages) {
+        let asked = prompt.streams.conversation.stimulus.as_deref().is_some_and(|key| self.view_covers("conversation", key));
+        if asked || prompt.stimulus.as_ref().is_some_and(|message| self.view_holds_sent(message)) {
+            prompt.stimulus = None;
+        }
+        if prompt.action_statement.as_ref().is_some_and(|message| self.view_holds_sent(message)) {
+            prompt.action_statement = None;
+        }
+        let view_len = prompt.grounding_at.min(prompt.history.len());
+        let mut tail = prompt.history.split_off(view_len);
+        tail.retain(|message| !self.view_holds_sent(message));
+        prompt.history.append(&mut tail);
+    }
+
+    /// What this act's tail shows her that her sources also render: the ask (her conversation's
+    /// held-out turn) and her newest act (held out of her actions while newest).
+    pub(in super::super) fn tail_covers(prompt: &PromptMessages) -> Vec<(&'static str, String)> {
+        let asked = prompt.stimulus.as_ref().and(prompt.streams.conversation.stimulus.clone()).map(|key| ("conversation", key));
+        let acted = (!prompt.latest_result.is_empty()).then_some(prompt.streams.latest_act).flatten().map(|seq| ("actions", seq.to_string()));
+        asked.into_iter().chain(acted).collect()
+    }
+
+    /// The prompt built on `view` was served: its tail (what follows her view: the clock, the ask,
+    /// her call and its result) joins her view in the bytes it was sent ([`View::append_sent`]), so
+    /// her next act's prompt is this one plus what is new, and the engine resumes at its end
+    /// (`DeliberationPromptView::resumes_at`). A tail carrying media is not held as sent: it
+    /// re-renders from its producers next act, as every tail did before.
+    pub(in super::super) fn view_served(&self, view: &DeliberationPromptView) {
+        let kept: Result<Vec<ContextMessage>, _> = view.tail().iter().map(ContextMessage::from_chat).collect();
+        let tail = match kept {
+            Ok(tail) => tail,
+            Err(not_kept) => {
+                continuum_base::probe!(
+                    class = "delib.view.tail_not_kept",
+                    persona = %self.persona_name,
+                    reason = ?not_kept,
+                    "her sent tail carries what her view cannot hold as sent: it re-renders next act"
+                );
+                return;
+            }
+        };
+        let covers: Vec<(&str, &str)> = view.tail_covers.iter().map(|(source, key)| (*source, key.as_str())).collect();
+        let memory = self.working_memory.as_deref();
+        let mut held = self.context_view.lock();
+        let Some(context) = held.as_mut() else {
+            return; // no view (no working memory): nothing holds the tail
+        };
+        let appended = context.append_sent(SENT_TAIL, tail, &covers);
+        continuum_base::probe!(
+            class = "delib.view.tail_kept",
+            persona = %self.persona_name,
+            epoch = context.epoch_id(),
+            messages = appended.items,
+            chars = appended.chars,
+            covers = covers.len(),
+            "her sent tail joined her view as sent: her next prompt extends this one"
+        );
+        if let Some(memory) = memory {
+            memory.keep_view(held.clone());
+        }
+    }
+
     /// Start a new epoch of her view within `budget_chars`, the flexbox granting each
     /// source its share by priority, without the `shed` sources.
     /// Whether her view, started now under `allocate`'s grants, would show her more than it holds.
@@ -425,6 +516,10 @@ impl LlmDeliberationFaculty {
         sources.extend(memory.map(|m| &m.tasks as &dyn Source<ContextMessage>));
         sources.extend(memory.map(|m| &m.open_views as &dyn Source<ContextMessage>));
         sources.extend(memory.map(|m| &m.notices as &dyn Source<ContextMessage>));
+        // What her situation shows now: appended after everything else an act changed, so the
+        // facts stand right before this act's tail (the clock, the ask), never ahead of what she
+        // already read.
+        sources.push(&streams.facts);
         sources
     }
 
