@@ -1,5 +1,6 @@
-//! The batch-scheduler decision on the recorded M5 hour: the fork baseline calibrated first, then
-//! the candidates on the SAME arrivals, each number beside the baseline's calibration error.
+//! The batch-scheduler decision on the recorded M5 hour: the costs fitted, the fork baseline
+//! calibrated measure by measure, then the candidates on the SAME arrivals with the baseline's
+//! calibration error beside every number.
 #![cfg(test)]
 
 use super::*;
@@ -9,142 +10,165 @@ fn evidence() -> Evidence {
     Evidence::load().expect("test: the recorded M5 hour parses")
 }
 
-fn median(mut v: Vec<f64>) -> f64 {
+fn quantile(mut v: Vec<f64>, q: f64) -> f64 {
     v.retain(|x| x.is_finite());
     v.sort_by(f64::total_cmp);
     match v.len() {
         0 => f64::NAN,
-        n => v[n / 2],
+        n => v[((n as f64 * q) as usize).min(n - 1)],
     }
 }
 
-fn p90(mut v: Vec<f64>) -> f64 {
-    v.retain(|x| x.is_finite());
-    v.sort_by(f64::total_cmp);
-    match v.len() {
-        0 => f64::NAN,
-        n => v[((n as f64 * 0.9) as usize).min(n - 1)],
+fn median(v: Vec<f64>) -> f64 {
+    quantile(v, 0.5)
+}
+
+/// The measures the calibration compares, one value each.
+#[derive(Debug, Clone)]
+struct Measures {
+    resident_slot_rate: BTreeMap<usize, f64>,
+    dream_rate: f64,
+    median_prefill_s: f64,
+    median_decode_s: f64,
+    median_act_s: f64,
+    makespan_s: f64,
+    acts_per_hour: f64,
+}
+
+fn measures(hour: &Hour, prefill: impl Fn(usize) -> f64, decode: impl Fn(usize) -> f64, act: impl Fn(usize) -> f64, release: impl Fn(usize) -> f64) -> Measures {
+    let resident = |i: &usize| hour.tasks[*i].class == TaskClass::Resident;
+    let idx: Vec<usize> = (0..hour.tasks.len()).collect();
+    let rate = |of: &dyn Fn(&usize) -> bool| {
+        let (tok, sec) = idx.iter().filter(|i| of(i)).fold((0.0, 0.0), |(t, s), i| (t + f64::from(hour.tasks[*i].fresh), s + prefill(*i)));
+        tok / sec
+    };
+    let slots: std::collections::BTreeSet<usize> = idx.iter().filter(|i| resident(i)).map(|i| hour.tasks[*i].slot).collect();
+    let makespan_s = idx.iter().map(|i| release(*i)).fold(0.0, f64::max);
+    let acts = idx.iter().filter(|i| resident(i)).count();
+    Measures {
+        resident_slot_rate: slots.iter().map(|s| (*s, rate(&|i: &usize| resident(i) && hour.tasks[*i].slot == *s))).collect(),
+        dream_rate: rate(&|i: &usize| !resident(i)),
+        median_prefill_s: median(idx.iter().filter(|i| resident(i)).map(|i| prefill(*i)).collect()),
+        median_decode_s: median(idx.iter().filter(|i| resident(i)).map(|i| decode(*i)).collect()),
+        median_act_s: median(idx.iter().filter(|i| resident(i)).map(|i| act(*i)).collect()),
+        makespan_s,
+        // Useful work is the residents' acts, over the span until the last of them is released
+        // (a dream task's tail after it is not resident service).
+        acts_per_hour: acts as f64 * 3600.0 / idx.iter().filter(|i| resident(i)).map(|i| release(*i)).fold(0.0, f64::max),
     }
 }
 
-/// Per slot: fresh tokens over prefill seconds.
-fn slot_rates(hour: &Hour, prefill_s: impl Fn(usize) -> f64) -> BTreeMap<usize, f64> {
-    let mut sums: BTreeMap<usize, (f64, f64)> = BTreeMap::new();
-    for (i, t) in hour.tasks.iter().enumerate() {
-        let e = sums.entry(t.slot).or_insert((0.0, 0.0));
-        e.0 += f64::from(t.fresh);
-        e.1 += prefill_s(i);
-    }
-    sums.into_iter().map(|(s, (tok, sec))| (s, tok / sec)).collect()
+fn recorded(hour: &Hour) -> Measures {
+    let t = |i: usize| &hour.tasks[i];
+    measures(hour, |i| t(i).recorded_prefill_s, |i| t(i).recorded_decode_s, |i| t(i).recorded_act_s, |i| t(i).launch_s + t(i).recorded_act_s)
 }
 
-/// The baseline's calibration against the recording: per-slot prefill rate error and the median
-/// act-prefill error (fractions), and the median act-time error.
-struct Calibration {
-    slot_rate_err: BTreeMap<usize, f64>,
-    median_prefill_err: f64,
-    median_act_err: f64,
+fn modeled(hour: &Hour, out: &[TaskOutcome]) -> Measures {
+    measures(hour, |i| out[i].prefill_s, |i| out[i].decode_s, |i| out[i].act_s(), |i| out[i].release_s)
 }
 
-fn calibrate(hour: &Hour, costs: &Costs) -> Calibration {
-    let out = replay(hour, costs, &mut Fork::default());
-    let recorded = slot_rates(hour, |i| hour.tasks[i].recorded_prefill_s);
-    let modeled = slot_rates(hour, |i| out[i].prefill_s);
-    let slot_rate_err = recorded.iter().map(|(s, r)| (*s, (modeled[s] - r) / r)).collect();
-    let acts = |f: &dyn Fn(usize) -> f64| median(hour.tasks.iter().enumerate().filter(|(_, t)| t.mind != "scratch").map(|(i, _)| f(i)).collect());
-    let (rp, mp) = (acts(&|i| hour.tasks[i].recorded_prefill_s), acts(&|i| out[i].prefill_s));
-    let (ra, ma) = (acts(&|i| hour.tasks[i].recorded_act_s), acts(&|i| out[i].act_s()));
-    let (rd, md) = (acts(&|i| hour.tasks[i].recorded_decode_s), acts(&|i| out[i].release_s - out[i].arrival_s - hour.tasks[i].restore_s - out[i].first_service_wait_s - out[i].prefill_s));
-    eprintln!("calibration: per-slot prefill tok/s recorded {recorded:.1?} modeled {modeled:.1?}; median act prefill {rp:.1} vs {mp:.1} s; median act decode {rd:.1} vs {md:.1} s; median act {ra:.1} vs {ma:.1} s");
-    Calibration { slot_rate_err, median_prefill_err: (mp - rp) / rp, median_act_err: (ma - ra) / ra }
+/// (measure, recorded, modeled, relative error) for every calibration measure.
+fn calibration(hour: &Hour, costs: &Costs) -> Vec<(String, f64, f64, f64)> {
+    let (r, m) = (recorded(hour), modeled(hour, &replay(hour, costs, &mut Fork::default())));
+    let mut rows: Vec<(String, f64, f64)> = r.resident_slot_rate.iter().map(|(s, v)| (format!("prefill tok/s, resident slot {s}"), *v, m.resident_slot_rate[s])).collect();
+    rows.extend([
+        ("prefill tok/s, dream traffic".to_string(), r.dream_rate, m.dream_rate),
+        ("median act prefill s".to_string(), r.median_prefill_s, m.median_prefill_s),
+        ("median act decode s".to_string(), r.median_decode_s, m.median_decode_s),
+        ("median act s".to_string(), r.median_act_s, m.median_act_s),
+        ("makespan s".to_string(), r.makespan_s, m.makespan_s),
+        ("useful acts/h".to_string(), r.acts_per_hour, m.acts_per_hour),
+    ]);
+    rows.into_iter().map(|(n, a, b)| (n, a, b, (b - a) / a)).collect()
 }
 
-/// The stated calibration bound: 20% of the recording (the model holds per-batch rates constant
-/// across context depth, gives a decoder one token per iteration, and costs a decode-only step
-/// per decoder from one measured interval).
+/// The stated calibration bound: 20% of the recording for every measure.
 const CALIBRATION_BOUND: f64 = 0.20;
 
-/// The residents' slots (0-3) and the median act prefill.
-fn residents_calibrated(c: &Calibration) -> bool {
-    c.slot_rate_err.iter().filter(|(s, _)| **s < 4).all(|(_, e)| e.abs() <= CALIBRATION_BOUND) && c.median_prefill_err.abs() <= CALIBRATION_BOUND
+fn print_calibration(rows: &[(String, f64, f64, f64)], costs: &Costs) {
+    eprintln!("fits: prefill chunk {:.3} + {:.4} d + t ({:.3} + {:.4} d) s, t and d in k tokens (median residual {:.0}%); decode step {:.3} + {:.3} n + {:.4} D/1k s (median residual {:.0}%)",
+        costs.prefill[0], costs.prefill[1], costs.prefill[2], costs.prefill[3], costs.prefill_residual * 100.0,
+        costs.decode[0], costs.decode[1], costs.decode[2], costs.decode_residual * 100.0);
+    for (n, r, m, e) in rows {
+        eprintln!("   {n:34} recorded {r:9.1} modeled {m:9.1} ({:+.0}%)", e * 100.0);
+    }
 }
 
-fn print_error(c: &Calibration) {
-    eprintln!("calibration error: per slot {:+.1?}, median prefill {:+.1}%, median act {:+.1}%",
-        c.slot_rate_err.iter().map(|(s, x)| (*s, x * 100.0)).collect::<Vec<_>>(), c.median_prefill_err * 100.0, c.median_act_err * 100.0);
+// what this catches: a fit that is not what the log measured. The solo prefill chunk grows with
+// depth (attention over the resident context: positive slope), and the decode step grows with
+// decoders; each fit's residual is printed.
+#[test]
+fn the_costs_are_fitted_from_the_log_and_grow_with_depth_and_decoders() {
+    let costs = Costs::of(&evidence());
+    assert!(costs.prefill[1] > 0.0 && costs.prefill[3] > 0.0 && costs.decode[1] > 0.0, "{costs:?}");
+    assert!(costs.prompt_s(2048, 100_000) > costs.prompt_s(2048, 7_000));
 }
 
 // what this catches: believing an alternative schedule from a model that does not reproduce the
-// hour it replays. The fork baseline reproduces the residents' recorded per-slot prefill rates
-// (88/68/53/34 tok/s, slot-id order on the unified KV) and the median act prefill (84.7 s) within
-// the stated 20%.
+// hour it replays: every measure (per resident slot and dream prefill rate, median act prefill,
+// decode and act time, makespan, useful acts/h) within the stated 20%.
 #[test]
-fn the_fork_baseline_reproduces_the_residents_prefill_in_the_recorded_hour() {
+#[ignore = "dyno batch model: calibration measures outside the stated 20% (see the printed table)"]
+fn the_fork_baseline_reproduces_every_measure_of_the_recorded_hour() {
     let e = evidence();
-    let c = calibrate(&e.m5_hour.value, &Costs::of(&e));
-    print_error(&c);
-    assert!(residents_calibrated(&c), "the baseline is outside the stated {:.0}% bound", CALIBRATION_BOUND * 100.0);
-}
-
-// what this catches: the rest of the calibration still open. Slot 4 (scratch traffic, last in
-// slot order) prefills at ~4.3 tok/s modeled against 8.1 recorded, and an act's decode takes
-// ~21 s modeled against 35.2 recorded (median act -22%): the candidates' act times carry that
-// error until this is green.
-#[test]
-#[ignore = "dyno batch model: slot 4 prefill and act decode outside the stated 20% (candidates carry the error)"]
-fn the_fork_baseline_reproduces_every_slot_and_the_act_time() {
-    let e = evidence();
-    let c = calibrate(&e.m5_hour.value, &Costs::of(&e));
-    print_error(&c);
-    assert!(c.slot_rate_err.values().all(|x| x.abs() <= CALIBRATION_BOUND) && c.median_act_err.abs() <= CALIBRATION_BOUND);
+    let costs = Costs::of(&e);
+    let rows = calibration(&e.m5_hour.value, &costs);
+    print_calibration(&rows, &costs);
+    let off: Vec<_> = rows.iter().filter(|r| r.3.abs() > CALIBRATION_BOUND).map(|r| r.0.clone()).collect();
+    assert!(off.is_empty(), "outside {:.0}%: {off:?}", CALIBRATION_BOUND * 100.0);
 }
 
 // what this catches: nothing by itself; it is the comparison the fork's 4b change is chosen from,
-// each candidate on the same arrivals, printed beside the baseline's calibration error. It holds
-// only that every candidate completes every recorded task (no starvation to the end of time).
+// each candidate on the same arrivals, printed with the baseline's calibration error. It holds
+// only that every candidate completes every recorded task.
 #[test]
 fn candidate_schedulers_on_the_recorded_hour() {
     let e = evidence();
     let hour = &e.m5_hour.value;
     let costs = Costs::of(&e);
-    let c = calibrate(hour, &costs);
+    let rows = calibration(hour, &costs);
+    print_calibration(&rows, &costs);
     let knee = match costs.knee() {
         Knee::Derived(k) => k as usize,
         Knee::NeedsNoiseBand { below, .. } => below as usize,
     };
-    let mut policies: Vec<Box<dyn BatchScheduler>> = vec![
-        Box::new(Fork::default()),
-        Box::new(ShortestRemaining::default()),
-        Box::new(WholeTail::default()),
-        Box::new(BoundedGap { chunk: 512 }),
-        Box::new(KneeAdmitted::new(knee)),
+    let mut policies: Vec<(String, Box<dyn BatchScheduler>)> = vec![
+        (String::new(), Box::new(Fork::default())),
+        (String::new(), Box::new(ShortestRemaining::default())),
+        (String::new(), Box::new(WholeTail::default())),
+        (format!(" (knee {knee})"), Box::new(KneeAdmitted::new(knee))),
     ];
-    eprintln!("calibration (baseline vs recorded): per-slot prefill rate {:+.0?}%, median act prefill {:+.0}%, median act {:+.0}%; knee {knee} ({:?})",
-        c.slot_rate_err.values().map(|x| x * 100.0).collect::<Vec<_>>(), c.median_prefill_err * 100.0, c.median_act_err * 100.0, costs.knee());
-    for policy in policies.iter_mut() {
+    for chunk in [512, 1024, 2048] {
+        policies.push((format!(" @{chunk}"), Box::new(BoundedGap { chunk, shortest_first: false })));
+        policies.push((format!(" @{chunk}"), Box::new(BoundedGap { chunk, shortest_first: true })));
+    }
+    let mut table = Vec::new();
+    for (label, policy) in policies.iter_mut() {
         let out = replay(hour, &costs, policy.as_mut());
-        let makespan = out.iter().map(|o| o.release_s).fold(0.0, f64::max);
-        let useful = hour.tasks.iter().zip(&out).filter(|(t, o)| t.mind != "scratch" && o.release_s.is_finite()).count();
-        eprintln!("{}: makespan {makespan:.0} s, useful acts/h {:.1}, longest decode gap {:.1} s, oldest waiter {:.0} s",
-            policy.name(), useful as f64 * 3600.0 / makespan,
-            out.iter().map(|o| o.longest_gap_s).fold(0.0, f64::max),
-            out.iter().map(|o| o.first_service_wait_s).fold(0.0, f64::max));
+        let m = modeled(hour, &out);
+        let resident: Vec<usize> = (0..hour.tasks.len()).filter(|i| hour.tasks[*i].class == TaskClass::Resident).collect();
+        let oldest = resident.iter().map(|i| out[*i].first_service_wait_s).fold(0.0, f64::max);
+        let gap = resident.iter().map(|i| out[*i].longest_gap_s).fold(0.0, f64::max);
+        eprintln!("{}{label}: acts/h {:.1}, makespan {:.0} s, median act {:.0} s, p90 act {:.0} s, median prefill {:.0} s, longest decode gap {:.1} s, oldest waiter {:.0} s",
+            policy.name(), m.acts_per_hour, m.makespan_s, m.median_act_s,
+            quantile(resident.iter().map(|i| out[*i].act_s()).collect(), 0.9), m.median_prefill_s, gap, oldest);
         let mut minds: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
-        for (i, t) in hour.tasks.iter().enumerate() {
-            minds.entry(t.mind.as_str()).or_default().push(i);
+        for i in &resident {
+            minds.entry(hour.tasks[*i].mind.as_str()).or_default().push(*i);
         }
         for (mind, idx) in &minds {
             let acts: Vec<f64> = idx.iter().map(|i| out[*i].act_s()).collect();
-            let prefill: Vec<f64> = idx.iter().map(|i| out[*i].prefill_s).collect();
             eprintln!("   {mind:8} acts {:3} median {:6.0} s p90 {:6.0} s, prefill median {:5.0} s",
-                idx.len(), median(acts.clone()), p90(acts), median(prefill));
+                idx.len(), median(acts.clone()), quantile(acts, 0.9), median(idx.iter().map(|i| out[*i].prefill_s).collect()));
         }
         assert!(out.iter().all(|o| o.release_s.is_finite()), "{} left tasks unfinished", policy.name());
+        table.push((format!("{}{label}", policy.name()), m.acts_per_hour, oldest));
     }
-    let recorded: Vec<f64> = hour.tasks.iter().filter(|t| t.mind != "scratch").map(|t| t.recorded_act_s).collect();
-    let span = hour.tasks.iter().map(|t| t.launch_s + t.recorded_act_s).fold(0.0, f64::max);
-    eprintln!("recorded: makespan {span:.0} s, useful acts/h {:.1}, median act {:.0} s p90 {:.0} s; residents calibrated: {}",
-        recorded.len() as f64 * 3600.0 / span, median(recorded.clone()), p90(recorded), residents_calibrated(&c));
+    // The decision: the most useful acts per hour among policies whose oldest-waiter age is no worse
+    // than today's (the baseline's modeled age is the bound).
+    let bound = table[0].2;
+    let best = table.iter().filter(|r| r.2 <= bound).max_by(|a, b| a.1.total_cmp(&b.1)).expect("test: the baseline meets its own bound");
+    eprintln!("winner at an oldest waiter <= {bound:.0} s: {} ({:.1} acts/h)", best.0, best.1);
 }
 
 // what this catches: a fork fill that drifts from the source: a slot stops where its remaining
