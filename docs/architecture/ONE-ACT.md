@@ -626,6 +626,45 @@ held-out recorded scenarios and adversarial interleavings, then compare shadow d
 real outcomes before adopting through the existing stable/shadow learning lifecycle. Simulation
 is an initial environment model; live discrepancies become new reproductions and training cases.
 No learned optimizer is required to complete the current deterministic dispatch correction.
+
+#### Incoming-agent work package: learned optimizer
+
+This is an independent side workstream requested by Joel, ready for assignment when collaborators
+return. Recover existing learning and scheduler work before claiming it. Its first deliverable is
+a reproducible simulator experiment and an integration proposal against the existing policy seam;
+it must not delay or independently modify the dispatch/custody correction above.
+
+**Scope the first experiment:** choose one decision domain (for example, selection among feasible
+ready operations), expose the current deterministic policy as the baseline, and train a candidate
+on recorded workloads plus seeded variations. Do not combine scheduling, placement and cache
+retention into one unexplained reward initially. Preserve a versioned observation/action schema:
+operation identity and age, feasible actions, owned-resource observations, measured service costs,
+policy/version, proposed action, admitted action, and terminal useful-work outcome. Unknown costs
+remain explicit; the network must not receive future completion information as an observation.
+
+**Deliverables for review:**
+
+1. A scenario corpus with provenance, deterministic replay seeds and separate training/held-out
+   workloads, including cold/warm prefixes, all-pinned waits, heterogeneous service times and
+   resource pressure. Use the production owners and decision interfaces; do not train against a
+   duplicate implementation of their invariants.
+2. A baseline-versus-candidate report covering useful work per unit time, latency distribution,
+   starvation/service debt, memory and movement cost, and policy inference overhead. Document
+   reward terms, normalization and tradeoffs; reject improvements bought by lost work, unfairness
+   or relaxed custody. Compare with the deterministic baseline, including under workload shift.
+3. A versioned candidate artifact and reproducible training/evaluation recipe using the existing
+   learning infrastructure. Include an ablation showing which observations/actions produced the
+   improvement and the failure cases where it loses.
+4. A shadow-mode adapter at the existing policy interface. It records proposals without owning
+   resources or executing side effects. Define the subsequent bounded real evaluation and
+   stable/shadow adoption criteria before activating a learned policy; retain deterministic
+   resource validation for every proposed action.
+
+**Integration boundary:** the optimizer owns scoring/proposals and training evidence. The engine
+owners retain feasibility, reservation, lifetime, cancellation and terminal settlement. Coordinate
+shared schema changes with those owners; no second queue, daemon, priority system or leaf-specific
+policy. Completion means held-out simulation results plus real shadow evidence and a reviewed
+adoption plan. It does not mean merely that a network trained or its training reward increased.
 #### Work boundaries for incoming collaborators
 
 | Workstream | Interface to agree first | Deliverable / deletion requirement |
