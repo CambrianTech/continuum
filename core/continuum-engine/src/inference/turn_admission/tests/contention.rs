@@ -83,6 +83,71 @@ impl Wake for WakeCount {
     }
 }
 
+// Compose the real two owners as cognition's SharedLocal call does: its lane
+// surrounds adapter admission. This is a custody reproduction, not an HTTP or
+// full cognition integration test. An inner permit drop cannot release it.
+#[tokio::test]
+#[ignore = "known red: outer serving lane remains owned during all-pinned wait"]
+async fn all_pinned_wait_releases_the_outer_serving_lane() -> Result<(), Box<dyn std::error::Error>>
+{
+    use crate::inference::resource_admission::{LaneAdmission, LanePriority};
+    let root = format!("test://outer-lane-{}", Uuid::new_v4());
+    let pool = Arc::new(KvSlotPool::new(&root, 1));
+    let sem = Arc::new(Semaphore::new(2));
+    let client = reqwest::Client::new();
+    let owner = PageKey::mind(Uuid::new_v4()).ok_or("owner key")?;
+    let held = admit_turn(
+        &sem,
+        crate::inference::slots::SlotClass::Turn,
+        Some(owner),
+        Some(pool.clone()),
+        &client,
+        &root,
+        100,
+        std::time::Duration::ZERO,
+    )
+    .await?;
+    let lanes: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+    lanes.set_served_lane_count(1);
+    let outer = lanes
+        .acquire_serving_lane(None, LanePriority::Directed, None)
+        .await;
+    let key = PageKey::mind(Uuid::new_v4()).ok_or("waiting key")?;
+    let mut waiting = Box::pin(async {
+        let _outer = outer;
+        admit_turn(
+            &sem,
+            crate::inference::slots::SlotClass::Turn,
+            Some(key),
+            Some(pool.clone()),
+            &client,
+            &root,
+            100,
+            std::time::Duration::ZERO,
+        )
+        .await
+    });
+    assert!(futures::poll!(&mut waiting).is_pending());
+    assert_eq!(
+        sem.available_permits(),
+        1,
+        "inner adapter permit was released"
+    );
+    let mut next = Box::pin(lanes.acquire_serving_lane(None, LanePriority::Directed, None));
+    let released_while_parked = futures::poll!(&mut next).is_ready();
+    drop(waiting);
+    if !released_while_parked {
+        let recovered = tokio::time::timeout(std::time::Duration::from_secs(2), next).await?;
+        drop(recovered);
+    }
+    drop(held);
+    assert!(
+        released_while_parked,
+        "all-pinned wait retained the outer serving lane until cancellation"
+    );
+    Ok(())
+}
+
 // Intel's all-pinned storm: nine contenders must not repeatedly wake each other
 // while the sole physical slot remains pinned. Cancellation must not manufacture
 // a slot release; a real release must still make the survivor eligible.
