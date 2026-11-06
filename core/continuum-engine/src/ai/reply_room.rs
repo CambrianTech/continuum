@@ -1,37 +1,16 @@
-//! Caller authority for resolving output room against the selected engine's exact prompt count.
-//! This policy neither acquires a lease nor authorizes dispatch: those remain the grant owner's
-//! and transport's duties. Resolution must be repeated after an engine or grant changes.
+//! Output intent resolved by the dispatch owner after an exact prompt quote.
+//! Resolution is arithmetic evidence, never endpoint custody or permission to send.
 
-/// What the caller permits the dispatch owner to send.
+use std::num::NonZeroU32;
+
+/// Explicit caller authority. An estimate is not an output ceiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplyRoom {
-    /// Preserve this allowance exactly, or refuse. No implicit adaptation for ordinary callers.
-    Fixed(u32),
-    /// The caller explicitly permits reducing its ceiling, but never its required reply room.
-    Act(ActReplyRoom),
+pub enum OutputIntent {
+    Fixed(NonZeroU32),
+    UseAdmittedRoom { required_reply: NonZeroU32 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ActReplyRoom {
-    minimum: u32,
-    ceiling: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InvalidActRoom {
-    ZeroMinimum,
-    MinimumAboveCeiling,
-}
-
-impl ActReplyRoom {
-    pub fn new(minimum: u32, ceiling: u32) -> Result<Self, InvalidActRoom> {
-        if minimum == 0 { return Err(InvalidActRoom::ZeroMinimum); }
-        if minimum > ceiling { return Err(InvalidActRoom::MinimumAboveCeiling); }
-        Ok(Self { minimum, ceiling })
-    }
-}
-
-/// A receipt of this resolution, not a grant reservation or terminal generation receipt.
+/// Resolution evidence; the executable attempt must bind it to owned custody.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 pub struct QuotedReplyRoom {
     pub prompt: u32,
@@ -46,17 +25,24 @@ pub struct InsufficientReplyRoom {
     pub minimum: u32,
 }
 
-impl ReplyRoom {
-    /// The engine requires prompt + reply < window. `window` must be the intersection of the
-    /// current physical sequence and the caller's admitted lease, never a guessed larger pool.
-    pub fn resolve(self, prompt: u32, window: u32) -> Result<QuotedReplyRoom, InsufficientReplyRoom> {
-        let (minimum, ceiling) = match self {
-            Self::Fixed(reply) => (reply, reply),
-            Self::Act(room) => (room.minimum, room.ceiling),
+impl OutputIntent {
+    /// Strict feasibility: P + R < min(physical, admitted). Capacity inputs must
+    /// come from the selected endpoint and grant owners on this exact attempt.
+    pub fn resolve(self, prompt: u32, physical: u32, admitted: u32) -> Result<QuotedReplyRoom, InsufficientReplyRoom> {
+        let window = physical.min(admitted);
+        let minimum = match self {
+            Self::Fixed(reply) => reply.get(),
+            Self::UseAdmittedRoom { required_reply } => required_reply.get(),
         };
-        let room = window.checked_sub(prompt).and_then(|n| n.checked_sub(1));
-        match room {
-            Some(room) if room >= minimum => Ok(QuotedReplyRoom { prompt, window, reply: room.min(ceiling) }),
+        let available = window.checked_sub(prompt).and_then(|n| n.checked_sub(1));
+        match available {
+            Some(room) if room >= minimum => {
+                let reply = match self {
+                    Self::Fixed(reply) => reply.get(),
+                    Self::UseAdmittedRoom { .. } => room,
+                };
+                Ok(QuotedReplyRoom { prompt, window, reply })
+            }
             _ => Err(InsufficientReplyRoom { prompt, window, minimum }),
         }
     }
@@ -66,23 +52,57 @@ impl ReplyRoom {
 mod tests {
     use super::*;
 
-    #[test]
-    fn kimi_density_error_requires_explicit_authority_to_resize() {
-        assert!(ReplyRoom::Fixed(5857).resolve(27221, 32512).is_err());
-        let policy = ReplyRoom::Act(ActReplyRoom::new(4534, 5857).expect("valid measured claim"));
-        assert_eq!(policy.resolve(27221, 32512), Ok(QuotedReplyRoom { prompt: 27221, window: 32512, reply: 5290 }));
-        assert!(policy.resolve(28000, 32512).is_err(), "never reduce the required reply claim");
-        assert!(policy.resolve(27221, 30000).is_err(), "a smaller grant must be resolved again");
-        assert_eq!(policy.resolve(20000, 32512).expect("room fits").reply, 5857, "no growth beyond caller authority");
+    fn positive(n: u32) -> NonZeroU32 {
+        NonZeroU32::new(n).expect("positive fixture")
     }
 
     #[test]
-    fn strict_boundary_and_invalid_claims_are_refused() {
-        assert_eq!(ActReplyRoom::new(0, 100), Err(InvalidActRoom::ZeroMinimum));
-        assert_eq!(ActReplyRoom::new(101, 100), Err(InvalidActRoom::MinimumAboveCeiling));
-        assert!(ReplyRoom::Fixed(1).resolve(99, 100).is_err());
-        assert!(ReplyRoom::Fixed(0).resolve(100, 100).is_err());
-        assert!(ReplyRoom::Fixed(u32::MAX).resolve(1, u32::MAX).is_err());
-        assert_eq!(ReplyRoom::Fixed(0).resolve(99, 100).expect("one free cell").reply, 0);
+    fn recorded_prediction_errors_resolve_without_estimate_authority() {
+        for (prompt, window, predicted, required, actual) in [
+            (27221, 32512, 5857, 4534, 5290),
+            (18702, 22435, 3769, 3558, 3732),
+        ] {
+            assert!(OutputIntent::Fixed(positive(predicted)).resolve(prompt, window, window).is_err());
+            let intent = OutputIntent::UseAdmittedRoom { required_reply: positive(required) };
+            assert_eq!(intent.resolve(prompt, window, window), Ok(QuotedReplyRoom { prompt, window, reply: actual }));
+            assert!(intent.resolve(window - required, window, window).is_err());
+            assert_eq!(intent.resolve(0, window, window).expect("empty prompt fits").reply, window - 1);
+        }
+    }
+
+    #[test]
+    fn exhaustive_small_domain_matches_independent_feasible_set() {
+        for physical in 0..20_u32 {
+            for admitted in 0..20_u32 {
+                for prompt in 0..22_u32 {
+                    for required in 1..22_u32 {
+                        let feasible: Vec<u32> = (required..22)
+                            .filter(|reply| u64::from(prompt) + u64::from(*reply) < u64::from(physical.min(admitted)))
+                            .collect();
+                        let adaptive = OutputIntent::UseAdmittedRoom { required_reply: positive(required) }
+                            .resolve(prompt, physical, admitted);
+                        assert_eq!(adaptive.map(|r| r.reply).ok(), feasible.last().copied());
+                        let fixed = OutputIntent::Fixed(positive(required)).resolve(prompt, physical, admitted);
+                        assert_eq!(fixed.map(|r| r.reply).ok(), feasible.first().copied());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn capacity_intersection_and_integer_extremes_are_safe() {
+        let intent = OutputIntent::UseAdmittedRoom { required_reply: positive(1) };
+        assert_eq!(intent.resolve(0, u32::MAX, u32::MAX).expect("max window").reply, u32::MAX - 1);
+        assert!(intent.resolve(u32::MAX, u32::MAX, u32::MAX).is_err());
+        assert!(intent.resolve(u32::MAX - 1, u32::MAX, u32::MAX).is_err());
+        assert!(intent.resolve(0, 0, u32::MAX).is_err());
+        assert!(OutputIntent::Fixed(positive(u32::MAX)).resolve(0, u32::MAX, u32::MAX).is_err());
+        for window in 2..100 {
+            let a = intent.resolve(0, window, 100).expect("fits");
+            let b = intent.resolve(0, 100, window).expect("fits");
+            assert_eq!(a, b);
+            assert_eq!(intent.resolve(0, window + 1, 100).expect("larger fits").reply, a.reply + 1);
+        }
     }
 }
