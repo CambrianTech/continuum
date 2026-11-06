@@ -700,6 +700,29 @@ The gate is the share of an act's fresh tokens prefilled before its go, together
 split into queue, final-delta prefill and decode. The dyno's pipeline scenario (#5801, "e-ready")
 scores this against today's recorded hour before the dispatcher is built.
 
+#### Stable prompts across minds: a central provider keeps the books (Joel, 2026-11-06)
+
+"You need a system that can maintain more stable prompts as it streams even between persona. This
+is a matter of bookkeeping as part of the consumers and centralized provider."
+
+Per-mind stability (#5802, #5803) is not enough. The rendered content must have one provider, and
+every mind is a consumer of it.
+- **Provider (the context ledger):** owns canonical segments, each rendered once, content-addressed,
+  in byte-identical form for every mind that includes it. Segments include the system head, each
+  tool set, the room wall, the board, each tool result and each fact. A streamed event appends to
+  its segment once.
+- **Consumer (her view):** her sequence is an ordered, append-only list of segment references. The
+  ledger's order rules decide placement, never per-act rendering. She records what she sent, and the
+  next act appends references.
+- **Engine bookkeeping:** which segments are resident on which slot, and to which token.
+  - A sequence that needs a segment another slot already holds gets it by sequence copy (`seq_cp`)
+    from the holder, not by prefill. This is section 3b's promise ("shared prefixes are copied,
+    never re-prefilled"), and the books make it possible.
+  - Placement prefers the slot holding her longest resident prefix. Atlas's 1,818 s cold act ran
+    on a slot holding another mind's prompt.
+- **Gate:** tokens prefilled per act that some slot already held (shared-prefix waste), and the
+  segment-reference share of each mind's prompt.
+
 ### 5f. Extend the pipeline to the grid: place work near warm state
 
 Joel requested this direction be recorded on 2026-11-04. This is the extension of stages
