@@ -67,6 +67,8 @@ pub(crate) struct HourTask {
     pub stream: u32,
     /// Fresh tokens changed inside the previous prompt, view turnover, checkpoint granularity.
     pub unstable: u32,
+    /// Fresh tokens of a recorded view turnover (the new epoch's re-prefill), 0 otherwise.
+    pub turnover: u32,
     pub launch_s: f64,
     pub restore_s: f64,
     pub cached: u32,
@@ -370,7 +372,7 @@ impl BatchScheduler for SortKey {
 }
 
 mod replay;
-pub(crate) use replay::{replay, run, Pipeline, Scope, TaskOutcome};
+pub(crate) use replay::{replay, run, Pipeline, Scope, Shadow, TaskOutcome};
 
 #[cfg(test)]
 mod tests;

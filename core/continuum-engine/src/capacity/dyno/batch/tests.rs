@@ -269,9 +269,9 @@ mod pipeline {
         let scenarios: Vec<(&str, Box<dyn BatchScheduler>, Pipeline)> = vec![
             ("today's fork", Box::new(Fork::default()), Pipeline::TODAY),
             ("(b) whole fitting tail", Box::new(WholeTail::default()), Pipeline::TODAY),
-            ("(e) pipeline, append-only streaming", Box::new(SortKey::new(knee)), Pipeline { scope: Scope::AppendOnly }),
-            ("(e*) pipeline + stable prompts", Box::new(SortKey::new(knee)), Pipeline { scope: Scope::StablePrompts }),
-            ("(e-ready) slot kept current", Box::new(SortKey::new(knee)), Pipeline { scope: Scope::ReadyBeforeGo }),
+            ("(e) pipeline, append-only streaming", Box::new(SortKey::new(knee)), Pipeline::scope(Scope::AppendOnly)),
+            ("(e*) pipeline + stable prompts", Box::new(SortKey::new(knee)), Pipeline::scope(Scope::StablePrompts)),
+            ("(e-ready) slot kept current", Box::new(SortKey::new(knee)), Pipeline::scope(Scope::ReadyBeforeGo)),
         ];
         let mut per_token: Vec<f64> = Vec::new();
         for (name, mut policy, pipeline) in scenarios {
@@ -299,5 +299,57 @@ mod pipeline {
             }
         }
         eprintln!("prefill device-seconds per fresh token by scenario: {per_token:.4?}");
+    }
+}
+
+mod shadow {
+    use super::*;
+
+    // what this catches: nothing by itself; it scores SHADOW NEXT EPOCH on the recorded hour's 13
+    // turnovers (their re-prefill tokens from the fixture), on today's best batch policy (b): the
+    // next epoch prefilled on a shadow sequence in otherwise-idle device time from k = 1, 2, 3 acts
+    // ahead, and the append-only-collapse bound as its own column. It holds that every task
+    // completes and that the shadow never takes a frame from other work (it only fills idle time).
+    #[test]
+    fn shadow_next_epoch_on_the_recorded_turnovers() {
+        let e = evidence();
+        let hour = &e.m5_hour.value;
+        let costs = Costs::of(&e);
+        let rows = calibration(hour, &costs);
+        print_calibration(&rows, &costs);
+        let turnovers: Vec<usize> = (0..hour.tasks.len()).filter(|i| hour.tasks[*i].turnover > 0).collect();
+        let total: u32 = turnovers.iter().map(|i| hour.tasks[*i].turnover).sum();
+        eprintln!("recorded turnovers: {} acts, {total} re-prefill tokens", turnovers.len());
+        let mut cases: Vec<(String, Pipeline)> = vec![("(b), no shadow".into(), Pipeline::TODAY)];
+        for acts in [1, 2, 3] {
+            cases.push((format!("(b) + shadow next epoch, k={acts}"), Pipeline { scope: Scope::AtGo, shadow: Shadow::Ahead { acts } }));
+        }
+        cases.push(("(b) + append-only collapse (slice-size bound)".into(), Pipeline { scope: Scope::AtGo, shadow: Shadow::CollapseSliceBound }));
+        for (name, pipeline) in cases {
+            let r = run(hour, &costs, &mut WholeTail::default(), pipeline);
+            let out = &r.outcomes;
+            assert!(out.iter().all(|o| o.release_s.is_finite()), "{name} left tasks unfinished");
+            let m = modeled(hour, out);
+            let shadowed: u32 = turnovers.iter().map(|i| out[*i].shadowed).sum();
+            // Under the collapse bound the turnover's re-prefill is gone from the act (fresh excludes it).
+            let inside: u32 = match pipeline.shadow {
+                Shadow::CollapseSliceBound => 0,
+                _ => turnovers.iter().map(|i| hour.tasks[*i].turnover - out[*i].shadowed.min(hour.tasks[*i].turnover)).sum(),
+            };
+            let resident: Vec<usize> = (0..hour.tasks.len()).filter(|i| hour.tasks[*i].class == TaskClass::Resident).collect();
+            let turnover_acts: Vec<f64> = turnovers.iter().map(|i| out[*i].act_s()).collect();
+            eprintln!("{name}: turnover tokens inside acts {inside}, in idle time {shadowed} ({:.0} device-s); device idle while ready {:.1}%; useful acts/h {:.1}; median act {:.0} s, p90 {:.0} s; turnover acts median {:.0} s; oldest waiter {:.0} s",
+                r.shadow_prefill_s, r.idle_while_ready_s / r.span_s * 100.0, m.acts_per_hour, m.median_act_s,
+                quantile(resident.iter().map(|i| out[*i].act_s()).collect(), 0.9), median(turnover_acts),
+                resident.iter().map(|i| out[*i].first_service_wait_s).fold(0.0, f64::max));
+            let mut minds: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+            for i in &resident {
+                minds.entry(hour.tasks[*i].mind.as_str()).or_default().push(*i);
+            }
+            for (mind, idx) in &minds {
+                let acts: Vec<f64> = idx.iter().map(|i| out[*i].act_s()).collect();
+                eprintln!("   {mind:8} acts {:3} median {:6.0} s p90 {:6.0} s", idx.len(), median(acts.clone()), quantile(acts, 0.9));
+            }
+        }
     }
 }
