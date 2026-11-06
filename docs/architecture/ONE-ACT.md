@@ -760,6 +760,46 @@ own size.
 
 ## Proof: the dyno, before anything goes live
 
+### Coverage audit and deterministic execution
+
+Joel asked on 2026-11-06 whether the prior failures can be simulated. Yes: extend the existing
+dyno and owner tests, not a separately implemented version of the desired algorithm. Each scenario
+records its production revision, source receipts, event schedule, asserted invariant and scope.
+Classify results as production-policy replay, actual transport/owner integration, missing test seam,
+or real-engine/live measurement. A green result in one category is not proof of the others.
+
+Direct run at local `f420b8a490`, 2026-11-06 15:25Z:
+`cargo test -p continuum-engine --lib capacity::dyno:: -j 2 -- --include-ignored`.
+Seven tests executed in under one second after cached compilation: four passed, three failed.
+Two failures execute the production grant policy against recorded demand and leave the waiter
+unserved across 28 holder completions. The third is an intentional missing-view-seam panic, not
+a simulation of the view algorithm. The assertions' old next-completion bound must be reconciled
+with section 4's feasible-opportunity contract; this replay does not exercise the complete live
+dispatcher/custodian. Do not relabel these failures as a new live outage or simply weaken assertions.
+Log: `~/.continuum/evidence/2026-11-05-recovery/dyno-including-known-red-1525.log`.
+
+The grant reservation owner's nine tests separately pass (15:26Z), covering exact lease identity,
+retirement, terminal receipts, dropped streams and replacement-engine reservation. This establishes
+those tested owner transitions, not end-to-end fairness. Log: `grant-owner-tests-1526.log` in the
+same evidence directory. This distinction is why the next validator must compose actual owners.
+
+Build deterministic scenarios by advancing a virtual clock to the next event, not sleeping.
+Feed the production decision code recorded demands, service curves and completion identities.
+Control the actuator with scripted quote/save/restore/send completions; enumerate bounded event
+interleavings and use seeded generated schedules, retaining the shortest failing trace. Assert
+conservation, legal state transitions and ownership after every event, not only at the end.
+Include duplicate/late receipts, cancellation at each phase, same-URL engine replacement, queued
+lifecycle writers, all-pinned waits, saturated submission, and grant revocation during quote.
+Progress assertions name their assumptions (feasible demand, finite prior work and responsive
+backend). Performance predictions use measured costs with explicit uncertainty; real-engine tests
+verify the costs and pipeline overlap rather than treating virtual time as measured acceleration.
+
+No acceptance run may silently exclude known-red scenarios relevant to its changed contract.
+Publish passed, failed, ignored and missing-seam counts separately. Replace a placeholder with a
+real production-path reproduction before claiming it repaired. Expand the existing actual-HTTP
+Kimi case into the new dispatch contract's one-authorized-send test and preserve invalidation tests.
+The complete simulator remains unfinished; this audit is the starting coverage inventory.
+
 A seconds-scale validator in CI and on any machine, built from the REAL policy code (launch sizing,
 the admission decision, the grant policy, the page custodian's contract, the view codec) driven by
 recorded inputs (the day's memory readings at each boot, per-act prompt items, the measured
