@@ -959,3 +959,16 @@ and the HTTP integration. Current canary 5d is merged into the branch. Final
 hygiene/cognition check and exact-head CI precede acceptance. No live deployment
 or complete Intel root-cause proof is claimed. Task-local custody scopes the
 directly awaited provider future; detached work receives no implicit authority.
+
+### 2026-11-06: operator correction — current code is the engineering target
+
+Joel explicitly rejected treating old-binary activity as recovery. Keep all three
+machines on current validated releases and repair failures there. An activity-count
+decline, particularly across an automatic engine geometry change, does not justify
+cycling back to an older core. Preserve state and stop concrete data loss; historical
+old-build success is not an acceptance criterion.
+
+M5 is being returned through the supported lifecycle to the published, all-CI-green
+5d release already running on Windows and Intel. The fresh evidence is under
+`5d5985c1c209/current-0524` on M5. PR5796 remains separate and unmerged until its
+exact-head CI completes; its isolated genome fixture rerun is in progress.
