@@ -38,6 +38,7 @@ pub mod embedding;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod heuristic_adapter;
 pub mod inference_error;
+pub mod reply_room;
 pub mod json_in_prompt_tools;
 pub mod openai_adapter;
 pub mod openai_endpoints;
