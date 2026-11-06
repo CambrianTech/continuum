@@ -151,10 +151,17 @@ impl EndpointSlots {
         if !*state.ready.borrow() {
             return Err("serving endpoint is suspended pending engine readiness".into());
         }
+        // An admission carries the pool to pin when one is known. Not asked and absent both admit
+        // without one: the adapter's discovery runs before admission and supplies the pool of a
+        // never-probed engine, and a latched one has none to pin.
+        let pool = match state.pool() {
+            Probed::Known(pool) => Some(Arc::clone(pool)),
+            Probed::NotAsked | Probed::Absent(_) => None,
+        };
         Ok(EndpointAdmission {
             endpoint: self.clone(),
             _guard: guard,
-            pool: state.current_pool().cloned(),
+            pool,
         })
     }
 
@@ -236,30 +243,30 @@ impl EndpointSlots {
     }
 
     /// What an adopted engine's checkpoint needs of this endpoint, read from its state alone: an
-    /// unowned, certain pool that is known, with a verified ledger naming `incarnation`. A never
-    /// probed endpoint answers `Unprobed`, which `SlotDirectory::adopted_checkpoint_pool` turns
-    /// into discovery; that is the one caller for the replacement's pre-flight (before anything is
-    /// condemned or drained) and for the checkpoint itself, under the guard.
+    /// unowned, certain pool, as far as it was probed; a known pool also needs a verified ledger
+    /// naming `incarnation`. `SlotDirectory::adopted_checkpoint_pool` is the one caller (for the
+    /// replacement's pre-flight, before anything is condemned or drained, and for the checkpoint
+    /// itself, under the guard): it discovers on `NotAsked` and refuses on `Absent`.
     pub(super) fn adopted_checkpoint_pool(
         &self,
         incarnation: crate::inference::engine_residency::EngineIncarnation,
-    ) -> Result<Arc<KvSlotPool>, AdoptedCheckpointRefusal> {
+    ) -> Result<PoolProbe, AdoptedCheckpointRefusal> {
         let pool = {
             let state = self.state.lock();
             if state.generation().is_some() || state.paging_uncertain {
                 return Err(AdoptedCheckpointRefusal::OwnedOrUncertain);
             }
-            match state.pool_entry() {
-                None => return Err(AdoptedCheckpointRefusal::Unprobed),
-                Some(None) => return Err(AdoptedCheckpointRefusal::UnknownPool(PoolDiscoveryMiss::LatchedUnsupported)),
-                Some(Some(pool)) => Arc::clone(pool),
+            match state.pool() {
+                Probed::NotAsked => return Ok(Probed::NotAsked),
+                Probed::Absent(why) => return Ok(Probed::Absent(*why)),
+                Probed::Known(pool) => Arc::clone(pool),
             }
         };
         let ledger = pool.ledger.get().ok_or(AdoptedCheckpointRefusal::UnverifiedLedger)?;
         if ledger.incarnation.get().copied() != Some((incarnation.pid, incarnation.started_s)) {
             return Err(AdoptedCheckpointRefusal::OtherProcess);
         }
-        Ok(pool)
+        Ok(Probed::Known(pool))
     }
 
     /// Drain first, then admit a conditional lifecycle operation. A superseded
@@ -349,9 +356,7 @@ impl EndpointTransition {
             // A terminal refusal did not mutate the engine. Only reopen this
             // exact pool; CheckpointSave quarantines cancellation/uncertainty.
             let state = self.endpoint.state.lock();
-            if state.generation().is_none() && !state.paging_uncertain
-                && state.current_pool()
-                    .is_some_and(|installed| Arc::ptr_eq(installed, &pool)) {
+            if state.generation().is_none() && !state.paging_uncertain && state.serves(&pool) {
                 state.ready.send_replace(true);
             }
         }
@@ -608,9 +613,13 @@ impl EndpointTransition {
             && previous.and_then(KvPageContract::fingerprint) == fingerprint
             && previous.and_then(|c| c.page_dir.as_ref()) == contract.page_dir.as_ref()
         {
-            if let Some(old) = state.current_pool() {
-                *pool.saved.lock() = old.saved.lock().clone();
-                carried = true;
+            // Not asked and absent carry nothing: no pool held saves under this contract.
+            match state.pool() {
+                Probed::Known(old) => {
+                    *pool.saved.lock() = old.saved.lock().clone();
+                    carried = true;
+                }
+                Probed::NotAsked | Probed::Absent(_) => {}
             }
         }
         // The same eligibility across a PROCESS restart: the ledger beside the pages,
@@ -669,7 +678,8 @@ impl SlotDirectory {
             })
             .clone()
     }
-    /// `None` entry == latched Unsupported for this server root.
+    /// Latch `root` unsupported (unless this core owns a generation there): its pool answers
+    /// `Probed::Absent(PropsAbsent)` from now on.
     pub fn latch_unsupported(&self, root: &str) {
         let endpoint = self.endpoint(root);
         let mut state = endpoint.state.lock();
@@ -678,10 +688,10 @@ impl SlotDirectory {
         }
     }
 
-    /// `Some(Some(pool))` = pool ready; `Some(None)` = latched unsupported;
-    /// `None` = never probed (caller should probe /props).
-    pub fn get(&self, root: &str) -> Option<Option<Arc<KvSlotPool>>> {
-        self.endpoint(root).state.lock().pool_entry().map(|entry| entry.cloned())
+    /// The pool at `root` as far as it was probed: `NotAsked` (the caller discovers it, probing
+    /// /props), `Absent` (latched unsupported), or `Known`.
+    pub fn get(&self, root: &str) -> PoolProbe {
+        self.endpoint(root).state.lock().pool().cloned()
     }
 
     pub(crate) fn page_admission_known(&self, root: &str) -> bool {
@@ -716,8 +726,7 @@ impl SlotDirectory {
         };
         let endpoint = self.endpoint(root);
         let mut state = endpoint.state.lock();
-        if state.generation().map(|current| current.id) != generation
-            || !state.current_pool().is_some_and(|current| Arc::ptr_eq(current, pool)) {
+        if state.generation().map(|current| current.id) != generation || !state.serves(pool) {
             return false; // a response from an old incarnation cannot authorize its successor
         }
         if !matches!(state.page_admission, Some(Ok(_))) {
@@ -735,7 +744,11 @@ impl SlotDirectory {
     pub(crate) async fn discover_page_admission(&self, client: &reqwest::Client, root: &str) -> Result<(), String> {
         if self.page_admission_known(root) { return self.page_admission_path(root).map(|_| ()); }
         let generation = self.page_discovery_generation(root);
-        let pool = self.get(root).flatten().ok_or("page-write discovery requires a pool")?;
+        let pool = match self.get(root) {
+            Probed::Known(pool) => pool,
+            Probed::NotAsked => return Err("page-write discovery requires a discovered pool".into()),
+            Probed::Absent(PropsAbsent) => return Err("page-write discovery: the engine has no paging surface".into()),
+        };
         let body = super::super::llama_server::engine_props(root, client).await
             .map_err(|error| format!("page-write capability request failed: {error}"))?;
         if body.get("total_slots").and_then(serde_json::Value::as_u64) != Some(pool.n_slots() as u64) {
@@ -755,7 +768,10 @@ impl SlotDirectory {
             return Some(path);
         }
         // Adoption installs a ledger only after checking the live process incarnation.
-        state.current_pool()?.ledger.get()?.path.parent().map(std::path::Path::to_path_buf)
+        match state.pool() {
+            Probed::Known(pool) => pool.ledger.get()?.path.parent().map(std::path::Path::to_path_buf),
+            Probed::NotAsked | Probed::Absent(_) => None,
+        }
     }
 
     /// Install (or return the already-installed) pool for a probed server.
@@ -765,9 +781,15 @@ impl SlotDirectory {
         let mut state = endpoint.state.lock();
         let pool = match &mut state.engine {
             Engine::Owned { serving: Serving::Install(install), .. } => return Arc::clone(&install.pool),
-            Engine::Owned { serving: Serving::Before(entry), .. } => {
-                entry.get_or_insert_with(|| Some(Arc::new(KvSlotPool::new(root, n_slots)))).clone()
-            }
+            Engine::Owned { serving: Serving::Before(before), .. } => match before {
+                Probed::Known(pool) => Some(Arc::clone(pool)),
+                Probed::Absent(PropsAbsent) => None,
+                not_asked @ Probed::NotAsked => {
+                    let pool = Arc::new(KvSlotPool::new(root, n_slots));
+                    *not_asked = Probed::Known(Arc::clone(&pool));
+                    Some(pool)
+                }
+            },
             Engine::Adopted(pool) => return Arc::clone(pool),
             Engine::Unsupported => None,
             unprobed @ Engine::Unprobed => {
@@ -795,8 +817,10 @@ pub(crate) fn stamp_engine_incarnation(root: &str, pid: u32, started_s: u64) {
     if started_s == 0 {
         return; // an unreadable start time names no process, so it can prove nothing
     }
-    if let Some(Some(pool)) = directory().get(root) {
-        pool.stamp_incarnation((pid, started_s));
+    match directory().get(root) {
+        Probed::Known(pool) => pool.stamp_incarnation((pid, started_s)),
+        // No pool installed for this root: no ledger to name the process in.
+        Probed::NotAsked | Probed::Absent(_) => {}
     }
 }
 

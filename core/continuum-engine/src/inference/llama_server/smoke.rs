@@ -142,13 +142,15 @@ pub(super) fn smoke_seat(scratch: Option<u32>, slots: &serde_json::Value) -> Smo
     }
 }
 
-/// The scratch slot of the pool installed for `v1_url`'s server, if it has one.
+/// The scratch slot of the pool installed for `v1_url`'s server, if it has one. A server whose
+/// pool was never probed or has none has no scratch slot to aim the smoke at.
 pub(super) fn scratch_slot_for(v1_url: &str) -> Option<u32> {
+    use continuum_base::probed::Probed;
     let root = v1_url.strip_suffix("/v1")?;
-    crate::inference::slots::directory()
-        .get(root)
-        .flatten()
-        .and_then(|pool| pool.scratch_slot())
+    match crate::inference::slots::directory().get(root) {
+        Probed::Known(pool) => pool.scratch_slot(),
+        Probed::NotAsked | Probed::Absent(_) => None,
+    }
 }
 
 /// The engine's own token count of [`smoke_answer`]: the quick attempt's cap. POSTs the
