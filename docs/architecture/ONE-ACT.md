@@ -883,3 +883,10 @@ hygiene passed 87 checks. Exact-head CI is still running. Existing embedding mem
 accounting is not a completed ONE-BUDGET migration. The repair is not deployed,
 and Windows has not been blindly restarted after the crash. Preserve the separate
 serving engine, resident identities and saved pages during supported recovery.
+
+At 2026-11-06 02:14Z, PR #5795 passed every applicable check on exact
+`545b91f366c13ba401b4ffda569b838202cf8b7e`, including engine, core, source hygiene,
+Windows library/tests compilation and binding drift. It merged as
+`5d5985c1c209de99791400cd029d4286a11b8ecb`. Supported binary publication
+`42149032888` targets that exact merge. This is CI acceptance only; no repair
+artifact has been deployed and Windows recovery is not yet established.
