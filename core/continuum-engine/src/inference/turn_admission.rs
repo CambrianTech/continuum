@@ -58,10 +58,24 @@ pub(crate) enum PageIn {
     None,
     /// Its KV was already resident in the leased slot.
     Resident,
-    /// Restored from its saved page.
+    /// Restored from its saved page, which held her newest known sequence.
     Restored,
+    /// Restored from a page OLDER than her newest completed sequence, which no slot held any
+    /// more (`SequenceBasis::PageBehindLive`): a regression, whatever the engine then reuses.
+    RestoredBehindLive,
     /// A restore was due and the engine refused it, so the turn re-prefills in full.
     RestoreRejected,
+}
+
+/// Whether the engine was ever asked to generate on this admission: the one fact that says
+/// whether dropping it can have touched her KV (Benchy, M5 ed142f14c: a refit dropped before its
+/// POST forgot her residency, and her retry restored an older page over her live sequence).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Dispatch {
+    /// Nothing was sent: the slot holds what paging left there.
+    Unsent,
+    /// A generation request was sent to the engine.
+    Sent,
 }
 
 /// What a turn holds for the whole generation. Dropping it releases the concurrency
@@ -89,6 +103,7 @@ pub struct TurnAdmission {
     /// A lease is provisional until the adapter observes successful generation.
     /// Cancellation during paging or generation must not save foreign KV later.
     uncommitted: Option<(Arc<KvSlotPool>, PageKey, u32)>,
+    dispatch: Dispatch,
     _endpoint: crate::inference::slots::EndpointAdmission,
     scratch: Option<u32>,
     /// A dream's ambient serving lane, taken only where it borrows a citizen slot (no scratch
@@ -155,9 +170,21 @@ impl TurnAdmission {
         }
     }
 
+    /// The adapter is sending this admission's generation request to the engine now. Called
+    /// at every attempt's POST, never before: a request refused earlier (a context refit, a
+    /// changed grant) leaves the slot as paging left it.
+    pub(crate) fn dispatching(&mut self) {
+        self.dispatch = Dispatch::Sent;
+        if let Some((pool, key, slot)) = &self.uncommitted {
+            pool.note_dispatched(*slot, *key);
+        }
+    }
+
     /// The adapter received a complete successful generation in this slot.
     pub(crate) fn generation_completed(&mut self) {
-        self.uncommitted = None;
+        if let Some((pool, key, slot)) = self.uncommitted.take() {
+            pool.note_generated(slot, key);
+        }
     }
 
     /// Attribute complete provider usage before releasing this engine generation.
@@ -179,7 +206,12 @@ impl Drop for TurnAdmission {
             self._endpoint.quarantine_paging();
         }
         if let Some((pool, key, slot)) = self.uncommitted.take() {
-            pool.forget_resident(slot, key);
+            // Nothing sent: the slot holds what paging left, which is hers when paging confirmed
+            // it (resident, or a verified restore), so she keeps her residency. A sent request
+            // or unconfirmed paging proves nothing about whose KV is there.
+            if self.dispatch == Dispatch::Sent || !self.page_confirmed {
+                pool.forget_resident(slot, key);
+            }
         }
         // Unpin BEFORE any release is announced, so a woken turn finds this lease evictable.
         // A pin dropped with no slot permit (cancelled while awaiting it, or acquire_slot
@@ -289,17 +321,15 @@ pub(crate) async fn warm_ahead(
         return Ok(());
     };
     // Best-effort: a closed endpoint is an instant no, never a held permit.
-    let mut admission = admit(concurrency, SlotClass::Turn, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
-    if admission.page_confirmed {
-        admission.uncommitted = None;
-    }
+    // No generation follows: its drop keeps only the warmth paging confirmed (`Dispatch::Unsent`).
+    let admission = admit(concurrency, SlotClass::Turn, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
     if let Some(slot) = admission.slot {
         continuum_base::probe!(
             class = "inference.kv_warm_ahead",
             page = %key,
             slot = slot as u64,
             saved_evictee = admission.saved_evictee,
-            restored = admission.page_in == PageIn::Restored,
+            restored = matches!(admission.page_in, PageIn::Restored | PageIn::RestoredBehindLive),
             confirmed = admission.page_confirmed,
             ms = started.elapsed().as_millis() as u64,
             "warm-ahead completed through turn paging admission",
@@ -397,6 +427,7 @@ async fn admit(
             paging_in_flight: false,
             _permit: Some(_permit),
             uncommitted: None,
+            dispatch: Dispatch::Unsent,
             scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
             _endpoint: endpoint,
             _mind: None,
@@ -494,6 +525,16 @@ async fn admit(
                 if pg.already_resident {
                     admission.page_in = PageIn::Resident;
                 }
+                // Every decision against her live sequence that is not plain residency is loud.
+                if matches!(pg.basis, crate::inference::slots::SequenceBasis::LiveKept | crate::inference::slots::SequenceBasis::PageBehindLive) {
+                    continuum_base::probe!(
+                        class = "inference.kv_page.live_sequence",
+                        page = %k,
+                        slot = pg.slot as u64,
+                        basis = ?pg.basis,
+                        "her attribution was lost: LiveKept resumes the newer sequence in her slot; PageBehindLive restores a page older than her newest sequence (a regression)"
+                    );
+                }
                 admission.uncommitted = Some((Arc::clone(pool), k, pg.slot));
                 // Taken on every admission, so only the first turn after a relaunch is blamed on it.
                 let discarded = admission._endpoint.take_relaunch_discard(&k);
@@ -545,13 +586,17 @@ async fn admit(
                         }
                         if pg.restore && interested.load(std::sync::atomic::Ordering::Acquire) {
                             let restored;
+                            pool.note_overwritten(pg.slot);
                             (admission, restored) = admission.page_action(&client, &paging_root, pg.slot, &k, "restore").await?;
                             admission.page_confirmed = restored;
-                            admission.page_in = if restored {
-                                PageIn::Restored
-                            } else {
-                                PageIn::RestoreRejected
+                            admission.page_in = match (restored, pg.basis) {
+                                (true, crate::inference::slots::SequenceBasis::PageBehindLive) => PageIn::RestoredBehindLive,
+                                (true, _) => PageIn::Restored,
+                                (false, _) => PageIn::RestoreRejected,
                             };
+                            if restored {
+                                pool.note_restored(pg.slot, k);
+                            }
                             if !restored {
                                 pool.note_page_lost(&k);
                                 // Reported HERE, at the decision, so a refused restore counts even when

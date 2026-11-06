@@ -266,6 +266,7 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
                 admission: None,
             },
             &mut None,
+            || {},
         ),
     )
     .await
