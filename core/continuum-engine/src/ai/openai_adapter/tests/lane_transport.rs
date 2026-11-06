@@ -59,7 +59,7 @@ async fn replay_reply_resize(estimate: usize, prompt: u32, window: u32, predicte
                 model: "fixture", prompt_tokens: estimate,
                 prompt_quote: Some(PromptQuote { client: &adapter.client, dedicated_lane: true, caller: "recorded room fixture", reply, request_id: "recorded-room" }),
                 admission: Some(DispatchAdmission {
-                    persona: uuid::Uuid::nil(), engine: None,
+                    persona: uuid::Uuid::nil(), endpoint: None,
                     admission: RequestAdmission { window, lease: None, priced: PromptAdmission::EngineCounted },
                 }),
             }, &mut None,

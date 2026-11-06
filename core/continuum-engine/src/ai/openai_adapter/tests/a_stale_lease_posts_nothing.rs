@@ -36,11 +36,24 @@ async fn a_stale_lease_posts_nothing() {
         owner: crate::capacity::window_grant::GrantOwner::this_process(),
     };
     let admission = crate::ai::types::RequestAdmission { window: 148_838, lease: Some(lease), priced: crate::ai::types::PromptAdmission::Estimated };
-    for (bound_to, why) in [
+    for (index, (bound_to, why)) in [
         (Some((engine_a.pid, engine_a.started_s)), "her lease is not the published grant"),
         (Some((8, 1_762_400_000)), "the endpoint admission is bound to engine B"),
         (None, "no engine the admission can name"),
-    ] {
+    ].into_iter().enumerate() {
+        // Exercise the real admission owner, not a copied incarnation certificate.
+        let endpoint_root = format!("http://{address}/case-{index}");
+        let pool = crate::inference::slots::directory().ensure_pool(&endpoint_root, 1);
+        if let Some((pid, started_s)) = bound_to {
+            crate::inference::slots::stamp_engine_incarnation(&endpoint_root, pid, started_s);
+        }
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let client = reqwest::Client::new();
+        let key = crate::inference::slots::PageKey::mind(uuid::Uuid::new_v4()).expect("test persona");
+        let owned = crate::inference::turn_admission::admit_turn(
+            &sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool),
+            &client, &endpoint_root, 4, std::time::Duration::ZERO,
+        ).await.expect("test endpoint admission");
         let mut reservation = None;
         let sent = crate::inference::lane_send::send_with_lane_retry(
             &adapter.config,
@@ -51,7 +64,7 @@ async fn a_stale_lease_posts_nothing() {
                 model: "fixture",
                 prompt_tokens: 4,
                 prompt_quote: None,
-                admission: Some(crate::inference::lane_send::DispatchAdmission { persona: uuid::Uuid::new_v4(), admission, engine: bound_to }),
+                admission: Some(crate::inference::lane_send::DispatchAdmission { persona: uuid::Uuid::new_v4(), admission, endpoint: Some(&owned) }),
             },
             &mut reservation,
         )
@@ -119,7 +132,7 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
             admission: Some(crate::inference::lane_send::DispatchAdmission {
                 persona,
                 admission,
-                engine: admitted.engine_incarnation(),
+                endpoint: Some(&admitted),
             }),
         },
         &mut reservation,

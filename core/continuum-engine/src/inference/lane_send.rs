@@ -68,7 +68,7 @@ fn probe_client() -> &'static reqwest::Client {
 /// What one send carried, for the receipt a tripped wait leaves behind: the model the
 /// lane was asked for and the prompt it was asked to prefill (chars/4 —
 /// `serving_guard::approx_prompt_tokens`, the same estimate the overflow guard uses).
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub(crate) struct FillReceipt<'a> {
     pub model: &'a str,
     pub prompt_tokens: usize,
@@ -76,17 +76,17 @@ pub(crate) struct FillReceipt<'a> {
     /// The admission the request was rendered under: at dispatch, after the wait for the lane, its
     /// lease on her grant is RESERVED (`window_grant::reserve`) against her grant now, with the
     /// engine's exact count, or the send is refused typed.
-    pub admission: Option<DispatchAdmission>,
+    pub admission: Option<DispatchAdmission<'a>>,
 }
 
 /// A request's admission and whose grant it was rendered against.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DispatchAdmission {
+#[derive(Clone, Copy)]
+pub(crate) struct DispatchAdmission<'a> {
     pub persona: uuid::Uuid,
     pub admission: crate::ai::types::RequestAdmission,
-    /// The engine incarnation (pid, OS start time) the request's endpoint admission is bound to:
-    /// the lease must name it, or the attempt is refused (the published lease is only a watch value).
-    pub engine: Option<(u32, u64)>,
+    /// Borrow the actual endpoint/page admission through quote, reservation and POST.
+    /// A copied incarnation is an observation, not ownership of that engine's lifetime.
+    pub endpoint: Option<&'a crate::inference::turn_admission::TurnAdmission>,
 }
 
 /// Request-specific authority for the engine's finalized-prompt counter. The adapter
@@ -180,8 +180,9 @@ pub(crate) async fn send_with_lane_retry(
         // the count just taken on this attempt's engine): a grant that moved since render, a
         // replacement engine, or a count past it refuses typed and nothing is sent; a reserved
         // lease holds every regrant off until the engine's terminal receipt.
-        if let Some(DispatchAdmission { persona, admission, engine }) = fill.admission {
+        if let Some(DispatchAdmission { persona, admission, endpoint }) = fill.admission {
             if let Some(leased) = admission.lease {
+                let engine = endpoint.and_then(|owned| owned.engine_incarnation());
                 // Bound to the engine this request's endpoint admission holds, never inferred from
                 // the published grants: a lease on any other incarnation (or none known) is refused.
                 let leased_on = leased.engine.map(|e| (e.pid, e.started_s));
