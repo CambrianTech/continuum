@@ -17,18 +17,13 @@ use ts_rs::TS;
 use crate::cognition::tool_executor::spill;
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, ProjectsOutcome, ToolVerdict, VerbRef};
 
-/// Default context lines around each grep match (like `grep -C2`).
-// context-budget-exempt: grep-style -C lines around a match — a display shape; the rendered slice's total size is window-derived (render_slice_chars)
-const DEFAULT_CONTEXT_LINES: usize = 2;
-/// Default cap on grep match windows — enough to see the failures, bounded so a
-/// pattern that matches everything can't re-flood.
-const DEFAULT_MAX_MATCHES: usize = 50;
-// Char budget for the rendered slice — a fraction of the caller's LIVE served window
-// (`ContextBudget::render_slice_chars`), kept below the result-fold bound so a normal
-// investigation isn't itself re-spilled. Never a constant: the old `RENDER_BUDGET_CHARS =
-// 12_000` clipped a 1M-context mind to the same slice as a 16k one.
-// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
-use crate::cognition::context_budget::ContextBudget;
+// It never sizes what she sees (ONE-BUDGET: the view is the only sizer). It returns the
+// selection she asked for, whole: no selection reopens the whole output (`ToolEffect::Reopens`),
+// a grep returns every match with the context she asks for, and her view's one allocation shows
+// it whole, as its summary or as its pointer. The read's memory bound is the saved output's own
+// measured length, which was held in memory once when it was saved. Before 2026-11-06 it cut its
+// own slice to a fraction of the window (`render_slice_chars`), a second budget the turn's
+// allocation never saw, with grep defaults of 2 context lines and 50 matches.
 
 // Prebuilt failure-hunting filters, so a persona navigates a flood WITHOUT having to
 // know regex — the PX "hit the ground running" affordance for the overwhelming case
@@ -100,7 +95,7 @@ pub struct ToolOutputParams {
     #[ts(optional)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
-    /// Context lines per match (default 2).
+    /// Context lines per match.
     #[ts(optional)]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(type = "number")]
@@ -115,7 +110,7 @@ pub struct ToolOutputParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(type = "number")]
     pub end_line: Option<usize>,
-    /// Most matches shown (default 50).
+    /// Most matches shown.
     #[ts(optional)]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(type = "number")]
@@ -208,7 +203,7 @@ impl ActionCommand for ToolOutput {
     // In every surface (`Always`), so every word here rides every act: the how lives on the
     // params, each a few words.
     const DESCRIPTION: &'static str =
-        "Reopen a saved result by outputId or act: grep it, read lines or bytes, or its tail.";
+        "Reopen a saved result by outputId or act: whole, or grep it, or read lines or bytes.";
     type Params = ToolOutputParams;
     type Output = ToolOutputResult;
 
@@ -245,7 +240,6 @@ impl ActionCommand for ToolOutput {
             (None, None) => None,
         };
 
-        let budget = ContextBudget::live().render_slice_chars();
         if params.byte_length.is_some() && params.byte_offset.is_none() {
             return Err(CommandError::Invalid(
                 "byteLength requires byteOffset".into(),
@@ -264,7 +258,7 @@ impl ActionCommand for ToolOutput {
         }
         // Disk scanning belongs off the async executor. The same spill owner handles
         // both views; no second content registry or private whole-file retrieval path.
-        tokio::task::spawn_blocking(move || read_saved(&path, handle, params, range, budget))
+        tokio::task::spawn_blocking(move || read_saved(&path, handle, params, range, spill::Allowance::Whole))
             .await
             .map_err(|e| CommandError::Invalid(format!("saved output reader failed: {e}")))?
             .map_err(CommandError::Invalid)
@@ -303,7 +297,7 @@ impl Reopen<'_> {
 impl std::fmt::Display for Reopen<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // A params struct of strings and numbers always serializes; an error is a formatter error.
-        let args = serde_json::to_string(&self.params()).map_err(|_| std::fmt::Error)?;
+        let args = serde_json::to_string(&self.params()).map_err(|_| std::fmt::Error)?; // boundary: her tool-call wire, the arguments she reads and sends back as written
         write!(f, "{TOOL_OUTPUT}({args})")
     }
 }
@@ -342,10 +336,10 @@ fn read_saved(
     handle: String,
     params: ToolOutputParams,
     range: Option<(usize, usize)>,
-    budget: usize,
+    allowance: spill::Allowance,
 ) -> Result<ToolOutputResult, String> {
     if let Some(offset) = params.byte_offset {
-        let extent = spill::read_extent(&path, offset, params.byte_length, budget)?;
+        let extent = spill::read_extent(path, offset, params.byte_length, allowance)?;
         return Ok(ToolOutputResult {
             handle,
             total_lines: None,
@@ -367,10 +361,10 @@ fn read_saved(
     let inv = spill::investigate_file(
         &path,
         effective_pattern,
-        params.context_lines.unwrap_or(DEFAULT_CONTEXT_LINES),
+        params.context_lines.unwrap_or_default(), // unwrap_or_default: no context asked for = the matching lines alone
         range,
-        params.max_matches.unwrap_or(DEFAULT_MAX_MATCHES),
-        budget,
+        params.max_matches,
+        allowance,
     )?;
     Ok(ToolOutputResult {
         handle,
@@ -417,6 +411,26 @@ mod tests {
         };
         assert_eq!(ToolOutput::outcome(&read("     2 error here\n")), ToolVerdict::Succeeded);
         assert_eq!(ToolOutput::outcome(&read("")), ToolVerdict::Failed);
+    }
+
+    // what this catches: the read sizing what she sees (a second budget beside her view's one
+    // allocation: it cut every reopen to a fraction of the window, and every grep to 50 matches).
+    // A reopen with no selection is the whole output, and a grep returns every match; her view
+    // decides whether she sees it whole, as its summary or as its pointer.
+    #[test]
+    fn a_reopen_returns_what_she_asked_for_whole_and_never_sizes_it() {
+        let Ok(dir) = tempfile::tempdir() else { panic!("a temp dir") };
+        let path = dir.path().join("whole");
+        let body: String = (1..=500).map(|n| format!("line {n} error\n")).collect();
+        assert!(std::fs::write(&path, &body).is_ok());
+        let read = |params| read_saved(&path, "h".into(), params, None, spill::Allowance::Whole);
+        let Ok(whole) = read(ToolOutputParams::default()) else { panic!("the whole reads back") };
+        assert!(whole.content.contains("line 1 error") && whole.content.contains("line 500 error"), "{}", whole.content);
+        assert!(!whole.truncated);
+        let Ok(grep) = read(ToolOutputParams { pattern: Some("error".into()), ..Default::default() }) else {
+            panic!("the grep reads back")
+        };
+        assert_eq!((grep.total_matches, grep.content.lines().count()), (Some(500), 500));
     }
 
     // what this catches: a reopen line she cannot make as written. It names the verb her tool
@@ -548,7 +562,7 @@ mod tests {
         };
         assert_eq!(by_act, by_handle);
         let read =
-            |handle: String| read_saved(&path, handle, ToolOutputParams::default(), None, 4_096);
+            |handle: String| read_saved(&path, handle, ToolOutputParams::default(), None, spill::Allowance::Whole);
         let (Ok(act_read), Ok(handle_read)) = (read(by_act), read(by_handle)) else {
             panic!("the saved output reads back")
         };
@@ -604,7 +618,7 @@ mod tests {
                     ..Default::default()
                 },
                 None,
-                12,
+                spill::Allowance::Chars(12),
             )
             .unwrap();
             assert!(result.content.len() <= 12);
@@ -639,7 +653,7 @@ mod tests {
                 ..Default::default()
             },
             None,
-            256,
+            spill::Allowance::Chars(256),
         )
         .unwrap();
         assert_eq!(result.total_lines, Some(4));
@@ -660,7 +674,7 @@ mod tests {
                 ..Default::default()
             },
             None,
-            256,
+            spill::Allowance::Chars(256),
         )
         .unwrap_err();
         assert!(error.contains("byteOffset 0"));

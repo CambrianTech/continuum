@@ -82,7 +82,7 @@ pub const WM_SETTLEMENT_PREFIX: &str = "[answered]";
 // behavior on a small machine is unchanged while a big window finally gets a big budget).
 // [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
 use crate::cognition::act_observe::Observation;
-use crate::commands::tool_output::Reopen;
+use crate::cognition::tool_executor::tool_output::Reopen;
 
 /// Her context view, the type her working memory checkpoints.
 pub(crate) type ContextView =

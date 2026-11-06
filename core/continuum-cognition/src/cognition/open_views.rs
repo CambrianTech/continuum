@@ -19,7 +19,7 @@
 
 use crate::ai::types::ResultCustody;
 use crate::cognition::act_observe::{Observation, ToolVerb};
-use crate::commands::tool_output::TOOL_OUTPUT;
+use crate::cognition::tool_executor::tool_output::TOOL_OUTPUT;
 use crate::sdk_codegen::VerbRef;
 
 /// The verb her open views name for paging a file.

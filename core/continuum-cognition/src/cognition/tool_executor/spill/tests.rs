@@ -446,7 +446,7 @@
         let path = resolve_in(&class(dir.path()), persona, &handle).unwrap();
         assert_eq!(path, persona_dir(dir.path(), persona).join(format!("{handle}.log")), "filed under her directory of the class");
         assert_eq!(fs::read_to_string(&path).unwrap(), body, "reopens byte-identical");
-        let page = investigate_file(&path, None, 0, Some((1, 2)), 10, 4096).unwrap();
+        let page = investigate_file(&path, None, 0, Some((1, 2)), Some(10), Allowance::Chars(4096)).unwrap();
         assert!(page.rendered.contains("     1 line one") && page.rendered.contains("     2 line two"), "{}", page.rendered);
     }
 

@@ -89,7 +89,7 @@ fn a_mind_s_saved_handles_are_live_until_it_drops() {
     wm.record_settlement("done", None);
     shed(&wm, cap / 2);
     assert!(
-        wm.recent_results_messages().join("\n").contains(&format!("{} — collapsed", crate::commands::tool_output::Reopen::Output(&handle))),
+        wm.recent_results_messages().join("\n").contains(&format!("{} — collapsed", crate::cognition::tool_executor::tool_output::Reopen::Output(&handle))),
         "it collapsed to a pointer"
     );
     assert!(live(&file), "still referenced by its pointer");
@@ -185,7 +185,7 @@ fn a_receipt_s_per_call_results_stay_reachable_as_long_as_the_receipt() {
 
     wm.record_settlement("done", None);
     shed(&wm, cap / 2);
-    assert!(wm.recent_results_messages().join("\n").contains(&format!("{} — collapsed", crate::commands::tool_output::Reopen::Output(&receipt))), "collapsed to a pointer");
+    assert!(wm.recent_results_messages().join("\n").contains(&format!("{} — collapsed", crate::cognition::tool_executor::tool_output::Reopen::Output(&receipt))), "collapsed to a pointer");
     assert!(live(&receipt) && children.iter().all(|c| live(c)), "the pointer holds the receipt and its children");
 
     let snapshot = wm.snapshot();

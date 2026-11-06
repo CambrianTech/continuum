@@ -23,7 +23,7 @@ filter?: OutputFilter,
  */
 pattern?: string, 
 /**
- * Context lines per match (default 2).
+ * Context lines per match.
  */
 contextLines?: number, 
 /**
@@ -35,7 +35,7 @@ startLine?: number,
  */
 endLine?: number, 
 /**
- * Most matches shown (default 50).
+ * Most matches shown.
  */
 maxMatches?: number, 
 /**

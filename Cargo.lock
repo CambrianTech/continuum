@@ -2970,7 +2970,6 @@ dependencies = [
  "continuum-bridge-protocol",
  "continuum-cli-lifecycle",
  "continuum-client",
- "continuum-cognition",
  "continuum-context",
  "continuum-dreaming",
  "continuum-embedding",

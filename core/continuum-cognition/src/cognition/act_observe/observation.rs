@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::ai::types::{ToolCall, ToolResult};
-use crate::commands::tool_output::Reopen;
+use crate::cognition::tool_executor::tool_output::Reopen;
 
 use super::recency::{
     humanize_result_content, render_act_for_recall,

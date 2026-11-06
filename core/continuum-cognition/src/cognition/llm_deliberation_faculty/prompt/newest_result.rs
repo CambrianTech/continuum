@@ -22,7 +22,7 @@
 use super::*;
 use crate::ai::types::{ContentPart, MessageContent};
 use crate::cognition::act_observe::Observation;
-use crate::commands::tool_output::Reopen;
+use crate::cognition::tool_executor::tool_output::Reopen;
 
 /// One text slot of the newest result group: a native tool result's content or a legacy
 /// receipt's text.

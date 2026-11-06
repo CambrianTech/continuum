@@ -8,7 +8,7 @@ use continuum_context::source::{Item, Source, StoredWhole};
 
 use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::working_memory::{ThoughtRecord, WmKind, WorkingMemory};
-use crate::commands::tool_output::Reopen;
+use crate::cognition::tool_executor::tool_output::Reopen;
 
 /// One entry of her interior chain.
 enum Entry {

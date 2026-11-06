@@ -12,7 +12,7 @@ use continuum_context::source::{Item, Source, StoredWhole};
 
 use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::working_memory::WorkingMemory;
-use crate::commands::tool_output::Reopen;
+use crate::cognition::tool_executor::tool_output::Reopen;
 
 pub(crate) struct Actions<'a> {
     pub memory: &'a WorkingMemory,

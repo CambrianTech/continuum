@@ -34,7 +34,6 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::sdk_codegen::CommandError;
-use continuum_cognition::commands::tool_output::TOOL_OUTPUT;
 
 pub mod brave;
 pub(crate) mod browser;
@@ -407,7 +406,7 @@ fn filtered_or_fallback(
         Ok(format!(
             "[web/fetch: filter /{pat}/ matched 0 of {total_lines} lines — showing the \
              unfiltered page so you can adjust the pattern or read it directly; page it \
-             with {TOOL_OUTPUT} if it is large]\n\n{readable}"
+             with tool/output if it is large]\n\n{readable}"
         ))
     } else {
         Ok(filtered)
