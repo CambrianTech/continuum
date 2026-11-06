@@ -99,6 +99,48 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires CONTINUUM_TEST_EMBED_MODEL pointing to the Qwen3 embedding GGUF"]
+    async fn embedding_preserves_text_beyond_the_old_window() {
+        let path = std::env::var_os("CONTINUUM_TEST_EMBED_MODEL").expect("explicit model path");
+        let backend = super::super::LlamaCppBackend::load(super::super::LlamaCppConfig {
+            model_path: path.into(),
+            n_gpu_layers: 0,
+            ..Default::default()
+        })
+        .expect("load embedding model");
+        let prefix = "resident ".repeat(2100);
+        let call = backend.admit_embedding().await.expect("admission");
+        assert!(
+            call.model
+                .tokenize(&prefix, true, false)
+                .expect("tokenize")
+                .len()
+                > 2048
+        );
+        let vectors = call
+            .run(
+                vec![
+                    format!("{prefix}The final subject is astronomy and distant galaxies."),
+                    format!("{prefix}The final subject is cooking and delicious vegetables."),
+                ],
+                (),
+            )
+            .await
+            .expect("full input embedding");
+        assert_eq!(vectors.len(), 2);
+        assert!(vectors.iter().flatten().all(|x| x.is_finite()));
+        let difference: f32 = vectors[0]
+            .iter()
+            .zip(&vectors[1])
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(
+            difference > 0.001,
+            "suffix beyond the old ceiling must affect the vector"
+        );
+    }
+
+    #[tokio::test]
     async fn queued_embedding_cancellation_cannot_admit_a_second_context() {
         let lane = EmbeddingLane::new();
         let first = lane.acquire().await.expect("first admitted");
