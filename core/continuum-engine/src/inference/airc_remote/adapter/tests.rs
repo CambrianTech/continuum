@@ -570,8 +570,9 @@ async fn the_grid_lane_carries_a_think_budget_only_to_a_seat_that_advertises_it(
     });
     let adapter = AircRemoteInferenceAdapter::new(transport).with_target_peer(uuid::Uuid::new_v4().to_string());
     let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let terms = DispatchTerms { admission: None, think: Some(ThinkBudget(338)) };
-    let refused = adapter.generate_admitted(req("act"), terms, sink).await;
+    let terms = DispatchTerms { output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(32).expect("fixture limit")), admission: None, think: Some(ThinkBudget(338)) };
+    let mut request = req("act"); request.max_tokens = Some(32);
+    let refused = adapter.generate_admitted(request, terms, sink).await;
     assert!(matches!(refused, Err(crate::ai::inference_error::InferenceError::ThinkUnenforceable { .. })), "{refused:?}");
     assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0, "never sent unbounded");
 

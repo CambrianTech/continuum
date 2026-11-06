@@ -157,6 +157,7 @@ async fn slot_discovery_failure_refuses_generation_before_http_dispatch() {
         let request = TextGenerationRequest {
             messages: vec![ChatMessage::text("user", "act")],
             purpose: Some("turn".into()),
+            max_tokens: Some(32), // Explicit fixed authority for this transport fixture.
             ..Default::default()
         };
         let (sink, _receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -228,6 +229,7 @@ async fn a_server_error_frame_fails_the_act_never_an_empty_completion() {
     adapter.config.base_url = format!("http://{address}");
     let request = TextGenerationRequest {
         messages: vec![ChatMessage::text("user", "act")],
+        max_tokens: Some(32), // Explicit fixed authority for this transport fixture.
         ..Default::default()
     };
     let (sink, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -298,6 +300,7 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
             "user",
             "Inspect the selected artifact — λ",
         )],
+        max_tokens: Some(32), // Explicit fixed authority for this transport fixture.
         ..Default::default()
     };
     let (sink, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -562,11 +565,13 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         persona_id: Some(activity.persona().to_string()),
         room_id: Some(uuid::Uuid::new_v4().to_string()),
         purpose: Some("cognition/deliberation".into()),
+        max_tokens: Some(32), // Explicit fixed authority for this transport fixture.
         ..Default::default()
     };
     let background = TextGenerationRequest {
         messages: vec![ChatMessage::text("user", "background")],
         purpose: Some("dream-belief-review".into()),
+        max_tokens: Some(32), // Explicit fixed authority for this transport fixture.
         ..Default::default()
     };
     for (request, fails) in [
@@ -734,7 +739,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         ["save", "generate", "restore", "generate", "generate"]
     );
     generation_mode.store(5, Ordering::SeqCst);
-    tokio::time::timeout(std::time::Duration::from_secs(5), adapter.generate_text(TextGenerationRequest::default()))
+    tokio::time::timeout(std::time::Duration::from_secs(5), adapter.generate_text(TextGenerationRequest { max_tokens: Some(32), ..Default::default() }))
         .await.expect("bounded foreign alias response").expect("response compatibility");
     assert!(!crate::inference::resource_admission::leased_in_sent_samples().iter()
         .any(|sample| sample.served(&root, Some("foreign-alias")).is_some()),

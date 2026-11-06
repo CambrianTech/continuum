@@ -336,7 +336,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
-        self.stream_checked(request, crate::ai::types::DispatchTerms::default(), sink).await
+        let terms = crate::ai::types::DispatchTerms::fixed(&request, None)?;
+        self.stream_checked(request, terms, sink).await
     }
 
     /// Create embeddings over the OpenAI-compatible `/v1/embeddings` endpoint.

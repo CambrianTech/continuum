@@ -93,13 +93,21 @@ impl LlmDeliberationFaculty {
         calibration: PromptCalibration,
         (window, lease): (u32, Option<crate::capacity::window_grant::GrantLease>),
         request: &TextGenerationRequest,
-    ) -> (crate::ai::types::DispatchTerms, Option<crate::ai::provenance::OutputRoom>) {
+    ) -> Result<(crate::ai::types::DispatchTerms, Option<crate::ai::provenance::OutputRoom>), crate::ai::inference_error::InferenceError> {
+        let output = if kind == TurnKind::Act {
+            let required_reply = std::num::NonZeroU32::new(view.completion_reserve)
+                .ok_or_else(|| crate::ai::inference_error::InferenceError::Protocol("act dispatch requires a positive reply claim".into()))?;
+            crate::ai::reply_room::OutputIntent::UseAdmittedRoom { required_reply }
+        } else {
+            crate::ai::types::DispatchTerms::fixed(request, None)?.output
+        };
         let terms = crate::ai::types::DispatchTerms {
+            output,
             admission: Some(crate::ai::types::RequestAdmission { window, lease, priced: calibration.admission }),
             think: Some(act_reasoning_budget(view.act_room, view.completion_reserve)),
         };
         let Some(cap) = request.max_tokens.filter(|_| kind == TurnKind::Act) else {
-            return (terms, None);
+            return Ok((terms, None));
         };
         let (density_estimated, density_measured) = calibration.density();
         let room = crate::ai::provenance::OutputRoom {
@@ -125,7 +133,7 @@ impl LlmDeliberationFaculty {
             admission = ?room.admission,
             "an act's output room as sent: think plus answer in one cap, priced at her measured density"
         );
-        (terms, Some(room))
+        Ok((terms, Some(room)))
     }
 
     /// An act whose prompt leaves less room than her reply's grant: refused typed and parked (the

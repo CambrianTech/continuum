@@ -338,14 +338,33 @@ pub struct TextGenerationRequest {
 /// it rendered the request, which the adapter enforces at dispatch
 /// (`AIProviderAdapter::generate_admitted`). Not part of the wire request: an adapter that cannot
 /// enforce them refuses typed rather than sending without them.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DispatchTerms {
+    pub output: crate::ai::reply_room::OutputIntent,
     /// The strict admission guard it was rendered under; `None` = the lane's own window only.
     pub admission: Option<RequestAdmission>,
     /// The think's bound inside `max_tokens`, sized from her MEASURED output need (her grant past
     /// her measured answer), so the answer keeps its room. A mind's turn always carries one, zero
     /// included; `None` only for a caller with no measured need.
     pub think: Option<ThinkBudget>,
+}
+
+impl DispatchTerms {
+    pub fn validate_request(&self, request: &TextGenerationRequest) -> Result<(), crate::ai::inference_error::InferenceError> {
+        if let crate::ai::reply_room::OutputIntent::Fixed(reply) = self.output {
+            if request.max_tokens != Some(reply.get()) {
+                return Err(crate::ai::inference_error::InferenceError::Protocol("fixed dispatch limit disagrees with request".into()));
+            }
+        }
+        Ok(())
+    }
+    /// Ordinary callers explicitly retain their positive requested limit. A
+    /// missing limit is a contract refusal, never a guessed provider allowance.
+    pub fn fixed(request: &TextGenerationRequest, think: Option<ThinkBudget>) -> Result<Self, crate::ai::inference_error::InferenceError> {
+        let reply = request.max_tokens.and_then(std::num::NonZeroU32::new)
+            .ok_or_else(|| crate::ai::inference_error::InferenceError::Protocol("fixed dispatch requires a positive output limit".into()))?;
+        Ok(Self { output: crate::ai::reply_room::OutputIntent::Fixed(reply), admission: None, think })
+    }
 }
 
 /// A think budget in tokens. ZERO is a budget, not "unbounded": on our fork the reasoning-budget

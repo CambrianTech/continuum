@@ -34,7 +34,9 @@ pub trait DispatchTermsPolicy: Send + Sync {
 /// The refusal of an admission this adapter cannot enforce (no exact prompt count, no grant to
 /// reserve), when the terms carry one; `Ok` when they do not.
 pub fn refuse_unenforceable_admission(request: &TextGenerationRequest, terms: &DispatchTerms) -> Result<(), InferenceError> {
-    match terms.admission.is_some_and(|a| a.lease.is_some() || a.priced == PromptAdmission::EngineCounted) {
+    terms.validate_request(request)?;
+    match matches!(terms.output, crate::ai::reply_room::OutputIntent::UseAdmittedRoom { .. })
+        || terms.admission.is_some_and(|a| a.lease.is_some() || a.priced == PromptAdmission::EngineCounted) {
         true => Err(InferenceError::AdmissionUncounted { model: model_of(request) }),
         false => Ok(()),
     }
@@ -112,7 +114,26 @@ mod tests {
     use crate::ai::types::{RequestAdmission, ThinkBudget};
 
     fn request() -> TextGenerationRequest {
-        TextGenerationRequest { model: Some("m".into()), ..Default::default() }
+        TextGenerationRequest { model: Some("m".into()), max_tokens: Some(32), ..Default::default() }
+    }
+
+    #[test]
+    fn output_authority_is_explicit_and_cannot_disagree_with_fixed_wire() {
+        let mut request = request();
+        let fixed = DispatchTerms::fixed(&request, None).expect("positive fixture limit");
+        assert!(fixed.validate_request(&request).is_ok());
+        request.max_tokens = Some(31);
+        assert!(fixed.validate_request(&request).is_err());
+        request.max_tokens = None;
+        assert!(DispatchTerms::fixed(&request, None).is_err());
+        request.max_tokens = Some(0);
+        assert!(DispatchTerms::fixed(&request, None).is_err());
+        let adaptive = DispatchTerms {
+            output: crate::ai::reply_room::OutputIntent::UseAdmittedRoom {
+                required_reply: std::num::NonZeroU32::new(1).expect("positive fixture claim"),
+            }, admission: None, think: None,
+        };
+        assert!(matches!(refuse_unenforceable_admission(&request, &adaptive), Err(InferenceError::AdmissionUncounted { .. })));
     }
 
     // what this catches: the generic contract once. An adapter that never thinks keeps any think
@@ -120,7 +141,7 @@ mod tests {
     // estimate) is refused typed before anything is generated.
     #[test]
     fn an_unthinking_adapter_keeps_a_budget_and_refuses_an_admission_it_cannot_enforce() {
-        let think = DispatchTerms { think: Some(ThinkBudget(0)), admission: None };
+        let think = DispatchTerms { output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(32).expect("fixture limit")), think: Some(ThinkBudget(0)), admission: None };
         assert_eq!(refuse_unenforceable_admission(&request(), &think), Ok(()));
         let counted = DispatchTerms {
             admission: Some(RequestAdmission { window: 4_096, lease: None, priced: PromptAdmission::EngineCounted }),
@@ -144,7 +165,7 @@ mod tests {
         });
         let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
         for think in [ThinkBudget(0), ThinkBudget(338)] {
-            let terms = DispatchTerms { think: Some(think), admission: None };
+            let terms = DispatchTerms { output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(32).expect("fixture limit")), think: Some(think), admission: None };
             let refused = adapter.generate_admitted(request(), terms, sink.clone()).await;
             assert_eq!(refused.err(), Some(InferenceError::ThinkUnenforceable { model: "m".into() }), "{think:?}");
         }

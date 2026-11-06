@@ -6,13 +6,21 @@ use crate::inference::sse_stream::warn_if_decode_collapsed;
 use continuum_tool_protocol::UnparsedArguments;
 
 impl OpenAICompatibleAdapter {
-    /// Generate `request` under `terms` (`DispatchTerms::default()` = none beyond the lane's own).
+    /// Generate `request` under explicit dispatch terms.
     pub(super) async fn stream_checked(
         &self,
         request: TextGenerationRequest,
         terms: crate::ai::types::DispatchTerms,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+        terms.validate_request(&request)?;
+        // Until the executable-attempt producer is integrated, this provider
+        // cannot claim adaptive authority merely because the caller supplied it.
+        if matches!(terms.output, crate::ai::reply_room::OutputIntent::UseAdmittedRoom { .. }) {
+            return Err(crate::ai::inference_error::InferenceError::AdmissionUncounted {
+                model: request.model.clone().unwrap_or_default(), // unnamed model is the adapter's default label
+            });
+        }
         // Only require API key for providers that need auth
         if self.config.requires_auth && self.api_key.is_none() {
             return Err(format!("{} not initialized", self.config.name).into());
