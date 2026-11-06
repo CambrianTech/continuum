@@ -137,6 +137,9 @@ pub(crate) async fn send_with_lane_retry(
     // Freeze prompt fields once; this owner serializes the canonical cap from
     // the same resolution used by reservation and the sent receipt.
     let prepared = command::PreparedCommand::new(&body, fill.output)?;
+    if matches!(fill.output, crate::ai::reply_room::OutputIntent::ProviderControlled) && fill.admission.is_some() {
+        return Err(InferenceError::Protocol("provider-controlled output cannot reserve an admitted grant".into()));
+    }
     if matches!(fill.output, crate::ai::reply_room::OutputIntent::UseAdmittedRoom { .. })
         && (fill.prompt_quote.is_none() || !fill.admission.is_some_and(|a| a.endpoint.is_some() && a.admission.lease.is_some())) {
         return Err(InferenceError::AdmissionUncounted { model: fill.model.into() });
@@ -192,7 +195,10 @@ pub(crate) async fn send_with_lane_retry(
                 }
                 _ => {
                     let fixed = prepared.fixed()?;
-                    let measured = super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: fixed.output.reply() };
+                    // Unadmitted provider-controlled generation checks prompt fit;
+                    // there is no caller reply reservation or counted output claim.
+                    let reply = match fixed.output { command::SentOutput::ProviderControlled => 0, command::SentOutput::ProviderFixed(cap) => cap.get(), command::SentOutput::Counted(room) => room.reply };
+                    let measured = super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply };
                     super::serving_guard::guard_resident_model(cfg, quote.dedicated_lane, fill.model, measured, quote.caller).await?;
                     if let Some(admission) = fill.admission { measured.check(admission.admission.window, &cfg.name, quote.caller)?; }
                     fixed
@@ -230,7 +236,7 @@ pub(crate) async fn send_with_lane_retry(
                     return Err(InferenceError::GrantChanged { rendered: leased.tokens, current: None });
                 }
                 let needed = (fill.prompt_tokens as u64)
-                    .saturating_add(u64::from(command.output.reply()))
+                    .saturating_add(u64::from(command.output.reply().ok_or_else(|| InferenceError::Protocol("grant reservation requires resolved output".into()))?))
                     .min(u64::from(u32::MAX)) as u32;
                 crate::capacity::window_grant::reserve_attempt(reservation, persona, leased, needed).map_err(|refused| match refused {
                     crate::capacity::window_grant::ReserveRefused::Changed { leased, current } => {

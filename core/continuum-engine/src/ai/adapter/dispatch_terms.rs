@@ -28,6 +28,9 @@ pub trait DispatchTermsPolicy: Send + Sync {
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, InferenceError> {
         terms.validate_request(&request)?;
+        if matches!(terms.output, crate::ai::reply_room::OutputIntent::ProviderControlled) {
+            return Err(InferenceError::Protocol("provider-controlled generation is not admitted generation".into()));
+        }
         let response = self.generate_with_terms(request, terms, sink).await?;
         response.dispatch.verify(terms)?;
         Ok(response)
@@ -130,6 +133,30 @@ mod tests {
 
     fn request() -> TextGenerationRequest {
         TextGenerationRequest { model: Some("m".into()), max_tokens: Some(32), ..Default::default() }
+    }
+
+    #[tokio::test]
+    async fn provider_controlled_is_refused_before_admitted_provider_dispatch() {
+        struct NeverDispatched;
+        #[async_trait::async_trait]
+        impl DispatchTermsPolicy for NeverDispatched {
+            async fn generate_with_terms(
+                &self, _: TextGenerationRequest, _: DispatchTerms,
+                _: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+            ) -> Result<TextGenerationResponse, InferenceError> {
+                panic!("unadmitted output reached admitted provider dispatch");
+            }
+        }
+        let mut request = request();
+        request.max_tokens = None;
+        let terms = DispatchTerms {
+            output: crate::ai::reply_room::OutputIntent::ProviderControlled,
+            admission: None, think: None,
+        };
+        assert!(terms.validate_request(&request).is_ok());
+        let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(matches!(NeverDispatched.generate_admitted(request, terms, sink).await,
+            Err(InferenceError::Protocol(_))));
     }
 
     #[test]

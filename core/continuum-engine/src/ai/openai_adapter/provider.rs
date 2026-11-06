@@ -336,7 +336,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
-        let terms = crate::ai::types::DispatchTerms::fixed(&request, None)?;
+        let terms = if request.max_tokens.is_none() {
+            crate::ai::types::DispatchTerms { output: crate::ai::reply_room::OutputIntent::ProviderControlled, admission: None, think: None }
+        } else { crate::ai::types::DispatchTerms::fixed(&request, None)? };
         self.stream_checked(request, terms, sink).await
     }
 

@@ -6,6 +6,8 @@ use std::num::NonZeroU32;
 /// Explicit caller authority. An estimate is not an output ceiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputIntent {
+    /// General generation only: the provider owns termination; never admitted authority.
+    ProviderControlled,
     Fixed(NonZeroU32),
     UseAdmittedRoom { required_reply: NonZeroU32 },
 }
@@ -77,6 +79,7 @@ impl OutputIntent {
     pub fn resolve(self, prompt: u32, physical: u32, admitted: u32) -> Result<QuotedReplyRoom, InsufficientReplyRoom> {
         let window = physical.min(admitted);
         let minimum = match self {
+            Self::ProviderControlled => return Err(InsufficientReplyRoom { prompt, window, minimum: 0 }),
             Self::Fixed(reply) => reply.get(),
             Self::UseAdmittedRoom { required_reply } => required_reply.get(),
         };
@@ -84,6 +87,7 @@ impl OutputIntent {
         match available {
             Some(room) if room >= minimum => {
                 let reply = match self {
+                    Self::ProviderControlled => return Err(InsufficientReplyRoom { prompt, window, minimum: 0 }),
                     Self::Fixed(reply) => reply.get(),
                     Self::UseAdmittedRoom { .. } => room,
                 };

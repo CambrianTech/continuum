@@ -3,13 +3,14 @@ use crate::ai::{inference_error::InferenceError, reply_room::{OutputIntent, Quot
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SentOutput {
+    ProviderControlled,
     Counted(QuotedReplyRoom),
     ProviderFixed(std::num::NonZeroU32),
 }
 
 impl SentOutput {
-    pub fn reply(self) -> u32 {
-        match self { Self::Counted(room) => room.reply, Self::ProviderFixed(reply) => reply.get() }
+    pub fn reply(self) -> Option<u32> {
+        match self { Self::Counted(room) => Some(room.reply), Self::ProviderFixed(reply) => Some(reply.get()), Self::ProviderControlled => None }
     }
 }
 
@@ -38,6 +39,9 @@ impl PreparedCommand {
                 return Err(InferenceError::Protocol(format!("prepared generation contains output alias {alias}")));
             }
         }
+        if matches!(intent, OutputIntent::ProviderControlled) && prompt.contains_key("max_tokens") {
+            return Err(InferenceError::Protocol("provider-controlled command contains a fixed output bound".into()));
+        }
         if let OutputIntent::Fixed(reply) = intent {
             if let Some(cap) = prompt.get("max_tokens") {
                 if cap.as_u64() != Some(u64::from(reply.get())) {
@@ -47,13 +51,14 @@ impl PreparedCommand {
         }
         // Output limits are not template input on this counted backend. Retain
         // every other finalized field; the serializer alone supplies max_tokens.
-        let fixed_body = (matches!(intent, OutputIntent::Fixed(_)) && prompt.contains_key("max_tokens")).then(|| body.to_vec());
+        let fixed_body = (matches!(intent, OutputIntent::ProviderControlled) || (matches!(intent, OutputIntent::Fixed(_)) && prompt.contains_key("max_tokens"))).then(|| body.to_vec());
         prompt.remove("max_tokens");
         Ok(Self { prompt, intent, fixed_body })
     }
 
     pub fn quote_builder(&self, template: &reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder, InferenceError> {
         let reply = match self.intent {
+            OutputIntent::ProviderControlled => return self.fixed()?.builder(template),
             OutputIntent::Fixed(reply) => reply.get(),
             OutputIntent::UseAdmittedRoom { required_reply } => required_reply.get(),
         };
@@ -63,6 +68,7 @@ impl PreparedCommand {
 
     pub fn fixed(&self) -> Result<ResolvedCommand, InferenceError> {
         match self.intent {
+            OutputIntent::ProviderControlled => Ok(ResolvedCommand { body: self.fixed_body.clone().ok_or_else(|| InferenceError::Protocol("missing provider-controlled wire body".into()))?, output: SentOutput::ProviderControlled }),
             OutputIntent::Fixed(reply) => self.encode(SentOutput::ProviderFixed(reply)),
             OutputIntent::UseAdmittedRoom { .. } => Err(InferenceError::Protocol(
                 "adaptive output requires an owned endpoint, exact quote and grant lease".into())),
@@ -76,7 +82,7 @@ impl PreparedCommand {
     }
 
     fn encode(&self, output: SentOutput) -> Result<ResolvedCommand, InferenceError> {
-        Ok(ResolvedCommand { body: self.body(output.reply())?, output })
+        Ok(ResolvedCommand { body: self.body(output.reply().ok_or_else(|| InferenceError::Protocol("resolved output needs an explicit cap".into()))?)?, output })
     }
 
     fn body(&self, reply: u32) -> Result<Vec<u8>, InferenceError> {
@@ -100,6 +106,17 @@ impl ResolvedCommand {
 mod tests {
     use super::*;
     use std::num::NonZeroU32;
+
+    #[test]
+    fn provider_controlled_preserves_omitted_limit_and_has_no_admitted_cap() {
+        let bytes = br#"{"messages":[],"model":"teacher"}"#;
+        let command = PreparedCommand::new(bytes, OutputIntent::ProviderControlled).expect("general command");
+        let resolved = command.fixed().expect("provider-controlled wire");
+        assert_eq!(resolved.body, bytes);
+        assert_eq!(resolved.output.reply(), None);
+        assert!(command.counted(10, 32768, 32768).is_err());
+        assert!(PreparedCommand::new(br#"{"max_tokens":32}"#, OutputIntent::ProviderControlled).is_err());
+    }
 
     #[test]
     fn output_aliases_and_contradictory_fixed_controls_are_refused() {
@@ -130,7 +147,7 @@ mod tests {
         assert!(command.fixed().is_err());
         assert!(command.counted(27221, 32512, 31000).is_err());
         let resolved = command.counted(27221, 32512, 32512).expect("recorded fit");
-        assert_eq!(resolved.output.reply(), 5290);
+        assert_eq!(resolved.output.reply(), Some(5290));
         let wire: serde_json::Value = serde_json::from_slice(&resolved.body).expect("wire");
         assert_eq!(wire["max_tokens"], 5290);
     }

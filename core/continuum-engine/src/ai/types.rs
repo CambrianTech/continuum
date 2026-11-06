@@ -351,6 +351,9 @@ pub struct DispatchTerms {
 
 impl DispatchTerms {
     pub fn validate_request(&self, request: &TextGenerationRequest) -> Result<(), crate::ai::inference_error::InferenceError> {
+        if matches!(self.output, crate::ai::reply_room::OutputIntent::ProviderControlled) && (request.max_tokens.is_some() || self.admission.is_some() || self.think.is_some()) {
+            return Err(crate::ai::inference_error::InferenceError::Protocol("provider-controlled generation cannot carry admission or output bounds".into()));
+        }
         if let crate::ai::reply_room::OutputIntent::Fixed(reply) = self.output {
             if request.max_tokens != Some(reply.get()) {
                 return Err(crate::ai::inference_error::InferenceError::Protocol("fixed dispatch limit disagrees with request".into()));

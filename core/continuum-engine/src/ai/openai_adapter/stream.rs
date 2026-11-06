@@ -541,8 +541,9 @@ impl OpenAICompatibleAdapter {
         )
         .await?;
 
-        request.max_tokens = Some(response.output.reply());
+        request.max_tokens = response.output.reply();
         let dispatch = match response.output {
+            crate::inference::lane_send::SentOutput::ProviderControlled => crate::ai::reply_room::DispatchReceipt::Unadmitted,
             crate::inference::lane_send::SentOutput::Counted(room) => crate::ai::reply_room::DispatchReceipt::Counted { room },
             crate::inference::lane_send::SentOutput::ProviderFixed(reply) => crate::ai::reply_room::DispatchReceipt::ProviderFixed { reply: reply.get() },
         };
