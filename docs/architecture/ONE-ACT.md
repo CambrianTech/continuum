@@ -857,3 +857,29 @@ prepared; the stale Windows checkout is not a deployment source. Acceptance
 requires this validated revision running on Windows, M5 and IntelMac with live
 useful resident work, saved-page continuity and bounded waits. Neither CI nor
 historical rollback activity establishes that result.
+
+At 2026-11-06 02:04Z, the three-node acceptance gate remains open. All three
+machines adopted 8b through the supported lifecycle. M5's complete 22:50–23:05Z
+window recorded 18 model-reached acts across all four residents and one confirmed
+code edit. Intel's first window recorded one model-reached act; its long admission
+and physical-slot waits still need correction. These are different outcomes, not
+a blanket recovery or causal throughput claim.
+
+Windows crashed at 00:18:14Z after concurrent embedding contexts requested roughly
+1201 MiB compute buffers and a native allocation exception crossed Rust FFI.
+PR #5795, exact head `545b91f366c13ba401b4ffda569b838202cf8b7e`, retains embedding
+permits and memory claims inside blocking workers, serializes contexts per backend,
+and contains native decode exceptions on the C++ side. Embedding graphs consume
+full inputs within the model limit instead of silently clipping at 2048 tokens.
+Generation consumes an explicit nonzero allocation; private RAM probing and
+fraction/floor sizing are deleted. Scheduler allocation identity is retained.
+
+Local cancellation and queue tests, native exception injection, four concurrent
+real-model embeddings and a 2110-token suffix-sensitivity regression passed.
+The short-input compute buffer measured 5.42 MiB instead of 1200.97 MiB; this is
+input-specific evidence, not a universal footprint bound. Final backend/adapter
+checks passed 17 tests with four explicit-environment tests ignored, and source
+hygiene passed 87 checks. Exact-head CI is still running. Existing embedding memory
+accounting is not a completed ONE-BUDGET migration. The repair is not deployed,
+and Windows has not been blindly restarted after the crash. Preserve the separate
+serving engine, resident identities and saved pages during supported recovery.
