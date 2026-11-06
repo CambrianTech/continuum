@@ -725,3 +725,32 @@ mod repeats {
         assert!(rendered(&view).starts_with(&before));
     }
 }
+
+// Atlas 2026-11-06: a large wall append preceded a fitting-view restore. This
+// exercises the real View owner, not the cognition turnover predicate alone.
+#[test]
+fn wall_append_preserves_prefix_until_restore_recovers_collapsed_content() -> Result<(), GrantMismatch> {
+    let mut actions = Fake::new("actions", 1);
+    actions.push("old-result", &"x".repeat(9_000));
+    let mut wall = Fake::new("room-wall", 2);
+    wall.push("wall", "original wall");
+    let sources: [&dyn Source<String>; 2] = [&actions, &wall];
+    let (mut view, _) = View::start(vec!["identity".into()], &sources, |claims| {
+        claims.iter().map(|claim| if claim.source == "actions" { 100 } else { claim.full_chars }).collect()
+    })?;
+    assert!(!view.renders("actions", "old-result"));
+    let before = rendered(&view);
+    wall.push("wall", &"w".repeat(35_500));
+    let sources: [&dyn Source<String>; 2] = [&actions, &wall];
+    view.advance(&sources);
+    let appended = rendered(&view);
+    assert!(appended.starts_with(&before), "the wall advance must preserve the held prefix");
+    assert!(view.start_would_restore(&sources, all_full)?);
+    assert_eq!(rendered(&view), appended, "the restore probe cannot mutate the view");
+    view.turn_over(vec!["identity".into()], &sources, all_full)?;
+    assert!(view.renders("actions", "old-result"), "restore must actually recover the old result");
+    assert!(view.renders("room-wall", "wall"));
+    assert!(!rendered(&view).starts_with(&appended), "restoring content changes the prior prefix");
+    assert!(!view.start_would_restore(&sources, all_full)?, "unchanged full grants must not restore twice");
+    Ok(())
+}
