@@ -184,3 +184,120 @@ fn the_fork_fill_breaks_at_each_checkpoint_offset() {
     assert_eq!(fork_fill(1, 2048, &offsets), 1);
     assert_eq!(fork_fill(9000, 2048, &offsets), 2048);
 }
+
+mod pipeline {
+    use super::*;
+
+    /// Union length of intervals.
+    fn union_s(mut v: Vec<(f64, f64)>) -> f64 {
+        v.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let (mut total, mut end) = (0.0, f64::NEG_INFINITY);
+        for (a, b) in v {
+            if b > end {
+                total += b - a.max(end);
+                end = b;
+            }
+        }
+        total
+    }
+
+    /// Length of `a` (a union) covered by `b` (a union), by sampling the merged breakpoints.
+    fn overlap_s(a: &[(f64, f64)], b: &[(f64, f64)]) -> f64 {
+        let mut points: Vec<f64> = a.iter().chain(b).flat_map(|(x, y)| [*x, *y]).collect();
+        points.sort_by(f64::total_cmp);
+        points.windows(2).filter(|w| {
+            let mid = (w[0] + w[1]) / 2.0;
+            a.iter().any(|(x, y)| *x <= mid && mid < *y) && b.iter().any(|(x, y)| *x <= mid && mid < *y)
+        }).map(|w| w[1] - w[0]).sum()
+    }
+
+    /// Residents' gaps (release to next launch) whose next act carries streamable output.
+    fn recorded_gaps(hour: &Hour) -> Vec<(usize, f64, f64)> {
+        let mut by: BTreeMap<usize, Vec<&HourTask>> = BTreeMap::new();
+        for t in hour.tasks.iter().filter(|t| t.class == TaskClass::Resident) {
+            by.entry(t.slot).or_default().push(t);
+        }
+        by.iter().flat_map(|(s, v)| v.windows(2).map(move |w| (*s, w[0].launch_s + w[0].recorded_act_s, w[1].launch_s))).collect()
+    }
+
+    // what this catches: nothing by itself; it is the 4c sizing (ONE-ACT 5e): today's fork from the
+    // recorded hour and in the model, (b), and the pipeline scopes (e) append-only streaming with
+    // page-in ahead, (e*) + stable prompts, (e-ready) slot kept current continuously, each with the
+    // GATE metric (device idle while device-ready work exists), host/device blocking, act time per
+    // mind and its decode share, useful acts/h, oldest waiter, longest decode gap and the share of
+    // fresh tokens prefilled before the go, beside the baseline's calibration. It holds that every
+    // scope completes every task and that streaming never adds device time per token.
+    #[test]
+    fn the_pipeline_scopes_on_the_recorded_hour() {
+        let e = evidence();
+        let hour = &e.m5_hour.value;
+        let costs = Costs::of(&e);
+        let rows = calibration(hour, &costs);
+        print_calibration(&rows, &costs);
+
+        // The recorded hour's gate: the device is busy from a task's restore end to its release.
+        let busy: Vec<(f64, f64)> = hour.tasks.iter().map(|t| (t.launch_s + t.restore_s, t.launch_s + t.recorded_act_s)).collect();
+        let span = hour.tasks.iter().map(|t| t.launch_s + t.recorded_act_s).fold(0.0, f64::max);
+        let busy_s = union_s(busy.clone());
+        let mut merged = busy.clone();
+        merged.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut idle: Vec<(f64, f64)> = Vec::new();
+        let mut end = 0.0;
+        for (a, b) in merged {
+            if a > end {
+                idle.push((end, a));
+            }
+            end = f64::max(end, b);
+        }
+        let gaps = recorded_gaps(hour);
+        let gap_iv: Vec<(f64, f64)> = gaps.iter().map(|(_, a, b)| (*a, *b)).collect();
+        let idle_ready = overlap_s(&idle, &gap_iv);
+        let concurrent_gaps = gap_iv.iter().map(|(a, b)| gap_iv.iter().filter(|(x, y)| x < b && a < y).count()).max().unwrap_or(0); // unwrap_or: no gaps
+        let gap_overlap = overlap_s(&gap_iv, &gap_iv.iter().enumerate().flat_map(|(i, g)| gap_iv.iter().enumerate().filter(move |(j, _)| *j != i).filter(move |(_, h)| h.0 < g.1 && g.0 < h.1).map(|(_, h)| (h.0.max(g.0), h.1.min(g.1)))).collect::<Vec<_>>());
+        let mut gap_med: BTreeMap<usize, Vec<f64>> = BTreeMap::new();
+        for (s, a, b) in &gaps {
+            gap_med.entry(*s).or_default().push(b - a);
+        }
+        eprintln!("recorded hour: device busy {:.0}% of {span:.0} s; idle while device-ready work existed {:.1}% of the span; host: up to {concurrent_gaps} minds in their gaps at once, {:.0}% of gap time concurrent with another mind's (no host serialization visible); engine-side gap median by slot {:?} s",
+            busy_s / span * 100.0, idle_ready / span * 100.0, gap_overlap / union_s(gap_iv.clone()).max(1e-9) * 100.0,
+            gap_med.into_iter().map(|(s, v)| (s, median(v))).map(|(s, m)| format!("{s}:{m:.1}")).collect::<Vec<_>>());
+
+        let knee = match costs.knee() {
+            Knee::Derived(k) => k as usize,
+            Knee::NeedsNoiseBand { below, .. } => below as usize,
+        };
+        let scenarios: Vec<(&str, Box<dyn BatchScheduler>, Pipeline)> = vec![
+            ("today's fork", Box::new(Fork::default()), Pipeline::TODAY),
+            ("(b) whole fitting tail", Box::new(WholeTail::default()), Pipeline::TODAY),
+            ("(e) pipeline, append-only streaming", Box::new(SortKey::new(knee)), Pipeline { scope: Scope::AppendOnly }),
+            ("(e*) pipeline + stable prompts", Box::new(SortKey::new(knee)), Pipeline { scope: Scope::StablePrompts }),
+            ("(e-ready) slot kept current", Box::new(SortKey::new(knee)), Pipeline { scope: Scope::ReadyBeforeGo }),
+        ];
+        let mut per_token: Vec<f64> = Vec::new();
+        for (name, mut policy, pipeline) in scenarios {
+            let r = run(hour, &costs, policy.as_mut(), pipeline);
+            let out = &r.outcomes;
+            assert!(out.iter().all(|o| o.release_s.is_finite()), "{name} left tasks unfinished");
+            let resident: Vec<usize> = (0..hour.tasks.len()).filter(|i| hour.tasks[*i].class == TaskClass::Resident).collect();
+            let m = modeled(hour, out);
+            let (before, fresh) = resident.iter().fold((0u64, 0u64), |(b, f), i| (b + u64::from(out[*i].before_go), f + u64::from(out[*i].fresh)));
+            let oldest = resident.iter().map(|i| out[*i].first_service_wait_s).fold(0.0, f64::max);
+            let gap = resident.iter().map(|i| out[*i].longest_gap_s).fold(0.0, f64::max);
+            per_token.push((r.gap_prefill_s + r.act_prefill_s) / fresh.max(1) as f64);
+            eprintln!("{name}: fresh prefilled before the go {:.0}%; device idle while ready {:.1}% of span; device busy {:.0}%; device blocked on host {:.0} s; host blocked on device {:.0} mind-s; prefill in acts {:.0} s, moved into gaps {:.0} s; useful acts/h {:.1}; median act {:.0} s, p90 {:.0} s; oldest waiter {oldest:.0} s; longest decode gap {gap:.1} s",
+                before as f64 / fresh.max(1) as f64 * 100.0, r.idle_while_ready_s / r.span_s * 100.0, r.busy_s / r.span_s * 100.0,
+                r.device_blocked_on_host_s, r.host_blocked_on_device_s, r.act_prefill_s, r.gap_prefill_s, m.acts_per_hour, m.median_act_s,
+                quantile(resident.iter().map(|i| out[*i].act_s()).collect(), 0.9));
+            let mut minds: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+            for i in &resident {
+                minds.entry(hour.tasks[*i].mind.as_str()).or_default().push(*i);
+            }
+            for (mind, idx) in &minds {
+                let acts: Vec<f64> = idx.iter().map(|i| out[*i].act_s()).collect();
+                let decode_share = idx.iter().map(|i| out[*i].decode_s).sum::<f64>() / acts.iter().sum::<f64>();
+                eprintln!("   {mind:8} acts {:3} median {:6.0} s p90 {:6.0} s, decode {:.0}% of act time", idx.len(), median(acts.clone()), quantile(acts, 0.9), decode_share * 100.0);
+            }
+        }
+        eprintln!("prefill device-seconds per fresh token by scenario: {per_token:.4?}");
+    }
+}
