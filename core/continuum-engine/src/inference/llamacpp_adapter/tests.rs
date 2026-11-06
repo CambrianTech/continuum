@@ -30,7 +30,7 @@ fn for_launch_populates_all_overrides_from_the_launch() {
         PathBuf::from("/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf")
     );
     assert_eq!(adapter.default_model, launch.model_id);
-    assert_eq!(adapter.context_length_override, Some(2048));
+    assert!(matches!(adapter.generation, GenerationSupport::Enabled { context: 2048 }));
     assert_eq!(adapter.n_seq_max_override, Some(1));
     assert_eq!(adapter.n_ubatch_override, Some(512));
     assert_eq!(adapter.n_gpu_layers_override, Some(0));
@@ -331,4 +331,14 @@ async fn owned_gene_page_in_changes_output() {
         out_base, out_gene,
         "gene paged in but output is byte-identical to base — set_loras did not apply"
     );
+}
+
+#[tokio::test]
+async fn embedding_only_adapter_refuses_generation_before_model_loading() {
+    let adapter = LlamaCppAdapter::with_model_id(
+        PathBuf::from("/nonexistent/embedding-only.gguf"), "embedding-only".into());
+    let result = adapter.generate_text(TextGenerationRequest::default()).await;
+    assert_eq!(result.expect_err("unsupported operation"),
+        "embedding-only adapter does not support text generation");
+    assert!(adapter.backend.read().is_none());
 }

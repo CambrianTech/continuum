@@ -39,7 +39,7 @@ use crate::ai::types::{
     MessageContent, ModelInfo, ResponseFormat, TextGenerationRequest, TextGenerationResponse,
     UsageMetrics,
 };
-use crate::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
+use crate::inference::backends::llamacpp::{GenerationAllocation, LlamaCppBackend, LlamaCppConfig};
 use crate::inference::backends::{SamplingConfig, JSON_GRAMMAR};
 use crate::inference_capability::enforce_residency;
 use crate::model_registry::Capability;
@@ -96,6 +96,12 @@ mod tests;
 
 use payload::{decode_audio_bytes, decode_image_bytes, sampling_config_from_request};
 
+#[derive(Clone, Copy)]
+enum GenerationSupport {
+    EmbeddingOnly,
+    Enabled { context: u32 },
+}
+
 /// Typed failure for [`LlamaCppAdapter::try_new`] when the model
 /// registry has no `llamacpp-local` row with a resolved
 /// `gguf_local_path`. Surfaces install-time-no-Qwen state as observable
@@ -140,7 +146,7 @@ pub struct LlamaCppAdapter {
     /// 262K alloc on qwen3.5-4b is ~24GB even at Q4. Tests use 16K;
     /// production tier-aware sizing is a follow-up (M5 Pro = 64K? or
     /// per-persona declaration).
-    context_length_override: Option<u32>,
+    generation: GenerationSupport,
     /// Per-residency KV quant policy. Controls type_k / type_v at each
     /// lifecycle stage (Active hot in GPU, CpuResident warm in unified
     /// memory, Idle spilled to NVMe). Default = `KvQuantPolicy::default()`
@@ -209,23 +215,22 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .as_ref()
             .map(|b| b.n_ctx_train())
             .unwrap_or(0);
-        // llama.cpp does text + chat + streaming, native (prompt-driven) tool
-        // calls, and embeddings (--embedding mode). Vision is handled by the
-        // mmproj adapter when loaded, not declared at this text-LLM layer;
-        // audio is bridged via STT (whisper) / TTS in the substrate.
-        // Tools are prompt-driven (no native protocol); structured output via
-        // GBNF grammar-constrained sampling, which IS native to llama.cpp.
+        let capabilities = match self.generation {
+            GenerationSupport::EmbeddingOnly => vec![Capability::Embedding],
+            GenerationSupport::Enabled { .. } => vec![
+                Capability::TextGeneration, Capability::Chat, Capability::ToolUse,
+                Capability::Streaming, Capability::Embedding,
+            ],
+        };
+        let output_window = match self.generation {
+            GenerationSupport::EmbeddingOnly => 0,
+            GenerationSupport::Enabled { context } => context,
+        };
         AdapterCapabilities::builder()
-            .capabilities([
-                Capability::TextGeneration,
-                Capability::Chat,
-                Capability::ToolUse,
-                Capability::Streaming,
-                Capability::Embedding,
-            ])
+            .capabilities(capabilities)
             .local()
             .context_window(max_ctx)
-            .max_output_tokens(4096)
+            .max_output_tokens(output_window)
             .protocols(crate::ai::adapter::NativeProtocols::GrammarConstrained)
             .build()
     }
@@ -317,6 +322,12 @@ impl AIProviderAdapter for LlamaCppAdapter {
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
+        let allocation = match self.generation {
+            GenerationSupport::EmbeddingOnly => return Err("embedding-only adapter does not support text generation".into()),
+            GenerationSupport::Enabled { context } => GenerationAllocation::new(
+                std::num::NonZeroU32::new(context).ok_or("invalid zero generation allocation")?
+            ),
+        };
         let backend = self.ensure_loaded()?;
 
         // Use the model's OWN chat template (from GGUF metadata) via
@@ -571,7 +582,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         .map(|(id, _, scale)| (id.clone(), *scale))
                         .collect();
                     backend_for_blocking.generate_for_persona(
-                        persona_id,
+                        allocation,                        persona_id,
                         &prompt_for_blocking,
                         max_tokens,
                         sampling_for_closure,
@@ -629,14 +640,14 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         stop_for_closure.iter().map(|s| s.as_str()).collect();
                     match kind {
                         llama::MediaKind::Image => backend_for_blocking.generate_with_image(
-                            &prompt_for_blocking,
+                        allocation,                            &prompt_for_blocking,
                             &media_bytes,
                             max_tokens,
                             sampling_for_closure,
                             &stop_refs,
                         ),
                         llama::MediaKind::Audio => backend_for_blocking.generate_with_audio(
-                            &prompt_for_blocking,
+                        allocation,                            &prompt_for_blocking,
                             &media_bytes,
                             max_tokens,
                             sampling_for_closure,
@@ -746,6 +757,9 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let start = Instant::now();
 
         // ── Governed GPU admission (mirrors inference::single_purpose_lane::acquire_lane_slot) ──
+        // Wait without a memory claim. The admitted worker owns both through context teardown,
+        // even when the request future is cancelled after spawn_blocking starts.
+        let embedding = backend.admit_embedding().await?;
         // The embedding forward pass allocates a bounded Metal context (a 2048-token
         // embedding context: ~1.2 GiB compute buffer — quadratic in n_ubatch=2048 —
         // plus ~224 MiB KV). UNGOVERNED, it grabbed that context behind the governor's
@@ -844,10 +858,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             }
         };
 
-        let embeddings = tokio::task::spawn_blocking(move || backend.embed(&texts))
-            .await
-            .map_err(|e| format!("embedding task join failed: {e}"))??;
-        // `_vram_lease` drops here → the VRAM is returned to the governor's board.
+        let embeddings = embedding.run(texts, _vram_lease).await?;
         Ok(EmbeddingResponse {
             embeddings,
             model: model_id,
@@ -858,7 +869,16 @@ impl AIProviderAdapter for LlamaCppAdapter {
     }
 
     async fn health_check(&self) -> HealthStatus {
-        let healthy = self.backend.read().is_some() || self.model_path.exists();
+        let (healthy, message) = if self.backend.read().is_some() {
+            (true, "in-process llama.cpp backend loaded".to_string())
+        } else {
+            match std::fs::metadata(&self.model_path) {
+                Ok(metadata) if metadata.is_file() =>
+                    (true, "model file available; backend not loaded".to_string()),
+                Ok(_) => (false, "model path is not a regular file".to_string()),
+                Err(error) => (false, format!("model file metadata: {error}")),
+            }
+        };
         HealthStatus {
             status: if healthy {
                 HealthState::Healthy
@@ -869,11 +889,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             response_time_ms: 0,
             error_rate: 0.0,
             last_checked: continuum_base::time::EpochMs::now().millis(),
-            message: Some(if healthy {
-                "in-process llama.cpp backend ready".to_string()
-            } else {
-                format!("model GGUF missing at {:?}", self.model_path)
-            }),
+            message: Some(message),
         }
     }
 
