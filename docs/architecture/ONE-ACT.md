@@ -222,6 +222,12 @@ Conceptual public contract (names may follow crate conventions):
 - A successful result carries either `CountedDispatch(sent_receipt)` or an explicitly supported
   `ProviderEnforcedFixed(sent_controls)` result. A requested counted contract can never return the
   latter. Requested intent, actual send and terminal outcome are distinct records tied by identity.
+- General generation may explicitly report `Unadmitted`; this is not a third successful admitted
+  outcome or a compatibility default. Every serialized response states its dispatch kind. The
+  shared admitted-call boundary rejects `Unadmitted`, contradictory fixed controls, and a
+  provider-fixed receipt for counted/adaptive authority. Adapter implementations supply behavior;
+  this boundary owns validation. Capture preserves the same mandatory dispatch observation,
+  while classification and allocation consume its actual sent reply, never an absent-field fallback.
 
 | Caller/provider path audited | First-slice obligation |
 |---|---|
