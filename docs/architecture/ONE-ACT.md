@@ -723,6 +723,18 @@ every mind is a consumer of it.
 - **Gate:** tokens prefilled per act that some slot already held (shared-prefix waste), and the
   segment-reference share of each mind's prompt.
 
+**It does not have to be sequential (Joel).** Across minds the engine's sequences form a tree, not a
+line.
+- Shared segments sit near the root and are prefilled once. Each mind is a branch, forked by
+  sequence copy where her content diverges, as in a radix-tree prefix cache.
+- Work on different branches runs in parallel and out of order, whenever its inputs exist.
+- The ledger keeps the tree's books: segment, branch point, and holding slot.
+- **The model's limit:** this hybrid model's recurrent layers make the state order-dependent along a
+  branch (the engine reports its memory cannot shift). So blocks cannot be stitched in arbitrary
+  order the way position-independent caching does on attention-only models.
+- **So the ledger orders segments by how widely they are shared and how stable they are.** Most
+  shared and most stable go nearest the root, so the trunk is long and branches split late.
+
 ### 5f. Extend the pipeline to the grid: place work near warm state
 
 Joel requested this direction be recorded on 2026-11-04. This is the extension of stages
