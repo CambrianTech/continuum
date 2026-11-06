@@ -361,6 +361,196 @@ fn is_vrm1_file(path: &Path) -> bool {
         .is_some()
 }
 
+/// Inspect a VRM/GLB file for body geometry and return a receipt_frame string.
+///
+/// Reads the glTF JSON embedded in the GLB binary, finds mesh primitives whose
+/// name contains "Body" (case-insensitive), checks that those meshes have POSITION
+/// attribute accessors with non-zero vertex counts, and returns a JSON object
+/// describing the body geometry status. Returns `None` if the file cannot be read
+/// or parsed.
+///
+/// Also detects known rendering issues:
+/// - `COLOR_0` vertex colors that are all zero (black) — causes black silhouette rendering
+pub fn has_body_geometry(path: &Path) -> Option<String> {
+    use std::io::Read;
+
+    // --- Read GLB binary and extract JSON chunk ---
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return None,
+    };
+
+    let mut header = [0u8; 12];
+    if file.read_exact(&mut header).is_err() {
+        return None;
+    }
+    let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+    if magic != 0x46546C67 {
+        // Not a GLB — could be .gltf JSON or something else
+        return None;
+    }
+
+    let mut chunk_header = [0u8; 8];
+    if file.read_exact(&mut chunk_header).is_err() {
+        return None;
+    }
+    let json_length = u32::from_le_bytes([
+        chunk_header[0],
+        chunk_header[1],
+        chunk_header[2],
+        chunk_header[3],
+    ]) as usize;
+    let chunk_type = u32::from_le_bytes([
+        chunk_header[4],
+        chunk_header[5],
+        chunk_header[6],
+        chunk_header[7],
+    ]);
+    if chunk_type != 0x4E4F534A {
+        return None;
+    }
+
+    let mut json_data = vec![0u8; json_length];
+    if file.read_exact(&mut json_data).is_err() {
+        return None;
+    }
+    let json_str = match std::str::from_utf8(&json_data) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+
+    let root: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+
+    // --- Inspect meshes for Body geometry ---
+    let meshes = match root.get("meshes").and_then(|m| m.as_array()) {
+        Some(arr) => arr,
+        None => return None,
+    };
+
+    let accessors = match root.get("accessors").and_then(|a| a.as_array()) {
+        Some(arr) => arr,
+        None => return None,
+    };
+
+    let mut body_meshes_found: u32 = 0;
+    let mut body_primitives_with_position: u32 = 0;
+    let mut total_body_vertices: usize = 0;
+    let mut has_all_zero_color0: bool = false;
+
+    for mesh in meshes {
+        let mesh_name = mesh.get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("");
+
+        // Check if this mesh is a Body mesh (case-insensitive contains "body")
+        if !mesh_name.to_lowercase().contains("body") {
+            continue;
+        }
+
+        body_meshes_found += 1;
+
+        let primitives = match mesh.get("primitives").and_then(|p| p.as_array()) {
+            Some(arr) => arr,
+            None => continue,
+        };
+
+        for prim in primitives {
+            // Check POSITION attribute
+            if let Some(pos_idx_val) = prim.get("attributes").and_then(|a| a.get("POSITION")) {
+                let pos_idx = match pos_idx_val.as_u64() {
+                    Some(i) => i as usize,
+                    None => continue,
+                };
+
+                if pos_idx < accessors.len() {
+                    let accessor = &accessors[pos_idx];
+                    // Count vertices from COUNT field or componentCount / numberOfComponents
+                    let count = match (accessor.get("count"), accessor.get("componentType")) {
+                        (Some(c), Some(ct)) => {
+                            // GLB spec: vertex_count = COUNT; we just need to know it's > 0
+                            c.as_u64().unwrap_or(0) as usize
+                        }
+                        _ => continue,
+                    };
+                    if count > 0 {
+                        body_primitives_with_position += 1;
+                        total_body_vertices += count;
+                    }
+                }
+            }
+
+            // Check for COLOR_0 with all-zero values (known issue: black skin)
+            if let Some(color_idx_val) = prim.get("attributes").and_then(|a| a.get("COLOR_0")) {
+                let color_idx = match color_idx_val.as_u64() {
+                    Some(i) => i as usize,
+                    None => continue,
+                };
+
+                if color_idx < accessors.len() {
+                    let accessor = &accessors[color_idx];
+                    // Check componentType — 5126 = GL_FLOAT, 5123/5121 = UNSIGNED_INT/SHORT
+                    let comp_type = accessor.get("componentType")
+                        .and_then(|c| c.as_u64())
+                        .unwrap_or(0);
+
+                    // Only check float colors (VRM skin uses FLOAT for COLOR_0)
+                    if comp_type == 5126 {
+                        // Check min/max arrays — VRMC extensions often store them,
+                        // but plain glTF accessors may not. We'll look at the data array.
+                        if let Some(data) = accessor.get("data").and_then(|d| d.as_array()) {
+                            if !data.is_empty() {
+                                // Check if all values are zero
+                                let mut all_zero = true;
+                                for val in &data[..data.len().min(100)] { // sample first 100
+                                    if val.get("number").and_then(|n| n.as_f64()) != Some(0.0)
+                                        && !val.is_number() {
+                                        all_zero = false;
+                                        break;
+                                    }
+                                    if let Some(n) = val.as_f64() {
+                                        if n != 0.0 {
+                                            all_zero = false;
+                                            break;
+                                        }
+                                    } else {
+                                        // Not a simple number — could be an object with .number
+                                        continue;
+                                    }
+                                }
+                                if all_zero && !data.is_empty() {
+                                    has_all_zero_color0 = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let body_present = body_meshes_found > 0 && body_primitives_with_position > 0;
+
+    // Build known_issues array
+    let mut issues: Vec<String> = Vec::new();
+    if has_all_zero_color0 {
+        issues.push(
+            "COLOR_0 vertex colors are all zero (black) — skin renders as black silhouette; mesh_fixup strips these resulting in unlit appearance".to_string(),
+        );
+    }
+
+    // Build the receipt_frame JSON
+    Some(serde_json::json!({
+        "expected_render": if body_present { "full-body anime character" } else { "head-only or missing body geometry" },
+        "known_issues": issues,
+        "body_present": body_present,
+        "vertex_count_approx": total_body_vertices,
+        "meshes": body_meshes_found,
+    }).to_string())
+}
+
 /// File extension priority for deduplication (higher = preferred).
 /// .glb is preferred because Bevy loads it natively without VRM-specific conversion.
 fn ext_priority(ext: &str) -> u8 {
@@ -560,7 +750,7 @@ impl AvatarCatalog {
                         energy: m.parse_energy(),
                     },
                     tags: m.tags.clone(),
-                    receipt_frame: None,
+                    receipt_frame: has_body_geometry(path),
                 }
             } else if let Some(static_model) = static_by_stem.get(stem.as_str()) {
                 // Known model from static catalog — inherit metadata
@@ -572,7 +762,7 @@ impl AvatarCatalog {
                     style: static_model.style,
                     voice_profile: static_model.voice_profile,
                     tags: Vec::new(),
-                    receipt_frame: None,
+                    receipt_frame: has_body_geometry(path),
                 }
             } else {
                 // Unknown model — infer from stem name and assign alternating gender
@@ -589,7 +779,7 @@ impl AvatarCatalog {
                         energy: EnergyLevel::Moderate,
                     },
                     tags: vec!["discovered".to_string()],
-                    receipt_frame: None,
+                    receipt_frame: has_body_geometry(path),
                 }
             };
 
