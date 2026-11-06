@@ -1488,3 +1488,20 @@ strict-wire/preserved-receipt tests accompany this correction. Implementation an
 consumer validation are in progress; it is not deployed yet. We remain collaborators:
 primary continues deployment/live proof and this newly observed regression; other
 workstreams can proceed independently within the contracts above.
+
+19:33Z live verification: Windows8ea0f15239/build612 is running under its scheduled
+supervisor. The historical examples that previously failed now decode and reach
+`training.job.remainder_waits`: required windows33,536–35,840 versus served32,409.
+This proves the storage regression is corrected, not that those examples trained.
+The new action observation window remains open through19:40:30Z.
+
+Prefill collaboration evidence: Claude's19:03 message (AIRC event466a07d3, original
+retained locally) reports four concurrent cold prefills on M5 and poor resident
+latency. Treat these as attributed measurements pending trace review. The current
+`lane_args::UBATCH_TOKENS=2048` comment cites an August21 M5 isolated llama-bench
+throughput measurement and failure to allocate4096 beside a serving lane. That
+provenance does not establish a mixed-load optimum; the peer's November4 paired
+warm-decode results test a different objective. The existing5c work must reconcile
+these measurements through the shared operating-point owner and deterministic
+mixed-load traces, not a new hardcoded launch flag or per-leaf policy. The exact
+reply-room change does not claim to solve cold-prefill admission or fairness.
