@@ -10,7 +10,9 @@
 pub(crate) mod actions;
 pub(crate) mod blocks;
 pub(crate) mod conversation;
+pub(crate) mod facts;
 pub(crate) mod held_work;
+pub(crate) mod native;
 pub(crate) mod notices;
 pub(crate) mod open_views;
 pub(crate) mod tasks;
@@ -36,6 +38,8 @@ pub(crate) enum Producer {
     Task,
     /// Her held work (`held_work`): a card in a state, an ended claim, a rejected claim.
     Work,
+    /// A perception fact about her situation (`facts`).
+    Fact,
 }
 
 /// An occurrence's id from its producer's own stable identity: whose (`persona`), which producer,
@@ -94,16 +98,30 @@ impl Role {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ContextMessage {
     pub role: Role,
+    /// What it says: its text, or for a native message the text its parts carry (what it costs
+    /// and is hashed by).
     pub text: String,
+    /// Her native protocol (her calls, their results) when the message is one, as the request
+    /// carried it (`native`): rendered back as the same protocol. Absent in a view saved before a
+    /// prompt's tail joined it, which held text alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<Vec<native::NativePart>>,
 }
 
 impl ContextMessage {
+    pub fn new(role: Role, text: String) -> Self {
+        Self { role, text, native: None }
+    }
+
     pub fn user(text: String) -> Self {
-        Self { role: Role::User, text }
+        Self::new(Role::User, text)
     }
 
     pub fn to_chat(&self) -> ChatMessage {
-        ChatMessage::text(self.role.as_str(), self.text.clone())
+        match &self.native {
+            None => ChatMessage::text(self.role.as_str(), self.text.clone()),
+            Some(parts) => ChatMessage { role: self.role.as_str().to_owned(), content: Self::native_content(parts), name: None },
+        }
     }
 }
 
@@ -123,6 +141,9 @@ pub(crate) mod priority {
     pub const ACTIONS: u8 = 5;
     /// Required input, the allocation's top weight: a notice collapses to itself.
     pub const NOTICES: u8 = 10;
+    /// What her situation shows now (a repetition, how many turns the room offered): grounding
+    /// for this act, weighed like her conversation.
+    pub const FACTS: u8 = 5;
 }
 
 #[cfg(test)]

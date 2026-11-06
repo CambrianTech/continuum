@@ -45,6 +45,29 @@ impl WorkingMemory {
             .and_then(|entry| (!entry.text.trim().is_empty()).then(|| entry.text.clone()))
     }
 
+    /// The words she wrote with the calls of act `seq` (the statement whose native calls its receipt
+    /// took), when that is still her latest decision in `room`: her words and those calls are one
+    /// turn of hers, rendered as she wrote it, her words then her calls, in one assistant message.
+    /// `None` when she decided again since, or wrote nothing with them.
+    pub fn statement_of_act(&self, seq: u64, room: Uuid) -> Option<String> {
+        if room.is_nil() {
+            return None;
+        }
+        let scope = self.scope.lock().clone();
+        let mut past_receipt = false;
+        for entry in self.entries.lock().iter().rev().filter(|entry| entry.scope == scope) {
+            match entry.kind {
+                WmKind::Receipt { n } if n == seq => past_receipt = true,
+                WmKind::ActionStatement { room: authored } if authored == room => {
+                    // A decision after the act's receipt is her latest: the act's words are not.
+                    return past_receipt.then(|| entry.text.clone()).filter(|text| !text.trim().is_empty());
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     pub fn new(capacity: usize) -> Self {
         static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
         Self {

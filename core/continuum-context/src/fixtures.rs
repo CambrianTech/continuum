@@ -23,16 +23,27 @@ pub(crate) struct Fake {
     pub items: Vec<(String, String)>,
     pub retired: Vec<(String, String)>,
     pub shaped: bool,
+    /// Its items are states, each ended by `[<key> ended]` once it is no longer offered.
+    pub states: bool,
 }
 
 impl Fake {
     pub fn new(name: &'static str, priority: u8) -> Self {
-        Self { name, priority, items: Vec::new(), retired: Vec::new(), shaped: false }
+        Self { name, priority, items: Vec::new(), retired: Vec::new(), shaped: false, states: false }
     }
 
     /// The same source whose items carry their summary level.
     pub fn shaped(name: &'static str, priority: u8) -> Self {
         Self { shaped: true, ..Self::new(name, priority) }
+    }
+
+    /// The same source whose items are states (`Source::states`).
+    pub fn states(name: &'static str, priority: u8) -> Self {
+        Self { states: true, ..Self::new(name, priority) }
+    }
+
+    pub fn drop_item(&mut self, key: &str) {
+        self.items.retain(|(k, _)| k != key);
     }
 
     pub fn push(&mut self, key: &str, text: &str) {
@@ -58,6 +69,12 @@ impl Source<String> for Fake {
                 item(key.clone(), text.clone(), summary, Some(format!("[{key}: {} chars, reopen by key]", text.len())))
             })
             .collect()
+    }
+    fn states(&self) -> bool {
+        self.states
+    }
+    fn ended(&self, key: &str) -> Option<String> {
+        Some(format!("[{key} ended]"))
     }
     fn retired(&self) -> Vec<Item<String>> {
         self.retired

@@ -4,7 +4,8 @@
 //! file, one notice), never as one block. The epoch appends only the items whose rendering
 //! changed, so a source that grows by one item costs one item, not a re-render of all of
 //! them. A source that cannot key its state (the clock, this act's ask) is not a source:
-//! it rides the fresh tail after the epoch.
+//! it rides the act's tail after the epoch, and the tail joins the epoch in the bytes it was
+//! sent (`view::View::append_sent`), so even it never moves once sent.
 
 use crate::cause::{Act, Cause, Content, ContentHash, ElementId};
 use crate::epoch::Block;
@@ -162,6 +163,24 @@ pub trait Source<T: Block> {
     /// immediately.
     fn retired(&self) -> Vec<Item<T>> {
         Vec::new()
+    }
+
+    /// Whether this source's items are STATES, true only while offered (a perception fact: "my
+    /// last two acts repeated" stops holding when she stops repeating), rather than events that
+    /// stay what happened (a turn, a result). The view ends a state the source no longer offers
+    /// with its [`Source::ended`] notice. `false` (the default): an item that left the source
+    /// stays until the next start, as [`Source::items`] says.
+    fn states(&self) -> bool {
+        false
+    }
+
+    /// For a source of [`states`](Source::states): the notice that supersedes its item `key`,
+    /// which her view holds and the source no longer offers. The view appends it once, so the
+    /// item's last word in her view is that it ended, and the same state returning later appends
+    /// anew at the newest end instead of reading as unchanged where it first fired. `None` keeps
+    /// that item (an event among the states) until the next start.
+    fn ended(&self, _key: &str) -> Option<T> {
+        None
     }
 
     /// Load the whole of one of this source's stored items (its `stored` handle), called only

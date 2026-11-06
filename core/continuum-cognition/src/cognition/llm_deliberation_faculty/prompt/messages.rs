@@ -125,27 +125,15 @@ impl LlmDeliberationFaculty {
         input.update(b"stimulus");
         input.update([stimulus_index.is_some() as u8]);
         // The system's own words to her (`TurnVoice::Perception`: a [pattern] notice, a
-        // board anchor) are perception facts, not conversation. In the conversation they
-        // sat AHEAD of the append-only results ring, so each new notice displaced the ring
-        // and everything behind it: Benchy's engine reuse fell to the system prompt alone
-        // (7,441 tokens) the turn a `[pattern]` notice landed (the M5, 2026-10-18 16:16Z).
-        // They render with the facts, after every append-only block, before the ask.
-        let mut perceived: Vec<String> = Vec::new();
+        // board anchor) are perception facts, not conversation: keyed items of her view's facts
+        // source (`context_streams::facts`), each appended once where it arrived, so a new one
+        // never displaces what her view already holds (Benchy, the M5, 2026-10-18 16:16Z: reuse
+        // fell to the system prompt the turn a `[pattern]` notice landed ahead of the ring).
+        let mut perceived: Vec<crate::cognition::context_streams::facts::Fact> = Vec::new();
+        let mut stimulus_key = None;
         for (index, turn) in ws.turns.iter().enumerate() {
             let role = if turn.is_self { "assistant" } else { "user" };
             let line = turn_message_line_addressed(turn, &participants, &self.persona_name);
-            if turn.voice == TurnVoice::Perception && Some(index) != stimulus_index {
-                // A fact, like every other fact: not part of the request's input identity, so
-                // diagnostic churn never reads as new input to a retained refusal.
-                perceived.push(line);
-                continue;
-            }
-            if Some(index) == stimulus_index {
-                // The event time and addressed author are required provenance too.
-                field(&mut input, line.as_bytes());
-                stimulus = Some(ChatMessage::text(role, line));
-                continue;
-            }
             // A room turn is its event (unique, and what her read receipt names); a turn without
             // one keys by time and author, an opaque stimulus by its position.
             let key = match (turn.source, turn.occurred_at_ms) {
@@ -153,6 +141,19 @@ impl LlmDeliberationFaculty {
                 (None, Some(ms)) => format!("{ms}/{}", turn.author),
                 (None, None) => format!("#{index}"),
             };
+            if turn.voice == TurnVoice::Perception && Some(index) != stimulus_index {
+                // A fact, like every other fact: not part of the request's input identity, so
+                // diagnostic churn never reads as new input to a retained refusal.
+                perceived.push(crate::cognition::context_streams::facts::Fact::event(&key, line));
+                continue;
+            }
+            if Some(index) == stimulus_index {
+                // The event time and addressed author are required provenance too.
+                field(&mut input, line.as_bytes());
+                stimulus = Some(ChatMessage::text(role, line));
+                stimulus_key = Some(key);
+                continue;
+            }
             let role = if turn.is_self {
                 crate::cognition::context_streams::Role::Assistant
             } else {
@@ -224,10 +225,11 @@ impl LlmDeliberationFaculty {
             persona_id: Some(self.persona_id),
         };
         let mut facts = perceived;
-        facts.extend(super::super::super::perception_facts::render_facts(
-            &fact_cx,
-            &super::super::super::perception_facts::FactPolicy::default(),
-        ));
+        facts.extend(
+            super::super::super::perception_facts::render_facts(&fact_cx, &super::super::super::perception_facts::FactPolicy::default())
+                .into_iter()
+                .map(|(id, text)| crate::cognition::context_streams::facts::Fact::state(id, text)),
+        );
         // MESSAGE ORDER IS MONOTONE IN STABILITY (2026-08-23, the byte-diff
         // verdict). Consecutive-act prompt captures showed the flickering
         // content — perception facts whose presence/wording changes per act,
@@ -238,6 +240,9 @@ impl LlmDeliberationFaculty {
         //
         //   old turns → history (append-only) → grounding (flickers)
         //   → facts (flicker) → ASK → pinned newest result
+        //
+        // (2026-11-06: the facts are items of her view now, appended at its end, and the tail
+        // after it joins her view once sent, so nothing in this order moves once sent.)
         //
         // Every prior lesson is preserved by construction: facts stay BEFORE
         // the ask and the ask stays after them (the 2026-07-20 parrot-loop
@@ -327,11 +332,9 @@ impl LlmDeliberationFaculty {
         let result_pointers = Vec::new();
         let grounding_at = 0;
 
-        // Facts flicker per act — they render after every append-only block,
-        // immediately before the ask (parrot-fix order preserved).
-        for fact in facts {
-            messages.push(ChatMessage::text("user", fact));
-        }
+        // The facts are her view's (`context_streams::facts`): appended where they fire, after
+        // everything her view held and before this act's tail, so they stay ahead of the ask
+        // (parrot-fix order preserved) and never move once sent.
         // The volatile framing (clock + own-time/presence flip) — same flicker
         // class as the facts, so it rides HERE: before the ask (the parrot-fix
         // order), after everything stable. It lived at the tail of the system
@@ -347,11 +350,14 @@ impl LlmDeliberationFaculty {
         // only a truncation notice. Oversized output paging belongs to the
         // existing spill/tool-output producer, never to a generic byte reducer.
         input.update(b"active_result");
+        let mut statement_in_call = false;
+        let mut latest_act = None;
         let latest_result = match self.working_memory.as_ref() {
             None => Vec::new(),
             Some(wm) => match wm.active_action_full() {
                 None => Vec::new(),
                 Some((seq, full)) => {
+                    latest_act = Some(seq);
                     let message = wm.full_result_message(seq, &full);
                     // Provenance remains part of request identity. Typed calls and
                     // producer payloads below additionally identify the native exchange.
@@ -375,7 +381,15 @@ impl LlmDeliberationFaculty {
                             field(&mut input, call.name.as_bytes());
                             field(&mut input, call.input.to_string().as_bytes());
                         }
-                        let calls = ChatMessage::assistant_tool_use(&calls);
+                        let mut calls = ChatMessage::assistant_tool_use(&calls);
+                        // HER TURN AS SHE WROTE IT: her words, then her calls, one assistant message
+                        // (the template renders it `words\n\n<tool_call>…`, as she generated it).
+                        // Two messages rendered an `<|im_end|>` and a second assistant header
+                        // between them that she never wrote.
+                        if let (Some(words), crate::ai::types::MessageContent::Parts(parts)) = (wm.statement_of_act(seq, ws.activity_room_id), &mut calls.content) {
+                            parts.insert(0, crate::ai::types::ContentPart::Text { text: words });
+                            statement_in_call = true;
+                        }
                         let mut results = ChatMessage::tool_results(&results);
                         // Preserve producer-owned whole-or-pointer payloads, never expand
                         // spill handles or reconstruct native protocol from receipt prose.
@@ -416,26 +430,26 @@ impl LlmDeliberationFaculty {
         // single-message shape the faculty sent before this refactor. NOT a fallback
         // hiding a defect ([[fallbacks-are-illegal-fail-loud]]): zero turns is a
         // real, valid input, and this is its faithful representation.
-        if messages.is_empty() && stimulus.is_none() && latest_result.is_empty() {
+        if messages.is_empty() && facts.is_empty() && stimulus.is_none() && latest_result.is_empty() {
             field(&mut input, ws.world_state.as_bytes());
             stimulus = Some(ChatMessage::text("user", ws.world_state.clone()));
         }
         input.update([(!latest_result.is_empty()) as u8]);
-        let action_statement = self
-            .working_memory
-            .as_ref()
-            .and_then(|memory| memory.action_statement(ws.activity_room_id))
-            .map(|text| ChatMessage::text("assistant", text));
-        if let Some(statement) = &action_statement {
-            field(&mut input, statement.content_text().as_bytes());
+        let statement = self.working_memory.as_ref().and_then(|memory| memory.action_statement(ws.activity_room_id));
+        if let Some(text) = &statement {
+            field(&mut input, text.as_bytes());
         }
+        // Rendered on its own only when it is not already her words in her newest call.
+        let action_statement = statement.filter(|_| !statement_in_call).map(|text| ChatMessage::text("assistant", text));
         PromptMessages {
             input_identity: input.finalize().into(),
             history: messages,
             streams: super::types::Streams {
-                conversation: crate::cognition::context_streams::conversation::Conversation { persona: self.persona_id, turns },
+                conversation: crate::cognition::context_streams::conversation::Conversation { persona: self.persona_id, turns, stimulus: stimulus_key },
                 blocks,
                 held: crate::cognition::context_streams::held_work::HeldWorkStream { persona: self.persona_id, work: std::sync::Arc::clone(&ws.held) },
+                facts: crate::cognition::context_streams::facts::Facts { persona: self.persona_id, facts },
+                latest_act,
             },
             result_pointers,
             grounding_tokens: 0,

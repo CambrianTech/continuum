@@ -479,7 +479,7 @@ fn a_view_turnover_keeps_her_tool_set() {
     // The fit turns her view over in this act (what `fit_view` does when it outgrows its grant).
     let none: [&dyn Source<crate::cognition::context_streams::ContextMessage>; 0] = [];
     faculty.context_view.lock().as_mut().expect("a view").turn_over(Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
-    let sent = faculty.retain_tools(choice, false);
+    let sent = faculty.retain_tools(choice, false, true);
     assert_eq!(wire(&sent), wire(&first.tools), "the turnover act sends the set she held");
     let next = faculty.prompt_view_within(&declared, 200_000);
     assert_eq!(wire(&next.tools), wire(&first.tools), "and so does every act after it");
@@ -502,10 +502,63 @@ fn a_window_that_cannot_hold_the_epochs_set_reselects_loudly() {
     let (choice, refused) = faculty.granted_tools(&ws, claim, claim.floor - 1);
     let refused = refused.expect("a grant below her core hands refuses loudly");
     assert_eq!(refused.required_tokens, claim.floor, "the refusal names her core hands' whole cost");
-    let sent = faculty.retain_tools(choice, true);
+    let sent = faculty.retain_tools(choice, true, false);
     assert!(sent.specs.is_none(), "no partial surface is sent");
     let restored = faculty.prompt_view_within(&ws, 200_000);
     assert_eq!(wire(&restored.tools), wire(&first.tools), "a window that holds her core hands sends them again");
     let after = faculty.prompt_view_within(&ws, 200_000);
     assert_eq!(wire(&after.tools), wire(&first.tools), "and the set holds");
+}
+
+// what this catches: a held card's transition rewriting her tool head mid-epoch. The served
+// template (Qwen3.6-35B-A3B's, read from its GGUF on the M5) renders her tools first of all, so a
+// set re-selected the moment her moves changed (`delib.tools.epoch_moves_changed`, Aiko on the M5,
+// 2026-11-06 17:04Z and 19:04Z; her list went 39 -> 30 verbs at 19:21Z) re-prefilled every token
+// behind the change. Mid-epoch her head holds and the verbs her new moves add ride the tail,
+// callable at once; the act that starts her view's next epoch adopts the set her moves select.
+#[test]
+fn a_moves_change_waits_for_her_views_next_start_and_rides_the_tail_until_then() {
+    use continuum_context::source::Source;
+    use crate::cognition::work_preconditions::{fixture_card, Held, FIXTURE_NOW_MS};
+    let faculty = asha_with_hands();
+    // A room that declares one verb: her head is that verb and the discovery pair, smaller than her hands.
+    let ws = declaring_one_hand(&faculty);
+    let first = faculty.prompt_view_within(&ws, 200_000);
+    assert!(first.capacity_error.is_none(), "{:?}", first.capacity_error);
+    let epoch = view_epoch(&faculty);
+    let surface = faculty.tool_surface();
+    let head = surface.names_of(&first.tools);
+    // A move her held card puts in her hands that her held head lacks, and that its own selection
+    // takes. From the built surface (the live native registry), so the fixture tracks its names.
+    let verb: &'static str = surface
+        .names()
+        .iter()
+        .zip(surface.registry())
+        .find(|(name, spec)| {
+            surface.hands().iter().any(|hand| hand.name == spec.name)
+                && !head.contains(name)
+                && surface.select_granted(&ws.room_affordances, std::slice::from_ref(*name), surface.hands_tokens()).is_ok_and(|fresh| surface.names_of(&fresh).contains(name))
+        })
+        .map(|(name, _)| &*Box::leak(name.clone().into_boxed_str())) // a held card's moves are static names
+        .expect("precondition: a verb of her hands outside her head that a move selects");
+    let her = airc_core::PeerId::from_uuid(Uuid::from_u128(1));
+    let mut held = Held::of(fixture_card(airc_work::CardState::InProgress, Some(her), None, "fix the thing"), her, FIXTURE_NOW_MS, 1).expect("test: she holds it");
+    held.in_hand = vec![verb];
+    let moved = declaring_one_hand(&faculty).held_work(crate::cognition::workspace::HeldWork { holds: vec![held], ..Default::default() });
+    let wire_name = surface.retained(&[verb.to_string()], first.tools.reason, 0).specs.expect("test: her surface has tools")[0].name.clone(); // JUSTIFIED: test fixture
+
+    let second = faculty.prompt_view_within(&moved, 200_000);
+    assert_eq!(view_epoch(&faculty), epoch, "precondition: no act turned the view over");
+    assert_eq!(wire(&second.tools), wire(&first.tools), "her head holds mid-epoch");
+    assert!(second.tools.tail.iter().any(|spec| spec.name == wire_name), "the move's verb rides the tail, callable now: {:?}", second.tools.tail);
+
+    // The act that starts her view's next epoch adopts the set her moves select.
+    let (choice, refused) = faculty.granted_tools(&moved, faculty.tools_claim(&moved), second.tools_grant);
+    assert!(refused.is_none());
+    let none: [&dyn Source<crate::cognition::context_streams::ContextMessage>; 0] = [];
+    faculty.context_view.lock().as_mut().expect("a view").turn_over(Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
+    let adopted = faculty.retain_tools(choice, false, true);
+    assert!(surface.names_of(&adopted).iter().any(|name| name == verb), "the start adopts the set her moves select");
+    let next = faculty.prompt_view_within(&moved, 200_000);
+    assert_eq!(wire(&next.tools), wire(&adopted), "and holds it");
 }

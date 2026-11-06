@@ -22,6 +22,9 @@ pub(crate) struct Conversation {
     /// Whose conversation this is (its turns' ids, `super::element`).
     pub persona: uuid::Uuid,
     pub turns: Vec<Turn>,
+    /// The key of the turn held out of `turns` as this act's ask (the newest external speech, the
+    /// stimulus): a sent tail that carried it covers it (`View::append_sent`).
+    pub stimulus: Option<String>,
 }
 
 impl Source<ContextMessage> for Conversation {
@@ -42,8 +45,8 @@ impl Source<ContextMessage> for Conversation {
             .map(|turn| {
                 let id = element(self.persona, Producer::Turn, turn.key.as_bytes());
                 let cause = previous.replace(id).map_or(Cause::Root(Origin::External), Cause::Of);
-                let full = ContextMessage { role: turn.role, text: turn.line.clone() };
-                let pointer = turn.pointer.clone().map(|text| ContextMessage { role: turn.role, text });
+                let full = ContextMessage::new(turn.role, turn.line.clone());
+                let pointer = turn.pointer.clone().map(|text| ContextMessage::new(turn.role, text));
                 // Collapsed, a turn leaves her view: the room's history holds it, and the
                 // `[context]` fact says how many turns the room offered. A one-line pointer would
                 // weigh about what a short turn does, saving nothing. The room-update index keeps

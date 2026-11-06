@@ -234,6 +234,11 @@ pub(in super::super) struct Streams {
     pub(in super::super) blocks: Vec<crate::cognition::context_streams::blocks::Grounding>,
     /// Her held work: one keyed item per card she holds (STATE-DRIVEN-SURFACE.md).
     pub(in super::super) held: crate::cognition::context_streams::held_work::HeldWorkStream,
+    /// What her situation shows now: the perception facts, keyed (`context_streams::facts`).
+    pub(in super::super) facts: crate::cognition::context_streams::facts::Facts,
+    /// The act whose native call and result this act's tail carries (`latest_result`), held out
+    /// of her actions while it is her newest: a sent tail covers it (`View::append_sent`).
+    pub(in super::super) latest_act: Option<u64>,
 }
 
 /// Prompt roles are provider-facing; these slots retain the substrate's meaning
@@ -578,9 +583,31 @@ pub struct DeliberationPromptView {
     /// An ACT whose required floors and measured output need do not fit her window
     /// (`ActPlan::irreducible_shortfall`): refused, never sent with a cap below her need.
     pub output_shortfall: Option<continuum_context::allocation::IrreducibleShortfall>,
+    /// What a sent tail of this view shows her that her sources also render (`(source, key)`): her
+    /// newest act, the stimulus. They do not arrive again from their sources (`View::append_sent`).
+    pub tail_covers: Vec<(&'static str, String)>,
 }
 
 impl DeliberationPromptView {
+    /// Her tail: what follows her view in this prompt (the clock, the ask, her call and its result).
+    pub(in super::super) fn tail(&self) -> &[ChatMessage] {
+        &self.messages[self.refit.grounding_at.min(self.messages.len())..]
+    }
+
+    /// Whether her view will hold this tail exactly as sent once it is served
+    /// (`LlmDeliberationFaculty::view_served`): every message is text or native protocol.
+    pub(in super::super) fn tail_holdable(&self) -> bool {
+        self.tail().iter().all(|message| crate::cognition::context_streams::ContextMessage::holdable(message).is_ok())
+    }
+
+    /// Where her next act's prompt stops matching this one, in messages: the engine checkpoints her
+    /// state there and her saved page keeps it (`view_messages`). Her whole prompt when its tail
+    /// joins her view as sent, so the next act resumes at its end; else where her view ends.
+    pub fn resumes_at(&self) -> Option<u32> {
+        let at = if self.tail_holdable() { self.messages.len() } else { self.refit.grounding_at };
+        u32::try_from(at).ok().filter(|len| *len > 0)
+    }
+
     /// The conversation rendered as flat text — the role-tagged thread joined for
     /// human-readable introspection (glass-box `eprintln!`, debug logs, assertions).
     /// The canonical form the model receives is [`messages`](Self::messages); this
