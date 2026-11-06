@@ -282,24 +282,17 @@ pub(super) fn render_tool_menu_inner(
     let mut out = String::new();
     match level {
         DisclosureLevel::Spine => {
-            // SPINE: call-form example + category headers with verb counts or inline verbs.
+            // SPINE: call-form example + category headers listing every verb name.
+            // Rung 0 — no hidden verbs. All names appear; expanded categories show
+            // inline, collapsed ones still list the names (the spine is the map).
             let _ = writeln!(
                 out,
-                "call form: code/read({{\"file_path\":\"src/main.rs\"}}) — exact args for any tool: commands/help(name)"
+                "call form: code/read({{{"file_path":"src/main.rs"}}}) — exact args for any tool: commands/help(name)"
             );
             for (cat, mut entries) in by_cat {
+                entries.sort_by(|a, b| a.0.cmp(b.0));
                 let verbs: Vec<&str> = entries.iter().map(|(v, _)| *v).collect();
-                if expanded.contains(cat) {
-                    // Expanded SPINE: show sorted verb list inline.
-                    entries.sort_by(|a, b| a.0.cmp(b.0));
-                    let verbs_sorted: Vec<&str> = entries.iter().map(|(v, _)| *v).collect();
-                    let _ = writeln!(out, "{cat}: {}", verbs_sorted.join(", "));
-                } else if verbs.len() == 1 {
-                    // Singleton categories aren't worth collapsing.
-                    let _ = writeln!(out, "{cat}: {} (+ commands/list --filter {cat})", verbs[0]);
-                } else {
-                    let _ = writeln!(out, "{cat} ({} — commands/list --filter {cat})", verbs.len());
-                }
+                let _ = writeln!(out, "{cat}: {}", verbs.join(", "));
             }
         }
         DisclosureLevel::Expanded => {
