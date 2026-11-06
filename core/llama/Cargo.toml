@@ -14,6 +14,7 @@ path = "src/bin/bench.rs"
 # Nothing yet — FFI + safe wrapper is self-contained
 
 [build-dependencies]
+cc = "1"
 cmake = "0.1"
 bindgen = "0.70"
 sha2 = { workspace = true } # streamed producer-output identity shared with cache reclamation

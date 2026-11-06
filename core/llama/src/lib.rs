@@ -67,5 +67,6 @@ pub mod sys {
 
 mod mtmd;
 mod safe;
+mod decode_boundary;
 pub use mtmd::{MediaKind, MtmdContext, MtmdEvalParams};
 pub use safe::*;
